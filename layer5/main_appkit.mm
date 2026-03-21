@@ -12,8 +12,29 @@
 #import <OpenGL/gl.h>
 #import <OpenGL/OpenGL.h>
 
+#include "ov_port.h"
+#include "ov_types.h"
 #include "PyMOL.h"
 #include "PyMOLOptions.h"
+#include "os_python.h"
+#include "PyMOLGlobals.h"
+#include "Cmd.h"
+
+// Defined in Cmd.cpp
+extern "C" PyObject* PyInit__cmd(void);
+
+// Defined in P.cpp (declared in P.h, but we can't include P.h here
+// because it pulls in GLEW which conflicts with the OpenGL framework headers)
+extern void PInit(PyMOLGlobals * G, int global_instance);
+extern void PUnblock(PyMOLGlobals * G);
+
+// Symbols normally provided by main.cpp (GLUT host).
+// The AppKit host uses the PyMOL_* embedding API instead.
+int _gScaleFactor = 1;
+
+int MainSavingUnderWhileIdle(void) { return 0; }
+PyObject *MainAsPyList(PyMOLGlobals *) { Py_RETURN_NONE; }
+int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 
 // Forward declarations
 @class PyMOLOpenGLView;
@@ -58,6 +79,9 @@ static PyMOLOpenGLView *glView = nullptr;
         _needsDisplay = YES;
         _initialized = NO;
 
+        // Enable Retina/HiDPI rendering
+        [self setWantsBestResolutionOpenGLSurface:YES];
+
         // Enable VSync
         GLint swapInterval = 1;
         [[self openGLContext] setValues:&swapInterval
@@ -79,7 +103,31 @@ static PyMOLOpenGLView *glView = nullptr;
     pymolInstance = PyMOL_NewWithOptions(options);
     PyMOLOptions_Free(options);
 
-    PyMOL_StartWithPython(pymolInstance);
+    // Follow the same init sequence as the GLUT host (main.cpp):
+    // 1. Set the global singleton so PInit can find it
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    SingletonPyMOLGlobals = G;
+
+    // 2. Start the C-level subsystems
+    PyMOL_Start(pymolInstance);
+
+    // 3. Initialize Python-to-C hooks as a global (singleton) instance
+    PInit(G, true);
+
+    // 4. Release the GIL so the main thread can proceed
+    PUnblock(G);
+
+    // Compute Retina scale factor and set via the setting system
+    NSRect pointBounds = [self bounds];
+    NSRect pixelBounds = [self convertRectToBacking:pointBounds];
+    int scaleFactor = (int)(pixelBounds.size.width / pointBounds.size.width);
+    if (scaleFactor < 1) scaleFactor = 1;
+    _gScaleFactor = scaleFactor;
+    if (scaleFactor > 1) {
+        char val[8];
+        snprintf(val, sizeof(val), "%d", scaleFactor);
+        PyMOL_CmdSet(pymolInstance, "display_scale_factor", val, "", -1, 1, 1);
+    }
 
     // Set swap callback
     PyMOL_SetSwapBuffersFn(pymolInstance, []() {
@@ -88,10 +136,9 @@ static PyMOLOpenGLView *glView = nullptr;
         }
     });
 
-    // Initial reshape
-    NSRect bounds = [self bounds];
-    int w = (int)bounds.size.width;
-    int h = (int)bounds.size.height;
+    // Initial reshape — use pixel dimensions for OpenGL
+    int w = (int)pixelBounds.size.width;
+    int h = (int)pixelBounds.size.height;
     glViewport(0, 0, w, h);
     PyMOL_Reshape(pymolInstance, w, h, 1);
 
@@ -130,12 +177,15 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     // Process idle work
     PyMOL_Idle(pymolInstance);
 
-    // Handle pending reshapes
+    // Handle pending reshapes — GetReshapeInfo returns point dimensions
+    // (divided by DIP2PIXEL), so scale back to pixels for GL and PyMOL_Reshape
     if (PyMOL_GetReshape(pymolInstance)) {
         PyMOLreturn_int_array info = PyMOL_GetReshapeInfo(pymolInstance, 1);
         if (info.array && info.size >= 5) {
-            glViewport(0, 0, info.array[3], info.array[4]);
-            PyMOL_Reshape(pymolInstance, info.array[3], info.array[4], 0);
+            int w = info.array[3] * _gScaleFactor;
+            int h = info.array[4] * _gScaleFactor;
+            glViewport(0, 0, w, h);
+            PyMOL_Reshape(pymolInstance, w, h, 0);
         }
         PyMOL_FreeResultArray(pymolInstance, info.array);
     }
@@ -160,9 +210,10 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     if (!pymolInstance) return;
 
     [[self openGLContext] makeCurrentContext];
-    NSRect bounds = [self bounds];
-    int w = (int)bounds.size.width;
-    int h = (int)bounds.size.height;
+    // Use pixel (backing) dimensions for Retina
+    NSRect pixelBounds = [self convertRectToBacking:[self bounds]];
+    int w = (int)pixelBounds.size.width;
+    int h = (int)pixelBounds.size.height;
     glViewport(0, 0, w, h);
     PyMOL_Reshape(pymolInstance, w, h, 0);
     _needsDisplay = YES;
@@ -401,8 +452,56 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 #pragma mark - Main
 // ---------------------------------------------------------------------------
 
+static void initPython(int argc, const char *argv[]) {
+    // Set up Python home and module search path for the bundle
+    NSBundle *bundle = [NSBundle mainBundle];
+    NSString *resourcePath = [bundle resourcePath];
+    NSString *modulesPath = [resourcePath stringByAppendingPathComponent:@"modules"];
+
+    // Register built-in _cmd module before Py_Initialize
+    // Note: PyImport_AppendInittab only supports top-level module names
+    PyImport_AppendInittab("_cmd", PyInit__cmd);
+
+    // Configure Python before initialization
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+    config.isolated = 0;
+    config.site_import = 1;
+
+    // Set program name
+    PyConfig_SetBytesString(&config, &config.program_name, argv[0]);
+
+    // Initialize Python
+    PyStatus status = Py_InitializeFromConfig(&config);
+    PyConfig_Clear(&config);
+    if (PyStatus_Exception(status)) {
+        NSLog(@"Failed to initialize Python: %s", status.err_msg);
+        return;
+    }
+
+    // Register pymol._cmd in sys.modules so "import pymol._cmd" works.
+    // init_cmd() calls PyInit__cmd() and inserts the module as "pymol._cmd".
+    init_cmd();
+
+    // Add our modules path to sys.path
+    PyObject *sysPath = PySys_GetObject("path");
+    if (sysPath) {
+        PyObject *path = PyUnicode_FromString([modulesPath UTF8String]);
+        PyList_Insert(sysPath, 0, path);
+        Py_DECREF(path);
+    }
+
+    // Set PYMOL_PATH and PYMOL_DATA for pymol module initialization
+    setenv("PYMOL_PATH", [resourcePath UTF8String], 1);
+    NSString *dataPath = [resourcePath stringByAppendingPathComponent:@"data"];
+    setenv("PYMOL_DATA", [dataPath UTF8String], 1);
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        // Initialize Python before anything else
+        initPython(argc, argv);
+
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
 

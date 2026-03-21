@@ -2,4 +2,5 @@
 *.d
 generated
 build
+build_appkit
 .vscode
