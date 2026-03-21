@@ -2205,6 +2205,29 @@ static PyObject *CmdSetTitle(PyObject * self, PyObject * args)
   return APISuccess();
 }
 
+static PyObject *CmdSetPrompt(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  char *str1;
+  API_SETUP_ARGS(G, self, args, "Os", &self, &str1);
+  API_ASSERT(APIEnterNotModal(G));
+  OrthoSetPrompt(G, str1);
+  OrthoRestorePrompt(G);
+  APIExit(G);
+  return APISuccess();
+}
+
+static PyObject *CmdSetAIMode(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  int mode;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &mode);
+  API_ASSERT(APIEnterNotModal(G));
+  OrthoSetAIMode(G, mode != 0);
+  APIExit(G);
+  return APISuccess();
+}
+
 static PyObject *CmdGetTitle(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -6636,6 +6659,8 @@ static PyMethodDef Cmd_methods[] = {
   {"set_state_order", CmdSetStateOrder, METH_VARARGS},
   {"set_symmetry", CmdSetSymmetry, METH_VARARGS},
   {"set_title", CmdSetTitle, METH_VARARGS},
+  {"set_prompt", CmdSetPrompt, METH_VARARGS},
+  {"set_ai_mode", CmdSetAIMode, METH_VARARGS},
   {"set_wizard", CmdSetWizard, METH_VARARGS},
   {"set_wizard_stack", CmdSetWizardStack, METH_VARARGS},
   {"set_view", CmdSetView, METH_VARARGS},

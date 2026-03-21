@@ -603,3 +603,6 @@ if True:
         print(*args, **kw)
 
     cmd.extend('print', _print_statement)
+
+    from pymol import ai_mode
+    ai_mode._init(cmd)
