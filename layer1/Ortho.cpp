@@ -108,7 +108,7 @@ public:
   OrthoRenderMode RenderMode = OrthoRenderMode::Main;
   Rect2D Viewport;
   int WrapXFlag{};
-  bool AIMode{};
+
   double DrawTime{}, LastDraw{};
   ClickSide WrapClickSide = ClickSide::None; /* ugly kludge for finding click
                                                 side in geowall stereo mode */
@@ -327,17 +327,6 @@ void OrthoSetPrompt(PyMOLGlobals* G, const char* prompt)
   I->Prompt[sizeof(I->Prompt) - 1] = '\0';
 }
 
-/*========================================================================*/
-void OrthoSetAIMode(PyMOLGlobals* G, bool mode)
-{
-  G->Ortho->AIMode = mode;
-}
-
-/*========================================================================*/
-bool OrthoGetAIMode(PyMOLGlobals* G)
-{
-  return G->Ortho->AIMode;
-}
 
 /*========================================================================*/
 void OrthoSpecial(PyMOLGlobals* G, int k, int x, int y, int mod)
@@ -961,11 +950,8 @@ void OrthoKey(PyMOLGlobals* G, unsigned char k, int x, int y, int mod)
         }
       }
       break;
-    case 9: /* tab */
-      if (mod & cOrthoSHIFT) {
-        PParse(G, "cmd._toggle_ai_mode()");
-        PFlush(G);
-      } else if (mod & cOrthoCTRL) {
+    case 9: /* CTRL I -- tab */
+      if (mod & cOrthoCTRL) {
         OrthoKeyControl(G, (unsigned char) (k + 64));
       } else {
         curLine = I->CurLine & OrthoSaveLines;
@@ -1037,13 +1023,9 @@ void OrthoKey(PyMOLGlobals* G, unsigned char k, int x, int y, int mod)
       break;
     case 22: /* CTRL V -- paste */
 #ifndef _PYMOL_NOPY
-      if (I->CurChar != I->PromptChar) { /* no text entered yet... */
-        PBlockAndUnlockAPI(G);
-        PRunStringInstance(G, "cmd.paste()");
-        PLockAPIAndUnblock(G);
-      } else {
-        OrthoKeyControl(G, (unsigned char) (k + 64));
-      }
+      PBlockAndUnlockAPI(G);
+      PRunStringInstance(G, "cmd.paste()");
+      PLockAPIAndUnblock(G);
 #endif
       break;
     default:
@@ -1075,14 +1057,7 @@ void OrthoParseCurrentLine(PyMOLGlobals* G)
     if (WordMatch(G, buffer, "quit", true) == 0) /* don't log quit */
       PLog(G, buffer, cPLog_pml);
     OrthoDirty(G); /* this will force a redraw, if necessary */
-    if (I->AIMode) {
-      char ai_buf[OrthoLineLength + 128];
-      snprintf(ai_buf, sizeof(ai_buf),
-          "pymol.ai_mode._ai_submit(r\"\"\"%s\"\"\")", buffer);
-      PParse(G, ai_buf);
-    } else {
-      PParse(G, buffer);
-    }
+    PParse(G, buffer);
     OrthoRestorePrompt(G);
   }
 #endif

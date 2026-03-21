@@ -604,5 +604,5 @@ if True:
 
     cmd.extend('print', _print_statement)
 
-    from pymol import ai_mode
-    ai_mode._init(cmd)
+    from pymol import ai_chat
+    ai_chat._init(cmd)

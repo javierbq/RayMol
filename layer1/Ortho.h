@@ -116,8 +116,6 @@ std::string OrthoFeedbackOut(PyMOLGlobals* G, COrtho& ortho);
 
 void OrthoSetWizardPrompt(PyMOLGlobals * G, char *vla);
 void OrthoSetPrompt(PyMOLGlobals * G, const char *prompt);
-void OrthoSetAIMode(PyMOLGlobals * G, bool mode);
-bool OrthoGetAIMode(PyMOLGlobals * G);
 
 int OrthoGetOverlayStatus(PyMOLGlobals * G);
 void OrthoPasteIn(PyMOLGlobals * G, const char *buffer);
