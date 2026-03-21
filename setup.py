@@ -197,6 +197,7 @@ class options:
     glut = False
     use_msgpackc = "guess"
     testing = False
+    appkit = False
     openvr = False
     use_openmp = "no" if MAC else "yes"
     use_vtkm = "no"
@@ -237,6 +238,8 @@ parser.add_argument(
     "shared library; no: disable fast MMTF load support",
 )
 parser.add_argument("--testing", type=str2bool, help="Build C-level tests")
+parser.add_argument("--appkit", dest="appkit", type=str2bool,
+    help="Build native macOS AppKit app (no GLUT dependency)")
 parser.add_argument("--openvr", dest="openvr", type=str2bool)
 parser.add_argument(
     "--vmd-plugins",
@@ -649,7 +652,12 @@ else:
 
     pymol_src_dirs += ["contrib/mmtf-c"]
 
-if not options.glut:
+if options.appkit and MAC:
+    def_macros += [
+        ("_PYMOL_NO_MAIN", None),
+        ("_PYMOL_APPKIT", None),
+    ]
+elif not options.glut:
     def_macros += [
         ("_PYMOL_NO_MAIN", None),
     ]
@@ -678,6 +686,8 @@ if MAC:
             "-framework OpenGL",
         ] + (options.glut) * [
             "-framework GLUT",
+        ] + (options.appkit) * [
+            "-framework Cocoa",
         ]
         def_macros += [
             ("_PYMOL_OSX", None),
@@ -805,7 +815,7 @@ def get_pymol_version():
     return re.findall(r'_PyMOL_VERSION "(.*)"', open("layer0/Version.h").read())[0]
 
 
-def get_sources(subdirs, suffixes=(".c", ".cpp")):
+def get_sources(subdirs, suffixes=(".c", ".cpp", ".mm")):
     return sorted(
         [f for d in subdirs for s in suffixes for f in glob.glob(d + "/*" + s)]
     )
