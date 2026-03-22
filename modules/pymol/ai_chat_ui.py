@@ -12,7 +12,7 @@ import Foundation
 # Module-level state
 # ---------------------------------------------------------------------------
 
-_panel = None        # NSPanel instance (created lazily)
+_panel = None        # NSPanel instance (created lazily, GLUT mode only)
 _visible = False     # current visibility
 _text_view = None    # NSTextView for messages
 _input_field = None  # NSTextField for user input
@@ -20,6 +20,8 @@ _status_label = None # NSTextField used as a status indicator
 _scroll_view = None  # NSScrollView wrapping the text view
 _delegate = None     # InputDelegate instance (prevent GC)
 _key_monitor = None  # reference to the installed event monitor
+_embedded = False    # True when running inside AppKit host (not GLUT)
+_container_view = None  # NSView provided by the AppKit host
 
 
 # ---------------------------------------------------------------------------
@@ -27,14 +29,39 @@ _key_monitor = None  # reference to the installed event monitor
 # ---------------------------------------------------------------------------
 
 def _init():
-    """Install the Cmd+L key monitor. The panel itself is created lazily."""
-    _install_key_monitor()
+    """Install the Cmd+L key monitor (GLUT mode only).
+
+    In embedded/AppKit mode, _setup_embedded() is called instead and
+    Cmd+L is handled natively in the ObjC keyDown: handler.
+    """
+    if not _embedded:
+        _install_key_monitor()
+
+
+def _setup_embedded(container_view):
+    """Set up the chat UI inside a container view provided by the AppKit host.
+
+    This is called from main_appkit.mm after the window is created.
+    The container is an NSView on the left side of the main window.
+    """
+    global _embedded, _container_view, _visible
+    _embedded = True
+    _container_view = container_view
+    _visible = True
+    _build_chat_subviews(container_view)
 
 
 def toggle():
-    """Show or hide the chat panel, creating it on first call."""
-    global _panel, _visible
+    """Show or hide the chat panel."""
+    global _visible
 
+    if _embedded:
+        # In embedded mode, toggling is handled by the ObjC host
+        # (toggleChatPanel in PyMOLAppDelegate). Nothing to do here.
+        return
+
+    # --- GLUT / NSPanel mode (backwards compatible) ---
+    global _panel
     if _panel is None:
         _create_panel()
 
@@ -234,34 +261,17 @@ def _attrs_for_role(role):
 # Panel construction
 # ---------------------------------------------------------------------------
 
-def _create_panel():
-    """Build the NSPanel and all its subviews."""
-    global _panel, _text_view, _input_field, _status_label, _scroll_view
-    global _delegate
+def _build_chat_subviews(parent_view):
+    """Populate *parent_view* with the chat header, message area, input field.
 
-    panel_width = 320
-    panel_height = 600
+    This is shared between the embedded AppKit mode and the GLUT NSPanel mode.
+    """
+    global _text_view, _input_field, _status_label, _scroll_view, _delegate
 
-    style = (AppKit.NSWindowStyleMaskTitled
-             | AppKit.NSWindowStyleMaskClosable
-             | AppKit.NSWindowStyleMaskResizable
-             | AppKit.NSWindowStyleMaskNonactivatingPanel)
-
-    _panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        AppKit.NSMakeRect(100, 100, panel_width, panel_height),
-        style,
-        AppKit.NSBackingStoreBuffered,
-        False,
-    )
-    _panel.setTitle_("AI Chat")
-    _panel.setFloatingPanel_(True)
-    _panel.setBecomesKeyOnlyIfNeeded_(True)
-    _panel.setReleasedWhenClosed_(False)
-
-    content = _panel.contentView()
-    content.setAutoresizesSubviews_(True)
-    cw = panel_width
-    ch = panel_height
+    parent_view.setAutoresizesSubviews_(True)
+    bounds = parent_view.bounds()
+    cw = bounds.size.width
+    ch = bounds.size.height
 
     # -- Header (30px) -------------------------------------------------------
     header_y = ch - 30
@@ -273,6 +283,7 @@ def _create_panel():
     title_label = AppKit.NSTextField.labelWithString_("AI Chat")
     title_label.setFrame_(AppKit.NSMakeRect(8, 2, 200, 24))
     title_label.setFont_(AppKit.NSFont.boldSystemFontOfSize_(14.0))
+    title_label.setTextColor_(AppKit.NSColor.whiteColor())
     title_label.setAutoresizingMask_(AppKit.NSViewMaxXMargin)
     header.addSubview_(title_label)
 
@@ -284,10 +295,10 @@ def _create_panel():
     _new_target = _NewButtonTarget.alloc().init()
     new_btn.setTarget_(_new_target)
     new_btn.setAction_('newConversation:')
-    # prevent GC by storing on module
-    _create_panel._new_target = _new_target
+    # prevent GC
+    _build_chat_subviews._new_target = _new_target
     header.addSubview_(new_btn)
-    content.addSubview_(header)
+    parent_view.addSubview_(header)
 
     # -- Input area (40px) at the bottom -------------------------------------
     input_y = 0
@@ -309,10 +320,10 @@ def _create_panel():
     _send_target = _SendButtonTarget.alloc().init()
     send_btn.setTarget_(_send_target)
     send_btn.setAction_('sendMessage:')
-    _create_panel._send_target = _send_target
+    _build_chat_subviews._send_target = _send_target
 
-    content.addSubview_(_input_field)
-    content.addSubview_(send_btn)
+    parent_view.addSubview_(_input_field)
+    parent_view.addSubview_(send_btn)
 
     # -- Status label (20px) just above input --------------------------------
     status_y = input_height
@@ -324,7 +335,7 @@ def _create_panel():
             0.53, 0.53, 0.53, 1.0))
     _status_label.setHidden_(True)
     _status_label.setAutoresizingMask_(AppKit.NSViewWidthSizable)
-    content.addSubview_(_status_label)
+    parent_view.addSubview_(_status_label)
 
     # -- Scroll view (fills the rest) ----------------------------------------
     scroll_y = input_height + 20  # above status label
@@ -334,6 +345,11 @@ def _create_panel():
     _scroll_view.setHasVerticalScroller_(True)
     _scroll_view.setAutoresizingMask_(
         AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+    # Dark background for the scroll view in embedded mode
+    if _embedded:
+        _scroll_view.setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.15, 0.15, 0.17, 1.0))
 
     text_frame = AppKit.NSMakeRect(0, 0, cw, scroll_height)
     _text_view = AppKit.NSTextView.alloc().initWithFrame_(text_frame)
@@ -342,9 +358,41 @@ def _create_panel():
     _text_view.setAutoresizingMask_(AppKit.NSViewWidthSizable)
     _text_view.textContainer().setWidthTracksTextView_(True)
     _text_view.setTextContainerInset_(AppKit.NSMakeSize(4.0, 4.0))
+    # Dark background for the text view in embedded mode
+    if _embedded:
+        _text_view.setDrawsBackground_(True)
+        _text_view.setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.15, 0.15, 0.17, 1.0))
 
     _scroll_view.setDocumentView_(_text_view)
-    content.addSubview_(_scroll_view)
+    parent_view.addSubview_(_scroll_view)
+
+
+def _create_panel():
+    """Build the NSPanel and all its subviews (GLUT mode only)."""
+    global _panel
+
+    panel_width = 320
+    panel_height = 600
+
+    style = (AppKit.NSWindowStyleMaskTitled
+             | AppKit.NSWindowStyleMaskClosable
+             | AppKit.NSWindowStyleMaskResizable
+             | AppKit.NSWindowStyleMaskNonactivatingPanel)
+
+    _panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        AppKit.NSMakeRect(100, 100, panel_width, panel_height),
+        style,
+        AppKit.NSBackingStoreBuffered,
+        False,
+    )
+    _panel.setTitle_("AI Chat")
+    _panel.setFloatingPanel_(True)
+    _panel.setBecomesKeyOnlyIfNeeded_(True)
+    _panel.setReleasedWhenClosed_(False)
+
+    _build_chat_subviews(_panel.contentView())
 
 
 # ---------------------------------------------------------------------------

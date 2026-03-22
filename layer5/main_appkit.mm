@@ -45,7 +45,13 @@ int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 
 // Forward declarations
 @class PyMOLOpenGLView;
-@class PyMOLAppDelegate;
+
+@interface PyMOLAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@property (strong) NSWindow *window;
+@property (strong) NSView *chatContainer;
+@property (assign) BOOL chatVisible;
+- (void)toggleChatPanel;
+@end
 
 static CPyMOL *pymolInstance = nullptr;
 static PyMOLOpenGLView *glView = nullptr;
@@ -125,8 +131,21 @@ static PyMOLOpenGLView *glView = nullptr;
     // which calls cmd.config_mouse() to set up mouse bindings.
     PyMOL_SetPythonInitStage(pymolInstance, 1);
 
-    // Initialize the AI chat panel (Cmd+L to toggle)
-    PyRun_SimpleString("from pymol import ai_chat; ai_chat._init(__import__('pymol').cmd)");
+    // Initialize the AI chat engine and set up the embedded chat UI
+    // The chat container NSView (tag=100) was created in applicationDidFinishLaunching.
+    // We find it by tag and pass it to ai_chat_ui._setup_embedded().
+    PyRun_SimpleString(
+        "from pymol import ai_chat; ai_chat._init(__import__('pymol').cmd)\n"
+        "import AppKit\n"
+        "from pymol import ai_chat_ui\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'chatContainer':\n"
+        "                ai_chat_ui._setup_embedded(_sv)\n"
+        "                break\n"
+        "        break\n"
+    );
 
     // Release the GIL
     PUnblock(G);
@@ -375,8 +394,19 @@ static PyMOLOpenGLView *glView = nullptr;
 - (void)keyDown:(NSEvent *)event {
     if (!pymolInstance) return;
 
-    // Let the AI chat panel Cmd+L monitor handle it first
-    // (NSEvent local monitors fire before this)
+    // Handle Cmd+L toggle of the embedded chat panel
+    NSEventModifierFlags flags = [event modifierFlags];
+    if ((flags & NSEventModifierFlagCommand)
+        && !(flags & NSEventModifierFlagShift)
+        && !(flags & NSEventModifierFlagControl)
+        && [[event charactersIgnoringModifiers] isEqualToString:@"l"]) {
+        // Find the app delegate and toggle
+        PyMOLAppDelegate *del = (PyMOLAppDelegate *)[NSApp delegate];
+        if ([del respondsToSelector:@selector(toggleChatPanel)]) {
+            [del toggleChatPanel];
+        }
+        return;  // swallow the event
+    }
 
     NSPoint pt = [self pymolPointFromEvent:event];
     int mods = [self pymolModifiersFromEvent:event];
@@ -439,13 +469,11 @@ static PyMOLOpenGLView *glView = nullptr;
 #pragma mark - App Delegate
 // ---------------------------------------------------------------------------
 
-@interface PyMOLAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
-@property (strong) NSWindow *window;
-@end
-
 @implementation PyMOLAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    static const CGFloat kChatPanelWidth = 320.0;
+
     // Create window
     NSRect frame = NSMakeRect(100, 100, 1024, 768);
     NSWindowStyleMask style = NSWindowStyleMaskTitled
@@ -461,10 +489,33 @@ static PyMOLOpenGLView *glView = nullptr;
     [self.window setDelegate:self];
     [self.window setMinSize:NSMakeSize(400, 300)];
 
-    // Set the OpenGL view as the window's content view directly
-    // (not as a subview — avoids event dispatch issues)
-    glView = [[PyMOLOpenGLView alloc] initWithFrame:[[self.window contentView] bounds]];
-    [self.window setContentView:glView];
+    // Create a container view that holds both the chat panel and GL view
+    NSRect contentBounds = [[self.window contentView] bounds];
+    NSView *container = [[NSView alloc] initWithFrame:contentBounds];
+    container.autoresizesSubviews = YES;
+    container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    // Chat container on the left (320px wide, dark background)
+    NSRect chatFrame = NSMakeRect(0, 0, kChatPanelWidth, contentBounds.size.height);
+    self.chatContainer = [[NSView alloc] initWithFrame:chatFrame];
+    self.chatContainer.autoresizingMask = NSViewHeightSizable | NSViewMaxXMargin;
+    self.chatContainer.identifier = @"chatContainer";
+    // Dark background using a layer
+    self.chatContainer.wantsLayer = YES;
+    self.chatContainer.layer.backgroundColor =
+        [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
+    [container addSubview:self.chatContainer];
+
+    // GL view on the right (fills remaining width)
+    CGFloat glX = kChatPanelWidth;
+    CGFloat glWidth = contentBounds.size.width - kChatPanelWidth;
+    NSRect glFrame = NSMakeRect(glX, 0, glWidth, contentBounds.size.height);
+    glView = [[PyMOLOpenGLView alloc] initWithFrame:glFrame];
+    glView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [container addSubview:glView];
+
+    [self.window setContentView:container];
+    self.chatVisible = YES;
 
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:glView];
@@ -475,7 +526,34 @@ static PyMOLOpenGLView *glView = nullptr;
     } else {
         [NSApp activateIgnoringOtherApps:YES];
     }
+}
 
+- (void)toggleChatPanel {
+    static const CGFloat kChatPanelWidth = 320.0;
+    NSRect contentBounds = [[self.window contentView] bounds];
+
+    self.chatVisible = !self.chatVisible;
+
+    if (self.chatVisible) {
+        // Show the chat panel
+        [self.chatContainer setHidden:NO];
+        NSRect chatFrame = NSMakeRect(0, 0, kChatPanelWidth, contentBounds.size.height);
+        [self.chatContainer setFrame:chatFrame];
+        NSRect glFrame = NSMakeRect(kChatPanelWidth, 0,
+                                     contentBounds.size.width - kChatPanelWidth,
+                                     contentBounds.size.height);
+        [glView setFrame:glFrame];
+    } else {
+        // Hide the chat panel
+        [self.chatContainer setHidden:YES];
+        NSRect glFrame = NSMakeRect(0, 0,
+                                     contentBounds.size.width,
+                                     contentBounds.size.height);
+        [glView setFrame:glFrame];
+    }
+
+    // Force reshape so PyMOL picks up the new viewport size
+    [glView reshape];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
