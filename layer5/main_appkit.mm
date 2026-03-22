@@ -145,6 +145,11 @@ static PyMOLOpenGLView *glView = nullptr;
         "            os.environ[_k.strip()] = _v.strip()\n"
     );
 
+    // Build the native macOS menu bar from Python
+    PyRun_SimpleString(
+        "from pymol import appkit_menus; appkit_menus.setup_menus(__import__('pymol').cmd)\n"
+    );
+
     // Initialize the AI chat engine and set up the embedded chat UI
     // The chat container NSView (tag=100) was created in applicationDidFinishLaunching.
     // We find it by tag and pass it to ai_chat_ui._setup_embedded().
