@@ -2011,6 +2011,10 @@ void PyMOL_StartWithPython(CPyMOL * I)
 
 #endif
 
+/* Set the Python initialization stage.  Stage 1 enables exec_deferred()
+   in PyMOL_Idle, which processes queued commands such as config_mouse().
+   Used by embedding hosts (e.g. AppKit) that call PyMOL_Start and PInit
+   separately instead of using PyMOL_StartWithPython. */
 void PyMOL_SetPythonInitStage(CPyMOL * I, int stage)
 {
   I->PythonInitStage = stage;

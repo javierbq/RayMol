@@ -3,8 +3,6 @@
 import os
 import json
 import threading
-import io
-import sys
 import urllib.request
 import urllib.error
 
@@ -129,8 +127,10 @@ def _toggle_panel():
 def _get_session_context():
     """Return a short text description of the current PyMOL session state.
 
-    Called from the worker thread. Uses try/except to handle cases where
-    the API lock can't be acquired.
+    NOTE: This function is currently unused. Calling _cmd.get_names() from
+    the worker thread deadlocks because it tries to acquire the API lock
+    that the render loop holds. A future approach could use cmd.do() to
+    queue the query on the main thread and pass results back.
     """
     parts = []
     try:
@@ -149,22 +149,12 @@ def _on_user_message(text):
     """Main entry point called by the UI when the user submits a message."""
     global _messages
 
-    with open('/tmp/pymol_ai_debug.log', 'a') as f:
-        f.write(f"_on_user_message: {text!r}, provider={_ai_config['provider']}, "
-                f"key={_ai_config['api_keys'].get(_ai_config['provider'], '')[:10]}...\n")
-
     _messages.append({'role': 'user', 'content': text})
-
-    with open('/tmp/pymol_ai_debug.log', 'a') as f:
-        f.write("before show_message\n")
 
     if _has_ui:
         from pymol import ai_chat_ui
         ai_chat_ui.show_message('user', text)
         ai_chat_ui.show_status('Thinking...')
-
-    with open('/tmp/pymol_ai_debug.log', 'a') as f:
-        f.write("after show_message, checking key\n")
 
     provider = _ai_config['provider']
     key = _ai_config['api_keys'].get(provider, '')
@@ -181,27 +171,18 @@ def _on_user_message(text):
             print(error_msg)
         return
 
-    with open('/tmp/pymol_ai_debug.log', 'a') as f:
-        f.write("spawning worker thread...\n")
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
-    with open('/tmp/pymol_ai_debug.log', 'a') as f:
-        f.write(f"thread started: {t.is_alive()}\n")
 
 
 def _worker():
     """Background thread: call LLM, execute commands, retry on errors."""
     global _messages
-    import sys
 
     max_retries = 2
     attempt = 0
 
-    def _log(msg):
-        with open('/tmp/pymol_ai_debug.log', 'a') as f:
-            f.write(msg + '\n')
-
-    # Thread-safe UI helpers — dispatch to main thread
+    # Thread-safe UI helpers -- dispatch to main thread
     def _ui_msg(role, text):
         if _has_ui:
             from pymol import ai_chat_ui
@@ -217,9 +198,7 @@ def _worker():
     try:
         while attempt <= max_retries:
             try:
-                _log(f"calling LLM ({_ai_config['provider']})...")
                 response_text = _call_llm()
-                _log(f"got response: {response_text[:80]}...")
             except Exception as exc:
                 error_msg = f"LLM call failed: {exc}"
                 _messages.append({'role': 'assistant', 'content': error_msg})
@@ -261,7 +240,7 @@ def _call_llm():
     key = _ai_config['api_keys'].get(provider, '')
     model = _ai_config['models'].get(provider, '')
 
-    # Build messages (skip session context — calling _cmd from worker thread deadlocks)
+    # Build messages (session context omitted; see _get_session_context docstring)
     messages = [{'role': m['role'], 'content': m['content']} for m in _messages]
 
     if provider == 'anthropic':
@@ -330,12 +309,8 @@ def _call_anthropic(messages, key, model):
     )
 
     try:
-        with open('/tmp/pymol_ai_debug.log', 'a') as f:
-            f.write(f"HTTP POST to {url} with model={model}...\n")
         with urllib.request.urlopen(req, timeout=60) as resp:
             body = json.loads(resp.read().decode('utf-8'))
-        with open('/tmp/pymol_ai_debug.log', 'a') as f:
-            f.write(f"HTTP response OK\n")
         return body['content'][0]['text']
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode('utf-8', errors='replace')

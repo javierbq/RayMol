@@ -1,8 +1,8 @@
 """Native macOS chat panel UI for PyMOL using PyObjC.
 
-This module provides an NSPanel-based chat interface that overlays the left
-side of the PyMOL GLUT window.  It is imported by pymol.ai_chat and will
-raise ImportError on non-macOS platforms (ai_chat handles that gracefully).
+In AppKit mode, the chat UI is embedded as a subview of the main window.
+In legacy GLUT mode, it creates a floating NSPanel alongside the GLUT window.
+Imported by pymol.ai_chat; raises ImportError on non-macOS platforms.
 """
 
 import AppKit
@@ -12,15 +12,15 @@ import Foundation
 # Module-level state
 # ---------------------------------------------------------------------------
 
-_panel = None        # NSPanel instance (created lazily, GLUT mode only)
-_visible = False     # current visibility
-_text_view = None    # NSTextView for messages
-_input_field = None  # NSTextField for user input
-_status_label = None # NSTextField used as a status indicator
-_scroll_view = None  # NSScrollView wrapping the text view
-_delegate = None     # InputDelegate instance (prevent GC)
-_key_monitor = None  # reference to the installed event monitor
-_embedded = False    # True when running inside AppKit host (not GLUT)
+_panel = None           # NSPanel instance (GLUT mode only, created lazily)
+_visible = False        # current visibility
+_text_view = None       # NSTextView for messages
+_input_field = None     # NSTextField for user input
+_status_label = None    # NSTextField used as a status indicator
+_scroll_view = None     # NSScrollView wrapping the text view
+_delegate = None        # InputDelegate instance (prevent GC)
+_key_monitor = None     # global event monitor reference
+_embedded = False       # True when running inside AppKit host
 _container_view = None  # NSView provided by the AppKit host
 
 
