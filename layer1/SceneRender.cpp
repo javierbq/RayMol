@@ -187,7 +187,7 @@ void SceneProjectionMatrix(PyMOLGlobals* G, float front, float back, float aspRa
   }
 
 #ifndef PURE_OPENGL_ES_2
-  if (ALWAYS_IMMEDIATE_OR(!use_shaders)) {
+  if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shaders)) {
     glMatrixMode(GL_PROJECTION);
     glLoadMatrixf(SceneGetProjectionMatrixPtr(G));
     glMatrixMode(GL_MODELVIEW);

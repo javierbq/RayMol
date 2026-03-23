@@ -5317,7 +5317,7 @@ void ScenePrepareMatrix(PyMOLGlobals * G, int mode, int stereo_mode /* = 0 */)
   }
 
 #ifndef PURE_OPENGL_ES_2
-  if (ALWAYS_IMMEDIATE_OR(!SettingGetGlobal_b(G, cSetting_use_shaders))) {
+  if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!SettingGetGlobal_b(G, cSetting_use_shaders))) {
     glLoadMatrixf(SceneGetModelViewMatrixPtr(G));
   }
 #endif
