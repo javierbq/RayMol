@@ -44,39 +44,78 @@ _HEADER_COLOR = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
     0.6, 0.6, 0.6, 1.0)
 
 # ---------------------------------------------------------------------------
-# Representation and color lists
+# Menu option lists  (title, command, [color_rgb])
 # ---------------------------------------------------------------------------
 
-_REPRESENTATIONS = [
-    'cartoon', 'sticks', 'spheres', 'surface', 'mesh',
-    'lines', 'ribbon', 'dots', 'everything'
+# Show/Hide share the same menu structure; Show calls cmd.show, Hide calls
+# cmd.hide.  Entries: (label, representation_or_None, is_header).
+# '---' = separator, items with cmd=None are disabled group headers.
+_SHOW_HIDE_OPTIONS = [
+    ('as', 'as'),
+    ('---', None),
+    ('wire', None),
+    ('  lines', 'lines'),
+    ('  nonbonded', 'nonbonded'),
+    ('---', None),
+    ('licorice', None),
+    ('  sticks', 'sticks'),
+    ('  nb_spheres', 'nb_spheres'),
+    ('---', None),
+    ('ribbon', 'ribbon'),
+    ('cartoon', 'cartoon'),
+    ('label', 'label'),
+    ('cell', 'cell'),
+    ('dots', 'dots'),
+    ('spheres', 'spheres'),
+    ('mesh', 'mesh'),
+    ('surface', 'surface'),
+    ('flag ignore', None),
+    ('---', None),
+    ('organic', None),
+    ('  main chain', 'main_chain'),
+    ('  side chain', 'side_chain'),
+    ('  disulfides', 'disulfides'),
+    ('  valence', 'valence'),
 ]
 
 _LABEL_OPTIONS = [
     ('None', ''),
+    ('---', None),
     ('Residues', 'resn+resi'),
     ('Chains', 'chain'),
+    ('Segments', 'segi'),
     ('Atoms', 'name'),
+    ('Elements', 'elem'),
 ]
 
+# (title, command, color_rgb_or_None)
 _COLOR_OPTIONS = [
-    ('By Element', 'cbag'),
-    ('By Chain', 'cbc'),
-    ('Spectrum', 'spectrum'),
-    ('Green', 'green'),
-    ('Cyan', 'cyan'),
-    ('Yellow', 'yellow'),
-    ('Red', 'red'),
-    ('Blue', 'blue'),
-    ('White', 'white'),
-    ('Gray', 'gray'),
+    ('by element', 'util.cbag', None),
+    ('by chain', 'util.cbc', None),
+    ('by ss', 'util.cbss', None),
+    ('by rep', None, None),
+    ('spectrum', 'spectrum', None),
+    ('auto', 'util.cba', None),
+    ('---', None, None),
+    ('reds', 'red', (1.0, 0.0, 0.0)),
+    ('greens', 'green', (0.0, 1.0, 0.0)),
+    ('blues', 'blue', (0.0, 0.3, 1.0)),
+    ('yellows', 'yellow', (1.0, 1.0, 0.0)),
+    ('magentas', 'magenta', (1.0, 0.0, 1.0)),
+    ('cyans', 'cyan', (0.0, 1.0, 1.0)),
+    ('oranges', 'orange', (1.0, 0.5, 0.0)),
+    ('tints', 'lightteal', (0.7, 0.9, 0.9)),
+    ('grays', 'gray', (0.5, 0.5, 0.5)),
 ]
 
 _ACTION_OPTIONS = [
     ('Zoom', 'zoom'),
     ('Orient', 'orient'),
     ('Center', 'center'),
+    ('---', None),
     ('Delete', 'delete'),
+    ('Duplicate', 'copy'),
+    ('Rename', None),
 ]
 
 # ---------------------------------------------------------------------------
@@ -111,33 +150,45 @@ class ObjPanel_ButtonTarget(AppKit.NSObject):
         action = self._action
 
         try:
-            if action == 'show':
-                self._cmd.show(title.lower(), name)
-            elif action == 'hide':
-                self._cmd.hide(title.lower(), name)
+            if action in ('show', 'hide'):
+                # Look up the representation command from _SHOW_HIDE_OPTIONS
+                for opt_title, opt_cmd in _SHOW_HIDE_OPTIONS:
+                    if opt_title == title and opt_cmd is not None:
+                        if action == 'show':
+                            if opt_cmd == 'as':
+                                self._cmd.show('everything', name)
+                            else:
+                                self._cmd.show(opt_cmd, name)
+                        else:
+                            if opt_cmd == 'as':
+                                self._cmd.hide('everything', name)
+                            else:
+                                self._cmd.hide(opt_cmd, name)
+                        break
             elif action == 'label':
-                for label_name, expr in _LABEL_OPTIONS:
-                    if label_name == title:
-                        if expr:
-                            self._cmd.label(name, expr)
+                for item in _LABEL_OPTIONS:
+                    if item[0] == title and item[1] is not None:
+                        if item[1]:
+                            self._cmd.label(name, item[1])
                         else:
                             self._cmd.label(name, '')
                         break
             elif action == 'color':
-                for color_name, color_val in _COLOR_OPTIONS:
-                    if color_name == title:
-                        if color_val == 'cbag':
-                            self._cmd.util.cbag(name)
-                        elif color_val == 'cbc':
-                            self._cmd.util.cbc(name)
-                        elif color_val == 'spectrum':
+                for item in _COLOR_OPTIONS:
+                    if item[0] == title and item[1] is not None:
+                        cmd_str = item[1]
+                        if cmd_str.startswith('util.'):
+                            func = getattr(self._cmd.util, cmd_str[5:])
+                            func(name)
+                        elif cmd_str == 'spectrum':
                             self._cmd.spectrum('count', selection=name)
                         else:
-                            self._cmd.color(color_val, name)
+                            self._cmd.color(cmd_str, name)
                         break
             elif action == 'action':
-                for act_name, act_cmd in _ACTION_OPTIONS:
-                    if act_name == title:
+                for item in _ACTION_OPTIONS:
+                    if item[0] == title and item[1] is not None:
+                        act_cmd = item[1]
                         if act_cmd == 'zoom':
                             self._cmd.zoom(name)
                         elif act_cmd == 'orient':
@@ -146,6 +197,8 @@ class ObjPanel_ButtonTarget(AppKit.NSObject):
                             self._cmd.center(name)
                         elif act_cmd == 'delete':
                             self._cmd.delete(name)
+                        elif act_cmd == 'copy':
+                            self._cmd.copy(name + '_copy', name)
                         break
         except Exception as e:
             print(f"ObjPanel action error: {e}")
@@ -186,7 +239,14 @@ class ObjPanel_TimerTarget(AppKit.NSObject):
 # ---------------------------------------------------------------------------
 
 def _make_popup_button(title, items, target, action_sel):
-    """Create a small popup button with the given items."""
+    """Create a small popup button with structured menu items.
+
+    *items* is a list of tuples.  Each tuple has at least two elements:
+      (label, command_or_None [, color_rgb_or_None])
+    '---' labels become separator items.  Items with command=None are
+    rendered as disabled group headers.  If a color tuple is present the
+    menu item text is rendered in that color.
+    """
     btn = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
         AppKit.NSMakeRect(0, 0, 28, 20), True)
     btn.setBezelStyle_(AppKit.NSBezelStyleSmallSquare)
@@ -202,19 +262,44 @@ def _make_popup_button(title, items, target, action_sel):
                 AppKit.NSForegroundColorAttributeName: _BUTTON_TEXT_COLOR,
             }))
 
-    for item_title in items:
+    for item_info in items:
+        item_title = item_info[0]
+
+        # Separator
+        if item_title == '---':
+            btn.menu().addItem_(AppKit.NSMenuItem.separatorItem())
+            continue
+
         btn.addItemWithTitle_(item_title)
+        menu_item = btn.lastItem()
+
+        # Disabled group header (no command)
+        if item_info[1] is None:
+            menu_item.setEnabled_(False)
+
+        # Colored text (color items)
+        if len(item_info) > 2 and item_info[2] is not None:
+            r, g, b = item_info[2]
+            color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                r, g, b, 1.0)
+            attrs = {
+                AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(11),
+                AppKit.NSForegroundColorAttributeName: color,
+            }
+            astr = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                item_title, attrs)
+            menu_item.setAttributedTitle_(astr)
 
     btn.setTarget_(target)
     btn.setAction_(action_sel)
     return btn
 
 
-def _build_row(name, is_selection, enabled):
+def _build_row(name, is_selection, enabled, row_width=280):
     """Build a single row NSView for an object or selection."""
     row_height = 24
     row = AppKit.NSView.alloc().initWithFrame_(
-        AppKit.NSMakeRect(0, 0, 220, row_height))
+        AppKit.NSMakeRect(0, 0, row_width, row_height))
     row.setWantsLayer_(True)
 
     # Checkbox
@@ -231,7 +316,7 @@ def _build_row(name, is_selection, enabled):
     checkbox.setAction_(objc.selector(cb_target.toggle_, signature=b'v@:@'))
     row.addSubview_(checkbox)
 
-    # Name label
+    # Name label — stretches up to the buttons
     display_name = name
     if is_selection:
         try:
@@ -240,8 +325,15 @@ def _build_row(name, is_selection, enabled):
         except Exception:
             pass
 
+    btn_width = 22
+    btn_spacing = 1
+    num_buttons = 5
+    buttons_total = num_buttons * btn_width + (num_buttons - 1) * btn_spacing
+    btn_start_x = row_width - buttons_total - 4  # 4px right margin
+    label_width = btn_start_x - 24 - 2  # 24=label x, 2=gap
+
     label = AppKit.NSTextField.labelWithString_(display_name)
-    label.setFrame_(AppKit.NSMakeRect(24, 2, 80, 18))
+    label.setFrame_(AppKit.NSMakeRect(24, 2, label_width, 18))
     label.setFont_(AppKit.NSFont.systemFontOfSize_(11))
     label.setTextColor_(_SELECTION_TEXT_COLOR if is_selection else _TEXT_COLOR)
     label.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
@@ -251,18 +343,16 @@ def _build_row(name, is_selection, enabled):
     label.setSelectable_(False)
     row.addSubview_(label)
 
-    # A/S/H/L/C popup buttons
+    # A/S/H/L/C popup buttons — right-aligned
     button_defs = [
-        ('A', [opt[0] for opt in _ACTION_OPTIONS], 'action'),
-        ('S', [r.capitalize() for r in _REPRESENTATIONS], 'show'),
-        ('H', [r.capitalize() for r in _REPRESENTATIONS], 'hide'),
-        ('L', [opt[0] for opt in _LABEL_OPTIONS], 'label'),
-        ('C', [opt[0] for opt in _COLOR_OPTIONS], 'color'),
+        ('A', _ACTION_OPTIONS, 'action'),
+        ('S', _SHOW_HIDE_OPTIONS, 'show'),
+        ('H', _SHOW_HIDE_OPTIONS, 'hide'),
+        ('L', _LABEL_OPTIONS, 'label'),
+        ('C', _COLOR_OPTIONS, 'color'),
     ]
 
-    x_offset = 108
-    btn_width = 22
-    btn_spacing = 1
+    x_offset = btn_start_x
 
     for btn_title, items, action in button_defs:
         target = ObjPanel_ButtonTarget.alloc().initWithName_cmd_action_(
@@ -306,7 +396,7 @@ def _rebuild_rows(objects, selections, enabled_set):
     # Object rows
     for name in objects:
         enabled = name in enabled_set
-        row = _build_row(name, False, enabled)
+        row = _build_row(name, False, enabled, row_width=w)
         row.setFrame_(AppKit.NSMakeRect(0, y, w, row_height))
         doc.addSubview_(row)
         y += row_height + 1
@@ -323,7 +413,7 @@ def _rebuild_rows(objects, selections, enabled_set):
 
         for name in selections:
             enabled = name in enabled_set
-            row = _build_row(name, True, enabled)
+            row = _build_row(name, True, enabled, row_width=w)
             row.setFrame_(AppKit.NSMakeRect(0, y, w, row_height))
             doc.addSubview_(row)
             y += row_height + 1
