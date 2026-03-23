@@ -4,13 +4,25 @@
  * Replaces GLUT-based main.cpp with a native NSApplication + NSOpenGLView.
  * Uses the PyMOL_* embedding API (_PYMOL_LIB mode).
  *
- * Build with: -framework Cocoa -framework OpenGL
+ * Supports two rendering backends:
+ *   - OpenGL via NSOpenGLView (PyMOLOpenGLView)
+ *   - Metal via MTKView (PyMOLMetalView) — selected at runtime if available
+ *
+ * Build with: -framework Cocoa -framework OpenGL -framework Metal -framework MetalKit
  * Requires: _PYMOL_LIB, _PYMOL_NO_MAIN, _PYMOL_PRETEND_GLUT
  */
 
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/gl.h>
 #import <OpenGL/OpenGL.h>
+
+#if __has_include(<MetalKit/MetalKit.h>)
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+#define PYMOL_HAS_METAL 1
+#else
+#define PYMOL_HAS_METAL 0
+#endif
 
 #include "ov_port.h"
 #include "ov_types.h"
@@ -42,17 +54,120 @@ int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 
 // Forward declarations
 @class PyMOLOpenGLView;
+#if PYMOL_HAS_METAL
+@class PyMOLMetalView;
+#endif
 
 @interface PyMOLAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (strong) NSWindow *window;
 @property (strong) NSView *chatContainer;
 @property (strong) NSView *commandPanelContainer;
 @property (assign) BOOL chatVisible;
+@property (assign) BOOL usingMetal;
 - (void)toggleChatPanel;
 @end
 
 static CPyMOL *pymolInstance = nullptr;
-static PyMOLOpenGLView *glView = nullptr;
+static NSView *glView = nullptr;  // Either PyMOLOpenGLView or PyMOLMetalView
+
+// ---------------------------------------------------------------------------
+#pragma mark - Shared input helpers
+// ---------------------------------------------------------------------------
+// These free functions are called by both PyMOLOpenGLView and PyMOLMetalView
+// to avoid duplicating mouse/keyboard event handling.
+
+static int pymolModifiers(NSEvent *event) {
+    int mods = 0;
+    NSEventModifierFlags flags = [event modifierFlags];
+    if (flags & NSEventModifierFlagShift)   mods |= PYMOL_MODIFIER_SHIFT;
+    if (flags & NSEventModifierFlagControl) mods |= PYMOL_MODIFIER_CTRL;
+    if (flags & NSEventModifierFlagOption)  mods |= PYMOL_MODIFIER_ALT;
+    return mods;
+}
+
+static NSPoint pymolPoint(NSView *view, NSEvent *event) {
+    NSPoint loc = [view convertPoint:[event locationInWindow] fromView:nil];
+    loc = [view convertPointToBacking:loc];
+    return loc;
+}
+
+static void handleMouseButton(NSView *view, NSEvent *event, int button, int state) {
+    if (!pymolInstance) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    NSPoint pt = pymolPoint(view, event);
+    int mods = pymolModifiers(event);
+    OrthoButton(G, button, state, (int)pt.x, (int)pt.y, mods);
+}
+
+static void handleMouseDrag(NSView *view, NSEvent *event) {
+    if (!pymolInstance) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    NSPoint pt = pymolPoint(view, event);
+    int mods = pymolModifiers(event);
+    OrthoDrag(G, (int)pt.x, (int)pt.y, mods);
+}
+
+static void handleScrollWheel(NSView *view, NSEvent *event) {
+    if (!pymolInstance) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    NSPoint pt = pymolPoint(view, event);
+    int mods = pymolModifiers(event);
+    float dy = [event deltaY];
+    if (dy > 0.0f) {
+        OrthoButton(G, PYMOL_BUTTON_SCROLL_FORWARD, PYMOL_BUTTON_DOWN,
+                    (int)pt.x, (int)pt.y, mods);
+    } else if (dy < 0.0f) {
+        OrthoButton(G, PYMOL_BUTTON_SCROLL_REVERSE, PYMOL_BUTTON_DOWN,
+                    (int)pt.x, (int)pt.y, mods);
+    }
+}
+
+static void handleKeyDown(NSView *view, NSEvent *event) {
+    if (!pymolInstance) return;
+
+    // Handle Cmd+L toggle of the embedded chat panel
+    NSEventModifierFlags flags = [event modifierFlags];
+    if ((flags & NSEventModifierFlagCommand)
+        && !(flags & NSEventModifierFlagShift)
+        && !(flags & NSEventModifierFlagControl)
+        && [[event charactersIgnoringModifiers] isEqualToString:@"l"]) {
+        PyMOLAppDelegate *del = (PyMOLAppDelegate *)[NSApp delegate];
+        if ([del respondsToSelector:@selector(toggleChatPanel)]) {
+            [del toggleChatPanel];
+        }
+        return;
+    }
+
+    NSPoint pt = pymolPoint(view, event);
+    int mods = pymolModifiers(event);
+    NSString *chars = [event characters];
+
+    if ([chars length] > 0) {
+        unichar c = [chars characterAtIndex:0];
+        if (c == NSUpArrowFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_UP, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSDownArrowFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_DOWN, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSLeftArrowFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_LEFT, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSRightArrowFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_RIGHT, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSPageUpFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_PAGE_UP, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSPageDownFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_PAGE_DOWN, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSHomeFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_HOME, (int)pt.x, (int)pt.y, mods);
+        } else if (c == NSEndFunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_END, (int)pt.x, (int)pt.y, mods);
+        } else if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
+            PyMOL_Special(pymolInstance, PYMOL_KEY_F1 + (c - NSF1FunctionKey),
+                         (int)pt.x, (int)pt.y, mods);
+        } else if (c < 256) {
+            PyMOL_Key(pymolInstance, (unsigned char)c, (int)pt.x, (int)pt.y, mods);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 #pragma mark - PyMOLOpenGLView
@@ -192,10 +307,10 @@ static PyMOLOpenGLView *glView = nullptr;
         PyMOL_CmdSet(pymolInstance, "display_scale_factor", val, "", -1, 1, 1);
     }
 
-    // Set swap callback
+    // Set swap callback — glView is NSView*, cast to NSOpenGLView for GL path
     PyMOL_SetSwapBuffersFn(pymolInstance, []() {
-        if (glView) {
-            [[glView openGLContext] flushBuffer];
+        if (glView && [glView isKindOfClass:[NSOpenGLView class]]) {
+            [[(NSOpenGLView *)glView openGLContext] flushBuffer];
         }
     });
 
@@ -269,197 +384,25 @@ static PyMOLOpenGLView *glView = nullptr;
     _needsDisplay = YES;
 }
 
-- (BOOL)acceptsFirstResponder {
-    return YES;
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+
+// Mouse and keyboard — delegate to shared helpers
+- (void)mouseDown:(NSEvent *)e {
+    int btn = ([e modifierFlags] & NSEventModifierFlagCommand) ? PYMOL_BUTTON_MIDDLE : PYMOL_BUTTON_LEFT;
+    handleMouseButton(self, e, btn, PYMOL_BUTTON_DOWN);
 }
-
-- (BOOL)acceptsFirstMouse:(NSEvent *)event {
-    return YES;
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Modifier conversion
-// ---------------------------------------------------------------------------
-
-- (int)pymolModifiersFromEvent:(NSEvent *)event {
-    int mods = 0;
-    NSEventModifierFlags flags = [event modifierFlags];
-    if (flags & NSEventModifierFlagShift)   mods |= PYMOL_MODIFIER_SHIFT;
-    if (flags & NSEventModifierFlagControl) mods |= PYMOL_MODIFIER_CTRL;
-    if (flags & NSEventModifierFlagOption)  mods |= PYMOL_MODIFIER_ALT;
-    return mods;
-}
-
-- (NSPoint)pymolPointFromEvent:(NSEvent *)event {
-    NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-    // Convert to backing (pixel) coordinates for Retina
-    loc = [self convertPointToBacking:loc];
-    // NSView uses bottom-left origin, same as OpenGL/PyMOL mouse coords
-    return loc;
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Mouse events
-// ---------------------------------------------------------------------------
-
-- (void)mouseDown:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    int button = PYMOL_BUTTON_LEFT;
-    if ([event modifierFlags] & NSEventModifierFlagCommand) {
-        button = PYMOL_BUTTON_MIDDLE;
-    }
-    OrthoButton(G, button, PYMOL_BUTTON_DOWN, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoButton(G, PYMOL_BUTTON_LEFT, PYMOL_BUTTON_UP, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoDrag(G, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)rightMouseDown:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoButton(G, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_DOWN, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)rightMouseUp:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoButton(G, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_UP, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)rightMouseDragged:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoDrag(G, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)otherMouseDown:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoButton(G, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_DOWN, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)otherMouseUp:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoButton(G, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_UP, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)otherMouseDragged:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    OrthoDrag(G, (int)pt.x, (int)pt.y, mods);
-
-}
-
-- (void)scrollWheel:(NSEvent *)event {
-    if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    float dy = [event deltaY];
-    if (dy > 0.0f) {
-        OrthoButton(G, PYMOL_BUTTON_SCROLL_FORWARD, PYMOL_BUTTON_DOWN, (int)pt.x, (int)pt.y, mods);
-    } else if (dy < 0.0f) {
-        OrthoButton(G, PYMOL_BUTTON_SCROLL_REVERSE, PYMOL_BUTTON_DOWN, (int)pt.x, (int)pt.y, mods);
-    }
-
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Keyboard events
-// ---------------------------------------------------------------------------
-
-- (void)keyDown:(NSEvent *)event {
-    if (!pymolInstance) return;
-
-    // Handle Cmd+L toggle of the embedded chat panel
-    NSEventModifierFlags flags = [event modifierFlags];
-    if ((flags & NSEventModifierFlagCommand)
-        && !(flags & NSEventModifierFlagShift)
-        && !(flags & NSEventModifierFlagControl)
-        && [[event charactersIgnoringModifiers] isEqualToString:@"l"]) {
-        // Find the app delegate and toggle
-        PyMOLAppDelegate *del = (PyMOLAppDelegate *)[NSApp delegate];
-        if ([del respondsToSelector:@selector(toggleChatPanel)]) {
-            [del toggleChatPanel];
-        }
-        return;  // swallow the event
-    }
-
-    NSPoint pt = [self pymolPointFromEvent:event];
-    int mods = [self pymolModifiersFromEvent:event];
-    NSString *chars = [event characters];
-    NSString *charsNoMod = [event charactersIgnoringModifiers];
-
-    if ([chars length] > 0) {
-        unichar c = [chars characterAtIndex:0];
-
-        // Map special keys
-        if (c == NSUpArrowFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_UP, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSDownArrowFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_DOWN, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSLeftArrowFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_LEFT, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSRightArrowFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_RIGHT, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSPageUpFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_PAGE_UP, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSPageDownFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_PAGE_DOWN, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSHomeFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_HOME, (int)pt.x, (int)pt.y, mods);
-        } else if (c == NSEndFunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_END, (int)pt.x, (int)pt.y, mods);
-        } else if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
-            PyMOL_Special(pymolInstance, PYMOL_KEY_F1 + (c - NSF1FunctionKey),
-                         (int)pt.x, (int)pt.y, mods);
-        } else if (c < 256) {
-            // ASCII key
-            PyMOL_Key(pymolInstance, (unsigned char)c, (int)pt.x, (int)pt.y, mods);
-        }
-    }
-}
-
-- (void)flagsChanged:(NSEvent *)event {
-    // Could track modifier key state changes if needed
-}
+- (void)mouseUp:(NSEvent *)e        { handleMouseButton(self, e, PYMOL_BUTTON_LEFT, PYMOL_BUTTON_UP); }
+- (void)mouseDragged:(NSEvent *)e   { handleMouseDrag(self, e); }
+- (void)rightMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_DOWN); }
+- (void)rightMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_UP); }
+- (void)rightMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
+- (void)otherMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_DOWN); }
+- (void)otherMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_UP); }
+- (void)otherMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
+- (void)scrollWheel:(NSEvent *)e     { handleScrollWheel(self, e); }
+- (void)keyDown:(NSEvent *)e         { handleKeyDown(self, e); }
+- (void)flagsChanged:(NSEvent *)event {}
 
 // ---------------------------------------------------------------------------
 #pragma mark - Cleanup
@@ -478,6 +421,201 @@ static PyMOLOpenGLView *glView = nullptr;
 }
 
 @end
+
+// ---------------------------------------------------------------------------
+#pragma mark - PyMOLMetalView
+// ---------------------------------------------------------------------------
+#if PYMOL_HAS_METAL
+
+@interface PyMOLMetalView : MTKView <MTKViewDelegate>
+@end
+
+@implementation PyMOLMetalView {
+    id<MTLDevice> _metalDevice;
+    id<MTLCommandQueue> _commandQueue;
+    BOOL _initialized;
+}
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    _metalDevice = MTLCreateSystemDefaultDevice();
+    if (!_metalDevice) return nil;
+
+    self = [super initWithFrame:frame device:_metalDevice];
+    if (self) {
+        self.delegate = self;
+        self.preferredFramesPerSecond = 60;
+        self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+        self.depthStencilPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+        self.sampleCount = 1;
+        _commandQueue = [_metalDevice newCommandQueue];
+
+        // Enable Retina
+        self.layer.contentsScale = [[NSScreen mainScreen] backingScaleFactor];
+
+        // Initialize PyMOL
+        [self initPyMOL];
+    }
+    return self;
+}
+
+- (void)initPyMOL {
+    CPyMOLOptions *options = PyMOLOptions_New();
+    options->show_splash = 1;
+    options->internal_gui = 1;
+    options->internal_feedback = 1;
+
+    pymolInstance = PyMOL_NewWithOptions(options);
+    PyMOLOptions_Free(options);
+
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    SingletonPyMOLGlobals = G;
+    G->HaveGUI = true;
+
+    PyMOL_Start(pymolInstance);
+    PInit(G, true);
+    PyMOL_SetPythonInitStage(pymolInstance, 1);
+
+    // Load API keys
+    PyRun_SimpleString(
+        "import os, os.path\n"
+        "_conf = os.path.expanduser('~/.pymol_ai.conf')\n"
+        "if os.path.isfile(_conf):\n"
+        "    for _line in open(_conf):\n"
+        "        _line = _line.strip()\n"
+        "        if '=' in _line and not _line.startswith('#'):\n"
+        "            _k, _v = _line.split('=', 1)\n"
+        "            os.environ[_k.strip()] = _v.strip()\n"
+    );
+
+    // Build native menu bar
+    PyRun_SimpleString(
+        "from pymol import appkit_menus; appkit_menus.setup_menus(__import__('pymol').cmd)\n"
+    );
+
+    // Initialize AI chat
+    PyRun_SimpleString(
+        "from pymol import ai_chat; ai_chat._init(__import__('pymol').cmd)\n"
+        "import AppKit\n"
+        "from pymol import ai_chat_ui\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'chatContainer':\n"
+        "                ai_chat_ui._setup_embedded(_sv)\n"
+        "                break\n"
+        "        break\n"
+    );
+
+    // Initialize command panel
+    PyRun_SimpleString(
+        "import AppKit\n"
+        "from pymol import appkit_command_panel\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'commandPanel':\n"
+        "                appkit_command_panel.setup(_sv, __import__('pymol').cmd)\n"
+        "                break\n"
+        "        break\n"
+    );
+
+    // Compute Retina scale factor
+    NSRect pointBounds = [self bounds];
+    NSRect pixelBounds = [self convertRectToBacking:pointBounds];
+    int scaleFactor = (int)(pixelBounds.size.width / pointBounds.size.width);
+    if (scaleFactor < 1) scaleFactor = 1;
+    _gScaleFactor = scaleFactor;
+    if (scaleFactor > 1) {
+        char val[8];
+        snprintf(val, sizeof(val), "%d", scaleFactor);
+        PyMOL_CmdSet(pymolInstance, "display_scale_factor", val, "", -1, 1, 1);
+    }
+
+    // Metal swap is a no-op — MTKView presents drawables automatically
+    PyMOL_SetSwapBuffersFn(pymolInstance, []() {});
+
+    // Initial reshape using drawable size (pixels)
+    CGSize drawSize = self.drawableSize;
+    PyMOL_Reshape(pymolInstance, (int)drawSize.width, (int)drawSize.height, 1);
+
+    _initialized = YES;
+}
+
+// MTKViewDelegate — replaces the NSTimer render loop
+- (void)drawInMTKView:(MTKView *)view {
+    if (!_initialized || !pymolInstance) return;
+
+    // Process idle work
+    PyMOL_Idle(pymolInstance);
+
+    // Handle pending reshapes
+    if (PyMOL_GetReshape(pymolInstance)) {
+        PyMOLreturn_int_array info = PyMOL_GetReshapeInfo(pymolInstance, 1);
+        if (info.array && info.size >= 5) {
+            int w = info.array[3] * _gScaleFactor;
+            int h = info.array[4] * _gScaleFactor;
+            PyMOL_Reshape(pymolInstance, w, h, 0);
+        }
+        PyMOL_FreeResultArray(pymolInstance, info.array);
+    }
+
+    // Draw via PyMOL if needed (will go through RendererMetal when wired up)
+    if (PyMOL_GetRedisplay(pymolInstance, 1)) {
+        PyMOL_PushValidContext(pymolInstance);
+        PyMOL_Draw(pymolInstance);
+        PyMOL_PopValidContext(pymolInstance);
+    }
+
+    // Present a clear frame via Metal command buffer
+    id<CAMetalDrawable> drawable = self.currentDrawable;
+    MTLRenderPassDescriptor *passDesc = self.currentRenderPassDescriptor;
+    if (!drawable || !passDesc) return;
+
+    id<MTLCommandBuffer> cmdBuf = [_commandQueue commandBuffer];
+    id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
+    [encoder endEncoding];
+
+    [cmdBuf presentDrawable:drawable];
+    [cmdBuf commit];
+}
+
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
+    if (pymolInstance) {
+        PyMOL_Reshape(pymolInstance, (int)size.width, (int)size.height, 0);
+    }
+}
+
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+
+// Mouse and keyboard — same shared helpers as OpenGLView
+- (void)mouseDown:(NSEvent *)e {
+    int btn = ([e modifierFlags] & NSEventModifierFlagCommand) ? PYMOL_BUTTON_MIDDLE : PYMOL_BUTTON_LEFT;
+    handleMouseButton(self, e, btn, PYMOL_BUTTON_DOWN);
+}
+- (void)mouseUp:(NSEvent *)e        { handleMouseButton(self, e, PYMOL_BUTTON_LEFT, PYMOL_BUTTON_UP); }
+- (void)mouseDragged:(NSEvent *)e   { handleMouseDrag(self, e); }
+- (void)rightMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_DOWN); }
+- (void)rightMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_UP); }
+- (void)rightMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
+- (void)otherMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_DOWN); }
+- (void)otherMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_UP); }
+- (void)otherMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
+- (void)scrollWheel:(NSEvent *)e     { handleScrollWheel(self, e); }
+- (void)keyDown:(NSEvent *)e         { handleKeyDown(self, e); }
+- (void)flagsChanged:(NSEvent *)event {}
+
+- (void)dealloc {
+    if (pymolInstance) {
+        PyMOL_Stop(pymolInstance);
+        PyMOL_Free(pymolInstance);
+        pymolInstance = nullptr;
+    }
+}
+
+@end
+
+#endif // PYMOL_HAS_METAL
 
 // ---------------------------------------------------------------------------
 #pragma mark - App Delegate
@@ -535,10 +673,24 @@ static PyMOLOpenGLView *glView = nullptr;
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.commandPanelContainer];
 
-    // GL view below the command panel
+    // Rendering view below the command panel — Metal if available, else OpenGL
     CGFloat glHeight = contentH - kCommandPanelHeight;
     NSRect glFrame = NSMakeRect(rightX, 0, rightWidth, glHeight);
-    glView = [[PyMOLOpenGLView alloc] initWithFrame:glFrame];
+
+#if PYMOL_HAS_METAL
+    id<MTLDevice> metalDevice = MTLCreateSystemDefaultDevice();
+    if (metalDevice) {
+        self.usingMetal = YES;
+        glView = [[PyMOLMetalView alloc] initWithFrame:glFrame];
+        NSLog(@"PyMOL: Using Metal backend (%@)", [metalDevice name]);
+    }
+#endif
+    if (!glView) {
+        self.usingMetal = NO;
+        glView = [[PyMOLOpenGLView alloc] initWithFrame:glFrame];
+        NSLog(@"PyMOL: Using OpenGL backend");
+    }
+
     glView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [container addSubview:glView];
 
@@ -583,7 +735,10 @@ static PyMOLOpenGLView *glView = nullptr;
     }
 
     // Force reshape so PyMOL picks up the new viewport size
-    [glView reshape];
+    if ([glView isKindOfClass:[NSOpenGLView class]]) {
+        [(NSOpenGLView *)glView reshape];
+    }
+    // MTKView handles reshape automatically via drawableSizeWillChange
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {

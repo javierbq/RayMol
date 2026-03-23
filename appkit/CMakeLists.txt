@@ -75,8 +75,12 @@ file(GLOB_RECURSE PYMOL_SOURCES
     "${PYMOL_ROOT}/layerGraphics/gl/*.cpp"
 )
 
-# AppKit entry point (Objective-C++)
-set(APPKIT_SOURCES ${PYMOL_ROOT}/layer5/main_appkit.mm)
+# Objective-C++ sources (Metal shader manager, renderer, AppKit entry point)
+set(OBJCXX_SOURCES
+    ${PYMOL_ROOT}/layer0/MetalShaderMgr.mm
+    ${PYMOL_ROOT}/layerGraphics/metal/RendererMetal.mm
+    ${PYMOL_ROOT}/layer5/main_appkit.mm
+)
 
 # Layer5 sources (exclude main.cpp — we use main_appkit.mm)
 file(GLOB LAYER5_SOURCES "${PYMOL_ROOT}/layer5/*.cpp")
@@ -99,7 +103,7 @@ endif()
 set(ALL_SOURCES
     ${PYMOL_SOURCES}
     ${LAYER5_SOURCES}
-    ${APPKIT_SOURCES}
+    ${OBJCXX_SOURCES}
     ${GENERATED_SOURCES}
     ${VMD_SOURCES}
 )
@@ -119,6 +123,7 @@ target_include_directories(PyMOL PRIVATE
     ${PYMOL_ROOT}/layer5
     ${PYMOL_ROOT}/layerGraphics
     ${PYMOL_ROOT}/layerGraphics/gl
+    ${PYMOL_ROOT}/layerGraphics/metal
     ${PYMOL_ROOT}/contrib/pocketfft
     ${CMAKE_BINARY_DIR}/generated
     ${Python3_INCLUDE_DIRS}
@@ -195,6 +200,8 @@ target_link_libraries(PyMOL PRIVATE
     "-framework Cocoa"
     "-framework OpenGL"
     "-framework CoreVideo"
+    "-framework Metal"
+    "-framework MetalKit"
     ${Python3_LIBRARIES}
     ${PNG_LIBRARIES}
     ${FREETYPE_LIBRARIES}
@@ -222,4 +229,11 @@ add_custom_command(TARGET PyMOL POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${PYMOL_ROOT}/modules
         $<TARGET_BUNDLE_DIR:PyMOL>/Contents/Resources/modules
+)
+
+# Compile Metal shaders into a .metallib and place it in the bundle
+add_custom_command(TARGET PyMOL POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${PYMOL_ROOT}/scripts/compile_metal_shaders.py
+        --output $<TARGET_BUNDLE_DIR:PyMOL>/Contents/Resources/pymol.metallib
+    COMMENT "Compiling Metal shaders into pymol.metallib"
 )
