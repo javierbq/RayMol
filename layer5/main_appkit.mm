@@ -13,6 +13,7 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 #import <OpenGL/gl.h>
 #import <OpenGL/OpenGL.h>
 
@@ -483,6 +484,20 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 }
 
 - (void)initPyMOL {
+    // Create a hidden OpenGL context so that stray gl* calls from
+    // PyMOL's rendering code don't crash (they become no-ops drawing
+    // to an offscreen context). This is needed because the render path
+    // has GL calls scattered throughout object render() methods.
+    NSOpenGLPixelFormatAttribute attrs[] = {
+        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersionLegacy,
+        0
+    };
+    NSOpenGLPixelFormat *pf = [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs];
+    NSOpenGLContext *dummyGL = [[NSOpenGLContext alloc] initWithFormat:pf shareContext:nil];
+    [dummyGL makeCurrentContext];
+    // Keep a strong reference so it stays alive
+    objc_setAssociatedObject(self, "dummyGL", dummyGL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     CPyMOLOptions *options = PyMOLOptions_New();
     options->show_splash = 1;
     options->internal_gui = 1;
