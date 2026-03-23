@@ -730,27 +730,52 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     if (!pymolInstance) return;
     PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
 
-    // Convert point-space coordinates to backing-pixel coordinates
-    NSPoint pixelPt = [self convertPointToBacking:point];
-    int x = (int)pixelPt.x;
-    int y = (int)pixelPt.y;
-    int mods = pymolModifiers(event);
+    // Convert to normalized coordinates [0,1] in the viewport
+    NSRect bounds = [self bounds];
+    float nx = point.x / bounds.size.width;
+    float ny = point.y / bounds.size.height;
 
-    // Make the dummy GL context current for the GL picking render pass
+    // Use PyMOL's Python select with screen coordinates via cmd.do()
+    // The 'select' approach: find the nearest atom to the 3D ray from screen coords
+    // PyMOL's cmd.select("sele", "first (all within 2 of center)") doesn't use screen coords.
+    // Instead, use the GL picking pass through the dummy context.
+
+    // Make the dummy GL context current
     NSOpenGLContext *dummyGL = objc_getAssociatedObject(self, "dummyGL");
     [dummyGL makeCurrentContext];
 
-    // Set up GL viewport to match the current scene dimensions
-    glViewport(0, 0, G->Option->winX, G->Option->winY);
+    // Set up GL state to match the scene for picking
+    int winX = G->Option->winX;
+    int winY = G->Option->winY;
+    glViewport(0, 0, winX, winY);
 
-    // Simulate a full click (down + up) at this location.
-    // OrthoButton → SceneClick → SceneDoXYPick does the actual picking.
+    // Load the scene matrices into the GL context
+    extern float* SceneGetProjectionMatrixPtr(PyMOLGlobals*);
+    extern float* SceneGetModelViewMatrixPtr(PyMOLGlobals*);
+    glMatrixMode(GL_PROJECTION);
+    glLoadMatrixf(SceneGetProjectionMatrixPtr(G));
+    glMatrixMode(GL_MODELVIEW);
+    glLoadMatrixf(SceneGetModelViewMatrixPtr(G));
+
+    // Convert point to pixel coordinates for the GL picking pass
+    NSPoint pixelPt = [self convertPointToBacking:point];
+    int x = (int)pixelPt.x;
+    int y = (int)pixelPt.y;
+
+    // Force the scene block to cover the full viewport
+    // (OrthoReshape was called with internal_gui=0, so it should already be full)
     PyMOL_PushValidContext(pymolInstance);
 
     int btn = ([event modifierFlags] & NSEventModifierFlagCommand)
                   ? PYMOL_BUTTON_MIDDLE : PYMOL_BUTTON_LEFT;
-    OrthoButton(G, btn, PYMOL_BUTTON_DOWN, x, y, mods);
-    OrthoButton(G, btn, PYMOL_BUTTON_UP, x, y, mods);
+
+    // Ensure PyMOL's winX/winY and scene rect match our drawable
+    CGSize drawSize = self.drawableSize;
+    PyMOL_Reshape(pymolInstance, (int)drawSize.width, (int)drawSize.height, 1);
+    glViewport(0, 0, (int)drawSize.width, (int)drawSize.height);
+
+    OrthoButton(G, btn, PYMOL_BUTTON_DOWN, x, y, 0);
+    OrthoButton(G, btn, PYMOL_BUTTON_UP, x, y, 0);
 
     PyMOL_PopValidContext(pymolInstance);
 }
