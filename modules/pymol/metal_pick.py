@@ -50,14 +50,13 @@ def pick_at(ndc_x, ndc_y, aspect):
         wy = R[0][1] * px + R[1][1] * py + R[2][1] * pz + oy
         wz = R[0][2] * px + R[1][2] * py + R[2][2] * pz + oz
 
-        # Select nearest atom within 5 angstroms of the unprojected point
-        sel_expr = 'first (all within 5 of (%f, %f, %f))' % (wx, wy, wz)
-        n = cmd.select('sele', sel_expr)
-
+        # Create a temporary pseudoatom at the unprojected point,
+        # then select the nearest real atom within range
+        cmd.pseudoatom('_pick_tmp', pos=[wx, wy, wz])
+        n = cmd.select('sele', 'first (all and not _pick_tmp) within 5 of _pick_tmp')
         if n == 0:
-            # Try larger radius
-            sel_expr = 'first (all within 10 of (%f, %f, %f))' % (wx, wy, wz)
-            cmd.select('sele', sel_expr)
+            n = cmd.select('sele', 'first (all and not _pick_tmp) within 10 of _pick_tmp')
+        cmd.delete('_pick_tmp')
 
     except Exception as e:
         try:
