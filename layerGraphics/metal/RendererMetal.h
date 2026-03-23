@@ -170,6 +170,7 @@ private:
 
   // Pipeline state cache
   id<MTLRenderPipelineState> _currentPipeline;
+  id<MTLRenderPipelineState> _batchPipeline;  // built-in batch shader pipeline
   uint32_t _currentProgram = 0;
 
   // Depth/stencil state

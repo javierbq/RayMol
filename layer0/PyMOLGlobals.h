@@ -22,6 +22,7 @@ namespace pymol
 {
 class cif_file;
 class cif_data;
+class Renderer;
 }; // namespace pymol
 
 /* retina scale factor for ortho gui */
@@ -159,6 +160,7 @@ struct PyMOLGlobals {
   CShaderMgr* ShaderMgr;
   COpenVR* OpenVR;
   GFXManager* GFXMgr;
+  pymol::Renderer* Renderer = nullptr;
 #ifndef _PYMOL_NOPY
   CP_inst *P_inst;
 #endif

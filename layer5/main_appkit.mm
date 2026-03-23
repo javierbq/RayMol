@@ -31,6 +31,11 @@
 #include "os_python.h"
 #include "PyMOLGlobals.h"
 #include "Cmd.h"
+#include "Renderer.h"
+
+#if PYMOL_HAS_METAL
+#include "RendererMetal.h"
+#endif
 
 // Defined in Cmd.cpp
 extern "C" PyObject* PyInit__cmd(void);
@@ -57,6 +62,10 @@ int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 #if PYMOL_HAS_METAL
 @class PyMOLMetalView;
 #endif
+
+// Backend preference: 0 = auto (Metal first), 1 = force Metal, 2 = force OpenGL
+enum RendererBackend { kBackendAuto = 0, kBackendMetal = 1, kBackendOpenGL = 2 };
+static RendererBackend g_requestedBackend = kBackendAuto;
 
 @interface PyMOLAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (strong) NSWindow *window;
@@ -471,6 +480,9 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     SingletonPyMOLGlobals = G;
     G->HaveGUI = true;
 
+    // Create the Metal renderer and attach it to globals
+    G->Renderer = new pymol::RendererMetal(_metalDevice, _commandQueue);
+
     PyMOL_Start(pymolInstance);
     PInit(G, true);
     PyMOL_SetPythonInitStage(pymolInstance, 1);
@@ -545,6 +557,25 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 - (void)drawInMTKView:(MTKView *)view {
     if (!_initialized || !pymolInstance) return;
 
+    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+    auto* renderer = static_cast<pymol::RendererMetal*>(G->Renderer);
+    if (!renderer) return;
+
+    // Get drawable and pass descriptor for this frame
+    id<CAMetalDrawable> drawable = self.currentDrawable;
+    MTLRenderPassDescriptor *passDesc = self.currentRenderPassDescriptor;
+    if (!drawable || !passDesc) return;
+
+    // Hand the drawable to the renderer and begin the frame
+    renderer->setDrawable(drawable, passDesc);
+
+    // Set viewport to match drawable size
+    CGSize sz = self.drawableSize;
+    renderer->viewport(0, 0, (int)sz.width, (int)sz.height);
+    renderer->clearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    renderer->clear(true, true, false);
+    renderer->beginFrame();
+
     // Process idle work
     PyMOL_Idle(pymolInstance);
 
@@ -554,29 +585,30 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         if (info.array && info.size >= 5) {
             int w = info.array[3] * _gScaleFactor;
             int h = info.array[4] * _gScaleFactor;
+            renderer->viewport(0, 0, w, h);
             PyMOL_Reshape(pymolInstance, w, h, 0);
         }
         PyMOL_FreeResultArray(pymolInstance, info.array);
     }
 
-    // Draw via PyMOL if needed (will go through RendererMetal when wired up)
-    if (PyMOL_GetRedisplay(pymolInstance, 1)) {
-        PyMOL_PushValidContext(pymolInstance);
-        PyMOL_Draw(pymolInstance);
-        PyMOL_PopValidContext(pymolInstance);
-    }
+    // Draw a test triangle to prove Metal rendering works end-to-end.
+    // Once the CGO pipeline is migrated, this will be replaced by
+    // PyMOL_Draw() dispatching through G->Renderer.
+    renderer->loadIdentity();  // identity modelview
+    renderer->matrixMode(1);   // projection
+    renderer->loadIdentity();  // identity projection
+    renderer->matrixMode(0);   // back to modelview
 
-    // Present a clear frame via Metal command buffer
-    id<CAMetalDrawable> drawable = self.currentDrawable;
-    MTLRenderPassDescriptor *passDesc = self.currentRenderPassDescriptor;
-    if (!drawable || !passDesc) return;
+    renderer->beginBatch(pymol::PrimitiveType::Triangles);
+    renderer->batchColor4f(1.0f, 0.0f, 0.0f, 1.0f);
+    renderer->batchVertex3f(-0.5f, -0.5f, 0.0f);
+    renderer->batchColor4f(0.0f, 1.0f, 0.0f, 1.0f);
+    renderer->batchVertex3f( 0.5f, -0.5f, 0.0f);
+    renderer->batchColor4f(0.0f, 0.0f, 1.0f, 1.0f);
+    renderer->batchVertex3f( 0.0f,  0.5f, 0.0f);
+    renderer->endBatch();
 
-    id<MTLCommandBuffer> cmdBuf = [_commandQueue commandBuffer];
-    id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
-    [encoder endEncoding];
-
-    [cmdBuf presentDrawable:drawable];
-    [cmdBuf commit];
+    renderer->endFrame();
 }
 
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
@@ -607,6 +639,9 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 
 - (void)dealloc {
     if (pymolInstance) {
+        PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+        delete G->Renderer;
+        G->Renderer = nullptr;
         PyMOL_Stop(pymolInstance);
         PyMOL_Free(pymolInstance);
         pymolInstance = nullptr;
@@ -673,22 +708,40 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.commandPanelContainer];
 
-    // Rendering view below the command panel — Metal if available, else OpenGL
+    // Rendering view below the command panel — Metal if available, else OpenGL.
+    // Respect --metal / --opengl flags and PYMOL_RENDERER env var.
     CGFloat glHeight = contentH - kCommandPanelHeight;
     NSRect glFrame = NSMakeRect(rightX, 0, rightWidth, glHeight);
 
+    bool tryMetal = (g_requestedBackend != kBackendOpenGL);
+    bool tryOpenGL = (g_requestedBackend != kBackendMetal);
+
 #if PYMOL_HAS_METAL
-    id<MTLDevice> metalDevice = MTLCreateSystemDefaultDevice();
-    if (metalDevice) {
-        self.usingMetal = YES;
-        glView = [[PyMOLMetalView alloc] initWithFrame:glFrame];
-        NSLog(@"PyMOL: Using Metal backend (%@)", [metalDevice name]);
+    if (tryMetal) {
+        id<MTLDevice> metalDevice = MTLCreateSystemDefaultDevice();
+        if (metalDevice) {
+            self.usingMetal = YES;
+            glView = [[PyMOLMetalView alloc] initWithFrame:glFrame];
+            NSLog(@"PyMOL: Using Metal backend (%@)", [metalDevice name]);
+        } else if (g_requestedBackend == kBackendMetal) {
+            NSLog(@"PyMOL: Metal requested but no Metal device available");
+        }
+    }
+#else
+    if (g_requestedBackend == kBackendMetal) {
+        NSLog(@"PyMOL: Metal requested but not compiled in (PYMOL_HAS_METAL=0)");
     }
 #endif
-    if (!glView) {
+    if (!glView && tryOpenGL) {
         self.usingMetal = NO;
         glView = [[PyMOLOpenGLView alloc] initWithFrame:glFrame];
         NSLog(@"PyMOL: Using OpenGL backend");
+    }
+
+    if (!glView) {
+        NSLog(@"PyMOL: FATAL — no rendering backend available");
+        [NSApp terminate:nil];
+        return;
     }
 
     glView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -820,6 +873,28 @@ static void initPython(int argc, const char *argv[]) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        // Parse --metal / --opengl command-line flags
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "--metal") == 0) {
+                g_requestedBackend = kBackendMetal;
+            } else if (strcmp(argv[i], "--opengl") == 0) {
+                g_requestedBackend = kBackendOpenGL;
+            }
+        }
+
+        // Check PYMOL_RENDERER env var (command-line flags take precedence)
+        if (g_requestedBackend == kBackendAuto) {
+            const char *envRenderer = getenv("PYMOL_RENDERER");
+            if (envRenderer) {
+                if (strcasecmp(envRenderer, "metal") == 0) {
+                    g_requestedBackend = kBackendMetal;
+                } else if (strcasecmp(envRenderer, "opengl") == 0 ||
+                           strcasecmp(envRenderer, "gl") == 0) {
+                    g_requestedBackend = kBackendOpenGL;
+                }
+            }
+        }
+
         // Initialize Python before anything else
         initPython(argc, argv);
 

@@ -119,6 +119,7 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _passDesc(nil)
     , _drawable(nil)
     , _currentPipeline(nil)
+    , _batchPipeline(nil)
     , _depthStencilState(nil)
 {
   _modelviewMatrix = identityMatrix();
@@ -127,6 +128,97 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
 
   // Create initial depth stencil state
   applyDepthStencilState();
+
+  // Build the built-in batch pipeline from embedded MSL source.
+  // This pipeline is used by beginBatch/endBatch for immediate-mode drawing.
+  NSString* batchSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct BatchVertexIn {
+  float3 position [[attribute(0)]];
+  float4 color    [[attribute(1)]];
+  float3 normal   [[attribute(2)]];
+};
+
+struct BatchUniforms {
+  float4x4 modelview;
+  float4x4 projection;
+};
+
+struct BatchVertexOut {
+  float4 position [[position]];
+  float4 color;
+};
+
+vertex BatchVertexOut batch_vertex(
+    BatchVertexIn in [[stage_in]],
+    constant BatchUniforms& uniforms [[buffer(1)]])
+{
+  BatchVertexOut out;
+  out.position = uniforms.projection * uniforms.modelview * float4(in.position, 1.0);
+  out.color = in.color;
+  return out;
+}
+
+fragment float4 batch_fragment(BatchVertexOut in [[stage_in]])
+{
+  return in.color;
+}
+)";
+
+  NSError* error = nil;
+  id<MTLLibrary> batchLib = [_device newLibraryWithSource:batchSrc
+                                                 options:nil
+                                                   error:&error];
+  if (batchLib) {
+    id<MTLFunction> vertFunc = [batchLib newFunctionWithName:@"batch_vertex"];
+    id<MTLFunction> fragFunc = [batchLib newFunctionWithName:@"batch_fragment"];
+
+    if (vertFunc && fragFunc) {
+      // Vertex descriptor matching BatchVertex { float3 pos, float4 color, float3 normal }
+      MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+      // position: offset 0, float3
+      vd.attributes[0].format = MTLVertexFormatFloat3;
+      vd.attributes[0].offset = 0;
+      vd.attributes[0].bufferIndex = 0;
+      // color: offset 12, float4
+      vd.attributes[1].format = MTLVertexFormatFloat4;
+      vd.attributes[1].offset = 3 * sizeof(float);
+      vd.attributes[1].bufferIndex = 0;
+      // normal: offset 28, float3
+      vd.attributes[2].format = MTLVertexFormatFloat3;
+      vd.attributes[2].offset = 7 * sizeof(float);
+      vd.attributes[2].bufferIndex = 0;
+      // stride = sizeof(BatchVertex) = 10 floats = 40 bytes
+      vd.layouts[0].stride = 10 * sizeof(float);
+      vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+
+      MTLRenderPipelineDescriptor* psd =
+          [[MTLRenderPipelineDescriptor alloc] init];
+      psd.vertexFunction = vertFunc;
+      psd.fragmentFunction = fragFunc;
+      psd.vertexDescriptor = vd;
+      psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+      psd.colorAttachments[0].blendingEnabled = YES;
+      psd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+      psd.colorAttachments[0].destinationRGBBlendFactor =
+          MTLBlendFactorOneMinusSourceAlpha;
+      psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+      psd.colorAttachments[0].destinationAlphaBlendFactor =
+          MTLBlendFactorOneMinusSourceAlpha;
+      psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+      psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+
+      _batchPipeline = [_device newRenderPipelineStateWithDescriptor:psd
+                                                               error:&error];
+      if (!_batchPipeline) {
+        NSLog(@"RendererMetal: failed to create batch pipeline: %@", error);
+      }
+    }
+  } else {
+    NSLog(@"RendererMetal: failed to compile batch shader: %@", error);
+  }
 }
 
 RendererMetal::~RendererMetal()
@@ -926,8 +1018,12 @@ void RendererMetal::endBatch()
   std::memcpy(matrices.projection, _projectionMatrix.data(), 64);
   [_encoder setVertexBytes:&matrices length:sizeof(matrices) atIndex:1];
 
-  if (_currentPipeline) {
-    [_encoder setRenderPipelineState:_currentPipeline];
+  // Use the current pipeline if set, otherwise fall back to the built-in
+  // batch pipeline (simple position+color, no lighting).
+  id<MTLRenderPipelineState> pipeline =
+      _currentPipeline ? _currentPipeline : _batchPipeline;
+  if (pipeline) {
+    [_encoder setRenderPipelineState:pipeline];
   }
 
   MTLPrimitiveType mtlPrim =
