@@ -2251,6 +2251,16 @@ static void check_gl_stereo_capable(PyMOLGlobals * G)
 
 void PyMOL_DrawWithoutLock(CPyMOL * I)
 {
+  // When Metal is active, skip the entire GL draw pipeline.
+  // Metal rendering is handled by RendererMetal in drawInMTKView.
+  // We still process idle/deferred/commands but don't touch GL.
+  if (I->G->Renderer) {
+    I->done_ConfigureShaders = true;
+    I->DrawnFlag = true;
+    I->RedisplayFlag = false;
+    return;
+  }
+
   if (!I->done_ConfigureShaders) {
     I->done_ConfigureShaders = true;
 

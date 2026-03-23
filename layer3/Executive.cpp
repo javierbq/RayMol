@@ -11525,7 +11525,7 @@ void ExecutiveDrawNow(PyMOLGlobals* G, ExecutiveDrawInfo execDrawInfo)
   if (!SettingGetGlobal_b(G, cSetting_suspend_updates)) {
     int stereo_mode = SettingGetGlobal_i(G, cSetting_stereo_mode);
     int stereo = SettingGetGlobal_i(G, cSetting_stereo);
-    if (G->HaveGUI && G->ValidContext) {
+    if (G->HaveGUI && G->ValidContext && !G->Renderer) {
       glMatrixMode(GL_MODELVIEW); /* why is this necessary?  is it? */
     }
 
