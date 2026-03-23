@@ -18,6 +18,7 @@ Z* -------------------------------------------------------------------
 
 #include"os_predef.h"
 #include"os_gl.h"
+#include "ImmediateHelper.h"
 #include"os_std.h"
 
 #include"main.h"
@@ -1172,29 +1173,28 @@ void pymol::CObject::render(RenderInfo * info)
 #ifdef PURE_OPENGL_ES_2
     /* TODO */
 #else
-    glBegin(GL_LINE_LOOP);
-    glVertex3i(-1, -1, -1);
-    glVertex3i(-1, -1, 1);
-    glVertex3i(-1, 1, 1);
-    glVertex3i(-1, 1, -1);
+    {
+      ImmBatch batch;
+      batch.begin(GL_LINE_LOOP);
+      batch.vertex3i(-1, -1, -1);
+      batch.vertex3i(-1, -1, 1);
+      batch.vertex3i(-1, 1, 1);
+      batch.vertex3i(-1, 1, -1);
+      batch.vertex3i(1, 1, -1);
+      batch.vertex3i(1, 1, 1);
+      batch.vertex3i(1, -1, 1);
+      batch.vertex3i(1, -1, -1);
+      batch.end();
 
-    glVertex3i(1, 1, -1);
-    glVertex3i(1, 1, 1);
-    glVertex3i(1, -1, 1);
-    glVertex3i(1, -1, -1);
-    glEnd();
-
-    glBegin(GL_LINES);
-    glVertex3i(0, 0, 0);
-    glVertex3i(1, 0, 0);
-
-    glVertex3i(0, 0, 0);
-    glVertex3i(0, 3, 0);
-
-    glVertex3i(0, 0, 0);
-    glVertex3i(0, 0, 9);
-
-    glEnd();
+      batch.begin(GL_LINES);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(1, 0, 0);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(0, 3, 0);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(0, 0, 9);
+      batch.end();
+    }
 #endif
   }
 }

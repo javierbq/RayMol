@@ -19,6 +19,7 @@ Z* -------------------------------------------------------------------
 #include"os_predef.h"
 #include"os_std.h"
 #include"os_gl.h"
+#include "ImmediateHelper.h"
 
 #include"Base.h"
 #include"Sphere.h"
@@ -671,19 +672,20 @@ void SphereRender(PyMOLGlobals * G, int level, const float *centroid, const floa
   int a, cc;
   int *q = sp->Sequence;
   float pt[3];
+  ImmBatch batch;
   if (color)
-    glColor4f(color[0], color[1], color[2], alpha);
+    batch.color4f(color[0], color[1], color[2], alpha);
   for(a = 0; a < sp->NStrip; a++) {
-    glBegin(GL_TRIANGLE_STRIP);
+    batch.begin(GL_TRIANGLE_STRIP);
     cc = sp->StripLen[a];
     while(cc--) {
-      glNormal3fv(sp->dot[*q]);
+      batch.normal3fv(sp->dot[*q]);
       mult3f(sp->dot[*q], radius, pt);
       add3f(centroid, pt, pt);
-      glVertex3fv(pt);
+      batch.vertex3fv(pt);
       q++;
     }
-    glEnd();
+    batch.end();
   }
 #endif
 }

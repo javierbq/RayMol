@@ -16,6 +16,7 @@ Z* -------------------------------------------------------------------
 */
 
 #include"os_gl.h"
+#include "ImmediateHelper.h"
 
 #include"Base.h"
 #include"Character.h"
@@ -269,25 +270,29 @@ short CharacterRenderOpenGL(PyMOLGlobals * G, const RenderInfo * info, int id, s
 	  }
       } else {
 #ifndef PURE_OPENGL_ES_2
-	  glBegin(GL_QUADS);
         if (TextGetIsPicking(G)){
           unsigned char *cptr = TextGetColorUChar4uv(G);
-          glColor4ubv(cptr);
+          ImmBatch batch;
+          batch.begin(GL_QUADS);
+          batch.color4f(cptr[0] / 255.0f, cptr[1] / 255.0f,
+                        cptr[2] / 255.0f, cptr[3] / 255.0f);
+          batch.vertex3f(v0[0], v0[1], v0[2]);
+          batch.vertex3f(v0[0], v1[1], v0[2]);
+          batch.vertex3f(v1[0], v1[1], v0[2]);
+          batch.vertex3f(v1[0], v0[1], v0[2]);
+          batch.end();
+        } else {
+          /* Textured quad — requires glTexCoord2f, kept as immediate mode */
+          glBegin(GL_QUADS);
+          glTexCoord2f(rec->extent[0], rec->extent[1]);
           glVertex3f(v0[0], v0[1], v0[2]);
+          glTexCoord2f(rec->extent[0], rec->extent[3]);
           glVertex3f(v0[0], v1[1], v0[2]);
+          glTexCoord2f(rec->extent[2], rec->extent[3]);
           glVertex3f(v1[0], v1[1], v0[2]);
+          glTexCoord2f(rec->extent[2], rec->extent[1]);
           glVertex3f(v1[0], v0[1], v0[2]);
           glEnd();
-        } else {
-	  glTexCoord2f(rec->extent[0], rec->extent[1]);
-	  glVertex3f(v0[0], v0[1], v0[2]);
-	  glTexCoord2f(rec->extent[0], rec->extent[3]);
-	  glVertex3f(v0[0], v1[1], v0[2]);
-	  glTexCoord2f(rec->extent[2], rec->extent[3]);
-	  glVertex3f(v1[0], v1[1], v0[2]);
-	  glTexCoord2f(rec->extent[2], rec->extent[1]);
-	  glVertex3f(v1[0], v0[1], v0[2]);
-	  glEnd();
         }
 #endif
       }

@@ -18,6 +18,7 @@ Z* -------------------------------------------------------------------
 
 #include "Err.h"
 #include "os_gl.h"
+#include "ImmediateHelper.h"
 #include "os_predef.h"
 #include "os_std.h"
 
@@ -1250,65 +1251,60 @@ static void draw_bond(PyMOLGlobals* G, float* v0, float* v1, CGO* shaderCGO)
 #ifdef PURE_OPENGL_ES_2
     /* TODO */
 #else
-    glColor3fv(ColorGet(G, 0));
-    glBegin(GL_TRIANGLE_STRIP);
-    for (a = 0; a <= nEdge; a++) {
-      c = a % nEdge;
-      v[0] = n1[0] * x[c] + n2[0] * y[c];
-      v[1] = n1[1] * x[c] + n2[1] * y[c];
-      v[2] = n1[2] * x[c] + n2[2] * y[c];
-      normalize3f(v);
-      glNormal3fv(v);
-      v[0] = v2[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
-      v[1] = v2[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
-      v[2] = v2[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
-      glVertex3fv(v);
+    {
+      ImmBatch batch;
+      batch.color3fv(ColorGet(G, 0));
+      batch.begin(GL_TRIANGLE_STRIP);
+      for (a = 0; a <= nEdge; a++) {
+        c = a % nEdge;
+        v[0] = n1[0] * x[c] + n2[0] * y[c];
+        v[1] = n1[1] * x[c] + n2[1] * y[c];
+        v[2] = n1[2] * x[c] + n2[2] * y[c];
+        normalize3f(v);
+        batch.normal3fv(v);
+        v[0] = v2[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
+        v[1] = v2[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
+        v[2] = v2[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
+        batch.vertex3fv(v);
 
-      v[0] = v3[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
-      v[1] = v3[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
-      v[2] = v3[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
-      glVertex3fv(v);
-    }
-    glEnd();
-#endif
+        v[0] = v3[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
+        v[1] = v3[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
+        v[2] = v3[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
+        batch.vertex3fv(v);
+      }
+      batch.end();
 
-#ifdef PURE_OPENGL_ES_2
-    /* TODO */
-#else
-    glBegin(GL_TRIANGLE_STRIP);
-    glNormal3fv(n0);
-    for (a = 0; a <= nEdge; a++) {
-      c = a % nEdge;
-      v[0] = v2[0] + n1[0] * tube_size3 * x[c] + n2[0] * tube_size3 * y[c];
-      v[1] = v2[1] + n1[1] * tube_size3 * x[c] + n2[1] * tube_size3 * y[c];
-      v[2] = v2[2] + n1[2] * tube_size3 * x[c] + n2[2] * tube_size3 * y[c];
-      glVertex3fv(v);
-      v[0] = v2[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
-      v[1] = v2[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
-      v[2] = v2[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
-      glVertex3fv(v);
-    }
-    glEnd();
-#endif
+      batch.begin(GL_TRIANGLE_STRIP);
+      batch.normal3fv(n0);
+      for (a = 0; a <= nEdge; a++) {
+        c = a % nEdge;
+        v[0] = v2[0] + n1[0] * tube_size3 * x[c] + n2[0] * tube_size3 * y[c];
+        v[1] = v2[1] + n1[1] * tube_size3 * x[c] + n2[1] * tube_size3 * y[c];
+        v[2] = v2[2] + n1[2] * tube_size3 * x[c] + n2[2] * tube_size3 * y[c];
+        batch.vertex3fv(v);
+        v[0] = v2[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
+        v[1] = v2[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
+        v[2] = v2[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
+        batch.vertex3fv(v);
+      }
+      batch.end();
 
-#ifdef PURE_OPENGL_ES_2
-    /* TODO */
-#else
-    glBegin(GL_TRIANGLE_STRIP);
-    scale3f(n0, -1.0F, v);
-    glNormal3fv(v);
-    for (a = 0; a <= nEdge; a++) {
-      c = a % nEdge;
-      v[0] = v3[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
-      v[1] = v3[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
-      v[2] = v3[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
-      glVertex3fv(v);
-      v[0] = v3[0] + n1[0] * tube_size3 * x[c] + n2[0] * tube_size3 * y[c];
-      v[1] = v3[1] + n1[1] * tube_size3 * x[c] + n2[1] * tube_size3 * y[c];
-      v[2] = v3[2] + n1[2] * tube_size3 * x[c] + n2[2] * tube_size3 * y[c];
-      glVertex3fv(v);
+      scale3f(n0, -1.0F, v);
+      batch.begin(GL_TRIANGLE_STRIP);
+      batch.normal3fv(v);
+      for (a = 0; a <= nEdge; a++) {
+        c = a % nEdge;
+        v[0] = v3[0] + n1[0] * tube_size1 * x[c] + n2[0] * tube_size1 * y[c];
+        v[1] = v3[1] + n1[1] * tube_size1 * x[c] + n2[1] * tube_size1 * y[c];
+        v[2] = v3[2] + n1[2] * tube_size1 * x[c] + n2[2] * tube_size1 * y[c];
+        batch.vertex3fv(v);
+        v[0] = v3[0] + n1[0] * tube_size3 * x[c] + n2[0] * tube_size3 * y[c];
+        v[1] = v3[1] + n1[1] * tube_size3 * x[c] + n2[1] * tube_size3 * y[c];
+        v[2] = v3[2] + n1[2] * tube_size3 * x[c] + n2[2] * tube_size3 * y[c];
+        batch.vertex3fv(v);
+      }
+      batch.end();
     }
-    glEnd();
 #endif
   }
 }
@@ -1476,88 +1472,83 @@ static void draw_globe(PyMOLGlobals* G, float* v2, int number, CGO* shaderCGO)
 #ifdef PURE_OPENGL_ES_2
       /* TODO */
 #else
-      glBegin(GL_TRIANGLE_STRIP);
-      for (a = 0; a <= nEdge; a++) {
-        c = a % nEdge;
-        v[0] = n1[0] * x[c] + n2[0] * y[c];
-        v[1] = n1[1] * x[c] + n2[1] * y[c];
-        v[2] = n1[2] * x[c] + n2[2] * y[c];
-        normalize3f(v);
-        glNormal3fv(v);
-        v[0] = v2[0] + n1[0] * radius * x[c] + n2[0] * radius * y[c] +
-               n0[0] * (offset + width);
-        v[1] = v2[1] + n1[1] * radius * x[c] + n2[1] * radius * y[c] +
-               n0[1] * (offset + width);
-        v[2] = v2[2] + n1[2] * radius * x[c] + n2[2] * radius * y[c] +
-               n0[2] * (offset + width);
-        glVertex3fv(v);
-        v[0] = v2[0] + n1[0] * radius * x[c] + n2[0] * radius * y[c] +
-               n0[0] * (offset - width);
-        v[1] = v2[1] + n1[1] * radius * x[c] + n2[1] * radius * y[c] +
-               n0[1] * (offset - width);
-        v[2] = v2[2] + n1[2] * radius * x[c] + n2[2] * radius * y[c] +
-               n0[2] * (offset - width);
-        glVertex3fv(v);
-      }
-      glEnd();
-#endif
+      {
+        ImmBatch batch;
+        batch.begin(GL_TRIANGLE_STRIP);
+        for (a = 0; a <= nEdge; a++) {
+          c = a % nEdge;
+          v[0] = n1[0] * x[c] + n2[0] * y[c];
+          v[1] = n1[1] * x[c] + n2[1] * y[c];
+          v[2] = n1[2] * x[c] + n2[2] * y[c];
+          normalize3f(v);
+          batch.normal3fv(v);
+          v[0] = v2[0] + n1[0] * radius * x[c] + n2[0] * radius * y[c] +
+                 n0[0] * (offset + width);
+          v[1] = v2[1] + n1[1] * radius * x[c] + n2[1] * radius * y[c] +
+                 n0[1] * (offset + width);
+          v[2] = v2[2] + n1[2] * radius * x[c] + n2[2] * radius * y[c] +
+                 n0[2] * (offset + width);
+          batch.vertex3fv(v);
+          v[0] = v2[0] + n1[0] * radius * x[c] + n2[0] * radius * y[c] +
+                 n0[0] * (offset - width);
+          v[1] = v2[1] + n1[1] * radius * x[c] + n2[1] * radius * y[c] +
+                 n0[1] * (offset - width);
+          v[2] = v2[2] + n1[2] * radius * x[c] + n2[2] * radius * y[c] +
+                 n0[2] * (offset - width);
+          batch.vertex3fv(v);
+        }
+        batch.end();
 
-#ifdef PURE_OPENGL_ES_2
-      /* TODO */
-#else
-      glBegin(GL_TRIANGLE_STRIP);
-      for (a = 0; a <= nEdge; a++) {
-        c = a % nEdge;
-        v[0] = n2[0] * x[c] + n0[0] * y[c];
-        v[1] = n2[1] * x[c] + n0[1] * y[c];
-        v[2] = n2[2] * x[c] + n0[2] * y[c];
-        normalize3f(v);
-        glNormal3fv(v);
-        v[0] = v2[0] + n2[0] * radius * x[c] + n0[0] * radius * y[c] +
-               n1[0] * (offset + width);
-        v[1] = v2[1] + n2[1] * radius * x[c] + n0[1] * radius * y[c] +
-               n1[1] * (offset + width);
-        v[2] = v2[2] + n2[2] * radius * x[c] + n0[2] * radius * y[c] +
-               n1[2] * (offset + width);
-        glVertex3fv(v);
-        v[0] = v2[0] + n2[0] * radius * x[c] + n0[0] * radius * y[c] +
-               n1[0] * (offset - width);
-        v[1] = v2[1] + n2[1] * radius * x[c] + n0[1] * radius * y[c] +
-               n1[1] * (offset - width);
-        v[2] = v2[2] + n2[2] * radius * x[c] + n0[2] * radius * y[c] +
-               n1[2] * (offset - width);
-        glVertex3fv(v);
-      }
-      glEnd();
-#endif
+        batch.begin(GL_TRIANGLE_STRIP);
+        for (a = 0; a <= nEdge; a++) {
+          c = a % nEdge;
+          v[0] = n2[0] * x[c] + n0[0] * y[c];
+          v[1] = n2[1] * x[c] + n0[1] * y[c];
+          v[2] = n2[2] * x[c] + n0[2] * y[c];
+          normalize3f(v);
+          batch.normal3fv(v);
+          v[0] = v2[0] + n2[0] * radius * x[c] + n0[0] * radius * y[c] +
+                 n1[0] * (offset + width);
+          v[1] = v2[1] + n2[1] * radius * x[c] + n0[1] * radius * y[c] +
+                 n1[1] * (offset + width);
+          v[2] = v2[2] + n2[2] * radius * x[c] + n0[2] * radius * y[c] +
+                 n1[2] * (offset + width);
+          batch.vertex3fv(v);
+          v[0] = v2[0] + n2[0] * radius * x[c] + n0[0] * radius * y[c] +
+                 n1[0] * (offset - width);
+          v[1] = v2[1] + n2[1] * radius * x[c] + n0[1] * radius * y[c] +
+                 n1[1] * (offset - width);
+          v[2] = v2[2] + n2[2] * radius * x[c] + n0[2] * radius * y[c] +
+                 n1[2] * (offset - width);
+          batch.vertex3fv(v);
+        }
+        batch.end();
 
-#ifdef PURE_OPENGL_ES_2
-      /* TODO */
-#else
-      glBegin(GL_TRIANGLE_STRIP);
-      for (a = 0; a <= nEdge; a++) {
-        c = a % nEdge;
-        v[0] = n0[0] * x[c] + n1[0] * y[c];
-        v[1] = n0[1] * x[c] + n1[1] * y[c];
-        v[2] = n0[2] * x[c] + n1[2] * y[c];
-        normalize3f(v);
-        glNormal3fv(v);
-        v[0] = v2[0] + n0[0] * radius * x[c] + n1[0] * radius * y[c] +
-               n2[0] * (offset + width);
-        v[1] = v2[1] + n0[1] * radius * x[c] + n1[1] * radius * y[c] +
-               n2[1] * (offset + width);
-        v[2] = v2[2] + n0[2] * radius * x[c] + n1[2] * radius * y[c] +
-               n2[2] * (offset + width);
-        glVertex3fv(v);
-        v[0] = v2[0] + n0[0] * radius * x[c] + n1[0] * radius * y[c] +
-               n2[0] * (offset - width);
-        v[1] = v2[1] + n0[1] * radius * x[c] + n1[1] * radius * y[c] +
-               n2[1] * (offset - width);
-        v[2] = v2[2] + n0[2] * radius * x[c] + n1[2] * radius * y[c] +
-               n2[2] * (offset - width);
-        glVertex3fv(v);
+        batch.begin(GL_TRIANGLE_STRIP);
+        for (a = 0; a <= nEdge; a++) {
+          c = a % nEdge;
+          v[0] = n0[0] * x[c] + n1[0] * y[c];
+          v[1] = n0[1] * x[c] + n1[1] * y[c];
+          v[2] = n0[2] * x[c] + n1[2] * y[c];
+          normalize3f(v);
+          batch.normal3fv(v);
+          v[0] = v2[0] + n0[0] * radius * x[c] + n1[0] * radius * y[c] +
+                 n2[0] * (offset + width);
+          v[1] = v2[1] + n0[1] * radius * x[c] + n1[1] * radius * y[c] +
+                 n2[1] * (offset + width);
+          v[2] = v2[2] + n0[2] * radius * x[c] + n1[2] * radius * y[c] +
+                 n2[2] * (offset + width);
+          batch.vertex3fv(v);
+          v[0] = v2[0] + n0[0] * radius * x[c] + n1[0] * radius * y[c] +
+                 n2[0] * (offset - width);
+          v[1] = v2[1] + n0[1] * radius * x[c] + n1[1] * radius * y[c] +
+                 n2[1] * (offset - width);
+          v[2] = v2[2] + n0[2] * radius * x[c] + n1[2] * radius * y[c] +
+                 n2[2] * (offset - width);
+          batch.vertex3fv(v);
+        }
+        batch.end();
       }
-      glEnd();
 #endif
     }
     cycle_counter--;

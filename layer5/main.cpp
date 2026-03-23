@@ -29,6 +29,7 @@
 
 #include "os_std.h"
 #include "os_gl.h"
+#include "ImmediateHelper.h"
 
 #ifdef _DRI_WORKAROUND
 #include <dlfcn.h>
@@ -172,20 +173,24 @@ static void DrawBlueLine(PyMOLGlobals * G)
       glTranslatef(-window_width / 2.0f, -window_height / 2.0f, 0.0f);
 
       /* draw sync lines */
-      glColor3d(0.0f, 0.0f, 0.0f);
-      glBegin(GL_LINES);        /* Draw a background line */
-      glVertex3f(0.0F, window_height - 0.5F, 0.0F);
-      glVertex3f((float) window_width, window_height - 0.5F, 0.0F);
-      glEnd();
-      glColor3d(0.0f, 0.0f, 1.0f);
-      glBegin(GL_LINES);        /* Draw a line of the correct length (the cross
-                                   over is about 40% across the screen from the left */
-      glVertex3f(0.0f, window_height - 0.5f, 0.0f);
-      if(buffer == GL_BACK_LEFT)
-        glVertex3f(window_width * 0.30f, window_height - 0.5f, 0.0f);
-      else
-        glVertex3f(window_width * 0.80f, window_height - 0.5f, 0.0f);
-      glEnd();
+      {
+        ImmBatch batch;
+        batch.begin(GL_LINES); /* Draw a background line */
+        batch.color3f(0.0f, 0.0f, 0.0f);
+        batch.vertex3f(0.0F, window_height - 0.5F, 0.0F);
+        batch.vertex3f((float) window_width, window_height - 0.5F, 0.0F);
+        batch.end();
+
+        batch.begin(GL_LINES); /* Draw a line of the correct length (the cross
+                                  over is about 40% across the screen from the left */
+        batch.color3f(0.0f, 0.0f, 1.0f);
+        batch.vertex3f(0.0f, window_height - 0.5f, 0.0f);
+        if(buffer == GL_BACK_LEFT)
+          batch.vertex3f(window_width * 0.30f, window_height - 0.5f, 0.0f);
+        else
+          batch.vertex3f(window_width * 0.80f, window_height - 0.5f, 0.0f);
+        batch.end();
+      }
 
       glPopMatrix();
       glMatrixMode(GL_PROJECTION);
@@ -520,19 +525,20 @@ static void MainDrawProgress(PyMOLGlobals * G)
           OrthoDrawBuffer(G, GL_FRONT); /* draw into the front buffer */
         }
 
-        glColor3fv(black);
-        glBegin(GL_POLYGON);
-        glVertex2i(0, ViewPort[3]);
-        glVertex2i(cBusyWidth, ViewPort[3]);
-        glVertex2i(cBusyWidth, ViewPort[3] - cBusyHeight);
-        glVertex2i(0, ViewPort[3] - cBusyHeight);
-        glVertex2i(0, ViewPort[3]);     /* needed on old buggy Mesa */
-        glEnd();
+        {
+          ImmBatch batch;
+          batch.begin(GL_POLYGON);
+          batch.color3fv(black);
+          batch.vertex2i(0, ViewPort[3]);
+          batch.vertex2i(cBusyWidth, ViewPort[3]);
+          batch.vertex2i(cBusyWidth, ViewPort[3] - cBusyHeight);
+          batch.vertex2i(0, ViewPort[3] - cBusyHeight);
+          batch.vertex2i(0, ViewPort[3]);     /* needed on old buggy Mesa */
+          batch.end();
+        }
         y = ViewPort[3] - cBusyMargin;
 
-        glColor3fv(white);
-
-        /* 
+        /*
            c=I->BusyMessage;
            if(*c) {
            TextSetColor(G,white);
@@ -545,24 +551,26 @@ static void MainDrawProgress(PyMOLGlobals * G)
         for(offset = 0; offset < PYMOL_PROGRESS_SIZE; offset += 2) {
 
           if(progress[offset + 1]) {
-            glBegin(GL_LINE_LOOP);
-            glVertex2i(cBusyMargin, y);
-            glVertex2i(cBusyWidth - cBusyMargin, y);
-            glVertex2i(cBusyWidth - cBusyMargin, y - cBusyBar);
-            glVertex2i(cBusyMargin, y - cBusyBar);
-            glVertex2i(cBusyMargin, y); /* needed on old buggy Mesa */
-            glEnd();
-            glColor3fv(white);
+            ImmBatch batch;
+            batch.begin(GL_LINE_LOOP);
+            batch.color3fv(white);
+            batch.vertex2i(cBusyMargin, y);
+            batch.vertex2i(cBusyWidth - cBusyMargin, y);
+            batch.vertex2i(cBusyWidth - cBusyMargin, y - cBusyBar);
+            batch.vertex2i(cBusyMargin, y - cBusyBar);
+            batch.vertex2i(cBusyMargin, y); /* needed on old buggy Mesa */
+            batch.end();
             x =
               (progress[offset] * (cBusyWidth - 2 * cBusyMargin) / progress[offset + 1]) +
               cBusyMargin;
-            glBegin(GL_POLYGON);
-            glVertex2i(cBusyMargin, y);
-            glVertex2i(x, y);
-            glVertex2i(x, y - cBusyBar);
-            glVertex2i(cBusyMargin, y - cBusyBar);
-            glVertex2i(cBusyMargin, y); /* needed on old buggy Mesa */
-            glEnd();
+            batch.begin(GL_POLYGON);
+            batch.color3fv(white);
+            batch.vertex2i(cBusyMargin, y);
+            batch.vertex2i(x, y);
+            batch.vertex2i(x, y - cBusyBar);
+            batch.vertex2i(cBusyMargin, y - cBusyBar);
+            batch.vertex2i(cBusyMargin, y); /* needed on old buggy Mesa */
+            batch.end();
             y -= cBusySpacing;
           }
         }

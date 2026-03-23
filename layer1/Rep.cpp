@@ -19,6 +19,7 @@ Z* -------------------------------------------------------------------
 #include"os_predef.h"
 #include"os_std.h"
 #include"os_gl.h"
+#include "ImmediateHelper.h"
 
 #include"main.h"
 #include"Feedback.h"
@@ -150,29 +151,28 @@ void Rep::render(RenderInfo* info)
 #ifdef PURE_OPENGL_ES_2
     /* TODO */
 #else
-    glBegin(GL_LINE_LOOP);
-    glVertex3f(-0.5F, -0.5F, -0.5F);
-    glVertex3f(-0.5F, -0.5F, 0.5F);
-    glVertex3f(-0.5F, 0.5F, 0.5F);
-    glVertex3f(-0.5F, 0.5F, -0.5F);
+    {
+      ImmBatch batch;
+      batch.begin(GL_LINE_LOOP);
+      batch.vertex3f(-0.5F, -0.5F, -0.5F);
+      batch.vertex3f(-0.5F, -0.5F, 0.5F);
+      batch.vertex3f(-0.5F, 0.5F, 0.5F);
+      batch.vertex3f(-0.5F, 0.5F, -0.5F);
+      batch.vertex3f(0.5F, 0.5F, -0.5F);
+      batch.vertex3f(0.5F, 0.5F, 0.5F);
+      batch.vertex3f(0.5F, -0.5F, 0.5F);
+      batch.vertex3f(0.5F, -0.5F, -0.5F);
+      batch.end();
 
-    glVertex3f(0.5F, 0.5F, -0.5F);
-    glVertex3f(0.5F, 0.5F, 0.5F);
-    glVertex3f(0.5F, -0.5F, 0.5F);
-    glVertex3f(0.5F, -0.5F, -0.5F);
-    glEnd();
-
-    glBegin(GL_LINES);
-    glVertex3i(0, 0, 0);
-    glVertex3i(1, 0, 0);
-
-    glVertex3i(0, 0, 0);
-    glVertex3i(0, 2, 0);
-
-    glVertex3i(0, 0, 0);
-    glVertex3i(0, 0, 3);
-
-    glEnd();
+      batch.begin(GL_LINES);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(1, 0, 0);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(0, 2, 0);
+      batch.vertex3i(0, 0, 0);
+      batch.vertex3i(0, 0, 3);
+      batch.end();
+    }
 #endif
   }
 
