@@ -34,6 +34,9 @@
 #include "Cmd.h"
 #include "Renderer.h"
 
+// Defined in os_gl_init.cpp (separate file to avoid GLEW header conflicts)
+extern "C" void initGLEWForDummyContext(void);
+
 #if PYMOL_HAS_METAL
 #include "RendererMetal.h"
 #endif
@@ -495,6 +498,8 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     NSOpenGLPixelFormat *pf = [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs];
     NSOpenGLContext *dummyGL = [[NSOpenGLContext alloc] initWithFormat:pf shareContext:nil];
     [dummyGL makeCurrentContext];
+    // Initialize GLEW so extension function pointers (glGenBuffers etc.) work
+    initGLEWForDummyContext();
     // Keep a strong reference so it stays alive
     objc_setAssociatedObject(self, "dummyGL", dummyGL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
