@@ -41,6 +41,9 @@
 // pulling in GLEW which conflicts with the OpenGL framework headers.
 void ImmBatch_SetActiveRenderer(pymol::Renderer* r);
 
+// Defined in SceneRender.cpp — Metal-specific render path
+void SceneRenderMetal(PyMOLGlobals* G);
+
 // Defined in Cmd.cpp
 extern "C" PyObject* PyInit__cmd(void);
 
@@ -596,14 +599,13 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // Route ImmBatch and CGO batch rendering through the Metal renderer.
     ImmBatch_SetActiveRenderer(renderer);
 
-    // Run the actual PyMOL rendering pipeline.
-    // GL calls inside will be no-ops (no GL context), but operations
-    // routed through G->Renderer will produce Metal rendering.
-    if (PyMOL_GetRedisplay(pymolInstance, 1)) {
-        PyMOL_PushValidContext(pymolInstance);
-        PyMOL_Draw(pymolInstance);
-        PyMOL_PopValidContext(pymolInstance);
-    }
+    // Metal render path: update scene geometry (CPU) then render objects
+    // through the Metal renderer.  Bypasses the GL-heavy SceneRender()
+    // pipeline entirely; object render() methods dispatch VBO draws
+    // through CGORenderGL which routes to RendererMetal.
+    PyMOL_PushValidContext(pymolInstance);
+    SceneRenderMetal(G);
+    PyMOL_PopValidContext(pymolInstance);
 
     ImmBatch_SetActiveRenderer(nullptr);
 

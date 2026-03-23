@@ -54,6 +54,7 @@ struct SceneRenderInfo
 };
 
 void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo);
+void SceneRenderMetal(PyMOLGlobals* G);
 void SceneRenderAll(PyMOLGlobals * G, SceneUnitContext * context,
                     float *normal, PickColorManager*,
                     RenderPass pass, int fat, float width_scale,

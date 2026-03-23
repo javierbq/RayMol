@@ -707,7 +707,8 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
   auto use_shader = info->use_shaders;
 
 #ifndef _WEBGL
-  glLineWidth(fat ? 3.0 : 1.0);
+  if (!G->Renderer)
+    glLineWidth(fat ? 3.0 : 1.0);
 #endif
 
   switch (obj->getRenderContext()) {
@@ -725,7 +726,7 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
               context->unit_bottom, context->unit_front, context->unit_back);
 
 #ifndef PURE_OPENGL_ES_2
-      if (ALWAYS_IMMEDIATE_OR(!use_shader)) {
+      if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
         glPushAttrib(GL_LIGHTING_BIT);
 
         glMatrixMode(GL_PROJECTION);
@@ -749,7 +750,7 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
       I->projectionMatrix = projSave;
 
 #ifndef PURE_OPENGL_ES_2
-      if (ALWAYS_IMMEDIATE_OR(!use_shader)) {
+      if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
         glMatrixMode(GL_PROJECTION);
         glLoadMatrixf(SceneGetProjectionMatrixPtr(G));
 
@@ -766,7 +767,7 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
     ScenePushModelViewMatrix(G);
 
 #ifndef PURE_OPENGL_ES_2
-    if (normal && Feedback(G, FB_OpenGL, FB_Debugging))
+    if (!G->Renderer && normal && Feedback(G, FB_OpenGL, FB_Debugging))
       glNormal3fv(normal);
 #endif
 
@@ -1832,4 +1833,83 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
    * decouple antialiasing logic from framebuffer management.
    */
   SceneRenderAA(G, parentImage);
+}
+
+/*========================================================================
+ * SceneRenderMetal: Lightweight render path for Metal backend.
+ *
+ * Performs the update phase (SceneUpdate builds CGOs / VBOs on CPU),
+ * sets up projection + modelview matrices, loads them into the Metal
+ * renderer, then iterates scene objects via SceneRenderAll.  Object
+ * render() methods dispatch CGO draws through CGORenderGL which
+ * already routes VBOs to RendererMetal via drawVBOViaMetal().
+ *========================================================================*/
+void SceneRenderMetal(PyMOLGlobals* G)
+{
+  if (!G->Renderer)
+    return;
+
+  CScene* I = G->Scene;
+
+  // --- Update phase (CPU only, no GL) ---
+  ExecutiveUpdateSceneMembers(G);
+  SceneUpdate(G, false);
+
+  // --- Matrix setup ---
+  auto aspRat = SceneGetAspectRatio(G);
+  SceneProjectionMatrix(
+      G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
+  ScenePrepareMatrix(G, 0);
+
+  // Load matrices into the Metal renderer
+  G->Renderer->matrixMode(1); // projection
+  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+  G->Renderer->matrixMode(0); // modelview
+  G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+
+  // --- Scene state needed by RenderInfo ---
+  I->VertexScale = SceneGetScreenVertexScale(G, nullptr);
+
+  float zAxis[4] = {0.0, 0.0, 1.0, 0.0};
+  float normal[4] = {0.0, 0.0, 1.0, 0.0};
+  MatrixInvTransformC44fAs33f3f(
+      glm::value_ptr(I->m_view.rotMatrix()), zAxis, normal);
+  copy3f(normal, I->ViewNormal);
+  I->LinesNormal[0] = I->ViewNormal[0];
+  I->LinesNormal[1] = I->ViewNormal[1];
+  I->LinesNormal[2] = I->ViewNormal[2];
+
+  // Renderer state
+  G->Renderer->lineWidth(SettingGet<float>(G, cSetting_line_width));
+  G->Renderer->enable(pymol::Capability::DepthTest);
+  G->Renderer->pointSize(SettingGet<float>(G, cSetting_dot_width));
+
+  // --- Prepare unit context for gadgets ---
+  auto scene_extent = SceneGetExtent(G);
+  auto context = ScenePrepareUnitContext(scene_extent);
+
+  // Grid (usually inactive for simple scenes)
+  auto grid_mode = SettingGet<GridMode>(G, cSetting_grid_mode);
+  if (grid_mode != GridMode::NoGrid) {
+    int grid_size = SceneGetGridSize(G, grid_mode);
+    GridUpdate(&I->grid, aspRat, grid_mode, grid_size);
+  } else {
+    I->grid.active = false;
+  }
+
+  // Transparency alpha CGO
+  if (SettingGet<bool>(G, cSetting_transparency_global_sort) &&
+      SettingGet<bool>(G, cSetting_transparency_mode)) {
+    if (!I->AlphaCGO)
+      I->AlphaCGO = CGONew(G);
+  } else {
+    CGOFree(I->AlphaCGO);
+  }
+
+  // --- Render objects: opaque, then transparent ---
+  for (auto pass : {RenderPass::Opaque, RenderPass::Antialias,
+                    RenderPass::Transparent}) {
+    SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
+        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+  }
 }
