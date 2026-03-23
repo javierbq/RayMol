@@ -204,6 +204,10 @@ private:
   // Color mask
   MTLColorWriteMask _colorWriteMask = MTLColorWriteMaskAll;
 
+  // VBO buffer cache — reuse Metal buffers across frames
+  std::unordered_map<const void*, id<MTLBuffer>> _vboCache;
+  id<MTLBuffer> _batchBuffer;  // reusable buffer for batch drawing
+
   // Clear values
   float _clearR = 0.0f, _clearG = 0.0f, _clearB = 0.0f, _clearA = 1.0f;
 
@@ -249,8 +253,6 @@ private:
   float _lineWidth = 1.0f;
   float _pointSize = 1.0f;
 
-  // VBO buffer cache (maps external key → Metal buffer)
-  std::unordered_map<uint64_t, id<MTLBuffer>> _vboCache;
 };
 
 } // namespace pymol

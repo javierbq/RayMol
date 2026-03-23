@@ -1014,10 +1014,13 @@ void RendererMetal::endBatch()
   }
 
   NSUInteger byteSize = drawVertices->size() * sizeof(BatchVertex);
-  id<MTLBuffer> tmpVBO =
-      [_device newBufferWithBytes:drawVertices->data()
-                           length:byteSize
-                          options:MTLResourceStorageModeShared];
+  // Reuse a shared batch buffer, growing only when needed
+  if (!_batchBuffer || _batchBuffer.length < byteSize) {
+    _batchBuffer = [_device newBufferWithLength:std::max(byteSize, (NSUInteger)65536)
+                                        options:MTLResourceStorageModeShared];
+  }
+  memcpy(_batchBuffer.contents, drawVertices->data(), byteSize);
+  id<MTLBuffer> tmpVBO = _batchBuffer;
 
   // Bind batch VBO at buffer index 0
   [_encoder setVertexBuffer:tmpVBO offset:0 atIndex:0];
@@ -1285,11 +1288,18 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Create temporary Metal buffer from CPU data
-  id<MTLBuffer> vbo = [_device newBufferWithBytes:data
-                                           length:dataSize
-                                          options:MTLResourceStorageModeShared];
-  if (!vbo) return;
+  // Reuse cached Metal buffer if same data pointer, otherwise create new
+  id<MTLBuffer> vbo = nil;
+  auto cacheIt = _vboCache.find(data);
+  if (cacheIt != _vboCache.end()) {
+    vbo = cacheIt->second;
+  } else {
+    vbo = [_device newBufferWithBytes:data
+                              length:dataSize
+                             options:MTLResourceStorageModeShared];
+    if (!vbo) return;
+    _vboCache[data] = vbo;
+  }
 
   // Build a vertex descriptor matching the VBO layout
   MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
@@ -1412,13 +1422,23 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Create temporary Metal buffers
-  id<MTLBuffer> vbo = [_device newBufferWithBytes:vertexData
-                                           length:vertexDataSize
-                                          options:MTLResourceStorageModeShared];
-  id<MTLBuffer> ibo = [_device newBufferWithBytes:indexData
-                                           length:indexDataSize
-                                          options:MTLResourceStorageModeShared];
+  // Reuse cached Metal buffers
+  id<MTLBuffer> vbo = nil;
+  auto vboIt = _vboCache.find(vertexData);
+  if (vboIt != _vboCache.end()) {
+    vbo = vboIt->second;
+  } else {
+    vbo = [_device newBufferWithBytes:vertexData length:vertexDataSize options:MTLResourceStorageModeShared];
+    if (vbo) _vboCache[vertexData] = vbo;
+  }
+  id<MTLBuffer> ibo = nil;
+  auto iboIt = _vboCache.find(indexData);
+  if (iboIt != _vboCache.end()) {
+    ibo = iboIt->second;
+  } else {
+    ibo = [_device newBufferWithBytes:indexData length:indexDataSize options:MTLResourceStorageModeShared];
+    if (ibo) _vboCache[indexData] = ibo;
+  }
   if (!vbo || !ibo) return;
 
   // Build vertex descriptor
@@ -1503,7 +1523,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
 void RendererMetal::invalidateVBOCache(uint64_t key)
 {
-  _vboCache.erase(key);
+  // Clear entire cache — key type changed to pointer-based
+  _vboCache.clear();
 }
 
 } // namespace pymol

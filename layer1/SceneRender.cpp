@@ -1857,6 +1857,8 @@ void SceneRenderMetal(PyMOLGlobals* G)
     SettingSetGlobal_b(G, cSetting_use_shaders, true);
     SettingSetGlobal_i(G, cSetting_internal_gui, 0);
     SettingSetGlobal_i(G, cSetting_internal_feedback, 0);
+    // Force re-reshape so block rects are recalculated without internal GUI
+    OrthoReshape(G, G->Option->winX, G->Option->winY, true);
     metalConfigDone = true;
   }
 

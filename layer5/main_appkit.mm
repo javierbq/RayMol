@@ -37,6 +37,7 @@
 // Defined in os_gl_init.cpp (separate file to avoid GLEW header conflicts)
 extern "C" void initGLEWForDummyContext(void);
 
+
 #if PYMOL_HAS_METAL
 #include "RendererMetal.h"
 #endif
@@ -113,18 +114,16 @@ static NSPoint pymolPoint(NSView *view, NSEvent *event) {
 
 static void handleMouseButton(NSView *view, NSEvent *event, int button, int state) {
     if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
     NSPoint pt = pymolPoint(view, event);
     int mods = pymolModifiers(event);
-    OrthoButton(G, button, state, (int)pt.x, (int)pt.y, mods);
+    PyMOL_Button(pymolInstance, button, state, (int)pt.x, (int)pt.y, mods);
 }
 
 static void handleMouseDrag(NSView *view, NSEvent *event) {
     if (!pymolInstance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
     NSPoint pt = pymolPoint(view, event);
     int mods = pymolModifiers(event);
-    OrthoDrag(G, (int)pt.x, (int)pt.y, mods);
+    PyMOL_Drag(pymolInstance, (int)pt.x, (int)pt.y, mods);
 }
 
 static void handleScrollWheel(NSView *view, NSEvent *event) {
@@ -454,6 +453,7 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     id<MTLDevice> _metalDevice;
     id<MTLCommandQueue> _commandQueue;
     BOOL _initialized;
+    NSPoint _lastDragPoint;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -651,20 +651,53 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 
 // Mouse and keyboard — same shared helpers as OpenGLView
 - (void)mouseDown:(NSEvent *)e {
-    { static int c=0; if(c<3){ FILE*f=fopen("/tmp/pymol_metal_render.log","a");
-      if(f){NSPoint p=pymolPoint(self,e);fprintf(f,"Metal mouseDown: x=%.0f y=%.0f\n",p.x,p.y);fclose(f);}c++;}}
+    _lastDragPoint = [self convertPoint:[e locationInWindow] fromView:nil];
     int btn = ([e modifierFlags] & NSEventModifierFlagCommand) ? PYMOL_BUTTON_MIDDLE : PYMOL_BUTTON_LEFT;
     handleMouseButton(self, e, btn, PYMOL_BUTTON_DOWN);
 }
 - (void)mouseUp:(NSEvent *)e        { handleMouseButton(self, e, PYMOL_BUTTON_LEFT, PYMOL_BUTTON_UP); }
-- (void)mouseDragged:(NSEvent *)e   { handleMouseDrag(self, e); }
-- (void)rightMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_DOWN); }
+- (void)mouseDragged:(NSEvent *)e {
+    // Direct rotation via SceneRotate — bypasses OrthoButton/findBlock
+    NSPoint cur = [self convertPoint:[e locationInWindow] fromView:nil];
+    float dx = cur.x - _lastDragPoint.x;
+    float dy = cur.y - _lastDragPoint.y;
+    _lastDragPoint = cur;
+    if (pymolInstance) {
+        PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+        extern void SceneRotate(PyMOLGlobals*, float, float, float, float, bool);
+        SceneRotate(G, dx, 0.0f, 1.0f, 0.0f, true);  // horizontal = Y rotation
+        SceneRotate(G, dy, 1.0f, 0.0f, 0.0f, true);  // vertical = X rotation
+    }
+}
+- (void)rightMouseDown:(NSEvent *)e  {
+    _lastDragPoint = [self convertPoint:[e locationInWindow] fromView:nil];
+    handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_DOWN);
+}
 - (void)rightMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_RIGHT, PYMOL_BUTTON_UP); }
-- (void)rightMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
+- (void)rightMouseDragged:(NSEvent *)e {
+    // Right-drag = translate
+    NSPoint cur = [self convertPoint:[e locationInWindow] fromView:nil];
+    float dx = cur.x - _lastDragPoint.x;
+    float dy = cur.y - _lastDragPoint.y;
+    _lastDragPoint = cur;
+    if (pymolInstance) {
+        PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+        extern void SceneTranslate(PyMOLGlobals*, float, float, float);
+        SceneTranslate(G, dx * 0.1f, dy * 0.1f, 0.0f);
+    }
+}
 - (void)otherMouseDown:(NSEvent *)e  { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_DOWN); }
 - (void)otherMouseUp:(NSEvent *)e    { handleMouseButton(self, e, PYMOL_BUTTON_MIDDLE, PYMOL_BUTTON_UP); }
 - (void)otherMouseDragged:(NSEvent *)e { handleMouseDrag(self, e); }
-- (void)scrollWheel:(NSEvent *)e     { handleScrollWheel(self, e); }
+- (void)scrollWheel:(NSEvent *)e {
+    // Scroll = zoom (translate Z)
+    if (pymolInstance) {
+        float dy = [e deltaY];
+        PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
+        extern void SceneTranslate(PyMOLGlobals*, float, float, float);
+        SceneTranslate(G, 0.0f, 0.0f, dy * 2.0f);
+    }
+}
 - (void)keyDown:(NSEvent *)e         { handleKeyDown(self, e); }
 - (void)flagsChanged:(NSEvent *)event {}
 
