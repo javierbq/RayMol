@@ -734,51 +734,13 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     float ndcX = (point.x / bounds.size.width) * 2.0f - 1.0f;
     float ndcY = (point.y / bounds.size.height) * 2.0f - 1.0f;
 
-    // Use PyMOL's get_view() to unproject screen coords to world coords.
-    // get_view() returns 18 floats:
-    //   [0:9]   = rotation matrix (3x3, row-major)
-    //   [9:12]  = camera position (post-rotation translation)
-    //   [12:15] = origin (center of rotation in world coords)
-    //   [15:18] = clipping planes (front, back) + orthoscopic flag
-    //
-    // Screen-to-eye: the camera looks along -Z in eye space.
-    // Eye-to-world: apply inverse rotation + origin offset.
-    char script[1024];
-    snprintf(script, sizeof(script),
-        "from pymol import cmd\n"
-        "import math\n"
-        "try:\n"
-        "    v = cmd.get_view()\n"
-        "    # Rotation matrix (3x3 column-major as PyMOL stores it)\n"
-        "    R = [[v[0],v[1],v[2]], [v[3],v[4],v[5]], [v[6],v[7],v[8]]]\n"
-        "    # Camera pos in eye space\n"
-        "    tx, ty, tz = v[9], v[10], v[11]\n"
-        "    # Origin in world space\n"
-        "    ox, oy, oz = v[12], v[13], v[14]\n"
-        "    # Screen offset in eye space (scaled by distance)\n"
-        "    fov = cmd.get_setting_float('field_of_view')\n"
-        "    aspect = %.6f\n"
-        "    dist = abs(tz)\n"
-        "    half_h = dist * math.tan(math.radians(fov / 2.0))\n"
-        "    half_w = half_h * aspect\n"
-        "    ex = %.6f * half_w\n"
-        "    ey = %.6f * half_h\n"
-        "    # Eye space point on the near plane\n"
-        "    # Transform to world: world = R_inv * (eye - cam) + origin\n"
-        "    # R is orthogonal so R_inv = R_transpose\n"
-        "    px = ex - tx\n"
-        "    py = ey - ty\n"
-        "    pz = -tz  # looking along -Z\n"
-        "    # Rotate by inverse (transpose) of R\n"
-        "    wx = R[0][0]*px + R[1][0]*py + R[2][0]*pz + ox\n"
-        "    wy = R[0][1]*px + R[1][1]*py + R[2][1]*pz + oy\n"
-        "    wz = R[0][2]*px + R[1][2]*py + R[2][2]*pz + oz\n"
-        "    cmd.select('sele', 'first (all within 3 of (%%f,%%f,%%f))' %% (wx, wy, wz))\n"
-        "except Exception as e:\n"
-        "    with open('/tmp/pymol_pick.log','a') as f: f.write('pick err: %%s\\n' %% e)\n",
-        (double)(bounds.size.width / bounds.size.height),
-        (double)ndcX, (double)ndcY);
+    float aspect = bounds.size.width / bounds.size.height;
 
+    // Use a separate Python module to avoid string escaping issues
+    char script[256];
+    snprintf(script, sizeof(script),
+        "from pymol.metal_pick import pick_at; pick_at(%f, %f, %f)",
+        ndcX, ndcY, aspect);
     PyRun_SimpleString(script);
 }
 
