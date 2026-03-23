@@ -51,31 +51,29 @@ _HEADER_COLOR = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
 # cmd.hide.  Entries: (label, representation_or_None, is_header).
 # '---' = separator, items with cmd=None are disabled group headers.
 _SHOW_HIDE_OPTIONS = [
-    ('as', 'as'),
+    ('everything', 'everything'),
     ('---', None),
-    ('wire', None),
-    ('  lines', 'lines'),
-    ('  nonbonded', 'nonbonded'),
+    ('lines', 'lines'),
+    ('nonbonded', 'nonbonded'),
     ('---', None),
-    ('licorice', None),
-    ('  sticks', 'sticks'),
-    ('  nb_spheres', 'nb_spheres'),
+    ('sticks', 'sticks'),
+    ('nb_spheres', 'nb_spheres'),
     ('---', None),
     ('ribbon', 'ribbon'),
     ('cartoon', 'cartoon'),
-    ('label', 'label'),
+    ('labels', 'labels'),
     ('cell', 'cell'),
     ('dots', 'dots'),
     ('spheres', 'spheres'),
     ('mesh', 'mesh'),
     ('surface', 'surface'),
-    ('flag ignore', None),
+    ('volume', 'volume'),
+    ('slice', 'slice'),
+    ('extent', 'extent'),
     ('---', None),
-    ('organic', None),
-    ('  main chain', 'main_chain'),
-    ('  side chain', 'side_chain'),
-    ('  disulfides', 'disulfides'),
-    ('  valence', 'valence'),
+    ('licorice', 'licorice'),
+    ('wire', 'wire'),
+    ('dashes', 'dashes'),
 ]
 
 _LABEL_OPTIONS = [
@@ -329,7 +327,7 @@ def _build_row(name, is_selection, enabled, row_width=280):
     btn_spacing = 1
     num_buttons = 5
     buttons_total = num_buttons * btn_width + (num_buttons - 1) * btn_spacing
-    btn_start_x = row_width - buttons_total - 4  # 4px right margin
+    btn_start_x = row_width - buttons_total - 18  # 18px right margin (clear scrollbar)
     label_width = btn_start_x - 24 - 2  # 24=label x, 2=gap
 
     label = AppKit.NSTextField.labelWithString_(display_name)
