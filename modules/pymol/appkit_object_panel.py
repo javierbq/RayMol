@@ -253,7 +253,7 @@ def _build_row(name, is_selection, enabled):
 
     # A/S/H/L/C popup buttons
     button_defs = [
-        ('A', _ACTION_OPTIONS, 'action'),
+        ('A', [opt[0] for opt in _ACTION_OPTIONS], 'action'),
         ('S', [r.capitalize() for r in _REPRESENTATIONS], 'show'),
         ('H', [r.capitalize() for r in _REPRESENTATIONS], 'hide'),
         ('L', [opt[0] for opt in _LABEL_OPTIONS], 'label'),
@@ -342,8 +342,16 @@ def _poll_objects():
     try:
         objects = list(_cmd.get_names('public_objects') or [])
         selections = list(_cmd.get_names('public_selections') or [])
-    except Exception:
-        return
+        # Always include "all" at the top (it's a built-in, not returned by get_names)
+        if 'all' not in objects:
+            objects.insert(0, 'all')
+    except Exception as e:
+        try:
+            all_names = list(_cmd.get_names() or [])
+            objects = all_names
+            selections = []
+        except Exception:
+            return
 
     current = objects + ['|'] + selections
     if current == _prev_names:
@@ -353,14 +361,6 @@ def _poll_objects():
 
     # Get enabled set
     enabled_set = set()
-    for name in objects + selections:
-        try:
-            if _cmd.get_object_state(name) is not None:
-                enabled_set.add(name)
-        except Exception:
-            pass
-
-    # Fallback: check via get_names with enabled_only
     try:
         enabled_objects = set(_cmd.get_names('public_objects', enabled_only=1) or [])
         enabled_sels = set(_cmd.get_names('public_selections', enabled_only=1) or [])
@@ -368,7 +368,14 @@ def _poll_objects():
     except Exception:
         enabled_set = set(objects + selections)
 
-    _rebuild_rows(objects, selections, enabled_set)
+    try:
+        _rebuild_rows(objects, selections, enabled_set)
+        with open('/tmp/pymol_objpanel.log', 'a') as f:
+            f.write(f"poll: objects={objects} selections={selections} rebuilt OK\n")
+    except Exception as e:
+        with open('/tmp/pymol_objpanel.log', 'a') as f:
+            import traceback
+            f.write(f"poll ERROR: {e}\n{traceback.format_exc()}\n")
 
 
 # ---------------------------------------------------------------------------
