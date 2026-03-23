@@ -22,6 +22,12 @@
 #include "main.h"
 #include "pymol/utility.h"
 #include "ImmediateHelper.h"
+#include "Renderer.h"
+
+// Bridge function for main_appkit.mm which cannot include GLEW headers.
+void ImmBatch_SetActiveRenderer(pymol::Renderer* r) {
+  ImmBatch::setActiveRenderer(r);
+}
 
 #ifdef _PYMOL_OPENVR
 #include "OpenVRMode.h"
@@ -342,32 +348,38 @@ void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo)
     if (!(renderInfo.pick || renderInfo.sceneMultipick))
       bg_grad(G);
 
-#ifndef _WEBGL
-    glLineWidth(SettingGet<float>(G, cSetting_line_width));
-#endif
-    glEnable(GL_DEPTH_TEST);
-
-    /* get matrixes for unit objects */
-#ifndef PURE_OPENGL_ES_2
-    if (SettingGet<bool>(G, cSetting_line_smooth)) {
-      if (!(renderInfo.pick || renderInfo.sceneMultipick)) {
-        glEnable(GL_LINE_SMOOTH);
-        glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-      }
+    if (G->Renderer) {
+      G->Renderer->lineWidth(SettingGet<float>(G, cSetting_line_width));
+      G->Renderer->enable(pymol::Capability::DepthTest);
+      G->Renderer->pointSize(SettingGet<float>(G, cSetting_dot_width));
     } else {
-      glDisable(GL_LINE_SMOOTH);
-    }
-    glPointSize(SettingGet<float>(G, cSetting_dot_width));
-
-    if (ALWAYS_IMMEDIATE_OR(!use_shaders)) {
-      glEnable(GL_NORMALIZE); /* get rid of this to boost performance */
-
-      glMatrixMode(GL_MODELVIEW);
-      glLoadIdentity();
-      /* must be done with identity MODELVIEW */
-      SceneProgramLighting(G);
-    }
+#ifndef _WEBGL
+      glLineWidth(SettingGet<float>(G, cSetting_line_width));
 #endif
+      glEnable(GL_DEPTH_TEST);
+
+      /* get matrixes for unit objects */
+#ifndef PURE_OPENGL_ES_2
+      if (SettingGet<bool>(G, cSetting_line_smooth)) {
+        if (!(renderInfo.pick || renderInfo.sceneMultipick)) {
+          glEnable(GL_LINE_SMOOTH);
+          glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+        }
+      } else {
+        glDisable(GL_LINE_SMOOTH);
+      }
+      glPointSize(SettingGet<float>(G, cSetting_dot_width));
+
+      if (ALWAYS_IMMEDIATE_OR(!use_shaders)) {
+        glEnable(GL_NORMALIZE); /* get rid of this to boost performance */
+
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        /* must be done with identity MODELVIEW */
+        SceneProgramLighting(G);
+      }
+#endif
+    }
     auto scene_extent = SceneGetExtent(G);
     auto context = ScenePrepareUnitContext(scene_extent);
     /* do standard 3D objects */
@@ -381,6 +393,15 @@ void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo)
     SceneProjectionMatrix(
         G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
     ScenePrepareMatrix(G, 0);
+
+    // Load the computed matrices into the Renderer (Metal) so batch
+    // drawing uses the correct projection and modelview transforms.
+    if (G->Renderer) {
+      G->Renderer->matrixMode(1); // projection
+      G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+      G->Renderer->matrixMode(0); // modelview
+      G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+    }
 
     /* get the Z axis vector for sorting transparent objects */
 

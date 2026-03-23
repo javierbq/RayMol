@@ -2,12 +2,16 @@
 
 #include <vector>
 #include <GL/glew.h>
+#include "Renderer.h"
 
 /**
  * ImmBatch — a drop-in replacement for glBegin/glEnd immediate mode.
  *
  * Collects vertices with per-vertex color/normal into a temporary buffer,
  * then flushes them through a VBO + client-state arrays on end().
+ *
+ * When a pymol::Renderer is active (Metal backend), the batch is flushed
+ * through the Renderer's batch API instead of GL.
  *
  * Usage:
  *   ImmBatch batch;
@@ -19,19 +23,26 @@
  */
 class ImmBatch {
 public:
+  // Set the active renderer for all ImmBatch instances.
+  // When non-null, end() routes through the Renderer batch API.
+  static void setActiveRenderer(pymol::Renderer* r) { s_renderer = r; }
+  static pymol::Renderer* activeRenderer() { return s_renderer; }
+
   void begin(GLenum mode)
   {
     m_mode = mode;
     m_verts.clear();
-    // Inherit the current GL color so that callers who set glColor
-    // before a batch (e.g. glColor3fv(BackColor); fill()) get the
-    // expected result.
-    GLfloat c[4];
-    glGetFloatv(GL_CURRENT_COLOR, c);
-    m_r = c[0];
-    m_g = c[1];
-    m_b = c[2];
-    m_a = c[3];
+    if (!s_renderer) {
+      // Inherit the current GL color so that callers who set glColor
+      // before a batch (e.g. glColor3fv(BackColor); fill()) get the
+      // expected result.
+      GLfloat c[4];
+      glGetFloatv(GL_CURRENT_COLOR, c);
+      m_r = c[0];
+      m_g = c[1];
+      m_b = c[2];
+      m_a = c[3];
+    }
   }
 
   void color3f(float r, float g, float b)
@@ -84,6 +95,11 @@ public:
     if (m_verts.empty())
       return;
 
+    if (s_renderer) {
+      endRenderer();
+      return;
+    }
+
     GLuint vbo = 0;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -113,14 +129,43 @@ public:
   }
 
 private:
+  void endRenderer()
+  {
+    pymol::PrimitiveType pt;
+    switch (m_mode) {
+    case GL_POINTS: pt = pymol::PrimitiveType::Points; break;
+    case GL_LINES: pt = pymol::PrimitiveType::Lines; break;
+    case GL_LINE_STRIP: pt = pymol::PrimitiveType::LineStrip; break;
+    case GL_TRIANGLES: pt = pymol::PrimitiveType::Triangles; break;
+    case GL_TRIANGLE_STRIP: pt = pymol::PrimitiveType::TriangleStrip; break;
+    case GL_TRIANGLE_FAN: pt = pymol::PrimitiveType::TriangleFan; break;
+    default: pt = pymol::PrimitiveType::Triangles; break;
+    }
+
+    s_renderer->beginBatch(pt);
+    for (auto& v : m_verts) {
+      s_renderer->batchColor4f(v.r, v.g, v.b, v.a);
+      s_renderer->batchNormal3fv(&v.nx);
+      s_renderer->batchVertex3f(v.x, v.y, v.z);
+    }
+    s_renderer->endBatch();
+    m_verts.clear();
+  }
+
   struct Vert {
     float x, y, z;
     float r, g, b, a;
     float nx, ny, nz;
   };
 
+  static inline pymol::Renderer* s_renderer = nullptr;
+
   GLenum m_mode{GL_TRIANGLES};
   std::vector<Vert> m_verts;
   float m_r{1.0f}, m_g{1.0f}, m_b{1.0f}, m_a{1.0f};
   float m_nx{0.0f}, m_ny{0.0f}, m_nz{1.0f};
 };
+
+// Free function bridge — can be forward-declared in files that cannot
+// include GLEW (e.g. main_appkit.mm which uses framework GL headers).
+void ImmBatch_SetActiveRenderer(pymol::Renderer* r);

@@ -7,6 +7,7 @@
 #include "Feedback.h"
 #include "GLVertexBuffer.h"
 #include "GraphicsUtil.h"
+#include "PyMOLGlobals.h"
 #include "Renderer.h"
 #include "RendererGL.h"
 #include "Scene.h"
@@ -33,8 +34,10 @@ constexpr unsigned VERTEX_ACCESSIBILITY_SIZE = 1;
 
 /* ======== GL Rendering ======== */
 
-static pymol::Renderer& getBatchRenderer()
+static pymol::Renderer& getBatchRenderer(PyMOLGlobals* G = nullptr)
 {
+  if (G && G->Renderer)
+    return *G->Renderer;
   static pymol::RendererGL instance;
   return instance;
 }
@@ -253,7 +256,9 @@ static void CGO_gl_draw_arrays(CCGORenderer* I, CGO_op_data pc)
   const float* data = sp->floatdata;
   (void) narrays;
 #ifndef PURE_OPENGL_ES_2
-  if (I->use_shader) {
+  // When a non-GL renderer (e.g. Metal) is active, force the batch path
+  // so geometry is routed through the Renderer interface.
+  if (I->use_shader && !I->G->Renderer) {
 #endif
 
 #ifdef _WEBGL
@@ -396,7 +401,7 @@ static void CGO_gl_draw_arrays(CCGORenderer* I, CGO_op_data pc)
       mode = CGOConvertDebugMode(I->debug, mode);
     }
 
-    auto& batch = getBatchRenderer();
+    auto& batch = getBatchRenderer(I->G);
     batch.beginBatch(glModeToPrimitive(mode));
     for (pl = 0, pla = 0, plc = 0; pl < nverts; pl++, pla += 3, plc += 4) {
       if (pickColorVals) {
@@ -501,6 +506,10 @@ static void CGOReorderIndicesWithTransparentInfo(PyMOLGlobals* G, int nindices,
 
 static void CGO_gl_draw_buffers_indexed(CCGORenderer* I, CGO_op_data pc)
 {
+  // VBO-based rendering requires GL — skip when using a non-GL renderer
+  if (I->G->Renderer)
+    return;
+
   auto sp = reinterpret_cast<const cgo::draw::buffers_indexed*>(*pc);
   int mode = sp->mode, nindices = sp->nindices, nverts = sp->nverts,
       n_data = sp->n_data;
@@ -582,6 +591,10 @@ static void CGO_gl_draw_buffers_indexed(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_buffers_not_indexed(CCGORenderer* I, CGO_op_data pc)
 {
+  // VBO-based rendering requires GL — skip when using a non-GL renderer
+  if (I->G->Renderer)
+    return;
+
   const cgo::draw::buffers_not_indexed* sp =
       reinterpret_cast<decltype(sp)>(*pc);
   int mode = sp->mode;
@@ -664,6 +677,8 @@ static void CGO_gl_bind_vbo_for_picking(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_custom(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::custom* sp = reinterpret_cast<decltype(sp)>(*pc);
 
   auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
@@ -697,6 +712,8 @@ static void CGO_gl_draw_custom(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_sphere_buffers(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::sphere_buffers* sp = reinterpret_cast<decltype(sp)>(*pc);
   int num_spheres = sp->num_spheres;
   int attr_color;
@@ -740,6 +757,8 @@ static void CGO_gl_draw_sphere_buffers(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
 {
+  if (I->G->Renderer)
+    return;
   const auto bezier =
       reinterpret_cast<const cgo::draw::bezier_buffers*>(*cgo_data);
   const auto vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
@@ -755,6 +774,8 @@ static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
 
 static void CGO_gl_draw_cylinder_buffers(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::cylinder_buffers* sp = reinterpret_cast<decltype(sp)>(*pc);
   int num_cyl = sp->num_cyl;
   int min_alpha = sp->alpha;
@@ -822,6 +843,8 @@ static void CGO_gl_draw_cylinder_buffers(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_labels(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::labels* sp = reinterpret_cast<decltype(sp)>(*pc);
 
   CShaderPrg* shaderPrg;
@@ -872,6 +895,8 @@ static void CGO_gl_draw_labels(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_connectors(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   int use_geometry_shaders =
       SettingGetGlobal_b(I->G, cSetting_use_geometry_shaders);
 
@@ -931,6 +956,8 @@ static void CGO_gl_draw_connectors(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_textures(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::textures* sp = reinterpret_cast<decltype(sp)>(*pc);
   int ntextures = sp->ntextures;
   auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(sp->vboid);
@@ -961,6 +988,8 @@ static void CGO_gl_draw_textures(CCGORenderer* I, CGO_op_data pc)
 static void CGO_gl_draw_screen_textures_and_polygons(
     CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   const cgo::draw::screen_textures* sp = reinterpret_cast<decltype(sp)>(*pc);
   int nverts = sp->nverts;
   CShaderPrg* shaderPrg;
@@ -982,6 +1011,8 @@ static void CGO_gl_draw_screen_textures_and_polygons(
 
 static void CGO_gl_draw_trilines(CCGORenderer* I, CGO_op_data pc)
 {
+  if (I->G->Renderer)
+    return;
   int nverts = CGO_get_int(*pc);
   int buffer = CGO_get_int(*pc + 1);
   int a_vertex, a_othervertex, a_uv, a_color, a_color2;
@@ -2551,7 +2582,7 @@ void CGORenderGLAlpha(CGO* I, RenderInfo* info, bool calcDepth)
         /* now render by bin */
 #ifndef PURE_OPENGL_ES_2
         {
-          auto& batch = getBatchRenderer();
+          auto& batch = getBatchRenderer(G);
           batch.beginBatch(glModeToPrimitive(mode));
           for (int i = 0; i < i_size; i++) {
             int ii = *start;
@@ -2578,7 +2609,7 @@ void CGORenderGLAlpha(CGO* I, RenderInfo* info, bool calcDepth)
     } else {
 #ifndef PURE_OPENGL_ES_2
       {
-        auto& batch = getBatchRenderer();
+        auto& batch = getBatchRenderer(G);
         batch.beginBatch(glModeToPrimitive(mode));
         for (auto it = I->begin(); !it.is_stop(); ++it) {
           if (it.op_code() == CGO_ALPHA_TRIANGLE) {

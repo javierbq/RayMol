@@ -37,6 +37,10 @@
 #include "RendererMetal.h"
 #endif
 
+// Defined in ImmediateHelper.h — forward-declared here to avoid
+// pulling in GLEW which conflicts with the OpenGL framework headers.
+void ImmBatch_SetActiveRenderer(pymol::Renderer* r);
+
 // Defined in Cmd.cpp
 extern "C" PyObject* PyInit__cmd(void);
 
@@ -572,8 +576,6 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // Set viewport to match drawable size
     CGSize sz = self.drawableSize;
     renderer->viewport(0, 0, (int)sz.width, (int)sz.height);
-    renderer->clearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    renderer->clear(true, true, false);
     renderer->beginFrame();
 
     // Process idle work
@@ -591,22 +593,19 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         PyMOL_FreeResultArray(pymolInstance, info.array);
     }
 
-    // Draw a test triangle to prove Metal rendering works end-to-end.
-    // Once the CGO pipeline is migrated, this will be replaced by
-    // PyMOL_Draw() dispatching through G->Renderer.
-    renderer->loadIdentity();  // identity modelview
-    renderer->matrixMode(1);   // projection
-    renderer->loadIdentity();  // identity projection
-    renderer->matrixMode(0);   // back to modelview
+    // Route ImmBatch and CGO batch rendering through the Metal renderer.
+    ImmBatch_SetActiveRenderer(renderer);
 
-    renderer->beginBatch(pymol::PrimitiveType::Triangles);
-    renderer->batchColor4f(1.0f, 0.0f, 0.0f, 1.0f);
-    renderer->batchVertex3f(-0.5f, -0.5f, 0.0f);
-    renderer->batchColor4f(0.0f, 1.0f, 0.0f, 1.0f);
-    renderer->batchVertex3f( 0.5f, -0.5f, 0.0f);
-    renderer->batchColor4f(0.0f, 0.0f, 1.0f, 1.0f);
-    renderer->batchVertex3f( 0.0f,  0.5f, 0.0f);
-    renderer->endBatch();
+    // Run the actual PyMOL rendering pipeline.
+    // GL calls inside will be no-ops (no GL context), but operations
+    // routed through G->Renderer will produce Metal rendering.
+    if (PyMOL_GetRedisplay(pymolInstance, 1)) {
+        PyMOL_PushValidContext(pymolInstance);
+        PyMOL_Draw(pymolInstance);
+        PyMOL_PopValidContext(pymolInstance);
+    }
+
+    ImmBatch_SetActiveRenderer(nullptr);
 
     renderer->endFrame();
 }
