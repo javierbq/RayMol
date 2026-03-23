@@ -1869,10 +1869,31 @@ void SceneRenderMetal(PyMOLGlobals* G)
   ScenePrepareMatrix(G, 0);
 
   // Load matrices into the Metal renderer
-  G->Renderer->matrixMode(1); // projection
-  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
-  G->Renderer->matrixMode(0); // modelview
-  G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+  {
+    const float* proj = SceneGetProjectionMatrixPtr(G);
+    const float* mv = SceneGetModelViewMatrixPtr(G);
+
+    // Matrices may still be identity if the view hasn't been initialized.
+    // SceneProjectionMatrix stores in I->projectionMatrix, ScenePrepareMatrix
+    // stores in I->modelViewMatrix — both called above.
+
+    G->Renderer->matrixMode(0x1701); // GL_PROJECTION = 0x1701
+    G->Renderer->loadMatrixf(proj);
+    G->Renderer->matrixMode(0x1700); // GL_MODELVIEW = 0x1700
+    G->Renderer->loadMatrixf(mv);
+
+    static int logCount = 0;
+    if (logCount < 3 && !I->Obj.empty()) {
+      FILE* f = fopen("/tmp/pymol_metal_render.log", "a");
+      if (f) {
+        fprintf(f, "Scene matrices [%d]: MV=%.4f %.4f %.4f %.4f P=%.4f %.4f %.4f %.4f mv12-14=%.2f %.2f %.2f\n",
+                logCount, mv[0], mv[5], mv[10], mv[15], proj[0], proj[5], proj[10], proj[15],
+                mv[12], mv[13], mv[14]);
+        fclose(f);
+      }
+      logCount++;
+    }
+  }
 
   // --- Scene state needed by RenderInfo ---
   I->VertexScale = SceneGetScreenVertexScale(G, nullptr);

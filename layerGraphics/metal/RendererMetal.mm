@@ -1380,6 +1380,22 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   std::memcpy(matrices.projection, _projectionMatrix.data(), 64);
   [_encoder setVertexBytes:&matrices length:sizeof(matrices) atIndex:1];
 
+  {
+    static int logOnce = 0;
+    if (!logOnce) {
+      FILE* f = fopen("/tmp/pymol_metal_render.log", "a");
+      if (f) {
+        fprintf(f, "drawVBO draw: MV diag=%.2f %.2f %.2f %.2f P diag=%.2f %.2f %.2f %.2f\n",
+                matrices.modelview[0], matrices.modelview[5], matrices.modelview[10], matrices.modelview[15],
+                matrices.projection[0], matrices.projection[5], matrices.projection[10], matrices.projection[15]);
+        fprintf(f, "  posOff=%d normOff=%d colOff=%d colType=%d stride=%zu verts=%d pipeline=%p\n",
+                posOffset, normalOffset, colorOffset, colorType, stride, vertexCount, (void*)pipeline);
+        fclose(f);
+      }
+      logOnce = 1;
+    }
+  }
+
   // Draw
   [_encoder drawPrimitives:toMTL(mode)
                vertexStart:0
