@@ -836,9 +836,23 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.chatContainer];
 
-    // Object panel on the right, below the command panel area
-    CGFloat objHeight = contentH - kCommandPanelHeight;
-    NSRect objFrame = NSMakeRect(contentW - kObjectPanelWidth, 0, kObjectPanelWidth, objHeight);
+    // Right panel: buttons (top ~150px) + objects (rest), full height
+    static const CGFloat kButtonAreaHeight = 150.0;
+    CGFloat rightX = contentW - kObjectPanelWidth;
+
+    // Command panel (buttons) at top of right side
+    NSRect cmdFrame = NSMakeRect(rightX, contentH - kButtonAreaHeight, kObjectPanelWidth, kButtonAreaHeight);
+    self.commandPanelContainer = [[NSView alloc] initWithFrame:cmdFrame];
+    self.commandPanelContainer.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
+    self.commandPanelContainer.identifier = @"commandPanel";
+    self.commandPanelContainer.wantsLayer = YES;
+    self.commandPanelContainer.layer.backgroundColor =
+        [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
+    [container addSubview:self.commandPanelContainer];
+
+    // Object panel below buttons on right side
+    CGFloat objHeight = contentH - kButtonAreaHeight;
+    NSRect objFrame = NSMakeRect(rightX, 0, kObjectPanelWidth, objHeight);
     self.objectPanelContainer = [[NSView alloc] initWithFrame:objFrame];
     self.objectPanelContainer.autoresizingMask = NSViewHeightSizable | NSViewMinXMargin;
     self.objectPanelContainer.identifier = @"objectPanel";
@@ -847,24 +861,12 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.objectPanelContainer];
 
-    // Center area: between chat (left) and object panel (right)
+    // Center area: between chat (left) and right panel
     CGFloat centerX = kChatPanelWidth;
     CGFloat centerWidth = contentW - kChatPanelWidth - kObjectPanelWidth;
 
-    // Command panel container at the top — spans center + object panel width
-    CGFloat cmdWidth = contentW - kChatPanelWidth;
-    NSRect cmdFrame = NSMakeRect(centerX, contentH - kCommandPanelHeight, cmdWidth, kCommandPanelHeight);
-    self.commandPanelContainer = [[NSView alloc] initWithFrame:cmdFrame];
-    self.commandPanelContainer.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    self.commandPanelContainer.identifier = @"commandPanel";
-    self.commandPanelContainer.wantsLayer = YES;
-    self.commandPanelContainer.layer.backgroundColor =
-        [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
-    [container addSubview:self.commandPanelContainer];
-
-    // Rendering view below the command panel — Metal if available, else OpenGL.
-    // Respect --metal / --opengl flags and PYMOL_RENDERER env var.
-    CGFloat glHeight = contentH - kCommandPanelHeight;
+    // Rendering view fills the center area (no separate command panel above)
+    CGFloat glHeight = contentH;
     NSRect glFrame = NSMakeRect(centerX, 0, centerWidth, glHeight);
 
     bool tryMetal = (g_requestedBackend != kBackendOpenGL);
@@ -917,34 +919,31 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 
 - (void)toggleChatPanel {
     static const CGFloat kChatPanelWidth = 320.0;
-    static const CGFloat kCommandPanelHeight = 200.0;
     static const CGFloat kObjectPanelWidth = 280.0;
+    static const CGFloat kButtonAreaHeight = 150.0;
     NSRect contentBounds = [[self.window contentView] bounds];
 
     self.chatVisible = !self.chatVisible;
 
-    CGFloat cmdH = self.commandPanelContainer.isHidden ? 0 : kCommandPanelHeight;
-    CGFloat objW = self.objectPanelContainer.isHidden ? 0 : kObjectPanelWidth;
-
+    CGFloat objW = kObjectPanelWidth;
     CGFloat W = contentBounds.size.width;
     CGFloat H = contentBounds.size.height;
 
-    // Object panel stays anchored to the right
-    [self.objectPanelContainer setFrame:NSMakeRect(W - objW, 0, objW, H)];
+    // Right panel (buttons + objects) stays anchored to the right
+    CGFloat rightX = W - objW;
+    [self.commandPanelContainer setFrame:NSMakeRect(rightX, H - kButtonAreaHeight, objW, kButtonAreaHeight)];
+    [self.objectPanelContainer setFrame:NSMakeRect(rightX, 0, objW, H - kButtonAreaHeight)];
 
     if (self.chatVisible) {
         [self.chatContainer setHidden:NO];
         [self.chatContainer setFrame:NSMakeRect(0, 0, kChatPanelWidth, H)];
-
         CGFloat centerX = kChatPanelWidth;
         CGFloat centerW = W - kChatPanelWidth - objW;
-        [self.commandPanelContainer setFrame:NSMakeRect(centerX, H - cmdH, centerW, cmdH)];
-        [glView setFrame:NSMakeRect(centerX, 0, centerW, H - cmdH)];
+        [glView setFrame:NSMakeRect(centerX, 0, centerW, H)];
     } else {
         [self.chatContainer setHidden:YES];
         CGFloat centerW = W - objW;
-        [self.commandPanelContainer setFrame:NSMakeRect(0, H - cmdH, centerW, cmdH)];
-        [glView setFrame:NSMakeRect(0, 0, centerW, H - cmdH)];
+        [glView setFrame:NSMakeRect(0, 0, centerW, H)];
     }
 
     // Force reshape so PyMOL picks up the new viewport size
