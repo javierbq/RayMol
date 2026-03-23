@@ -2255,7 +2255,13 @@ void PyMOL_DrawWithoutLock(CPyMOL * I)
   // Metal rendering is handled by RendererMetal in drawInMTKView.
   // We still process idle/deferred/commands but don't touch GL.
   if (I->G->Renderer) {
-    I->done_ConfigureShaders = true;
+    if (!I->done_ConfigureShaders) {
+      I->done_ConfigureShaders = true;
+      I->G->HaveGUI = I->G->Option->pmgui;
+      // Force shader-based CGO optimization so VBOs are created
+      // (Metal renders VBOs, not immediate mode)
+      SettingSetGlobal_b(I->G, cSetting_use_shaders, true);
+    }
     I->DrawnFlag = true;
     I->RedisplayFlag = false;
     return;
