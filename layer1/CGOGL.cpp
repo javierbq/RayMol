@@ -1881,6 +1881,7 @@ static void CGO_gl_vertex_attribute_3f(CCGORenderer* I, CGO_op_data varg)
   auto vertex_attr =
       reinterpret_cast<const cgo::draw::vertex_attribute_3f*>(*varg);
   auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
+  if (!shaderPrg) return;
   int loc = shaderPrg->GetAttribLocation(
       I->G->ShaderMgr->GetAttributeName(vertex_attr->attr_lookup_idx));
   if (loc >= 0)
@@ -1892,6 +1893,7 @@ static void CGO_gl_vertex_attribute_4ub(CCGORenderer* I, CGO_op_data varg)
   auto vertex_attr =
       reinterpret_cast<const cgo::draw::vertex_attribute_4ub*>(*varg);
   auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
+  if (!shaderPrg) return;
   int loc = shaderPrg->GetAttribLocation(
       I->G->ShaderMgr->GetAttributeName(vertex_attr->attr_lookup_idx));
   if (loc >= 0)
@@ -1906,6 +1908,7 @@ static void CGO_gl_vertex_attribute_4ub_if_picking(
         reinterpret_cast<const cgo::draw::vertex_attribute_4ub_if_picking*>(
             *varg);
     auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
+    if (!shaderPrg) return;
     int loc = shaderPrg->GetAttribLocation(
         I->G->ShaderMgr->GetAttributeName(vertex_attr->attr_lookup_idx));
     if (loc >= 0)
@@ -1918,6 +1921,7 @@ static void CGO_gl_vertex_attribute_1f(CCGORenderer* I, CGO_op_data varg)
   auto vertex_attr =
       reinterpret_cast<const cgo::draw::vertex_attribute_1f*>(*varg);
   auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
+  if (!shaderPrg) return;  // no GL shader in Metal path
   const char* name =
       I->G->ShaderMgr->GetAttributeName(vertex_attr->attr_lookup_idx);
   int loc = shaderPrg->GetAttribLocation(name);

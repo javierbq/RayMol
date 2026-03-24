@@ -256,9 +256,9 @@ def _call_llm():
 def _execute_commands(response_text):
     """Parse the LLM response and queue each PyMOL command line.
 
-    Commands are queued via cmd.do() with async=1 so they execute during
-    PyMOL's idle cycle on the main thread, avoiding API lock contention
-    with the render loop.
+    Commands are dispatched to PyMOL's command queue so they execute
+    during the idle cycle on the main thread. This avoids API lock
+    contention with the render loop when called from a worker thread.
 
     Returns a list of result strings.
     """
@@ -272,7 +272,9 @@ def _execute_commands(response_text):
             continue
 
         try:
-            _cmd.do(line)
+            # Use async=1 (the second positional arg) to queue
+            # the command for main-thread execution during idle
+            _cmd.do(line, 0, 1)
             results.append(f"OK: {line}")
         except Exception as exc:
             results.append(f"Error: {line} => {exc}")
