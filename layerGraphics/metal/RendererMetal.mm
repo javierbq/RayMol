@@ -1042,12 +1042,10 @@ void RendererMetal::endBatch()
   uniforms._pad[0] = uniforms._pad[1] = uniforms._pad[2] = 0.0f;
   [_encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
 
-  // Use the current pipeline if set, otherwise fall back to the built-in
-  // batch pipeline (simple position+color, no lighting).
-  id<MTLRenderPipelineState> pipeline =
-      _currentPipeline ? _currentPipeline : _batchPipeline;
-  if (pipeline) {
-    [_encoder setRenderPipelineState:pipeline];
+  // Always use the built-in batch pipeline for batch rendering.
+  // _currentPipeline is for VBO draws with a different vertex layout.
+  if (_batchPipeline) {
+    [_encoder setRenderPipelineState:_batchPipeline];
   }
 
   MTLPrimitiveType mtlPrim =

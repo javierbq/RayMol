@@ -254,30 +254,51 @@ def _call_llm():
 
 
 def _execute_commands(response_text):
-    """Parse the LLM response and queue each PyMOL command line.
+    """Extract PyMOL commands from the LLM response and execute them.
 
-    Commands are dispatched to PyMOL's command queue so they execute
-    during the idle cycle on the main thread. This avoids API lock
-    contention with the render loop when called from a worker thread.
+    Only lines inside markdown code blocks (```...```) are treated as
+    commands. Plain text lines are ignored.
 
     Returns a list of result strings.
     """
     results = []
-    for line in response_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        # Strip markdown code fences if the LLM wraps commands
-        if line.startswith('```'):
-            continue
+    in_code_block = False
+    commands = []
 
+    for line in response_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block and stripped and not stripped.startswith('#'):
+            commands.append(stripped)
+
+    # If no code blocks found, try to detect bare PyMOL commands
+    # (lines starting with known PyMOL verbs)
+    if not commands:
+        _PYMOL_VERBS = {
+            'fetch', 'load', 'select', 'color', 'show', 'hide', 'set',
+            'bg_color', 'orient', 'zoom', 'center', 'ray', 'png', 'save',
+            'align', 'super', 'cealign', 'delete', 'remove', 'create',
+            'spectrum', 'label', 'distance', 'angle', 'dihedral',
+            'cartoon', 'surface', 'stick', 'sphere', 'line', 'mesh',
+            'enable', 'disable', 'reset', 'turn', 'move', 'clip',
+            'viewport', 'split_states', 'util', 'cmd',
+        }
+        for line in response_text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            first_word = stripped.split('(')[0].split()[0].lower() if stripped else ''
+            if first_word in _PYMOL_VERBS:
+                commands.append(stripped)
+
+    for cmd_line in commands:
         try:
-            # Use async=1 (the second positional arg) to queue
-            # the command for main-thread execution during idle
-            _cmd.do(line, 0, 1)
-            results.append(f"OK: {line}")
+            _cmd.do(cmd_line, 0, 1)
+            results.append(f"OK: {cmd_line}")
         except Exception as exc:
-            results.append(f"Error: {line} => {exc}")
+            results.append(f"Error: {cmd_line} => {exc}")
 
     return results
 
