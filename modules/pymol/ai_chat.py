@@ -1,4 +1,10 @@
-"""AI Chat conversation engine for PyMOL — multi-turn, agentic LLM integration."""
+"""AI Chat conversation engine for PyMOL — agentic LLM integration with tool use.
+
+Uses the Anthropic Messages API with streaming SSE and tool_use for an
+agentic loop: the model can call tools (get_session_state, execute_command,
+capture_viewport, search_pdb), inspect results, and iterate until it produces
+a final structured JSON response with {response, script, questions}.
+"""
 
 import os
 import json
@@ -8,40 +14,27 @@ import urllib.error
 
 _cmd = None
 _has_ui = False
-_messages = []  # list of {'role': str, 'content': str}
+_messages = []  # list of {'role': str, 'content': str | list}
 
 _ai_config = {
-    'provider': os.environ.get('PYMOL_LLM_PROVIDER', 'anthropic'),
+    'provider': 'anthropic',
     'api_keys': {
         'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
-        'openai': os.environ.get('OPENAI_API_KEY', ''),
-        'gemini': os.environ.get('GEMINI_API_KEY', ''),
     },
     'models': {
         'anthropic': 'claude-sonnet-4-20250514',
-        'openai': 'gpt-4o',
-        'gemini': 'gemini-2.0-flash',
     },
 }
 
-SYSTEM_PROMPT = """\
-You are an AI assistant controlling PyMOL, a molecular visualization tool. \
-You generate PyMOL commands to fulfill user requests.
+from pymol.ai_system_prompt import SYSTEM_PROMPT
 
-Rules:
-- Output PyMOL commands, one per line
-- Do NOT use markdown code fences
-- You may include a brief explanation line (starting with #) before commands
-- After your commands execute, you will see the results
-- If a command errors, analyze the error and try a corrected approach
-- Use the session state to understand what's currently loaded
-
-Common commands: fetch, load, select, color, show, hide, cartoon, stick, surface, \
-sphere, line, ribbon, zoom, orient, center, rotate, ray, png, set, get, \
-distance, angle, align, super, cealign, create, extract, delete, remove, \
-enable, disable, group, spectrum, label, iterate, alter, h_add, bg_color, \
-set_color, util.cbc, util.cbag, util.cbac, util.cbam, util.cbay\
-"""
+# Try to import tool definitions (created by Agent B)
+try:
+    from pymol.ai_tools import TOOL_DEFINITIONS, execute_tool
+except ImportError:
+    TOOL_DEFINITIONS = []
+    def execute_tool(name, tool_input, cmd):
+        return json.dumps({"error": f"Tool '{name}' not available — ai_tools module not found."})
 
 
 def _init(cmd_module):
@@ -73,9 +66,8 @@ def ai_config(args='', _self=None):
 
     Usage:
         ai_config                        # show current config
-        ai_config provider=openai        # set provider
-        ai_config key=sk-...             # set API key for current provider
-        ai_config model=gpt-4o           # set model for current provider
+        ai_config key=sk-...             # set API key
+        ai_config model=claude-sonnet-4-20250514  # set model
     """
     global _ai_config
 
@@ -95,14 +87,6 @@ def ai_config(args='', _self=None):
         if '=' in token:
             k, _, v = token.partition('=')
             pairs[k.strip()] = v.strip()
-
-    if 'provider' in pairs:
-        new_provider = pairs['provider'].lower()
-        if new_provider not in _ai_config['api_keys']:
-            print(f"Unknown provider '{new_provider}'. Supported: {', '.join(_ai_config['api_keys'].keys())}")
-        else:
-            _ai_config['provider'] = new_provider
-            print(f"Provider set to '{new_provider}'.")
 
     if 'key' in pairs:
         provider = _ai_config['provider']
@@ -124,27 +108,6 @@ def _toggle_panel():
         print("Chat panel requires macOS with pyobjc-framework-Cocoa.")
 
 
-def _get_session_context():
-    """Return a short text description of the current PyMOL session state.
-
-    NOTE: This function is currently unused. Calling _cmd.get_names() from
-    the worker thread deadlocks because it tries to acquire the API lock
-    that the render loop holds. A future approach could use cmd.do() to
-    queue the query on the main thread and pass results back.
-    """
-    parts = []
-    try:
-        objects = _cmd.get_names('objects')
-        if objects:
-            parts.append("Loaded objects: " + ", ".join(objects))
-        selections = _cmd.get_names('selections')
-        if selections:
-            parts.append("Named selections: " + ", ".join(selections))
-    except Exception:
-        parts.append("(session state unavailable)")
-    return "\n".join(parts) if parts else "Empty session (no objects loaded)."
-
-
 def _on_user_message(text):
     """Main entry point called by the UI when the user submits a message."""
     global _messages
@@ -156,12 +119,11 @@ def _on_user_message(text):
         ai_chat_ui.show_message('user', text)
         ai_chat_ui.show_status('Thinking...')
 
-    provider = _ai_config['provider']
-    key = _ai_config['api_keys'].get(provider, '')
+    key = _ai_config['api_keys'].get('anthropic', '')
     if not key:
         error_msg = (
-            f"No API key set for provider '{provider}'. "
-            f"Run: ai_config key=YOUR_KEY"
+            "No API key set. "
+            "Run: ai_config key=YOUR_ANTHROPIC_API_KEY"
         )
         if _has_ui:
             from pymol import ai_chat_ui
@@ -175,18 +137,21 @@ def _on_user_message(text):
     t.start()
 
 
+# ---------------------------------------------------------------------------
+# Agentic worker loop
+# ---------------------------------------------------------------------------
+
 def _worker():
-    """Background thread: call LLM, execute commands, retry on errors."""
+    """Background thread: agentic loop with streaming and tool use.
+
+    1. Stream API call with tools
+    2. Handle text_delta (update streaming bubble)
+    3. Handle tool_use blocks (execute tools, send tool_result back)
+    4. Loop until stop_reason == "end_turn"
+    5. Parse final text as JSON {response, script, questions}
+    6. Execute script silently, show questions
+    """
     global _messages
-
-    max_retries = 2
-    attempt = 0
-
-    # Thread-safe UI helpers -- dispatch to main thread
-    def _ui_msg(role, text):
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.update_on_main_thread(role, text, [])
 
     def _ui_status(text):
         if _has_ui:
@@ -195,129 +160,336 @@ def _worker():
             ai_chat_ui._StatusUpdater.alloc().init().performSelectorOnMainThread_withObject_waitUntilDone_(
                 'doStatus:', None, False)
 
+    def _ui_msg(role, text):
+        if _has_ui:
+            from pymol import ai_chat_ui
+            ai_chat_ui.update_on_main_thread(role, text, [])
+
+    def _ui_begin_stream():
+        if _has_ui:
+            from pymol import ai_chat_ui
+            ai_chat_ui.run_on_main_thread(ai_chat_ui.begin_streaming_message)
+
+    def _ui_update_stream(text):
+        if _has_ui:
+            from pymol import ai_chat_ui
+            ai_chat_ui.update_streaming_message(text)
+
+    def _ui_finalize_stream():
+        if _has_ui:
+            from pymol import ai_chat_ui
+            ai_chat_ui.finalize_streaming_message()
+
     try:
-        while attempt <= max_retries:
+        key = _ai_config['api_keys'].get('anthropic', '')
+        model = _ai_config['models'].get('anthropic', '')
+
+        while True:
+            # Build clean messages for the API
+            api_messages = _build_api_messages()
+
+            # Start streaming
+            _ui_begin_stream()
+            accumulated_text = ''
+            stop_reason = None
+            content_blocks = []  # collected content blocks from the response
+
+            # Current block tracking
+            current_block_type = None
+            current_block_id = None
+            current_block_name = None
+            current_block_text = ''
+            current_block_json = ''
+
+            def on_text_delta(delta_text):
+                nonlocal accumulated_text
+                accumulated_text += delta_text
+                _ui_update_stream(accumulated_text)
+
+            def on_content_block_start(block):
+                nonlocal current_block_type, current_block_id, current_block_name
+                nonlocal current_block_text, current_block_json
+                btype = block.get('type', '')
+                current_block_type = btype
+                if btype == 'tool_use':
+                    current_block_id = block.get('id', '')
+                    current_block_name = block.get('name', '')
+                    current_block_json = ''
+                elif btype == 'text':
+                    current_block_text = ''
+
+            def on_content_block_delta(delta):
+                nonlocal current_block_text, current_block_json
+                dtype = delta.get('type', '')
+                if dtype == 'text_delta':
+                    text = delta.get('text', '')
+                    current_block_text += text
+                    on_text_delta(text)
+                elif dtype == 'input_json_delta':
+                    current_block_json += delta.get('partial_json', '')
+
+            def on_content_block_stop():
+                nonlocal current_block_type
+                if current_block_type == 'text':
+                    content_blocks.append({
+                        'type': 'text',
+                        'text': current_block_text,
+                    })
+                elif current_block_type == 'tool_use':
+                    try:
+                        tool_input = json.loads(current_block_json) if current_block_json else {}
+                    except json.JSONDecodeError:
+                        tool_input = {}
+                    content_blocks.append({
+                        'type': 'tool_use',
+                        'id': current_block_id,
+                        'name': current_block_name,
+                        'input': tool_input,
+                    })
+                current_block_type = None
+
+            def on_message_delta(delta):
+                nonlocal stop_reason
+                stop_reason = delta.get('stop_reason', stop_reason)
+
             try:
-                response_text = _call_llm()
+                _call_anthropic_streaming(
+                    api_messages, key, model,
+                    on_content_block_start=on_content_block_start,
+                    on_content_block_delta=on_content_block_delta,
+                    on_content_block_stop=on_content_block_stop,
+                    on_message_delta=on_message_delta,
+                )
             except Exception as exc:
-                error_msg = f"LLM call failed: {exc}"
+                _ui_finalize_stream()
+                error_msg = f"API call failed: {exc}"
                 _messages.append({'role': 'assistant', 'content': error_msg})
                 _ui_msg('error', error_msg)
                 _ui_status('')
                 return
 
-            _messages.append({'role': 'assistant', 'content': response_text})
-            _ui_msg('assistant', response_text)
-            _ui_status('Executing...')
+            _ui_finalize_stream()
 
-            results = _execute_commands(response_text)
-            errors = [r for r in results if r.startswith('Error:')]
-            # Only show errors in the chat, not OK confirmations
-            for r in errors:
-                _ui_msg('error', r)
+            # Store assistant response in conversation history
+            # Use content blocks format if there are tool_use blocks
+            if any(b['type'] == 'tool_use' for b in content_blocks):
+                _messages.append({'role': 'assistant', 'content': content_blocks})
+            else:
+                # Plain text
+                full_text = ''.join(b.get('text', '') for b in content_blocks if b['type'] == 'text')
+                _messages.append({'role': 'assistant', 'content': full_text})
 
-            if not errors or attempt >= max_retries:
-                _ui_status('')
-                break
+            # If stop_reason is tool_use, execute tools and loop
+            if stop_reason == 'tool_use':
+                _ui_status('Using tools...')
+                tool_results = []
+                for block in content_blocks:
+                    if block['type'] != 'tool_use':
+                        continue
+                    tool_name = block['name']
+                    tool_input = block['input']
+                    tool_id = block['id']
 
-            retry_content = (
-                "The following commands had errors:\n"
-                + "\n".join(errors)
-                + "\nPlease fix and try again."
-            )
-            _messages.append({'role': 'user', 'content': retry_content})
-            _ui_status('Retrying...')
-            attempt += 1
+                    try:
+                        result = execute_tool(tool_name, tool_input, _cmd)
+                    except Exception as exc:
+                        result = json.dumps({"error": str(exc)})
+
+                    # Build tool_result content block
+                    # Check if result is an image (for capture_viewport)
+                    try:
+                        result_parsed = json.loads(result) if isinstance(result, str) else result
+                    except (json.JSONDecodeError, TypeError):
+                        result_parsed = None
+
+                    if (isinstance(result_parsed, dict)
+                            and result_parsed.get('type') == 'image'
+                            and 'data' in result_parsed):
+                        tool_results.append({
+                            'type': 'tool_result',
+                            'tool_use_id': tool_id,
+                            'content': [{
+                                'type': 'image',
+                                'source': {
+                                    'type': 'base64',
+                                    'media_type': result_parsed.get('media_type', 'image/png'),
+                                    'data': result_parsed['data'],
+                                }
+                            }],
+                        })
+                    else:
+                        result_str = result if isinstance(result, str) else json.dumps(result)
+                        tool_results.append({
+                            'type': 'tool_result',
+                            'tool_use_id': tool_id,
+                            'content': result_str,
+                        })
+
+                # Add tool results as a user message
+                _messages.append({'role': 'user', 'content': tool_results})
+                _ui_status('Thinking...')
+                # Reset for next iteration
+                continue
+
+            # stop_reason == "end_turn" (or anything else) — we're done
+            full_text = ''.join(b.get('text', '') for b in content_blocks if b['type'] == 'text')
+
+            # Parse structured response
+            parsed = _parse_structured_response(full_text)
+            response_text = parsed.get('response', full_text)
+            script = parsed.get('script', '')
+            questions = parsed.get('questions', [])
+
+            # The streaming bubble already showed the raw text; if we parsed
+            # a structured response, show the clean version instead
+            if response_text != full_text and response_text:
+                _ui_msg('assistant', response_text)
+
+            # Execute script silently on main thread
+            if script:
+                _ui_status('Executing...')
+                _execute_script(script)
+
+            # Show question buttons
+            if questions and _has_ui:
+                from pymol import ai_chat_ui
+                ai_chat_ui.show_question_buttons(questions)
+
+            _ui_status('')
+            break
 
     except Exception as exc:
+        if _has_ui:
+            from pymol import ai_chat_ui
+            ai_chat_ui.finalize_streaming_message()
         _ui_msg('error', f"Unexpected error: {exc}")
         _ui_status('')
 
 
-def _call_llm():
-    """Build the message list and call the configured LLM provider."""
-    provider = _ai_config['provider']
-    key = _ai_config['api_keys'].get(provider, '')
-    model = _ai_config['models'].get(provider, '')
+def _build_api_messages():
+    """Build a clean message list for the Anthropic API.
 
-    # Build messages (session context omitted; see _get_session_context docstring)
-    messages = [{'role': m['role'], 'content': m['content']} for m in _messages]
-
-    if provider == 'anthropic':
-        return _call_anthropic(messages, key, model)
-    elif provider == 'openai':
-        return _call_openai(messages, key, model)
-    elif provider == 'gemini':
-        return _call_gemini(messages, key, model)
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
-
-
-def _execute_commands(response_text):
-    """Extract PyMOL commands from the LLM response and execute them.
-
-    Only lines inside markdown code blocks (```...```) are treated as
-    commands. Plain text lines are ignored.
-
-    Returns a list of result strings.
+    Handles both string content and list-of-blocks content (for tool_use turns).
+    Ensures proper alternating user/assistant roles.
     """
-    results = []
-    in_code_block = False
-    commands = []
+    api_messages = []
+    for m in _messages:
+        role = m['role']
+        content = m['content']
+        api_messages.append({'role': role, 'content': content})
+    return api_messages
 
-    for line in response_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('```'):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block and stripped and not stripped.startswith('#'):
-            commands.append(stripped)
 
-    # If no code blocks found, try to detect bare PyMOL commands
-    # (lines starting with known PyMOL verbs)
-    if not commands:
-        _PYMOL_VERBS = {
-            'fetch', 'load', 'select', 'color', 'show', 'hide', 'set',
-            'bg_color', 'orient', 'zoom', 'center', 'ray', 'png', 'save',
-            'align', 'super', 'cealign', 'delete', 'remove', 'create',
-            'spectrum', 'label', 'distance', 'angle', 'dihedral',
-            'cartoon', 'surface', 'stick', 'sphere', 'line', 'mesh',
-            'enable', 'disable', 'reset', 'turn', 'move', 'clip',
-            'viewport', 'split_states', 'util', 'cmd',
-        }
-        for line in response_text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            first_word = stripped.split('(')[0].split()[0].lower() if stripped else ''
-            if first_word in _PYMOL_VERBS:
-                commands.append(stripped)
+# ---------------------------------------------------------------------------
+# Structured response parsing
+# ---------------------------------------------------------------------------
 
-    for cmd_line in commands:
+def _parse_structured_response(text):
+    """Extract JSON {response, script, questions} from the model's text.
+
+    The model is instructed to respond with JSON. This function tries to
+    extract it, with a fallback to treating the entire text as a plain
+    response (no script, no questions).
+    """
+    text = text.strip()
+
+    # Try direct JSON parse
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and 'response' in parsed:
+            return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try to find JSON in code blocks
+    import re
+    json_block = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if json_block:
         try:
-            _cmd.do(cmd_line, 0, 1)
-            results.append(f"OK: {cmd_line}")
-        except Exception as exc:
-            results.append(f"Error: {cmd_line} => {exc}")
+            parsed = json.loads(json_block.group(1))
+            if isinstance(parsed, dict) and 'response' in parsed:
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    return results
+    # Try to find a JSON object anywhere in the text
+    brace_start = text.find('{')
+    if brace_start >= 0:
+        # Find the matching closing brace
+        depth = 0
+        for i in range(brace_start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[brace_start:i + 1])
+                        if isinstance(parsed, dict) and 'response' in parsed:
+                            return parsed
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+
+    # Fallback: plain text response
+    return {'response': text, 'script': '', 'questions': []}
 
 
 # ---------------------------------------------------------------------------
-# LLM provider implementations
+# Script execution
 # ---------------------------------------------------------------------------
 
-def _call_anthropic(messages, key, model):
-    """Call the Anthropic Messages API with a multi-turn conversation."""
+def _execute_script(script):
+    """Execute a multi-line PyMOL script silently on the main thread.
+
+    Each non-empty, non-comment line is executed via _cmd.do(line, 0, 1).
+    """
+    if not script or not _cmd:
+        return
+
+    from pymol import ai_chat_ui
+    for line in script.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        try:
+            ai_chat_ui.run_on_main_thread(lambda l=line: _cmd.do(l, 0, 1))
+        except Exception:
+            pass  # silently ignore errors in script execution
+
+
+# ---------------------------------------------------------------------------
+# Anthropic streaming API
+# ---------------------------------------------------------------------------
+
+def _call_anthropic_streaming(messages, key, model,
+                               on_content_block_start=None,
+                               on_content_block_delta=None,
+                               on_content_block_stop=None,
+                               on_message_delta=None):
+    """Call the Anthropic Messages API with streaming SSE.
+
+    Reads the response line-by-line, parsing SSE events:
+    - message_start
+    - content_block_start: {content_block: {type, id?, name?}}
+    - content_block_delta: {delta: {type: "text_delta"|"input_json_delta", ...}}
+    - content_block_stop
+    - message_delta: {delta: {stop_reason}}
+    - message_stop
+    """
     url = 'https://api.anthropic.com/v1/messages'
 
-    # Anthropic requires alternating user/assistant roles; build payload
     payload = {
         'model': model,
-        'max_tokens': 1024,
+        'max_tokens': 4096,
+        'stream': True,
         'system': SYSTEM_PROMPT,
-        'messages': [{'role': m['role'], 'content': m['content']} for m in messages],
+        'messages': messages,
     }
+
+    # Include tools if available
+    if TOOL_DEFINITIONS:
+        payload['tools'] = TOOL_DEFINITIONS
 
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(
@@ -332,89 +504,74 @@ def _call_anthropic(messages, key, model):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode('utf-8'))
-        return body['content'][0]['text']
+        resp = urllib.request.urlopen(req, timeout=120)
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode('utf-8', errors='replace')
         raise RuntimeError(f"Anthropic HTTP {exc.code}: {error_body}") from exc
 
-
-def _call_openai(messages, key, model):
-    """Call the OpenAI Chat Completions API with a multi-turn conversation."""
-    url = 'https://api.openai.com/v1/chat/completions'
-
-    oai_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-    oai_messages += [{'role': m['role'], 'content': m['content']} for m in messages]
-
-    payload = {
-        'model': model,
-        'messages': oai_messages,
-        'max_tokens': 1024,
-    }
-
-    data = json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {key}',
-        },
-        method='POST',
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode('utf-8'))
-        return body['choices'][0]['message']['content']
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode('utf-8', errors='replace')
-        raise RuntimeError(f"OpenAI HTTP {exc.code}: {error_body}") from exc
+        _parse_sse_stream(resp, on_content_block_start, on_content_block_delta,
+                          on_content_block_stop, on_message_delta)
+    finally:
+        resp.close()
 
 
-def _call_gemini(messages, key, model):
-    """Call the Google Gemini generateContent API with a multi-turn conversation."""
-    url = (
-        f'https://generativelanguage.googleapis.com/v1beta/models/{model}'
-        f':generateContent?key={key}'
-    )
+def _parse_sse_stream(resp, on_content_block_start, on_content_block_delta,
+                       on_content_block_stop, on_message_delta):
+    """Parse an SSE stream from the Anthropic API response."""
+    event_type = None
+    data_buf = ''
 
-    # Gemini uses 'user' and 'model' roles (not 'assistant')
-    def _gemini_role(role):
-        return 'model' if role == 'assistant' else 'user'
+    for raw_line in resp:
+        line = raw_line.decode('utf-8', errors='replace').rstrip('\n').rstrip('\r')
 
-    contents = [
-        {
-            'role': _gemini_role(m['role']),
-            'parts': [{'text': m['content']}],
-        }
-        for m in messages
-    ]
+        if line.startswith('event: '):
+            event_type = line[7:].strip()
+            data_buf = ''
+            continue
 
-    payload = {
-        'contents': contents,
-        'systemInstruction': {
-            'parts': [{'text': SYSTEM_PROMPT}],
-        },
-    }
+        if line.startswith('data: '):
+            data_buf += line[6:]
+            continue
 
-    data = json.dumps(payload).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
+        if line == '' and event_type and data_buf:
+            # End of event — process it
+            try:
+                payload = json.loads(data_buf)
+            except json.JSONDecodeError:
+                event_type = None
+                data_buf = ''
+                continue
 
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode('utf-8'))
-        return body['candidates'][0]['content']['parts'][0]['text']
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode('utf-8', errors='replace')
-        raise RuntimeError(f"Gemini HTTP {exc.code}: {error_body}") from exc
+            if event_type == 'content_block_start':
+                block = payload.get('content_block', {})
+                if on_content_block_start:
+                    on_content_block_start(block)
 
+            elif event_type == 'content_block_delta':
+                delta = payload.get('delta', {})
+                if on_content_block_delta:
+                    on_content_block_delta(delta)
+
+            elif event_type == 'content_block_stop':
+                if on_content_block_stop:
+                    on_content_block_stop()
+
+            elif event_type == 'message_delta':
+                delta = payload.get('delta', {})
+                if on_message_delta:
+                    on_message_delta(delta)
+
+            elif event_type == 'message_stop':
+                pass  # stream complete
+
+            event_type = None
+            data_buf = ''
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def clear_conversation():
     """Reset the conversation history and clear the UI (if available)."""

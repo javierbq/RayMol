@@ -8,6 +8,7 @@ In legacy GLUT mode, it creates a floating NSPanel alongside the GLUT window.
 Imported by pymol.ai_chat; raises ImportError on non-macOS platforms.
 """
 
+import threading
 import AppKit
 import Foundation
 import objc
@@ -28,6 +29,11 @@ _key_monitor = None     # global event monitor reference
 _embedded = False       # True when running inside AppKit host
 _container_view = None  # NSView provided by the AppKit host
 
+# Streaming state
+_streaming_view = None  # the NSView currently being streamed into
+_streaming_label = None  # the NSTextField inside the streaming view
+_streaming_active = False
+
 # ---------------------------------------------------------------------------
 # Colors
 # ---------------------------------------------------------------------------
@@ -42,6 +48,8 @@ _COLOR_INPUT_BG = None
 _COLOR_INPUT_TEXT = None
 _COLOR_STATUS_TEXT = None
 _COLOR_ACCENT = None
+_COLOR_QUESTION_BG = None
+_COLOR_QUESTION_TEXT = None
 
 
 def _ensure_colors():
@@ -49,6 +57,7 @@ def _ensure_colors():
     global _COLOR_BG, _COLOR_USER_BUBBLE, _COLOR_USER_TEXT
     global _COLOR_ASSISTANT_TEXT, _COLOR_ERROR_TEXT, _COLOR_RESULT_TEXT
     global _COLOR_INPUT_BG, _COLOR_INPUT_TEXT, _COLOR_STATUS_TEXT, _COLOR_ACCENT
+    global _COLOR_QUESTION_BG, _COLOR_QUESTION_TEXT
 
     if _COLOR_BG is not None:
         return
@@ -64,6 +73,302 @@ def _ensure_colors():
     _COLOR_INPUT_TEXT = _c(0.90, 0.90, 0.90, 1.0)
     _COLOR_STATUS_TEXT = _c(0.53, 0.53, 0.53, 1.0)
     _COLOR_ACCENT = _c(0.29, 0.56, 0.85, 1.0)           # #4A90D9
+    _COLOR_QUESTION_BG = _c(0.22, 0.22, 0.25, 1.0)      # slightly lighter
+    _COLOR_QUESTION_TEXT = _c(0.70, 0.85, 1.0, 1.0)      # light blue
+
+
+# ---------------------------------------------------------------------------
+# Main-thread dispatch helper
+# ---------------------------------------------------------------------------
+
+class _MainThreadExecutor(AppKit.NSObject):
+    """NSObject that executes a stored callable on the main thread."""
+    _func = None
+    _result = None   # [value, exception]
+    _event = None    # threading.Event
+
+    def doExecute_(self, _ignored):
+        func = _MainThreadExecutor._func
+        result = _MainThreadExecutor._result
+        event = _MainThreadExecutor._event
+        try:
+            result[0] = func()
+        except Exception as exc:
+            result[1] = exc
+        finally:
+            if event is not None:
+                event.set()
+
+
+def run_on_main_thread(func, timeout=10.0):
+    """Execute *func* on the main thread and wait for the result.
+
+    Uses performSelectorOnMainThread with waitUntilDone_:False plus a
+    threading.Event to avoid deadlocks when the main thread is inside
+    the PyMOL render loop.
+
+    Returns the result of func(). Raises if func raised or if timeout.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return func()
+
+    result = [None, None]  # [value, exception]
+    event = threading.Event()
+    _MainThreadExecutor._func = func
+    _MainThreadExecutor._result = result
+    _MainThreadExecutor._event = event
+    executor = _MainThreadExecutor.alloc().init()
+    executor.performSelectorOnMainThread_withObject_waitUntilDone_(
+        'doExecute:', None, False)
+    if not event.wait(timeout=timeout):
+        raise TimeoutError("run_on_main_thread timed out after %.1f seconds" % timeout)
+    if result[1] is not None:
+        raise result[1]
+    return result[0]
+
+
+# ---------------------------------------------------------------------------
+# Streaming message support
+# ---------------------------------------------------------------------------
+
+class _StreamUpdater(AppKit.NSObject):
+    """NSObject for dispatching streaming text updates to the main thread."""
+    _text = ''
+
+    def doStreamUpdate_(self, _ignored):
+        _do_update_streaming_message(_StreamUpdater._text)
+
+
+def begin_streaming_message():
+    """Create an empty assistant bubble for streaming. Must be called from main thread."""
+    global _streaming_view, _streaming_label, _streaming_active
+
+    if _message_container is None or _scroll_view is None:
+        return
+
+    _ensure_colors()
+
+    container_width = _scroll_view.contentView().bounds().size.width
+    margin = 12.0
+    max_text_width = container_width - 2 * margin
+
+    font = AppKit.NSFont.systemFontOfSize_(13.0)
+    # Start with a placeholder
+    label = _create_text_label("...", font, _COLOR_ASSISTANT_TEXT, max_text_width)
+    label_size = label.frame().size
+
+    wrapper = AppKit.NSView.alloc().initWithFrame_(
+        AppKit.NSMakeRect(margin, 0, label_size.width, label_size.height))
+    label.setFrameOrigin_(AppKit.NSMakePoint(0, 0))
+    wrapper.addSubview_(label)
+
+    # Position below the last message
+    y_offset = 0.0
+    if _message_views:
+        last = _message_views[-1]
+        y_offset = last.frame().origin.y + last.frame().size.height + 8.0
+
+    wrapper.setFrameOrigin_(AppKit.NSMakePoint(margin, y_offset))
+
+    _message_container.addSubview_(wrapper)
+    _message_views.append(wrapper)
+
+    _streaming_view = wrapper
+    _streaming_label = label
+    _streaming_active = True
+
+    _update_container_height()
+    _scroll_to_bottom()
+
+
+def update_streaming_message(text):
+    """Update the in-progress streaming bubble. Thread-safe (dispatches to main thread)."""
+    if not _streaming_active:
+        return
+    _StreamUpdater._text = text
+    updater = _StreamUpdater.alloc().init()
+    updater.performSelectorOnMainThread_withObject_waitUntilDone_(
+        'doStreamUpdate:', None, False)
+
+
+def _do_update_streaming_message(text):
+    """Actually update the streaming label on the main thread."""
+    global _streaming_view, _streaming_label
+
+    if _streaming_label is None or _streaming_view is None:
+        return
+    if _scroll_view is None:
+        return
+
+    container_width = _scroll_view.contentView().bounds().size.width
+    margin = 12.0
+    max_text_width = container_width - 2 * margin
+
+    display_text = text if text else "..."
+    _streaming_label.setStringValue_(display_text)
+
+    # Re-measure and resize
+    font = _streaming_label.font()
+    _tw, th = _measure_text(display_text, font, max_text_width)
+    new_h = th + 4
+    _streaming_label.setFrameSize_(AppKit.NSMakeSize(max_text_width, new_h))
+    _streaming_view.setFrameSize_(AppKit.NSMakeSize(max_text_width, new_h))
+
+    _update_container_height()
+    _scroll_to_bottom()
+
+
+def finalize_streaming_message():
+    """Mark streaming as complete. Thread-safe (dispatches to main thread)."""
+    finalizer = _StreamFinalizer.alloc().init()
+    finalizer.performSelectorOnMainThread_withObject_waitUntilDone_(
+        'doFinalize:', None, False)
+
+
+class _StreamFinalizer(AppKit.NSObject):
+    def doFinalize_(self, _ignored):
+        global _streaming_view, _streaming_label, _streaming_active
+        _streaming_view = None
+        _streaming_label = None
+        _streaming_active = False
+
+
+# ---------------------------------------------------------------------------
+# Question buttons
+# ---------------------------------------------------------------------------
+
+class _QuestionButtonTarget(AppKit.NSObject):
+    """Target for question option buttons. Sends the option text as a user message."""
+    _option_text = ''
+
+    def buttonClicked_(self, sender):
+        text = sender.title()
+        if text:
+            _DeferredMessage._pending_text = text
+            Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.0, _DeferredMessage.alloc().init(), 'fire:', None, False)
+
+
+# Store references to prevent GC
+_question_targets = []
+
+
+def show_question_buttons(questions):
+    """Render clickable option buttons below the last message.
+
+    *questions* is a list of dicts: [{"text": "Which chain?", "options": ["A", "B"]}]
+    Dispatches to main thread if needed.
+    """
+    if not questions:
+        return
+
+    if threading.current_thread() is not threading.main_thread():
+        _QuestionDispatcher._questions = questions
+        dispatcher = _QuestionDispatcher.alloc().init()
+        dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_(
+            'doShow:', None, False)
+        return
+
+    _do_show_question_buttons(questions)
+
+
+class _QuestionDispatcher(AppKit.NSObject):
+    _questions = None
+
+    def doShow_(self, _ignored):
+        _do_show_question_buttons(_QuestionDispatcher._questions)
+
+
+def _do_show_question_buttons(questions):
+    """Actually create and add question button views (must run on main thread)."""
+    global _question_targets
+
+    if _message_container is None or _scroll_view is None:
+        return
+
+    _ensure_colors()
+
+    container_width = _scroll_view.contentView().bounds().size.width
+    margin = 12.0
+
+    for q in questions:
+        question_text = q.get('text', '')
+        options = q.get('options', [])
+        if not options:
+            continue
+
+        # Create a wrapper view for this question group
+        btn_height = 28.0
+        btn_spacing = 8.0
+        row_height = btn_height + btn_spacing
+
+        # Calculate total height: optional question label + buttons
+        total_height = 0.0
+        if question_text:
+            total_height += 22.0  # label height + spacing
+
+        # Lay out buttons in rows
+        x_cursor = 0.0
+        available_width = container_width - 2 * margin
+        rows = 1
+        for opt in options:
+            btn_w = max(len(opt) * 8.0 + 24.0, 60.0)
+            if x_cursor + btn_w > available_width and x_cursor > 0:
+                rows += 1
+                x_cursor = 0.0
+            x_cursor += btn_w + btn_spacing
+        total_height += rows * row_height
+
+        wrapper = AppKit.NSView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(margin, 0, available_width, total_height))
+
+        cur_y = total_height
+
+        # Optional question label
+        if question_text:
+            cur_y -= 20.0
+            qlabel = AppKit.NSTextField.labelWithString_(question_text)
+            qlabel.setFrame_(AppKit.NSMakeRect(0, cur_y, available_width, 18))
+            qlabel.setFont_(AppKit.NSFont.systemFontOfSize_(11.0))
+            qlabel.setTextColor_(_COLOR_STATUS_TEXT)
+            wrapper.addSubview_(qlabel)
+            cur_y -= 4.0
+
+        # Buttons
+        x_cursor = 0.0
+        cur_y -= btn_height
+        for opt in options:
+            btn_w = max(len(opt) * 8.0 + 24.0, 60.0)
+            if x_cursor + btn_w > available_width and x_cursor > 0:
+                x_cursor = 0.0
+                cur_y -= row_height
+
+            btn = AppKit.NSButton.alloc().initWithFrame_(
+                AppKit.NSMakeRect(x_cursor, cur_y, btn_w, btn_height))
+            btn.setTitle_(opt)
+            btn.setBezelStyle_(AppKit.NSBezelStyleRounded)
+            btn.setFont_(AppKit.NSFont.systemFontOfSize_(12.0))
+
+            target = _QuestionButtonTarget.alloc().init()
+            btn.setTarget_(target)
+            btn.setAction_('buttonClicked:')
+            _question_targets.append(target)
+
+            wrapper.addSubview_(btn)
+            x_cursor += btn_w + btn_spacing
+
+        # Position below last message
+        y_offset = 0.0
+        if _message_views:
+            last = _message_views[-1]
+            y_offset = last.frame().origin.y + last.frame().size.height + 8.0
+
+        wrapper.setFrameOrigin_(AppKit.NSMakePoint(margin, y_offset))
+        _message_container.addSubview_(wrapper)
+        _message_views.append(wrapper)
+
+    _update_container_height()
+    _scroll_to_bottom()
 
 
 # ---------------------------------------------------------------------------
@@ -148,14 +453,7 @@ def show_message(role, text):
     _message_container.addSubview_(bubble_view)
     _message_views.append(bubble_view)
 
-    # Update container height to fit all messages
-    total_height = y_offset + bubble_view.frame().size.height + 8.0
-    container_frame = _message_container.frame()
-    visible_height = _scroll_view.contentView().bounds().size.height
-    new_height = max(total_height, visible_height)
-    _message_container.setFrameSize_(AppKit.NSMakeSize(container_width, new_height))
-
-    # Auto-scroll to bottom
+    _update_container_height()
     _scroll_to_bottom()
 
 
@@ -186,12 +484,17 @@ def update_on_main_thread(role, content, results):
 
 def clear_messages():
     """Clear all messages from the chat view."""
-    global _message_views
+    global _message_views, _streaming_view, _streaming_label, _streaming_active
+    global _question_targets
     if _message_container is None:
         return
     for v in _message_views:
         v.removeFromSuperview()
     _message_views = []
+    _streaming_view = None
+    _streaming_label = None
+    _streaming_active = False
+    _question_targets = []
     # Reset container height
     if _scroll_view is not None:
         visible_height = _scroll_view.contentView().bounds().size.height
@@ -203,6 +506,20 @@ def clear_messages():
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _update_container_height():
+    """Recalculate and set the message container height to fit all messages."""
+    if _scroll_view is None or _message_container is None:
+        return
+    container_width = _scroll_view.contentView().bounds().size.width
+    total_height = 8.0
+    if _message_views:
+        last = _message_views[-1]
+        total_height = last.frame().origin.y + last.frame().size.height + 8.0
+    visible_height = _scroll_view.contentView().bounds().size.height
+    new_height = max(total_height, visible_height)
+    _message_container.setFrameSize_(AppKit.NSMakeSize(container_width, new_height))
+
 
 def _scroll_to_bottom():
     """Scroll the message area to the very bottom."""
