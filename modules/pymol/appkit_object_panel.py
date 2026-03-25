@@ -290,7 +290,7 @@ class ObjPanel_ButtonTarget(AppKit.NSObject):
             elif action == 'action':
                 _run_action_command(self._cmd, name, title)
         except Exception as e:
-            print(f"ObjPanel action error: {e}")
+            print(f"ObjPanel action '{action}' on '{name}' error: {e}")
 
 
 def _run_action_command(cmd, name, title):
@@ -407,7 +407,10 @@ def _run_action_command(cmd, name, title):
             cmd.matrix_reset(name)
         # ---- Generate ----
         elif cmd_key == 'gen_vacuum_esp':
-            cmd.util.protein_vacuum_esp(name, mode=2, quiet=0, _self=cmd)
+            try:
+                cmd.util.protein_vacuum_esp(name, mode=2, quiet=0, _self=cmd)
+            except Exception:
+                print("Vacuum electrostatics unavailable (requires APBS/champ)")
         elif cmd_key == 'gen_symm_4':
             cmd.symexp(name + "_", name, name, cutoff=4, segi=1)
         elif cmd_key == 'gen_symm_8':

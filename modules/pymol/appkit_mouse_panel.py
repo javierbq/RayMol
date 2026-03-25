@@ -399,14 +399,11 @@ class _TransportTarget(AppKit.NSObject):
             elif cmd_str == 'fullscreen':
                 _cmd.full_screen()
             elif cmd_str == 'mouse_mode_forward':
-                from pymol.controlling import mouse_ring
-                bm = int(_cmd.get_setting_int('button_mode'))
-                bm = (bm + 1) % len(mouse_ring)
-                _cmd.set('button_mode', str(bm), quiet=1)
+                from pymol.controlling import mouse as _mouse_cmd
+                _mouse_cmd(action='forward', _self=_cmd)
             elif cmd_str == 'sel_mode_forward':
-                sm = int(_cmd.get_setting_int('mouse_selection_mode'))
-                sm = (sm + 1) % 7
-                _cmd.set('mouse_selection_mode', str(sm), quiet=1)
+                from pymol.controlling import mouse as _mouse_cmd
+                _mouse_cmd(action='select_forward', _self=_cmd)
         except Exception as e:
             print(f"Mouse panel transport error: {e}")
 
