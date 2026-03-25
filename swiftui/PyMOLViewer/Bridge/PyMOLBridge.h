@@ -9,42 +9,42 @@ extern "C" {
 
 #include <stdbool.h>
 
-// Opaque PyMOL instance
-typedef struct _CPyMOL CPyMOL;
+// Opaque PyMOL instance handle (CPyMOL* in the implementation)
+typedef void* PyMOLHandle;
 
 // --- Lifecycle ---
-CPyMOL *PyMOLBridge_New(void);
-void PyMOLBridge_Free(CPyMOL *instance);
-void PyMOLBridge_InitPython(CPyMOL *instance, const char *resourcePath);
-void PyMOLBridge_Start(CPyMOL *instance);
-void PyMOLBridge_Stop(CPyMOL *instance);
+PyMOLHandle PyMOLBridge_New(void);
+void PyMOLBridge_Free(PyMOLHandle instance);
+void PyMOLBridge_InitPython(PyMOLHandle instance, const char *resourcePath);
+void PyMOLBridge_Start(PyMOLHandle instance);
+void PyMOLBridge_Stop(PyMOLHandle instance);
 
 // --- Render loop ---
-int  PyMOLBridge_Idle(CPyMOL *instance);
-void PyMOLBridge_Draw(CPyMOL *instance);
-void PyMOLBridge_Reshape(CPyMOL *instance, int width, int height);
-int  PyMOLBridge_GetRedisplay(CPyMOL *instance, int reset);
+int  PyMOLBridge_Idle(PyMOLHandle instance);
+void PyMOLBridge_Draw(PyMOLHandle instance);
+void PyMOLBridge_Reshape(PyMOLHandle instance, int width, int height);
+int  PyMOLBridge_GetRedisplay(PyMOLHandle instance, int reset);
 
 // --- Input ---
-void PyMOLBridge_Button(CPyMOL *instance, int button, int state, int x, int y, int modifiers);
-void PyMOLBridge_Drag(CPyMOL *instance, int x, int y, int modifiers);
-void PyMOLBridge_Key(CPyMOL *instance, unsigned char k, int x, int y, int modifiers);
+void PyMOLBridge_Button(PyMOLHandle instance, int button, int state, int x, int y, int modifiers);
+void PyMOLBridge_Drag(PyMOLHandle instance, int x, int y, int modifiers);
+void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 
 // --- Context management ---
-void PyMOLBridge_PushValidContext(CPyMOL *instance);
-void PyMOLBridge_PopValidContext(CPyMOL *instance);
+void PyMOLBridge_PushValidContext(PyMOLHandle instance);
+void PyMOLBridge_PopValidContext(PyMOLHandle instance);
 
 // --- Python execution ---
 void PyMOLBridge_RunCommand(const char *command);
-char *PyMOLBridge_GetFeedback(CPyMOL *instance);
+char *PyMOLBridge_GetFeedback(PyMOLHandle instance);
 void PyMOLBridge_FreeFeedback(char *str);
 
 // --- Metal rendering ---
-void PyMOLBridge_RenderMetal(CPyMOL *instance);
+void PyMOLBridge_RenderMetal(PyMOLHandle instance);
 
 // --- Getters ---
-void *PyMOLBridge_GetGlobals(CPyMOL *instance);
-void *PyMOLBridge_GetRenderer(CPyMOL *instance);
+void *PyMOLBridge_GetGlobals(PyMOLHandle instance);
+void *PyMOLBridge_GetRenderer(PyMOLHandle instance);
 
 // --- Button/modifier constants (match PyMOL's defines) ---
 #define PYMOL_BUTTON_LEFT    0

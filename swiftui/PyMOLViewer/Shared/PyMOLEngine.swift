@@ -14,7 +14,7 @@ final class PyMOLEngine: ObservableObject {
     @Published var sequenceVisible = false
 
     // The opaque PyMOL instance pointer
-    private(set) var instance: OpaquePointer?
+    private(set) var instance: PyMOLHandle?
 
     private var feedbackTimer: Timer?
 
@@ -144,10 +144,6 @@ final class PyMOLEngine: ObservableObject {
 }
 
 // MARK: - Data models
-
-struct MoleculeObject: Identifiable, Equatable {
-    let id: String
-    let name: String
-    var isEnabled: Bool
-    var representation: String
-}
+// ObjectEntry is the canonical model, defined in ObjectPanel.swift.
+// MoleculeObject is a typealias for backward compatibility.
+typealias MoleculeObject = ObjectEntry

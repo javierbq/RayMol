@@ -5,14 +5,18 @@
 // PyMOLBridge.xcconfig (not HEADER_SEARCH_PATHS, which would break
 // Clang module builds due to layer0/Block.h shadowing system Block.h).
 
-#include "PyMOLBridge.h"
-
 #include "PyMOL.h"
 #include "PyMOLOptions.h"
 #include "P.h"
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
+
+// The bridging header uses PyMOLHandle (void*) to avoid CPyMOL typedef
+// conflicts between the bridging header and PyMOL.h. We include PyMOL.h
+// directly here (not the bridging header) and cast at function boundaries.
+typedef void* PyMOLHandle;
+#define INST(h) static_cast<CPyMOL*>(h)
 
 // Forward declarations from PyMOL internals
 extern "C" {
@@ -22,40 +26,36 @@ extern "C" {
 
 // --- Lifecycle ---
 
-CPyMOL *PyMOLBridge_New(void)
+PyMOLHandle PyMOLBridge_New(void)
 {
     CPyMOLOptions *options = PyMOLOptions_New();
     if (!options) return nullptr;
 
     options->show_splash = 1;
-    options->internal_gui = 0;       // We provide our own GUI
+    options->internal_gui = 0;
     options->internal_feedback = 1;
     options->external_gui = 0;
 
     CPyMOL *instance = PyMOL_NewWithOptions(options);
     PyMOLOptions_Free(options);
-    return instance;
+    return static_cast<PyMOLHandle>(instance);
 }
 
-void PyMOLBridge_Free(CPyMOL *instance)
+void PyMOLBridge_Free(PyMOLHandle h)
 {
-    if (instance) {
-        PyMOL_Stop(instance);
-        PyMOL_Free(instance);
+    if (h) {
+        PyMOL_Stop(INST(h));
+        PyMOL_Free(INST(h));
     }
 }
 
-void PyMOLBridge_InitPython(CPyMOL *instance, const char *resourcePath)
+void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
 {
-    if (!instance || !resourcePath) return;
+    if (!h || !resourcePath) return;
 
-    // Register the _cmd module before Py_Initialize
     PyImport_AppendInittab("_cmd", PyInit__cmd);
-
-    // Initialize Python
     Py_Initialize();
 
-    // Set up module search paths
     NSString *resPath = [NSString stringWithUTF8String:resourcePath];
     NSString *modulesPath = [resPath stringByAppendingPathComponent:@"modules"];
     NSString *dataPath = [resPath stringByAppendingPathComponent:@"data"];
@@ -71,77 +71,75 @@ void PyMOLBridge_InitPython(CPyMOL *instance, const char *resourcePath)
         [resPath UTF8String]);
     PyRun_SimpleString(script);
 
-    // Initialize the _cmd module and PyMOL's Python layer
     init_cmd();
 
-    PyMOLGlobals *G = PyMOL_GetGlobals(instance);
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     PInit(G, true);
 
-    // Configure mouse bindings
-    PyMOL_SetDefaultMouse(instance);
-    PyMOL_SetPythonInitStage(instance, 1);
+    PyMOL_SetDefaultMouse(INST(h));
+    PyMOL_SetPythonInitStage(INST(h), 1);
 }
 
-void PyMOLBridge_Start(CPyMOL *instance)
+void PyMOLBridge_Start(PyMOLHandle h)
 {
-    if (instance) PyMOL_StartWithPython(instance);
+    if (h) PyMOL_StartWithPython(INST(h));
 }
 
-void PyMOLBridge_Stop(CPyMOL *instance)
+void PyMOLBridge_Stop(PyMOLHandle h)
 {
-    if (instance) PyMOL_Stop(instance);
+    if (h) PyMOL_Stop(INST(h));
 }
 
 // --- Render loop ---
 
-int PyMOLBridge_Idle(CPyMOL *instance)
+int PyMOLBridge_Idle(PyMOLHandle h)
 {
-    return instance ? PyMOL_Idle(instance) : 0;
+    return h ? PyMOL_Idle(INST(h)) : 0;
 }
 
-void PyMOLBridge_Draw(CPyMOL *instance)
+void PyMOLBridge_Draw(PyMOLHandle h)
 {
-    if (instance) PyMOL_Draw(instance);
+    if (h) PyMOL_Draw(INST(h));
 }
 
-void PyMOLBridge_Reshape(CPyMOL *instance, int width, int height)
+void PyMOLBridge_Reshape(PyMOLHandle h, int width, int height)
 {
-    if (instance) PyMOL_Reshape(instance, width, height, 0);
+    if (h) PyMOL_Reshape(INST(h), width, height, 0);
 }
 
-int PyMOLBridge_GetRedisplay(CPyMOL *instance, int reset)
+int PyMOLBridge_GetRedisplay(PyMOLHandle h, int reset)
 {
-    return instance ? PyMOL_GetRedisplay(instance, reset) : 0;
+    return h ? PyMOL_GetRedisplay(INST(h), reset) : 0;
 }
 
 // --- Input ---
 
-void PyMOLBridge_Button(CPyMOL *instance, int button, int state,
+void PyMOLBridge_Button(PyMOLHandle h, int button, int state,
                         int x, int y, int modifiers)
 {
-    if (instance) PyMOL_Button(instance, button, state, x, y, modifiers);
+    if (h) PyMOL_Button(INST(h), button, state, x, y, modifiers);
 }
 
-void PyMOLBridge_Drag(CPyMOL *instance, int x, int y, int modifiers)
+void PyMOLBridge_Drag(PyMOLHandle h, int x, int y, int modifiers)
 {
-    if (instance) PyMOL_Drag(instance, x, y, modifiers);
+    if (h) PyMOL_Drag(INST(h), x, y, modifiers);
 }
 
-void PyMOLBridge_Key(CPyMOL *instance, unsigned char k, int x, int y, int modifiers)
+void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
 {
-    if (instance) PyMOL_Key(instance, k, x, y, modifiers);
+    if (h) PyMOL_Key(INST(h), k, x, y, modifiers);
 }
 
 // --- Context management ---
 
-void PyMOLBridge_PushValidContext(CPyMOL *instance)
+void PyMOLBridge_PushValidContext(PyMOLHandle h)
 {
-    if (instance) PyMOL_PushValidContext(instance);
+    if (h) PyMOL_PushValidContext(INST(h));
 }
 
-void PyMOLBridge_PopValidContext(CPyMOL *instance)
+void PyMOLBridge_PopValidContext(PyMOLHandle h)
 {
-    if (instance) PyMOL_PopValidContext(instance);
+    if (h) PyMOL_PopValidContext(INST(h));
 }
 
 // --- Python execution ---
@@ -155,16 +153,13 @@ void PyMOLBridge_RunCommand(const char *command)
     }
 }
 
-char *PyMOLBridge_GetFeedback(CPyMOL *instance)
+char *PyMOLBridge_GetFeedback(PyMOLHandle h)
 {
-    // Polls PyMOL's feedback buffer and returns accumulated text.
-    // Caller must free with PyMOLBridge_FreeFeedback.
-    if (!instance) return nullptr;
+    if (!h) return nullptr;
 
-    PyMOLGlobals *G = PyMOL_GetGlobals(instance);
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G) return nullptr;
 
-    // Use Python to poll feedback
     PyGILState_STATE gstate = PyGILState_Ensure();
     PyObject *result = PyRun_String(
         "from pymol import cmd\n"
@@ -195,10 +190,10 @@ void PyMOLBridge_FreeFeedback(char *str)
 
 // --- Metal rendering ---
 
-void PyMOLBridge_RenderMetal(CPyMOL *instance)
+void PyMOLBridge_RenderMetal(PyMOLHandle h)
 {
-    if (!instance) return;
-    PyMOLGlobals *G = PyMOL_GetGlobals(instance);
+    if (!h) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G) return;
 
     extern void SceneRenderMetal(PyMOLGlobals *);
@@ -207,13 +202,13 @@ void PyMOLBridge_RenderMetal(CPyMOL *instance)
 
 // --- Getters ---
 
-void *PyMOLBridge_GetGlobals(CPyMOL *instance)
+void *PyMOLBridge_GetGlobals(PyMOLHandle h)
 {
-    return instance ? PyMOL_GetGlobals(instance) : nullptr;
+    return h ? PyMOL_GetGlobals(INST(h)) : nullptr;
 }
 
-void *PyMOLBridge_GetRenderer(CPyMOL *instance)
+void *PyMOLBridge_GetRenderer(PyMOLHandle h)
 {
-    PyMOLGlobals *G = instance ? PyMOL_GetGlobals(instance) : nullptr;
+    PyMOLGlobals *G = h ? PyMOL_GetGlobals(INST(h)) : nullptr;
     return G ? G->Renderer : nullptr;
 }

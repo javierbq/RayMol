@@ -493,7 +493,8 @@ private struct ActionMenuButton: View {
                 Divider()
             case .submenu(let label, let children):
                 Menu(label) {
-                    actionMenuContent(items: children)
+                    // Use AnyView to break recursive opaque type inference
+                    AnyView(actionMenuContent(items: children))
                 }
             }
         }
@@ -668,23 +669,25 @@ extension PyMOLEngine {
         }
 
         let enabledSet = Set(payload.enabled)
-        var entries: [MoleculeObject] = []
+        var entries: [ObjectEntry] = []
 
         for name in payload.objects {
-            entries.append(MoleculeObject(
+            entries.append(ObjectEntry(
                 id: "obj_\(name)",
                 name: name,
                 isEnabled: enabledSet.contains(name),
-                representation: ""
+                isSelection: false,
+                atomCount: nil
             ))
         }
 
         for name in payload.selections {
-            entries.append(MoleculeObject(
+            entries.append(ObjectEntry(
                 id: "sel_\(name)",
                 name: name,
                 isEnabled: enabledSet.contains(name),
-                representation: "selection"
+                isSelection: true,
+                atomCount: payload.sel_counts[name]
             ))
         }
 
@@ -694,32 +697,9 @@ extension PyMOLEngine {
     }
 }
 
-// MARK: - Convenience to map MoleculeObject -> ObjectEntry
-
-extension MoleculeObject {
-    var isSelection: Bool {
-        representation == "selection"
-    }
-
-    func toObjectEntry() -> ObjectEntry {
-        ObjectEntry(
-            id: id,
-            name: name,
-            isEnabled: isEnabled,
-            isSelection: isSelection,
-            atomCount: nil
-        )
-    }
-}
+// MoleculeObject is now a typealias for ObjectEntry — no conversion needed.
 
 // MARK: - Updated ObjectPanel using engine.objects directly
-
-extension ObjectPanel {
-    /// Convenience: converts engine.objects into ObjectEntry array
-    var entries: [ObjectEntry] {
-        engine.objects.map { $0.toObjectEntry() }
-    }
-}
 
 // MARK: - Preview
 
@@ -727,13 +707,12 @@ extension ObjectPanel {
 struct ObjectPanel_Previews: PreviewProvider {
     static var previews: some View {
         let engine = PyMOLEngine.shared
-        // Inject sample data for preview
         let _ = {
             engine.objects = [
-                MoleculeObject(id: "obj_1ake", name: "1ake", isEnabled: true, representation: "cartoon"),
-                MoleculeObject(id: "obj_2kpo", name: "2kpo", isEnabled: true, representation: "sticks"),
-                MoleculeObject(id: "obj_3hyd", name: "3hyd", isEnabled: false, representation: "surface"),
-                MoleculeObject(id: "sel_sele", name: "sele", isEnabled: true, representation: "selection"),
+                ObjectEntry(id: "obj_1ake", name: "1ake", isEnabled: true, isSelection: false, atomCount: nil),
+                ObjectEntry(id: "obj_2kpo", name: "2kpo", isEnabled: true, isSelection: false, atomCount: nil),
+                ObjectEntry(id: "obj_3hyd", name: "3hyd", isEnabled: false, isSelection: false, atomCount: nil),
+                ObjectEntry(id: "sel_sele", name: "sele", isEnabled: true, isSelection: true, atomCount: 42),
             ]
         }()
 
