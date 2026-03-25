@@ -6,4 +6,4 @@
 PYMOL_ROOT = $(SRCROOT)/..
 PYMOL_BUILD = $(SRCROOT)/../build_appkit
 
-OTHER_CPLUSPLUSFLAGS = $(inherited) -I$(PYMOL_ROOT)/include -I$(PYMOL_ROOT)/include/pymol -I$(PYMOL_ROOT)/layer0 -I$(PYMOL_ROOT)/layer1 -I$(PYMOL_ROOT)/layer2 -I$(PYMOL_ROOT)/layer3 -I$(PYMOL_ROOT)/layer4 -I$(PYMOL_ROOT)/layer5 -I$(PYMOL_ROOT)/layerGraphics -I$(PYMOL_ROOT)/layerGraphics/metal -I$(PYMOL_ROOT)/contrib -I$(PYMOL_ROOT)/contrib/pocketfft -I$(PYMOL_BUILD)/generated -I/opt/homebrew/include -I/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14
+OTHER_CPLUSPLUSFLAGS = $(inherited) -I$(PYMOL_ROOT)/include -I$(PYMOL_ROOT)/include/pymol -I$(PYMOL_ROOT)/ov/src -I$(PYMOL_ROOT)/layer0 -I$(PYMOL_ROOT)/layer1 -I$(PYMOL_ROOT)/layer2 -I$(PYMOL_ROOT)/layer3 -I$(PYMOL_ROOT)/layer4 -I$(PYMOL_ROOT)/layer5 -I$(PYMOL_ROOT)/layerGraphics -I$(PYMOL_ROOT)/layerGraphics/gl -I$(PYMOL_ROOT)/layerGraphics/metal -I$(PYMOL_ROOT)/contrib -I$(PYMOL_ROOT)/contrib/pocketfft -I$(PYMOL_BUILD)/generated -I/opt/homebrew/include -I/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14

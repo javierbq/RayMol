@@ -20,6 +20,7 @@
 #endif
   }
 
+#ifndef _PYMOL_NO_OPENGL
 bool glCheckOkay() {
   int err = 0;
   if ((err = glGetError()) != 0) {
@@ -84,6 +85,7 @@ void GLAPIENTRY gl_debug_proc(
     gl_debug_proc(source, type, id, severity, length, msg,
                   const_cast<const void*>(userParams));
 }
+#endif /* !_PYMOL_NO_OPENGL */
 
 // Returns the size in bytes of the opengl type
 size_t gl_sizeof(GLenum type){

@@ -8,11 +8,13 @@
 #error "do not include directly, include os_gl.h"
 #endif
 
+#ifndef _PYMOL_NO_OPENGL
 #ifndef _PYMOL_OSX
 #include <GL/glut.h>
 #else
 #import <GLUT/glut.h>
 #endif
+#endif /* !_PYMOL_NO_OPENGL */
 
 #ifdef FREEGLUT
 #include <GL/freeglut_ext.h>

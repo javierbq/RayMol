@@ -1,7 +1,10 @@
 #pragma once
 
 #include <vector>
+#ifndef _PYMOL_NO_OPENGL
 #include <GL/glew.h>
+#endif
+#include "os_gl.h"
 #include "Renderer.h"
 
 /**
@@ -32,6 +35,7 @@ public:
   {
     m_mode = mode;
     m_verts.clear();
+#ifndef _PYMOL_NO_OPENGL
     if (!s_renderer) {
       // Inherit the current GL color so that callers who set glColor
       // before a batch (e.g. glColor3fv(BackColor); fill()) get the
@@ -43,6 +47,7 @@ public:
       m_b = c[2];
       m_a = c[3];
     }
+#endif
   }
 
   void color3f(float r, float g, float b)
@@ -100,6 +105,7 @@ public:
       return;
     }
 
+#ifndef _PYMOL_NO_OPENGL
     GLuint vbo = 0;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -124,6 +130,7 @@ public:
     glDisableClientState(GL_VERTEX_ARRAY);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glDeleteBuffers(1, &vbo);
+#endif /* !_PYMOL_NO_OPENGL */
 
     m_verts.clear();
   }

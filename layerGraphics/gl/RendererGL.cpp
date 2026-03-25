@@ -1,5 +1,8 @@
 #include "RendererGL.h"
+#ifndef _PYMOL_NO_OPENGL
 #include <GL/glew.h>
+#endif
+#include "os_gl.h"
 
 namespace pymol {
 

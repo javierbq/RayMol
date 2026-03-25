@@ -112,4 +112,16 @@ Z* -------------------------------------------------------------------
 // alternative to std::swap if references are not allowed (e.g. bit fields)
 #define SWAP_NOREF(a, b) {auto _t=(a);(a)=(b);(b)=_t;}
 
+/* When building without OpenGL (e.g. iOS Metal-only), leverage the existing
+ * PURE_OPENGL_ES_2 guards to compile out legacy GL immediate-mode code, and
+ * ensure GLUT headers are not pulled in.                                     */
+#ifdef _PYMOL_NO_OPENGL
+#ifndef PURE_OPENGL_ES_2
+#define PURE_OPENGL_ES_2
+#endif
+#ifndef _PYMOL_NO_MAIN
+#define _PYMOL_NO_MAIN
+#endif
+#endif
+
 #endif
