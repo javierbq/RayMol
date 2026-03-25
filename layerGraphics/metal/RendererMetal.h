@@ -109,6 +109,7 @@ public:
 
   // Render readiness
   bool isRenderReady() const override;
+  bool hasActiveEncoder() const override;
 
   // Queries
   void getIntegerv(int pname, int* params) override;

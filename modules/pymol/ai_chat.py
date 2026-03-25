@@ -570,10 +570,13 @@ def _parse_structured_response(text):
 
 
 def _execute_script(script):
-    """Execute a multi-line PyMOL script silently on the main thread.
+    """Execute a multi-line PyMOL script from the worker thread.
 
     Each non-empty, non-comment line is executed via _cmd.do(line, 0, 1).
-    Uses async dispatch (no wait) to avoid deadlocking with the render loop.
+    _cmd.do() is a C extension that acquires the PyMOL API lock internally
+    (via APIEnterNotModal), so it is safe to call from any thread.  The
+    worker thread holds the GIL while calling into _cmd.do(); the API lock
+    serializes access to PyMOL's internal state against the render loop.
     """
     if not script or not _cmd:
         return

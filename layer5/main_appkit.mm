@@ -10,6 +10,83 @@
  *
  * Build with: -framework Cocoa -framework OpenGL -framework Metal -framework MetalKit
  * Requires: _PYMOL_LIB, _PYMOL_NO_MAIN, _PYMOL_PRETEND_GLUT
+ *
+ * ---------------------------------------------------------------------------
+ * THREADING MODEL & GIL MANAGEMENT
+ * ---------------------------------------------------------------------------
+ *
+ * Threads:
+ *   1. Main thread (AppKit run loop)
+ *      - Render loop: drawInMTKView: (Metal) or renderFrame (OpenGL timer)
+ *      - Mouse/keyboard handlers (NSResponder methods)
+ *      - performSelectorOnMainThread: dispatches from worker threads
+ *      - All PyMOL_* embedding API calls happen here
+ *
+ *   2. AI chat worker thread(s)  (modules/pymol/ai_chat.py)
+ *      - Spawned by threading.Thread(target=_worker) for each chat request
+ *      - Makes HTTP requests to AI APIs (long-running, releases GIL)
+ *      - Executes PyMOL commands via _cmd.do(line, 0, 1)
+ *      - Updates UI via performSelectorOnMainThread (ai_chat_ui.py)
+ *
+ * GIL ownership at each stage (Metal path):
+ *
+ *   main() -> Py_Initialize            : main thread acquires GIL
+ *   initPyMOL -> PInit(G, true)        : GIL held, P_glut_thread_id set
+ *   initPyMOL -> PyRun_SimpleString()  : GIL held for all init Python calls
+ *   drawInMTKView: entry               : main thread holds GIL (held since init)
+ *     -> PyMOL_Idle (PYMOL_API_TRYLOCK): PBlock(GIL) -> API lock -> PUnblock(~GIL)
+ *                                        ... idle work runs without GIL ...
+ *        (PYMOL_API_UNLOCK_NO_FLUSH)   : PBlock(GIL) -> API unlock -> return with GIL
+ *     -> Py_BEGIN_ALLOW_THREADS        : releases GIL (worker threads can run)
+ *     -> Py_END_ALLOW_THREADS          : reacquires GIL
+ *     -> SceneRenderMetal (no GIL needed, pure C++/Metal)
+ *        Actually GIL is held here; safe but could be released for
+ *        better concurrency in the future.
+ *   drawInMTKView: exit                : main thread holds GIL
+ *
+ *   Mouse handlers (main thread):
+ *     - OpenGL path: handleMouseButton -> PyMOL_Button (PYMOL_API_LOCK)
+ *       PYMOL_API_LOCK = PLockAPIAndUnblock: GIL -> API lock -> ~GIL
+ *       All properly serialized via API lock.
+ *     - Metal path: left-click -> performPickAtPoint: PBlock/PUnblock
+ *       Drag -> SceneRotate/SceneTranslate (no locks, main thread only)
+ *       Right/middle click -> handleMouseButton -> PyMOL_Button (API lock)
+ *
+ *   Worker thread calling _cmd.do():
+ *     - Worker holds GIL (it's a Python thread)
+ *     - CmdDo -> APIEnterNotModal: already has GIL, gets API lock via
+ *       Python-level cmd.lock()
+ *     - PParse executes the command
+ *     - APIExit: PBlock (gets GIL back) and releases glut_thread_keep_out
+ *
+ * Known constraints and risks:
+ *
+ *   1. Metal drag handlers (mouseDragged) call SceneRotate/SceneTranslate
+ *      directly without the API lock.  This is safe against the render loop
+ *      (both are on the main thread) but could race with a worker thread
+ *      modifying scene state via _cmd.do().  In practice this is benign
+ *      because the worker thread holds the API lock while modifying state,
+ *      and the drag handler doesn't acquire it, so the worst case is a
+ *      transient visual glitch (torn rotation), not a crash or corruption.
+ *      A proper fix would require the drag handler to acquire the API lock,
+ *      but that risks deadlock with the render loop.
+ *
+ *   2. run_on_main_thread (ai_chat_ui.py) dispatches callables to the main
+ *      thread via performSelectorOnMainThread.  The main thread must process
+ *      its run loop (including these selectors) between render frames.
+ *      The Py_BEGIN_ALLOW_THREADS/Py_END_ALLOW_THREADS in drawInMTKView:
+ *      releases the GIL briefly so the main thread's run loop can execute
+ *      queued selectors that need Python.  If the render loop holds the GIL
+ *      for too long, worker thread timeouts in run_on_main_thread can fire.
+ *
+ *   3. PBlock/PUnblock vs PyGILState_Ensure/Release: PyMOL maintains its
+ *      own saved-thread table (P_inst->savedThread[]).  Mixing
+ *      PyGILState_Ensure with PBlock on the same thread can corrupt this
+ *      table.  The main thread should use PBlock/PUnblock or the raw
+ *      Py_BEGIN_ALLOW_THREADS/Py_END_ALLOW_THREADS macros (which bypass
+ *      PyMOL's bookkeeping).  Worker threads that are pure Python threads
+ *      can use PyGILState_* safely since they never call PBlock.
+ * ---------------------------------------------------------------------------
  */
 
 #import <Cocoa/Cocoa.h>
@@ -740,16 +817,22 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // Hand the drawable to the renderer and begin the frame
     renderer->setDrawable(drawable, passDesc);
 
-    // Process idle work (needs GIL for Python callbacks)
+    // Process idle work (needs GIL for Python callbacks).
+    // PyMOL_Idle uses PYMOL_API_TRYLOCK which calls PTryLockAPIAndUnblock:
+    //   PBlock -> get API lock -> PUnblock  (releases GIL while holding API lock)
+    // On exit, PYMOL_API_UNLOCK_NO_FLUSH calls PBlockAndUnlockAPI:
+    //   PBlock -> unlock API -> (GIL held on return)
     PyMOL_Idle(pymolInstance);
 
     // Briefly release/reacquire the GIL so background Python threads
     // (AI chat HTTP requests, etc.) get a chance to run.
+    // After PyMOL_Idle returns, the main thread holds the GIL.
+    // Py_BEGIN_ALLOW_THREADS saves the thread state and releases the GIL;
+    // Py_END_ALLOW_THREADS reacquires it.  This is safe because we are
+    // not inside any PyMOL API lock at this point.
     {
-        PyGILState_STATE gstate = PyGILState_Ensure();
         Py_BEGIN_ALLOW_THREADS
         Py_END_ALLOW_THREADS
-        PyGILState_Release(gstate);
     }
 
     // Set viewport to match drawable size
@@ -1072,16 +1155,18 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     static const CGFloat kButtonAreaHeight = 150.0;
     static const CGFloat kLogPanelHeight = 150.0;
     static const CGFloat kSeqPanelHeight = 22.0;
+    static const CGFloat kMousePanelHeight = 170.0;
 
     NSRect contentBounds = [[self.window contentView] bounds];
     CGFloat objW = kObjectPanelWidth;
     CGFloat W = contentBounds.size.width;
     CGFloat H = contentBounds.size.height;
 
-    // Right panel (buttons + objects) stays anchored to the right
+    // Right panel: command buttons (top), object list (middle), mouse panel (bottom)
     CGFloat rightX = W - objW;
     [self.commandPanelContainer setFrame:NSMakeRect(rightX, H - kButtonAreaHeight, objW, kButtonAreaHeight)];
-    [self.objectPanelContainer setFrame:NSMakeRect(rightX, 0, objW, H - kButtonAreaHeight)];
+    [self.mousePanelContainer setFrame:NSMakeRect(rightX, 0, objW, kMousePanelHeight)];
+    [self.objectPanelContainer setFrame:NSMakeRect(rightX, kMousePanelHeight, objW, H - kButtonAreaHeight - kMousePanelHeight)];
 
     CGFloat centerX = self.chatVisible ? kChatPanelWidth : 0;
     CGFloat centerW = W - (self.chatVisible ? kChatPanelWidth : 0) - objW;

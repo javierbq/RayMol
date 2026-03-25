@@ -88,6 +88,9 @@ def _ensure_colors():
 
 # Module-level storage for main-thread dispatch (PyObjC class variables
 # don't work reliably for storing Python callables on NSObject subclasses).
+# A lock serializes concurrent callers so the shared globals are not
+# clobbered when multiple worker threads call run_on_main_thread().
+_mt_lock = threading.Lock()
 _mt_func = None
 _mt_result = None
 _mt_event = None
@@ -114,25 +117,30 @@ def run_on_main_thread(func, timeout=10.0):
     threading.Event to avoid deadlocks when the main thread is inside
     the PyMOL render loop.
 
+    A threading.Lock serializes callers so the module-level globals
+    (_mt_func, _mt_result, _mt_event) are not clobbered by concurrent
+    worker threads.
+
     Returns the result of func(). Raises if func raised or if timeout.
     """
     if threading.current_thread() is threading.main_thread():
         return func()
 
-    global _mt_func, _mt_result, _mt_event
-    result = [None, None]  # [value, exception]
-    event = threading.Event()
-    _mt_func = func
-    _mt_result = result
-    _mt_event = event
-    executor = _MainThreadExecutor.alloc().init()
-    executor.performSelectorOnMainThread_withObject_waitUntilDone_(
-        'doExecute:', None, False)
-    if not event.wait(timeout=timeout):
-        raise TimeoutError("run_on_main_thread timed out after %.1f seconds" % timeout)
-    if result[1] is not None:
-        raise result[1]
-    return result[0]
+    with _mt_lock:
+        global _mt_func, _mt_result, _mt_event
+        result = [None, None]  # [value, exception]
+        event = threading.Event()
+        _mt_func = func
+        _mt_result = result
+        _mt_event = event
+        executor = _MainThreadExecutor.alloc().init()
+        executor.performSelectorOnMainThread_withObject_waitUntilDone_(
+            'doExecute:', None, False)
+        if not event.wait(timeout=timeout):
+            raise TimeoutError("run_on_main_thread timed out after %.1f seconds" % timeout)
+        if result[1] is not None:
+            raise result[1]
+        return result[0]
 
 
 # ---------------------------------------------------------------------------

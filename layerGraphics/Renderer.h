@@ -153,6 +153,11 @@ public:
   // GL: always returns true.
   virtual bool isRenderReady() const { return true; }
 
+  /// Returns true if the renderer has an active command encoder that can
+  /// accept draw calls. On GL this is always true. On Metal, it returns
+  /// false if the encoder was ended or the command buffer was committed.
+  virtual bool hasActiveEncoder() const { return true; }
+
   // Queries
   virtual void getIntegerv(int pname, int* params) = 0;
   virtual const char* getString(int name) = 0;

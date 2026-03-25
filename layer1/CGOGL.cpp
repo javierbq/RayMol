@@ -28,22 +28,6 @@
 static bool drawVBOViaMetal(pymol::Renderer* renderer, VertexBufferGL* vbo,
     pymol::PrimitiveType mode, int vertexCount)
 {
-  {
-    static int logCount = 0;
-    if (logCount < 5) {
-      FILE* f = fopen("/tmp/pymol_metal_render.log", "a");
-      if (f) {
-        fprintf(f, "drawVBOViaMetal: renderer=%p vbo=%p hasCPU=%d verts=%d\n",
-                (void*)renderer, (void*)vbo,
-                vbo ? vbo->hasCPUData() : -1, vertexCount);
-        if (vbo && vbo->hasCPUData()) {
-          fprintf(f, "  cpuDataSize=%zu stride=%zu\n", vbo->cpuDataSize(), vbo->cpuStride());
-        }
-        fclose(f);
-      }
-      logCount++;
-    }
-  }
   if (!renderer || !vbo || !vbo->hasCPUData()) return false;
 
   const auto& desc = vbo->getDesc();

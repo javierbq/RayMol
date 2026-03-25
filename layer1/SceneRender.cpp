@@ -1936,7 +1936,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // --- Render selection indicators ---
   // Collect selected atom positions and draw them as pink points
   // through the Metal renderer (the GL indicator pipeline is unavailable).
-  SceneRenderMetalSelections(G);
+  // Guard: only attempt if the renderer's encoder is still alive after
+  // SceneRenderAll (which may have ended/restarted it).
+  if (G->Renderer && G->Renderer->hasActiveEncoder())
+    SceneRenderMetalSelections(G);
 }
 
 void SceneRenderMetalSelections(PyMOLGlobals* G)

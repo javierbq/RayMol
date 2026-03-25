@@ -808,12 +808,8 @@ def _poll_objects():
 
     try:
         _rebuild_rows(objects, selections, enabled_set)
-        with open('/tmp/pymol_objpanel.log', 'a') as f:
-            f.write(f"poll: objects={objects} selections={selections} rebuilt OK\n")
-    except Exception as e:
-        with open('/tmp/pymol_objpanel.log', 'a') as f:
-            import traceback
-            f.write(f"poll ERROR: {e}\n{traceback.format_exc()}\n")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

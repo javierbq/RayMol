@@ -260,6 +260,14 @@ void RendererMetal::ensureEncoder()
   if (_encoder) return;
   if (!_cmdBuffer || !_passDesc) return;
 
+  // Don't create an encoder on an already-committed command buffer.
+  // After endFrame() commits the buffer, its status changes from
+  // MTLCommandBufferStatusNotEnqueued/Enqueued to Committed/Completed.
+  MTLCommandBufferStatus status = [_cmdBuffer status];
+  if (status >= MTLCommandBufferStatusCommitted) {
+    return;
+  }
+
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
   if (!_encoder) return;
 
@@ -1066,6 +1074,18 @@ void RendererMetal::endBatch()
 bool RendererMetal::isRenderReady() const
 {
   return _cmdBuffer && _passDesc && _batchPipeline;
+}
+
+bool RendererMetal::hasActiveEncoder() const
+{
+  // The encoder must exist AND the command buffer must not yet be committed.
+  // After endFrame() commits the buffer, _cmdBuffer is nilled. But if
+  // SceneRenderAll ends/restarts the encoder, _encoder may be nil while
+  // _cmdBuffer is still valid — that's fine, ensureEncoder() can recreate it.
+  // We only reject the case where _cmdBuffer itself is gone or committed.
+  if (!_cmdBuffer) return false;
+  MTLCommandBufferStatus status = [_cmdBuffer status];
+  return status < MTLCommandBufferStatusCommitted;
 }
 
 // ---------------------------------------------------------------------------

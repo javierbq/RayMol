@@ -1593,6 +1593,12 @@ NOTES
                 _cmd.set_busy(_self._COb,0)
         finally:
             _self.unlock(r)
+        # Show rendered image in Metal viewport overlay
+        try:
+            from pymol import appkit_ray_overlay
+            appkit_ray_overlay.show_ray_image(_self)
+        except Exception:
+            pass
         return r
 
     def capture(quiet=1, *, _self=cmd):
@@ -1657,7 +1663,14 @@ SEE ALSO
 
                 return _cmd.draw(_self._COb,int(width),int(height),
                           int(antialias),int(quiet))
-        return _self._call_with_opengl_context(func)
+        r = _self._call_with_opengl_context(func)
+        # Show rendered image in Metal viewport overlay
+        try:
+            from pymol import appkit_ray_overlay
+            appkit_ray_overlay.show_ray_image(_self)
+        except Exception:
+            pass
+        return r
 
     def ray(width=0, height=0, antialias=-1, angle=0.0, shift=0.0,
             renderer=-1, quiet=1, async_=0, _self=cmd, **kwargs):
