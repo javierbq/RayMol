@@ -1,9 +1,28 @@
-// PyMOLBridge.xcconfig — Include paths for compiling ObjC++ bridge files
-// These paths are NOT added to HEADER_SEARCH_PATHS (which would break
-// Clang module builds due to layer0/Block.h shadowing system Block.h).
-// Instead they're added to OTHER_CPLUSPLUSFLAGS which only affects C++/ObjC++ compilation.
+// PyMOLBridge.xcconfig — Build settings for PyMOL SwiftUI app
+//
+// Include paths go via OTHER_CPLUSPLUSFLAGS (not HEADER_SEARCH_PATHS)
+// because layer0/Block.h shadows the system Block.h and breaks Clang
+// module builds for CoreFoundation/UIKit.
 
 PYMOL_ROOT = $(SRCROOT)/..
 PYMOL_BUILD = $(SRCROOT)/../build_appkit
 
-OTHER_CPLUSPLUSFLAGS = $(inherited) -I$(PYMOL_ROOT)/include -I$(PYMOL_ROOT)/include/pymol -I$(PYMOL_ROOT)/ov/src -I$(PYMOL_ROOT)/layer0 -I$(PYMOL_ROOT)/layer1 -I$(PYMOL_ROOT)/layer2 -I$(PYMOL_ROOT)/layer3 -I$(PYMOL_ROOT)/layer4 -I$(PYMOL_ROOT)/layer5 -I$(PYMOL_ROOT)/layerGraphics -I$(PYMOL_ROOT)/layerGraphics/gl -I$(PYMOL_ROOT)/layerGraphics/metal -I$(PYMOL_ROOT)/contrib -I$(PYMOL_ROOT)/contrib/pocketfft -I$(PYMOL_BUILD)/generated -I/opt/homebrew/include -I/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14
+// --- C++/ObjC++ include paths ---
+PYMOL_INCLUDE_FLAGS = -I$(PYMOL_ROOT)/include -I$(PYMOL_ROOT)/include/pymol -I$(PYMOL_ROOT)/ov/src -I$(PYMOL_ROOT)/layer0 -I$(PYMOL_ROOT)/layer1 -I$(PYMOL_ROOT)/layer2 -I$(PYMOL_ROOT)/layer3 -I$(PYMOL_ROOT)/layer4 -I$(PYMOL_ROOT)/layer5 -I$(PYMOL_ROOT)/layerGraphics -I$(PYMOL_ROOT)/layerGraphics/gl -I$(PYMOL_ROOT)/layerGraphics/metal -I$(PYMOL_ROOT)/contrib -I$(PYMOL_ROOT)/contrib/pocketfft -I$(PYMOL_BUILD)/generated -I/opt/homebrew/include -I/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14
+
+// On iOS, define _PYMOL_NO_OPENGL to compile out GL code (Metal-only)
+PYMOL_IOS_FLAGS[sdk=iphoneos*] = -D_PYMOL_NO_OPENGL
+PYMOL_IOS_FLAGS[sdk=iphonesimulator*] = -D_PYMOL_NO_OPENGL
+
+OTHER_CPLUSPLUSFLAGS = $(inherited) $(PYMOL_INCLUDE_FLAGS) $(PYMOL_IOS_FLAGS)
+
+// --- Linker flags ---
+// Shared libs for both platforms
+PYMOL_SHARED_LDFLAGS = -lpymol_core -lfreetype -lpng16 -lxml2 -lpython3.14 -framework Metal -framework MetalKit -framework CoreVideo
+
+// macOS-only: OpenGL + GLEW
+PYMOL_GL_LDFLAGS[sdk=macosx*] = -framework OpenGL -lGLEW
+PYMOL_GL_LDFLAGS[sdk=iphoneos*] =
+PYMOL_GL_LDFLAGS[sdk=iphonesimulator*] =
+
+OTHER_LDFLAGS = $(inherited) $(PYMOL_SHARED_LDFLAGS) $(PYMOL_GL_LDFLAGS)

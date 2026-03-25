@@ -19,24 +19,13 @@ settings:
     SWIFT_OBJC_BRIDGING_HEADER: PyMOLViewer/Bridge/PyMOLBridge.h
     # Do NOT add PyMOL layer paths to HEADER_SEARCH_PATHS —
     # layer0/Block.h shadows the system Block.h and breaks module builds.
-    # PyMOL paths go via OTHER_CPLUSPLUSFLAGS in PyMOLBridge.xcconfig.
+    # All paths and flags are in PyMOLBridge.xcconfig.
     LIBRARY_SEARCH_PATHS:
       - $(SRCROOT)/../build_appkit
       - /opt/homebrew/lib
       - /opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/lib
     FRAMEWORK_SEARCH_PATHS:
       - /opt/homebrew/opt/python@3.14/Frameworks
-    OTHER_LDFLAGS:
-      - -lpymol_core
-      - -lfreetype
-      - -lpng16
-      - -lGLEW
-      - -lxml2
-      - -lpython3.14
-      - -framework Metal
-      - -framework MetalKit
-      - -framework OpenGL
-      - -framework CoreVideo
 
 targets:
   PyMOLViewer:
