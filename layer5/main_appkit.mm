@@ -619,12 +619,16 @@ static void initPython(int argc, const char *argv[]) {
     // Set program name
     PyConfig_SetBytesString(&config, &config.program_name, argv[0]);
 
-    // If a bundled Python framework exists, set PYTHONHOME to it.
+    // If a bundled Python exists, set PYTHONHOME to it.
     // This makes the app portable — it finds its stdlib in the bundle
-    // instead of /opt/homebrew/. In development mode (no bundled framework),
+    // instead of /opt/homebrew/. In development mode (no bundled Python),
     // this is skipped and the system Python is used.
+    // PYMOL_PYTHON_VERSION is set by CMake (e.g., "3.13").
+#ifndef PYMOL_PYTHON_VERSION
+#define PYMOL_PYTHON_VERSION "3.13"
+#endif
     NSString *bundledPython = [[[bundle bundlePath]
-        stringByAppendingPathComponent:@"Contents/Frameworks/Python.framework/Versions/3.14"] retain];
+        stringByAppendingPathComponent:@"Contents/Resources/python"] retain];
     if ([[NSFileManager defaultManager] fileExistsAtPath:bundledPython]) {
         PyConfig_SetBytesString(&config, &config.home, [bundledPython UTF8String]);
     }
@@ -649,7 +653,8 @@ static void initPython(int argc, const char *argv[]) {
 
         // Add bundled site-packages (numpy, PyObjC, etc.) if present
         NSString *sitePackages = [resourcePath
-            stringByAppendingPathComponent:@"lib/python3.14/site-packages"];
+            stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"lib/python%s/site-packages", PYMOL_PYTHON_VERSION]];
         if ([[NSFileManager defaultManager] fileExistsAtPath:sitePackages]) {
             PyObject *spPath = PyUnicode_FromString([sitePackages UTF8String]);
             PyList_Insert(sysPath, 1, spPath);

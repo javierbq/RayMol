@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Make PyMOL.app fully portable by bundling all dependencies."""
+"""Make PyMOL.app fully portable by bundling embedded Python and dependencies.
+
+Assumes:
+  - C dependencies (libpng, freetype, GLEW, etc.) are statically linked
+  - Python is provided by python-build-standalone in deps/python/
+  - Python packages are specified in requirements-bundle.txt
+
+Usage:
+    python3 scripts/bundle_app.py build_appkit/PyMOL.app [--dmg] [--identity ID]
+"""
 
 import argparse
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -21,23 +29,11 @@ MACHO_MAGICS = {
     b"\xbe\xba\xfe\xca",  # FAT_CIGAM
 }
 
-EXCLUDE_STDLIB = {"test", "tests", "idlelib", "tkinter", "turtledemo", "ensurepip"}
-
-SITE_PACKAGES_DIRS = [
-    "numpy",
-    "objc",
-    "PyObjCTools",
-    "AppKit",
-    "Foundation",
-    "Cocoa",
-    "CoreFoundation",
-]
-
-SITE_PACKAGES_DIST_INFOS = [
-    "numpy",
-    "pyobjc_core",
-    "pyobjc_framework_cocoa",
-]
+# Stdlib directories to exclude from the bundle (saves ~30 MB)
+EXCLUDE_STDLIB = {
+    "test", "tests", "idlelib", "tkinter", "turtledemo", "ensurepip",
+    "lib2to3", "distutils",
+}
 
 
 def is_macho(path):
@@ -53,53 +49,9 @@ def is_macho(path):
         return False
 
 
-def get_dylib_deps(path):
-    """Get non-system dylib dependencies of a Mach-O binary.
-
-    Returns list of absolute paths starting with /opt/homebrew/.
-    """
-    try:
-        out = subprocess.check_output(
-            ["otool", "-L", str(path)], text=True, stderr=subprocess.DEVNULL
-        )
-    except subprocess.CalledProcessError:
-        return []
-    deps = []
-    for line in out.splitlines()[1:]:  # skip first line (filename)
-        line = line.strip()
-        if not line:
-            continue
-        # Format: /path/to/lib.dylib (compat ..., current ...)
-        m = re.match(r"(/\S+)", line)
-        if m:
-            dep_path = m.group(1)
-            if dep_path.startswith("/opt/homebrew/"):
-                deps.append(dep_path)
-    return deps
-
-
-def collect_all_dylibs(start_paths):
-    """Recursively collect all non-system dylibs starting from given paths.
-
-    Returns deduplicated set of absolute paths.
-    """
-    collected = set()
-    queue = list(start_paths)
-    while queue:
-        path = queue.pop()
-        deps = get_dylib_deps(path)
-        for dep in deps:
-            real = str(Path(dep).resolve())
-            if real not in collected and os.path.isfile(real):
-                collected.add(real)
-                queue.append(real)
-    return collected
-
-
 def find_all_macho(app_path):
     """Find all Mach-O files in the bundle."""
     results = []
-    app_path = Path(app_path)
     for root, dirs, files in os.walk(app_path):
         for fname in files:
             fpath = Path(root) / fname
@@ -108,302 +60,61 @@ def find_all_macho(app_path):
     return results
 
 
-def detect_python_version(binary_path):
-    """Detect Python version from the binary's linked Python.framework."""
-    out = subprocess.check_output(["otool", "-L", str(binary_path)], text=True)
-    for line in out.splitlines():
-        if "Python.framework" in line:
-            parts = line.strip().split("/")
-            try:
-                ver_idx = parts.index("Versions") + 1
-                return parts[ver_idx]
-            except (ValueError, IndexError):
-                pass
-    return None
+def get_non_system_refs(path):
+    """Get non-system library references from a Mach-O binary.
+
+    Returns list of paths that are NOT system frameworks or @rpath/@loader_path.
+    """
+    try:
+        out = subprocess.check_output(
+            ["otool", "-L", str(path)], text=True, stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError:
+        return []
+    refs = []
+    for line in out.splitlines()[1:]:
+        line = line.strip()
+        m = re.match(r"(/\S+)", line)
+        if m:
+            ref = m.group(1)
+            # Skip system libraries and frameworks
+            if ref.startswith("/usr/lib/") or ref.startswith("/System/"):
+                continue
+            refs.append(ref)
+    return refs
+
+
+def detect_python_version(python_prefix):
+    """Detect Python major.minor version from a python-build-standalone install."""
+    python_bin = Path(python_prefix) / "bin" / "python3"
+    if not python_bin.exists():
+        raise FileNotFoundError(f"Python binary not found at {python_bin}")
+    out = subprocess.check_output(
+        [str(python_bin), "-c",
+         "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        text=True
+    ).strip()
+    return out
 
 
 def strip_signature(path):
-    """Strip code signature from a Mach-O file (needed before install_name_tool)."""
+    """Strip code signature from a Mach-O file."""
     subprocess.run(
         ["codesign", "--remove-signature", str(path)],
-        stderr=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
     )
 
 
 def run_install_name_tool(args):
     """Run install_name_tool, stripping signature and retrying on failure."""
     result = subprocess.run(
-        ["install_name_tool"] + args,
-        capture_output=True,
-        text=True,
+        ["install_name_tool"] + args, capture_output=True, text=True,
     )
     if result.returncode != 0:
-        # Might fail due to code signature; strip and retry
-        target = args[-1]
-        strip_signature(target)
+        strip_signature(args[-1])
         subprocess.run(
-            ["install_name_tool"] + args,
-            capture_output=True,
-            text=True,
+            ["install_name_tool"] + args, capture_output=True, text=True,
         )
-
-
-def copytree_filtered(src, dst, exclude_dirs=None, exclude_patterns=None):
-    """Copy directory tree with exclusions."""
-    exclude_dirs = exclude_dirs or set()
-    exclude_patterns = exclude_patterns or set()
-
-    def _ignore(directory, contents):
-        ignored = set()
-        for item in contents:
-            if item in exclude_dirs:
-                ignored.add(item)
-            for pat in exclude_patterns:
-                if item.endswith(pat):
-                    ignored.add(item)
-        return ignored
-
-    if os.path.exists(dst):
-        shutil.rmtree(dst)
-    shutil.copytree(str(src), str(dst), symlinks=True, ignore=_ignore)
-
-
-def phase_a_collect_dylibs(binary_path, extra_paths=None):
-    """Phase A: Collect all non-system dylibs recursively."""
-    print("\n=== Phase A: Collecting non-system dylibs ===")
-    start = [str(binary_path)]
-    if extra_paths:
-        start.extend(str(p) for p in extra_paths)
-    dylibs = collect_all_dylibs(start)
-    print(f"  Found {len(dylibs)} Homebrew dylibs")
-    for d in sorted(dylibs):
-        print(f"    {d}")
-    return dylibs
-
-
-def phase_b_copy_python_framework(app_path, python_version):
-    """Phase B: Copy Python framework into the bundle."""
-    print("\n=== Phase B: Copying Python framework ===")
-    src_base = Path(f"/opt/homebrew/opt/python@{python_version}/Frameworks/Python.framework/Versions/{python_version}")
-    dst_base = app_path / f"Contents/Frameworks/Python.framework/Versions/{python_version}"
-
-    if not src_base.exists():
-        print(f"  ERROR: Python framework not found at {src_base}")
-        sys.exit(1)
-
-    # Create destination
-    dst_base.mkdir(parents=True, exist_ok=True)
-
-    # Copy the Python dylib
-    src_dylib = src_base / "Python"
-    dst_dylib = dst_base / "Python"
-    if dst_dylib.exists():
-        os.remove(dst_dylib)
-    print(f"  Copying Python dylib...")
-    shutil.copy2(str(src_dylib), str(dst_dylib))
-
-    # Copy stdlib
-    src_lib = src_base / f"lib/python{python_version}"
-    dst_lib = dst_base / f"lib/python{python_version}"
-    print(f"  Copying stdlib (excluding test dirs, __pycache__, .pyc)...")
-    copytree_filtered(
-        src_lib,
-        dst_lib,
-        exclude_dirs=EXCLUDE_STDLIB | {"__pycache__"},
-        exclude_patterns={".pyc"},
-    )
-
-    # Create framework symlinks
-    fw_root = app_path / "Contents/Frameworks/Python.framework"
-    versions_dir = fw_root / "Versions"
-
-    current_link = versions_dir / "Current"
-    if current_link.exists() or current_link.is_symlink():
-        current_link.unlink()
-    current_link.symlink_to(python_version)
-
-    top_python_link = fw_root / "Python"
-    if top_python_link.exists() or top_python_link.is_symlink():
-        top_python_link.unlink()
-    top_python_link.symlink_to(f"Versions/Current/Python")
-
-    # Create Resources/Info.plist (required for codesign)
-    resources_dir = dst_base / "Resources"
-    resources_dir.mkdir(exist_ok=True)
-    info_plist = resources_dir / "Info.plist"
-    info_plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>org.python.python</string>
-    <key>CFBundleName</key>
-    <string>Python</string>
-    <key>CFBundleVersion</key>
-    <string>{python_version}</string>
-</dict>
-</plist>
-""")
-
-    # Resources symlink at top level
-    res_link = fw_root / "Resources"
-    if res_link.exists() or res_link.is_symlink():
-        res_link.unlink()
-    res_link.symlink_to("Versions/Current/Resources")
-
-    print(f"  Python framework copied to {fw_root}")
-
-
-def phase_c_copy_site_packages(app_path, python_version):
-    """Phase C: Copy Python site-packages."""
-    print("\n=== Phase C: Copying site-packages ===")
-    src_sp = Path(f"/opt/homebrew/lib/python{python_version}/site-packages")
-    dst_sp = app_path / f"Contents/Resources/lib/python{python_version}/site-packages"
-    dst_sp.mkdir(parents=True, exist_ok=True)
-
-    # Copy package directories
-    for pkg in SITE_PACKAGES_DIRS:
-        src = src_sp / pkg
-        dst = dst_sp / pkg
-        if src.exists():
-            print(f"  Copying {pkg}/")
-            exclude_dirs = {"tests", "test", "__pycache__"} if pkg == "numpy" else {"__pycache__"}
-            copytree_filtered(src, dst, exclude_dirs=exclude_dirs, exclude_patterns={".pyc"})
-        else:
-            print(f"  WARNING: {pkg}/ not found in site-packages")
-
-    # Copy .dist-info directories
-    for prefix in SITE_PACKAGES_DIST_INFOS:
-        for entry in src_sp.iterdir():
-            if entry.is_dir() and entry.name.startswith(prefix) and entry.name.endswith(".dist-info"):
-                dst = dst_sp / entry.name
-                print(f"  Copying {entry.name}")
-                copytree_filtered(entry, dst)
-
-    # Copy _opaque_pointers.py if present
-    opaque = src_sp / "_opaque_pointers.py"
-    if opaque.exists():
-        print("  Copying _opaque_pointers.py")
-        shutil.copy2(str(opaque), str(dst_sp / "_opaque_pointers.py"))
-
-    print(f"  Site-packages copied to {dst_sp}")
-
-
-def phase_d_copy_dylibs(app_path, dylibs):
-    """Phase D: Copy collected Homebrew dylibs into Frameworks/."""
-    print("\n=== Phase D: Copying Homebrew dylibs into Frameworks/ ===")
-    fw_dir = app_path / "Contents/Frameworks"
-    fw_dir.mkdir(parents=True, exist_ok=True)
-
-    copied = {}
-    for dylib_path in sorted(dylibs):
-        basename = os.path.basename(dylib_path)
-        dst = fw_dir / basename
-        if dst.exists():
-            # Already there (maybe from a previous run)
-            pass
-        else:
-            shutil.copy2(dylib_path, str(dst))
-        copied[dylib_path] = str(dst)
-        print(f"  {basename}")
-
-    # Now scan .so files in the bundle for additional transitive deps
-    print("  Scanning bundle .so files for additional deps...")
-    so_files = list(app_path.rglob("*.so"))
-    extra_dylibs = collect_all_dylibs(so_files)
-    new_count = 0
-    for dylib_path in sorted(extra_dylibs):
-        basename = os.path.basename(dylib_path)
-        dst = fw_dir / basename
-        if not dst.exists():
-            shutil.copy2(dylib_path, str(dst))
-            copied[dylib_path] = str(dst)
-            print(f"  (transitive) {basename}")
-            new_count += 1
-    if new_count:
-        print(f"  Found {new_count} additional transitive dylibs")
-
-    print(f"  Total dylibs in Frameworks/: {len(list(fw_dir.glob('*.dylib')))}")
-    return copied
-
-
-def phase_e_rewrite_install_names(app_path):
-    """Phase E: Rewrite install names for all Mach-O files."""
-    print("\n=== Phase E: Rewriting install names ===")
-    all_macho = find_all_macho(app_path)
-    binary = app_path / "Contents/MacOS/PyMOL"
-    fw_dir = app_path / "Contents/Frameworks"
-
-    # Build map of basename -> exists in Frameworks
-    fw_basenames = set()
-    for f in fw_dir.iterdir():
-        if f.is_file() and not f.is_symlink():
-            fw_basenames.add(f.name)
-
-    rewritten = 0
-    for macho_path in all_macho:
-        macho_path = Path(macho_path)
-        deps = []
-        try:
-            out = subprocess.check_output(
-                ["otool", "-L", str(macho_path)], text=True, stderr=subprocess.DEVNULL
-            )
-        except subprocess.CalledProcessError:
-            continue
-
-        changes = []
-        for line in out.splitlines()[1:]:
-            m = re.match(r"\s+(/\S+)", line)
-            if not m:
-                continue
-            ref = m.group(1)
-            if ref.startswith("/opt/homebrew/"):
-                basename = os.path.basename(ref)
-                new_ref = f"@rpath/{basename}"
-                changes.append((ref, new_ref))
-
-        if not changes:
-            continue
-
-        # Strip signature before modifying
-        strip_signature(macho_path)
-
-        for old, new in changes:
-            run_install_name_tool(["-change", old, new, str(macho_path)])
-        rewritten += 1
-
-    # Set dylib IDs
-    print("  Setting dylib IDs...")
-    for f in fw_dir.rglob("*"):
-        if f.is_file() and not f.is_symlink() and is_macho(f):
-            basename = f.name
-            strip_signature(f)
-            run_install_name_tool(["-id", f"@rpath/{basename}", str(f)])
-
-    # Also set Python framework dylib ID
-    python_dylib = fw_dir / "Python.framework/Versions/Current/Python"
-    if python_dylib.exists():
-        real_python = python_dylib.resolve()
-        strip_signature(real_python)
-        run_install_name_tool(["-id", "@rpath/Python", str(real_python)])
-
-    # Add rpaths
-    print("  Adding rpaths...")
-
-    # Main binary: @executable_path/../Frameworks
-    _add_rpath(binary, "@executable_path/../Frameworks")
-
-    # .so files: @executable_path/../Frameworks
-    for so in app_path.rglob("*.so"):
-        _add_rpath(so, "@executable_path/../Frameworks")
-
-    # Dylibs in Frameworks: @loader_path
-    for f in fw_dir.rglob("*"):
-        if f.is_file() and not f.is_symlink() and is_macho(f):
-            _add_rpath(f, "@loader_path")
-
-    print(f"  Rewrote {rewritten} Mach-O files")
 
 
 def _add_rpath(path, rpath):
@@ -420,56 +131,298 @@ def _add_rpath(path, rpath):
     run_install_name_tool(["-add_rpath", rpath, str(path)])
 
 
-def phase_f_codesign(app_path):
-    """Phase F: Ad-hoc code sign everything."""
-    print("\n=== Phase F: Ad-hoc code signing ===")
-    fw_dir = app_path / "Contents/Frameworks"
+# ==========================================================================
+# Phase A: Copy embedded Python
+# ==========================================================================
+
+def phase_a_copy_python(app_path, python_prefix, python_version):
+    """Copy python-build-standalone into the app bundle."""
+    print("\n=== Phase A: Copying embedded Python ===")
+
+    src = Path(python_prefix)
+    dst = app_path / "Contents" / "Resources" / "python"
+
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True)
+
+    # Copy bin/ (just python3 and python3.X)
+    bin_dst = dst / "bin"
+    bin_dst.mkdir()
+    for name in ["python3", f"python{python_version}"]:
+        src_bin = src / "bin" / name
+        if src_bin.exists() and not src_bin.is_symlink():
+            shutil.copy2(str(src_bin), str(bin_dst / name))
+        elif src_bin.is_symlink():
+            link_target = os.readlink(src_bin)
+            os.symlink(link_target, str(bin_dst / name))
+
+    # Copy lib/pythonX.Y/ (stdlib)
+    src_lib = src / "lib" / f"python{python_version}"
+    dst_lib = dst / "lib" / f"python{python_version}"
+    print(f"  Copying stdlib (python{python_version})...")
+
+    def _ignore(directory, contents):
+        ignored = set()
+        for item in contents:
+            if item in EXCLUDE_STDLIB or item == "__pycache__":
+                ignored.add(item)
+            if item.endswith(".pyc"):
+                ignored.add(item)
+        return ignored
+
+    shutil.copytree(str(src_lib), str(dst_lib), symlinks=True, ignore=_ignore)
+
+    # Copy libpython dylib
+    lib_dir = dst / "lib"
+    dylib_name = f"libpython{python_version}.dylib"
+    src_dylib = src / "lib" / dylib_name
+    if src_dylib.exists():
+        shutil.copy2(str(src_dylib), str(lib_dir / dylib_name))
+        print(f"  Copied {dylib_name}")
+    else:
+        # Try without minor version
+        for f in (src / "lib").glob("libpython3*.dylib"):
+            if f.is_file() and not f.is_symlink():
+                shutil.copy2(str(f), str(lib_dir / f.name))
+                print(f"  Copied {f.name}")
+
+    # Copy include/ (needed at runtime for some extensions)
+    src_inc = src / "include" / f"python{python_version}"
+    dst_inc = dst / "include" / f"python{python_version}"
+    if src_inc.exists():
+        shutil.copytree(str(src_inc), str(dst_inc), symlinks=True)
+
+    print(f"  Python {python_version} copied to {dst}")
+    return dst
+
+
+# ==========================================================================
+# Phase B: Install Python packages
+# ==========================================================================
+
+def phase_b_install_packages(app_path, python_prefix, python_version, requirements_file):
+    """Install Python packages into the bundle via pip."""
+    print("\n=== Phase B: Installing Python packages ===")
+
+    python_bin = Path(python_prefix) / "bin" / "python3"
+    site_packages = (
+        app_path / "Contents" / "Resources"
+        / "lib" / f"python{python_version}" / "site-packages"
+    )
+    site_packages.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(python_bin), "-m", "pip", "install",
+        "--target", str(site_packages),
+        "--only-binary=:all:",
+        "-r", str(requirements_file),
+    ]
+
+    print(f"  Installing packages to {site_packages}")
+    subprocess.check_call(cmd)
+
+    # Remove unnecessary files
+    for pattern in ["__pycache__"]:
+        for f in site_packages.rglob(pattern):
+            if f.is_dir():
+                shutil.rmtree(f)
+
+    # List installed packages
+    for d in sorted(site_packages.iterdir()):
+        if d.is_dir() and not d.name.startswith("."):
+            print(f"    {d.name}/")
+
+    print(f"  Packages installed to {site_packages}")
+
+
+# ==========================================================================
+# Phase C: Collect and copy remaining dylibs
+# ==========================================================================
+
+def phase_c_copy_dylibs(app_path):
+    """Copy any non-system dylibs referenced by .so files in the bundle.
+
+    With static C deps, this mainly handles libpython and any dylibs
+    pulled in by numpy or pyobjc .so extensions.
+    """
+    print("\n=== Phase C: Collecting remaining dylibs ===")
+
+    fw_dir = app_path / "Contents" / "Frameworks"
+    fw_dir.mkdir(parents=True, exist_ok=True)
+
+    all_macho = find_all_macho(app_path)
+    needed = set()
+
+    for macho_path in all_macho:
+        for ref in get_non_system_refs(macho_path):
+            if ref.startswith("@"):
+                continue  # already relocated
+            real = str(Path(ref).resolve())
+            if os.path.isfile(real):
+                needed.add(real)
+
+    # Recursively collect transitive deps
+    queue = list(needed)
+    while queue:
+        path = queue.pop()
+        for ref in get_non_system_refs(path):
+            if ref.startswith("@"):
+                continue
+            real = str(Path(ref).resolve())
+            if real not in needed and os.path.isfile(real):
+                needed.add(real)
+                queue.append(real)
+
+    # Copy to Frameworks (skip if already inside the bundle)
+    app_str = str(app_path)
+    copied = 0
+    for dylib_path in sorted(needed):
+        if dylib_path.startswith(app_str):
+            continue  # already in bundle
+        basename = os.path.basename(dylib_path)
+        dst = fw_dir / basename
+        if not dst.exists():
+            shutil.copy2(dylib_path, str(dst))
+            print(f"  Copied {basename}")
+            copied += 1
+
+    if copied == 0:
+        print("  No additional dylibs needed (static deps working)")
+    else:
+        print(f"  Copied {copied} dylibs to Frameworks/")
+
+
+# ==========================================================================
+# Phase D: Rewrite install names
+# ==========================================================================
+
+def phase_d_rewrite_install_names(app_path):
+    """Rewrite non-system library references to @rpath."""
+    print("\n=== Phase D: Rewriting install names ===")
+
+    binary = app_path / "Contents" / "MacOS" / "PyMOL"
+    fw_dir = app_path / "Contents" / "Frameworks"
+
+    all_macho = find_all_macho(app_path)
+    rewritten = 0
+
+    for macho_path in all_macho:
+        try:
+            out = subprocess.check_output(
+                ["otool", "-L", str(macho_path)], text=True, stderr=subprocess.DEVNULL
+            )
+        except subprocess.CalledProcessError:
+            continue
+
+        changes = []
+        for line in out.splitlines()[1:]:
+            m = re.match(r"\s+(/\S+)", line)
+            if not m:
+                continue
+            ref = m.group(1)
+            if ref.startswith("/usr/lib/") or ref.startswith("/System/"):
+                continue
+            if ref.startswith("@"):
+                continue
+            basename = os.path.basename(ref)
+            new_ref = f"@rpath/{basename}"
+            changes.append((ref, new_ref))
+
+        if not changes:
+            continue
+
+        strip_signature(macho_path)
+        for old, new in changes:
+            run_install_name_tool(["-change", old, new, str(macho_path)])
+        rewritten += 1
+
+    # Set dylib IDs in Frameworks/
+    print("  Setting dylib IDs...")
+    for f in fw_dir.rglob("*"):
+        if f.is_file() and not f.is_symlink() and is_macho(f):
+            strip_signature(f)
+            run_install_name_tool(["-id", f"@rpath/{f.name}", str(f)])
+
+    # Also fix libpython inside Frameworks/python/lib/
+    python_lib_dir = fw_dir / "python" / "lib"
+    if python_lib_dir.exists():
+        for f in python_lib_dir.glob("libpython*.dylib"):
+            if f.is_file() and not f.is_symlink():
+                strip_signature(f)
+                run_install_name_tool(["-id", f"@rpath/{f.name}", str(f)])
+
+    # Add rpaths
+    print("  Adding rpaths...")
+
+    # Main binary
+    _add_rpath(binary, "@executable_path/../Frameworks")
+    _add_rpath(binary, "@executable_path/../Resources/python/lib")
+
+    # .so files (numpy, pyobjc extensions)
+    for so in app_path.rglob("*.so"):
+        _add_rpath(so, "@executable_path/../Frameworks")
+        _add_rpath(so, "@executable_path/../Resources/python/lib")
+
+    # Dylibs in Frameworks/
+    for f in fw_dir.rglob("*"):
+        if f.is_file() and not f.is_symlink() and is_macho(f):
+            _add_rpath(f, "@loader_path")
+            _add_rpath(f, "@loader_path/../Resources/python/lib")
+
+    print(f"  Rewrote {rewritten} Mach-O files")
+
+
+# ==========================================================================
+# Phase E: Code signing
+# ==========================================================================
+
+def phase_e_codesign(app_path, identity="-"):
+    """Code sign the bundle."""
+    print("\n=== Phase E: Code signing ===")
+
+    sign_args = ["codesign", "--force", "--sign", identity]
+    if identity != "-":
+        sign_args.append("--options=runtime")  # hardened runtime for notarization
+
+    fw_dir = app_path / "Contents" / "Frameworks"
 
     # Sign dylibs
     for f in sorted(fw_dir.rglob("*.dylib")):
         if f.is_file() and not f.is_symlink():
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", str(f)],
-                capture_output=True,
-            )
+            subprocess.run(sign_args + [str(f)], capture_output=True)
 
     # Sign .so files
     so_count = 0
     for so in sorted(app_path.rglob("*.so")):
         if so.is_file() and not so.is_symlink():
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", str(so)],
-                capture_output=True,
-            )
+            subprocess.run(sign_args + [str(so)], capture_output=True)
             so_count += 1
 
-    # Sign Python framework
-    python_fw = fw_dir / "Python.framework"
-    if python_fw.exists():
-        subprocess.run(
-            ["codesign", "--force", "--sign", "-", str(python_fw)],
-            capture_output=True,
-        )
+    # Sign Python binary
+    python_bin = fw_dir / "python" / "bin" / "python3"
+    if python_bin.exists():
+        subprocess.run(sign_args + [str(python_bin)], capture_output=True)
 
     # Sign main binary
-    binary = app_path / "Contents/MacOS/PyMOL"
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(binary)],
-        capture_output=True,
-    )
+    binary = app_path / "Contents" / "MacOS" / "PyMOL"
+    subprocess.run(sign_args + [str(binary)], capture_output=True)
 
     # Sign the whole app
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(app_path)],
-        capture_output=True,
-    )
+    subprocess.run(sign_args + [str(app_path)], capture_output=True)
 
-    print(f"  Signed dylibs, {so_count} .so files, Python.framework, binary, and app")
+    sign_type = "Developer ID" if identity != "-" else "ad-hoc"
+    print(f"  Signed ({sign_type}): dylibs, {so_count} .so files, binary, and app")
 
 
-def phase_g_verify(app_path):
-    """Phase G: Verify no /opt/homebrew/ references remain."""
-    print("\n=== Phase G: Verification ===")
+# ==========================================================================
+# Phase F: Verification
+# ==========================================================================
+
+def phase_f_verify(app_path):
+    """Verify no non-system, non-@rpath references remain."""
+    print("\n=== Phase F: Verification ===")
+
     all_macho = find_all_macho(app_path)
     violations = []
 
@@ -481,18 +434,32 @@ def phase_g_verify(app_path):
         except subprocess.CalledProcessError:
             continue
         for line in out.splitlines()[1:]:
-            if "/opt/homebrew/" in line:
-                violations.append((str(macho_path), line.strip()))
+            m = re.match(r"\s+(/\S+)", line)
+            if not m:
+                continue
+            ref = m.group(1)
+            if ref.startswith("/usr/lib/") or ref.startswith("/System/"):
+                continue
+            if ref.startswith("@"):
+                continue
+            violations.append((str(macho_path), ref))
 
     if violations:
-        print(f"  ERRORS: {len(violations)} remaining /opt/homebrew/ references:")
-        for path, ref in violations:
+        print(f"  ERRORS: {len(violations)} non-portable references:")
+        for path, ref in violations[:20]:
             rel = os.path.relpath(path, app_path)
             print(f"    {rel}: {ref}")
+        if len(violations) > 20:
+            print(f"    ... and {len(violations) - 20} more")
     else:
-        print("  OK: No /opt/homebrew/ references found")
+        print("  OK: All references are system or @rpath-relative")
 
-    # Print bundle size
+    # Check architecture
+    binary = app_path / "Contents" / "MacOS" / "PyMOL"
+    arch_out = subprocess.check_output(["lipo", "-info", str(binary)], text=True).strip()
+    print(f"  Architecture: {arch_out}")
+
+    # Bundle size
     total = sum(
         f.stat().st_size
         for f in app_path.rglob("*")
@@ -503,21 +470,22 @@ def phase_g_verify(app_path):
     return len(violations) == 0
 
 
-def phase_h_dmg(app_path):
-    """Phase H: Create DMG."""
-    print("\n=== Phase H: Creating DMG ===")
+# ==========================================================================
+# Phase G: DMG
+# ==========================================================================
+
+def phase_g_dmg(app_path):
+    """Create DMG."""
+    print("\n=== Phase G: Creating DMG ===")
     dmg_path = app_path.parent / "PyMOL.dmg"
+    if dmg_path.exists():
+        dmg_path.unlink()
     subprocess.run(
         [
-            "hdiutil",
-            "create",
-            "-volname",
-            "PyMOL",
-            "-srcfolder",
-            str(app_path),
-            "-ov",
-            "-format",
-            "UDZO",
+            "hdiutil", "create",
+            "-volname", "PyMOL",
+            "-srcfolder", str(app_path),
+            "-ov", "-format", "UDZO",
             str(dmg_path),
         ],
         check=True,
@@ -526,12 +494,23 @@ def phase_h_dmg(app_path):
     print(f"  Created {dmg_path} ({size:.1f} MB)")
 
 
+# ==========================================================================
+# Main
+# ==========================================================================
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Make PyMOL.app fully portable by bundling all dependencies."
+        description="Make PyMOL.app portable by bundling embedded Python and dependencies."
     )
     parser.add_argument("app_path", type=Path, help="Path to PyMOL.app bundle")
     parser.add_argument("--dmg", action="store_true", help="Create a DMG after bundling")
+    parser.add_argument("--identity", default="-",
+                        help="Code signing identity (default: ad-hoc). "
+                             "Use 'Developer ID Application: ...' for distribution.")
+    parser.add_argument("--python-prefix", type=Path, default=None,
+                        help="Path to python-build-standalone install (default: deps/python/)")
+    parser.add_argument("--requirements", type=Path, default=None,
+                        help="Path to requirements-bundle.txt (default: auto-detect)")
     args = parser.parse_args()
 
     app_path = args.app_path.resolve()
@@ -539,48 +518,61 @@ def main():
         print(f"Error: {app_path} is not a valid .app bundle")
         sys.exit(1)
 
-    binary = app_path / "Contents/MacOS/PyMOL"
+    binary = app_path / "Contents" / "MacOS" / "PyMOL"
     if not binary.exists():
         print(f"Error: Binary not found at {binary}")
         sys.exit(1)
 
-    # Detect Python version
-    python_version = detect_python_version(binary)
-    if not python_version:
-        print("Error: Could not detect Python version from binary")
+    # Find repo root (parent of scripts/)
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+
+    # Python prefix
+    python_prefix = args.python_prefix or (repo_root / "deps" / "python")
+    if not python_prefix.exists():
+        print(f"Error: Python prefix not found at {python_prefix}")
+        print("Run ./scripts/fetch_python.sh first")
         sys.exit(1)
-    print(f"Detected Python version: {python_version}")
-    print(f"App bundle: {app_path}")
 
-    # Phase A: initial dylib collection from binary
-    dylibs = phase_a_collect_dylibs(binary)
+    # Requirements file
+    requirements = args.requirements or (repo_root / "requirements-bundle.txt")
+    if not requirements.exists():
+        print(f"Error: Requirements file not found at {requirements}")
+        sys.exit(1)
 
-    # Phase B: copy Python framework
-    phase_b_copy_python_framework(app_path, python_version)
+    # Detect Python version
+    python_version = detect_python_version(python_prefix)
+    print(f"Python version: {python_version}")
+    print(f"Python prefix:  {python_prefix}")
+    print(f"App bundle:     {app_path}")
+    print(f"Signing:        {'ad-hoc' if args.identity == '-' else args.identity}")
 
-    # Phase C: copy site-packages
-    phase_c_copy_site_packages(app_path, python_version)
+    # Phase A: Copy embedded Python
+    phase_a_copy_python(app_path, python_prefix, python_version)
 
-    # Phase D: copy dylibs (also scans .so files for transitive deps)
-    phase_d_copy_dylibs(app_path, dylibs)
+    # Phase B: Install Python packages
+    phase_b_install_packages(app_path, python_prefix, python_version, requirements)
 
-    # Phase E: rewrite install names
-    phase_e_rewrite_install_names(app_path)
+    # Phase C: Copy remaining dylibs
+    phase_c_copy_dylibs(app_path)
 
-    # Phase F: code sign
-    phase_f_codesign(app_path)
+    # Phase D: Rewrite install names
+    phase_d_rewrite_install_names(app_path)
 
-    # Phase G: verify
-    ok = phase_g_verify(app_path)
+    # Phase E: Code sign
+    phase_e_codesign(app_path, args.identity)
 
-    # Phase H: optional DMG
+    # Phase F: Verify
+    ok = phase_f_verify(app_path)
+
+    # Phase G: Optional DMG
     if args.dmg:
-        phase_h_dmg(app_path)
+        phase_g_dmg(app_path)
 
     if ok:
         print("\nDone! Bundle is portable.")
     else:
-        print("\nWARNING: Some references could not be rewritten. See errors above.")
+        print("\nWARNING: Some non-portable references remain. See errors above.")
         sys.exit(1)
 
 

@@ -3,4 +3,5 @@
 generated
 build
 build_appkit
+deps
 .vscode

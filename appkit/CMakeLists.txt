@@ -13,6 +13,11 @@
 #   cmake --build . --config Release
 
 cmake_minimum_required(VERSION 3.20)
+
+# Must be set BEFORE project() to take effect
+set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build for Apple Silicon only")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version")
+
 project(PyMOL LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -27,26 +32,48 @@ option(PYMOL_LIBXML "Enable libxml2 (COLLADA)" ON)
 option(PYMOL_VMD_PLUGINS "Enable VMD plugins" ON)
 option(PYMOL_MSGPACKC "Enable msgpack-c" OFF)
 
-# Homebrew prefix — must be set before find_package calls
-# NOTE: Do NOT add /opt/homebrew/include globally — it contains event.h
-# (libevent) which shadows our layer0/Event.h on case-insensitive macOS.
-if(EXISTS "/opt/homebrew")
-    list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew")
+# Dependency prefix — static libs built by scripts/build_deps.sh
+set(DEPS_PREFIX "${PYMOL_ROOT}/deps/arm64" CACHE PATH "Static dependencies prefix")
+
+# Embedded Python prefix — fetched by scripts/fetch_python.sh
+set(PYMOL_PYTHON_PREFIX "${PYMOL_ROOT}/deps/python" CACHE PATH "Embedded Python prefix")
+
+# Set up search paths for dependencies
+if(EXISTS "${DEPS_PREFIX}")
+    list(PREPEND CMAKE_PREFIX_PATH "${DEPS_PREFIX}")
+endif()
+
+# Fallback to Homebrew for development builds without static deps
+if(EXISTS "/opt/homebrew" AND NOT EXISTS "${DEPS_PREFIX}/lib")
+    message(STATUS "Static deps not found at ${DEPS_PREFIX}, falling back to Homebrew")
+    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
     link_directories("/opt/homebrew/lib")
 endif()
 
-# Find Python
+# Find Python — prefer embedded python-build-standalone
+if(EXISTS "${PYMOL_PYTHON_PREFIX}/bin/python3")
+    set(Python3_ROOT_DIR "${PYMOL_PYTHON_PREFIX}")
+    set(Python3_FIND_STRATEGY LOCATION)
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development NumPy)
+
+# Detect Python version and pass as compile-time define
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    OUTPUT_VARIABLE PYMOL_PYTHON_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+message(STATUS "Python version for embedding: ${PYMOL_PYTHON_VERSION}")
 
 # Find system libraries
 find_package(PNG REQUIRED)
 find_package(Freetype REQUIRED)
-find_library(GLEW_LIB GLEW REQUIRED HINTS /opt/homebrew/lib)
+find_library(GLEW_LIB GLEW REQUIRED HINTS "${DEPS_PREFIX}/lib")
 find_path(GLEW_INCLUDE glew.h
     PATH_SUFFIXES GL GLEW
-    HINTS /opt/homebrew/include)
+    HINTS "${DEPS_PREFIX}/include")
 find_path(GLM_INCLUDE glm/glm.hpp
-    HINTS /opt/homebrew/include)
+    HINTS "${DEPS_PREFIX}/include" "/opt/homebrew/include")
 
 # Generate shader text and build info
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
@@ -152,6 +179,7 @@ target_compile_definitions(PyMOL PRIVATE
     _PYMOL_APPKIT
     _PYMOL_EMBEDDED
     PYMOL_CURVE_VALIDATE
+    PYMOL_PYTHON_VERSION="${PYMOL_PYTHON_VERSION}"
 )
 
 if(PYMOL_VMD_PLUGINS)
@@ -159,14 +187,19 @@ if(PYMOL_VMD_PLUGINS)
 endif()
 
 if(PYMOL_LIBXML)
-    find_library(XML2_LIB xml2 HINTS /opt/homebrew/lib)
+    find_library(XML2_LIB xml2 HINTS "${DEPS_PREFIX}/lib")
     find_path(XML2_INCLUDE libxml/parser.h
         PATH_SUFFIXES libxml2
-        HINTS /opt/homebrew/include)
+        HINTS "${DEPS_PREFIX}/include")
     if(XML2_LIB AND XML2_INCLUDE)
         target_compile_definitions(PyMOL PRIVATE _HAVE_LIBXML)
         target_include_directories(PyMOL PRIVATE ${XML2_INCLUDE})
         target_link_libraries(PyMOL PRIVATE ${XML2_LIB})
+        # Static libxml2 depends on iconv (system library on macOS)
+        find_library(ICONV_LIB iconv)
+        if(ICONV_LIB)
+            target_link_libraries(PyMOL PRIVATE ${ICONV_LIB})
+        endif()
     endif()
 endif()
 
@@ -188,7 +221,10 @@ target_compile_options(PyMOL PRIVATE
 )
 
 # Find optional netCDF (needed by VMD netcdf plugin)
-find_library(NETCDF_LIB netcdf HINTS /opt/homebrew/lib)
+find_library(NETCDF_LIB netcdf HINTS "${DEPS_PREFIX}/lib")
+find_library(HDF5_LIB hdf5 HINTS "${DEPS_PREFIX}/lib")
+find_library(HDF5_HL_LIB hdf5_hl HINTS "${DEPS_PREFIX}/lib")
+find_library(ZLIB_LIB z HINTS "${DEPS_PREFIX}/lib")
 
 # Link frameworks and libraries
 target_link_libraries(PyMOL PRIVATE
@@ -202,6 +238,17 @@ target_link_libraries(PyMOL PRIVATE
 )
 if(NETCDF_LIB)
     target_link_libraries(PyMOL PRIVATE ${NETCDF_LIB})
+    # Static netcdf depends on HDF5 and zlib
+    if(HDF5_HL_LIB)
+        target_link_libraries(PyMOL PRIVATE ${HDF5_HL_LIB})
+    endif()
+    if(HDF5_LIB)
+        target_link_libraries(PyMOL PRIVATE ${HDF5_LIB})
+    endif()
+endif()
+# zlib — needed by libpng and others when statically linked
+if(ZLIB_LIB)
+    target_link_libraries(PyMOL PRIVATE ${ZLIB_LIB})
 endif()
 
 # macOS bundle properties
