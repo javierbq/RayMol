@@ -357,23 +357,6 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/../include",
-					"$(SRCROOT)/../include/pymol",
-					"$(SRCROOT)/../layer0",
-					"$(SRCROOT)/../layer1",
-					"$(SRCROOT)/../layer2",
-					"$(SRCROOT)/../layer3",
-					"$(SRCROOT)/../layer4",
-					"$(SRCROOT)/../layer5",
-					"$(SRCROOT)/../layerGraphics",
-					"$(SRCROOT)/../layerGraphics/metal",
-					"$(SRCROOT)/../contrib",
-					"$(SRCROOT)/../contrib/pocketfft",
-					"$(SRCROOT)/../build_appkit/generated",
-					/opt/homebrew/include,
-					"/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14",
-				);
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LIBRARY_SEARCH_PATHS = (
 					"$(SRCROOT)/../build_appkit",
@@ -452,23 +435,6 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/../include",
-					"$(SRCROOT)/../include/pymol",
-					"$(SRCROOT)/../layer0",
-					"$(SRCROOT)/../layer1",
-					"$(SRCROOT)/../layer2",
-					"$(SRCROOT)/../layer3",
-					"$(SRCROOT)/../layer4",
-					"$(SRCROOT)/../layer5",
-					"$(SRCROOT)/../layerGraphics",
-					"$(SRCROOT)/../layerGraphics/metal",
-					"$(SRCROOT)/../contrib",
-					"$(SRCROOT)/../contrib/pocketfft",
-					"$(SRCROOT)/../build_appkit/generated",
-					/opt/homebrew/include,
-					"/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14",
-				);
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LIBRARY_SEARCH_PATHS = (
 					"$(SRCROOT)/../build_appkit",
