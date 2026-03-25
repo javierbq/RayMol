@@ -1064,77 +1064,56 @@ def _position_panel_and_shift_glut(glut_win, opening):
 # API key prompt & account modal
 # ---------------------------------------------------------------------------
 
+def prompt_for_credentials():
+    """Show a dialog letting the user choose provider and enter credentials."""
+    Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.1, _CredentialPromptHelper.alloc().init(), 'fire:', None, False)
+
+
 def prompt_for_api_key():
     """Show a dialog asking for the Anthropic API key."""
-    def _do_prompt():
-        alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_("Anthropic API Key Required")
-        alert.setInformativeText_(
-            "Enter your Anthropic API key to use the AI chat.\n"
-            "It will be stored securely in your macOS Keychain.")
-        alert.addButtonWithTitle_("Save")
-        alert.addButtonWithTitle_("Cancel")
-        alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
-
-        input_field = AppKit.NSSecureTextField.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, 320, 24))
-        input_field.setPlaceholderString_("sk-ant-...")
-        alert.setAccessoryView_(input_field)
-        alert.window().setInitialFirstResponder_(input_field)
-
-        response = alert.runModal()
-        if response == AppKit.NSAlertFirstButtonReturn:
-            key = input_field.stringValue().strip()
-            if key:
-                from pymol import ai_chat
-                ai_chat.set_api_key(key)
-                show_message('assistant', 'API key saved to Keychain.')
-
-    # Defer to main thread via timer
     Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         0.1, _ApiKeyPromptHelper.alloc().init(), 'fire:', None, False)
 
 
+def prompt_for_vertex_config():
+    """Show a dialog to configure Vertex AI."""
+    Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.1, _VertexConfigHelper.alloc().init(), 'fire:', None, False)
+
+
 def show_account_modal():
     """Show a modal with the current login status and a logout button."""
-    def _do_modal():
-        from pymol import ai_chat
-
-        alert = AppKit.NSAlert.alloc().init()
-
-        if ai_chat.is_logged_in():
-            masked = ai_chat.get_masked_key()
-            alert.setMessageText_("Account")
-            alert.setInformativeText_(
-                f"Provider: Anthropic\n"
-                f"API Key: {masked}\n"
-                f"Model: {ai_chat._ai_config['models'].get('anthropic', 'N/A')}")
-            alert.addButtonWithTitle_("Done")
-            alert.addButtonWithTitle_("Logout")
-
-            response = alert.runModal()
-            if response == AppKit.NSAlertSecondButtonReturn:
-                ai_chat.logout()
-        else:
-            alert.setMessageText_("Not Logged In")
-            alert.setInformativeText_("No API key is configured.")
-            alert.addButtonWithTitle_("Set API Key")
-            alert.addButtonWithTitle_("Cancel")
-
-            response = alert.runModal()
-            if response == AppKit.NSAlertFirstButtonReturn:
-                prompt_for_api_key()
-
     Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         0.0, _AccountModalHelper.alloc().init(), 'fire:', None, False)
+
+
+class _CredentialPromptHelper(AppKit.NSObject):
+    """Provider selection dialog shown on first launch."""
+
+    def fire_(self, timer):
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Configure AI Provider")
+        alert.setInformativeText_(
+            "Choose how to connect to Claude:")
+        alert.addButtonWithTitle_("Anthropic API Key")
+        alert.addButtonWithTitle_("Google Vertex AI")
+        alert.addButtonWithTitle_("Cancel")
+        alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
+
+        response = alert.runModal()
+        if response == AppKit.NSAlertFirstButtonReturn:
+            prompt_for_api_key()
+        elif response == AppKit.NSAlertSecondButtonReturn:
+            prompt_for_vertex_config()
 
 
 class _ApiKeyPromptHelper(AppKit.NSObject):
     def fire_(self, timer):
         alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_("Anthropic API Key Required")
+        alert.setMessageText_("Anthropic API Key")
         alert.setInformativeText_(
-            "Enter your Anthropic API key to use the AI chat.\n"
+            "Enter your Anthropic API key.\n"
             "It will be stored securely in your macOS Keychain.")
         alert.addButtonWithTitle_("Save")
         alert.addButtonWithTitle_("Cancel")
@@ -1152,7 +1131,86 @@ class _ApiKeyPromptHelper(AppKit.NSObject):
             if key:
                 from pymol import ai_chat
                 ai_chat.set_api_key(key)
-                show_message('assistant', 'API key saved to Keychain.')
+                show_message('assistant', 'API key saved. Using Anthropic API.')
+
+
+class _VertexConfigHelper(AppKit.NSObject):
+    """Vertex AI configuration dialog with SA JSON file picker."""
+
+    def fire_(self, timer):
+        from pymol import ai_chat
+
+        # First, open file picker for SA JSON
+        panel = AppKit.NSOpenPanel.openPanel()
+        panel.setTitle_("Select Service Account JSON")
+        panel.setMessage_("Choose your Google Cloud service account key file")
+        panel.setAllowedFileTypes_(["json"])
+        panel.setAllowsMultipleSelection_(False)
+        panel.setCanChooseDirectories_(False)
+
+        if panel.runModal() != AppKit.NSModalResponseOK:
+            return
+
+        sa_path = str(panel.URLs()[0].path())
+
+        # Parse the SA JSON to get project_id
+        try:
+            from pymol.ai_vertex_auth import parse_sa_json
+            sa_info = parse_sa_json(sa_path)
+        except Exception:
+            sa_info = {}
+
+        project_id = sa_info.get('project_id', '')
+        client_email = sa_info.get('client_email', '')
+
+        # Show config dialog with pre-filled project ID
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Vertex AI Configuration")
+
+        info_text = f"Service Account: {client_email}\n" if client_email else ""
+        info_text += "Configure your Vertex AI settings below."
+        alert.setInformativeText_(info_text)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+
+        # Create accessory view with project ID and region fields
+        accessory = AppKit.NSView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, 320, 70))
+
+        project_label = AppKit.NSTextField.labelWithString_("Project ID:")
+        project_label.setFrame_(AppKit.NSMakeRect(0, 46, 80, 20))
+        accessory.addSubview_(project_label)
+
+        project_field = AppKit.NSTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(85, 44, 235, 24))
+        project_field.setStringValue_(project_id)
+        project_field.setPlaceholderString_("my-gcp-project")
+        accessory.addSubview_(project_field)
+
+        region_label = AppKit.NSTextField.labelWithString_("Region:")
+        region_label.setFrame_(AppKit.NSMakeRect(0, 12, 80, 20))
+        accessory.addSubview_(region_label)
+
+        region_field = AppKit.NSTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(85, 10, 235, 24))
+        region_field.setStringValue_(
+            ai_chat._ai_config['vertex_ai'].get('region', 'us-east5'))
+        region_field.setPlaceholderString_("us-east5")
+        accessory.addSubview_(region_field)
+
+        alert.setAccessoryView_(accessory)
+        alert.window().setInitialFirstResponder_(project_field)
+
+        response = alert.runModal()
+        if response == AppKit.NSAlertFirstButtonReturn:
+            pid = project_field.stringValue().strip()
+            rgn = region_field.stringValue().strip() or 'us-east5'
+            if pid:
+                ai_chat.set_vertex_config(sa_path, pid, rgn)
+                show_message('assistant',
+                             f'Vertex AI configured.\n'
+                             f'Project: {pid}\n'
+                             f'Region: {rgn}')
 
 
 class _AccountModalHelper(AppKit.NSObject):
@@ -1160,29 +1218,50 @@ class _AccountModalHelper(AppKit.NSObject):
         from pymol import ai_chat
 
         alert = AppKit.NSAlert.alloc().init()
+        provider = ai_chat.get_provider()
 
         if ai_chat.is_logged_in():
-            masked = ai_chat.get_masked_key()
-            alert.setMessageText_("Account")
-            alert.setInformativeText_(
-                f"Provider: Anthropic\n"
-                f"API Key: {masked}\n"
-                f"Model: {ai_chat._ai_config['models'].get('anthropic', 'N/A')}")
+            if provider == 'vertex_ai':
+                vc = ai_chat._ai_config['vertex_ai']
+                alert.setMessageText_("Account")
+                alert.setInformativeText_(
+                    f"Provider: Vertex AI\n"
+                    f"Project: {vc.get('project_id', 'N/A')}\n"
+                    f"Region: {vc.get('region', 'N/A')}\n"
+                    f"Model: {ai_chat._ai_config['models'].get('vertex_ai', 'N/A')}")
+            else:
+                masked = ai_chat.get_masked_key()
+                alert.setMessageText_("Account")
+                alert.setInformativeText_(
+                    f"Provider: Anthropic\n"
+                    f"API Key: {masked}\n"
+                    f"Model: {ai_chat._ai_config['models'].get('anthropic', 'N/A')}")
+
             alert.addButtonWithTitle_("Done")
+            alert.addButtonWithTitle_("Switch Provider")
             alert.addButtonWithTitle_("Logout")
 
             response = alert.runModal()
             if response == AppKit.NSAlertSecondButtonReturn:
+                # Switch provider
+                if provider == 'anthropic':
+                    prompt_for_vertex_config()
+                else:
+                    prompt_for_api_key()
+            elif response == AppKit.NSAlertThirdButtonReturn:
                 ai_chat.logout()
         else:
             alert.setMessageText_("Not Logged In")
-            alert.setInformativeText_("No API key is configured.")
-            alert.addButtonWithTitle_("Set API Key")
+            alert.setInformativeText_("No credentials are configured.")
+            alert.addButtonWithTitle_("Anthropic API Key")
+            alert.addButtonWithTitle_("Vertex AI")
             alert.addButtonWithTitle_("Cancel")
 
             response = alert.runModal()
             if response == AppKit.NSAlertFirstButtonReturn:
                 prompt_for_api_key()
+            elif response == AppKit.NSAlertSecondButtonReturn:
+                prompt_for_vertex_config()
 
 
 class _AccountButtonTarget(AppKit.NSObject):

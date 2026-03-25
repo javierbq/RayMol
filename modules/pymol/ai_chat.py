@@ -38,14 +38,18 @@ if not _HAS_SDK:
 
 _KEYCHAIN_SERVICE = 'com.pymol.ai-chat'
 _KEYCHAIN_ACCOUNT = 'anthropic-api-key'
+_KEYCHAIN_ACCOUNT_PROVIDER = 'provider'
+_KEYCHAIN_ACCOUNT_VERTEX_SA = 'vertex-sa-json-path'
+_KEYCHAIN_ACCOUNT_VERTEX_PROJECT = 'vertex-project-id'
+_KEYCHAIN_ACCOUNT_VERTEX_REGION = 'vertex-region'
 
 
-def _keychain_get():
-    """Retrieve the Anthropic API key from the macOS Keychain. Returns '' on failure."""
+def _keychain_get(account=_KEYCHAIN_ACCOUNT):
+    """Retrieve a value from the macOS Keychain. Returns '' on failure."""
     try:
         result = subprocess.run(
             ['security', 'find-generic-password',
-             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT, '-w'],
+             '-s', _KEYCHAIN_SERVICE, '-a', account, '-w'],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -55,19 +59,18 @@ def _keychain_get():
     return ''
 
 
-def _keychain_set(api_key):
-    """Store the Anthropic API key in the macOS Keychain."""
+def _keychain_set(value, account=_KEYCHAIN_ACCOUNT):
+    """Store a value in the macOS Keychain."""
     try:
-        # Delete existing entry first (ignore errors if it doesn't exist)
         subprocess.run(
             ['security', 'delete-generic-password',
-             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT],
+             '-s', _KEYCHAIN_SERVICE, '-a', account],
             capture_output=True, timeout=5,
         )
         subprocess.run(
             ['security', 'add-generic-password',
-             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT,
-             '-w', api_key],
+             '-s', _KEYCHAIN_SERVICE, '-a', account,
+             '-w', value],
             capture_output=True, check=True, timeout=5,
         )
         return True
@@ -75,12 +78,12 @@ def _keychain_set(api_key):
         return False
 
 
-def _keychain_delete():
-    """Remove the Anthropic API key from the macOS Keychain."""
+def _keychain_delete(account=_KEYCHAIN_ACCOUNT):
+    """Remove a value from the macOS Keychain."""
     try:
         subprocess.run(
             ['security', 'delete-generic-password',
-             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT],
+             '-s', _KEYCHAIN_SERVICE, '-a', account],
             capture_output=True, timeout=5,
         )
         return True
@@ -97,12 +100,18 @@ _has_ui = False
 _messages = []  # list of {'role': str, 'content': str | list}
 
 _ai_config = {
-    'provider': 'anthropic',
+    'provider': os.environ.get('PYMOL_LLM_PROVIDER', 'anthropic'),
     'api_keys': {
         'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
     },
     'models': {
         'anthropic': 'claude-sonnet-4-6',
+        'vertex_ai': 'claude-sonnet-4-6',
+    },
+    'vertex_ai': {
+        'project_id': os.environ.get('GCP_PROJECT_ID', ''),
+        'region': os.environ.get('GCP_REGION', 'us-east5'),
+        'sa_json_path': os.environ.get('GCP_SA_JSON_PATH', ''),
     },
 }
 
@@ -171,11 +180,29 @@ def _init(cmd_module):
         if val:
             _ai_config['api_keys'][provider] = val
 
+    # Load saved provider preference from keychain
+    saved_provider = _keychain_get(_KEYCHAIN_ACCOUNT_PROVIDER)
+    if saved_provider in ('anthropic', 'vertex_ai'):
+        _ai_config['provider'] = saved_provider
+
     # If no API key from env, try the macOS Keychain
     if not _ai_config['api_keys'].get('anthropic'):
-        keychain_key = _keychain_get()
+        keychain_key = _keychain_get(_KEYCHAIN_ACCOUNT)
         if keychain_key:
             _ai_config['api_keys']['anthropic'] = keychain_key
+
+    # Load Vertex AI config from keychain
+    if not _ai_config['vertex_ai']['sa_json_path']:
+        sa_path = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_SA)
+        if sa_path:
+            _ai_config['vertex_ai']['sa_json_path'] = sa_path
+    if not _ai_config['vertex_ai']['project_id']:
+        project = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
+        if project:
+            _ai_config['vertex_ai']['project_id'] = project
+    region = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_REGION)
+    if region:
+        _ai_config['vertex_ai']['region'] = region
 
     try:
         from pymol import ai_chat_ui
@@ -186,26 +213,81 @@ def _init(cmd_module):
 
     cmd_module.extend('ai_config', ai_config)
 
-    # If still no API key, prompt the user via UI
-    if not _ai_config['api_keys'].get('anthropic') and _has_ui:
+    # If no credentials for the active provider, prompt the user
+    if _has_ui and not _has_credentials():
         from pymol import ai_chat_ui
-        ai_chat_ui.prompt_for_api_key()
+        ai_chat_ui.prompt_for_credentials()
+
+
+def _has_credentials():
+    """Return True if the active provider has credentials configured."""
+    provider = _ai_config['provider']
+    if provider == 'anthropic':
+        return bool(_ai_config['api_keys'].get('anthropic', ''))
+    elif provider == 'vertex_ai':
+        vc = _ai_config['vertex_ai']
+        return bool(vc.get('project_id') and (vc.get('sa_json_path') or _vertex_gcloud_available()))
+    return False
+
+
+def _vertex_gcloud_available():
+    """Check if gcloud CLI is available for Vertex AI auth."""
+    try:
+        r = subprocess.run(['gcloud', 'auth', 'print-access-token'],
+                           capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def set_api_key(key):
     """Set the Anthropic API key, storing it in the Keychain."""
     _ai_config['api_keys']['anthropic'] = key
-    _keychain_set(key)
+    _ai_config['provider'] = 'anthropic'
+    _keychain_set(key, _KEYCHAIN_ACCOUNT)
+    _keychain_set('anthropic', _KEYCHAIN_ACCOUNT_PROVIDER)
+
+
+def set_vertex_config(sa_json_path, project_id, region='us-east5'):
+    """Configure Vertex AI credentials, storing in Keychain."""
+    _ai_config['provider'] = 'vertex_ai'
+    _ai_config['vertex_ai']['sa_json_path'] = sa_json_path
+    _ai_config['vertex_ai']['project_id'] = project_id
+    _ai_config['vertex_ai']['region'] = region
+    _keychain_set('vertex_ai', _KEYCHAIN_ACCOUNT_PROVIDER)
+    _keychain_set(sa_json_path, _KEYCHAIN_ACCOUNT_VERTEX_SA)
+    _keychain_set(project_id, _KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
+    _keychain_set(region, _KEYCHAIN_ACCOUNT_VERTEX_REGION)
+    # Clear token cache
+    try:
+        from pymol.ai_vertex_auth import clear_cache
+        clear_cache()
+    except ImportError:
+        pass
 
 
 def logout():
-    """Clear the API key from memory and Keychain."""
-    _ai_config['api_keys']['anthropic'] = ''
-    _keychain_delete()
+    """Clear credentials for the active provider."""
+    provider = _ai_config['provider']
+    if provider == 'anthropic':
+        _ai_config['api_keys']['anthropic'] = ''
+        _keychain_delete(_KEYCHAIN_ACCOUNT)
+    elif provider == 'vertex_ai':
+        _ai_config['vertex_ai']['sa_json_path'] = ''
+        _ai_config['vertex_ai']['project_id'] = ''
+        _keychain_delete(_KEYCHAIN_ACCOUNT_VERTEX_SA)
+        _keychain_delete(_KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
+        _keychain_delete(_KEYCHAIN_ACCOUNT_VERTEX_REGION)
+        try:
+            from pymol.ai_vertex_auth import clear_cache
+            clear_cache()
+        except ImportError:
+            pass
+    _keychain_delete(_KEYCHAIN_ACCOUNT_PROVIDER)
     clear_conversation()
     if _has_ui:
         from pymol import ai_chat_ui
-        ai_chat_ui.show_message('assistant', 'API key removed. You have been logged out.')
+        ai_chat_ui.show_message('assistant', 'Credentials removed. You have been logged out.')
 
 
 def get_masked_key():
@@ -219,8 +301,13 @@ def get_masked_key():
 
 
 def is_logged_in():
-    """Return True if an API key is configured."""
-    return bool(_ai_config['api_keys'].get('anthropic', ''))
+    """Return True if the active provider has credentials."""
+    return _has_credentials()
+
+
+def get_provider():
+    """Return the active provider name."""
+    return _ai_config['provider']
 
 
 def ai_config(args='', _self=None):
@@ -368,10 +455,19 @@ async def _agent_query():
             ai_chat_ui.update_on_main_thread(role, text, [])
 
     try:
-        # Ensure ANTHROPIC_API_KEY is set in the environment for the SDK
-        key = _ai_config['api_keys'].get('anthropic', '')
-        if key:
-            os.environ['ANTHROPIC_API_KEY'] = key
+        # Set environment variables for the SDK based on active provider
+        provider = _ai_config['provider']
+        if provider == 'vertex_ai':
+            vc = _ai_config['vertex_ai']
+            os.environ['CLOUD_ML_REGION'] = vc.get('region', 'us-east5')
+            os.environ['ANTHROPIC_VERTEX_PROJECT_ID'] = vc.get('project_id', '')
+            sa_path = vc.get('sa_json_path', '')
+            if sa_path:
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = sa_path
+        else:
+            key = _ai_config['api_keys'].get('anthropic', '')
+            if key:
+                os.environ['ANTHROPIC_API_KEY'] = key
 
         # Build the prompt from the last user message
         user_text = ''
@@ -497,15 +593,19 @@ def _worker_impl_fallback():
             ai_chat_ui.update_on_main_thread(role, text, [])
 
     try:
-        key = _ai_config['api_keys'].get('anthropic', '')
-        model = _ai_config['models'].get('anthropic', '')
+        provider = _ai_config['provider']
+        model = _ai_config['models'].get(provider, 'claude-sonnet-4-6')
 
         max_tool_rounds = 5
         for _round in range(max_tool_rounds):
             api_messages = _build_api_messages()
 
             try:
-                body = _call_anthropic(api_messages, key, model)
+                if provider == 'vertex_ai':
+                    body = _call_vertex_ai(api_messages, model)
+                else:
+                    key = _ai_config['api_keys'].get('anthropic', '')
+                    body = _call_anthropic(api_messages, key, model)
             except Exception as exc:
                 _ui_msg('error', f"API call failed: {exc}")
                 _ui_status('')
@@ -729,3 +829,53 @@ def _call_anthropic(messages, key, model):
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode('utf-8', errors='replace')
         raise RuntimeError(f"Anthropic HTTP {exc.code}: {error_body}") from exc
+
+
+def _call_vertex_ai(messages, model):
+    """Call Claude via Vertex AI (non-streaming). Returns the response body dict."""
+    from pymol.ai_vertex_auth import get_access_token
+
+    vc = _ai_config['vertex_ai']
+    project_id = vc['project_id']
+    region = vc['region']
+    sa_path = vc.get('sa_json_path', '')
+
+    token = get_access_token(sa_path)
+    if not token:
+        raise RuntimeError(
+            "Could not obtain Vertex AI access token. "
+            "Check your service account JSON or run: gcloud auth application-default login")
+
+    url = (
+        f"https://{region}-aiplatform.googleapis.com/v1/"
+        f"projects/{project_id}/locations/{region}/"
+        f"publishers/anthropic/models/{model}:rawPredict"
+    )
+
+    payload = {
+        'anthropic_version': 'vertex-2023-10-16',
+        'max_tokens': 4096,
+        'system': SYSTEM_PROMPT,
+        'messages': messages,
+    }
+
+    if TOOL_DEFINITIONS:
+        payload['tools'] = TOOL_DEFINITIONS
+
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}',
+        },
+        method='POST',
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f"Vertex AI HTTP {exc.code}: {error_body}") from exc

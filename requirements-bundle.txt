@@ -3,3 +3,4 @@
 numpy==2.2.4
 pyobjc-core==10.3.2
 pyobjc-framework-Cocoa==10.3.2
+cryptography>=43.0
