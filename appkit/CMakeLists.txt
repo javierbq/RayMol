@@ -221,6 +221,27 @@ set_target_properties(PyMOL PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${PYMOL_ROOT}/cmake/Info.plist.in"
 )
 
+# Build _champ Python extension module (for vacuum electrostatics)
+file(GLOB CHAMP_SOURCES "${PYMOL_ROOT}/contrib/champ/*.c")
+add_library(_champ MODULE ${CHAMP_SOURCES})
+target_include_directories(_champ PRIVATE
+    ${PYMOL_ROOT}/contrib/champ
+    ${Python3_INCLUDE_DIRS}
+)
+target_link_libraries(_champ PRIVATE ${Python3_LIBRARIES})
+set_target_properties(_champ PROPERTIES
+    PREFIX ""
+    SUFFIX ".so"
+    OUTPUT_NAME "_champ"
+)
+
+# Copy _champ.so into the bundle's chempy/champ/ directory
+add_custom_command(TARGET _champ POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE:_champ>
+        $<TARGET_BUNDLE_DIR:PyMOL>/Contents/Resources/modules/chempy/champ/_champ.so
+)
+
 # Copy data files into the bundle
 add_custom_command(TARGET PyMOL POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

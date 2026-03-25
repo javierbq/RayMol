@@ -410,7 +410,7 @@ def _run_action_command(cmd, name, title):
             try:
                 cmd.util.protein_vacuum_esp(name, mode=2, quiet=0, _self=cmd)
             except Exception:
-                print("Vacuum electrostatics unavailable (requires APBS/champ)")
+                print(" Vacuum electrostatics unavailable (_champ C extension not in this build)")
         elif cmd_key == 'gen_symm_4':
             cmd.symexp(name + "_", name, name, cutoff=4, segi=1)
         elif cmd_key == 'gen_symm_8':
