@@ -7,6 +7,7 @@ is not installed.
 
 import os
 import json
+import subprocess
 import threading
 import asyncio
 
@@ -30,6 +31,62 @@ except ImportError:
 if not _HAS_SDK:
     import urllib.request
     import urllib.error
+
+# ---------------------------------------------------------------------------
+# Keychain helpers (macOS)
+# ---------------------------------------------------------------------------
+
+_KEYCHAIN_SERVICE = 'com.pymol.ai-chat'
+_KEYCHAIN_ACCOUNT = 'anthropic-api-key'
+
+
+def _keychain_get():
+    """Retrieve the Anthropic API key from the macOS Keychain. Returns '' on failure."""
+    try:
+        result = subprocess.run(
+            ['security', 'find-generic-password',
+             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT, '-w'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ''
+
+
+def _keychain_set(api_key):
+    """Store the Anthropic API key in the macOS Keychain."""
+    try:
+        # Delete existing entry first (ignore errors if it doesn't exist)
+        subprocess.run(
+            ['security', 'delete-generic-password',
+             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT],
+            capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ['security', 'add-generic-password',
+             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT,
+             '-w', api_key],
+            capture_output=True, check=True, timeout=5,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _keychain_delete():
+    """Remove the Anthropic API key from the macOS Keychain."""
+    try:
+        subprocess.run(
+            ['security', 'delete-generic-password',
+             '-s', _KEYCHAIN_SERVICE, '-a', _KEYCHAIN_ACCOUNT],
+            capture_output=True, timeout=5,
+        )
+        return True
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -114,6 +171,12 @@ def _init(cmd_module):
         if val:
             _ai_config['api_keys'][provider] = val
 
+    # If no API key from env, try the macOS Keychain
+    if not _ai_config['api_keys'].get('anthropic'):
+        keychain_key = _keychain_get()
+        if keychain_key:
+            _ai_config['api_keys']['anthropic'] = keychain_key
+
     try:
         from pymol import ai_chat_ui
         _has_ui = True
@@ -122,6 +185,42 @@ def _init(cmd_module):
         _has_ui = False
 
     cmd_module.extend('ai_config', ai_config)
+
+    # If still no API key, prompt the user via UI
+    if not _ai_config['api_keys'].get('anthropic') and _has_ui:
+        from pymol import ai_chat_ui
+        ai_chat_ui.prompt_for_api_key()
+
+
+def set_api_key(key):
+    """Set the Anthropic API key, storing it in the Keychain."""
+    _ai_config['api_keys']['anthropic'] = key
+    _keychain_set(key)
+
+
+def logout():
+    """Clear the API key from memory and Keychain."""
+    _ai_config['api_keys']['anthropic'] = ''
+    _keychain_delete()
+    clear_conversation()
+    if _has_ui:
+        from pymol import ai_chat_ui
+        ai_chat_ui.show_message('assistant', 'API key removed. You have been logged out.')
+
+
+def get_masked_key():
+    """Return a masked version of the current API key for display."""
+    key = _ai_config['api_keys'].get('anthropic', '')
+    if len(key) > 12:
+        return key[:8] + '...' + key[-4:]
+    elif key:
+        return '***'
+    return ''
+
+
+def is_logged_in():
+    """Return True if an API key is configured."""
+    return bool(_ai_config['api_keys'].get('anthropic', ''))
 
 
 def ai_config(args='', _self=None):

@@ -8,6 +8,7 @@ In legacy GLUT mode, it creates a floating NSPanel alongside the GLUT window.
 Imported by pymol.ai_chat; raises ImportError on non-macOS platforms.
 """
 
+import re
 import threading
 import AppKit
 import Foundation
@@ -38,6 +39,9 @@ _streaming_active = False
 _busy = False
 _cancel_requested = False
 _send_button = None     # reference to the send button for appearance changes
+
+# Question button targets (prevent GC)
+_question_targets = []
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -1056,6 +1060,142 @@ def _position_panel_and_shift_glut(glut_win, opening):
 # Panel construction
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# API key prompt & account modal
+# ---------------------------------------------------------------------------
+
+def prompt_for_api_key():
+    """Show a dialog asking for the Anthropic API key."""
+    def _do_prompt():
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Anthropic API Key Required")
+        alert.setInformativeText_(
+            "Enter your Anthropic API key to use the AI chat.\n"
+            "It will be stored securely in your macOS Keychain.")
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
+
+        input_field = AppKit.NSSecureTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, 320, 24))
+        input_field.setPlaceholderString_("sk-ant-...")
+        alert.setAccessoryView_(input_field)
+        alert.window().setInitialFirstResponder_(input_field)
+
+        response = alert.runModal()
+        if response == AppKit.NSAlertFirstButtonReturn:
+            key = input_field.stringValue().strip()
+            if key:
+                from pymol import ai_chat
+                ai_chat.set_api_key(key)
+                show_message('assistant', 'API key saved to Keychain.')
+
+    # Defer to main thread via timer
+    Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.1, _ApiKeyPromptHelper.alloc().init(), 'fire:', None, False)
+
+
+def show_account_modal():
+    """Show a modal with the current login status and a logout button."""
+    def _do_modal():
+        from pymol import ai_chat
+
+        alert = AppKit.NSAlert.alloc().init()
+
+        if ai_chat.is_logged_in():
+            masked = ai_chat.get_masked_key()
+            alert.setMessageText_("Account")
+            alert.setInformativeText_(
+                f"Provider: Anthropic\n"
+                f"API Key: {masked}\n"
+                f"Model: {ai_chat._ai_config['models'].get('anthropic', 'N/A')}")
+            alert.addButtonWithTitle_("Done")
+            alert.addButtonWithTitle_("Logout")
+
+            response = alert.runModal()
+            if response == AppKit.NSAlertSecondButtonReturn:
+                ai_chat.logout()
+        else:
+            alert.setMessageText_("Not Logged In")
+            alert.setInformativeText_("No API key is configured.")
+            alert.addButtonWithTitle_("Set API Key")
+            alert.addButtonWithTitle_("Cancel")
+
+            response = alert.runModal()
+            if response == AppKit.NSAlertFirstButtonReturn:
+                prompt_for_api_key()
+
+    Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.0, _AccountModalHelper.alloc().init(), 'fire:', None, False)
+
+
+class _ApiKeyPromptHelper(AppKit.NSObject):
+    def fire_(self, timer):
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Anthropic API Key Required")
+        alert.setInformativeText_(
+            "Enter your Anthropic API key to use the AI chat.\n"
+            "It will be stored securely in your macOS Keychain.")
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
+
+        input_field = AppKit.NSSecureTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, 320, 24))
+        input_field.setPlaceholderString_("sk-ant-...")
+        alert.setAccessoryView_(input_field)
+        alert.window().setInitialFirstResponder_(input_field)
+
+        response = alert.runModal()
+        if response == AppKit.NSAlertFirstButtonReturn:
+            key = input_field.stringValue().strip()
+            if key:
+                from pymol import ai_chat
+                ai_chat.set_api_key(key)
+                show_message('assistant', 'API key saved to Keychain.')
+
+
+class _AccountModalHelper(AppKit.NSObject):
+    def fire_(self, timer):
+        from pymol import ai_chat
+
+        alert = AppKit.NSAlert.alloc().init()
+
+        if ai_chat.is_logged_in():
+            masked = ai_chat.get_masked_key()
+            alert.setMessageText_("Account")
+            alert.setInformativeText_(
+                f"Provider: Anthropic\n"
+                f"API Key: {masked}\n"
+                f"Model: {ai_chat._ai_config['models'].get('anthropic', 'N/A')}")
+            alert.addButtonWithTitle_("Done")
+            alert.addButtonWithTitle_("Logout")
+
+            response = alert.runModal()
+            if response == AppKit.NSAlertSecondButtonReturn:
+                ai_chat.logout()
+        else:
+            alert.setMessageText_("Not Logged In")
+            alert.setInformativeText_("No API key is configured.")
+            alert.addButtonWithTitle_("Set API Key")
+            alert.addButtonWithTitle_("Cancel")
+
+            response = alert.runModal()
+            if response == AppKit.NSAlertFirstButtonReturn:
+                prompt_for_api_key()
+
+
+class _AccountButtonTarget(AppKit.NSObject):
+    """Target for the user icon button in the header."""
+
+    def showAccount_(self, sender):
+        show_account_modal()
+
+
+# ---------------------------------------------------------------------------
+# Build chat subviews
+# ---------------------------------------------------------------------------
+
 def _build_chat_subviews(parent_view):
     """Populate *parent_view* with the chat header, message area, input field."""
     global _message_container, _input_field, _status_label, _scroll_view, _delegate
@@ -1092,8 +1232,22 @@ def _build_chat_subviews(parent_view):
     title_label.setAutoresizingMask_(AppKit.NSViewMaxXMargin)
     header.addSubview_(title_label)
 
+    # User account button (person icon, top-right)
+    account_btn = AppKit.NSButton.alloc().initWithFrame_(
+        AppKit.NSMakeRect(cw - 32, 6, 24, 24))
+    account_btn.setTitle_("\U0001F464")  # bust silhouette
+    account_btn.setBordered_(False)
+    account_btn.setFont_(AppKit.NSFont.systemFontOfSize_(14.0))
+    account_btn.setAutoresizingMask_(AppKit.NSViewMinXMargin)
+    account_btn.setToolTip_("Account settings")
+    _account_target = _AccountButtonTarget.alloc().init()
+    account_btn.setTarget_(_account_target)
+    account_btn.setAction_('showAccount:')
+    _build_chat_subviews._account_target = _account_target
+    header.addSubview_(account_btn)
+
     new_btn = AppKit.NSButton.alloc().initWithFrame_(
-        AppKit.NSMakeRect(cw - 60, 6, 52, 24))
+        AppKit.NSMakeRect(cw - 90, 6, 52, 24))
     new_btn.setTitle_("New")
     new_btn.setBezelStyle_(AppKit.NSBezelStyleRounded)
     new_btn.setAutoresizingMask_(AppKit.NSViewMinXMargin)
