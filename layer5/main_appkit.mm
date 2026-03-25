@@ -86,6 +86,7 @@ static NSOpenGLContext *g_dummyGLContext = nil;  // Metal's dummy GL context for
 @property (strong) NSView *commandPanelContainer;
 @property (strong) NSView *objectPanelContainer;
 @property (strong) NSView *logPanelContainer;
+@property (strong) NSView *mousePanelContainer;
 @property (assign) BOOL chatVisible;
 @property (assign) BOOL usingMetal;
 - (void)toggleChatPanel;
@@ -346,8 +347,18 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         "        break\n"
     );
 
-    // Release the GIL
-
+    // Initialize the mouse mode / selection mode panel
+    PyRun_SimpleString(
+        "import AppKit\n"
+        "from pymol import appkit_mouse_panel\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'mousePanel':\n"
+        "                appkit_mouse_panel.setup(_sv, __import__('pymol').cmd)\n"
+        "                break\n"
+        "        break\n"
+    );
 
     // Compute Retina scale factor and set via the setting system
     NSRect pointBounds = [self bounds];
@@ -650,6 +661,19 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         "        break\n"
     );
 
+    // Initialize the mouse mode / selection mode panel
+    PyRun_SimpleString(
+        "import AppKit\n"
+        "from pymol import appkit_mouse_panel\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'mousePanel':\n"
+        "                appkit_mouse_panel.setup(_sv, __import__('pymol').cmd)\n"
+        "                break\n"
+        "        break\n"
+    );
+
     // Compute Retina scale factor
     NSRect pointBounds = [self bounds];
     NSRect pixelBounds = [self convertRectToBacking:pointBounds];
@@ -914,9 +938,20 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.commandPanelContainer];
 
-    // Object panel below buttons on right side
-    CGFloat objHeight = contentH - kButtonAreaHeight;
-    NSRect objFrame = NSMakeRect(rightX, 0, kObjectPanelWidth, objHeight);
+    // Mouse mode panel at bottom of right side
+    static const CGFloat kMousePanelHeight = 170.0;
+    NSRect mouseFrame = NSMakeRect(rightX, 0, kObjectPanelWidth, kMousePanelHeight);
+    self.mousePanelContainer = [[NSView alloc] initWithFrame:mouseFrame];
+    self.mousePanelContainer.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    self.mousePanelContainer.identifier = @"mousePanel";
+    self.mousePanelContainer.wantsLayer = YES;
+    self.mousePanelContainer.layer.backgroundColor =
+        [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
+    [container addSubview:self.mousePanelContainer];
+
+    // Object panel between buttons (top) and mouse panel (bottom) on right side
+    CGFloat objHeight = contentH - kButtonAreaHeight - kMousePanelHeight;
+    NSRect objFrame = NSMakeRect(rightX, kMousePanelHeight, kObjectPanelWidth, objHeight);
     self.objectPanelContainer = [[NSView alloc] initWithFrame:objFrame];
     self.objectPanelContainer.autoresizingMask = NSViewHeightSizable | NSViewMinXMargin;
     self.objectPanelContainer.identifier = @"objectPanel";
