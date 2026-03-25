@@ -87,9 +87,11 @@ static NSOpenGLContext *g_dummyGLContext = nil;  // Metal's dummy GL context for
 @property (strong) NSView *objectPanelContainer;
 @property (strong) NSView *logPanelContainer;
 @property (strong) NSView *mousePanelContainer;
+@property (strong) NSView *seqPanelContainer;
 @property (assign) BOOL chatVisible;
 @property (assign) BOOL usingMetal;
 - (void)toggleChatPanel;
+- (void)relayoutCenter;
 @end
 
 static CPyMOL *pymolInstance = nullptr;
@@ -356,6 +358,19 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         "        for _sv in _win.contentView().subviews():\n"
         "            if _sv.identifier() == 'mousePanel':\n"
         "                appkit_mouse_panel.setup(_sv, __import__('pymol').cmd)\n"
+        "                break\n"
+        "        break\n"
+    );
+
+    // Initialize the sequence viewer panel
+    PyRun_SimpleString(
+        "import AppKit\n"
+        "from pymol import appkit_sequence_panel\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'seqPanel':\n"
+        "                appkit_sequence_panel.setup(_sv, __import__('pymol').cmd)\n"
         "                break\n"
         "        break\n"
     );
@@ -674,6 +689,19 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         "        break\n"
     );
 
+    // Initialize the sequence viewer panel
+    PyRun_SimpleString(
+        "import AppKit\n"
+        "from pymol import appkit_sequence_panel\n"
+        "for _win in AppKit.NSApp.windows():\n"
+        "    if _win.title() == 'PyMOL Viewer':\n"
+        "        for _sv in _win.contentView().subviews():\n"
+        "            if _sv.identifier() == 'seqPanel':\n"
+        "                appkit_sequence_panel.setup(_sv, __import__('pymol').cmd)\n"
+        "                break\n"
+        "        break\n"
+    );
+
     // Compute Retina scale factor
     NSRect pointBounds = [self bounds];
     NSRect pixelBounds = [self convertRectToBacking:pointBounds];
@@ -968,7 +996,20 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         [[NSColor colorWithCalibratedRed:0.15 green:0.15 blue:0.17 alpha:1.0] CGColor];
     [container addSubview:self.logPanelContainer];
 
-    // Rendering view below the log panel
+    // Sequence panel between the log panel and the GL view (hidden by default)
+    static const CGFloat kSeqPanelHeight = 22.0;
+    NSRect seqFrame = NSMakeRect(centerX, contentH - kLogPanelHeight - kSeqPanelHeight,
+                                  centerWidth, kSeqPanelHeight);
+    self.seqPanelContainer = [[NSView alloc] initWithFrame:seqFrame];
+    self.seqPanelContainer.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    self.seqPanelContainer.identifier = @"seqPanel";
+    self.seqPanelContainer.wantsLayer = YES;
+    self.seqPanelContainer.layer.backgroundColor =
+        [[NSColor colorWithCalibratedRed:0.13 green:0.13 blue:0.15 alpha:1.0] CGColor];
+    self.seqPanelContainer.hidden = YES;  // shown when seq_view is enabled
+    [container addSubview:self.seqPanelContainer];
+
+    // Rendering view below the log panel (and seq panel when visible)
     CGFloat glHeight = contentH - kLogPanelHeight;
     NSRect glFrame = NSMakeRect(centerX, 0, centerWidth, glHeight);
 
@@ -1021,13 +1062,18 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
 }
 
 - (void)toggleChatPanel {
+    self.chatVisible = !self.chatVisible;
+    [self relayoutCenter];
+}
+
+- (void)relayoutCenter {
     static const CGFloat kChatPanelWidth = 320.0;
     static const CGFloat kObjectPanelWidth = 280.0;
     static const CGFloat kButtonAreaHeight = 150.0;
+    static const CGFloat kLogPanelHeight = 150.0;
+    static const CGFloat kSeqPanelHeight = 22.0;
+
     NSRect contentBounds = [[self.window contentView] bounds];
-
-    self.chatVisible = !self.chatVisible;
-
     CGFloat objW = kObjectPanelWidth;
     CGFloat W = contentBounds.size.width;
     CGFloat H = contentBounds.size.height;
@@ -1037,21 +1083,29 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     [self.commandPanelContainer setFrame:NSMakeRect(rightX, H - kButtonAreaHeight, objW, kButtonAreaHeight)];
     [self.objectPanelContainer setFrame:NSMakeRect(rightX, 0, objW, H - kButtonAreaHeight)];
 
-    static const CGFloat kLogPanelHeight = 150.0;
+    CGFloat centerX = self.chatVisible ? kChatPanelWidth : 0;
+    CGFloat centerW = W - (self.chatVisible ? kChatPanelWidth : 0) - objW;
 
     if (self.chatVisible) {
         [self.chatContainer setHidden:NO];
         [self.chatContainer setFrame:NSMakeRect(0, 0, kChatPanelWidth, H)];
-        CGFloat centerX = kChatPanelWidth;
-        CGFloat centerW = W - kChatPanelWidth - objW;
-        [self.logPanelContainer setFrame:NSMakeRect(centerX, H - kLogPanelHeight, centerW, kLogPanelHeight)];
-        [glView setFrame:NSMakeRect(centerX, 0, centerW, H - kLogPanelHeight)];
     } else {
         [self.chatContainer setHidden:YES];
-        CGFloat centerW = W - objW;
-        [self.logPanelContainer setFrame:NSMakeRect(0, H - kLogPanelHeight, centerW, kLogPanelHeight)];
-        [glView setFrame:NSMakeRect(0, 0, centerW, H - kLogPanelHeight)];
     }
+
+    // Log panel at top of center area
+    [self.logPanelContainer setFrame:NSMakeRect(centerX, H - kLogPanelHeight, centerW, kLogPanelHeight)];
+
+    // Sequence panel sits below the log panel (only takes space when visible)
+    BOOL seqVisible = self.seqPanelContainer && !self.seqPanelContainer.hidden;
+    CGFloat seqH = seqVisible ? kSeqPanelHeight : 0;
+    if (self.seqPanelContainer) {
+        [self.seqPanelContainer setFrame:NSMakeRect(centerX, H - kLogPanelHeight - seqH, centerW, kSeqPanelHeight)];
+    }
+
+    // GL view fills remaining space below log + seq panels
+    CGFloat glTop = kLogPanelHeight + seqH;
+    [glView setFrame:NSMakeRect(centerX, 0, centerW, H - glTop)];
 
     // Force reshape so PyMOL picks up the new viewport size
     if ([glView isKindOfClass:[NSOpenGLView class]]) {
