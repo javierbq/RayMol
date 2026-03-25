@@ -1,5 +1,9 @@
 // PyMOLBridge.mm — C bridge implementation connecting Swift to PyMOL's embedding API
 // Compiled as Objective-C++ to access both the C++ PyMOL internals and ObjC Metal APIs.
+//
+// NOTE: PyMOL include paths come from OTHER_CPLUSPLUSFLAGS in
+// PyMOLBridge.xcconfig (not HEADER_SEARCH_PATHS, which would break
+// Clang module builds due to layer0/Block.h shadowing system Block.h).
 
 #include "PyMOLBridge.h"
 
@@ -8,7 +12,7 @@
 #include "P.h"
 
 #import <Foundation/Foundation.h>
-#import <Python/Python.h>
+#import <Python.h>
 
 // Forward declarations from PyMOL internals
 extern "C" {

@@ -43,6 +43,7 @@
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
+		"TEMP_0084A6C6-6D60-4671-A36F-8F8589D35D1B" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -103,6 +104,14 @@
 				356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */,
 			);
 			path = Bridge;
+			sourceTree = "<group>";
+		};
+		"TEMP_9659CC59-100D-489F-813A-83E615B28C51" /* swiftui */ = {
+			isa = PBXGroup;
+			children = (
+				"TEMP_0084A6C6-6D60-4671-A36F-8F8589D35D1B" /* PyMOLBridge.xcconfig */,
+			);
+			path = swiftui;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -305,6 +314,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_0084A6C6-6D60-4671-A36F-8F8589D35D1B" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -389,6 +399,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_0084A6C6-6D60-4671-A36F-8F8589D35D1B" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

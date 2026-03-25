@@ -7,15 +7,19 @@ options:
   xcodeVersion: "15.0"
   createIntermediateGroups: true
 
+configFiles:
+  Debug: PyMOLBridge.xcconfig
+  Release: PyMOLBridge.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
     CLANG_CXX_LANGUAGE_STANDARD: c++17
     CLANG_ENABLE_MODULES: YES
     SWIFT_OBJC_BRIDGING_HEADER: PyMOLViewer/Bridge/PyMOLBridge.h
-    # Do NOT add PyMOL layer paths here — layer0/Block.h shadows the
-    # system Block.h and breaks Clang module builds for CoreFoundation.
-    # PyMOL include paths are set per-file on PyMOLBridge.mm only.
+    # Do NOT add PyMOL layer paths to HEADER_SEARCH_PATHS —
+    # layer0/Block.h shadows the system Block.h and breaks module builds.
+    # PyMOL paths go via OTHER_CPLUSPLUSFLAGS in PyMOLBridge.xcconfig.
     LIBRARY_SEARCH_PATHS:
       - $(SRCROOT)/../build_appkit
       - /opt/homebrew/lib
@@ -42,27 +46,6 @@ targets:
       - path: PyMOLViewer
         excludes:
           - "**/*.md"
-        compilerFlags:
-          # Default flags for all files (Swift files ignore these)
-          - ""
-      - path: PyMOLViewer/Bridge/PyMOLBridge.mm
-        compilerFlags:
-          # PyMOL include paths ONLY for the ObjC++ bridge file
-          - -I$(SRCROOT)/../include
-          - -I$(SRCROOT)/../include/pymol
-          - -I$(SRCROOT)/../layer0
-          - -I$(SRCROOT)/../layer1
-          - -I$(SRCROOT)/../layer2
-          - -I$(SRCROOT)/../layer3
-          - -I$(SRCROOT)/../layer4
-          - -I$(SRCROOT)/../layer5
-          - -I$(SRCROOT)/../layerGraphics
-          - -I$(SRCROOT)/../layerGraphics/metal
-          - -I$(SRCROOT)/../contrib
-          - -I$(SRCROOT)/../contrib/pocketfft
-          - -I$(SRCROOT)/../build_appkit/generated
-          - -I/opt/homebrew/include
-          - -I/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.pymol.viewer
