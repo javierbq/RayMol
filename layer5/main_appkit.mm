@@ -831,14 +831,7 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
         SceneTranslate(G, dx * 0.1f, dy * 0.1f, 0.0f);
     }
 }
-- (void)scrollWheel:(NSEvent *)e {
-    if (pymolInstance) {
-        float dy = [e deltaY];
-        PyMOLGlobals *G = PyMOL_GetGlobals(pymolInstance);
-        extern void SceneTranslate(PyMOLGlobals*, float, float, float);
-        SceneTranslate(G, 0.0f, 0.0f, dy * 2.0f);
-    }
-}
+- (void)scrollWheel:(NSEvent *)e { handleScrollWheel(self, e); }
 - (void)keyDown:(NSEvent *)e         { handleKeyDown(self, e); }
 
 // Picking via NDC-to-world unprojection (GL picking is unavailable on Metal).
