@@ -1941,7 +1941,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
 
 void SceneRenderMetalSelections(PyMOLGlobals* G)
 {
-  if (!G->Renderer)
+  if (!G->Renderer || !G->Renderer->isRenderReady())
     return;
 
   // Collect selected atom coordinates via Executive helper

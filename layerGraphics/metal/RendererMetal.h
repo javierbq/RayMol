@@ -107,6 +107,9 @@ public:
   void batchNormal3fv(const float* n) override;
   void endBatch() override;
 
+  // Render readiness
+  bool isRenderReady() const override;
+
   // Queries
   void getIntegerv(int pname, int* params) override;
   const char* getString(int name) override;

@@ -986,7 +986,7 @@ void RendererMetal::endBatch()
   if (_batchVertices.empty()) return;
 
   ensureEncoder();
-  if (!_encoder) return;
+  if (!_encoder || !_batchPipeline) return;
 
   // Handle triangle fan conversion: fan vertices [0,1,2,3,...,N] become
   // triangles [0,1,2], [0,2,3], [0,3,4], ..., [0,N-1,N]
@@ -1044,9 +1044,7 @@ void RendererMetal::endBatch()
 
   // Always use the built-in batch pipeline for batch rendering.
   // _currentPipeline is for VBO draws with a different vertex layout.
-  if (_batchPipeline) {
-    [_encoder setRenderPipelineState:_batchPipeline];
-  }
+  [_encoder setRenderPipelineState:_batchPipeline];
 
   MTLPrimitiveType mtlPrim =
       (_batchMode == PrimitiveType::TriangleFan ||
@@ -1059,6 +1057,15 @@ void RendererMetal::endBatch()
                vertexCount:static_cast<NSUInteger>(drawVertices->size())];
 
   _batchVertices.clear();
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Render readiness
+// ---------------------------------------------------------------------------
+
+bool RendererMetal::isRenderReady() const
+{
+  return _cmdBuffer && _passDesc && _batchPipeline;
 }
 
 // ---------------------------------------------------------------------------

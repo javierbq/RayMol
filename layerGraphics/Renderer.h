@@ -148,6 +148,11 @@ public:
   virtual void batchNormal3fv(const float* n) = 0;
   virtual void endBatch() = 0;
 
+  // Returns true when the renderer is in a state that can accept draw calls.
+  // Metal: checks that the command encoder and batch pipeline are valid.
+  // GL: always returns true.
+  virtual bool isRenderReady() const { return true; }
+
   // Queries
   virtual void getIntegerv(int pname, int* params) = 0;
   virtual const char* getString(int name) = 0;
