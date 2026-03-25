@@ -110,10 +110,108 @@ _ACTION_OPTIONS = [
     ('Zoom', 'zoom'),
     ('Orient', 'orient'),
     ('Center', 'center'),
+    ('Origin', 'origin'),
     ('---', None),
-    ('Delete', 'delete'),
+    ('Drag Matrix', 'drag_matrix'),
+    ('Reset Matrix', 'reset_matrix'),
+    ('---', None),
+    ('Drag Coordinates', 'drag_coords'),
+    ('Clean', 'clean'),
+    ('---', None),
+    ('Preset', None, [
+        ('classified', 'preset_classified'),
+        ('---', None),
+        ('simple', 'preset_simple'),
+        ('simple (no solvent)', 'preset_simple_no_solv'),
+        ('ball and stick', 'preset_ball_and_stick'),
+        ('b factor putty', 'preset_b_factor_putty'),
+        ('technical', 'preset_technical'),
+        ('ligands', 'preset_ligands'),
+        ('pretty', 'preset_pretty'),
+        ('pretty (with solvent)', 'preset_pretty_solv'),
+        ('publication', 'preset_publication'),
+        ('publication (with solvent)', 'preset_pub_solv'),
+        ('---', None),
+        ('protein interface', 'preset_interface'),
+        ('---', None),
+        ('default', 'preset_default'),
+    ]),
+    ('Find', None, [
+        ('polar contacts (within)', 'find_polar_within'),
+        ('polar contacts (to other)', 'find_polar_other'),
+        ('polar contacts (any)', 'find_polar_any'),
+        ('---', None),
+        ('halogen bonds', 'find_halogen_bond'),
+        ('salt bridges', 'find_salt_bridge'),
+        ('---', None),
+        ('pi interactions (all)', 'find_pi_all'),
+        ('pi-pi', 'find_pi_pi'),
+        ('pi-cation', 'find_pi_cation'),
+    ]),
+    ('Align', None, [
+        ('enabled to this (*/CA)', 'align_enabled'),
+        ('all to this (*/CA)', 'align_all'),
+        ('---', None),
+        ('states (*/CA)', 'align_states_ca'),
+        ('states', 'align_states'),
+        ('---', None),
+        ('matrix reset', 'matrix_reset'),
+    ]),
+    ('Generate', None, [
+        ('vacuum electrostatics', 'gen_vacuum_esp'),
+        ('---', None),
+        ('symmetry mates 4 A', 'gen_symm_4'),
+        ('symmetry mates 8 A', 'gen_symm_8'),
+        ('symmetry mates 20 A', 'gen_symm_20'),
+    ]),
+    ('---', None),
+    ('Assign Sec. Struc.', 'dss'),
+    ('---', None),
+    ('Hydrogens', None, [
+        ('add', 'h_add'),
+        ('add polar', 'h_add_polar'),
+        ('---', None),
+        ('remove', 'h_remove'),
+        ('remove nonpolar', 'h_remove_nonpolar'),
+    ]),
+    ('Remove Waters', 'remove_waters'),
+    ('---', None),
+    ('State', None, [
+        ('freeze', 'state_freeze'),
+        ('all states', 'state_all'),
+        ('thaw', 'state_thaw'),
+        ('---', None),
+        ('split', 'state_split'),
+    ]),
+    ('Sequence', None, [
+        ('include', 'seq_include'),
+        ('exclude', 'seq_exclude'),
+        ('default', 'seq_default'),
+    ]),
+    ('Movement', None, [
+        ('protect', 'movement_protect'),
+        ('deprotect', 'movement_deprotect'),
+    ]),
+    ('Masking', None, [
+        ('mask', 'masking_mask'),
+        ('unmask', 'masking_unmask'),
+    ]),
+    ('Compute', None, [
+        ('atom count', 'compute_count'),
+        ('---', None),
+        ('formal charge sum', 'compute_formal_charge'),
+        ('partial charge sum', 'compute_partial_charge'),
+        ('---', None),
+        ('molecular surface area', 'compute_mol_area'),
+        ('solvent accessible area', 'compute_sasa'),
+        ('---', None),
+        ('mol. weight (explicit)', 'compute_mass_explicit'),
+        ('mol. weight (with H)', 'compute_mass_implicit'),
+    ]),
+    ('---', None),
+    ('Rename', 'rename'),
     ('Duplicate', 'copy'),
-    ('Rename', None),
+    ('Delete', 'delete'),
 ]
 
 # ---------------------------------------------------------------------------
@@ -140,10 +238,16 @@ class ObjPanel_ButtonTarget(AppKit.NSObject):
 
     @objc.typedSelector(b'v@:@')
     def popupAction_(self, sender):
-        idx = sender.indexOfSelectedItem()
-        if idx < 0:
-            return
-        title = str(sender.itemTitleAtIndex_(idx))
+        # sender may be an NSPopUpButton (top-level click) or an
+        # NSMenuItem (submenu click).
+        if hasattr(sender, 'indexOfSelectedItem'):
+            idx = sender.indexOfSelectedItem()
+            if idx < 0:
+                return
+            title = str(sender.itemTitleAtIndex_(idx))
+        else:
+            # NSMenuItem from a submenu
+            title = str(sender.title())
         name = self._name
         action = self._action
 
@@ -184,22 +288,214 @@ class ObjPanel_ButtonTarget(AppKit.NSObject):
                             self._cmd.color(cmd_str, name)
                         break
             elif action == 'action':
-                for item in _ACTION_OPTIONS:
-                    if item[0] == title and item[1] is not None:
-                        act_cmd = item[1]
-                        if act_cmd == 'zoom':
-                            self._cmd.zoom(name)
-                        elif act_cmd == 'orient':
-                            self._cmd.orient(name)
-                        elif act_cmd == 'center':
-                            self._cmd.center(name)
-                        elif act_cmd == 'delete':
-                            self._cmd.delete(name)
-                        elif act_cmd == 'copy':
-                            self._cmd.copy(name + '_copy', name)
-                        break
+                _run_action_command(self._cmd, name, title)
         except Exception as e:
             print(f"ObjPanel action error: {e}")
+
+
+def _run_action_command(cmd, name, title):
+    """Dispatch an action menu command for the given object name.
+
+    Called from popupAction_ when action == 'action'.  We look up the
+    title across _ACTION_OPTIONS (including submenus) to find the
+    matching command key, then execute the appropriate cmd.* call.
+    """
+    # Flatten _ACTION_OPTIONS to find the command key for this title
+    cmd_key = _find_action_key(title, _ACTION_OPTIONS)
+    if cmd_key is None:
+        return
+
+    try:
+        # ---- View / Transform ----
+        if cmd_key == 'zoom':
+            cmd.zoom(name, animate=-1)
+        elif cmd_key == 'orient':
+            cmd.orient(name, animate=-1)
+        elif cmd_key == 'center':
+            cmd.center(name, animate=-1)
+        elif cmd_key == 'origin':
+            cmd.origin(name)
+        elif cmd_key == 'drag_matrix':
+            cmd.drag(name)
+        elif cmd_key == 'reset_matrix':
+            cmd.reset(object=name)
+        elif cmd_key == 'drag_coords':
+            cmd.drag("(" + name + ")")
+        elif cmd_key == 'clean':
+            cmd.clean(name)
+        elif cmd_key == 'dss':
+            cmd.dss(name)
+        # ---- Presets ----
+        elif cmd_key == 'preset_classified':
+            from pymol import preset
+            preset.classified(name, _self=cmd)
+        elif cmd_key == 'preset_simple':
+            from pymol import preset
+            preset.simple(name, _self=cmd)
+        elif cmd_key == 'preset_simple_no_solv':
+            from pymol import preset
+            preset.simple_no_solv(name, _self=cmd)
+        elif cmd_key == 'preset_ball_and_stick':
+            from pymol import preset
+            preset.ball_and_stick(name, _self=cmd)
+        elif cmd_key == 'preset_b_factor_putty':
+            from pymol import preset
+            preset.b_factor_putty(name, _self=cmd)
+        elif cmd_key == 'preset_technical':
+            from pymol import preset
+            preset.technical(name, _self=cmd)
+        elif cmd_key == 'preset_ligands':
+            from pymol import preset
+            preset.ligands(name, _self=cmd)
+        elif cmd_key == 'preset_pretty':
+            from pymol import preset
+            preset.pretty(name, _self=cmd)
+        elif cmd_key == 'preset_pretty_solv':
+            from pymol import preset
+            preset.pretty_solv(name, _self=cmd)
+        elif cmd_key == 'preset_publication':
+            from pymol import preset
+            preset.publication(name, _self=cmd)
+        elif cmd_key == 'preset_pub_solv':
+            from pymol import preset
+            preset.pub_solv(name, _self=cmd)
+        elif cmd_key == 'preset_interface':
+            from pymol import preset
+            preset.interface(name, _self=cmd)
+        elif cmd_key == 'preset_default':
+            from pymol import preset
+            preset.default(name, _self=cmd)
+        # ---- Find ----
+        elif cmd_key == 'find_polar_within':
+            cmd.dist(name + "_polar_conts", name, name,
+                     quiet=1, mode=2, label=0, reset=1)
+            cmd.enable(name + "_polar_conts")
+        elif cmd_key == 'find_polar_other':
+            cmd.dist(name + "_polar_conts",
+                     "(" + name + ")",
+                     "(byobj (" + name + ")) and (not (" + name + "))",
+                     quiet=1, mode=2, label=0, reset=1)
+            cmd.enable(name + "_polar_conts")
+        elif cmd_key == 'find_polar_any':
+            cmd.dist(name + "_polar_conts",
+                     "(" + name + ")",
+                     "(not " + name + ")",
+                     quiet=1, mode=2, label=0, reset=1)
+            cmd.enable(name + "_polar_conts")
+        elif cmd_key == 'find_halogen_bond':
+            cmd.distance(name + "_halogen_bond", name, "same",
+                         reset=1, mode=9)
+        elif cmd_key == 'find_salt_bridge':
+            cmd.distance(name + "_salt_bridge", name, "same",
+                         reset=1, mode=10)
+        elif cmd_key == 'find_pi_all':
+            cmd.pi_interactions(name + "_pi_interactions", name, reset=1)
+        elif cmd_key == 'find_pi_pi':
+            cmd.distance(name + "_pi_pi", name, "same", reset=1, mode=6)
+        elif cmd_key == 'find_pi_cation':
+            cmd.distance(name + "_pi_cation", name, "same", reset=1, mode=7)
+        # ---- Align ----
+        elif cmd_key == 'align_enabled':
+            cmd.util.mass_align(name, 1, _self=cmd)
+        elif cmd_key == 'align_all':
+            cmd.util.mass_align(name, 0, _self=cmd)
+        elif cmd_key == 'align_states_ca':
+            cmd.intra_fit("(" + name + ") and name CA")
+        elif cmd_key == 'align_states':
+            cmd.intra_fit(name)
+        elif cmd_key == 'matrix_reset':
+            cmd.matrix_reset(name)
+        # ---- Generate ----
+        elif cmd_key == 'gen_vacuum_esp':
+            cmd.util.protein_vacuum_esp(name, mode=2, quiet=0, _self=cmd)
+        elif cmd_key == 'gen_symm_4':
+            cmd.symexp(name + "_", name, name, cutoff=4, segi=1)
+        elif cmd_key == 'gen_symm_8':
+            cmd.symexp(name + "_", name, name, cutoff=8, segi=1)
+        elif cmd_key == 'gen_symm_20':
+            cmd.symexp(name + "_", name, name, cutoff=20, segi=1)
+        # ---- Hydrogens ----
+        elif cmd_key == 'h_add':
+            cmd.h_add(name)
+            cmd.sort(name + " extend 1")
+        elif cmd_key == 'h_add_polar':
+            cmd.h_add(name + " & (don.|acc.)")
+            cmd.sort(name + " extend 1")
+        elif cmd_key == 'h_remove':
+            cmd.remove("(" + name + ") and hydro")
+        elif cmd_key == 'h_remove_nonpolar':
+            cmd.remove(name + " & hydro & not nbr. (don.|acc.)")
+        elif cmd_key == 'remove_waters':
+            cmd.remove("(solvent and (" + name + "))")
+        # ---- State ----
+        elif cmd_key == 'state_freeze':
+            cmd.set("state", cmd.get_state(), name)
+        elif cmd_key == 'state_all':
+            cmd.set("state", 0, name)
+        elif cmd_key == 'state_thaw':
+            cmd.unset("all_states", name)
+            cmd.unset("state", name)
+        elif cmd_key == 'state_split':
+            cmd.split_states(name)
+        # ---- Sequence ----
+        elif cmd_key == 'seq_include':
+            cmd.set("seq_view", "on", name)
+        elif cmd_key == 'seq_exclude':
+            cmd.set("seq_view", "off", name)
+        elif cmd_key == 'seq_default':
+            cmd.unset("seq_view", name)
+        # ---- Movement ----
+        elif cmd_key == 'movement_protect':
+            cmd.protect(name)
+        elif cmd_key == 'movement_deprotect':
+            cmd.deprotect(name)
+        # ---- Masking ----
+        elif cmd_key == 'masking_mask':
+            cmd.mask(name)
+        elif cmd_key == 'masking_unmask':
+            cmd.unmask(name)
+        # ---- Compute ----
+        elif cmd_key == 'compute_count':
+            cmd.count_atoms(name, quiet=0)
+        elif cmd_key == 'compute_formal_charge':
+            cmd.util.sum_formal_charges(name, quiet=0, _self=cmd)
+        elif cmd_key == 'compute_partial_charge':
+            cmd.util.sum_partial_charges(name, quiet=0, _self=cmd)
+        elif cmd_key == 'compute_mol_area':
+            cmd.util.get_area(name, -1, 0, quiet=0, _self=cmd)
+        elif cmd_key == 'compute_sasa':
+            cmd.util.get_sasa(name, quiet=0, _self=cmd)
+        elif cmd_key == 'compute_mass_explicit':
+            cmd.util.compute_mass(name, implicit=False, quiet=0, _self=cmd)
+        elif cmd_key == 'compute_mass_implicit':
+            cmd.util.compute_mass(name, implicit=True, quiet=0, _self=cmd)
+        # ---- Object management ----
+        elif cmd_key == 'rename':
+            cmd.wizard("renaming", name)
+        elif cmd_key == 'copy':
+            cmd.copy(name + '_copy', name)
+        elif cmd_key == 'delete':
+            cmd.delete(name)
+    except Exception as e:
+        print(f"ObjPanel action '{cmd_key}' error: {e}")
+
+
+def _find_action_key(title, options):
+    """Search _ACTION_OPTIONS (including submenus) for a title match.
+
+    Returns the command key string or None.
+    """
+    for item in options:
+        if item[0] == '---':
+            continue
+        # Item with submenu: (title, None, [(sub_title, cmd_key), ...])
+        if len(item) > 2 and item[2] is not None:
+            result = _find_action_key(title, item[2])
+            if result is not None:
+                return result
+        elif item[0] == title and item[1] is not None:
+            return item[1]
+    return None
 
 
 class ObjPanel_CheckboxTarget(AppKit.NSObject):
@@ -236,14 +532,38 @@ class ObjPanel_TimerTarget(AppKit.NSObject):
 # UI building
 # ---------------------------------------------------------------------------
 
+def _build_submenu(sub_items, target, action_sel):
+    """Build an NSMenu from a list of (title, cmd_key) tuples.
+
+    Used for nested submenus inside popup buttons.  Each leaf item
+    gets the same *target* / *action_sel* so the action handler can
+    dispatch by title.
+    """
+    submenu = AppKit.NSMenu.alloc().init()
+    submenu.setAutoenablesItems_(False)
+    for sub in sub_items:
+        sub_title = sub[0]
+        if sub_title == '---':
+            submenu.addItem_(AppKit.NSMenuItem.separatorItem())
+            continue
+        mi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            sub_title, action_sel, '')
+        mi.setTarget_(target)
+        if sub[1] is None:
+            mi.setEnabled_(False)
+        submenu.addItem_(mi)
+    return submenu
+
+
 def _make_popup_button(title, items, target, action_sel):
     """Create a small popup button with structured menu items.
 
     *items* is a list of tuples.  Each tuple has at least two elements:
-      (label, command_or_None [, color_rgb_or_None])
-    '---' labels become separator items.  Items with command=None are
-    rendered as disabled group headers.  If a color tuple is present the
-    menu item text is rendered in that color.
+      (label, command_or_None [, color_rgb_or_None_or_submenu_list])
+    '---' labels become separator items.  Items with command=None and no
+    submenu are rendered as disabled group headers.  If the third element
+    is a list, it is treated as a submenu specification.  If it is an
+    (r,g,b) tuple the menu item text is rendered in that color.
     """
     btn = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
         AppKit.NSMakeRect(0, 0, 28, 20), True)
@@ -260,12 +580,29 @@ def _make_popup_button(title, items, target, action_sel):
                 AppKit.NSForegroundColorAttributeName: _BUTTON_TEXT_COLOR,
             }))
 
+    menu = btn.menu()
+    menu.setAutoenablesItems_(False)
+
     for item_info in items:
         item_title = item_info[0]
 
         # Separator
         if item_title == '---':
-            btn.menu().addItem_(AppKit.NSMenuItem.separatorItem())
+            menu.addItem_(AppKit.NSMenuItem.separatorItem())
+            continue
+
+        # Check for submenu (3rd element is a list)
+        has_submenu = (len(item_info) > 2
+                       and isinstance(item_info[2], list))
+
+        if has_submenu:
+            # Create an NSMenuItem with a submenu
+            mi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                item_title, None, '')
+            submenu = _build_submenu(item_info[2], target, action_sel)
+            submenu.setTitle_(item_title)
+            mi.setSubmenu_(submenu)
+            menu.addItem_(mi)
             continue
 
         btn.addItemWithTitle_(item_title)
@@ -275,8 +612,9 @@ def _make_popup_button(title, items, target, action_sel):
         if item_info[1] is None:
             menu_item.setEnabled_(False)
 
-        # Colored text (color items)
-        if len(item_info) > 2 and item_info[2] is not None:
+        # Colored text (color items — 3rd element is an (r,g,b) tuple)
+        if (len(item_info) > 2 and item_info[2] is not None
+                and not isinstance(item_info[2], list)):
             r, g, b = item_info[2]
             color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
                 r, g, b, 1.0)
