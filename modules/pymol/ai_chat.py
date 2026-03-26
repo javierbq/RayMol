@@ -10,6 +10,14 @@ import json
 import subprocess
 import threading
 import asyncio
+import time
+
+def _log(msg):
+    """Print timestamped telemetry to stderr."""
+    import sys
+    t = time.strftime('%H:%M:%S')
+    ms = int((time.time() % 1) * 1000)
+    print(f'[ai_chat {t}.{ms:03d}] {msg}', file=sys.stderr, flush=True)
 
 # ---------------------------------------------------------------------------
 # SDK availability check
@@ -213,6 +221,14 @@ def _init(cmd_module):
 
     cmd_module.extend('ai_config', ai_config)
 
+    # Eagerly import ai_vertex_auth so the cryptography library loads during
+    # startup (takes ~20s on first load) rather than blocking the first chat message.
+    if _ai_config['provider'] == 'vertex_ai':
+        try:
+            import pymol.ai_vertex_auth  # noqa: F401
+        except ImportError:
+            pass
+
     # If no credentials for the active provider, prompt the user
     if _has_ui and not _has_credentials():
         from pymol import ai_chat_ui
@@ -361,6 +377,7 @@ def _toggle_panel():
 def _on_user_message(text):
     """Main entry point called by the UI when the user submits a message."""
     global _messages
+    _log(f'_on_user_message: "{text[:50]}"')
 
     _messages.append({'role': 'user', 'content': text})
 
@@ -412,13 +429,16 @@ _worker_active = False
 def _worker():
     """Background thread: dispatch to SDK or fallback worker."""
     global _worker_active
+    _log(f'_worker started, _HAS_SDK={_HAS_SDK}, provider={_ai_config["provider"]}')
     if _has_ui:
         from pymol import ai_chat_ui
         ai_chat_ui.set_busy(True)
     try:
         if _HAS_SDK:
+            _log('dispatching to SDK worker')
             _worker_impl_sdk()
         else:
+            _log('dispatching to fallback worker')
             _worker_impl_fallback()
     finally:
         _worker_active = False
@@ -595,24 +615,31 @@ def _worker_impl_fallback():
     try:
         provider = _ai_config['provider']
         model = _ai_config['models'].get(provider, 'claude-sonnet-4-6')
+        _log(f'fallback worker: provider={provider}, model={model}')
 
         max_tool_rounds = 5
         for _round in range(max_tool_rounds):
+            _log(f'round {_round}: building api messages')
             api_messages = _build_api_messages()
+            _log(f'round {_round}: {len(api_messages)} messages, calling API...')
 
             try:
+                t_api = time.time()
                 if provider == 'vertex_ai':
                     body = _call_vertex_ai(api_messages, model)
                 else:
                     key = _ai_config['api_keys'].get('anthropic', '')
                     body = _call_anthropic(api_messages, key, model)
+                _log(f'round {_round}: API returned in {time.time()-t_api:.2f}s')
             except Exception as exc:
+                _log(f'round {_round}: API FAILED in {time.time()-t_api:.2f}s: {exc}')
                 _ui_msg('error', f"API call failed: {exc}")
                 _ui_status('')
                 return
 
             stop_reason = body.get('stop_reason', 'end_turn')
             content = body.get('content', [])
+            _log(f'round {_round}: stop_reason={stop_reason}, content_blocks={len(content)}')
 
             # Extract text and tool_use blocks
             text_parts = []
@@ -838,14 +865,20 @@ def _call_anthropic(messages, key, model):
 
 def _call_vertex_ai(messages, model):
     """Call Claude via Vertex AI (non-streaming). Returns the response body dict."""
+    _log('vertex: importing ai_vertex_auth...')
+    t_import = time.time()
     from pymol.ai_vertex_auth import get_access_token
+    _log(f'vertex: import took {time.time()-t_import:.2f}s')
 
     vc = _ai_config['vertex_ai']
     project_id = vc['project_id']
     region = vc['region']
     sa_path = vc.get('sa_json_path', '')
 
+    _log(f'vertex: importing ai_vertex_auth done, getting access token (sa={sa_path[:30]}...)')
+    t_tok = time.time()
     token = get_access_token(sa_path)
+    _log(f'vertex: token obtained in {time.time()-t_tok:.2f}s (cached={time.time()-t_tok < 0.01})')
     if not token:
         raise RuntimeError(
             "Could not obtain Vertex AI access token. "
