@@ -222,6 +222,7 @@ static NSMutableArray *pendingFiles = nil;  // files received before ready
 
     // Mark PyMOL as fully ready and load any files that were queued before init
     pymolReady = YES;
+    NSLog(@"[AiMOL] pymolReady=YES, pendingFiles=%lu", (unsigned long)(pendingFiles ? [pendingFiles count] : 0));
     if (pendingFiles && [pendingFiles count] > 0) {
         for (NSString *filename in pendingFiles) {
             NSString *escaped = [filename stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
@@ -610,34 +611,54 @@ static NSMutableArray *pendingFiles = nil;  // files received before ready
 }
 
 static void _loadFile(NSString *filename) {
+    NSLog(@"[AiMOL] Loading file: %@", filename);
+    // Use cmd.load() directly — cmd.do("load ...") has quoting issues with paths
     NSString *escaped = [filename stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
     escaped = [escaped stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
-    NSString *pyCmd = [@"__import__('pymol').cmd.do(\"load '" stringByAppendingString:escaped];
-    pyCmd = [pyCmd stringByAppendingString:@"'\")"];
+    NSString *pyCmd = [@"__import__('pymol').cmd.load('" stringByAppendingString:escaped];
+    pyCmd = [pyCmd stringByAppendingString:@"', quiet=0)"];
+    NSLog(@"[AiMOL] Python: %@", pyCmd);
     PyRun_SimpleString([pyCmd UTF8String]);
 }
 
-- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
+static void _queueOrLoadFile(NSString *filename) {
+    if (!pendingFiles) pendingFiles = [[NSMutableArray alloc] init];
+
     if (pymolReady) {
-        _loadFile(filename);
+        // Defer load to let the render loop settle after cold launch
+        NSLog(@"[AiMOL] Deferring file load: %@", filename);
+        NSString *retained = [filename copy];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            _loadFile(retained);
+        });
     } else {
-        // Queue for loading after PyMOL finishes initializing
-        if (!pendingFiles) pendingFiles = [[NSMutableArray alloc] init];
+        NSLog(@"[AiMOL] Queuing file (PyMOL not ready): %@", filename);
         [pendingFiles addObject:filename];
     }
+}
+
+- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
+    NSLog(@"[AiMOL] openFile: %@", filename);
+    _queueOrLoadFile(filename);
     return YES;
 }
 
 - (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames {
+    NSLog(@"[AiMOL] openFiles: %lu files", (unsigned long)[filenames count]);
     for (NSString *filename in filenames) {
-        if (pymolReady) {
-            _loadFile(filename);
-        } else {
-            if (!pendingFiles) pendingFiles = [[NSMutableArray alloc] init];
-            [pendingFiles addObject:filename];
-        }
+        _queueOrLoadFile(filename);
     }
     [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
+}
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
+    NSLog(@"[AiMOL] openURLs: %lu urls", (unsigned long)[urls count]);
+    for (NSURL *url in urls) {
+        if ([url isFileURL]) {
+            _queueOrLoadFile([url path]);
+        }
+    }
 }
 
 @end
