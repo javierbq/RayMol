@@ -477,13 +477,13 @@ def phase_f_verify(app_path):
 def phase_g_dmg(app_path):
     """Create DMG."""
     print("\n=== Phase G: Creating DMG ===")
-    dmg_path = app_path.parent / "PyMOL.dmg"
+    dmg_path = app_path.parent / "AiMOL.dmg"
     if dmg_path.exists():
         dmg_path.unlink()
     subprocess.run(
         [
             "hdiutil", "create",
-            "-volname", "PyMOL",
+            "-volname", "AiMOL",
             "-srcfolder", str(app_path),
             "-ov", "-format", "UDZO",
             str(dmg_path),
