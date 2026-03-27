@@ -156,7 +156,7 @@ static PyMOLOpenGLView *glView = nullptr;
         "import AppKit\n"
         "from pymol import ai_chat_ui\n"
         "for _win in AppKit.NSApp.windows():\n"
-        "    if _win.title() == 'PyMOL Viewer':\n"
+        "    if _win.title() == 'AiMOL':\n"
         "        for _sv in _win.contentView().subviews():\n"
         "            if _sv.identifier() == 'chatContainer':\n"
         "                ai_chat_ui._setup_embedded(_sv)\n"
@@ -169,7 +169,7 @@ static PyMOLOpenGLView *glView = nullptr;
         "import AppKit\n"
         "from pymol import appkit_command_panel\n"
         "for _win in AppKit.NSApp.windows():\n"
-        "    if _win.title() == 'PyMOL Viewer':\n"
+        "    if _win.title() == 'AiMOL':\n"
         "        for _sv in _win.contentView().subviews():\n"
         "            if _sv.identifier() == 'commandPanel':\n"
         "                appkit_command_panel.setup(_sv, __import__('pymol').cmd)\n"
@@ -500,7 +500,7 @@ static PyMOLOpenGLView *glView = nullptr;
                                               styleMask:style
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
-    [self.window setTitle:@"PyMOL Viewer"];
+    [self.window setTitle:@"AiMOL"];
     [self.window setDelegate:self];
     [self.window setMinSize:NSMakeSize(400, 300)];
 
@@ -681,10 +681,10 @@ int main(int argc, const char *argv[]) {
         NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:appMenuItem];
 
-        NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"PyMOL"];
-        [appMenu addItemWithTitle:@"About PyMOL" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+        NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"AiMOL"];
+        [appMenu addItemWithTitle:@"About AiMOL" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
         [appMenu addItem:[NSMenuItem separatorItem]];
-        [appMenu addItemWithTitle:@"Quit PyMOL" action:@selector(terminate:) keyEquivalent:@"q"];
+        [appMenu addItemWithTitle:@"Quit AiMOL" action:@selector(terminate:) keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
 
         [app setMainMenu:menuBar];

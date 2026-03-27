@@ -7,11 +7,11 @@
     <key>CFBundleExecutable</key>
     <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>org.pymol.PyMOL</string>
+    <string>com.accipiterbio.AiMOL</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>PyMOL</string>
+    <string>AiMOL</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -21,7 +21,7 @@
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>CFBundleIconFile</key>
-    <string>PyMOL</string>
+    <string>AiMOL</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

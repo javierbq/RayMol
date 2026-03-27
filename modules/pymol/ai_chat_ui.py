@@ -1305,7 +1305,7 @@ def _build_chat_subviews(parent_view):
         AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
             0.18, 0.18, 0.20, 1.0).CGColor())
 
-    title_label = AppKit.NSTextField.labelWithString_("AI Chat")
+    title_label = AppKit.NSTextField.labelWithString_("AiMOL Chat")
     title_label.setFrame_(AppKit.NSMakeRect(12, 6, 200, 24))
     title_label.setFont_(AppKit.NSFont.boldSystemFontOfSize_(15.0))
     title_label.setTextColor_(AppKit.NSColor.whiteColor())
