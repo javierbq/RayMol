@@ -594,6 +594,29 @@ static PyMOLOpenGLView *glView = nullptr;
     // Cleanup handled by view dealloc
 }
 
+- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
+    if (!pymolInstance) return NO;
+    NSString *escaped = [filename stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+    NSString *pyCmd = [@"__import__('pymol').cmd.load('" stringByAppendingString:escaped];
+    pyCmd = [pyCmd stringByAppendingString:@"')"];
+    PyRun_SimpleString([pyCmd UTF8String]);
+    return YES;
+}
+
+- (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames {
+    if (!pymolInstance) {
+        [sender replyToOpenOrPrint:NSApplicationDelegateReplyFailure];
+        return;
+    }
+    for (NSString *filename in filenames) {
+        NSString *escaped = [filename stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+        NSString *pyCmd = [@"__import__('pymol').cmd.load('" stringByAppendingString:escaped];
+        pyCmd = [pyCmd stringByAppendingString:@"')"];
+        PyRun_SimpleString([pyCmd UTF8String]);
+    }
+    [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
+}
+
 @end
 
 // ---------------------------------------------------------------------------
