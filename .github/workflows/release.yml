@@ -1,0 +1,52 @@
+name: Release — Build Portable Bundle
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-bundle:
+    runs-on: macos-14  # Apple Silicon (M1)
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # ---------------------------------------------------------------
+    # 1. Build static C dependencies (zlib, libpng, freetype, GLEW, etc.)
+    # ---------------------------------------------------------------
+    - name: Build static dependencies
+      run: ./scripts/build_deps.sh
+
+    # ---------------------------------------------------------------
+    # 2. Fetch embedded Python (python-build-standalone)
+    # ---------------------------------------------------------------
+    - name: Fetch embedded Python
+      run: ./scripts/fetch_python.sh 3.13
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # ---------------------------------------------------------------
+    # 3. Build the AppKit app (CMake copies modules/ and data/ post-build)
+    # ---------------------------------------------------------------
+    - name: Configure CMake
+      run: cmake -S appkit -B build_appkit -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build_appkit -j$(sysctl -n hw.ncpu)
+
+    # ---------------------------------------------------------------
+    # 4. Bundle — embed Python, install packages, fix dylibs, sign, DMG
+    # ---------------------------------------------------------------
+    - name: Bundle portable app and create DMG
+      run: python3 scripts/bundle_app.py build_appkit/PyMOL.app --dmg
+
+    # ---------------------------------------------------------------
+    # 5. Upload DMG to the GitHub release
+    # ---------------------------------------------------------------
+    - name: Upload DMG to release
+      run: |
+        gh release upload "${{ github.event.release.tag_name }}" \
+          build_appkit/AiMOL.dmg \
+          --clobber
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
