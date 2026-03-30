@@ -1244,11 +1244,18 @@ class _AccountModalHelper(AppKit.NSObject):
 
             response = alert.runModal()
             if response == AppKit.NSAlertSecondButtonReturn:
-                # Switch provider
-                if provider == 'anthropic':
-                    prompt_for_vertex_config()
-                else:
+                # Switch provider — show selection dialog
+                sel = AppKit.NSAlert.alloc().init()
+                sel.setMessageText_("Select Provider")
+                sel.setInformativeText_("Choose an AI provider:")
+                sel.addButtonWithTitle_("Anthropic API Key")
+                sel.addButtonWithTitle_("Vertex AI")
+                sel.addButtonWithTitle_("Cancel")
+                sel_response = sel.runModal()
+                if sel_response == AppKit.NSAlertFirstButtonReturn:
                     prompt_for_api_key()
+                elif sel_response == AppKit.NSAlertSecondButtonReturn:
+                    prompt_for_vertex_config()
             elif response == AppKit.NSAlertThirdButtonReturn:
                 ai_chat.logout()
         else:

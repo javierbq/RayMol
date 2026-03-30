@@ -92,15 +92,19 @@ def _exchange_jwt_for_token(jwt_bytes, token_uri):
     return result['access_token'], result.get('expires_in', _TOKEN_LIFETIME)
 
 
-def _token_from_sa_json(sa_path):
-    """Generate an access token from a service account JSON file."""
-    with open(sa_path) as f:
-        sa_info = json.load(f)
-
+def _token_from_sa_info(sa_info):
+    """Generate an access token from parsed service account info dict."""
     token_uri = sa_info.get('token_uri', 'https://oauth2.googleapis.com/token')
     jwt = _create_jwt(sa_info)
     token, expires_in = _exchange_jwt_for_token(jwt, token_uri)
     return token, time.time() + expires_in
+
+
+def _token_from_sa_json(sa_path):
+    """Generate an access token from a service account JSON file."""
+    with open(sa_path) as f:
+        sa_info = json.load(f)
+    return _token_from_sa_info(sa_info)
 
 
 def _token_from_gcloud():
@@ -117,6 +121,40 @@ def _token_from_gcloud():
     except Exception:
         pass
     return None, 0
+
+
+def get_access_token_from_data(sa_json_str):
+    """Get a valid OAuth2 access token from raw SA JSON string.
+
+    Args:
+        sa_json_str: Raw JSON string of the service account key.
+
+    Returns:
+        Access token string, or empty string on failure.
+    """
+    global _cached_token, _cached_expiry, _cached_sa_path
+
+    cache_key = 'data:' + sa_json_str[:40]
+    if (_cached_token
+            and _cached_sa_path == cache_key
+            and time.time() < _cached_expiry - _TOKEN_MARGIN):
+        return _cached_token
+
+    if not _HAS_CRYPTO:
+        print("[ai_vertex_auth] cryptography library not available")
+        return ''
+
+    try:
+        sa_info = json.loads(sa_json_str)
+        token, expiry = _token_from_sa_info(sa_info)
+    except Exception as e:
+        print(f"[ai_vertex_auth] SA auth failed: {e}")
+        return ''
+
+    _cached_token = token
+    _cached_expiry = expiry
+    _cached_sa_path = cache_key
+    return token
 
 
 def get_access_token(sa_json_path=''):

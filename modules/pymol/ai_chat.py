@@ -119,7 +119,7 @@ _ai_config = {
     'vertex_ai': {
         'project_id': os.environ.get('GCP_PROJECT_ID', ''),
         'region': os.environ.get('GCP_REGION', 'us-east5'),
-        'sa_json_path': os.environ.get('GCP_SA_JSON_PATH', ''),
+        'sa_json_data': '',  # raw SA JSON string (loaded from Keychain)
     },
 }
 
@@ -199,11 +199,15 @@ def _init(cmd_module):
         if keychain_key:
             _ai_config['api_keys']['anthropic'] = keychain_key
 
-    # Load Vertex AI config from keychain
-    if not _ai_config['vertex_ai']['sa_json_path']:
-        sa_path = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_SA)
-        if sa_path:
-            _ai_config['vertex_ai']['sa_json_path'] = sa_path
+    # Load Vertex AI SA credentials from keychain (base64-encoded JSON)
+    if not _ai_config['vertex_ai'].get('sa_json_data'):
+        sa_encoded = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_SA)
+        if sa_encoded:
+            import base64
+            try:
+                _ai_config['vertex_ai']['sa_json_data'] = base64.b64decode(sa_encoded).decode('utf-8')
+            except Exception:
+                _ai_config['vertex_ai']['sa_json_data'] = ''
     if not _ai_config['vertex_ai']['project_id']:
         project = _keychain_get(_KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
         if project:
@@ -242,7 +246,7 @@ def _has_credentials():
         return bool(_ai_config['api_keys'].get('anthropic', ''))
     elif provider == 'vertex_ai':
         vc = _ai_config['vertex_ai']
-        return bool(vc.get('project_id') and (vc.get('sa_json_path') or _vertex_gcloud_available()))
+        return bool(vc.get('project_id') and vc.get('sa_json_data'))
     return False
 
 
@@ -265,13 +269,22 @@ def set_api_key(key):
 
 
 def set_vertex_config(sa_json_path, project_id, region='us-east5'):
-    """Configure Vertex AI credentials, storing in Keychain."""
+    """Configure Vertex AI credentials, storing in Keychain.
+
+    Reads the SA JSON file, base64-encodes its contents, and stores the
+    encoded blob in the Keychain so the app never needs the file again.
+    """
+    import base64
+    with open(sa_json_path) as f:
+        sa_raw = f.read()
+    encoded = base64.b64encode(sa_raw.encode('utf-8')).decode('ascii')
+
     _ai_config['provider'] = 'vertex_ai'
-    _ai_config['vertex_ai']['sa_json_path'] = sa_json_path
+    _ai_config['vertex_ai']['sa_json_data'] = sa_raw
     _ai_config['vertex_ai']['project_id'] = project_id
     _ai_config['vertex_ai']['region'] = region
     _keychain_set('vertex_ai', _KEYCHAIN_ACCOUNT_PROVIDER)
-    _keychain_set(sa_json_path, _KEYCHAIN_ACCOUNT_VERTEX_SA)
+    _keychain_set(encoded, _KEYCHAIN_ACCOUNT_VERTEX_SA)
     _keychain_set(project_id, _KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
     _keychain_set(region, _KEYCHAIN_ACCOUNT_VERTEX_REGION)
     # Clear token cache
@@ -289,7 +302,7 @@ def logout():
         _ai_config['api_keys']['anthropic'] = ''
         _keychain_delete(_KEYCHAIN_ACCOUNT)
     elif provider == 'vertex_ai':
-        _ai_config['vertex_ai']['sa_json_path'] = ''
+        _ai_config['vertex_ai']['sa_json_data'] = ''
         _ai_config['vertex_ai']['project_id'] = ''
         _keychain_delete(_KEYCHAIN_ACCOUNT_VERTEX_SA)
         _keychain_delete(_KEYCHAIN_ACCOUNT_VERTEX_PROJECT)
@@ -481,9 +494,14 @@ async def _agent_query():
             vc = _ai_config['vertex_ai']
             os.environ['CLOUD_ML_REGION'] = vc.get('region', 'us-east5')
             os.environ['ANTHROPIC_VERTEX_PROJECT_ID'] = vc.get('project_id', '')
-            sa_path = vc.get('sa_json_path', '')
-            if sa_path:
-                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = sa_path
+            sa_data = vc.get('sa_json_data', '')
+            if sa_data:
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.json', prefix='aimol_sa_', delete=False)
+                tmp.write(sa_data)
+                tmp.close()
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = tmp.name
         else:
             key = _ai_config['api_keys'].get('anthropic', '')
             if key:
@@ -911,24 +929,21 @@ def _call_anthropic(messages, key, model):
 
 def _call_vertex_ai(messages, model):
     """Call Claude via Vertex AI (non-streaming). Returns the response body dict."""
-    _log('vertex: importing ai_vertex_auth...')
-    t_import = time.time()
-    from pymol.ai_vertex_auth import get_access_token
-    _log(f'vertex: import took {time.time()-t_import:.2f}s')
+    from pymol.ai_vertex_auth import get_access_token_from_data
 
     vc = _ai_config['vertex_ai']
     project_id = vc['project_id']
     region = vc['region']
-    sa_path = vc.get('sa_json_path', '')
+    sa_data = vc.get('sa_json_data', '')
 
-    _log(f'vertex: importing ai_vertex_auth done, getting access token (sa={sa_path[:30]}...)')
+    _log('vertex: getting access token from keychain credentials...')
     t_tok = time.time()
-    token = get_access_token(sa_path)
-    _log(f'vertex: token obtained in {time.time()-t_tok:.2f}s (cached={time.time()-t_tok < 0.01})')
+    token = get_access_token_from_data(sa_data) if sa_data else ''
+    _log(f'vertex: token obtained in {time.time()-t_tok:.2f}s')
     if not token:
         raise RuntimeError(
             "Could not obtain Vertex AI access token. "
-            "Check your service account JSON or run: gcloud auth application-default login")
+            "Re-configure your service account via the account menu.")
 
     url = (
         f"https://{region}-aiplatform.googleapis.com/v1/"
