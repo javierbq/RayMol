@@ -42,6 +42,7 @@ int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 
 // Forward declarations
 @class PyMOLOpenGLView;
+static void _loadFile(NSString *filename);
 
 @interface PyMOLAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (strong) NSWindow *window;
@@ -54,6 +55,7 @@ int MainFromPyList(PyMOLGlobals *, PyObject *) { return 0; }
 static CPyMOL *pymolInstance = nullptr;
 static PyMOLOpenGLView *glView = nullptr;
 static BOOL pymolReady = NO;  // set after full Python + PyMOL init
+static BOOL launchComplete = NO;  // set after cold-launch file delivery window
 static NSMutableArray *pendingFiles = nil;  // files received before ready
 
 // ---------------------------------------------------------------------------
@@ -225,11 +227,7 @@ static NSMutableArray *pendingFiles = nil;  // files received before ready
     NSLog(@"[AiMOL] pymolReady=YES, pendingFiles=%lu", (unsigned long)(pendingFiles ? [pendingFiles count] : 0));
     if (pendingFiles && [pendingFiles count] > 0) {
         for (NSString *filename in pendingFiles) {
-            NSString *escaped = [filename stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
-            escaped = [escaped stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
-            NSString *pyCmd = [@"__import__('pymol').cmd.do(\"load '" stringByAppendingString:escaped];
-            pyCmd = [pyCmd stringByAppendingString:@"'\")"];
-            PyRun_SimpleString([pyCmd UTF8String]);
+            _loadFile(filename);
         }
         [pendingFiles removeAllObjects];
     }
@@ -570,6 +568,14 @@ static NSMutableArray *pendingFiles = nil;  // files received before ready
     } else {
         [NSApp activateIgnoringOtherApps:YES];
     }
+
+    // Mark launch complete on the next run-loop iteration.
+    // Cold-launch file-open events (openURLs:) are delivered before this fires,
+    // so they load in the current instance.  Subsequent file opens spawn a new instance.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        launchComplete = YES;
+        NSLog(@"[AiMOL] launchComplete=YES");
+    });
 }
 
 - (void)toggleChatPanel {
@@ -625,38 +631,70 @@ static void _queueOrLoadFile(NSString *filename) {
     if (!pendingFiles) pendingFiles = [[NSMutableArray alloc] init];
 
     if (pymolReady) {
-        // Defer load to let the render loop settle after cold launch
-        NSLog(@"[AiMOL] Deferring file load: %@", filename);
-        NSString *retained = [filename copy];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            _loadFile(retained);
-        });
+        _loadFile(filename);
     } else {
         NSLog(@"[AiMOL] Queuing file (PyMOL not ready): %@", filename);
         [pendingFiles addObject:filename];
     }
 }
 
+// Spawn a new app instance to open files in a fresh window
+static void _spawnNewInstance(NSArray<NSURL *> *fileURLs) {
+    NSLog(@"[AiMOL] Spawning new instance for %lu file(s)", (unsigned long)[fileURLs count]);
+    NSURL *appURL = [[NSBundle mainBundle] bundleURL];
+    NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
+    config.createsNewApplicationInstance = YES;
+    [[NSWorkspace sharedWorkspace] openURLs:fileURLs
+                       withApplicationAtURL:appURL
+                              configuration:config
+                          completionHandler:^(NSRunningApplication *app, NSError *error) {
+        if (error) {
+            NSLog(@"[AiMOL] Failed to spawn new instance: %@", error);
+        }
+    }];
+}
+
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
-    NSLog(@"[AiMOL] openFile: %@", filename);
-    _queueOrLoadFile(filename);
+    NSLog(@"[AiMOL] openFile: %@ (launchComplete=%d)", filename, launchComplete);
+    if (launchComplete) {
+        _spawnNewInstance(@[[NSURL fileURLWithPath:filename]]);
+    } else {
+        _queueOrLoadFile(filename);
+    }
     return YES;
 }
 
 - (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames {
-    NSLog(@"[AiMOL] openFiles: %lu files", (unsigned long)[filenames count]);
-    for (NSString *filename in filenames) {
-        _queueOrLoadFile(filename);
+    NSLog(@"[AiMOL] openFiles: %lu files (launchComplete=%d)", (unsigned long)[filenames count], launchComplete);
+    if (launchComplete) {
+        NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+        for (NSString *f in filenames) {
+            [urls addObject:[NSURL fileURLWithPath:f]];
+        }
+        _spawnNewInstance(urls);
+    } else {
+        for (NSString *filename in filenames) {
+            _queueOrLoadFile(filename);
+        }
     }
     [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
 }
 
 - (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
-    NSLog(@"[AiMOL] openURLs: %lu urls", (unsigned long)[urls count]);
-    for (NSURL *url in urls) {
-        if ([url isFileURL]) {
-            _queueOrLoadFile([url path]);
+    NSLog(@"[AiMOL] openURLs: %lu urls (launchComplete=%d)", (unsigned long)[urls count], launchComplete);
+    if (launchComplete) {
+        NSMutableArray<NSURL *> *fileURLs = [NSMutableArray array];
+        for (NSURL *url in urls) {
+            if ([url isFileURL]) [fileURLs addObject:url];
+        }
+        if ([fileURLs count] > 0) {
+            _spawnNewInstance(fileURLs);
+        }
+    } else {
+        for (NSURL *url in urls) {
+            if ([url isFileURL]) {
+                _queueOrLoadFile([url path]);
+            }
         }
     }
 }
