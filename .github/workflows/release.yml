@@ -26,10 +26,13 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     # ---------------------------------------------------------------
-    # 3. Install NumPy into embedded Python (needed by CMake FindPython3)
+    # 3. Install additional build dependencies
     # ---------------------------------------------------------------
     - name: Install NumPy for embedded Python
       run: deps/python/bin/python3 -m pip install numpy
+
+    - name: Install GLM (header-only math library)
+      run: brew install glm
 
     # ---------------------------------------------------------------
     # 4. Build the AppKit app (CMake copies modules/ and data/ post-build)
