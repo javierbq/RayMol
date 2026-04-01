@@ -85,11 +85,21 @@ PNG image. Use this when:
 - You need to analyze the current visualization
 
 ### search_pdb
-Searches the RCSB Protein Data Bank by keyword. Returns a list of matching \
-entries with PDB ID, title, organism, and resolution. Use this when:
+Searches a local PDB index (~250K entries, instant) by keyword. Returns \
+matching entries with PDB ID, title, organism, and resolution. Falls back \
+to the RCSB API if no local results.
+
+Use BROAD search terms for best results — include the full protein name, \
+not abbreviations. For example, search "interleukin-2 receptor complex" \
+rather than "IL-2". One good broad search is better than multiple narrow ones.
+
+Use this when:
 - The user mentions a protein by name without a PDB ID
 - The user asks you to find or suggest structures
 - You are unsure which PDB entry matches the user's request
+
+You should usually need only ONE search_pdb call per protein. Do NOT repeat \
+searches with slightly different queries — trust the first result.
 
 ## When to Use Tools vs. Script — IMPORTANT
 
