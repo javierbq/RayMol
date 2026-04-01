@@ -131,6 +131,34 @@ def _add_rpath(path, rpath):
     run_install_name_tool(["-add_rpath", rpath, str(path)])
 
 
+def _remove_absolute_rpaths(path):
+    """Remove non-portable (absolute) rpaths from a Mach-O binary."""
+    try:
+        out = subprocess.check_output(
+            ["otool", "-l", str(path)], text=True, stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError:
+        return
+    # Parse LC_RPATH entries
+    lines = out.splitlines()
+    removed = 0
+    for i, line in enumerate(lines):
+        if "cmd LC_RPATH" in line:
+            # The path is 2 lines after "cmd LC_RPATH"
+            for j in range(i + 1, min(i + 4, len(lines))):
+                m = re.match(r"\s+path\s+(/\S+)", lines[j])
+                if m:
+                    rpath = m.group(1)
+                    # Remove absolute paths (not @executable_path, @loader_path, etc.)
+                    if not rpath.startswith("@"):
+                        strip_signature(path)
+                        run_install_name_tool(["-delete_rpath", rpath, str(path)])
+                        removed += 1
+                    break
+    if removed:
+        print(f"    Removed {removed} absolute rpath(s) from {Path(path).name}")
+
+
 # ==========================================================================
 # Phase A: Copy embedded Python
 # ==========================================================================
@@ -351,6 +379,12 @@ def phase_d_rewrite_install_names(app_path):
             if f.is_file() and not f.is_symlink():
                 strip_signature(f)
                 run_install_name_tool(["-id", f"@rpath/{f.name}", str(f)])
+
+    # Remove absolute rpaths baked in by CMake (e.g., /Users/runner/.../deps/python/lib)
+    print("  Removing absolute rpaths...")
+    _remove_absolute_rpaths(binary)
+    for so in app_path.rglob("*.so"):
+        _remove_absolute_rpaths(so)
 
     # Add rpaths
     print("  Adding rpaths...")
