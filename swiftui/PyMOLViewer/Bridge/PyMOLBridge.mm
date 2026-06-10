@@ -228,6 +228,21 @@ void PyMOLBridge_RunPython(const char *code)
     PAutoUnblock(G, blk);
 }
 
+void PyMOLBridge_Pick(PyMOLHandle h, float ndcX, float ndcY, float aspect)
+{
+    if (!h) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    char script[256];
+    snprintf(script, sizeof(script),
+             "from pymol.metal_pick import pick_at; pick_at(%f, %f, %f)",
+             ndcX, ndcY, aspect);
+    int blk = PAutoBlock(G);
+    PyRun_SimpleString(script);
+    if (PyErr_Occurred()) PyErr_Print();
+    PAutoUnblock(G, blk);
+}
+
 char *PyMOLBridge_GetFeedback(PyMOLHandle h)
 {
     if (!h) return nullptr;

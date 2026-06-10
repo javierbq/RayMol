@@ -51,6 +51,10 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *drawable, void *pa
 // Debug: execute raw Python (PyRun_SimpleString) under the GIL.
 void PyMOLBridge_RunPython(const char *code);
 
+// Tap-to-select: NDC coords in [-1,1], aspect = width/height. Runs the CPU-side
+// metal_pick.pick_at (GL color picking is unavailable on the Metal backend).
+void PyMOLBridge_Pick(PyMOLHandle instance, float ndcX, float ndcY, float aspect);
+
 // --- Getters ---
 void *PyMOLBridge_GetGlobals(PyMOLHandle instance);
 void *PyMOLBridge_GetRenderer(PyMOLHandle instance);

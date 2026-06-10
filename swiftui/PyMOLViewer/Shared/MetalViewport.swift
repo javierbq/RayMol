@@ -240,12 +240,17 @@ extension MetalViewport {
 
         #if os(iOS)
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let view = mtkView else { return }
-            let location = gesture.location(in: view)
-            let pt = pymolPoint(in: view, at: location)
-            // Tap = left click down + up
-            engine?.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
-            engine?.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: 0)
+            guard let engine = engine, let view = mtkView else { return }
+            // CPU-side pick (metal_pick). Compute NDC in POINT space (not backing
+            // pixels) and flip Y: UIKit gesture origin is top-left, PyMOL NDC is
+            // bottom-left. (The standard LEFT-click path does NOT select on the
+            // Metal backend, so we call the pick directly.)
+            let p = gesture.location(in: view)
+            let w = view.bounds.width, h = view.bounds.height
+            guard w > 0, h > 0 else { return }
+            let ndcX = Float(p.x / w) * 2 - 1
+            let ndcY = 1 - Float(p.y / h) * 2
+            engine.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
         }
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {

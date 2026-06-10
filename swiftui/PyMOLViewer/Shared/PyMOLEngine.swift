@@ -47,6 +47,16 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Test affordance: pick at an NDC point ("x,y") and record the selection
+        // size to a file for verification (no-op unless env var set).
+        if let s = ProcessInfo.processInfo.environment["PYMOL_AUTOPICK"] {
+            let parts = s.split(separator: ",").compactMap { Float($0) }
+            if parts.count == 2 {
+                pick(ndcX: parts[0], ndcY: parts[1], aspect: 1.0)
+                runPython("import os; from pymol import cmd; open(os.path.join(os.environ.get('TMPDIR','/tmp'),'pymol_pick.txt'),'w').write('selcount=%d' % cmd.count_atoms('sele'))")
+            }
+        }
+
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.pollFeedback()
@@ -75,6 +85,12 @@ final class PyMOLEngine: ObservableObject {
     func runPython(_ code: String) {
         guard isReady else { return }
         PyMOLBridge_RunPython(code)
+    }
+
+    // Tap-to-select via metal_pick (NDC in [-1,1], aspect = width/height).
+    func pick(ndcX: Float, ndcY: Float, aspect: Float) {
+        guard let inst = instance else { return }
+        PyMOLBridge_Pick(inst, ndcX, ndcY, aspect)
     }
 
     // MARK: - Render loop hooks (called by MetalViewport)
