@@ -42,6 +42,15 @@ void PyMOLBridge_FreeFeedback(char *str);
 // --- Metal rendering ---
 void PyMOLBridge_RenderMetal(PyMOLHandle instance);
 
+// Construct the Metal renderer from the MTKView (idempotent), and hand off the
+// per-frame drawable + render-pass descriptor (mtkView/drawable/passDescriptor
+// passed as opaque void* so this C header needs no Metal import).
+void PyMOLBridge_SetupMetalRenderer(PyMOLHandle instance, void *mtkView);
+void PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *drawable, void *passDescriptor, int width, int height);
+
+// Debug: execute raw Python (PyRun_SimpleString) under the GIL.
+void PyMOLBridge_RunPython(const char *code);
+
 // --- Getters ---
 void *PyMOLBridge_GetGlobals(PyMOLHandle instance);
 void *PyMOLBridge_GetRenderer(PyMOLHandle instance);

@@ -11,6 +11,10 @@
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+
+#include "RendererMetal.h"
 
 // The bridging header uses PyMOLHandle (void*) to avoid CPyMOL typedef
 // conflicts between the bridging header and PyMOL.h. We include PyMOL.h
@@ -28,6 +32,7 @@ extern "C" {
 // OUTSIDE the extern "C" block below so the call resolves to the core's
 // C++ (mangled) symbol, not a C one.
 void SceneRenderMetal(PyMOLGlobals *G);
+extern void ImmBatch_SetActiveRenderer(pymol::Renderer *r);
 
 // All PyMOLBridge_* entry points MUST have C linkage to match the Swift
 // bridging header (PyMOLBridge.h declares them inside extern "C"); otherwise
@@ -116,8 +121,14 @@ void PyMOLBridge_Start(PyMOLHandle h)
     // the Python layer as the global instance, THEN stage 1 enables deferred
     // command processing in PyMOL_Idle. (PyMOL_StartWithPython would PInit with
     // global_instance=false; macOS uses true, so we do the steps explicitly.)
-    PyMOL_Start(INST(h));
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    // Bind the high-level pymol.cmd singleton to THIS instance's globals BEFORE
+    // PInit (mirrors main_appkit.mm:353). PInit wraps &SingletonPyMOLGlobals in a
+    // capsule for the Python cmd singleton; without this it has no G and every
+    // cmd.* call raises CmdException('G'). Also gates Python stdout->feedback.
+    SingletonPyMOLGlobals = G;
+    G->HaveGUI = true;
+    PyMOL_Start(INST(h));
     PInit(G, true);
     PyMOL_SetPythonInitStage(INST(h), 1);
 }
@@ -183,40 +194,75 @@ void PyMOLBridge_PopValidContext(PyMOLHandle h)
 
 void PyMOLBridge_RunCommand(const char *command)
 {
-    if (command) {
-        PyGILState_STATE gstate = PyGILState_Ensure();
-        PyRun_SimpleString(command);
-        PyGILState_Release(gstate);
+    if (!command) return;
+    // Route through PyMOL's command interpreter (cmd.do) so input is parsed as
+    // PyMOL command language ("load ...", "show cartoon", "python ... python
+    // end"), NOT raw Python. Use PyMOL's GIL model (PAutoBlock), NOT
+    // PyGILState_Ensure — mixing the two with PyMOL_Idle's manual GIL corrupts
+    // the interpreter thread state.
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return;
+    int blk = PAutoBlock(G);
+    PyObject *pymol = PyImport_ImportModule("pymol");
+    if (pymol) {
+        PyObject *cmd = PyObject_GetAttrString(pymol, "cmd");
+        if (cmd) {
+            PyObject *res = PyObject_CallMethod(cmd, "do", "s", command);
+            Py_XDECREF(res);
+            Py_DECREF(cmd);
+        }
+        Py_DECREF(pymol);
     }
+    if (PyErr_Occurred()) PyErr_Print();
+    PAutoUnblock(G, blk);
+}
+
+void PyMOLBridge_RunPython(const char *code)
+{
+    if (!code) return;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return;
+    int blk = PAutoBlock(G);
+    PyRun_SimpleString(code);
+    if (PyErr_Occurred()) PyErr_Print();
+    PAutoUnblock(G, blk);
 }
 
 char *PyMOLBridge_GetFeedback(PyMOLHandle h)
 {
     if (!h) return nullptr;
-
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G) return nullptr;
 
-    PyGILState_STATE gstate = PyGILState_Ensure();
-    PyObject *result = PyRun_String(
-        "from pymol import cmd\n"
-        "_fb = cmd._get_feedback()\n"
-        "_fb_text = '\\n'.join(_fb) if _fb else ''\n",
-        Py_file_input, PyEval_GetGlobals(), PyEval_GetLocals());
-
+    // Use PAutoBlock + PyObject calls. The old PyRun_String(..., PyEval_GetGlobals(),
+    // PyEval_GetLocals()) needed an active Python frame, which does not exist when
+    // called from the C timer -> 'SystemError: frame does not exist' every tick.
+    int blk = PAutoBlock(G);
     char *text = nullptr;
-    if (result) {
-        Py_DECREF(result);
-        PyObject *fb = PyDict_GetItemString(PyEval_GetLocals(), "_fb_text");
-        if (fb && PyUnicode_Check(fb)) {
-            const char *str = PyUnicode_AsUTF8(fb);
-            if (str && str[0]) {
-                text = strdup(str);
+    PyObject *pymol = PyImport_ImportModule("pymol");
+    if (pymol) {
+        PyObject *cmd = PyObject_GetAttrString(pymol, "cmd");
+        if (cmd) {
+            PyObject *fb = PyObject_CallMethod(cmd, "_get_feedback", nullptr);
+            if (fb) {
+                if (PyList_Check(fb) && PyList_Size(fb) > 0) {
+                    PyObject *sep = PyUnicode_FromString("\n");
+                    PyObject *joined = PyUnicode_Join(sep, fb);
+                    Py_XDECREF(sep);
+                    if (joined) {
+                        const char *str = PyUnicode_AsUTF8(joined);
+                        if (str && str[0]) text = strdup(str);
+                        Py_DECREF(joined);
+                    }
+                }
+                Py_DECREF(fb);
             }
+            Py_DECREF(cmd);
         }
+        Py_DECREF(pymol);
     }
-
-    PyGILState_Release(gstate);
+    if (PyErr_Occurred()) PyErr_Clear();
+    PAutoUnblock(G, blk);
     return text;
 }
 
@@ -234,6 +280,50 @@ void PyMOLBridge_RenderMetal(PyMOLHandle h)
     if (!G) return;
 
     SceneRenderMetal(G);
+}
+
+// Keep the Metal device + queue alive for the process lifetime: libpymol_core
+// is built WITHOUT ARC, so RendererMetal::_device/_queue are non-retaining raw
+// pointers (main_appkit holds them in long-lived view ivars; we hold them here).
+// A locally-created queue would be released by ARC on return, leaving _queue
+// dangling and crashing in beginFrame's [_queue commandBuffer].
+static id<MTLDevice> g_metalDevice = nil;
+static id<MTLCommandQueue> g_metalQueue = nil;
+
+void PyMOLBridge_SetupMetalRenderer(PyMOLHandle h, void *mtkViewPtr)
+{
+    if (!h || !mtkViewPtr) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G || G->Renderer) return;   // idempotent: build the renderer once
+    MTKView *v = (__bridge MTKView *)mtkViewPtr;
+    g_metalDevice = v.device ?: MTLCreateSystemDefaultDevice();
+    g_metalQueue = [g_metalDevice newCommandQueue];
+    G->HaveGUI = true;               // mirror main_appkit.mm:688
+    G->Renderer = new pymol::RendererMetal(g_metalDevice, g_metalQueue);
+}
+
+void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
+                                  void *passDescPtr, int width, int height)
+{
+    if (!h) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    auto *renderer = static_cast<pymol::RendererMetal *>(G->Renderer);
+    if (!renderer) return;
+    id<CAMetalDrawable> drawable = (__bridge id<CAMetalDrawable>)drawablePtr;
+    MTLRenderPassDescriptor *passDesc = (__bridge MTLRenderPassDescriptor *)passDescPtr;
+    if (!drawable || !passDesc) return;
+
+    // Mirror main_appkit.mm drawInMTKView (805-869); ordering is load-bearing.
+    renderer->setDrawable(drawable, passDesc);
+    renderer->viewport(0, 0, width, height);
+    renderer->beginFrame();
+    ImmBatch_SetActiveRenderer(renderer);
+    PyMOL_PushValidContext(INST(h));
+    SceneRenderMetal(G);
+    PyMOL_PopValidContext(INST(h));
+    ImmBatch_SetActiveRenderer(nullptr);
+    renderer->endFrame();
 }
 
 // --- Getters ---

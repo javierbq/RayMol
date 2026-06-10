@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import MetalKit
 
 final class PyMOLEngine: ObservableObject {
     static let shared = PyMOLEngine()
@@ -33,6 +34,19 @@ final class PyMOLEngine: ObservableObject {
 
         isReady = true
 
+        // Test affordance (no-op unless env var set): auto-load a bundled
+        // structure so a screenshot has content without UI typing.
+        if let f = ProcessInfo.processInfo.environment["PYMOL_AUTOLOAD"] {
+            let name = (f as NSString).deletingPathExtension
+            let ext = (f as NSString).pathExtension
+            if let path = Bundle.main.path(forResource: name, ofType: ext) {
+                runCommand("load \(path), mol")
+                runCommand("hide everything")
+                runCommand("show cartoon")
+                runCommand("orient")
+            }
+        }
+
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.pollFeedback()
@@ -55,6 +69,12 @@ final class PyMOLEngine: ObservableObject {
     func runCommand(_ command: String) {
         guard isReady else { return }
         PyMOLBridge_RunCommand(command)
+    }
+
+    // Debug: run raw Python in the embedded interpreter.
+    func runPython(_ code: String) {
+        guard isReady else { return }
+        PyMOLBridge_RunPython(code)
     }
 
     // MARK: - Render loop hooks (called by MetalViewport)
@@ -97,6 +117,20 @@ final class PyMOLEngine: ObservableObject {
     func popValidContext() {
         guard let inst = instance else { return }
         PyMOLBridge_PopValidContext(inst)
+    }
+
+    // Construct the Metal renderer from the MTKView (idempotent in the bridge).
+    func setupMetalRenderer(view: MTKView) {
+        guard let inst = instance else { return }
+        PyMOLBridge_SetupMetalRenderer(inst, Unmanaged.passUnretained(view).toOpaque())
+    }
+
+    // Hand the current frame's drawable + render-pass descriptor to RendererMetal.
+    func renderMetalFrame(drawable: CAMetalDrawable, passDescriptor: MTLRenderPassDescriptor, width: Int, height: Int) {
+        guard let inst = instance else { return }
+        let dPtr = Unmanaged.passUnretained(drawable as AnyObject).toOpaque()
+        let pPtr = Unmanaged.passUnretained(passDescriptor).toOpaque()
+        PyMOLBridge_RenderMetalFrame(inst, dPtr, pPtr, Int32(width), Int32(height))
     }
 
     // MARK: - Polling

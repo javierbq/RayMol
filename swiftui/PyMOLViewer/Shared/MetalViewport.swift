@@ -131,18 +131,15 @@ extension MetalViewport {
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
-            guard let renderer = engine.instance.flatMap({ PyMOLBridge_GetRenderer($0) }) else { return }
+            // Build RendererMetal on the first frame (bridge no-ops thereafter),
+            // then hand off this frame's drawable + pass descriptor and render.
+            engine.setupMetalRenderer(view: view)
             guard let drawable = view.currentDrawable,
                   let passDesc = view.currentRenderPassDescriptor else { return }
-
             engine.idle()
-
-            // Hand drawable to the Metal renderer
-            // The renderer needs the drawable and pass descriptor set before rendering.
-            // This is done via the C++ RendererMetal API through the bridge.
-            engine.pushValidContext()
-            engine.renderMetal()
-            engine.popValidContext()
+            let size = view.drawableSize
+            engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
+                                    width: Int(size.width), height: Int(size.height))
         }
 
         // MARK: - Coordinate conversion
