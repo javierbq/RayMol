@@ -54,6 +54,64 @@ targets:
           DEBUG_INFORMATION_FORMAT: dwarf
         Release:
           SWIFT_OPTIMIZATION_LEVEL: -O
+    # iOS runtime packaging (BeeWare CPython 3.13). Guarded to iOS via
+    # PLATFORM_NAME so the macOS target is unaffected. The xcframework has no
+    # macOS slice, so a native embed dependency can't be used on a shared target.
+    postBuildScripts:
+      - name: "iOS: Embed Python.framework"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in iphone*) ;; *) echo "skip (non-iOS)"; exit 0 ;; esac
+          set -e
+          if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi
+          SRC="$SRCROOT/../deps_ios/Python.xcframework/$SLICE/Python.framework"
+          mkdir -p "$CODESIGNING_FOLDER_PATH/Frameworks"
+          ditto "$SRC" "$CODESIGNING_FOLDER_PATH/Frameworks/Python.framework"
+      - name: "iOS: Install Python stdlib"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in iphone*) ;; *) exit 0 ;; esac
+          set -e
+          if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi
+          mkdir -p "$CODESIGNING_FOLDER_PATH/python/lib"
+          rsync -au --delete "$SRCROOT/../deps_ios/Python.xcframework/$SLICE/lib/" "$CODESIGNING_FOLDER_PATH/python/lib/"
+      - name: "iOS: Prepare Python binary modules"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in iphone*) ;; *) exit 0 ;; esac
+          set -e
+          TEMPLATE="$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist"
+          install_dylib () {
+            INSTALL_BASE=$1; FULL_EXT=$2
+            RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}
+            PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}
+            FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d "." -f 1 | tr "/" ".")
+            FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr "_" "-")
+            FRAMEWORK_FOLDER="Frameworks/$FULL_MODULE_NAME.framework"
+            if [ ! -d "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER" ]; then
+              mkdir -p "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER"
+              cp "$TEMPLATE" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist"
+              plutil -replace CFBundleExecutable -string "$FULL_MODULE_NAME" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist"
+              plutil -replace CFBundleIdentifier -string "$FRAMEWORK_BUNDLE_ID" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist"
+            fi
+            mv "$FULL_EXT" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME"
+            echo "$FRAMEWORK_FOLDER/$FULL_MODULE_NAME" > "${FULL_EXT%.so}.fwork"
+            echo "${RELATIVE_EXT%.so}.fwork" > "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin"
+          }
+          PYTHON_VER=$(ls -1 "$CODESIGNING_FOLDER_PATH/python/lib")
+          find "$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload" -name "*.so" | while read FULL_EXT; do
+            install_dylib "python/lib/$PYTHON_VER/lib-dynload/" "$FULL_EXT"
+          done
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ]; then
+            find "$CODESIGNING_FOLDER_PATH/Frameworks" -name "*.framework" -exec /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" \; || true
+          fi
+      - name: "iOS: Bundle PyMOL modules + data"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in iphone*) ;; *) exit 0 ;; esac
+          set -e
+          ditto "$SRCROOT/../modules" "$CODESIGNING_FOLDER_PATH/modules"
+          ditto "$SRCROOT/../data" "$CODESIGNING_FOLDER_PATH/data"
     dependencies: []
     scheme:
       testTargets: []

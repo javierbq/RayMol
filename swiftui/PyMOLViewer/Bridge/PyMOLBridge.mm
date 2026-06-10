@@ -64,36 +64,62 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
 {
     if (!h || !resourcePath) return;
 
+    // Register the statically-linked _cmd builtin BEFORE init (top-level name only).
     PyImport_AppendInittab("_cmd", PyInit__cmd);
-    Py_Initialize();
 
-    NSString *resPath = [NSString stringWithUTF8String:resourcePath];
+    NSString *resPath     = [NSString stringWithUTF8String:resourcePath];
+    NSString *pythonHome  = [resPath stringByAppendingPathComponent:@"python"];   // contains lib/python3.13
     NSString *modulesPath = [resPath stringByAppendingPathComponent:@"modules"];
-    NSString *dataPath = [resPath stringByAppendingPathComponent:@"data"];
+    NSString *dataPath    = [resPath stringByAppendingPathComponent:@"data"];
 
-    char script[2048];
-    snprintf(script, sizeof(script),
-        "import sys, os\n"
-        "sys.path.insert(0, '%s')\n"
-        "os.environ['PYMOL_DATA'] = '%s'\n"
-        "os.environ['PYMOL_PATH'] = '%s'\n",
-        [modulesPath UTF8String],
-        [dataPath UTF8String],
-        [resPath UTF8String]);
-    PyRun_SimpleString(script);
+    // Modern PyConfig boot (mirrors layer5/main_appkit.mm). NOT isolated: PyMOL
+    // relies on a normally-populated sys.path + site.py. config.home must be the
+    // directory CONTAINING lib/python3.13 (BeeWare layout), i.e. <res>/python.
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+    config.isolated = 0;
+    config.site_import = 1;
+    config.write_bytecode = 0;   // signed/read-only bundle: cannot write .pyc
+    config.buffered_stdio = 0;
+    PyConfig_SetBytesString(&config, &config.program_name, "PyMOL");
+    PyConfig_SetBytesString(&config, &config.home, [pythonHome UTF8String]);
 
-    init_cmd();
+    PyStatus status = Py_InitializeFromConfig(&config);
+    PyConfig_Clear(&config);
+    if (PyStatus_Exception(status)) {
+        NSLog(@"[PyMOL] Python init failed: %s", status.err_msg ? status.err_msg : "(unknown)");
+        return;
+    }
 
-    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
-    PInit(G, true);
+    init_cmd();   // register pymol._cmd in sys.modules
 
-    PyMOL_SetDefaultMouse(INST(h));
-    PyMOL_SetPythonInitStage(INST(h), 1);
+    PyObject *sysPath = PySys_GetObject("path");
+    if (sysPath) {
+        PyObject *p = PyUnicode_FromString([modulesPath UTF8String]);
+        PyList_Insert(sysPath, 0, p);
+        Py_DECREF(p);
+    }
+
+    setenv("PYMOL_PATH", [resPath UTF8String], 1);
+    setenv("PYMOL_DATA", [dataPath UTF8String], 1);
+
+    // NOTE: PInit / PyMOL_Start / stage-1 happen in PyMOLBridge_Start, AFTER the
+    // C subsystems exist. Calling them here (before PyMOL_Start) dereferences
+    // uninitialized button-mode/Setting state and crashes.
 }
 
 void PyMOLBridge_Start(PyMOLHandle h)
 {
-    if (h) PyMOL_StartWithPython(INST(h));
+    if (!h) return;
+    // Mirror the macOS embedding sequence (layer5/main_appkit.mm): PyMOL_Start
+    // brings up all C subsystems (Setting/ButMode/Scene/...), THEN PInit wires
+    // the Python layer as the global instance, THEN stage 1 enables deferred
+    // command processing in PyMOL_Idle. (PyMOL_StartWithPython would PInit with
+    // global_instance=false; macOS uses true, so we do the steps explicitly.)
+    PyMOL_Start(INST(h));
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    PInit(G, true);
+    PyMOL_SetPythonInitStage(INST(h), 1);
 }
 
 void PyMOLBridge_Stop(PyMOLHandle h)
