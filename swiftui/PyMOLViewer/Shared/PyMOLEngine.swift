@@ -12,6 +12,7 @@ final class PyMOLEngine: ObservableObject {
     @Published var feedbackLog: [String] = []
     @Published var objects: [MoleculeObject] = []
     @Published var sequences: [SequenceObject] = []
+    @Published var selectedResidueKeys: Set<String> = []
     @Published var isReady = false
     @Published var sequenceVisible = true
 
@@ -136,20 +137,50 @@ final class PyMOLEngine: ObservableObject {
         // than the feedback buffer — PyMOL feedback lines are capped (~1KB) and
         // long sequences would be split/truncated. Print only a short marker;
         // Swift reads the file (same process TMPDIR) on seeing it.
+        // Each residue carries its guide-atom color index; a color table maps
+        // index -> RGB so the panel can reflect the real molecular coloring.
         runPython(
             "import json, os, tempfile\n"
             + "from pymol import cmd as _sc\n"
             + "_out = []\n"
+            + "_cols = {}\n"
             + "for _o in (_sc.get_names('public_objects') or []):\n"
             + "    _r = []\n"
             + "    try:\n"
-            + "        _sc.iterate('(%s) and guide' % _o, '_r.append((chain, resi, resn))', space={'_r': _r})\n"
+            + "        _sc.iterate('(%s) and guide' % _o, '_r.append((chain, resi, resn, str(color)))', space={'_r': _r})\n"
             + "    except Exception:\n"
             + "        pass\n"
             + "    if _r:\n"
             + "        _out.append({'name': _o, 'residues': _r})\n"
-            + "open(os.path.join(tempfile.gettempdir(), 'pymol_seq.json'), 'w').write(json.dumps(_out))\n"
+            + "        for _t in _r:\n"
+            + "            _cols[_t[3]] = None\n"
+            + "for _ci in list(_cols.keys()):\n"
+            + "    try:\n"
+            + "        _cols[_ci] = _sc.get_color_tuple(int(_ci))\n"
+            + "    except Exception:\n"
+            + "        _cols[_ci] = (0.8, 0.8, 0.8)\n"
+            + "_data = {'objects': _out, 'colors': _cols}\n"
+            + "open(os.path.join(tempfile.gettempdir(), 'pymol_seq.json'), 'w').write(json.dumps(_data))\n"
             + "print('SEQPANEL:ready')"
+        )
+    }
+
+    // Poll which residues are in the active 'sele' selection so the sequence
+    // panel can highlight them (3D -> sequence sync). Writes compact keys
+    // ("obj/chain/resi") to a temp file; emits a short SEQSEL marker.
+    func fetchSequenceSelection() {
+        guard isReady else { return }
+        runPython(
+            "import json, os, tempfile\n"
+            + "from pymol import cmd as _sc\n"
+            + "_sel = []\n"
+            + "try:\n"
+            + "    if 'sele' in (_sc.get_names('selections') or []):\n"
+            + "        _sc.iterate('sele and guide', '_sel.append(model+chr(47)+chain+chr(47)+resi)', space={'_sel': _sel})\n"
+            + "except Exception:\n"
+            + "    pass\n"
+            + "open(os.path.join(tempfile.gettempdir(), 'pymol_seqsel.json'), 'w').write(json.dumps(_sel))\n"
+            + "print('SEQSEL:ready')"
         )
     }
 
@@ -229,6 +260,8 @@ final class PyMOLEngine: ObservableObject {
                     parseObjectPanelFeedback(line)
                 } else if line.hasPrefix("SEQPANEL:") {
                     parseSequencePanelFeedback(line)
+                } else if line.hasPrefix("SEQSEL:") {
+                    parseSequenceSelectionFeedback(line)
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
                         self.feedbackLog.append(line)
@@ -249,6 +282,12 @@ final class PyMOLEngine: ObservableObject {
         // Poll every 5th tick (~500ms at 100ms timer) to avoid flooding
         objectPollCounter += 1
         guard objectPollCounter % 5 == 0 else { return }
+
+        // Keep the sequence-panel selection highlight in sync with the active
+        // selection (3D-view picks/selects reflect in the sequence).
+        if sequenceVisible {
+            fetchSequenceSelection()
+        }
 
         // Run via runPython (raw PyRun), NOT runCommand/cmd.do — cmd.do echoes
         // the whole command block into the feedback log every poll, which floods
