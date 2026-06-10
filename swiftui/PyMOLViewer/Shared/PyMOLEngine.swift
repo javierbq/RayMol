@@ -11,8 +11,9 @@ final class PyMOLEngine: ObservableObject {
     // Published state for UI binding
     @Published var feedbackLog: [String] = []
     @Published var objects: [MoleculeObject] = []
+    @Published var sequences: [SequenceObject] = []
     @Published var isReady = false
-    @Published var sequenceVisible = false
+    @Published var sequenceVisible = true
 
     // The opaque PyMOL instance pointer
     private(set) var instance: PyMOLHandle?
@@ -126,6 +127,32 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_RunPython(code)
     }
 
+    // Fetch per-object residue sequences (one guide atom per residue) and emit
+    // a SEQPANEL: feedback line parsed into `sequences`. Run via raw Python so
+    // the command isn't echoed to the log.
+    func fetchSequences() {
+        guard isReady else { return }
+        // Write the (potentially large) per-residue JSON to a temp file rather
+        // than the feedback buffer — PyMOL feedback lines are capped (~1KB) and
+        // long sequences would be split/truncated. Print only a short marker;
+        // Swift reads the file (same process TMPDIR) on seeing it.
+        runPython(
+            "import json, os, tempfile\n"
+            + "from pymol import cmd as _sc\n"
+            + "_out = []\n"
+            + "for _o in (_sc.get_names('public_objects') or []):\n"
+            + "    _r = []\n"
+            + "    try:\n"
+            + "        _sc.iterate('(%s) and guide' % _o, '_r.append((chain, resi, resn))', space={'_r': _r})\n"
+            + "    except Exception:\n"
+            + "        pass\n"
+            + "    if _r:\n"
+            + "        _out.append({'name': _o, 'residues': _r})\n"
+            + "open(os.path.join(tempfile.gettempdir(), 'pymol_seq.json'), 'w').write(json.dumps(_out))\n"
+            + "print('SEQPANEL:ready')"
+        )
+    }
+
     // Tap-to-select via metal_pick (NDC in [-1,1], aspect = width/height).
     func pick(ndcX: Float, ndcY: Float, aspect: Float) {
         guard let inst = instance else { return }
@@ -200,6 +227,8 @@ final class PyMOLEngine: ObservableObject {
             for line in text.components(separatedBy: "\n") {
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
+                } else if line.hasPrefix("SEQPANEL:") {
+                    parseSequencePanelFeedback(line)
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
                         self.feedbackLog.append(line)

@@ -112,6 +112,9 @@ struct ContentView: View {
 
     private var panelToggles: some ToolbarContent {
         ToolbarItemGroup {
+            Toggle(isOn: $engine.sequenceVisible) {
+                Label("Sequence", systemImage: "textformat.abc")
+            }
             Toggle(isOn: $showObjectPanel) {
                 Label("Objects", systemImage: "cube")
             }

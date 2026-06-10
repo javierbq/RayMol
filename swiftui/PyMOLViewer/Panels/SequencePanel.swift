@@ -108,20 +108,28 @@ private func placeholderSequences() -> [SequenceObject] {
 
 struct SequencePanel: View {
     @EnvironmentObject var engine: PyMOLEngine
-    @State private var sequences: [SequenceObject] = placeholderSequences()
     @State private var selectedResidueIDs: Set<String> = []
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(spacing: 0) {
-                ForEach(sequences) { seqObj in
-                    objectSequenceView(seqObj)
+                if engine.sequences.isEmpty {
+                    Text("No sequence — load a structure")
+                        .font(.system(size: 10))
+                        .foregroundColor(separatorColor)
+                        .padding(.horizontal, 8)
+                } else {
+                    ForEach(engine.sequences) { seqObj in
+                        objectSequenceView(seqObj)
+                    }
                 }
             }
             .padding(.horizontal, 4)
         }
         .frame(maxWidth: .infinity)
         .background(panelBackground)
+        .onAppear { engine.fetchSequences() }
+        .onChange(of: engine.objects) { _ in engine.fetchSequences() }
     }
 
     // MARK: - Per-object sequence row
@@ -239,6 +247,53 @@ struct SequencePanel: View {
             tip += " (chain \(residue.chain))"
         }
         return tip
+    }
+}
+
+// MARK: - PyMOLEngine extension for sequence polling
+
+extension PyMOLEngine {
+    /// Parse the SEQPANEL JSON emitted by fetchSequences() into `sequences`.
+    /// Payload: [{ "name": <obj>, "residues": [[chain, resi, resn], ...] }]
+    func parseSequencePanelFeedback(_ line: String) {
+        guard line.hasPrefix("SEQPANEL:") else { return }
+        // fetchSequences() wrote the JSON to TMPDIR/pymol_seq.json (same process
+        // temp dir) and printed "SEQPANEL:ready"; read it here.
+        let path = NSTemporaryDirectory() + "pymol_seq.json"
+        guard let data = FileManager.default.contents(atPath: path) else { return }
+
+        struct SeqObjPayload: Decodable {
+            let name: String
+            let residues: [[String]]
+        }
+
+        guard let payload = try? JSONDecoder().decode([SeqObjPayload].self, from: data) else {
+            return
+        }
+
+        var objs: [SequenceObject] = []
+        for o in payload {
+            var residues: [SequenceResidue] = []
+            for (i, t) in o.residues.enumerated() where t.count >= 3 {
+                let chain = t[0], resi = t[1], resn = t[2]
+                let one = aa3to1[resn.uppercased()] ?? "X"
+                residues.append(SequenceResidue(
+                    id: "\(o.name)/\(chain)/\(resi)/\(i)",
+                    objectName: o.name,
+                    chain: chain,
+                    oneLetter: one,
+                    resi: resi,
+                    resn: resn
+                ))
+            }
+            if !residues.isEmpty {
+                objs.append(SequenceObject(id: o.name, name: o.name, residues: residues))
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.sequences = objs
+        }
     }
 }
 
