@@ -476,6 +476,7 @@ private struct ActionMenuButton: View {
             Text("A")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 18)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
@@ -522,6 +523,7 @@ private struct ShowButton: View {
             Text("S")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 18)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
@@ -549,6 +551,7 @@ private struct HideButton: View {
             Text("H")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 18)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
@@ -580,6 +583,7 @@ private struct LabelMenuButton: View {
             Text("L")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 18)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
@@ -616,6 +620,7 @@ private struct ColorMenuButton: View {
             Text("C")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 22, height: 18)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
