@@ -1912,7 +1912,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
                                                                            : 0;
     const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
-        bg[2], /*aoEnabled=*/1, proj[10], proj[14]);
+        bg[2], /*aoEnabled=*/1, proj[10], proj[14], proj[0], proj[5]);
   }
 
   // --- Scene state needed by RenderInfo ---

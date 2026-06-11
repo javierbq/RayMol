@@ -445,6 +445,10 @@ struct PostU {
   float aoEnabled;
   float aoIntensity;
   float aoRadiusPx;  // sample radius in pixels at render resolution
+  float projX;       // projection[0]
+  float projY;       // projection[5]
+  float shadowEnabled;
+  float shadowIntensity;
   float _pad;
 };
 
@@ -490,6 +494,34 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     ao = clamp(1.0 - (occ / float(N)) * u.aoIntensity, 0.0, 1.0);
   }
   color *= ao;
+
+  // Screen-space directional shadows: march from the surface point toward the
+  // key light through the depth buffer; if a closer surface lies along the
+  // ray, the point is shadowed. Real directional cast shadows for the dense
+  // (mostly on-screen) molecular scenes PyMOL renders.
+  if (u.shadowEnabled > 0.5 && d < 0.99999) {
+    float ez = -u.projB / ((2.0 * d - 1.0) + u.projA);  // eye z (negative)
+    float ndcx = 2.0 * in.uv.x - 1.0;
+    float ndcy = 1.0 - 2.0 * in.uv.y;
+    float3 p = float3(ndcx * (-ez) / u.projX, ndcy * (-ez) / u.projY, ez);
+    float3 Ldir = normalize(float3(0.4, 0.4, 1.0)); // toward light (eye space)
+    float stepv = (-ez) * 0.010;
+    float occluded = 0.0;
+    const int KS = 24;
+    for (int i = 1; i <= KS; i++) {
+      float3 q = p + Ldir * (stepv * float(i));
+      if (q.z > -1e-4) break;                 // crossed in front of camera
+      float2 nq = float2(u.projX * q.x / (-q.z), u.projY * q.y / (-q.z));
+      float2 uvq = float2(0.5 * nq.x + 0.5, 0.5 - 0.5 * nq.y);
+      if (uvq.x < 0.0 || uvq.x > 1.0 || uvq.y < 0.0 || uvq.y > 1.0) break;
+      float dq = depthTex.sample(s, uvq);
+      if (dq >= 0.99999) continue;            // background: not an occluder
+      float zq = -u.projB / ((2.0 * dq - 1.0) + u.projA);
+      float diff = zq - q.z; // > 0 when scene surface is closer than ray point
+      if (diff > stepv * 0.6 && diff < stepv * 6.0) { occluded = 1.0; break; }
+    }
+    color *= (1.0 - occluded * u.shadowIntensity);
+  }
 
   if (u.fogEnabled > 0.5 && d < 0.99999) {
     float dist = post_linear_depth(d, u.projA, u.projB);
@@ -565,7 +597,8 @@ void RendererMetal::buildPostPipelines()
 }
 
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
-    float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB)
+    float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB,
+    float projX, float projY)
 {
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
@@ -574,6 +607,8 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
   _aoEnabled = aoEnabled;
   _projA = projA;
   _projB = projB;
+  _projX = projX;
+  _projY = projY;
 }
 
 void RendererMetal::runPostChain()
@@ -582,24 +617,30 @@ void RendererMetal::runPostChain()
 
   static bool noAA = getenv("PYMOL_NO_AA") != nullptr;
   static bool noAO = getenv("PYMOL_NO_AO") != nullptr;
+  static bool noShadow = getenv("PYMOL_NO_SHADOW") != nullptr;
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
+  bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
   id<MTLTexture> sceneSrc = _sceneColor;
 
-  // Pass 1: SSAO + depth-cue/fog (scene color+depth -> _postColor).
-  if ((doAO || doFog) && _postColor) {
+  // Pass 1: SSAO + screen-space shadows + depth-cue/fog (color+depth -> post).
+  if ((doAO || doFog || doShadow) && _postColor) {
     struct {
       float projA, projB, fogStart, fogEnd;
       float bgR, bgG, bgB, fogEnabled;
-      float aoEnabled, aoIntensity, aoRadiusPx, _pad;
+      float aoEnabled, aoIntensity, aoRadiusPx, projX;
+      float projY, shadowEnabled, shadowIntensity, _pad;
     } u;
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
     u.bgR = _bgR; u.bgG = _bgG; u.bgB = _bgB;
     u.fogEnabled = doFog ? 1.0f : 0.0f;
     u.aoEnabled = doAO ? 1.0f : 0.0f;
-    u.aoIntensity = 1.0f;
+    u.aoIntensity = 0.8f;
     u.aoRadiusPx = (float)_rtH * 0.015f; // ~1.5% of height
+    u.projX = _projX; u.projY = _projY;
+    u.shadowEnabled = doShadow ? 1.0f : 0.0f;
+    u.shadowIntensity = 0.45f;
     u._pad = 0.0f;
 
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];

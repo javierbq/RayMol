@@ -260,11 +260,14 @@ public:
   };
   virtual void drawCylinderImpostors(const CylinderImpostorDrawCall&) {}
 
-  // Per-frame post-process parameters (depth-cue/fog + SSAO). fogStart/fogEnd
-  // are eye-space distances; projA/projB are projection[10]/[14] for
-  // reconstructing linear eye depth from the depth buffer. Default: no-op.
+  // Per-frame post-process parameters (depth-cue/fog + SSAO + screen-space
+  // shadows). fogStart/fogEnd are eye-space distances; projA/projB are
+  // projection[10]/[14] (linear eye depth) and projX/projY are projection[0]/[5]
+  // (eye-space x/y reconstruction + reprojection for the shadow march).
+  // Default: no-op.
   virtual void setPostParams(int fogEnabled, float fogStart, float fogEnd,
-      float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB)
+      float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB,
+      float projX, float projY)
   {
   }
 };
