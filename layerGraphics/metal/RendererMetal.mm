@@ -2223,8 +2223,22 @@ vertex SphereVOut sphere_impostor_vertex(SphereIn in [[stage_in]],
   return out;
 }
 
-fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
-    constant SphereU& u [[buffer(1)]]) {
+// Weighted-blended OIT output for transparent spheres (accum + reveal + the
+// ray-cast depth, so opaque geometry still occludes them).
+struct SphereOITOut {
+  float4 accum  [[color(0)]];
+  float  reveal [[color(1)]];
+  float  depth  [[depth(any)]];
+};
+static float sph_oit_weight(float a, float z) {
+  return clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 *
+               pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
+}
+
+// Shared ray-sphere intersection + PyMOL two-light shading. Discards on miss /
+// out-of-range depth. Returns lit rgb, alpha, and window depth.
+static void sphere_shade(SphereVOut in, constant SphereU& u,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 ray_origin, ray_dir, sphere_dir;
   if (u.ortho >= 0.5) {
     ray_origin = in.point; ray_dir = float3(0.0,0.0,-1.0);
@@ -2241,20 +2255,11 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
   float3 normal = normalize(ipoint - in.sphere_center);
   float4 clip = u.projection * float4(ipoint, 1.0);
   float ndcz = clip.z / clip.w;
-  float depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
+  depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0 || depth >= 1.0) discard_fragment();
 
-  // PyMOL default two-light model, matching the GL real-time path
-  // (data/shaders/compute_color_for_light.fs + Scene lighting setup):
-  //   intensity = ambient + Sum_i diffuse_i * max(N.L_i, 0)
-  //   specular  = Sum_i spec_i  * pow(max(N.H_i, 0), shine)   (N.L_i > 0)
-  //   rgb       = color * min(intensity, 1) + specular
-  // Light 0 = camera headlight (diffuse only; spec_direct default 0).
-  // Light 1 = positional key from the `light` setting (-0.4,-0.4,-1.0):
-  //   dir-to-light = normalize(-light) = normalize(0.4, 0.4, 1.0).
-  // Constants are the shipped PyMOL defaults (ambient .14, direct .45,
-  // reflect .45 * reflect-scale ~1.069 = .481, specular_intensity .5,
-  // shininess 55).
+  // PyMOL default two-light model (see data/shaders/compute_color_for_light.fs):
+  // ambient .14, headlight direct .45, key reflect .481, specular .5, shine 55.
   const float ambient    = 0.14;
   const float direct     = 0.45;
   const float reflect    = 0.481;
@@ -2262,7 +2267,6 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
   const float shininess  = 55.0;
   const float3 L0 = float3(0.0, 0.0, 1.0);
   const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
-
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
@@ -2273,9 +2277,28 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
     specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
-  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  alpha = in.color.a;
+}
+
+fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
+    constant SphereU& u [[buffer(1)]]) {
+  float3 rgb; float a; float depth;
+  sphere_shade(in, u, rgb, a, depth);
   SphereFOut out;
-  out.color = float4(rgb, in.color.a);
+  out.color = float4(rgb, a);
+  out.depth = depth;
+  return out;
+}
+
+fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
+    constant SphereU& u [[buffer(1)]]) {
+  float3 rgb; float a; float depth;
+  sphere_shade(in, u, rgb, a, depth);
+  float w = sph_oit_weight(a, depth);
+  SphereOITOut out;
+  out.accum = float4(rgb * a, a) * w;
+  out.reveal = a;
   out.depth = depth;
   return out;
 }
@@ -2315,16 +2338,41 @@ void RendererMetal::buildImpostorPipelines()
   _sphereImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
   if (!_sphereImpostorPipeline)
     NSLog(@"RendererMetal: sphere impostor pipeline failed: %@", err);
+
+  // Transparent sphere OIT variant: same vertex shader + geometry, MRT
+  // accum/reveal output, ray-cast depth retained for occlusion.
+  id<MTLFunction> offn = [lib newFunctionWithName:@"sphere_impostor_fragment_oit"];
+  if (offn) {
+    MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
+    op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
+    op.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    op.colorAttachments[0].blendingEnabled = YES;
+    op.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[1].pixelFormat = MTLPixelFormatR16Float;
+    op.colorAttachments[1].blendingEnabled = YES;
+    op.colorAttachments[1].sourceRGBBlendFactor = MTLBlendFactorZero;
+    op.colorAttachments[1].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
+    op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _sphereOitPipeline = [_device newRenderPipelineStateWithDescriptor:op error:&err];
+    if (!_sphereOitPipeline)
+      NSLog(@"RendererMetal: sphere OIT pipeline failed: %@", err);
+  }
 }
 
 void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
 {
   if (!call.data || call.dataSize == 0 || call.sphereCount <= 0) return;
-  if (_oitActive) return; // transparent sphere OIT variant: Stage 2
   ensureEncoder();
   if (!_encoder) return;
   buildImpostorPipelines();
   if (!_sphereImpostorPipeline) return;
+  if (_oitActive && !_sphereOitPipeline) return; // no OIT variant: skip
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
   // is handled by the prebuilt pipeline. Log and bail otherwise (revisit if hit).
@@ -2351,9 +2399,17 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   NSUInteger vertexCount = call.stride ? (call.dataSize / call.stride) : 0;
   if (vertexCount < 3) return;
 
-  [_encoder setRenderPipelineState:_sphereImpostorPipeline];
-  applyDepthStencilState();
-  if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  if (_oitActive) {
+    [_encoder setRenderPipelineState:_sphereOitPipeline];
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLessEqual; // test vs opaque
+    d.depthWriteEnabled = NO;
+    [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:d]];
+  } else {
+    [_encoder setRenderPipelineState:_sphereImpostorPipeline];
+    applyDepthStencilState();
+    if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  }
   [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
 
   struct {
@@ -2490,8 +2546,20 @@ vertex CylVOut cyl_impostor_vertex(CylIn in [[stage_in]],
   return o;
 }
 
-fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
-    constant CylU& u [[buffer(1)]]) {
+struct CylOITOut {
+  float4 accum  [[color(0)]];
+  float  reveal [[color(1)]];
+  float  depth  [[depth(any)]];
+};
+static float cyl_oit_weight(float a, float z) {
+  return clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 *
+               pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
+}
+
+// Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
+// Discards on miss; returns lit rgb, alpha, window depth.
+static void cyl_shade(CylVOut in, constant CylU& u,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 ray_target = in.surface_point;
   float3 ray_origin, ray_dir;
   if (u.ortho >= 0.5) { ray_origin = in.surface_point; ray_dir = float3(0.0,0.0,1.0); }
@@ -2558,7 +2626,7 @@ fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
 
   float4 clip = u.projection * float4(new_point, 1.0);
   float ndcz = clip.z / clip.w;
-  float depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
+  depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0) discard_fragment();
 
   // PyMOL default two-light model (identical to the sphere impostor).
@@ -2579,9 +2647,28 @@ fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
     specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
-  float3 rgb = color.rgb * min(intensity, 1.0) + specular;
+  rgb = color.rgb * min(intensity, 1.0) + specular;
+  alpha = color.a;
+}
+
+fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
+    constant CylU& u [[buffer(1)]]) {
+  float3 rgb; float a; float depth;
+  cyl_shade(in, u, rgb, a, depth);
   CylFOut o;
-  o.color = float4(rgb, color.a);
+  o.color = float4(rgb, a);
+  o.depth = depth;
+  return o;
+}
+
+fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
+    constant CylU& u [[buffer(1)]]) {
+  float3 rgb; float a; float depth;
+  cyl_shade(in, u, rgb, a, depth);
+  float w = cyl_oit_weight(a, depth);
+  CylOITOut o;
+  o.accum = float4(rgb * a, a) * w;
+  o.reveal = a;
   o.depth = depth;
   return o;
 }
@@ -2635,6 +2722,30 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
   else
     _cylinderPipelineStride = call.stride;
+
+  // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
+  id<MTLFunction> offn = [lib newFunctionWithName:@"cyl_impostor_fragment_oit"];
+  if (offn) {
+    MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
+    op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
+    op.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    op.colorAttachments[0].blendingEnabled = YES;
+    op.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+    op.colorAttachments[1].pixelFormat = MTLPixelFormatR16Float;
+    op.colorAttachments[1].blendingEnabled = YES;
+    op.colorAttachments[1].sourceRGBBlendFactor = MTLBlendFactorZero;
+    op.colorAttachments[1].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
+    op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _cylinderOitPipeline = [_device newRenderPipelineStateWithDescriptor:op error:&err];
+    if (!_cylinderOitPipeline)
+      NSLog(@"RendererMetal: cyl OIT pipeline failed: %@", err);
+  }
 }
 
 void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
@@ -2649,11 +2760,11 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     NSLog(@"RendererMetal: cyl impostor unexpected Float attr_flags; skipping");
     return;
   }
-  if (_oitActive) return; // transparent cylinder OIT variant: Stage 2
   ensureEncoder();
   if (!_encoder) return;
   buildCylinderImpostorPipeline(call);
   if (!_cylinderImpostorPipeline) return;
+  if (_oitActive && !_cylinderOitPipeline) return; // no OIT variant: skip
 
   id<MTLBuffer> vbo = nil, ibo = nil;
   { auto it = _vboCache.find(call.vdata);
@@ -2668,9 +2779,17 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
            if (ibo) _vboCache[call.idata] = ibo; } }
   if (!vbo || !ibo) return;
 
-  [_encoder setRenderPipelineState:_cylinderImpostorPipeline];
-  applyDepthStencilState();
-  if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  if (_oitActive) {
+    [_encoder setRenderPipelineState:_cylinderOitPipeline];
+    MTLDepthStencilDescriptor* dd = [[MTLDepthStencilDescriptor alloc] init];
+    dd.depthCompareFunction = MTLCompareFunctionLessEqual; // test vs opaque
+    dd.depthWriteEnabled = NO;
+    [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:dd]];
+  } else {
+    [_encoder setRenderPipelineState:_cylinderImpostorPipeline];
+    applyDepthStencilState();
+    if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  }
   [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
 
   struct {
