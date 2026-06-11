@@ -259,6 +259,14 @@ public:
     int noFlatCaps = 1;      // 1 => round caps (matches GL shader default)
   };
   virtual void drawCylinderImpostors(const CylinderImpostorDrawCall&) {}
+
+  // Per-frame post-process parameters (depth-cue/fog + SSAO). fogStart/fogEnd
+  // are eye-space distances; projA/projB are projection[10]/[14] for
+  // reconstructing linear eye depth from the depth buffer. Default: no-op.
+  virtual void setPostParams(int fogEnabled, float fogStart, float fogEnd,
+      float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB)
+  {
+  }
 };
 
 } // namespace pymol

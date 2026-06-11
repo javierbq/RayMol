@@ -136,6 +136,8 @@ public:
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
   void drawCylinderImpostors(const CylinderImpostorDrawCall& call) override;
+  void setPostParams(int fogEnabled, float fogStart, float fogEnd, float bgR,
+      float bgG, float bgB, int aoEnabled, float projA, float projB) override;
 
 private:
   void buildImpostorPipelines();
@@ -228,6 +230,12 @@ private:
   void ensurePostTargets(NSUInteger w, NSUInteger h);
   void buildPostPipelines();
   void runPostChain();
+  // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
+  int _postFogEnabled = 0;
+  float _fogStart = 0.f, _fogEnd = 1.f;
+  float _bgR = 0.f, _bgG = 0.f, _bgB = 0.f;
+  int _aoEnabled = 1;          // SSAO on by default
+  float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;

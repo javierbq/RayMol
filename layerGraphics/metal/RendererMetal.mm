@@ -429,6 +429,76 @@ fragment float4 post_fxaa(PostVOut in [[stage_in]],
     return float4(rgbA, 1.0);
   return float4(rgbB, 1.0);
 }
+
+// SSAO (depth-difference / crease shading) + depth-cue fog, in one pass.
+// Reads the scene color + scene depth, darkens creases where neighbors are
+// modestly closer to the camera, then fades toward the background color with
+// distance (PyMOL depth_cue). Scale-invariant: occlusion uses RELATIVE depth
+// difference so it needs no per-scene world-unit tuning.
+struct PostU {
+  float projA;       // projection[10]
+  float projB;       // projection[14]
+  float fogStart;    // eye-space distance
+  float fogEnd;
+  float bgR, bgG, bgB;
+  float fogEnabled;
+  float aoEnabled;
+  float aoIntensity;
+  float aoRadiusPx;  // sample radius in pixels at render resolution
+  float _pad;
+};
+
+// Linear eye distance (positive, toward the scene) from window depth [0,1].
+static float post_linear_depth(float d, float projA, float projB) {
+  float ndcz = 2.0 * d - 1.0;
+  float ez = -projB / (ndcz + projA); // eye z (negative, in front of camera)
+  return -ez;                         // distance from camera (positive)
+}
+
+fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    constant PostU& u [[buffer(0)]]) {
+  float3 color = colorTex.sample(s, in.uv).rgb;
+  float d = depthTex.sample(s, in.uv);
+
+  float ao = 1.0;
+  if (u.aoEnabled > 0.5 && d < 0.99999) {
+    float zc = post_linear_depth(d, u.projA, u.projB);
+    float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
+    const int N = 12;
+    const float TWO_PI = 6.28318530718;
+    const float range = 0.06; // ignore occluders farther than 6% of center z
+    float occ = 0.0;
+    for (int i = 0; i < N; i++) {
+      float ang = (float(i) + 0.5) * (TWO_PI / float(N));
+      // vary the radius across the ring to cover the disk
+      float rr = u.aoRadiusPx * (0.35 + 0.65 * float((i % 4) + 1) / 4.0);
+      float2 off = float2(cos(ang), sin(ang)) * rr * invres;
+      float dn = depthTex.sample(s, in.uv + off);
+      if (dn >= 0.99999) continue; // background neighbor: no occlusion (no halo)
+      float zn = post_linear_depth(dn, u.projA, u.projB);
+      float diff = zc - zn; // > 0 when neighbor is closer to camera (occluder)
+      if (diff > 0.0) {
+        float rel = diff / max(zc, 1e-4);
+        float w = smoothstep(0.0, 0.01, rel) *
+                  (1.0 - smoothstep(range * 0.5, range, rel));
+        occ += w;
+      }
+    }
+    ao = clamp(1.0 - (occ / float(N)) * u.aoIntensity, 0.0, 1.0);
+  }
+  color *= ao;
+
+  if (u.fogEnabled > 0.5 && d < 0.99999) {
+    float dist = post_linear_depth(d, u.projA, u.projB);
+    float fog = clamp((u.fogEnd - dist) / max(u.fogEnd - u.fogStart, 1e-4),
+                      0.0, 1.0);
+    color = mix(float3(u.bgR, u.bgG, u.bgB), color, fog);
+  }
+  return float4(color, 1.0);
+}
 )";
 
 void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
@@ -494,23 +564,71 @@ void RendererMetal::buildPostPipelines()
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
 }
 
+void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
+    float bgR, float bgG, float bgB, int aoEnabled, float projA, float projB)
+{
+  _postFogEnabled = fogEnabled;
+  _fogStart = fogStart;
+  _fogEnd = fogEnd;
+  _bgR = bgR; _bgG = bgG; _bgB = bgB;
+  _aoEnabled = aoEnabled;
+  _projA = projA;
+  _projB = projB;
+}
+
 void RendererMetal::runPostChain()
 {
   if (!_blitPipeline) return;
-  // The drawable target's depth/stencil are unused by fullscreen passes.
-  _screenPassDesc.depthAttachment.texture = nil;
-  _screenPassDesc.stencilAttachment.texture = nil;
-  _screenPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+
+  static bool noAA = getenv("PYMOL_NO_AA") != nullptr;
+  static bool noAO = getenv("PYMOL_NO_AO") != nullptr;
+  bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
+  bool doFog = _ssaoPipeline && _postFogEnabled;
+  id<MTLTexture> sceneSrc = _sceneColor;
+
+  // Pass 1: SSAO + depth-cue/fog (scene color+depth -> _postColor).
+  if ((doAO || doFog) && _postColor) {
+    struct {
+      float projA, projB, fogStart, fogEnd;
+      float bgR, bgG, bgB, fogEnabled;
+      float aoEnabled, aoIntensity, aoRadiusPx, _pad;
+    } u;
+    u.projA = _projA; u.projB = _projB;
+    u.fogStart = _fogStart; u.fogEnd = _fogEnd;
+    u.bgR = _bgR; u.bgG = _bgG; u.bgB = _bgB;
+    u.fogEnabled = doFog ? 1.0f : 0.0f;
+    u.aoEnabled = doAO ? 1.0f : 0.0f;
+    u.aoIntensity = 1.0f;
+    u.aoRadiusPx = (float)_rtH * 0.015f; // ~1.5% of height
+    u._pad = 0.0f;
+
+    MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
+    pd.colorAttachments[0].texture = _postColor;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e1 =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [e1 setRenderPipelineState:_ssaoPipeline];
+    [e1 setFragmentTexture:_sceneColor atIndex:0];
+    [e1 setFragmentTexture:_sceneDepth atIndex:1];
+    [e1 setFragmentSamplerState:_postSampler atIndex:0];
+    [e1 setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    [e1 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [e1 endEncoding];
+    sceneSrc = _postColor;
+  }
 
   // Final pass → drawable: FXAA if available, else a 1:1 blit.
   // PYMOL_NO_AA forces the blit (A/B testing + user escape hatch).
-  static bool noAA = getenv("PYMOL_NO_AA") != nullptr;
+  _screenPassDesc.depthAttachment.texture = nil;
+  _screenPassDesc.stencilAttachment.texture = nil;
+  _screenPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
   id<MTLRenderPipelineState> finalPipe =
       (_fxaaPipeline && !noAA) ? _fxaaPipeline : _blitPipeline;
   id<MTLRenderCommandEncoder> enc =
       [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
   [enc setRenderPipelineState:finalPipe];
-  [enc setFragmentTexture:_sceneColor atIndex:0];
+  [enc setFragmentTexture:sceneSrc atIndex:0];
   [enc setFragmentSamplerState:_postSampler atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [enc endEncoding];

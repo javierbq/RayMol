@@ -1895,6 +1895,24 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->loadMatrixf(proj);
     G->Renderer->matrixMode(0x1700); // GL_MODELVIEW = 0x1700
     G->Renderer->loadMatrixf(mv);
+
+    // Push per-frame post-process params (depth-cue/fog + SSAO). Fog matches
+    // SceneSetFog: FogStart/FogEnd are eye-space distances; proj[10]/[14] let
+    // the post shader reconstruct linear eye depth from the depth buffer.
+    float front = I->m_view.m_clipSafe().m_front;
+    float back = I->m_view.m_clipSafe().m_back;
+    float fog_density = SettingGetGlobal_f(G, cSetting_fog);
+    float fogStart =
+        (back - front) * SettingGetGlobal_f(G, cSetting_fog_start) + front;
+    float fogEnd = (fog_density > R_SMALL8 && fog_density != 1.0f)
+        ? fogStart + (back - fogStart) / fog_density
+        : back;
+    int fogEnabled =
+        (SettingGetGlobal_b(G, cSetting_depth_cue) && fog_density != 0.0f) ? 1
+                                                                           : 0;
+    const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
+    G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
+        bg[2], /*aoEnabled=*/1, proj[10], proj[14]);
   }
 
   // --- Scene state needed by RenderInfo ---
