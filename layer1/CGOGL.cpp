@@ -86,6 +86,40 @@ static bool drawVBOIndexedViaMetal(pymol::Renderer* renderer,
   return true;
 }
 
+// Metal path for analytic sphere impostors. The GL path below uses the GL
+// "sphere" shader (CShaderPrg), absent in NO_OPENGL builds; instead route the
+// impostor VBO to Renderer::drawSphereImpostors (per-pixel ray-sphere casting).
+static void drawSphereImpostorsViaMetal(
+    CCGORenderer* I, const cgo::draw::sphere_buffers* sp)
+{
+  auto* G = I->G;
+  auto* vbo = G->ShaderMgr->getGPUBuffer<VertexBufferGL>(sp->vboid);
+  if (!vbo || !vbo->hasCPUData())
+    return;
+
+  pymol::Renderer::SphereImpostorDrawCall call;
+  call.data = vbo->cpuData();
+  call.dataSize = vbo->cpuDataSize();
+  call.stride = vbo->cpuStride();
+  call.sphereCount = sp->num_spheres;
+  for (const auto& d : vbo->getDesc().descs) {
+    int off = static_cast<int>(d.offset);
+    if (d.attr_name == "a_vertex_radius")
+      call.posRadiusOff = off;
+    else if (d.attr_name == "a_Color")
+      call.colorOff = off;
+    else if (d.attr_name == "a_rightUpFlags") {
+      call.rightUpOff = off;
+      call.rightUpIsFloat = (d.m_format == VertexFormat::Float) ? 1 : 0;
+    }
+  }
+  // Radius is already baked into a_vertex_radius.w by the rep, so no extra scale.
+  call.sphereSizeScale = 1.0f;
+  call.ortho = SettingGetGlobal_b(G, cSetting_ortho) ? 1 : 0;
+
+  G->Renderer->drawSphereImpostors(call);
+}
+
 #ifdef PURE_OPENGL_ES_2
 #define glVertexAttrib4ubv(loc, data) glVertexAttrib4f(loc, \
     (data)[0] / 255.f, (data)[1] / 255.f, (data)[2] / 255.f, (data)[3] / 255.f);
@@ -94,6 +128,8 @@ static bool drawVBOIndexedViaMetal(pymol::Renderer* renderer,
 // Label/text Metal helpers (defined later, after Texture.h is included).
 static bool vboLooksLikeLabels(VertexBufferGL* vbo);
 static void drawLabelsViaMetal(CCGORenderer* I, size_t vboid, int vertexCount);
+static void drawSphereImpostorsViaMetal(
+    CCGORenderer* I, const cgo::draw::sphere_buffers* sp);
 
 constexpr unsigned VERTEX_PICKCOLOR_RGBA_SIZE = 1;  // 4 unsigned bytes
 constexpr unsigned VERTEX_PICKCOLOR_INDEX_SIZE = 2; // index + bond
@@ -811,9 +847,12 @@ static void CGO_gl_draw_custom(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_sphere_buffers(CCGORenderer* I, CGO_op_data pc)
 {
-  if (I->G->Renderer)
-    return;
   const cgo::draw::sphere_buffers* sp = reinterpret_cast<decltype(sp)>(*pc);
+  if (I->G->Renderer) {
+    if (!I->isPicking)  // picking uses the CPU metal_pick path
+      drawSphereImpostorsViaMetal(I, sp);
+    return;
+  }
   int num_spheres = sp->num_spheres;
   int attr_color;
   auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(sp->vboid);

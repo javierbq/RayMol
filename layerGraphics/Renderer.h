@@ -217,8 +217,9 @@ public:
   };
   virtual void drawLabels(const LabelDrawCall&) {}
 
-  // Sphere impostors: interleaved VBO (4 verts/sphere) with attributes
-  // a_vertex_radius (Float4 center+radius), a_Color (UByte4Norm), a_rightUpFlags.
+  // Sphere impostors: interleaved triangle-list VBO (6 verts/sphere, two tris
+  // per screen-aligned quad) with attributes a_vertex_radius (Float4
+  // center+radius), a_Color (UByte4Norm), a_rightUpFlags (corner code).
   // Offsets are byte offsets within `stride` (-1 = absent). Default: no-op.
   struct SphereImpostorDrawCall {
     int sphereCount = 0;

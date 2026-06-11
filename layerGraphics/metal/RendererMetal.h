@@ -203,8 +203,6 @@ private:
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
-  id<MTLBuffer> _sphereIndexBuffer = nil;   // 6 indices/sphere (quad -> 2 tris)
-  NSUInteger _sphereIndexCapacity = 0;      // # spheres the index buffer covers
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;

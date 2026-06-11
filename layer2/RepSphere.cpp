@@ -140,7 +140,10 @@ static int RepGetSphereMode(PyMOLGlobals *G, RepSphere * I, bool use_shader){
   case -1:
     sphere_mode = 9;
   case 9:
-    if (!use_shader || !G->ShaderMgr->ShaderPrgExists("sphere")) {
+    // On the Metal renderer the GL "sphere" shader program doesn't exist, but
+    // the Metal impostor pipeline does — keep mode 9 so sphere_buffers (the
+    // impostor VBO) are emitted and routed to RendererMetal::drawSphereImpostors.
+    if (!use_shader || (!G->Renderer && !G->ShaderMgr->ShaderPrgExists("sphere"))) {
       sphere_mode = 0;
     }
   }

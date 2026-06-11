@@ -128,7 +128,6 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _vboFragmentUnlitFunc(nil)
     , _batchBuffer(nil)
     , _sphereImpostorPipeline(nil)
-    , _sphereIndexBuffer(nil)
     , _depthStencilState(nil)
 {
   _modelviewMatrix = identityMatrix();
@@ -1690,12 +1689,37 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
   float ndcz = clip.z / clip.w;
   float depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0 || depth >= 1.0) discard_fragment();
-  float3 L = float3(0.0, 0.0, 1.0);
-  float NdotL = max(dot(normal, L), 0.0);
-  float3 H = normalize(L + float3(0.0,0.0,1.0));
-  float spec = pow(max(dot(normal, H), 0.0), 32.0);
-  float ambient = 0.25;
-  float3 rgb = in.color.rgb * (ambient + (1.0 - ambient) * NdotL) + spec * 0.6;
+
+  // PyMOL default two-light model, matching the GL real-time path
+  // (data/shaders/compute_color_for_light.fs + Scene lighting setup):
+  //   intensity = ambient + Sum_i diffuse_i * max(N.L_i, 0)
+  //   specular  = Sum_i spec_i  * pow(max(N.H_i, 0), shine)   (N.L_i > 0)
+  //   rgb       = color * min(intensity, 1) + specular
+  // Light 0 = camera headlight (diffuse only; spec_direct default 0).
+  // Light 1 = positional key from the `light` setting (-0.4,-0.4,-1.0):
+  //   dir-to-light = normalize(-light) = normalize(0.4, 0.4, 1.0).
+  // Constants are the shipped PyMOL defaults (ambient .14, direct .45,
+  // reflect .45 * reflect-scale ~1.069 = .481, specular_intensity .5,
+  // shininess 55).
+  const float ambient    = 0.14;
+  const float direct     = 0.45;
+  const float reflect    = 0.481;
+  const float spec_value = 0.5;
+  const float shininess  = 55.0;
+  const float3 L0 = float3(0.0, 0.0, 1.0);
+  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+
+  float intensity = ambient;
+  float specular = 0.0;
+  float n0 = dot(normal, L0);
+  if (n0 > 0.0) intensity += direct * n0;
+  float n1 = dot(normal, L1);
+  if (n1 > 0.0) {
+    intensity += reflect * n1;
+    float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
+    specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
   SphereFOut out;
   out.color = float4(rgb, in.color.a);
   out.depth = depth;
@@ -1767,21 +1791,10 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     _vboCache[call.data] = vbo;
   }
 
-  // 6 indices per sphere mapping the 4 quad corners (verts order LL,LR,UR,UL).
-  NSUInteger nSph = (NSUInteger)call.sphereCount;
-  if (!_sphereIndexBuffer || _sphereIndexCapacity < nSph) {
-    std::vector<uint32_t> idx(nSph * 6);
-    for (NSUInteger s = 0; s < nSph; ++s) {
-      uint32_t b = (uint32_t)(s * 4);
-      idx[s*6+0]=b+0; idx[s*6+1]=b+1; idx[s*6+2]=b+2;
-      idx[s*6+3]=b+0; idx[s*6+4]=b+2; idx[s*6+5]=b+3;
-    }
-    _sphereIndexBuffer = [_device newBufferWithBytes:idx.data()
-                            length:idx.size()*sizeof(uint32_t)
-                            options:MTLResourceStorageModeShared];
-    _sphereIndexCapacity = nSph;
-  }
-  if (!_sphereIndexBuffer) return;
+  // The impostor VBO is a plain triangle list (our build emits 6 verts/sphere
+  // with corner flags {0,1,3,3,2,0}); draw all verts directly, no index buffer.
+  NSUInteger vertexCount = call.stride ? (call.dataSize / call.stride) : 0;
+  if (vertexCount < 3) return;
 
   [_encoder setRenderPipelineState:_sphereImpostorPipeline];
   applyDepthStencilState();
@@ -1800,15 +1813,20 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
   u.sphere_size_scale = call.sphereSizeScale;
   u.ortho = (float)call.ortho;
-  u.depthZeroToOne = 1.0f;   // Metal [0,1] clip Z assumed; verified empirically
+  // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
+  // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
+  u.depthZeroToOne = 0.0f;
   u._pad = 0.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+  // The fragment shader also reads `u` (projection for depth, ortho flag) at
+  // buffer index 1 — it must be bound to the fragment stage too, otherwise it
+  // reads zero and clip.z/clip.w = 0/0 = NaN (all fragments fail the depth
+  // range test / produce garbage depth).
+  [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
 
-  [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                       indexCount:nSph * 6
-                        indexType:MTLIndexTypeUInt32
-                      indexBuffer:_sphereIndexBuffer
-                indexBufferOffset:0];
+  [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
+               vertexStart:0
+               vertexCount:vertexCount];
 }
 
 // ---------------------------------------------------------------------------
