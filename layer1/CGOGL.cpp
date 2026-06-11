@@ -971,10 +971,17 @@ static void CGO_gl_draw_sphere_buffers(CCGORenderer* I, CGO_op_data pc)
 
 static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
 {
-  if (I->G->Renderer)
-    return;
   const auto bezier =
       reinterpret_cast<const cgo::draw::bezier_buffers*>(*cgo_data);
+  if (I->G->Renderer) {
+    // Metal: GPU-tessellate the cubic Bezier control points into a smooth tube
+    // (the GL "bezier" tessellation shader is absent in NO_OPENGL builds).
+    if (I->isPicking) return;
+    auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
+    if (vbo && vbo->hasCPUData())
+      I->G->Renderer->drawBezierTubes(vbo->cpuData(), vbo->cpuDataSize());
+    return;
+  }
   const auto vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
   auto shaderPrg = I->G->ShaderMgr->Get_BezierShader();
   if (!shaderPrg) {

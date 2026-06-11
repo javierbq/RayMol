@@ -2825,6 +2825,195 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
 }
 
 // ---------------------------------------------------------------------------
+#pragma mark - GPU-tessellated Bezier tubes ("tube cartoon")
+// ---------------------------------------------------------------------------
+
+// Metal tessellation pipeline: each cubic Bezier patch (4 control points) is
+// tessellated over a QUAD domain — u runs along the curve, v around a ring —
+// to extrude a smooth tube. (Metal has no isoline tessellation, so a tube via
+// quad tessellation is both the natural fit and the showcase.)
+static NSString* const kBezierTubeSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct CP { float3 pos [[attribute(0)]]; };
+struct TubeU {
+  float4x4 modelview;
+  float4x4 projection;
+  float radius;
+  float _p0, _p1, _p2;
+  float4 color;
+};
+struct TubeOut {
+  float4 position [[position]];
+  float3 eyeNormal;
+  float4 color;
+};
+
+[[patch(quad, 4)]]
+vertex TubeOut bezier_tube_vertex(
+    patch_control_point<CP> cp [[stage_in]],
+    float2 uv [[position_in_patch]],
+    constant TubeU& U [[buffer(1)]]) {
+  float t = uv.x;
+  float omt = 1.0 - t;
+  float3 p0 = cp[0].pos, p1 = cp[1].pos, p2 = cp[2].pos, p3 = cp[3].pos;
+  // cubic Bezier position + tangent (derivative)
+  float3 P = omt*omt*omt*p0 + 3.0*omt*omt*t*p1 + 3.0*omt*t*t*p2 + t*t*t*p3;
+  float3 T = 3.0*omt*omt*(p1-p0) + 6.0*omt*t*(p2-p1) + 3.0*t*t*(p3-p2);
+  T = normalize(T);
+  // a stable frame around the tangent
+  float3 up = (abs(T.y) < 0.99) ? float3(0.0,1.0,0.0) : float3(1.0,0.0,0.0);
+  float3 N = normalize(cross(up, T));
+  float3 B = normalize(cross(T, N));
+  float ang = uv.y * 6.28318530718;
+  float3 radial = cos(ang) * N + sin(ang) * B;
+  float3 world = P + radial * U.radius;
+  float4 eye = U.modelview * float4(world, 1.0);
+  TubeOut o;
+  o.position = U.projection * eye;
+  o.eyeNormal = normalize((U.modelview * float4(radial, 0.0)).xyz);
+  o.color = U.color;
+  return o;
+}
+
+fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]]) {
+  // PyMOL default two-light model (same as the impostors).
+  float3 nrm = normalize(in.eyeNormal);
+  const float ambient = 0.14, direct = 0.45, reflectv = 0.481;
+  const float spec_value = 0.5, shininess = 55.0;
+  const float3 L0 = float3(0.0,0.0,1.0);
+  const float3 L1 = normalize(float3(0.4,0.4,1.0));
+  float intensity = ambient, specular = 0.0;
+  float n0 = dot(nrm, L0);
+  if (n0 > 0.0) intensity += direct * n0;
+  float n1 = dot(nrm, L1);
+  if (n1 > 0.0) {
+    intensity += reflectv * n1;
+    float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
+    specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  return float4(rgb, in.color.a);
+}
+)";
+
+void RendererMetal::buildBezierTubePipeline()
+{
+  if (_bezierTubePipeline) return;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kBezierTubeSrc
+                                             options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: bezier tube compile failed: %@", err); return; }
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"bezier_tube_vertex"];
+  id<MTLFunction> ffn = [lib newFunctionWithName:@"bezier_tube_fragment"];
+  if (!vfn || !ffn) { NSLog(@"RendererMetal: bezier tube funcs missing"); return; }
+
+  MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+  vd.attributes[0].format = MTLVertexFormatFloat3;  // control point position
+  vd.attributes[0].offset = 0;
+  vd.attributes[0].bufferIndex = 0;
+  vd.layouts[0].stride = 12;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn;
+  psd.fragmentFunction = ffn;
+  psd.vertexDescriptor = vd;
+  psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.maxTessellationFactor = 64;
+  psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;
+  psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+  psd.tessellationOutputWindingOrder = MTLWindingClockwise;
+  psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
+  _bezierTubePipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_bezierTubePipeline)
+    NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
+}
+
+// half-float bit pattern for a tessellation factor
+static inline uint16_t f16(float v) {
+  _Float16 h = (_Float16) v;
+  uint16_t bits;
+  std::memcpy(&bits, &h, sizeof(bits));
+  return bits;
+}
+
+void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize)
+{
+  if (!cp || dataSize < 48) return;       // need at least one 4-point patch
+  ensureEncoder();
+  if (!_encoder) return;
+  buildBezierTubePipeline();
+  if (!_bezierTubePipeline) return;
+
+  NSUInteger numPatches = dataSize / 48;  // 4 control points * 3 floats * 4 B
+  if (numPatches == 0) return;
+
+  // Control-point buffer (cache by pointer like the other VBOs).
+  id<MTLBuffer> cpBuf = nil;
+  auto it = _vboCache.find(cp);
+  if (it != _vboCache.end()) cpBuf = it->second;
+  else {
+    cpBuf = [_device newBufferWithBytes:cp length:dataSize
+                                options:MTLResourceStorageModeShared];
+    if (!cpBuf) return;
+    _vboCache[cp] = cpBuf;
+  }
+
+  // Constant per-patch tessellation factors (u = along curve, v = around ring).
+  const float segF = 24.0f;  // subdivisions along the curve
+  const float ringF = 14.0f; // subdivisions around the tube
+  struct QuadFactors { uint16_t edge[4]; uint16_t inside[2]; };
+  if (!_bezierTessFactors || _bezierTessPatchCap < numPatches) {
+    _bezierTessFactors = [_device newBufferWithLength:numPatches * sizeof(QuadFactors)
+                                              options:MTLResourceStorageModeShared];
+    if (!_bezierTessFactors) return;
+    QuadFactors qf;
+    qf.edge[0] = f16(ringF); qf.edge[1] = f16(segF);
+    qf.edge[2] = f16(ringF); qf.edge[3] = f16(segF);
+    qf.inside[0] = f16(segF); qf.inside[1] = f16(ringF);
+    QuadFactors* dst = (QuadFactors*) _bezierTessFactors.contents;
+    for (NSUInteger i = 0; i < numPatches; ++i) dst[i] = qf;
+    _bezierTessPatchCap = numPatches;
+  }
+
+  [_encoder setRenderPipelineState:_bezierTubePipeline];
+  // Opaque geometry: standard depth test + write.
+  MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+  dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
+  dsd.depthWriteEnabled = YES;
+  [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:dsd]];
+  [_encoder setCullMode:MTLCullModeNone];
+  [_encoder setVertexBuffer:cpBuf offset:0 atIndex:0];
+
+  struct {
+    float modelview[16];
+    float projection[16];
+    float radius;
+    float _p0, _p1, _p2;
+    float color[4];
+  } u;
+  std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
+  std::memcpy(u.projection, _projectionMatrix.data(), 64);
+  u.radius = 0.4f;
+  u._p0 = u._p1 = u._p2 = 0.0f;
+  u.color[0] = 0.30f; u.color[1] = 0.75f; u.color[2] = 0.95f; u.color[3] = 1.0f;
+  [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+
+  [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];
+  [_encoder drawPatches:4
+             patchStart:0
+             patchCount:numPatches
+       patchIndexBuffer:nil
+ patchIndexBufferOffset:0
+          instanceCount:1
+           baseInstance:0];
+}
+
+// ---------------------------------------------------------------------------
 #pragma mark - Label / Text Drawing
 // ---------------------------------------------------------------------------
 

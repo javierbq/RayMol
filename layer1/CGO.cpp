@@ -4413,7 +4413,11 @@ CGO* CGOOptimizeBezier(const CGO* I)
   }
 
   std::size_t numDimensions = 3;
-  std::size_t numVerts = 4;
+  // Upload ALL bezier patches (4 control points each), not just the first —
+  // the original hardcoded one patch (4 verts), truncating multi-segment
+  // splines. The Metal tube path draws every patch; the GL path still draws
+  // the first via glDrawArrays(GL_PATCHES, 0, 4).
+  std::size_t numVerts = 4 * static_cast<std::size_t>(num_splines);
   BufferDataDesc dataDesc{{
       BufferDesc("position", VertexFormat::Float3,
           sizeof(float) * numVerts * numDimensions, vertData.data()),

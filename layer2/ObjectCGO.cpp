@@ -289,15 +289,20 @@ static void ObjectCGORenderState(PyMOLGlobals* G, RenderPass pass, CRay* ray,
 
           if (use_shader) {
             shaderPrg = G->ShaderMgr->Enable_DefaultShader(info->pass);
-            if (!shaderPrg)
+            // The GL path needs the default shader; the Metal renderer has no
+            // GL shaders but dispatches CGO ops to its own pipelines.
+            if (!shaderPrg && !G->Renderer)
               return;
-            shaderPrg->SetLightingEnabled(cgo_lighting);
-            shaderPrg->Set1i("two_sided_lighting_enabled", two_sided_lighting);
+            if (shaderPrg) {
+              shaderPrg->SetLightingEnabled(cgo_lighting);
+              shaderPrg->Set1i("two_sided_lighting_enabled", two_sided_lighting);
+            }
             sobj->renderCGO->use_shader = use_shader;
             sobj->renderCGO->debug = SettingGetGlobal_i(G, cSetting_cgo_debug);
             CGORender(sobj->renderCGO.get(), color, I->Setting.get(), nullptr,
                 info, nullptr);
-            shaderPrg->Disable();
+            if (shaderPrg)
+              shaderPrg->Disable();
           } else {
             sobj->renderCGO->use_shader = use_shader;
             sobj->renderCGO->debug = SettingGetGlobal_i(G, cSetting_cgo_debug);
@@ -386,8 +391,12 @@ static void ObjectCGOGenerateCGO(PyMOLGlobals* G, ObjectCGO* I,
       if (use_shader) {
         bool t_mode_3 = SettingGetGlobal_i(G, cSetting_transparency_mode) == 3;
         if ((t_mode_3 || !hasTransparency) &&
-            G->ShaderMgr->Get_DefaultSphereShader(RenderPass::Antialias) &&
-            G->ShaderMgr->Get_CylinderShader(RenderPass::Antialias)) {
+            (G->Renderer ||
+             (G->ShaderMgr->Get_DefaultSphereShader(RenderPass::Antialias) &&
+              G->ShaderMgr->Get_CylinderShader(RenderPass::Antialias)))) {
+          // On the Metal renderer the GL sphere/cylinder shaders are absent,
+          // but the Metal impostor + Bezier-tube paths handle these ops; keep
+          // the optimization so CGO spheres/cylinders/beziers still render.
           if (CGOHasCylinderOperations(convertcgo)) {
             allCylinders = CGONew(G);
             CGOEnable(allCylinders, GL_CYLINDER_SHADER);

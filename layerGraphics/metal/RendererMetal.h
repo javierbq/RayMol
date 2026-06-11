@@ -141,6 +141,7 @@ public:
       float projA, float projB, float projX, float projY) override;
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
+  void drawBezierTubes(const void* controlPoints, size_t dataSize) override;
 
 private:
   void buildImpostorPipelines();
@@ -252,6 +253,12 @@ private:
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;
   bool _oitActive = false;      // true while the transparent pass is rendering
   bool _oitHasContent = false;  // true if any transparent fragments drew
+
+  // GPU-tessellated Bezier tube ("tube cartoon") pipeline.
+  id<MTLRenderPipelineState> _bezierTubePipeline = nil;
+  id<MTLBuffer> _bezierTessFactors = nil;  // MTLQuadTessellationFactorsHalf/patch
+  NSUInteger _bezierTessPatchCap = 0;      // patches the factor buffer covers
+  void buildBezierTubePipeline();
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
   int _postFogEnabled = 0;
   float _fogStart = 0.f, _fogEnd = 1.f;
