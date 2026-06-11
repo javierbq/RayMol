@@ -94,8 +94,16 @@ def pick_at(ndc_x, ndc_y, aspect):
                 continue
 
         if sele_expr:
-            # Plain click replaces the selection (standard PyMOL behavior).
-            cmd.select('sele', sele_expr)
+            # Toggle the clicked residue in/out of the active 'sele', matching
+            # PyMOL's sequence/viewer behavior (additive): clicking an
+            # unselected residue adds it, clicking a selected one removes it.
+            exists = 'sele' in (cmd.get_names('selections') or [])
+            already = exists and cmd.count_atoms(
+                '(sele) and (%s)' % sele_expr) > 0
+            if already:
+                cmd.select('sele', '(sele) and not (%s)' % sele_expr)
+            else:
+                cmd.select('sele', '(?sele) or (%s)' % sele_expr)
             cmd.enable('sele')
 
     except Exception as e:

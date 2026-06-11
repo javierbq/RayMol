@@ -141,9 +141,9 @@ struct SequencePanel: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(headerColor)
                     .onTapGesture {
-                        // Click object name → select the whole object.
+                        // Click object name → add the whole object to 'sele'.
                         anchorIndex = nil
-                        applySelection(residues: obj.residues, extend: false, center: false)
+                        applyToggle(residues: obj.residues, add: true)
                     }
                 ForEach(obj.residues) { r in
                     residueCell(r)
@@ -172,8 +172,12 @@ struct SequencePanel: View {
             .help(tooltip(r))
     }
 
-    /// Click selection: plain = single (set anchor), Shift = range from anchor,
-    /// Ctrl = single + center. Modifiers read from the current NSEvent on macOS.
+    /// Click selection (PyMOL-style, additive/toggle):
+    ///  - plain click toggles the residue in/out of 'sele' (add if not
+    ///    selected, remove if selected), setting the range anchor;
+    ///  - Shift-click adds the range from the anchor to here;
+    ///  - Ctrl-click toggles + centers.
+    /// Modifiers are read from the current NSEvent on macOS.
     private func handleClick(on r: SequenceResidue) {
         guard let idx = idToIndex[r.id] else { return }
         var shift = false, ctrl = false
@@ -184,10 +188,11 @@ struct SequencePanel: View {
         #endif
         if shift, let a = anchorIndex {
             let lo = min(a, idx), hi = max(a, idx)
-            applySelection(residues: Array(flat[lo...hi]), extend: false, center: false)
+            applyToggle(residues: Array(flat[lo...hi]), add: true)
         } else {
             anchorIndex = idx
-            applySelection(residues: [r], extend: false, center: ctrl)
+            let isSelected = engine.selectedResidueKeys.contains(r.selKey)
+            applyToggle(residues: [r], add: !isSelected, center: ctrl)
         }
     }
 
@@ -228,8 +233,8 @@ struct SequencePanel: View {
                 let range = min(startIdx, curIdx)...max(startIdx, curIdx)
                 guard range != lastRange else { return }
                 lastRange = range
-                let ctrl = NSEvent.modifierFlags.contains(.control)
-                applySelection(residues: Array(flat[range]), extend: false, center: ctrl)
+                // Drag adds the swept range to the selection (additive).
+                applyToggle(residues: Array(flat[range]), add: true)
                 anchorIndex = startIdx
             }
             .onEnded { _ in lastRange = nil }
@@ -248,13 +253,17 @@ struct SequencePanel: View {
 
     // MARK: - Selection dispatch
 
-    private func applySelection(residues: [SequenceResidue], extend: Bool, center: Bool) {
+    /// Toggle residues into/out of the active 'sele', mirroring PyMOL's
+    /// SeekerSelectionToggle: `add` => `(?sele) or (expr)` (additive),
+    /// otherwise `(sele) and not (expr)` (remove). Never replaces — clicks
+    /// accumulate, and clicking a selected residue removes just that residue.
+    private func applyToggle(residues: [SequenceResidue], add: Bool, center: Bool = false) {
         guard !residues.isEmpty else { return }
         let expr = selectionExpression(residues)
-        if extend {
-            engine.runCommand("select sele, (sele) or (\(expr))")
+        if add {
+            engine.runCommand("select sele, (?sele) or (\(expr)), enable=1")
         } else {
-            engine.runCommand("select sele, \(expr)")
+            engine.runCommand("select sele, (sele) and not (\(expr)), enable=1")
         }
         if center {
             engine.runCommand("center sele, animate=-1")
