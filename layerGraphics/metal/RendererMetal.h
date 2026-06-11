@@ -141,7 +141,8 @@ public:
       float projA, float projB, float projX, float projY) override;
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
-  void drawBezierTubes(const void* controlPoints, size_t dataSize) override;
+  void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
+      float r, float g, float b) override;
 
 private:
   void buildImpostorPipelines();

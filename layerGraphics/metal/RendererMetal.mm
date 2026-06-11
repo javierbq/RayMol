@@ -2861,6 +2861,10 @@ vertex TubeOut bezier_tube_vertex(
   // cubic Bezier position + tangent (derivative)
   float3 P = omt*omt*omt*p0 + 3.0*omt*omt*t*p1 + 3.0*omt*t*t*p2 + t*t*t*p3;
   float3 T = 3.0*omt*omt*(p1-p0) + 6.0*omt*t*(p2-p1) + 3.0*t*t*(p3-p2);
+  // Robust tangent: fall back to the chord if the derivative degenerates
+  // (coincident control points at sharp turns) to avoid collapsed/flipped
+  // rings and gaps at joints.
+  if (dot(T, T) < 1e-6) T = p3 - p0;
   T = normalize(T);
   // a stable frame around the tangent
   float3 up = (abs(T.y) < 0.99) ? float3(0.0,1.0,0.0) : float3(1.0,0.0,0.0);
@@ -2878,8 +2882,11 @@ vertex TubeOut bezier_tube_vertex(
 }
 
 fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]]) {
-  // PyMOL default two-light model (same as the impostors).
+  // PyMOL default two-light model (same as the impostors). Two-sided via the
+  // view vector: orient the normal toward the camera (eye-space +z) so both the
+  // outer surface and the open tube ends/interior are lit, never black.
   float3 nrm = normalize(in.eyeNormal);
+  if (nrm.z < 0.0) nrm = -nrm;
   const float ambient = 0.14, direct = 0.45, reflectv = 0.481;
   const float spec_value = 0.5, shininess = 55.0;
   const float3 L0 = float3(0.0,0.0,1.0);
@@ -2941,7 +2948,8 @@ static inline uint16_t f16(float v) {
   return bits;
 }
 
-void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize)
+void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
+    float radius, float r, float g, float b)
 {
   if (!cp || dataSize < 48) return;       // need at least one 4-point patch
   ensureEncoder();
@@ -2998,9 +3006,9 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize)
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
-  u.radius = 0.4f;
+  u.radius = radius;
   u._p0 = u._p1 = u._p2 = 0.0f;
-  u.color[0] = 0.30f; u.color[1] = 0.75f; u.color[2] = 0.95f; u.color[3] = 1.0f;
+  u.color[0] = r; u.color[1] = g; u.color[2] = b; u.color[3] = 1.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];

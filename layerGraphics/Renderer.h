@@ -281,9 +281,12 @@ public:
 
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each
-  // (P0,P1,P2,P3), dataSize bytes total. Each patch is tessellated on the GPU
-  // into a smooth tube. Default: no-op (GL path uses its own bezier shader).
-  virtual void drawBezierTubes(const void* controlPoints, size_t dataSize) {}
+  // (P0,P1,P2,P3), dataSize bytes total. radius = tube radius; r/g/b = color.
+  // Each patch is tessellated on the GPU into a smooth tube. Default: no-op.
+  virtual void drawBezierTubes(const void* controlPoints, size_t dataSize,
+      float radius, float r, float g, float b)
+  {
+  }
 };
 
 } // namespace pymol

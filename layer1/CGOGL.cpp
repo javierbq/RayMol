@@ -978,8 +978,14 @@ static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
     // (the GL "bezier" tessellation shader is absent in NO_OPENGL builds).
     if (I->isPicking) return;
     auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
-    if (vbo && vbo->hasCPUData())
-      I->G->Renderer->drawBezierTubes(vbo->cpuData(), vbo->cpuDataSize());
+    if (vbo && vbo->hasCPUData()) {
+      float radius =
+          SettingGet_f(I->G, I->set1, I->set2, cSetting_cartoon_tube_radius);
+      if (radius <= 0.f) radius = 0.5f;
+      const float* col = I->color ? I->color : g_ones4f;
+      I->G->Renderer->drawBezierTubes(vbo->cpuData(), vbo->cpuDataSize(),
+          radius, col[0], col[1], col[2]);
+    }
     return;
   }
   const auto vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
