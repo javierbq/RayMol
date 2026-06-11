@@ -272,6 +272,13 @@ public:
   {
   }
 
+  // MSAA sample count for the scene (opaque) pass. SceneRenderMetal calls this
+  // each frame from the metal_msaa setting (4 = on, 1 = off). The renderer
+  // stashes it and applies the rebuild at the next frame's setDrawable (before
+  // any encoder is open), so toggling never mismatches an in-flight encoder.
+  // Default: no-op (GL path unaffected).
+  virtual void setDesiredSampleCount(int n) {}
+
   // Order-independent transparency: SceneRenderMetal calls these around the
   // RenderPass::Transparent iteration. Between them, transparent draws
   // accumulate into weighted-blended OIT targets (depth-tested vs the opaque

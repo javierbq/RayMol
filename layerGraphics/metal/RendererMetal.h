@@ -25,6 +25,14 @@ public:
   void beginFrame() override;
   void endFrame() override;
 
+  // MSAA: stash the desired sample count (from metal_msaa). Applied at the top
+  // of the next setDrawable, before any encoder is open, so a toggle never
+  // mismatches an in-flight encoder. n < 1 is clamped to 1.
+  void setDesiredSampleCount(int n) override
+  {
+    _desiredSampleCount = (n < 1) ? 1 : (NSUInteger)n;
+  }
+
   // Viewport and clear
   void viewport(int x, int y, int w, int h) override;
   void clear(bool color, bool depth, bool stencil) override;
@@ -223,9 +231,18 @@ private:
   // fullscreen passes (SSAO, fog/depth-cue, FXAA) composite to the drawable.
   // _passDesc is pointed at _scenePassDesc so existing scene-draw code is
   // unchanged; _screenPassDesc (from Swift) is used only by the final pass.
-  id<MTLTexture> _sceneColor = nil;
-  id<MTLTexture> _sceneDepth = nil;
+  id<MTLTexture> _sceneColor = nil;  // resolved (single-sample), post chain reads
+  id<MTLTexture> _sceneDepth = nil;  // resolved (single-sample), post chain reads
   id<MTLTexture> _postColor = nil;   // ping-pong target for intermediate passes
+  // MSAA: when _sampleCount > 1 the scene renders to these multisampled targets
+  // and resolves into _sceneColor/_sceneDepth. Opaque pipelines use
+  // _sampleCount; OIT + post pipelines stay single-sample.
+  id<MTLTexture> _sceneColorMS = nil;
+  id<MTLTexture> _sceneDepthMS = nil;
+  NSUInteger _sampleCount = 4;        // 4x MSAA by default (metal_msaa)
+  NSUInteger _desiredSampleCount = 4; // applied at next setDrawable (no encoder)
+  void setSampleCount(NSUInteger n);  // rebuilds targets+pipelines on change
+  void buildBatchPipeline();
   MTLRenderPassDescriptor* _scenePassDesc = nil;
   MTLRenderPassDescriptor* _screenPassDesc = nil;
   NSUInteger _rtW = 0, _rtH = 0;

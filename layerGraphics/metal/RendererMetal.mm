@@ -138,8 +138,16 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
   // Create initial depth stencil state
   applyDepthStencilState();
 
-  // Build the built-in batch pipeline from embedded MSL source.
-  // This pipeline is used by beginBatch/endBatch for immediate-mode drawing.
+  // Build the built-in pipelines (re-callable so setSampleCount can rebuild
+  // them at a new MSAA sample count).
+  buildBatchPipeline();
+  buildVBOPipelines();
+}
+
+// Built-in batch pipeline (immediate-mode beginBatch/endBatch + selection
+// indicators). Rebuilt by setSampleCount when the MSAA sample count changes.
+void RendererMetal::buildBatchPipeline()
+{
   NSString* batchSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -220,6 +228,7 @@ fragment float4 batch_fragment(BatchVertexOut in [[stage_in]])
       psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
       psd.colorAttachments[0].destinationAlphaBlendFactor =
           MTLBlendFactorOneMinusSourceAlpha;
+      psd.rasterSampleCount = _sampleCount;
       psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
       psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
@@ -232,9 +241,28 @@ fragment float4 batch_fragment(BatchVertexOut in [[stage_in]])
   } else {
     NSLog(@"RendererMetal: failed to compile batch shader: %@", error);
   }
+}
 
-  // Build VBO pipelines for molecular geometry rendering
+void RendererMetal::setSampleCount(NSUInteger n)
+{
+  if (n < 1) n = 1;
+  if (n == _sampleCount) return;
+  _sampleCount = n;
+  // Rebuild every sample-count-dependent (opaque-pass) pipeline. OIT and
+  // post-process pipelines stay single-sample. Lazy pipelines rebuild on next
+  // use once nil'd; batch + VBO are rebuilt eagerly here.
+  _sphereImpostorPipeline = nil;
+  _cylinderImpostorPipeline = nil;
+  _cylinderPipelineStride = 0;
+  _bezierTubePipeline = nil;
+  _labelPipeline = nil;
+  buildBatchPipeline();
   buildVBOPipelines();
+  // Force scene-target recreation (single-sample vs multisampled) next frame.
+  _sceneColorMS = nil;
+  _sceneDepthMS = nil;
+  _rtW = 0;
+  _rtH = 0;
 }
 
 RendererMetal::~RendererMetal()
@@ -254,6 +282,11 @@ void RendererMetal::setDrawable(
 {
   _drawable = drawable;
   _screenPassDesc = passDesc;       // the drawable target (final composite pass)
+  // Apply any pending MSAA sample-count change here, before any encoder is open
+  // (endFrame ended the previous one and beginFrame hasn't run yet). This
+  // rebuilds the opaque pipelines + forces target recreation below, so the new
+  // count is consistent for the whole upcoming frame. Early-returns if unchanged.
+  setSampleCount(_desiredSampleCount);
   // Render the scene into offscreen targets sized to the drawable; the existing
   // scene-draw code keys off _passDesc, so point it at the offscreen descriptor.
   id<MTLTexture> tex = drawable.texture;
@@ -610,9 +643,52 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
 
   if (!_scenePassDesc)
     _scenePassDesc = [[MTLRenderPassDescriptor alloc] init];
-  _scenePassDesc.colorAttachments[0].texture = _sceneColor;
-  _scenePassDesc.depthAttachment.texture = _sceneDepth;
-  _scenePassDesc.stencilAttachment.texture = _sceneDepth;
+  if (_sampleCount > 1) {
+    // MSAA: the scene renders to multisampled targets and resolves into the
+    // single-sample _sceneColor/_sceneDepth that the post chain samples.
+    // StoreAndMultisampleResolve keeps the MS content so the scene encoder can
+    // be resumed (selection indicators) across the OIT pass before the final
+    // resolve.
+    MTLTextureDescriptor* cms = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:w height:h mipmapped:NO];
+    cms.textureType = MTLTextureType2DMultisample;
+    cms.sampleCount = _sampleCount;
+    cms.usage = MTLTextureUsageRenderTarget;
+    cms.storageMode = MTLStorageModePrivate;
+    _sceneColorMS = [_device newTextureWithDescriptor:cms];
+    MTLTextureDescriptor* dms = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                     width:w height:h mipmapped:NO];
+    dms.textureType = MTLTextureType2DMultisample;
+    dms.sampleCount = _sampleCount;
+    dms.usage = MTLTextureUsageRenderTarget;
+    dms.storageMode = MTLStorageModePrivate;
+    _sceneDepthMS = [_device newTextureWithDescriptor:dms];
+
+    _scenePassDesc.colorAttachments[0].texture = _sceneColorMS;
+    _scenePassDesc.colorAttachments[0].resolveTexture = _sceneColor;
+    _scenePassDesc.colorAttachments[0].storeAction =
+        MTLStoreActionStoreAndMultisampleResolve;
+    _scenePassDesc.depthAttachment.texture = _sceneDepthMS;
+    _scenePassDesc.depthAttachment.resolveTexture = _sceneDepth;
+    _scenePassDesc.depthAttachment.depthResolveFilter =
+        MTLMultisampleDepthResolveFilterSample0;
+    _scenePassDesc.depthAttachment.storeAction =
+        MTLStoreActionStoreAndMultisampleResolve;
+    _scenePassDesc.stencilAttachment.texture = _sceneDepthMS;
+    _scenePassDesc.stencilAttachment.storeAction = MTLStoreActionDontCare;
+  } else {
+    _sceneColorMS = nil;
+    _sceneDepthMS = nil;
+    _scenePassDesc.colorAttachments[0].texture = _sceneColor;
+    _scenePassDesc.colorAttachments[0].resolveTexture = nil;
+    _scenePassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+    _scenePassDesc.depthAttachment.texture = _sceneDepth;
+    _scenePassDesc.depthAttachment.resolveTexture = nil;
+    _scenePassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+    _scenePassDesc.stencilAttachment.texture = _sceneDepth;
+  }
 
   // OIT accumulation targets (weighted-blended). accum holds Σ premul·weight,
   // reveal holds Π(1-α). They share the opaque depth (tested, not written).
@@ -1829,6 +1905,7 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]])
     psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     psd.colorAttachments[0].destinationAlphaBlendFactor =
         MTLBlendFactorOneMinusSourceAlpha;
+    psd.rasterSampleCount = _sampleCount;
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
@@ -1869,6 +1946,7 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]])
     psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     psd.colorAttachments[0].destinationAlphaBlendFactor =
         MTLBlendFactorOneMinusSourceAlpha;
+    psd.rasterSampleCount = _sampleCount;
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
@@ -2036,6 +2114,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     psd.colorAttachments[0].destinationAlphaBlendFactor =
         MTLBlendFactorOneMinusSourceAlpha;
+    psd.rasterSampleCount = _sampleCount;
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
@@ -2170,6 +2249,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     psd.colorAttachments[0].destinationAlphaBlendFactor =
         MTLBlendFactorOneMinusSourceAlpha;
+    psd.rasterSampleCount = _sampleCount;
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
@@ -2400,6 +2480,7 @@ void RendererMetal::buildImpostorPipelines()
   psd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
   psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
   psd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   _sphereImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
@@ -2782,6 +2863,7 @@ void RendererMetal::buildCylinderImpostorPipeline(
   psd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
   psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
   psd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   _cylinderImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
@@ -2995,6 +3077,7 @@ void RendererMetal::buildBezierTubePipeline()
   psd.fragmentFunction = ffn;
   psd.vertexDescriptor = vd;
   psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.maxTessellationFactor = 64;
@@ -3237,6 +3320,7 @@ void RendererMetal::buildLabelPipeline()
   psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
   psd.colorAttachments[0].destinationAlphaBlendFactor =
       MTLBlendFactorOneMinusSourceAlpha;
+  psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
