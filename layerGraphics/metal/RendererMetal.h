@@ -210,6 +210,24 @@ private:
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil;
   NSUInteger _cylinderPipelineStride = 0; // stride the cyl pipeline was built for
+
+  // Post-processing: the scene renders to offscreen color+depth, then
+  // fullscreen passes (SSAO, fog/depth-cue, FXAA) composite to the drawable.
+  // _passDesc is pointed at _scenePassDesc so existing scene-draw code is
+  // unchanged; _screenPassDesc (from Swift) is used only by the final pass.
+  id<MTLTexture> _sceneColor = nil;
+  id<MTLTexture> _sceneDepth = nil;
+  id<MTLTexture> _postColor = nil;   // ping-pong target for intermediate passes
+  MTLRenderPassDescriptor* _scenePassDesc = nil;
+  MTLRenderPassDescriptor* _screenPassDesc = nil;
+  NSUInteger _rtW = 0, _rtH = 0;
+  id<MTLRenderPipelineState> _blitPipeline = nil;
+  id<MTLRenderPipelineState> _ssaoPipeline = nil;
+  id<MTLRenderPipelineState> _fxaaPipeline = nil;
+  id<MTLSamplerState> _postSampler = nil;
+  void ensurePostTargets(NSUInteger w, NSUInteger h);
+  void buildPostPipelines();
+  void runPostChain();
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;

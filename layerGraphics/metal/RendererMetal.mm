@@ -253,7 +253,12 @@ void RendererMetal::setDrawable(
     id<CAMetalDrawable> drawable, MTLRenderPassDescriptor* passDesc)
 {
   _drawable = drawable;
-  _passDesc = passDesc;
+  _screenPassDesc = passDesc;       // the drawable target (final composite pass)
+  // Render the scene into offscreen targets sized to the drawable; the existing
+  // scene-draw code keys off _passDesc, so point it at the offscreen descriptor.
+  id<MTLTexture> tex = drawable.texture;
+  ensurePostTargets(tex.width, tex.height);
+  _passDesc = _scenePassDesc;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +345,12 @@ void RendererMetal::endFrame()
     _encoder = nil;
   }
 
-  if (_drawable && _cmdBuffer) {
+  // The scene was rendered to _sceneColor/_sceneDepth; run the post-process
+  // chain, whose final pass writes to the drawable.
+  if (_drawable && _cmdBuffer && _screenPassDesc && _sceneColor) {
+    runPostChain();
+    [_cmdBuffer presentDrawable:_drawable];
+  } else if (_drawable && _cmdBuffer) {
     [_cmdBuffer presentDrawable:_drawable];
   }
 
@@ -351,6 +361,114 @@ void RendererMetal::endFrame()
 
   _drawable = nil;
   _passDesc = nil;
+  _screenPassDesc = nil;
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Post-processing (offscreen scene target + fullscreen passes)
+// ---------------------------------------------------------------------------
+
+// Fullscreen-triangle vertex shader + post-process fragment shaders. A single
+// library so all post pipelines share the vertex function.
+static NSString* const kPostSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct PostVOut { float4 position [[position]]; float2 uv; };
+
+vertex PostVOut post_vertex(uint vid [[vertex_id]]) {
+  // Oversized triangle covering the screen: ids 0,1,2 -> (0,0),(2,0),(0,2).
+  float2 p = float2((vid << 1) & 2, vid & 2);
+  PostVOut o;
+  o.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+  o.uv = float2(p.x, 1.0 - p.y); // texture v=0 is top of screen
+  return o;
+}
+
+fragment float4 post_blit(PostVOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+  return src.sample(s, in.uv);
+}
+)";
+
+void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
+{
+  if (w == 0 || h == 0) return;
+  buildPostPipelines();
+  if (_sceneColor && _rtW == w && _rtH == h) return;
+  _rtW = w; _rtH = h;
+
+  MTLTextureDescriptor* cd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                   width:w height:h mipmapped:NO];
+  cd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  cd.storageMode = MTLStorageModePrivate;
+  _sceneColor = [_device newTextureWithDescriptor:cd];
+  _postColor = [_device newTextureWithDescriptor:cd];
+
+  MTLTextureDescriptor* dd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                   width:w height:h mipmapped:NO];
+  dd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  dd.storageMode = MTLStorageModePrivate;
+  _sceneDepth = [_device newTextureWithDescriptor:dd];
+
+  if (!_scenePassDesc)
+    _scenePassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _scenePassDesc.colorAttachments[0].texture = _sceneColor;
+  _scenePassDesc.depthAttachment.texture = _sceneDepth;
+  _scenePassDesc.stencilAttachment.texture = _sceneDepth;
+}
+
+void RendererMetal::buildPostPipelines()
+{
+  if (_blitPipeline) return;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kPostSrc options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: post lib compile failed: %@", err); return; }
+
+  if (!_postSampler) {
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = MTLSamplerMinMagFilterLinear;
+    sd.magFilter = MTLSamplerMinMagFilterLinear;
+    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    _postSampler = [_device newSamplerStateWithDescriptor:sd];
+  }
+
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"post_vertex"];
+  auto mkpipe = [&](NSString* name) -> id<MTLRenderPipelineState> {
+    id<MTLFunction> ffn = [lib newFunctionWithName:name];
+    if (!vfn || !ffn) return nil;
+    MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+    psd.vertexFunction = vfn; psd.fragmentFunction = ffn;
+    psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    NSError* e = nil;
+    id<MTLRenderPipelineState> p =
+        [_device newRenderPipelineStateWithDescriptor:psd error:&e];
+    if (!p) NSLog(@"RendererMetal: post pipeline %@ failed: %@", name, e);
+    return p;
+  };
+  _blitPipeline = mkpipe(@"post_blit");
+  _fxaaPipeline = mkpipe(@"post_fxaa");
+  _ssaoPipeline = mkpipe(@"post_ssao_fog");
+}
+
+void RendererMetal::runPostChain()
+{
+  if (!_blitPipeline) return;
+  // The drawable target's depth/stencil are unused by fullscreen passes.
+  _screenPassDesc.depthAttachment.texture = nil;
+  _screenPassDesc.stencilAttachment.texture = nil;
+  _screenPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+
+  id<MTLRenderCommandEncoder> enc =
+      [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
+  [enc setRenderPipelineState:_blitPipeline];
+  [enc setFragmentTexture:_sceneColor atIndex:0];
+  [enc setFragmentSamplerState:_postSampler atIndex:0];
+  [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [enc endEncoding];
 }
 
 // ---------------------------------------------------------------------------
