@@ -28,16 +28,18 @@ struct ContentView: View {
             VSplitView {
                 if engine.sequenceVisible {
                     SequencePanel()
-                        .frame(minHeight: 28, idealHeight: 40, maxHeight: 160)
+                        .frame(minHeight: 30, idealHeight: 84, maxHeight: 240)
                 }
 
                 if showCommandPanel {
                     CommandPanel()
-                        .frame(minHeight: 80, idealHeight: 160)
+                        .frame(minHeight: 50, idealHeight: 110, maxHeight: 400)
                 }
 
+                // The viewport takes the remaining (majority of) space.
                 MetalViewport()
-                    .frame(minWidth: 400, minHeight: 200)
+                    .frame(minWidth: 400, minHeight: 360)
+                    .layoutPriority(1)
             }
 
             // Right column: objects + (chat) + mouse legend

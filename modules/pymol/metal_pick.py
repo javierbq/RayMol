@@ -1,25 +1,19 @@
-"""Screen-to-world unprojection for Metal picking.
+"""Screen-space atom picking for the Metal backend.
 
-Used by the Metal backend where GL picking (SceneDoXYPick) is unavailable.
-Unprojects screen coordinates to world space, finds the nearest atom, creates
-a selection. Selection indicators are rendered in C++ by
-SceneRenderMetalSelections() in SceneRender.cpp.
+GL color-picking (SceneDoXYPick) is unavailable on Metal, so we reproduce its
+effect in Python: project every atom of the enabled objects to screen NDC using
+the current camera (cmd.get_view), pick the atom whose projection is closest to
+the click, and toggle its residue in/out of the active 'sele' (PyMOL's additive
+behavior). Selection indicators are drawn in C++ by SceneRenderMetalSelections.
 """
 import math
 
-# Maximum picking distance in Angstroms — clicks farther than this from any
-# atom are treated as empty-space clicks and leave the selection unchanged.
-_MAX_PICK_DISTANCE = 20.0
+# Screen pick radius (squared, in NDC). Clicks farther than this from any
+# atom's projection are treated as empty space and leave 'sele' unchanged.
+_MAX_PICK_NDC2 = 0.0100  # ~0.1 NDC radius
 
 
 def pick_at(ndc_x, ndc_y, aspect):
-    """Select the nearest atom/residue to the screen position.
-
-    When the click lands on empty space (no atom within _MAX_PICK_DISTANCE),
-    the function returns immediately without modifying any selection.  This
-    avoids the scene-invalidation side effects that the old pseudoatom-based
-    approach caused (which would clear the current ``sele``).
-    """
     from pymol import cmd
 
     try:
@@ -27,84 +21,69 @@ def pick_at(ndc_x, ndc_y, aspect):
         if not v:
             return
 
-        R = [
-            [v[0], v[1], v[2]],
-            [v[3], v[4], v[5]],
-            [v[6], v[7], v[8]],
-        ]
+        # 3x3 rotation (rows), camera translation, rotation origin.
+        r00, r01, r02, r10, r11, r12, r20, r21, r22 = v[0:9]
         tx, ty, tz = v[9], v[10], v[11]
         ox, oy, oz = v[12], v[13], v[14]
 
         fov = cmd.get_setting_float('field_of_view')
-        dist = abs(tz)
-        half_h = dist * math.tan(math.radians(fov / 2.0))
-        half_w = half_h * aspect
-
-        px = ndc_x * half_w - tx
-        py = ndc_y * half_h - ty
-        pz = 0.0
-
-        wx = R[0][0] * px + R[1][0] * py + R[2][0] * pz + ox
-        wy = R[0][1] * px + R[1][1] * py + R[2][1] * pz + oy
-        wz = R[0][2] * px + R[1][2] * py + R[2][2] * pz + oz
-
-        # Find the nearest atom by iterating in pure Python — no pseudoatom
-        # creation needed, so clicking empty space causes zero scene changes.
-        all_atoms = cmd.get_model('all')
-        if not all_atoms or not all_atoms.atom:
+        tan_half = math.tan(math.radians(fov / 2.0))
+        if tan_half <= 0.0 or aspect <= 0.0:
             return
 
-        nearest = None
-        best_dist = _MAX_PICK_DISTANCE
-        for at in all_atoms.atom:
-            d = math.sqrt(
-                (at.coord[0] - wx)**2 +
-                (at.coord[1] - wy)**2 +
-                (at.coord[2] - wz)**2)
-            if d < best_dist:
-                best_dist = d
-                nearest = at
+        best = None  # (screen_d2, obj, chain, resi, resn, segi, name)
 
-        if not nearest:
-            return
-
-        chain = nearest.chain or ''
-        resi = nearest.resi
-
-        ident = '/%s/%s/%s`%s/%s' % (
-            nearest.segi or chain, chain,
-            nearest.resn, resi, nearest.name)
-        print(' You clicked %s' % ident)
-
-        # Build selection expression
-        obj_list = cmd.get_names('objects')
-        sele_expr = None
-        for obj in obj_list:
+        # Project the atoms of each enabled object; track the nearest-to-click.
+        for obj in (cmd.get_names('objects', enabled_only=1) or []):
             if obj.startswith('_'):
                 continue
             try:
-                n = cmd.count_atoms(
-                    '(%s and chain %s and resi %s)' % (
-                        obj, repr(chain), resi))
-                if n > 0:
-                    sele_expr = '(%s and chain %s and resi %s)' % (
-                        obj, repr(chain), resi)
-                    break
+                model = cmd.get_model(obj)
             except Exception:
                 continue
+            if not model or not model.atom:
+                continue
+            for at in model.atom:
+                dx = at.coord[0] - ox
+                dy = at.coord[1] - oy
+                dz = at.coord[2] - oz
+                ex = r00 * dx + r01 * dy + r02 * dz + tx
+                ey = r10 * dx + r11 * dy + r12 * dz + ty
+                ez = r20 * dx + r21 * dy + r22 * dz + tz
+                depth = -ez
+                if depth <= 0.01:        # behind the camera
+                    continue
+                half_h = depth * tan_half
+                half_w = half_h * aspect
+                sx = ex / half_w
+                sy = ey / half_h
+                d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
+                if d2 > _MAX_PICK_NDC2:
+                    continue
+                if best is None or d2 < best[0]:
+                    best = (d2, obj, at.chain or '', at.resi,
+                            at.resn, at.segi or (at.chain or ''), at.name)
 
-        if sele_expr:
-            # Toggle the clicked residue in/out of the active 'sele', matching
-            # PyMOL's sequence/viewer behavior (additive): clicking an
-            # unselected residue adds it, clicking a selected one removes it.
-            exists = 'sele' in (cmd.get_names('selections') or [])
-            already = exists and cmd.count_atoms(
-                '(sele) and (%s)' % sele_expr) > 0
-            if already:
-                cmd.select('sele', '(sele) and not (%s)' % sele_expr)
-            else:
-                cmd.select('sele', '(?sele) or (%s)' % sele_expr)
-            cmd.enable('sele')
+        if best is None:
+            return  # empty-space click — leave selection unchanged
+
+        _, obj, chain, resi, resn, segi, name = best
+        print(' You clicked /%s/%s/%s`%s/%s' % (segi, chain, resn, resi, name))
+
+        # Residue-level selection scoped to the picked object.
+        if chain:
+            expr = '(%s and chain %s and resi %s)' % (obj, chain, resi)
+        else:
+            expr = '(%s and resi %s)' % (obj, resi)
+
+        # Toggle into/out of 'sele' (additive — matches PyMOL Seeker behavior).
+        exists = 'sele' in (cmd.get_names('selections') or [])
+        already = exists and cmd.count_atoms('(sele) and %s' % expr) > 0
+        if already:
+            cmd.select('sele', '(sele) and not %s' % expr)
+        else:
+            cmd.select('sele', '(?sele) or %s' % expr)
+        cmd.enable('sele')
 
     except Exception as e:
         print('metal_pick error: %s' % e)
