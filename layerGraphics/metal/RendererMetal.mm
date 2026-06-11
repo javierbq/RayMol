@@ -322,6 +322,8 @@ void RendererMetal::beginFrame()
 {
   _cmdBuffer = [_queue commandBuffer];
   _encoder = nil;
+  _oitActive = false;
+  _oitHasContent = false;
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -388,6 +390,21 @@ vertex PostVOut post_vertex(uint vid [[vertex_id]]) {
 fragment float4 post_blit(PostVOut in [[stage_in]],
     texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
   return src.sample(s, in.uv);
+}
+
+// Weighted-blended OIT resolve: composite accumulated transparent color over
+// the (already post-processed) opaque color. reveal = Π(1-α) = transmittance.
+fragment float4 oit_resolve(PostVOut in [[stage_in]],
+    texture2d<float> opaqueTex [[texture(0)]],
+    texture2d<float> accumTex [[texture(1)]],
+    texture2d<float> revealTex [[texture(2)]],
+    sampler s [[sampler(0)]]) {
+  float3 opaque = opaqueTex.sample(s, in.uv).rgb;
+  float reveal = revealTex.sample(s, in.uv).r;
+  float4 accum = accumTex.sample(s, in.uv);
+  float3 avg = accum.rgb / max(accum.a, 1e-5);
+  float cover = 1.0 - reveal;            // fraction covered by transparency
+  return float4(avg * cover + opaque * (1.0 - cover), 1.0);
 }
 
 // FXAA (Timothy Lottes' classic console variant) — edge-aware blur that
@@ -560,6 +577,37 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _scenePassDesc.colorAttachments[0].texture = _sceneColor;
   _scenePassDesc.depthAttachment.texture = _sceneDepth;
   _scenePassDesc.stencilAttachment.texture = _sceneDepth;
+
+  // OIT accumulation targets (weighted-blended). accum holds Σ premul·weight,
+  // reveal holds Π(1-α). They share the opaque depth (tested, not written).
+  MTLTextureDescriptor* ad = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:w height:h mipmapped:NO];
+  ad.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  ad.storageMode = MTLStorageModePrivate;
+  _oitAccum = [_device newTextureWithDescriptor:ad];
+  MTLTextureDescriptor* rd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Float
+                                   width:w height:h mipmapped:NO];
+  rd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  rd.storageMode = MTLStorageModePrivate;
+  _oitReveal = [_device newTextureWithDescriptor:rd];
+
+  if (!_oitPassDesc)
+    _oitPassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _oitPassDesc.colorAttachments[0].texture = _oitAccum;
+  _oitPassDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
+  _oitPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+  _oitPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+  _oitPassDesc.colorAttachments[1].texture = _oitReveal;
+  _oitPassDesc.colorAttachments[1].loadAction = MTLLoadActionClear;
+  _oitPassDesc.colorAttachments[1].clearColor = MTLClearColorMake(1, 0, 0, 0);
+  _oitPassDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+  _oitPassDesc.depthAttachment.texture = _sceneDepth;
+  _oitPassDesc.depthAttachment.loadAction = MTLLoadActionLoad; // keep opaque depth
+  _oitPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  _oitPassDesc.stencilAttachment.texture = _sceneDepth;
+  _oitPassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
 }
 
 void RendererMetal::buildPostPipelines()
@@ -594,6 +642,7 @@ void RendererMetal::buildPostPipelines()
   _blitPipeline = mkpipe(@"post_blit");
   _fxaaPipeline = mkpipe(@"post_fxaa");
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
+  _oitResolvePipeline = mkpipe(@"oit_resolve");
 }
 
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
@@ -661,6 +710,26 @@ void RendererMetal::runPostChain()
     sceneSrc = _postColor;
   }
 
+  // Pass 2: OIT resolve — composite accumulated transparency over the opaque
+  // (post-processed) color. Ping-pongs to whichever target isn't the source.
+  if (_oitHasContent && _oitResolvePipeline && _oitAccum) {
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e2 =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [e2 setRenderPipelineState:_oitResolvePipeline];
+    [e2 setFragmentTexture:sceneSrc atIndex:0];
+    [e2 setFragmentTexture:_oitAccum atIndex:1];
+    [e2 setFragmentTexture:_oitReveal atIndex:2];
+    [e2 setFragmentSamplerState:_postSampler atIndex:0];
+    [e2 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [e2 endEncoding];
+    sceneSrc = dst;
+  }
+
   // Final pass → drawable: FXAA if available, else a 1:1 blit.
   // PYMOL_NO_AA forces the blit (A/B testing + user escape hatch).
   _screenPassDesc.depthAttachment.texture = nil;
@@ -675,6 +744,55 @@ void RendererMetal::runPostChain()
   [enc setFragmentSamplerState:_postSampler atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [enc endEncoding];
+}
+
+void RendererMetal::beginTransparentOIT()
+{
+  // OIT requires its targets + pipelines; if any are missing, leave the scene
+  // encoder active so transparent draws fall back to normal blending.
+  if (!_cmdBuffer || !_oitPassDesc || !_vboOitPipelineUByte ||
+      !_oitResolvePipeline)
+    return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+
+  _passDesc = _oitPassDesc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_oitPassDesc];
+  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  [_encoder setViewport:_viewport];
+  // Depth-test against opaque depth (LEQUAL), but DO NOT write depth, so
+  // transparent fragments occlude/are-occluded by opaque geometry yet never
+  // hide each other.
+  MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+  dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
+  dsd.depthWriteEnabled = NO;
+  [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:dsd]];
+  [_encoder setCullMode:MTLCullModeNone];
+  _oitActive = true;
+  _oitHasContent = true;
+}
+
+void RendererMetal::endTransparentOIT()
+{
+  if (!_oitActive) return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  _oitActive = false;
+
+  // Resume rendering into the scene color (LOAD, don't clear) so any
+  // post-transparent draws (e.g. selection indicators) land on the opaque
+  // image. The OIT resolve runs later in runPostChain.
+  _passDesc = _scenePassDesc;
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  if (_encoder) {
+    [_encoder setViewport:_viewport];
+    _depthTestEnabled = true;
+    _depthWriteEnabled = true;
+    _depthStencilDirty = true;
+    applyDepthStencilState();
+    [_encoder setCullMode:_cullFaceEnabled ? MTLCullModeBack : MTLCullModeNone];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,6 +1691,27 @@ fragment float4 vbo_fragment_unlit(VBOVertexOutUnlit in [[stage_in]])
 {
   return in.color;
 }
+
+// Weighted-blended OIT output (McGuire/Bavoil). Transparent geometry writes
+// premultiplied color*weight to the accum target and its alpha to the reveal
+// target; the weight de-emphasizes far/low-alpha fragments. z = window depth.
+struct OITFragOut {
+  float4 accum  [[color(0)]];
+  float  reveal [[color(1)]];
+};
+static float oit_weight(float a, float z) {
+  return clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 *
+               pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
+}
+fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]])
+{
+  float4 c = in.color;
+  float w = oit_weight(c.a, in.position.z);
+  OITFragOut o;
+  o.accum = float4(c.rgb * c.a, c.a) * w;
+  o.reveal = c.a;
+  return o;
+}
 )";
 
   NSError* error = nil;
@@ -1672,6 +1811,62 @@ fragment float4 vbo_fragment_unlit(VBOVertexOutUnlit in [[stage_in]])
       NSLog(@"RendererMetal: failed to create VBO Float pipeline: %@", error);
     }
   }
+
+  // Weighted-blended OIT variants: same vertex shader + geometry, but the
+  // fragment writes to MRT (accum RGBA16F additive, reveal R16F multiplicative)
+  // for order-independent transparency. Prebuild the two common layouts; other
+  // layouts (e.g. the surface's stride-44 layout) get a one-off via
+  // oitPipelineForVD() at draw time.
+  _vboFragmentOitFunc = [lib newFunctionWithName:@"vbo_fragment_oit"];
+  if (_vboFragmentOitFunc) {
+    auto mkvd = [](MTLVertexFormat colorFmt,
+                   NSUInteger strideBytes) -> MTLVertexDescriptor* {
+      MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+      vd.attributes[0].format = MTLVertexFormatFloat3;
+      vd.attributes[0].offset = 0;  vd.attributes[0].bufferIndex = 0;
+      vd.attributes[1].format = MTLVertexFormatFloat3;
+      vd.attributes[1].offset = 12; vd.attributes[1].bufferIndex = 0;
+      vd.attributes[2].format = colorFmt;
+      vd.attributes[2].offset = 24; vd.attributes[2].bufferIndex = 0;
+      vd.layouts[0].stride = strideBytes;
+      vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+      return vd;
+    };
+    _vboOitPipelineUByte =
+        oitPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
+    _vboOitPipelineFloat = oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
+  }
+}
+
+id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
+    MTLVertexDescriptor* vd)
+{
+  if (!_vboVertexFunc || !_vboFragmentOitFunc) return nil;
+  MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
+  p.vertexFunction = _vboVertexFunc;
+  p.fragmentFunction = _vboFragmentOitFunc;
+  p.vertexDescriptor = vd;
+  p.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+  p.colorAttachments[0].blendingEnabled = YES;
+  p.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+  p.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+  p.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+  p.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+  p.colorAttachments[1].pixelFormat = MTLPixelFormatR16Float;
+  p.colorAttachments[1].blendingEnabled = YES;
+  p.colorAttachments[1].sourceRGBBlendFactor = MTLBlendFactorZero;
+  p.colorAttachments[1].destinationRGBBlendFactor =
+      MTLBlendFactorOneMinusSourceColor;
+  p.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
+  p.colorAttachments[1].destinationAlphaBlendFactor =
+      MTLBlendFactorOneMinusSourceColor;
+  p.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  p.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  NSError* e = nil;
+  id<MTLRenderPipelineState> ps =
+      [_device newRenderPipelineStateWithDescriptor:p error:&e];
+  if (!ps) NSLog(@"RendererMetal: VBO OIT pipeline failed: %@", e);
+  return ps;
 }
 
 // ---------------------------------------------------------------------------
@@ -1736,11 +1931,23 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Check if layout matches pre-built pipelines
   if (!unlit && posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
-    if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
+    if (_oitActive) {
+      // Transparent pass: route lit common layouts to the OIT MRT pipelines.
+      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
       pipeline = _vboPipelineUByte;
     } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
       pipeline = _vboPipelineFloat;
     }
+  }
+  // In the OIT pass only MRT pipelines can render; build a one-off OIT
+  // pipeline for non-standard lit layouts (e.g. surface stride 44). Unlit
+  // geometry (lines/dots) is skipped in the transparent pass.
+  if (_oitActive && !pipeline) {
+    if (unlit) return;
+    pipeline = oitPipelineForVD(vd);
+    if (!pipeline) return;
   }
 
   // Fallback: create pipeline on-the-fly (cached by Metal driver). `unlit`
@@ -1778,9 +1985,16 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   [_encoder setRenderPipelineState:pipeline];
 
   // Apply depth/stencil
-  applyDepthStencilState();
-  if (_depthStencilState) {
-    [_encoder setDepthStencilState:_depthStencilState];
+  if (_oitActive) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLessEqual; // test vs opaque, no write
+    d.depthWriteEnabled = NO;
+    [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:d]];
+  } else {
+    applyDepthStencilState();
+    if (_depthStencilState) {
+      [_encoder setDepthStencilState:_depthStencilState];
+    }
   }
 
   // Bind vertex buffer
@@ -1857,14 +2071,22 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   // Select or create pipeline (same logic as drawVBO)
   id<MTLRenderPipelineState> pipeline = nil;
-  if (posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
-    if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
+  bool unlit = (normalOffset < 0);
+  if (!unlit && posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
+    if (_oitActive) {
+      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
       pipeline = _vboPipelineUByte;
     } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
       pipeline = _vboPipelineFloat;
     }
   }
-  bool unlit = (normalOffset < 0);
+  if (_oitActive && !pipeline) {
+    if (unlit) return;
+    pipeline = oitPipelineForVD(vd);
+    if (!pipeline) return;
+  }
   id<MTLFunction> vfn = unlit ? _vboVertexUnlitFunc : _vboVertexFunc;
   id<MTLFunction> ffn = unlit ? _vboFragmentUnlitFunc : _vboFragmentFunc;
   if (!pipeline && vfn && ffn) {
@@ -1895,9 +2117,16 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   [_encoder setRenderPipelineState:pipeline];
 
-  applyDepthStencilState();
-  if (_depthStencilState) {
-    [_encoder setDepthStencilState:_depthStencilState];
+  if (_oitActive) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLessEqual; // test vs opaque, no write
+    d.depthWriteEnabled = NO;
+    [_encoder setDepthStencilState:[_device newDepthStencilStateWithDescriptor:d]];
+  } else {
+    applyDepthStencilState();
+    if (_depthStencilState) {
+      [_encoder setDepthStencilState:_depthStencilState];
+    }
   }
 
   [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
@@ -2091,6 +2320,7 @@ void RendererMetal::buildImpostorPipelines()
 void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
 {
   if (!call.data || call.dataSize == 0 || call.sphereCount <= 0) return;
+  if (_oitActive) return; // transparent sphere OIT variant: Stage 2
   ensureEncoder();
   if (!_encoder) return;
   buildImpostorPipelines();
@@ -2419,6 +2649,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     NSLog(@"RendererMetal: cyl impostor unexpected Float attr_flags; skipping");
     return;
   }
+  if (_oitActive) return; // transparent cylinder OIT variant: Stage 2
   ensureEncoder();
   if (!_encoder) return;
   buildCylinderImpostorPipeline(call);

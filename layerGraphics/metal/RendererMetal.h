@@ -139,6 +139,8 @@ public:
   void setPostParams(int fogEnabled, float fogStart, float fogEnd, float bgR,
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       float projA, float projB, float projX, float projY) override;
+  void beginTransparentOIT() override;
+  void endTransparentOIT() override;
 
 private:
   void buildImpostorPipelines();
@@ -231,6 +233,25 @@ private:
   void ensurePostTargets(NSUInteger w, NSUInteger h);
   void buildPostPipelines();
   void runPostChain();
+
+  // Order-independent transparency (weighted-blended). Transparent geometry
+  // accumulates here (depth-tested vs opaque _sceneDepth, no write); a resolve
+  // pass composites over the opaque color during runPostChain.
+  id<MTLTexture> _oitAccum = nil;    // RGBA16Float, additive
+  id<MTLTexture> _oitReveal = nil;   // R16Float, revealage (multiplicative)
+  MTLRenderPassDescriptor* _oitPassDesc = nil;
+  id<MTLRenderPipelineState> _vboOitPipelineUByte = nil;
+  id<MTLRenderPipelineState> _vboOitPipelineFloat = nil;
+  id<MTLFunction> _vboFragmentOitFunc = nil;  // for one-off OIT pipelines
+  // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
+  // for an arbitrary vertex layout (e.g. the surface's stride-44 layout).
+  id<MTLRenderPipelineState> oitPipelineForVD(MTLVertexDescriptor* vd);
+  id<MTLRenderPipelineState> _sphereOitPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderOitPipeline = nil;
+  NSUInteger _cylinderOitStride = 0;
+  id<MTLRenderPipelineState> _oitResolvePipeline = nil;
+  bool _oitActive = false;      // true while the transparent pass is rendering
+  bool _oitHasContent = false;  // true if any transparent fragments drew
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
   int _postFogEnabled = 0;
   float _fogStart = 0.f, _fogEnd = 1.f;

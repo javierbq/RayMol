@@ -270,6 +270,14 @@ public:
       int aaEnabled, float projA, float projB, float projX, float projY)
   {
   }
+
+  // Order-independent transparency: SceneRenderMetal calls these around the
+  // RenderPass::Transparent iteration. Between them, transparent draws
+  // accumulate into weighted-blended OIT targets (depth-tested vs the opaque
+  // depth, no depth-write) instead of blending into the scene color; endFrame
+  // resolves them over the opaque color. Default: no-op (GL path unaffected).
+  virtual void beginTransparentOIT() {}
+  virtual void endTransparentOIT() {}
 };
 
 } // namespace pymol

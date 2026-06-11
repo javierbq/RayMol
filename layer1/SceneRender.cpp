@@ -1862,6 +1862,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // headless). metal_ssao/metal_shadows already default true in SettingInfo.
     // All three remain user-overridable via cmd.set at runtime.
     SettingSetGlobal_i(G, cSetting_antialias_shader, 1);
+    // Weighted-blended OIT handles transparent ordering on the GPU, so disable
+    // the CPU global triangle sort (which would defer transparent geometry to
+    // a sorted AlphaCGO instead of drawing it in the Transparent pass).
+    SettingSetGlobal_b(G, cSetting_transparency_global_sort, false);
     // Force re-reshape so block rects are recalculated without internal GUI
     OrthoReshape(G, G->Option->winX, G->Option->winY, true);
     metalConfigDone = true;
@@ -1962,12 +1966,17 @@ void SceneRenderMetal(PyMOLGlobals* G)
     CGOFree(I->AlphaCGO);
   }
 
-  // --- Render objects: opaque, then transparent ---
-  for (auto pass : {RenderPass::Opaque, RenderPass::Antialias,
-                    RenderPass::Transparent}) {
+  // --- Render objects: opaque first, then transparent via order-independent
+  // transparency (weighted-blended). The transparent pass accumulates into the
+  // OIT targets between begin/endTransparentOIT; endFrame resolves them. ---
+  for (auto pass : {RenderPass::Opaque, RenderPass::Antialias}) {
     SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
         &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
   }
+  G->Renderer->beginTransparentOIT();
+  SceneRenderAll(G, &context, normal, nullptr, RenderPass::Transparent, false,
+      0.0f, &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+  G->Renderer->endTransparentOIT();
 
   // --- Render selection indicators ---
   // Collect selected atom positions and draw them as pink points
