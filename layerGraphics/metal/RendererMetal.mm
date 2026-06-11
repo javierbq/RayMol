@@ -127,6 +127,8 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _vboVertexUnlitFunc(nil)
     , _vboFragmentUnlitFunc(nil)
     , _batchBuffer(nil)
+    , _sphereImpostorPipeline(nil)
+    , _sphereIndexBuffer(nil)
     , _depthStencilState(nil)
 {
   _modelviewMatrix = identityMatrix();
@@ -1599,6 +1601,214 @@ void RendererMetal::invalidateVBOCache(uint64_t key)
 {
   // Clear entire cache — key type changed to pointer-based
   _vboCache.clear();
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Impostor Ray-Casting (analytic spheres)
+// ---------------------------------------------------------------------------
+
+// Inline MSL port of data/shaders/sphere.vs + sphere.fs. Per-pixel ray-sphere
+// intersection with [[depth(any)]] output and diffuse + Blinn-Phong specular.
+static NSString* const kSphereImpostorSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct SphereIn {
+  float4 vertex_radius [[attribute(0)]];  // center xyz + radius
+  float4 color         [[attribute(1)]];  // UByte4Norm -> float4
+  float  rightUpFlags  [[attribute(2)]];
+};
+struct SphereU {
+  float4x4 modelview;
+  float4x4 projection;
+  float sphere_size_scale;
+  float ortho;          // 1 = orthographic
+  float depthZeroToOne; // 1 if clip Z already [0,1]; else apply 0.5+0.5 remap
+  float _pad;
+};
+struct SphereVOut {
+  float4 position [[position]];
+  float4 color;
+  float3 sphere_center;  // eye space
+  float  radius2;
+  float3 point;          // eye-space impostor point
+};
+struct SphereFOut {
+  float4 color [[color(0)]];
+  float  depth [[depth(any)]];
+};
+
+static float2 outer_tangent_adjustment(float3 center, float radius_sq) {
+  float2 xy_dist = float2(length(center.xz), length(center.yz));
+  float2 cos_a = clamp(center.z / xy_dist, -1.0, 1.0);
+  float2 cos_b = xy_dist / sqrt(radius_sq + (xy_dist * xy_dist));
+  float2 cos_ab = cos_a * cos_b + sqrt((1.0 - cos_a*cos_a) * (1.0 - cos_b*cos_b));
+  float2 cos_ab_sq = cos_ab * cos_ab;
+  float2 tan_ab_sq = (1.0 - cos_ab_sq) / cos_ab_sq;
+  return min(sqrt(tan_ab_sq + 1.0), 10.0);
+}
+
+vertex SphereVOut sphere_impostor_vertex(SphereIn in [[stage_in]],
+    constant SphereU& u [[buffer(1)]]) {
+  SphereVOut out;
+  float radius = in.vertex_radius.w * u.sphere_size_scale;
+  float3 mvcol0 = float3(u.modelview[0].x, u.modelview[0].y, u.modelview[0].z);
+  radius /= max(length(mvcol0), 1e-6);
+  float right = -1.0 + 2.0 * fmod(in.rightUpFlags, 2.0);
+  float up    = -1.0 + 2.0 * floor(fmod(in.rightUpFlags / 2.0, 2.0));
+  float4 tmppos = u.modelview * float4(in.vertex_radius.xyz, 1.0);
+  out.color = in.color;
+  out.radius2 = radius * radius;
+  float2 corner = float2(right, up);
+  if (u.ortho < 0.5)
+    corner *= outer_tangent_adjustment(tmppos.xyz, out.radius2);
+  float4 eyePos = tmppos;
+  eyePos.xy += radius * corner;
+  out.sphere_center = tmppos.xyz / tmppos.w;
+  out.point = eyePos.xyz / eyePos.w;
+  out.position = u.projection * eyePos;
+  return out;
+}
+
+fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
+    constant SphereU& u [[buffer(1)]]) {
+  float3 ray_origin, ray_dir, sphere_dir;
+  if (u.ortho >= 0.5) {
+    ray_origin = in.point; ray_dir = float3(0.0,0.0,-1.0);
+    sphere_dir = ray_origin - in.sphere_center;
+  } else {
+    ray_origin = float3(0.0); ray_dir = normalize(in.point);
+    sphere_dir = in.sphere_center;
+  }
+  float b = dot(sphere_dir, ray_dir);
+  float position = b*b + in.radius2 - dot(sphere_dir, sphere_dir);
+  if (position < 0.0) discard_fragment();
+  float nearest = b - sqrt(position);
+  float3 ipoint = nearest * ray_dir + ray_origin;
+  float3 normal = normalize(ipoint - in.sphere_center);
+  float4 clip = u.projection * float4(ipoint, 1.0);
+  float ndcz = clip.z / clip.w;
+  float depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
+  if (depth <= 0.0 || depth >= 1.0) discard_fragment();
+  float3 L = float3(0.0, 0.0, 1.0);
+  float NdotL = max(dot(normal, L), 0.0);
+  float3 H = normalize(L + float3(0.0,0.0,1.0));
+  float spec = pow(max(dot(normal, H), 0.0), 32.0);
+  float ambient = 0.25;
+  float3 rgb = in.color.rgb * (ambient + (1.0 - ambient) * NdotL) + spec * 0.6;
+  SphereFOut out;
+  out.color = float4(rgb, in.color.a);
+  out.depth = depth;
+  return out;
+}
+)";
+
+void RendererMetal::buildImpostorPipelines()
+{
+  if (_sphereImpostorPipeline) return;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kSphereImpostorSrc
+                                             options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
+  id<MTLFunction> ffn = [lib newFunctionWithName:@"sphere_impostor_fragment"];
+  if (!vfn || !ffn) { NSLog(@"RendererMetal: sphere impostor funcs missing"); return; }
+
+  MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+  vd.attributes[0].format = MTLVertexFormatFloat4;           // a_vertex_radius
+  vd.attributes[0].offset = 0;  vd.attributes[0].bufferIndex = 0;
+  vd.attributes[1].format = MTLVertexFormatUChar4Normalized; // a_Color
+  vd.attributes[1].offset = 16; vd.attributes[1].bufferIndex = 0;
+  vd.attributes[2].format = MTLVertexFormatFloat;            // a_rightUpFlags
+  vd.attributes[2].offset = 20; vd.attributes[2].bufferIndex = 0;
+  vd.layouts[0].stride = 24;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn; psd.fragmentFunction = ffn; psd.vertexDescriptor = vd;
+  psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.colorAttachments[0].blendingEnabled = YES;
+  psd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+  psd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+  psd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  _sphereImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_sphereImpostorPipeline)
+    NSLog(@"RendererMetal: sphere impostor pipeline failed: %@", err);
+}
+
+void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
+{
+  if (!call.data || call.dataSize == 0 || call.sphereCount <= 0) return;
+  ensureEncoder();
+  if (!_encoder) return;
+  buildImpostorPipelines();
+  if (!_sphereImpostorPipeline) return;
+
+  // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
+  // is handled by the prebuilt pipeline. Log and bail otherwise (revisit if hit).
+  bool common = (call.posRadiusOff == 0 && call.colorOff == 16 &&
+                 call.rightUpOff == 20 && call.stride == 24 && call.rightUpIsFloat);
+  if (!common) {
+    NSLog(@"RendererMetal: sphere impostor non-standard packing pos=%d col=%d ru=%d(float=%d) stride=%zu",
+          call.posRadiusOff, call.colorOff, call.rightUpOff, call.rightUpIsFloat, call.stride);
+    return;
+  }
+
+  id<MTLBuffer> vbo = nil;
+  auto it = _vboCache.find(call.data);
+  if (it != _vboCache.end()) vbo = it->second;
+  else {
+    vbo = [_device newBufferWithBytes:call.data length:call.dataSize
+                              options:MTLResourceStorageModeShared];
+    if (!vbo) return;
+    _vboCache[call.data] = vbo;
+  }
+
+  // 6 indices per sphere mapping the 4 quad corners (verts order LL,LR,UR,UL).
+  NSUInteger nSph = (NSUInteger)call.sphereCount;
+  if (!_sphereIndexBuffer || _sphereIndexCapacity < nSph) {
+    std::vector<uint32_t> idx(nSph * 6);
+    for (NSUInteger s = 0; s < nSph; ++s) {
+      uint32_t b = (uint32_t)(s * 4);
+      idx[s*6+0]=b+0; idx[s*6+1]=b+1; idx[s*6+2]=b+2;
+      idx[s*6+3]=b+0; idx[s*6+4]=b+2; idx[s*6+5]=b+3;
+    }
+    _sphereIndexBuffer = [_device newBufferWithBytes:idx.data()
+                            length:idx.size()*sizeof(uint32_t)
+                            options:MTLResourceStorageModeShared];
+    _sphereIndexCapacity = nSph;
+  }
+  if (!_sphereIndexBuffer) return;
+
+  [_encoder setRenderPipelineState:_sphereImpostorPipeline];
+  applyDepthStencilState();
+  if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
+
+  struct {
+    float modelview[16];
+    float projection[16];
+    float sphere_size_scale;
+    float ortho;
+    float depthZeroToOne;
+    float _pad;
+  } u;
+  std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
+  std::memcpy(u.projection, _projectionMatrix.data(), 64);
+  u.sphere_size_scale = call.sphereSizeScale;
+  u.ortho = (float)call.ortho;
+  u.depthZeroToOne = 1.0f;   // Metal [0,1] clip Z assumed; verified empirically
+  u._pad = 0.0f;
+  [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+
+  [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                       indexCount:nSph * 6
+                        indexType:MTLIndexTypeUInt32
+                      indexBuffer:_sphereIndexBuffer
+                indexBufferOffset:0];
 }
 
 // ---------------------------------------------------------------------------

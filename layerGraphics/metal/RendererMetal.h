@@ -134,8 +134,10 @@ public:
       const void* indexData, size_t indexDataSize) override;
   void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
+  void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
 
 private:
+  void buildImpostorPipelines();
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -199,6 +201,10 @@ private:
   id<MTLFunction> _vboFragmentFunc;
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
+  // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
+  id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
+  id<MTLBuffer> _sphereIndexBuffer = nil;   // 6 indices/sphere (quad -> 2 tris)
+  NSUInteger _sphereIndexCapacity = 0;      // # spheres the index buffer covers
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;

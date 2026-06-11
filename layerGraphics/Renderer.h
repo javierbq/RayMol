@@ -216,6 +216,23 @@ public:
     float clipRange = 1.f;
   };
   virtual void drawLabels(const LabelDrawCall&) {}
+
+  // Sphere impostors: interleaved VBO (4 verts/sphere) with attributes
+  // a_vertex_radius (Float4 center+radius), a_Color (UByte4Norm), a_rightUpFlags.
+  // Offsets are byte offsets within `stride` (-1 = absent). Default: no-op.
+  struct SphereImpostorDrawCall {
+    int sphereCount = 0;
+    const void* data = nullptr;
+    size_t dataSize = 0;
+    size_t stride = 0;
+    int posRadiusOff = -1;   // a_vertex_radius (Float4)
+    int colorOff = -1;       // a_Color (UByte4Norm)
+    int rightUpOff = -1;     // a_rightUpFlags
+    int rightUpIsFloat = 1;  // 1 = Float, 0 = UByte
+    float sphereSizeScale = 1.0f;
+    int ortho = 0;           // 1 = orthographic
+  };
+  virtual void drawSphereImpostors(const SphereImpostorDrawCall&) {}
 };
 
 } // namespace pymol
