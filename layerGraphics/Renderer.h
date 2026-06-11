@@ -234,6 +234,31 @@ public:
     int ortho = 0;           // 1 = orthographic
   };
   virtual void drawSphereImpostors(const SphereImpostorDrawCall&) {}
+
+  // Cylinder impostors: interleaved triangle-list VBO (8 verts/cylinder box,
+  // 36 indices) + a UInt32 index buffer. Ported from cylinder.vs/cylinder.fs:
+  // per-pixel ray-cylinder intersection with flat/round caps and two-color
+  // interpolation along the bond. Offsets are byte offsets within `stride`
+  // (-1 = absent). `a_cap` is supplied as a constant (capConst), not a VBO
+  // attribute, in the common case. Default: no-op.
+  struct CylinderImpostorDrawCall {
+    int cylinderCount = 0;
+    const void* vdata = nullptr;  size_t vdataSize = 0;  size_t stride = 0;
+    const void* idata = nullptr;  size_t idataSize = 0;  int indexCount = 0;
+    int v1Off = -1;       // attr_vertex1 (Float3)
+    int v2Off = -1;       // attr_vertex2 (Float3)
+    int colorOff = -1;    // a_Color
+    int color2Off = -1;   // a_Color2
+    int radiusOff = -1;   // attr_radius (Float)
+    int flagsOff = -1;    // attr_flags (UByte: out/up/right corner code)
+    int colorIsFloat = 0; // a_Color/a_Color2 format: 1=Float4, 0=UByte4Norm
+    int flagsIsFloat = 0; // attr_flags format: 1=Float, 0=UByte
+    float uniRadius = 0.0f;  // uni_radius (0 => use attr_radius directly)
+    float capConst = 15.0f;  // a_cap bits (default cCylShaderBothCapsRound)
+    int ortho = 0;
+    int noFlatCaps = 1;      // 1 => round caps (matches GL shader default)
+  };
+  virtual void drawCylinderImpostors(const CylinderImpostorDrawCall&) {}
 };
 
 } // namespace pymol

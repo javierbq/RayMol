@@ -135,9 +135,14 @@ public:
   void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
+  void drawCylinderImpostors(const CylinderImpostorDrawCall& call) override;
 
 private:
   void buildImpostorPipelines();
+  // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
+  // the cylinder pipeline is built lazily from the first draw call's layout
+  // and rebuilt only if a later call has a different stride.
+  void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -203,6 +208,8 @@ private:
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil;
+  NSUInteger _cylinderPipelineStride = 0; // stride the cyl pipeline was built for
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;

@@ -126,7 +126,11 @@ static int RepCylBondCGOGenerate(RepCylBond * I, RenderInfo * info)
       use_shader && //
       SettingGet<bool>(*I->cs, cSetting_stick_as_cylinders) &&
       SettingGet<bool>(*I->cs, cSetting_render_as_cylinders) &&
-      G->ShaderMgr->ShaderPrgExists("cylinder");
+      // On the Metal renderer the GL "cylinder" shader program doesn't exist,
+      // but the Metal cylinder impostor pipeline stands in for it — keep the
+      // impostor path so cylinder_buffers are emitted and routed to
+      // RendererMetal::drawCylinderImpostors.
+      (G->Renderer || G->ShaderMgr->ShaderPrgExists("cylinder"));
 
   std::unique_ptr<CGO> convertcgo;
 

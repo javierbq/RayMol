@@ -120,6 +120,72 @@ static void drawSphereImpostorsViaMetal(
   G->Renderer->drawSphereImpostors(call);
 }
 
+// True if this VBO carries the cylinder-impostor attributes (sticks/bonds are
+// emitted as a generic CGO_DRAW_CUSTOM op whose VBO has these names).
+static bool vboLooksLikeCylinders(VertexBufferGL* vbo)
+{
+  if (!vbo)
+    return false;
+  bool v1 = false, v2 = false, rad = false;
+  for (const auto& d : vbo->getDesc().descs) {
+    if (d.attr_name == "attr_vertex1")
+      v1 = true;
+    else if (d.attr_name == "attr_vertex2")
+      v2 = true;
+    else if (d.attr_name == "attr_radius")
+      rad = true;
+  }
+  return v1 && v2 && rad;
+}
+
+// Metal path for analytic cylinder impostors. The GL "cylinder" shader is
+// absent in NO_OPENGL builds, so route the impostor VBO + index buffer to
+// Renderer::drawCylinderImpostors (per-pixel ray-cylinder). The cylinder rep
+// emits its VBO via a generic CGO_DRAW_CUSTOM op, so this is called from
+// CGO_gl_draw_custom once the VBO is recognized as cylinders.
+static void drawCylinderImpostorsViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
+    IndexBufferGL* ibo, int indexCount)
+{
+  auto* G = I->G;
+  if (!vbo || !vbo->hasCPUData() || !ibo || !ibo->hasCPUData())
+    return;
+
+  pymol::Renderer::CylinderImpostorDrawCall call;
+  call.vdata = vbo->cpuData();
+  call.vdataSize = vbo->cpuDataSize();
+  call.stride = vbo->cpuStride();
+  call.idata = ibo->cpuData();
+  call.idataSize = ibo->cpuDataSize();
+  call.indexCount = (indexCount > 0)
+      ? indexCount
+      : static_cast<int>(ibo->cpuDataSize() / sizeof(VertexIndex_t));
+  call.cylinderCount = call.indexCount / 36; // 36 indices per cylinder box
+  for (const auto& d : vbo->getDesc().descs) {
+    int off = static_cast<int>(d.offset);
+    if (d.attr_name == "attr_vertex1")
+      call.v1Off = off;
+    else if (d.attr_name == "attr_vertex2")
+      call.v2Off = off;
+    else if (d.attr_name == "a_Color") {
+      call.colorOff = off;
+      call.colorIsFloat = (d.m_format == VertexFormat::Float4) ? 1 : 0;
+    } else if (d.attr_name == "a_Color2")
+      call.color2Off = off;
+    else if (d.attr_name == "attr_radius")
+      call.radiusOff = off;
+    else if (d.attr_name == "attr_flags") {
+      call.flagsOff = off;
+      call.flagsIsFloat = (d.m_format == VertexFormat::Float) ? 1 : 0;
+    }
+  }
+  call.uniRadius = 0.0f; // sticks bake the radius into attr_radius (uni_radius=0)
+  call.capConst = I->metalCylCapConst; // captured from CGO_VERTEX_ATTRIBUTE_1F
+  call.noFlatCaps = 1;   // round caps (matches Get_CylinderShader GL default)
+  call.ortho = SettingGetGlobal_b(G, cSetting_ortho) ? 1 : 0;
+
+  G->Renderer->drawCylinderImpostors(call);
+}
+
 #ifdef PURE_OPENGL_ES_2
 #define glVertexAttrib4ubv(loc, data) glVertexAttrib4f(loc, \
     (data)[0] / 255.f, (data)[1] / 255.f, (data)[2] / 255.f, (data)[3] / 255.f);
@@ -130,6 +196,9 @@ static bool vboLooksLikeLabels(VertexBufferGL* vbo);
 static void drawLabelsViaMetal(CCGORenderer* I, size_t vboid, int vertexCount);
 static void drawSphereImpostorsViaMetal(
     CCGORenderer* I, const cgo::draw::sphere_buffers* sp);
+static bool vboLooksLikeCylinders(VertexBufferGL* vbo);
+static void drawCylinderImpostorsViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
+    IndexBufferGL* ibo, int indexCount);
 
 constexpr unsigned VERTEX_PICKCOLOR_RGBA_SIZE = 1;  // 4 unsigned bytes
 constexpr unsigned VERTEX_PICKCOLOR_INDEX_SIZE = 2; // index + bond
@@ -805,6 +874,13 @@ static void CGO_gl_draw_custom(CCGORenderer* I, CGO_op_data pc)
       drawLabelsViaMetal(I, sp->vboid, sp->nverts);
       return;
     }
+    if (vboLooksLikeCylinders(vbo)) {
+      auto* ibo = sp->iboid
+          ? I->G->ShaderMgr->getGPUBuffer<IndexBufferGL>(sp->iboid)
+          : nullptr;
+      drawCylinderImpostorsViaMetal(I, vbo, ibo, sp->nindices);
+      return;
+    }
     if (sp->iboid) {
       auto* ibo = I->G->ShaderMgr->getGPUBuffer<IndexBufferGL>(sp->iboid);
       drawVBOIndexedViaMetal(I->G->Renderer, vbo, ibo,
@@ -912,9 +988,18 @@ static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
 
 static void CGO_gl_draw_cylinder_buffers(CCGORenderer* I, CGO_op_data pc)
 {
-  if (I->G->Renderer)
-    return;
   const cgo::draw::cylinder_buffers* sp = reinterpret_cast<decltype(sp)>(*pc);
+  if (I->G->Renderer) {
+    // Legacy cylinder_buffers op. The current stick rep instead emits a generic
+    // CGO_DRAW_CUSTOM op (handled in CGO_gl_draw_custom), but route this here
+    // too for completeness.
+    if (!I->isPicking) {
+      auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(sp->vboid);
+      auto* ibo = I->G->ShaderMgr->getGPUBuffer<IndexBufferGL>(sp->iboid);
+      drawCylinderImpostorsViaMetal(I, vbo, ibo, 0);
+    }
+    return;
+  }
   int num_cyl = sp->num_cyl;
   int min_alpha = sp->alpha;
   int attr_colors, attr_colors2;
@@ -2044,10 +2129,18 @@ static void CGO_gl_vertex_attribute_1f(CCGORenderer* I, CGO_op_data varg)
 {
   auto vertex_attr =
       reinterpret_cast<const cgo::draw::vertex_attribute_1f*>(*varg);
-  auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
-  if (!shaderPrg) return;  // no GL shader in Metal path
   const char* name =
       I->G->ShaderMgr->GetAttributeName(vertex_attr->attr_lookup_idx);
+  if (I->G->Renderer) {
+    // Metal path: no GL shader to set a generic attribute on. The cylinder
+    // impostor reads `a_cap` as a uniform; capture the constant here so the
+    // subsequent draw_cylinder_buffers op can pass it along.
+    if (name && strcmp(name, "a_cap") == 0)
+      I->metalCylCapConst = vertex_attr->value;
+    return;
+  }
+  auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
+  if (!shaderPrg) return;  // no GL shader in Metal path
   int loc = shaderPrg->GetAttribLocation(name);
   if (loc >= 0)
     glVertexAttrib1f(loc, vertex_attr->value);

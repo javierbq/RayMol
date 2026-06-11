@@ -128,6 +128,7 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _vboFragmentUnlitFunc(nil)
     , _batchBuffer(nil)
     , _sphereImpostorPipeline(nil)
+    , _cylinderImpostorPipeline(nil)
     , _depthStencilState(nil)
 {
   _modelviewMatrix = identityMatrix();
@@ -1827,6 +1828,326 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
                vertexStart:0
                vertexCount:vertexCount];
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Impostor Ray-Casting (analytic cylinders)
+// ---------------------------------------------------------------------------
+
+// Inline MSL port of data/shaders/cylinder.vs + cylinder.fs. An 8-vertex box
+// impostor (36 indices) with per-pixel ray-cylinder intersection, flat/round
+// caps, two-color interpolation along the bond, [[depth(any)]] output, and the
+// same PyMOL two-light shading as the sphere impostor. `a_cap` is supplied as a
+// uniform constant (cap_const), not a vertex attribute.
+static NSString* const kCylinderImpostorSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct CylIn {
+  float3 vertex1 [[attribute(0)]];
+  float3 vertex2 [[attribute(1)]];
+  float4 color   [[attribute(2)]];
+  float4 color2  [[attribute(3)]];
+  float  radius  [[attribute(4)]];
+  uchar  flags   [[attribute(5)]];
+};
+struct CylU {
+  float4x4 modelview;
+  float4x4 projection;
+  float uni_radius;
+  float ortho;
+  float depthZeroToOne;
+  float no_flat_caps;
+  float cap_const;
+  float half_bond;
+  float inv_height;
+  float _pad;
+};
+struct CylVOut {
+  float4 position [[position]];
+  float3 surface_point;
+  float3 axis;
+  float3 base;
+  float3 end_cyl;
+  float3 U;
+  float3 V;
+  float radius;
+  float inv_sqr_height;
+  float4 color1;
+  float4 color2;
+};
+struct CylFOut { float4 color [[color(0)]]; float depth [[depth(any)]]; };
+
+static float cyl_bit(thread float& bits) {
+  float bit = fmod(bits, 2.0);
+  bits = (bits - bit) / 2.0;
+  return step(0.5, bit);
+}
+
+vertex CylVOut cyl_impostor_vertex(CylIn in [[stage_in]],
+    constant CylU& u [[buffer(1)]]) {
+  CylVOut o;
+  // Normal matrix == upper-left 3x3 of the (rotation+uniform-scale) modelview.
+  float3x3 N = float3x3(u.modelview[0].xyz, u.modelview[1].xyz, u.modelview[2].xyz);
+  float uniformglscale = length(N[0]);
+  float radius = (u.uni_radius != 0.0) ? (u.uni_radius * in.radius) : in.radius;
+  o.color1 = in.color;
+  o.color2 = in.color2;
+  float3 attr_axis = in.vertex2 - in.vertex1;
+  float ish = length(attr_axis) / uniformglscale;
+  ish *= ish;
+  o.inv_sqr_height = 1.0 / ish;
+  float3 h = normalize(attr_axis);
+  o.axis = normalize(N * h);
+  float3 uu = cross(h, float3(1.0, 0.0, 0.0));
+  if (dot(uu, uu) < 0.001) uu = cross(h, float3(0.0, 1.0, 0.0));
+  uu = normalize(uu);
+  float3 vv = normalize(cross(uu, h));
+  o.U = normalize(N * uu);
+  o.V = normalize(N * vv);
+  float4 base4 = u.modelview * float4(in.vertex1, 1.0); o.base = base4.xyz;
+  float4 end4  = u.modelview * float4(in.vertex2, 1.0); o.end_cyl = end4.xyz;
+
+  float4 vert = float4(in.vertex1, 1.0);
+  float packed = float(in.flags);
+  float out_v   = cyl_bit(packed);
+  float up_v    = cyl_bit(packed);
+  float right_v = cyl_bit(packed);
+  vert.xyz += up_v * attr_axis;
+  vert.xyz += (2.0 * right_v - 1.0) * radius * uu;
+  vert.xyz += (2.0 * out_v   - 1.0) * radius * vv;
+  vert.xyz += (2.0 * up_v    - 1.0) * radius * h;
+
+  float4 tvertex = u.modelview * vert;
+  o.surface_point = tvertex.xyz;
+  float4 pos = u.projection * tvertex;
+
+  // Clamp z on the front clipping plane if the impostor box would be clipped
+  // (we want to clip on the per-pixel depth, not the box face). See cylinder.vs.
+  if (pos.z / pos.w < -1.0) {
+    float diff = abs(base4.z - end4.z) + radius * 3.5;
+    float4 inset = u.modelview * vert;
+    inset.z -= diff;
+    inset = u.projection * inset;
+    if (inset.z / inset.w > -1.0) pos.z = -pos.w;
+  }
+  o.position = pos;
+  o.radius = radius / uniformglscale;
+  return o;
+}
+
+fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
+    constant CylU& u [[buffer(1)]]) {
+  float3 ray_target = in.surface_point;
+  float3 ray_origin, ray_dir;
+  if (u.ortho >= 0.5) { ray_origin = in.surface_point; ray_dir = float3(0.0,0.0,1.0); }
+  else { ray_origin = float3(0.0); ray_dir = normalize(-ray_target); }
+
+  float3x3 basis = float3x3(in.U, in.V, in.axis);
+  float2 P = ((ray_target - in.base) * basis).xy;
+  float2 D = (ray_dir * basis).xy;
+  float radius2 = in.radius * in.radius;
+  float a0 = P.x*P.x + P.y*P.y - radius2;
+  float a1 = P.x*D.x + P.y*D.y;
+  float a2 = D.x*D.x + D.y*D.y;
+  float d = a1*a1 - a0*a2;
+  if (d < 0.0) discard_fragment();
+  float dist = (-a1 + sqrt(d)) / a2;
+  float3 new_point = ray_target + dist * ray_dir;
+  float3 tmp_point = new_point - in.base;
+  float3 normal = normalize(tmp_point - in.axis * dot(tmp_point, in.axis));
+
+  // cap bits: 0 frontcap, 1 endcap, 2 frontcapround, 3 endcapround, 4 interp
+  float fcap = u.cap_const + 0.001;
+  bool frontcap      = cyl_bit(fcap) > 0.5;
+  bool endcap        = cyl_bit(fcap) > 0.5;
+  bool frontcapround = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
+  bool endcapround   = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
+  bool nocolorinterp = !(cyl_bit(fcap) > 0.5);
+
+  float ratio = dot(new_point - in.base, in.end_cyl - in.base) * in.inv_sqr_height;
+  if (nocolorinterp) {
+    float dp = clamp(-u.half_bond * new_point.z * u.inv_height, 0.0, 0.5);
+    ratio = smoothstep(0.5 - dp, 0.5 + dp, ratio);
+  } else {
+    ratio = clamp(ratio, 0.0, 1.0);
+  }
+  float4 color = mix(in.color1, in.color2, ratio);
+
+  bool cap_test_base = 0.0 > dot(new_point - in.base, in.axis);
+  bool cap_test_end  = 0.0 < dot(new_point - in.end_cyl, in.axis);
+  if (cap_test_base || cap_test_end) {
+    float3 thisaxis = -in.axis;
+    float3 thisbase = in.base;
+    if (cap_test_end) {
+      thisaxis = in.axis; thisbase = in.end_cyl;
+      frontcap = endcap; frontcapround = endcapround;
+    }
+    if (!frontcap) discard_fragment();
+    if (frontcapround) {
+      float3 sd = thisbase - ray_origin;
+      float b = dot(sd, ray_dir);
+      float pos = b*b + radius2 - dot(sd, sd);
+      if (pos < 0.0) discard_fragment();
+      float nr = sqrt(pos) + b;
+      new_point = nr * ray_dir + ray_origin;
+      normal = normalize(new_point - thisbase);
+    } else {
+      float dNV = dot(thisaxis, ray_dir);
+      if (dNV < 0.0) discard_fragment();
+      float nr = dot(thisaxis, thisbase - ray_origin) / dNV;
+      new_point = ray_dir * nr + ray_origin;
+      if (dot(new_point - thisbase, new_point - thisbase) > radius2) discard_fragment();
+      normal = thisaxis;
+    }
+  }
+
+  float4 clip = u.projection * float4(new_point, 1.0);
+  float ndcz = clip.z / clip.w;
+  float depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
+  if (depth <= 0.0) discard_fragment();
+
+  // PyMOL default two-light model (identical to the sphere impostor).
+  const float ambient    = 0.14;
+  const float direct     = 0.45;
+  const float reflect    = 0.481;
+  const float spec_value = 0.5;
+  const float shininess  = 55.0;
+  const float3 L0 = float3(0.0, 0.0, 1.0);
+  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+  float intensity = ambient;
+  float specular = 0.0;
+  float n0 = dot(normal, L0);
+  if (n0 > 0.0) intensity += direct * n0;
+  float n1 = dot(normal, L1);
+  if (n1 > 0.0) {
+    intensity += reflect * n1;
+    float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
+    specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
+  }
+  float3 rgb = color.rgb * min(intensity, 1.0) + specular;
+  CylFOut o;
+  o.color = float4(rgb, color.a);
+  o.depth = depth;
+  return o;
+}
+)";
+
+void RendererMetal::buildCylinderImpostorPipeline(
+    const CylinderImpostorDrawCall& call)
+{
+  if (_cylinderImpostorPipeline && _cylinderPipelineStride == call.stride)
+    return; // already built for this layout
+  _cylinderImpostorPipeline = nil;
+
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kCylinderImpostorSrc
+                                             options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: cyl impostor compile failed: %@", err); return; }
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"cyl_impostor_vertex"];
+  id<MTLFunction> ffn = [lib newFunctionWithName:@"cyl_impostor_fragment"];
+  if (!vfn || !ffn) { NSLog(@"RendererMetal: cyl impostor funcs missing"); return; }
+
+  MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+  vd.attributes[0].format = MTLVertexFormatFloat3;       // attr_vertex1
+  vd.attributes[0].offset = call.v1Off;     vd.attributes[0].bufferIndex = 0;
+  vd.attributes[1].format = MTLVertexFormatFloat3;       // attr_vertex2
+  vd.attributes[1].offset = call.v2Off;     vd.attributes[1].bufferIndex = 0;
+  MTLVertexFormat colFmt = call.colorIsFloat ? MTLVertexFormatFloat4
+                                             : MTLVertexFormatUChar4Normalized;
+  vd.attributes[2].format = colFmt;                      // a_Color
+  vd.attributes[2].offset = call.colorOff;  vd.attributes[2].bufferIndex = 0;
+  vd.attributes[3].format = colFmt;                      // a_Color2
+  vd.attributes[3].offset = call.color2Off; vd.attributes[3].bufferIndex = 0;
+  vd.attributes[4].format = MTLVertexFormatFloat;        // attr_radius
+  vd.attributes[4].offset = call.radiusOff; vd.attributes[4].bufferIndex = 0;
+  vd.attributes[5].format = MTLVertexFormatUChar;        // attr_flags (UByte)
+  vd.attributes[5].offset = call.flagsOff;  vd.attributes[5].bufferIndex = 0;
+  vd.layouts[0].stride = call.stride;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn; psd.fragmentFunction = ffn; psd.vertexDescriptor = vd;
+  psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.colorAttachments[0].blendingEnabled = YES;
+  psd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+  psd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+  psd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  _cylinderImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_cylinderImpostorPipeline)
+    NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
+  else
+    _cylinderPipelineStride = call.stride;
+}
+
+void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
+{
+  if (!call.vdata || !call.idata || call.indexCount <= 0) return;
+  if (call.v1Off < 0 || call.v2Off < 0 || call.radiusOff < 0 ||
+      call.flagsOff < 0 || call.colorOff < 0 || call.color2Off < 0)
+    return;
+  if (call.flagsIsFloat) {
+    // The MSL declares attr_flags as `uchar`; a Float-format flags VBO would
+    // mismatch. This layout isn't produced by the current rep; bail loudly.
+    NSLog(@"RendererMetal: cyl impostor unexpected Float attr_flags; skipping");
+    return;
+  }
+  ensureEncoder();
+  if (!_encoder) return;
+  buildCylinderImpostorPipeline(call);
+  if (!_cylinderImpostorPipeline) return;
+
+  id<MTLBuffer> vbo = nil, ibo = nil;
+  { auto it = _vboCache.find(call.vdata);
+    if (it != _vboCache.end()) vbo = it->second;
+    else { vbo = [_device newBufferWithBytes:call.vdata length:call.vdataSize
+                                     options:MTLResourceStorageModeShared];
+           if (vbo) _vboCache[call.vdata] = vbo; } }
+  { auto it = _vboCache.find(call.idata);
+    if (it != _vboCache.end()) ibo = it->second;
+    else { ibo = [_device newBufferWithBytes:call.idata length:call.idataSize
+                                     options:MTLResourceStorageModeShared];
+           if (ibo) _vboCache[call.idata] = ibo; } }
+  if (!vbo || !ibo) return;
+
+  [_encoder setRenderPipelineState:_cylinderImpostorPipeline];
+  applyDepthStencilState();
+  if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
+  [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
+
+  struct {
+    float modelview[16];
+    float projection[16];
+    float uni_radius;
+    float ortho;
+    float depthZeroToOne;
+    float no_flat_caps;
+    float cap_const;
+    float half_bond;
+    float inv_height;
+    float _pad;
+  } u;
+  std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
+  std::memcpy(u.projection, _projectionMatrix.data(), 64);
+  u.uni_radius = call.uniRadius;
+  u.ortho = (float)call.ortho;
+  u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
+  u.no_flat_caps = (float)call.noFlatCaps;
+  u.cap_const = call.capConst;
+  u.half_bond = 0.0f;      // smooth_half_bonds default off
+  u.inv_height = 1.0f;     // only used when half_bond != 0
+  u._pad = 0.0f;
+  [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+  [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+
+  [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                       indexCount:call.indexCount
+                        indexType:MTLIndexTypeUInt32
+                      indexBuffer:ibo
+                indexBufferOffset:0];
 }
 
 // ---------------------------------------------------------------------------

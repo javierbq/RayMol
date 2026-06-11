@@ -19,6 +19,12 @@ struct CCGORenderer {
   bool debug{};
   CSetting* set1 = nullptr;
   CSetting* set2 = nullptr;
+  // Metal impostor path: the cylinder `a_cap` flags are usually supplied as a
+  // constant generic vertex attribute via a CGO_VERTEX_ATTRIBUTE_1F op (which
+  // the GL path applies with glVertexAttrib1f). We capture that constant here
+  // so the Metal cylinder draw can pass it as a uniform. Default =
+  // cCylShaderBothCapsRound (0x0F).
+  float metalCylCapConst = 15.0f;
 };
 
 bool CGORendererInit(PyMOLGlobals* G);
