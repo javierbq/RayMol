@@ -119,7 +119,7 @@ enum {
   REC_f(  35, test2                                   , global    , -0.5F ),
   REC_f(  36, surface_best                            , ostate    , 0.25F ),
   REC_f(  37, surface_normal                          , ostate    , 0.5F ),
-  REC_i(  38, surface_quality                         , ostate    , 0 ),
+  REC_i(  38, surface_quality                         , ostate    , 1 ),
   REC_b(  39, surface_proximity                       , ostate    , 1 ),
   REC_b(  40, normal_workaround                       , global    , 0 ),
   REC_f(  41, stereo_angle                            , global    , 2.1F ),
