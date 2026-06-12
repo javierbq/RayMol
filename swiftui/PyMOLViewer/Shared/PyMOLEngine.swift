@@ -132,6 +132,27 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Test affordance: simulate a Shift+RIGHT vertical drag — the exact calls
+        // the Shift+two-finger trackpad gesture makes — to verify it CLIPS (moves
+        // the slab through the scene). Format: "cx,cy". Fires at t+4s (after
+        // config_mouse settles, so Right+Shift maps to 'clip').
+        if let d = ProcessInfo.processInfo.environment["PYMOL_AUTOCLIP"] {
+            let parts = d.split(separator: ",").compactMap { Int32($0) }
+            if parts.count == 2 {
+                let cx = parts[0], cy = parts[1]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                    guard let self = self else { return }
+                    let s = PYMOL_MOD_SHIFT
+                    self.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_DOWN, x: cx, y: cy, modifiers: s)
+                    for i in 1...30 {
+                        self.drag(x: cx, y: cy + Int32(i) * 6, modifiers: s)
+                    }
+                    self.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_UP, x: cx, y: cy + 180, modifiers: s)
+                    NSLog("PYMOL_AUTOCLIP: simulated Shift+right-drag from (\(cx),\(cy)) +180px up")
+                }
+            }
+        }
+
         // Test affordance: exercise the pinch zoom path (engine.zoomBy) — the
         // exact call the pinch gesture makes — to verify it ZOOMS (not slabs).
         // Format: "frac[,reps]" (frac>0 zooms in). Fires at t+4s so PyMOL's

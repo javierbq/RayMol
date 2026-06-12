@@ -140,6 +140,7 @@ struct SceneParam: Identifiable {
 enum SceneCatalog {
     static let groups = ["Lighting & Quality", "Camera"]
     static let params: [SceneParam] = [
+        SceneParam(setting: "metal_raytrace", label: "Ray tracing", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_shadows", label: "Shadows", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_ssao",    label: "Ambient occlusion", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_outline", label: "Outline", kind: .toggle, group: "Lighting & Quality"),

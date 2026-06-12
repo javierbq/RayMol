@@ -40,8 +40,8 @@ REP_COLOR = {
     'dots': 'dot_color', 'lines': 'line_color', 'labels': 'label_color',
 }
 
-SCENE_SETTINGS = ['metal_shadows', 'metal_ssao', 'metal_outline', 'metal_msaa',
-                  'depth_cue', 'fog', 'field_of_view', 'surface_quality']
+SCENE_SETTINGS = ['metal_raytrace', 'metal_shadows', 'metal_ssao', 'metal_outline',
+                  'metal_msaa', 'depth_cue', 'fog', 'field_of_view', 'surface_quality']
 
 
 def _num(setting, obj):

@@ -171,6 +171,18 @@ extension MetalViewport {
         // want (verified — up/down was inverted before the flip).
         private let kPanSignX: CGFloat = 1
         private let kPanSignY: CGFloat = -1
+
+        // Gesture mode latched at drag START (a mid-drag modifier change can't
+        // switch it). Shift held → synthesize a Shift+Right-button drag, which
+        // PyMOL's three_button_viewing binds to 'clip' (vertical = move the slab
+        // through the scene, horizontal = slab thickness). Otherwise a Middle-drag
+        // = translate. Clip is not grab-and-move, so its Y is NOT negated; flip
+        // kClipSignY if the up/down direction feels inverted.
+        private var gestureButton: Int32 = PYMOL_BUTTON_MIDDLE
+        private var gestureMods: Int32 = 0
+        private var gestureIsClip = false
+        private let kClipSignX: CGFloat = 1
+        private let kClipSignY: CGFloat = 1
         #endif
 
         #if os(iOS)
@@ -334,28 +346,33 @@ extension MetalViewport {
                 return
             }
 
-            // Trackpad two-finger drag → translate (middle-drag).
+            // Trackpad two-finger drag. Latch the mode at the START: Shift held →
+            // CLIP (Shift+Right-drag), else PAN (Middle-drag). Real trackpad
+            // gestures begin with phase == .began; synthetic/no-phase precise
+            // scrolls (and momentum without a prior .began) start on first delta.
             let scale = view.window?.backingScaleFactor ?? 2.0
-            let dx = Int32((event.scrollingDeltaX * scale * kPanSignX).rounded())
-            let dy = Int32((event.scrollingDeltaY * scale * kPanSignY).rounded())
-
-            // Start the synthetic middle-drag. Real trackpad gestures begin with
-            // phase == .began; synthetic/no-phase precise scrolls (and momentum
-            // that arrives without a prior .began) start on first delta.
             if !panActive && (phase == .began || (phase == [] && momentum != .ended)) {
+                gestureIsClip = event.modifierFlags.contains(.shift)
+                gestureButton = gestureIsClip ? PYMOL_BUTTON_RIGHT : PYMOL_BUTTON_MIDDLE
+                gestureMods = gestureIsClip ? PYMOL_MOD_SHIFT : 0
                 panActive = true
                 panCursorX = pt.0
                 panCursorY = pt.1
-                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN,
-                               x: panCursorX, y: panCursorY, modifiers: mods)
+                engine?.button(gestureButton, state: PYMOL_BUTTON_DOWN,
+                               x: panCursorX, y: panCursorY, modifiers: gestureMods)
             }
+
+            let signX = gestureIsClip ? kClipSignX : kPanSignX
+            let signY = gestureIsClip ? kClipSignY : kPanSignY
+            let dx = Int32((event.scrollingDeltaX * scale * signX).rounded())
+            let dy = Int32((event.scrollingDeltaY * scale * signY).rounded())
 
             if panActive && (dx != 0 || dy != 0) {
                 // macOS views are bottom-left origin (matching PyMOL); a finger
                 // moving up has positive scrollingDeltaY, so add directly.
                 panCursorX += dx
                 panCursorY += dy
-                engine?.drag(x: panCursorX, y: panCursorY, modifiers: mods)
+                engine?.drag(x: panCursorX, y: panCursorY, modifiers: gestureMods)
             }
 
             // End when the momentum glide finishes (the true end), or on cancel.
@@ -383,8 +400,8 @@ extension MetalViewport {
             panEndDebounce = nil
             guard panActive else { return }
             panActive = false
-            engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP,
-                           x: panCursorX, y: panCursorY, modifiers: 0)
+            engine?.button(gestureButton, state: PYMOL_BUTTON_UP,
+                           x: panCursorX, y: panCursorY, modifiers: gestureMods)
         }
 
         @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
