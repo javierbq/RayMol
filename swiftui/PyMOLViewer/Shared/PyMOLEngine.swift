@@ -191,13 +191,26 @@ final class PyMOLEngine: ObservableObject {
     private func handleSessionViewport(for command: String) {
         let lower = command.lowercased()
         if lower.contains(".pse"), let path = sessionPath(from: command) {
-            // Read the session's saved viewport ('main' = [W,H]) and emit
-            // SESSIONVP:W,H (parsed by pollFeedback → setLetterboxAspect).
+            // Read the session's 'main' [W,H] (→ letterbox via SESSIONVP) AND fix
+            // the camera: modern .pse files store a 25-float SceneViewType, but
+            // our embedded core is 18-float and mis-restores it (front/back
+            // flip). Transpose the stored col-major 4x4 rotation into our
+            // row-major 3x3 and re-apply via set_view so the framing matches the
+            // session exactly. (18-float sessions restore natively — left alone.)
             runPython(
                 "import pickle, os\n"
+                + "from pymol import cmd as _sc\n"
                 + "try:\n"
-                + "    _m = pickle.load(open(os.path.expanduser(r'''\(path)'''), 'rb')).get('main')\n"
+                + "    _d = pickle.load(open(os.path.expanduser(r'''\(path)'''), 'rb'))\n"
+                + "    _m = _d.get('main')\n"
                 + "    if _m and _m[0] and _m[1]: print('SESSIONVP:%d,%d' % (int(_m[0]), int(_m[1])))\n"
+                + "    _v = _d.get('view')\n"
+                + "    if _v and len(_v) >= 25:\n"
+                + "        _R = [0.0]*9\n"
+                + "        for _i in range(3):\n"
+                + "            for _j in range(3):\n"
+                + "                _R[_i*3+_j] = _v[_j*4+_i]\n"
+                + "        _sc.set_view(_R + list(_v[16:19]) + list(_v[19:22]) + list(_v[22:24]) + [_v[24]])\n"
                 + "except Exception:\n"
                 + "    pass")
         } else if lower.hasPrefix("load ") || lower.hasPrefix("fetch ")
