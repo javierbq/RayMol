@@ -3,6 +3,153 @@
 
 import SwiftUI
 import Combine
+#if canImport(AppKit)
+import AppKit
+#endif
+
+// MARK: - Representation inspector: polled state models
+// (Inlined here rather than a separate file so they're in both app targets
+// without editing the Xcode project's explicit file references.)
+
+/// One active representation on an object, with current setting values + color.
+struct RepState: Equatable {
+    let rep: String                 // "cartoon", "surface", …
+    var visible: Bool
+    var values: [String: Double]    // setting name → current value
+    var color: String               // "inherit" or "#rrggbb"
+}
+
+/// Global "Scene" parameters.
+struct SceneState: Equatable {
+    var values: [String: Double] = [:]   // setting name → value (toggles 0/1)
+    var bg: [Double] = [0, 0, 0]         // background r,g,b in 0…1
+}
+
+// MARK: - Representation inspector: control metadata
+
+enum RepControlKind { case slider, segmented, toggle }
+
+/// One controllable property row (label + control bound to a PyMOL setting).
+struct RepProperty: Identifiable {
+    var id: String { setting }
+    let setting: String
+    let label: String
+    let kind: RepControlKind
+    var min: Double = 0
+    var max: Double = 1
+    var step: Double = 0.01
+    var decimals: Int = 2
+    var options: [(label: String, value: Double)] = []   // for .segmented
+}
+
+/// Static description of a representation: display name, color-override setting
+/// (empty = no per-rep color), and the property rows it exposes. Setting names
+/// MUST match modules/pymol/appkit_inspector.py.
+struct RepSpec {
+    let rep: String
+    let display: String
+    let colorSetting: String     // e.g. "surface_color"; "" if none
+    let defaultColor: Int        // value meaning "inherit" (-1, labels -6)
+    let properties: [RepProperty]
+}
+
+enum RepCatalog {
+    static let order = ["cartoon", "surface", "sticks", "spheres", "ribbon",
+                        "mesh", "lines", "dots", "nonbonded", "nb_spheres", "labels"]
+
+    static let specs: [String: RepSpec] = [
+        "cartoon": RepSpec(rep: "cartoon", display: "Cartoon",
+            colorSetting: "cartoon_color", defaultColor: -1, properties: [
+                RepProperty(setting: "cartoon_transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "cartoon_loop_radius",   label: "Loop radius",  kind: .slider),
+                RepProperty(setting: "cartoon_tube_radius",   label: "Tube radius",  kind: .slider),
+                RepProperty(setting: "cartoon_fancy_helices", label: "Fancy helices", kind: .toggle),
+            ]),
+        "surface": RepSpec(rep: "surface", display: "Surface",
+            colorSetting: "surface_color", defaultColor: -1, properties: [
+                RepProperty(setting: "transparency",   label: "Transparency", kind: .slider),
+                RepProperty(setting: "surface_quality", label: "Quality", kind: .segmented,
+                            options: [("0", 0), ("1", 1), ("2", 2)]),
+                RepProperty(setting: "solvent_radius", label: "Solvent radius", kind: .slider, min: 0.5, max: 3, step: 0.1, decimals: 1),
+            ]),
+        "sticks": RepSpec(rep: "sticks", display: "Sticks",
+            colorSetting: "stick_color", defaultColor: -1, properties: [
+                RepProperty(setting: "stick_transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "stick_radius",   label: "Radius",  kind: .slider),
+                RepProperty(setting: "stick_h_scale",  label: "H scale", kind: .slider),
+            ]),
+        "spheres": RepSpec(rep: "spheres", display: "Spheres",
+            colorSetting: "sphere_color", defaultColor: -1, properties: [
+                RepProperty(setting: "sphere_transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "sphere_scale", label: "Scale", kind: .slider, max: 3, step: 0.05),
+            ]),
+        "ribbon": RepSpec(rep: "ribbon", display: "Ribbon",
+            colorSetting: "ribbon_color", defaultColor: -1, properties: [
+                RepProperty(setting: "ribbon_transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "ribbon_width", label: "Width", kind: .slider, max: 6, step: 0.1, decimals: 1),
+            ]),
+        "mesh": RepSpec(rep: "mesh", display: "Mesh",
+            colorSetting: "mesh_color", defaultColor: -1, properties: [
+                RepProperty(setting: "transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "mesh_width", label: "Width", kind: .slider, max: 2, step: 0.05),
+            ]),
+        "lines": RepSpec(rep: "lines", display: "Lines",
+            colorSetting: "line_color", defaultColor: -1, properties: [
+                RepProperty(setting: "line_width", label: "Width", kind: .slider, min: 0.5, max: 10, step: 0.5, decimals: 1),
+            ]),
+        "dots": RepSpec(rep: "dots", display: "Dots",
+            colorSetting: "dot_color", defaultColor: -1, properties: [
+                RepProperty(setting: "transparency", label: "Transparency", kind: .slider),
+                RepProperty(setting: "dot_density", label: "Density", kind: .segmented,
+                            options: [("0", 0), ("1", 1), ("2", 2), ("3", 3)]),
+                RepProperty(setting: "dot_radius", label: "Radius", kind: .slider, max: 1, step: 0.05),
+            ]),
+        "nonbonded": RepSpec(rep: "nonbonded", display: "Nonbonded",
+            colorSetting: "", defaultColor: -1, properties: [
+                RepProperty(setting: "nonbonded_size", label: "Size", kind: .slider, max: 1, step: 0.05),
+            ]),
+        "nb_spheres": RepSpec(rep: "nb_spheres", display: "NB spheres",
+            colorSetting: "", defaultColor: -1, properties: [
+                RepProperty(setting: "nb_spheres_size", label: "Size", kind: .slider, max: 1, step: 0.05),
+            ]),
+        "labels": RepSpec(rep: "labels", display: "Labels",
+            colorSetting: "label_color", defaultColor: -6, properties: [
+                RepProperty(setting: "label_size", label: "Size", kind: .slider, min: 5, max: 40, step: 1, decimals: 0),
+            ]),
+    ]
+
+    static func spec(_ rep: String) -> RepSpec? { specs[rep] }
+    static func display(_ rep: String) -> String { specs[rep]?.display ?? rep }
+}
+
+// MARK: - Scene (global) parameter table
+
+struct SceneParam: Identifiable {
+    var id: String { setting }
+    let setting: String
+    let label: String
+    let kind: RepControlKind
+    var min: Double = 0
+    var max: Double = 1
+    var step: Double = 1
+    var decimals: Int = 0
+    var options: [(label: String, value: Double)] = []
+    let group: String
+}
+
+enum SceneCatalog {
+    static let groups = ["Lighting & Quality", "Camera"]
+    static let params: [SceneParam] = [
+        SceneParam(setting: "metal_shadows", label: "Shadows", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_ssao",    label: "Ambient occlusion", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_outline", label: "Outline", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_msaa",    label: "MSAA 4×", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "depth_cue",     label: "Depth cue / fog", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "field_of_view", label: "Field of view", kind: .slider, min: 10, max: 60, step: 1, decimals: 0, group: "Camera"),
+        SceneParam(setting: "surface_quality", label: "Surface quality", kind: .segmented,
+                   options: [("0", 0), ("1", 1), ("2", 2)], group: "Camera"),
+    ]
+}
 
 // MARK: - Data Models
 
@@ -339,10 +486,13 @@ struct ObjectPanel: View {
                     let objects = engine.objects.filter { !$0.isSelection }
                     let selections = engine.objects.filter { $0.isSelection }
 
-                    // Objects section
+                    // Global scene parameters (collapsible, pinned on top)
+                    SceneCard()
+
+                    // Objects section — each is an expandable inspector card
                     if !objects.isEmpty {
                         ForEach(Array(objects.enumerated()), id: \.element.id) { index, obj in
-                            ObjectRowView(entry: obj, isAlt: index % 2 == 1)
+                            ObjectCard(entry: obj, isAlt: index % 2 == 1)
                         }
                     }
 
@@ -634,6 +784,524 @@ private struct ColorMenuButton: View {
             engine.runCommand("spectrum count, selection=\(name)")
         } else {
             engine.runCommand("color \(command), \(name)")
+        }
+    }
+}
+
+// MARK: - Inspector: color helpers
+
+private func colorFromHex(_ hex: String) -> Color? {
+    var s = hex
+    if s.hasPrefix("#") { s.removeFirst() }
+    guard s.count == 6, let v = Int(s, radix: 16) else { return nil }
+    return Color(.sRGB,
+                 red: Double((v >> 16) & 0xff) / 255.0,
+                 green: Double((v >> 8) & 0xff) / 255.0,
+                 blue: Double(v & 0xff) / 255.0)
+}
+
+/// SwiftUI Color → PyMOL set_color list "[r,g,b]" in 0…1.
+private func rgb01List(_ color: Color) -> String {
+#if canImport(AppKit)
+    let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.white
+    return String(format: "[%.3f,%.3f,%.3f]", ns.redComponent, ns.greenComponent, ns.blueComponent)
+#else
+    return "[1,1,1]"
+#endif
+}
+
+private func sanitizeName(_ s: String) -> String {
+    String(s.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+}
+
+private let inspectorNamedColors: [(name: String, color: Color)] = [
+    ("red", .red), ("green", Color(.sRGB, red: 0, green: 0.9, blue: 0)),
+    ("blue", Color(.sRGB, red: 0.1, green: 0.3, blue: 1)),
+    ("yellow", .yellow), ("orange", .orange),
+    ("magenta", Color(.sRGB, red: 1, green: 0, blue: 1)), ("cyan", .cyan),
+    ("grey70", Color(.sRGB, white: 0.7)), ("grey30", Color(.sRGB, white: 0.3)),
+    ("white", .white), ("black", .black),
+]
+
+// MARK: - Inspector controls
+
+/// Slider + editable numeric field, debounced live updates, exact commit.
+private struct LabeledSlider: View {
+    let prop: RepProperty
+    let value: Double
+    let onLive: (Double) -> Void
+    let onCommit: (Double) -> Void
+
+    @State private var local: Double = 0
+    @State private var text: String = ""
+    @State private var editing = false
+    @State private var debounce: DispatchWorkItem?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Slider(value: $local, in: prop.min...prop.max, step: prop.step,
+                   onEditingChanged: { began in
+                       editing = began
+                       if !began { onCommit(local) }
+                   })
+                .controlSize(.mini)
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 40)
+                .foregroundColor(PanelTheme.textColor)
+                .onSubmit {
+                    if let v = Double(text) {
+                        local = Swift.min(Swift.max(v, prop.min), prop.max)
+                        onCommit(local)
+                    }
+                    text = fmt(local)
+                }
+        }
+        .onAppear { local = value; text = fmt(value) }
+        .onChange(of: value) { v in if !editing { local = v; text = fmt(v) } }
+        .onChange(of: local) { v in
+            text = fmt(v)
+            if editing { scheduleLive(v) }
+        }
+    }
+
+    private func fmt(_ v: Double) -> String { String(format: "%.\(prop.decimals)f", v) }
+    private func scheduleLive(_ v: Double) {
+        debounce?.cancel()
+        let w = DispatchWorkItem { onLive(v) }
+        debounce = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: w)
+    }
+}
+
+private struct SegmentedSetting: View {
+    let prop: RepProperty
+    let value: Double
+    let onSelect: (Double) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(prop.options.enumerated()), id: \.offset) { _, opt in
+                let sel = abs(opt.value - value) < 0.5
+                Button(action: { onSelect(opt.value) }) {
+                    Text(opt.label)
+                        .font(.system(size: 9, weight: sel ? .bold : .regular))
+                        .frame(width: 20, height: 16)
+                        .background(sel ? PanelTheme.selectionTextColor : PanelTheme.buttonBackground)
+                        .foregroundColor(sel ? Color.black : PanelTheme.buttonText)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
+private struct ToggleSetting: View {
+    let value: Double
+    let onToggle: (Bool) -> Void
+    var body: some View {
+        Toggle("", isOn: Binding(get: { value > 0.5 }, set: { onToggle($0) }))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .tint(PanelTheme.selectionTextColor)
+    }
+}
+
+/// Per-rep color OVERRIDE control (writes `<rep>_color`): Inherit / named / custom RGB.
+private struct RepColorControl: View {
+    let objName: String
+    let rep: String
+    let colorSetting: String
+    let defaultColor: Int
+    let colorState: String        // "inherit" or "#rrggbb"
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            swatch
+            Menu {
+                Button("Inherit") { setOverride("\(defaultColor)") }
+                Divider()
+                ForEach(Array(inspectorNamedColors.enumerated()), id: \.offset) { _, c in
+                    Button(action: { setOverride(c.name) }) {
+                        Label(c.name, systemImage: "circle.fill")
+                    }
+                }
+            } label: {
+                Text(colorState == "inherit" ? "Inherit" : "Custom")
+                    .font(.system(size: 10))
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .frame(maxWidth: 70)
+            ColorPicker("", selection: Binding(
+                get: { colorFromHex(colorState) ?? .white },
+                set: { applyCustom($0) }))
+                .labelsHidden()
+                .frame(width: 28)
+        }
+    }
+
+    @ViewBuilder private var swatch: some View {
+        if colorState == "inherit" {
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(PanelTheme.disabledColor, lineWidth: 1)
+                .frame(width: 14, height: 14)
+        } else {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(colorFromHex(colorState) ?? .gray)
+                .frame(width: 14, height: 14)
+        }
+    }
+
+    private func setOverride(_ c: String) {
+        engine.runCommand("set \(colorSetting), \(c), \(objName)")
+    }
+    private func applyCustom(_ color: Color) {
+        let nm = "tmp_\(sanitizeName(objName))_\(rep)"
+        engine.runCommand("set_color \(nm), \(rgb01List(color))\nset \(colorSetting), \(nm), \(objName)")
+    }
+}
+
+/// Object-level (Layer-1) color: presets + named + custom; affects all reps on "Inherit".
+private struct ObjectColorRow: View {
+    let objName: String
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Object color")
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.headerColor)
+            Spacer()
+            Menu {
+                Button("by element") { engine.runCommand("python\ncmd.util.cbag('\(objName)')\npython end") }
+                Button("by chain")   { engine.runCommand("python\ncmd.util.cbc('\(objName)')\npython end") }
+                Button("by ss")      { engine.runCommand("python\ncmd.util.cbss('\(objName)')\npython end") }
+                Button("spectrum")   { engine.runCommand("spectrum count, selection=\(objName)") }
+                Divider()
+                ForEach(Array(inspectorNamedColors.enumerated()), id: \.offset) { _, c in
+                    Button(c.name) { engine.runCommand("color \(c.name), \(objName)") }
+                }
+            } label: {
+                Text("Set").font(.system(size: 10))
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .frame(maxWidth: 60)
+            ColorPicker("", selection: Binding(get: { .white }, set: { applyCustom($0) }))
+                .labelsHidden()
+                .frame(width: 28)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func applyCustom(_ color: Color) {
+        let nm = "tmp_\(sanitizeName(objName))_obj"
+        engine.runCommand("set_color \(nm), \(rgb01List(color))\ncolor \(nm), \(objName)")
+    }
+}
+
+// MARK: - Object row content (shared by selection rows and object cards)
+
+private struct ObjectRowContent: View {
+    let entry: ObjectEntry
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        Button(action: { toggleEnabled() }) {
+            Image(systemName: entry.isEnabled ? "checkmark.square.fill" : "square")
+                .font(.system(size: 12))
+                .foregroundColor(entry.isEnabled ? PanelTheme.textColor : PanelTheme.disabledColor)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 18)
+
+        Text(entry.displayName)
+            .font(.system(size: 11))
+            .foregroundColor(entry.isSelection ? PanelTheme.selectionTextColor : PanelTheme.textColor)
+            .lineLimit(1)
+            .truncationMode(.tail)
+
+        Spacer(minLength: 4)
+
+        ActionMenuButton(name: entry.name)
+        ShowButton(name: entry.name)
+        HideButton(name: entry.name)
+        LabelMenuButton(name: entry.name)
+        ColorMenuButton(name: entry.name)
+    }
+
+    private func toggleEnabled() {
+        engine.runCommand(entry.isEnabled ? "disable \(entry.name)" : "enable \(entry.name)")
+    }
+}
+
+// MARK: - Expandable object card
+
+private struct ObjectCard: View {
+    let entry: ObjectEntry
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+    @State private var selectedRep: String?
+
+    private var expanded: Bool { engine.expandedObjects.contains(entry.name) }
+    private var reps: [RepState] { engine.objectDetails[entry.name] ?? [] }
+    private var activeReps: [String] {
+        RepCatalog.order.filter { r in reps.contains(where: { $0.rep == r }) }
+    }
+    private var currentRep: String? {
+        if let s = selectedRep, activeReps.contains(s) { return s }
+        return activeReps.first
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 2) {
+                Button(action: toggleExpand) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9))
+                        .foregroundColor(PanelTheme.headerColor)
+                        .frame(width: 13)
+                }
+                .buttonStyle(.plain)
+                ObjectRowContent(entry: entry)
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .frame(height: 24)
+            .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+
+            if expanded {
+                VStack(spacing: 3) {
+                    ObjectColorRow(objName: entry.name)
+                    if activeReps.isEmpty {
+                        Text("No representations shown")
+                            .font(.system(size: 10))
+                            .foregroundColor(PanelTheme.disabledColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        RepChips(objName: entry.name, active: activeReps,
+                                 current: currentRep, onSelect: { selectedRep = $0 })
+                        if let rep = currentRep,
+                           let spec = RepCatalog.spec(rep),
+                           let st = reps.first(where: { $0.rep == rep }) {
+                            RepPropertyGrid(objName: entry.name, spec: spec, state: st)
+                        }
+                    }
+                }
+                .padding(.leading, 18)
+                .padding(.trailing, 8)
+                .padding(.vertical, 4)
+                .background(PanelTheme.rowAltBackground.opacity(0.6))
+            }
+        }
+    }
+
+    private func toggleExpand() {
+        if expanded { engine.expandedObjects.remove(entry.name) }
+        else { engine.expandedObjects.insert(entry.name) }
+    }
+}
+
+// MARK: - Representation chips
+
+private struct RepChips: View {
+    let objName: String
+    let active: [String]
+    let current: String?
+    let onSelect: (String) -> Void
+    @EnvironmentObject var engine: PyMOLEngine
+
+    private var inactive: [String] {
+        RepCatalog.order.filter { !active.contains($0) }
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(active, id: \.self) { rep in
+                    let sel = rep == current
+                    Button(action: { onSelect(rep) }) {
+                        Text(RepCatalog.display(rep))
+                            .font(.system(size: 9, weight: sel ? .bold : .regular))
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(sel ? PanelTheme.selectionTextColor : PanelTheme.buttonBackground)
+                            .foregroundColor(sel ? Color.black : PanelTheme.buttonText)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Menu {
+                    ForEach(inactive, id: \.self) { rep in
+                        Button(RepCatalog.display(rep)) {
+                            engine.runCommand("show \(rep), \(objName)")
+                            onSelect(rep)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(PanelTheme.buttonBackground)
+                        .foregroundColor(PanelTheme.buttonText)
+                        .clipShape(Capsule())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+        }
+    }
+}
+
+// MARK: - Property grid
+
+private struct RepPropertyGrid: View {
+    let objName: String
+    let spec: RepSpec
+    let state: RepState
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        VStack(spacing: 3) {
+            gridRow("Visible") {
+                ToggleSetting(value: state.visible ? 1 : 0) { on in
+                    engine.runCommand("\(on ? "show" : "hide") \(spec.rep), \(objName)")
+                }
+            }
+            if !spec.colorSetting.isEmpty {
+                gridRow("Color") {
+                    RepColorControl(objName: objName, rep: spec.rep,
+                                    colorSetting: spec.colorSetting,
+                                    defaultColor: spec.defaultColor,
+                                    colorState: state.color)
+                }
+            }
+            ForEach(spec.properties) { p in
+                gridRow(p.label) { control(for: p) }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private func control(for p: RepProperty) -> some View {
+        let v = state.values[p.setting] ?? 0
+        switch p.kind {
+        case .slider:
+            LabeledSlider(prop: p, value: v,
+                          onLive: { set(p.setting, $0) },
+                          onCommit: { set(p.setting, $0) })
+        case .segmented:
+            SegmentedSetting(prop: p, value: v) { set(p.setting, $0) }
+        case .toggle:
+            ToggleSetting(value: v) { set(p.setting, $0 ? 1 : 0) }
+        }
+    }
+
+    private func set(_ setting: String, _ value: Double) {
+        let s = (value == value.rounded()) ? String(Int(value)) : String(format: "%.4f", value)
+        engine.runCommand("set \(setting), \(s), \(objName)")
+    }
+
+    @ViewBuilder
+    private func gridRow<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
+                .frame(width: 78, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+// MARK: - Scene (global) card
+
+private struct SceneCard: View {
+    @EnvironmentObject var engine: PyMOLEngine
+    @State private var expanded = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: { expanded.toggle() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9)).foregroundColor(PanelTheme.headerColor)
+                    Text("SCENE")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(PanelTheme.headerColor)
+                    Spacer()
+                    Text("global").font(.system(size: 9)).foregroundColor(PanelTheme.disabledColor)
+                }
+                .padding(.horizontal, 6).frame(height: 22)
+                .background(PanelTheme.background)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(spacing: 3) {
+                    sceneRow("Background") {
+                        ColorPicker("", selection: Binding(
+                            get: { Color(.sRGB,
+                                         red: engine.sceneState.bg.count > 0 ? engine.sceneState.bg[0] : 0,
+                                         green: engine.sceneState.bg.count > 1 ? engine.sceneState.bg[1] : 0,
+                                         blue: engine.sceneState.bg.count > 2 ? engine.sceneState.bg[2] : 0) },
+                            set: { setBackground($0) }))
+                            .labelsHidden().frame(width: 28)
+                    }
+                    ForEach(SceneCatalog.params) { p in
+                        sceneRow(p.label) { sceneControl(p) }
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(PanelTheme.rowAltBackground.opacity(0.6))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sceneControl(_ p: SceneParam) -> some View {
+        let v = engine.sceneState.values[p.setting] ?? 0
+        switch p.kind {
+        case .toggle:
+            ToggleSetting(value: v) { on in engine.runCommand("set \(p.setting), \(on ? 1 : 0)") }
+        case .segmented:
+            SegmentedSetting(prop: RepProperty(setting: p.setting, label: p.label, kind: .segmented, options: p.options),
+                             value: v) { engine.runCommand("set \(p.setting), \(Int($0))") }
+        case .slider:
+            LabeledSlider(prop: RepProperty(setting: p.setting, label: p.label, kind: .slider,
+                                            min: p.min, max: p.max, step: p.step, decimals: p.decimals),
+                          value: v,
+                          onLive: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") },
+                          onCommit: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") })
+        }
+    }
+
+    private func fmtScene(_ v: Double, _ p: SceneParam) -> String {
+        p.decimals == 0 ? String(Int(v.rounded())) : String(format: "%.4f", v)
+    }
+
+    private func setBackground(_ color: Color) {
+        engine.runCommand("set_color _bgcol, \(rgb01List(color))\nbg_color _bgcol")
+    }
+
+    @ViewBuilder
+    private func sceneRow<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
+                .frame(width: 110, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
         }
     }
 }

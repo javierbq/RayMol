@@ -16,6 +16,16 @@ final class PyMOLEngine: ObservableObject {
     @Published var isReady = false
     @Published var sequenceVisible = true
 
+    // Representation inspector state.
+    // Per-object active representations + their current setting values + color
+    // override, populated by pollDetails()/parseObjectDetailFeedback().
+    @Published var objectDetails: [String: [RepState]] = [:]
+    // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
+    @Published var sceneState = SceneState()
+    // Which object cards are expanded — drives which objects the detail poll
+    // queries (so collapsed cards cost nothing).
+    @Published var expandedObjects: Set<String> = []
+
     // The opaque PyMOL instance pointer
     private(set) var instance: PyMOLHandle?
 
@@ -130,6 +140,16 @@ final class PyMOLEngine: ObservableObject {
                 guard let self = self else { return }
                 for _ in 0..<reps { self.zoomBy(frac) }
                 NSLog("PYMOL_AUTOZOOM: zoomBy(\(frac)) x\(reps)")
+            }
+        }
+
+        // Test affordance: seed the inspector's expanded object cards so the
+        // expanded representation grid can be screenshotted without a click.
+        // Format: comma-separated object names.
+        if let ex = ProcessInfo.processInfo.environment["PYMOL_AUTOEXPAND"] {
+            let names = ex.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                self?.expandedObjects = Set(names.filter { !$0.isEmpty })
             }
         }
 
@@ -315,6 +335,8 @@ final class PyMOLEngine: ObservableObject {
             for line in text.components(separatedBy: "\n") {
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
+                } else if line.hasPrefix("OBJDETAIL:") {
+                    parseObjectDetailFeedback(line)
                 } else if line.hasPrefix("SEQPANEL:") {
                     parseSequencePanelFeedback(line)
                 } else if line.hasPrefix("SEQSEL:") {
@@ -361,6 +383,62 @@ final class PyMOLEngine: ObservableObject {
             + "print('OBJPANEL:' + json.dumps({'objects': _objs, 'selections': _sels, "
             + "'enabled': list(_en), 'sel_counts': _sc}))"
         )
+
+        pollDetails()
+    }
+
+    // Query active reps + per-rep settings + scene globals for the currently
+    // EXPANDED object cards only (collapsed cards cost nothing). Emits an
+    // OBJDETAIL feedback line via the bundled appkit_inspector module.
+    private func pollDetails() {
+        // Always run (cheap when nothing expanded — just the ~8 scene gets) so
+        // the Scene card stays fresh; per-object rep detail is queried only for
+        // expanded cards.
+        let names = expandedObjects
+        let pyList = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }.joined(separator: ", ")
+        runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
+    }
+
+    // Parse OBJDETAIL:<json> → objectDetails + sceneState.
+    func parseObjectDetailFeedback(_ line: String) {
+        let js = String(line.dropFirst("OBJDETAIL:".count))
+        guard let data = js.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        var details: [String: [RepState]] = [:]
+        if let detail = root["detail"] as? [String: Any] {
+            for (obj, repsAny) in detail {
+                guard let reps = repsAny as? [[String: Any]] else { continue }
+                details[obj] = reps.map { r in
+                    var values: [String: Double] = [:]
+                    if let vals = r["vals"] as? [String: Any] {
+                        for (k, v) in vals { values[k] = (v as? NSNumber)?.doubleValue ?? 0 }
+                    }
+                    return RepState(
+                        rep: r["rep"] as? String ?? "",
+                        visible: ((r["vis"] as? NSNumber)?.intValue ?? 1) != 0,
+                        values: values,
+                        color: r["color"] as? String ?? "inherit")
+                }
+            }
+        }
+
+        var scene = SceneState()
+        if let sc = root["scene"] as? [String: Any] {
+            for (k, v) in sc {
+                if k == "bg", let arr = v as? [Any] {
+                    scene.bg = arr.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+                } else {
+                    scene.values[k] = (v as? NSNumber)?.doubleValue ?? 0
+                }
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.objectDetails = details
+            self.sceneState = scene
+        }
     }
 }
 
