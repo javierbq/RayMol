@@ -1914,7 +1914,36 @@ struct VBOUniforms {
 struct VBOVertexOut {
   float4 position [[position]];
   float4 color;
+  float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
 };
+
+// PyMOL default two-light model (matches the sphere/cylinder impostors and
+// data/shaders/compute_color_for_light.fs): ambient .14, headlight direct .45,
+// key reflect .481, specular .5, shininess 55. Two-sided: the interpolated
+// normal is flipped to face the viewer so cartoon undersides / surface
+// interiors light up instead of going dark.
+static float3 vbo_shade(float3 baseColor, float3 nEye) {
+  float3 normal = normalize(nEye);
+  if (normal.z < 0.0) normal = -normal;
+  const float ambient    = 0.14;
+  const float direct     = 0.45;
+  const float reflect    = 0.481;
+  const float spec_value = 0.5;
+  const float shininess  = 55.0;
+  const float3 L0 = float3(0.0, 0.0, 1.0);
+  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+  float intensity = ambient;
+  float specular = 0.0;
+  float n0 = dot(normal, L0);
+  if (n0 > 0.0) intensity += direct * n0;
+  float n1 = dot(normal, L1);
+  if (n1 > 0.0) {
+    intensity += reflect * n1;
+    float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
+    specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
+  }
+  return baseColor * min(intensity, 1.0) + specular;
+}
 
 // Unlit input has no normal attribute (lines/ribbon/dots disable lighting).
 struct VBOVertexInUnlit {
@@ -1935,23 +1964,18 @@ vertex VBOVertexOut vbo_vertex(
   VBOVertexOut out;
   float4 eyePos = uniforms.modelview * float4(in.position, 1.0);
   out.position = uniforms.projection * eyePos;
-
-  // Two-sided directional lighting in eye space: abs(N·L) lights back faces
-  // (surface interiors, cartoon undersides) instead of leaving them black,
-  // matching desktop PyMOL's two_sided_lighting behavior for closed geometry.
-  float3 eyeNormal = normalize((uniforms.modelview * float4(in.normal, 0.0)).xyz);
-  float3 lightDir = float3(0.0, 0.0, 1.0);
-  float NdotL = abs(dot(eyeNormal, lightDir));
-  float ambient = 0.25;
-  float lighting = ambient + (1.0 - ambient) * NdotL;
-
-  out.color = float4(in.color.rgb * lighting, in.color.a);
+  // Carry the eye-space normal + raw color; lighting is done PER-FRAGMENT
+  // (Phong) in vbo_fragment. Per-vertex (Gouraud) lighting baked the shade
+  // into the interpolated color, which faceted the coarse cartoon mesh
+  // (visible triangle banding); per-pixel shading is smooth.
+  out.normalEye = (uniforms.modelview * float4(in.normal, 0.0)).xyz;
+  out.color = in.color;
   return out;
 }
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]])
 {
-  return in.color;
+  return float4(vbo_shade(in.color.rgb, in.normalEye), in.color.a);
 }
 
 // Unlit: flat color, no lighting. Used for lines/ribbon (GL_LINES) and dots
@@ -1986,7 +2010,7 @@ static float oit_weight(float a, float z) {
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]])
 {
-  float4 c = in.color;
+  float4 c = float4(vbo_shade(in.color.rgb, in.normalEye), in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
   o.accum = float4(c.rgb * c.a, c.a) * w;
