@@ -337,10 +337,14 @@ private:
   bool _rtReady = false;          // instance acceleration structure is built
   // Atom-sphere geometry accumulated each frame (model space, center+radius).
   std::vector<float> _rtSpheres;  // x,y,z,r per sphere
+  // Solid triangle geometry (model space): tessellated sticks + cartoon/surface
+  // meshes. 3 verts (9 floats) per triangle, non-indexed.
+  std::vector<float> _rtTris;
   uint64_t _rtSphereHash = 0;     // checksum of the built set (rebuild on change)
   size_t _rtBuiltCount = 0;
   id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
-  id<MTLAccelerationStructure> _rtInstanceAS = nil;     // one instance per atom
+  id<MTLAccelerationStructure> _rtTriProtoAS = nil;     // world triangle mesh
+  id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
   id<MTLBuffer> _rtProtoVerts = nil;
   id<MTLBuffer> _rtProtoIndices = nil;
   uint32_t _rtProtoIndexCount = 0;

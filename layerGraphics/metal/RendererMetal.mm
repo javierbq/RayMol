@@ -366,6 +366,7 @@ void RendererMetal::beginFrame()
   // Model-space geometry is stable, so one-frame latency is invisible.
   if (_rtEnabled) ensureRayTracingAS();
   _rtSpheres.clear();  // re-accumulated during this frame's opaque pass
+  _rtTris.clear();
 
   _cmdBuffer = [_queue commandBuffer];
   _encoder = nil;
@@ -982,6 +983,65 @@ fragment float4 rt_resolve(PostVOut in [[stage_in]],
 )";
 
 
+// Tessellate a cylinder (a→b, radius r) into a K-sided tube (no caps — bonded
+// atoms cover the ends) and append the triangles (x,y,z per vertex) to `out`.
+static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3 b, float r)
+{
+  simd_float3 axis = b - a;
+  float len = simd_length(axis);
+  if (len < 1e-5f || r <= 0.0f) return;
+  axis /= len;
+  simd_float3 up = fabsf(axis.z) < 0.9f ? simd_make_float3(0, 0, 1)
+                                        : simd_make_float3(1, 0, 0);
+  simd_float3 t1 = simd_normalize(simd_cross(up, axis));
+  simd_float3 t2 = simd_cross(axis, t1);
+  const int K = 6;
+  simd_float3 ringA[K], ringB[K];
+  for (int i = 0; i < K; ++i) {
+    float ang = 6.2831853f * (float)i / (float)K;
+    simd_float3 off = (cosf(ang) * t1 + sinf(ang) * t2) * r;
+    ringA[i] = a + off;
+    ringB[i] = b + off;
+  }
+  auto push = [&](simd_float3 p) { out.push_back(p.x); out.push_back(p.y); out.push_back(p.z); };
+  for (int i = 0; i < K; ++i) {
+    int j = (i + 1) % K;
+    push(ringA[i]); push(ringA[j]); push(ringB[j]);
+    push(ringA[i]); push(ringB[j]); push(ringB[i]);
+  }
+}
+
+// Append the triangles of a VBO (cartoon/surface mesh) to `out`, reading the
+// float3 position at posOffset. Handles triangle list/strip/fan/quads; indices
+// are UInt32 (matches drawVBOIndexed) or sequential when indexData is null.
+static void rtAppendVBOTris(std::vector<float>& out, PrimitiveType mode,
+    int count, const void* data, size_t stride, int posOffset, const void* indexData)
+{
+  if (!data || stride == 0 || posOffset < 0 || count < 3) return;
+  const uint8_t* base = static_cast<const uint8_t*>(data);
+  const uint32_t* idx = static_cast<const uint32_t*>(indexData);
+  auto gi = [&](int k) -> uint32_t { return idx ? idx[k] : (uint32_t)k; };
+  auto push = [&](uint32_t vi) {
+    const float* p = reinterpret_cast<const float*>(base + (size_t)vi * stride + posOffset);
+    out.push_back(p[0]); out.push_back(p[1]); out.push_back(p[2]);
+  };
+  auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) { push(i0); push(i1); push(i2); };
+  using PT = PrimitiveType;
+  if (mode == PT::Triangles) {
+    for (int k = 0; k + 2 < count; k += 3) tri(gi(k), gi(k + 1), gi(k + 2));
+  } else if (mode == PT::TriangleStrip) {
+    for (int k = 0; k + 2 < count; ++k)
+      (k & 1) ? tri(gi(k + 1), gi(k), gi(k + 2)) : tri(gi(k), gi(k + 1), gi(k + 2));
+  } else if (mode == PT::TriangleFan) {
+    for (int k = 1; k + 1 < count; ++k) tri(gi(0), gi(k), gi(k + 1));
+  } else if (mode == PT::Quads) {
+    for (int k = 0; k + 3 < count; k += 4) {
+      tri(gi(k), gi(k + 1), gi(k + 2));
+      tri(gi(k), gi(k + 2), gi(k + 3));
+    }
+  }
+}
+
 // Build (and synchronously complete) an acceleration structure from a descriptor.
 // Used only when geometry changes, so the CPU stall is acceptable.
 id<MTLAccelerationStructure>
@@ -1080,47 +1140,104 @@ void RendererMetal::ensureRayTracingAS()
 {
   if (!_rtEnabled || !_rtSupported) { _rtReady = false; return; }
   size_t nSph = _rtSpheres.size() / 4;
-  if (nSph == 0) { _rtReady = false; return; }
+  size_t nTris = (_rtTris.size() / 3) / 3;   // verts→triangles
+  if (nSph == 0 && nTris == 0) { _rtReady = false; return; }
 
-  buildSphereProtoAS();
-  if (!_rtSphereProtoAS) { _rtReady = false; return; }
+  if (nSph > 0) buildSphereProtoAS();
 
-  // FNV-1a over the sphere data → rebuild only on change.
+  // Cheap change signature (counts + sampled coords) — rebuild only when the
+  // geometry actually changes (stable across camera rotation, so no rebuild
+  // while orbiting). Full FNV over big surface meshes every frame is wasteful.
   uint64_t h = 1469598103934665603ULL;
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(_rtSpheres.data());
-  size_t n = _rtSpheres.size() * sizeof(float);
-  for (size_t i = 0; i < n; ++i) { h ^= bytes[i]; h *= 1099511628211ULL; }
-  if (_rtReady && _rtInstanceAS && h == _rtSphereHash && nSph == _rtBuiltCount) return;
+  auto mix = [&](uint64_t x) { h ^= x; h *= 1099511628211ULL; };
+  mix(nSph); mix(nTris);
+  auto sampleHash = [&](const std::vector<float>& vv) {
+    size_t m = vv.size();
+    if (!m) return;
+    size_t step = m > 1024 ? m / 1024 : 1;
+    for (size_t i = 0; i < m; i += step) { uint32_t b; std::memcpy(&b, &vv[i], 4); mix(b); }
+  };
+  sampleHash(_rtSpheres); sampleHash(_rtTris);
+  if (_rtReady && _rtInstanceAS && h == _rtSphereHash) { /* unchanged */ }
+  else {
+    // (Re)build the world-triangle primitive AS (sticks + cartoon/surface).
+    _rtTriProtoAS = nil;
+    if (nTris > 0) {
+      id<MTLBuffer> tb = [_device newBufferWithBytes:_rtTris.data()
+                                              length:_rtTris.size() * sizeof(float)
+                                             options:MTLResourceStorageModeShared];
+      MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
+          [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+      tgeo.vertexBuffer = tb;
+      tgeo.vertexStride = 3 * sizeof(float);
+      tgeo.vertexFormat = MTLAttributeFormatFloat3;
+      tgeo.triangleCount = nTris;
+      tgeo.opaque = YES;
+      MTLPrimitiveAccelerationStructureDescriptor* pd =
+          [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+      pd.geometryDescriptors = @[tgeo];
+      _rtTriProtoAS = buildAccelStructure(pd);
+    }
 
-  id<MTLBuffer> instBuf =
-      [_device newBufferWithLength:nSph * sizeof(MTLAccelerationStructureInstanceDescriptor)
-                          options:MTLResourceStorageModeShared];
-  auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
-  for (size_t i = 0; i < nSph; ++i) {
-    float x = _rtSpheres[i * 4], y = _rtSpheres[i * 4 + 1],
-          z = _rtSpheres[i * 4 + 2], r = _rtSpheres[i * 4 + 3];
-    if (r <= 0.0f) r = 0.001f;
-    MTLPackedFloat4x3 m;
-    m.columns[0].x = r; m.columns[0].y = 0; m.columns[0].z = 0;
-    m.columns[1].x = 0; m.columns[1].y = r; m.columns[1].z = 0;
-    m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = r;
-    m.columns[3].x = x; m.columns[3].y = y; m.columns[3].z = z;
-    inst[i].transformationMatrix = m;
-    inst[i].options = MTLAccelerationStructureInstanceOptionOpaque;
-    inst[i].mask = 0xFF;
-    inst[i].intersectionFunctionTableOffset = 0;
-    inst[i].accelerationStructureIndex = 0;
+    // Top-level instance AS: N icosphere instances (atoms) + 1 world-tri
+    // instance (identity). instancedAccelerationStructures indexes the protos.
+    NSMutableArray* protos = [NSMutableArray array];
+    int sphereIdx = -1, triIdx = -1;
+    if (nSph > 0 && _rtSphereProtoAS) { sphereIdx = (int)protos.count; [protos addObject:_rtSphereProtoAS]; }
+    if (_rtTriProtoAS) { triIdx = (int)protos.count; [protos addObject:_rtTriProtoAS]; }
+    size_t nInst = (sphereIdx >= 0 ? nSph : 0) + (triIdx >= 0 ? 1 : 0);
+    if (nInst == 0 || protos.count == 0) { _rtReady = false; return; }
+
+    id<MTLBuffer> instBuf =
+        [_device newBufferWithLength:nInst * sizeof(MTLAccelerationStructureInstanceDescriptor)
+                            options:MTLResourceStorageModeShared];
+    auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
+    size_t ii = 0;
+    if (sphereIdx >= 0) {
+      for (size_t i = 0; i < nSph; ++i, ++ii) {
+        float x = _rtSpheres[i * 4], y = _rtSpheres[i * 4 + 1],
+              z = _rtSpheres[i * 4 + 2], r = _rtSpheres[i * 4 + 3];
+        if (r <= 0.0f) r = 0.001f;
+        MTLPackedFloat4x3 m;
+        m.columns[0].x = r; m.columns[0].y = 0; m.columns[0].z = 0;
+        m.columns[1].x = 0; m.columns[1].y = r; m.columns[1].z = 0;
+        m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = r;
+        m.columns[3].x = x; m.columns[3].y = y; m.columns[3].z = z;
+        inst[ii].transformationMatrix = m;
+        inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
+        inst[ii].mask = 0xFF;
+        inst[ii].intersectionFunctionTableOffset = 0;
+        inst[ii].accelerationStructureIndex = sphereIdx;
+      }
+    }
+    if (triIdx >= 0) {
+      MTLPackedFloat4x3 m;
+      m.columns[0].x = 1; m.columns[0].y = 0; m.columns[0].z = 0;
+      m.columns[1].x = 0; m.columns[1].y = 1; m.columns[1].z = 0;
+      m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = 1;
+      m.columns[3].x = 0; m.columns[3].y = 0; m.columns[3].z = 0;
+      inst[ii].transformationMatrix = m;
+      inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
+      inst[ii].mask = 0xFF;
+      inst[ii].intersectionFunctionTableOffset = 0;
+      inst[ii].accelerationStructureIndex = triIdx;
+      ++ii;
+    }
+
+    MTLInstanceAccelerationStructureDescriptor* idesc =
+        [MTLInstanceAccelerationStructureDescriptor descriptor];
+    idesc.instancedAccelerationStructures = protos;
+    idesc.instanceCount = (NSUInteger)nInst;
+    idesc.instanceDescriptorBuffer = instBuf;
+    _rtInstanceAS = buildAccelStructure(idesc);
+    _rtSphereHash = h;
+    _rtBuiltCount = nSph;
+    _rtReady = (_rtInstanceAS != nil);
+
+    static int once = 0;
+    if (_rtReady && once++ < 5)
+      NSLog(@"RendererMetal RT: AS rebuilt — %zu spheres + %zu triangles", nSph, nTris);
   }
-
-  MTLInstanceAccelerationStructureDescriptor* idesc =
-      [MTLInstanceAccelerationStructureDescriptor descriptor];
-  idesc.instancedAccelerationStructures = @[_rtSphereProtoAS];
-  idesc.instanceCount = (NSUInteger)nSph;
-  idesc.instanceDescriptorBuffer = instBuf;
-  _rtInstanceAS = buildAccelStructure(idesc);
-  _rtSphereHash = h;
-  _rtBuiltCount = nSph;
-  _rtReady = (_rtInstanceAS != nil);
 
   // Lazily compile the RT resolve pipeline (separate library so the raytracing
   // intersector code can't affect the main post library). If it fails, the RT
@@ -1138,10 +1255,6 @@ void RendererMetal::ensureRayTracingAS()
     if (!_rtResolvePipeline)
       NSLog(@"RendererMetal RT: rt_resolve pipeline failed: %@", err);
   }
-
-  static int once = 0;
-  if (_rtReady && once++ < 3)
-    NSLog(@"RendererMetal RT: built instance AS with %zu spheres", nSph);
 }
 
 void RendererMetal::runPostChain()
@@ -2602,6 +2715,10 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   ensureEncoder();
   if (!_encoder) return;
 
+  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
+  if (_rtEnabled && !_shadowMode && !_oitActive)
+    rtAppendVBOTris(_rtTris, mode, vertexCount, data, stride, posOffset, nullptr);
+
   // Reuse cached Metal buffer if same data pointer, otherwise create new
   id<MTLBuffer> vbo = nil;
   auto cacheIt = _vboCache.find(data);
@@ -2769,6 +2886,10 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
       indexDataSize == 0 || indexCount <= 0) return;
   ensureEncoder();
   if (!_encoder) return;
+
+  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
+  if (_rtEnabled && !_shadowMode && !_oitActive)
+    rtAppendVBOTris(_rtTris, mode, indexCount, vertexData, stride, posOffset, indexData);
 
   // Reuse cached Metal buffers
   id<MTLBuffer> vbo = nil;
@@ -3603,6 +3724,22 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
                                      options:MTLResourceStorageModeShared];
            if (ibo) _vboCache[call.idata] = ibo; } }
   if (!vbo || !ibo) return;
+
+  // Ray tracing: tessellate cylinders (sticks) into the world-triangle set,
+  // once per frame (opaque pass only). 8 verts/cylinder share v1/v2/radius.
+  if (_rtEnabled && !_shadowMode && !_oitActive && call.cylinderCount > 0) {
+    const uint8_t* vb = static_cast<const uint8_t*>(call.vdata);
+    for (int k = 0; k < call.cylinderCount; ++k) {
+      size_t bptr = (size_t)(8 * k) * call.stride;
+      const float* p1 = reinterpret_cast<const float*>(vb + bptr + call.v1Off);
+      const float* p2 = reinterpret_cast<const float*>(vb + bptr + call.v2Off);
+      float r = call.uniRadius > 0.0f
+                    ? call.uniRadius
+                    : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
+      rtAppendCylinder(_rtTris, simd_make_float3(p1[0], p1[1], p1[2]),
+                       simd_make_float3(p2[0], p2[1], p2[2]), r);
+    }
+  }
 
   if (_shadowMode) {
     [_encoder setRenderPipelineState:_cylinderShadowPipeline];
