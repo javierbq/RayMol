@@ -972,6 +972,7 @@ struct RTU {
   float projA, projB, projX, projY;
   float fogStart, fogEnd, aoRadius, aoIntensity;
   float shadowIntensity, nSamples, frame, _pad;
+  float4x4 lightViewProj;  // eye-space light view*proj for shadow-map sampling
 };
 
 static float rt_hash(float2 p) {
@@ -981,7 +982,9 @@ static float rt_hash(float2 p) {
 fragment float4 rt_resolve(PostVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
+    depth2d<float> shadowTex [[texture(2)]],
     sampler s [[sampler(0)]],
+    sampler shadowSamp [[sampler(1)]],
     instance_acceleration_structure accel [[buffer(0)]],
     constant RTU& u [[buffer(1)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
@@ -1032,20 +1035,37 @@ fragment float4 rt_resolve(PostVOut in [[stage_in]],
     if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(max(N, 1))) * u.aoIntensity;
+  col *= ao;
 
-  // Hard shadow ray toward the key light.
-  float sh = 1.0;
-  {
-    ray rr;
-    rr.origin = origin;
-    rr.direction = normalize(u.lightDirModel.xyz);
-    rr.min_distance = bias;
-    rr.max_distance = 1.0e6;
-    auto res = it.intersect(rr, accel);
-    if (res.type != intersection_type::none) sh = 1.0 - u.shadowIntensity;
+  // Cast shadows: sample the SHADOW MAP (the same light-POV depth pre-pass the
+  // SSAO path uses) rather than a single RT shadow ray — the rasterized depth
+  // captures the full occluder silhouette, giving solid cast bands where a lone
+  // ray on thin cartoon ribbons would mostly miss. PCF + face/separation gates
+  // mirror post_ssao_fog so RT and non-RT shadows look identical.
+  if (u.shadowIntensity > 0.0) {
+    float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
+    float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
+    float4 lc = u.lightViewProj * float4(pEye, 1.0);     // eye -> light clip
+    if (faceGate > 0.0 && lc.w > 0.0) {
+      float3 ndc = lc.xyz / lc.w;
+      float2 suv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
+      float fragDepth = 0.5 + 0.5 * ndc.z;
+      if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 &&
+          fragDepth > 0.0 && fragDepth < 1.0) {
+        float2 dd = float2(dfdx(fragDepth), dfdy(fragDepth));
+        float sep = min(0.022 + 2.5 * (abs(dd.x) + abs(dd.y)), 0.05);
+        float2 texel = 1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
+        float lit = 0.0;
+        for (int j = -2; j <= 1; j++)
+          for (int i = -2; i <= 1; i++) {
+            float2 off = (float2(i, j) + 0.5) * 1.5 * texel;
+            lit += shadowTex.sample_compare(shadowSamp, suv + off, fragDepth - sep);
+          }
+        float shadow = (1.0 - lit / 16.0) * faceGate;
+        col *= (1.0 - shadow * u.shadowIntensity);
+      }
+    }
   }
-
-  col *= ao * sh;
 
   // Depth-cue fog toward bg (eye distance), matching the SSAO pass.
   if (u.bgFog.w > 0.5) {
@@ -1355,6 +1375,7 @@ void RendererMetal::runPostChain()
       float projA, projB, projX, projY;
       float fogStart, fogEnd, aoRadius, aoIntensity;
       float shadowIntensity, nSamples, frame, _pad;
+      float lightViewProj[16];   // eye-space light VP for shadow-map sampling
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -1373,6 +1394,7 @@ void RendererMetal::runPostChain()
     static uint32_t rtFrame = 0;
     u.frame = (float)(rtFrame++ & 1023);
     u._pad = 0.0f;
+    std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
 
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
     pd.colorAttachments[0].texture = _postColor;
@@ -1381,10 +1403,15 @@ void RendererMetal::runPostChain()
     id<MTLRenderCommandEncoder> er =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
     [er setRenderPipelineState:_rtResolvePipeline];
-    [er useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    if (_rtSphereProtoAS)
+      [er useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    if (_rtTriProtoAS)
+      [er useResource:_rtTriProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
+    [er setFragmentTexture:_shadowDepth atIndex:2];
     [er setFragmentSamplerState:_postSampler atIndex:0];
+    [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
     [er drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
