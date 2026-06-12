@@ -1078,7 +1078,9 @@ private struct ObjectCard: View {
 
             if expanded {
                 VStack(spacing: 3) {
-                    ObjectColorRow(objName: entry.name)
+                    // Object/layer-level coloring (by element/chain/ss/spectrum/
+                    // named) is the structure row's "C" button — not duplicated
+                    // here. The per-rep grid below controls per-rep color overrides.
                     if activeReps.isEmpty {
                         Text("No representations shown")
                             .font(.system(size: 10))

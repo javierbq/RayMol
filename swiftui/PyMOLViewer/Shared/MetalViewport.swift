@@ -318,19 +318,22 @@ extension MetalViewport {
             let pt = pymolPoint(in: view, at: loc)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
-            // A real mouse wheel has no precise deltas → zoom (via the explicit
-            // dolly, since the bare-wheel BUTTON path maps to 'slab'). Use
-            // scrollingDeltaY (modern, always-populated) over deprecated deltaY.
-            if !event.hasPreciseScrollingDeltas {
+            let phase = event.phase
+            let momentum = event.momentumPhase
+
+            // A traditional scroll WHEEL has no touch phase (a trackpad / Magic
+            // Mouse gesture always sets phase or momentumPhase). Route the wheel
+            // to PyMOL's default bare-wheel binding = SLAB (clip), via the scroll
+            // button. Touch-surface two-finger scroll falls through to PAN below.
+            if phase == [] && momentum == [] {
                 let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
                 guard wheel != 0 else { return }
-                engine?.zoomBy(wheel > 0 ? 0.1 : -0.1)
+                let btn: Int32 = wheel > 0 ? PYMOL_BUTTON_SCROLL_FORWARD : PYMOL_BUTTON_SCROLL_REVERSE
+                engine?.button(btn, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: mods)
                 return
             }
 
             // Trackpad two-finger drag → translate (middle-drag).
-            let phase = event.phase
-            let momentum = event.momentumPhase
             let scale = view.window?.backingScaleFactor ?? 2.0
             let dx = Int32((event.scrollingDeltaX * scale * kPanSignX).rounded())
             let dy = Int32((event.scrollingDeltaY * scale * kPanSignY).rounded())
