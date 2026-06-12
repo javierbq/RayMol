@@ -148,6 +148,15 @@ public:
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       int outlineEnabled, float projA, float projB, float projX,
       float projY, int rtEnabled) override;
+
+  // Letterbox: render the scene into a centered sub-rect of the given aspect
+  // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
+  void setLetterboxAspect(float a) { _letterboxAspect = a; }
+  float letterboxAspect() const { return _letterboxAspect; }
+  // Letterbox origin in backing px (for mouse-coordinate offsetting).
+  int letterboxOriginX() const { return _lbOriginX; }
+  int letterboxOriginY() const { return _lbOriginY; }
+  void setLetterboxOrigin(int x, int y) { _lbOriginX = x; _lbOriginY = y; }
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -330,6 +339,8 @@ private:
   id<MTLRenderPipelineState> _outlinePipeline = nil;
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
+  float _letterboxAspect = 0.f;       // saved-viewport W/H; 0 = fill window
+  int _lbOriginX = 0, _lbOriginY = 0; // letterbox sub-rect origin (backing px)
 
   // --- Real-time ray tracing (cSetting_metal_raytrace) ---
   bool _rtSupported = false;      // [_device supportsRaytracing], set in ctor

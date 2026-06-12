@@ -28,6 +28,7 @@ int  PyMOLBridge_GetRedisplay(PyMOLHandle instance, int reset);
 // --- Input ---
 void PyMOLBridge_Button(PyMOLHandle instance, int button, int state, int x, int y, int modifiers);
 void PyMOLBridge_Drag(PyMOLHandle instance, int x, int y, int modifiers);
+void PyMOLBridge_SetLetterboxAspect(PyMOLHandle instance, float aspect);
 void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 
 // --- Context management ---

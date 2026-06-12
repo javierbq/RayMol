@@ -183,6 +183,42 @@ final class PyMOLEngine: ObservableObject {
     func runCommand(_ command: String) {
         guard isReady else { return }
         PyMOLBridge_RunCommand(command)
+        handleSessionViewport(for: command)
+    }
+
+    // Apply a Metal-renderer letterbox so a loaded .pse reproduces its saved
+    // viewport aspect. Loading non-session content (or reinitialize) clears it.
+    private func handleSessionViewport(for command: String) {
+        let lower = command.lowercased()
+        if lower.contains(".pse"), let path = sessionPath(from: command) {
+            // Read the session's saved viewport ('main' = [W,H]) and emit
+            // SESSIONVP:W,H (parsed by pollFeedback → setLetterboxAspect).
+            runPython(
+                "import pickle, os\n"
+                + "try:\n"
+                + "    _m = pickle.load(open(os.path.expanduser(r'''\(path)'''), 'rb')).get('main')\n"
+                + "    if _m and _m[0] and _m[1]: print('SESSIONVP:%d,%d' % (int(_m[0]), int(_m[1])))\n"
+                + "except Exception:\n"
+                + "    pass")
+        } else if lower.hasPrefix("load ") || lower.hasPrefix("fetch ")
+                    || lower.hasPrefix("reinitialize") {
+            setLetterboxAspect(0)   // new non-session content → fill the window
+        }
+    }
+
+    // Extract the file path from a `load <path>[, ...]` command (best effort).
+    private func sessionPath(from command: String) -> String? {
+        let t = command.trimmingCharacters(in: .whitespaces)
+        guard let r = t.range(of: "load ", options: [.caseInsensitive]) else { return nil }
+        var rest = String(t[r.upperBound...])
+        if let comma = rest.firstIndex(of: ",") { rest = String(rest[..<comma]) }
+        rest = rest.trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? nil : rest
+    }
+
+    func setLetterboxAspect(_ aspect: Float) {
+        guard let inst = instance else { return }
+        PyMOLBridge_SetLetterboxAspect(inst, aspect)
     }
 
     // Debug: run raw Python in the embedded interpreter.
@@ -337,6 +373,12 @@ final class PyMOLEngine: ObservableObject {
                     parseObjectPanelFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
                     parseObjectDetailFeedback(line)
+                } else if line.hasPrefix("SESSIONVP:") {
+                    let parts = line.dropFirst("SESSIONVP:".count).split(separator: ",")
+                    if parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]), h > 0 {
+                        let aspect = Float(w / h)
+                        DispatchQueue.main.async { self.setLetterboxAspect(aspect) }
+                    }
                 } else if line.hasPrefix("SEQPANEL:") {
                     parseSequencePanelFeedback(line)
                 } else if line.hasPrefix("SEQSEL:") {

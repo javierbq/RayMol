@@ -162,15 +162,40 @@ int PyMOLBridge_GetRedisplay(PyMOLHandle h, int reset)
 
 // --- Input ---
 
+// Shift incoming mouse coords (full-drawable backing px) into the letterboxed
+// scene sub-rect's coordinate frame, so picking/drag line up with the render.
+static void lbOffset(PyMOLHandle h, int& x, int& y)
+{
+    PyMOLGlobals* G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    auto* r = static_cast<pymol::RendererMetal*>(G->Renderer);
+    if (!r) return;
+    x -= r->letterboxOriginX();
+    y -= r->letterboxOriginY();
+}
+
 void PyMOLBridge_Button(PyMOLHandle h, int button, int state,
                         int x, int y, int modifiers)
 {
-    if (h) PyMOL_Button(INST(h), button, state, x, y, modifiers);
+    if (!h) return;
+    lbOffset(h, x, y);
+    PyMOL_Button(INST(h), button, state, x, y, modifiers);
 }
 
 void PyMOLBridge_Drag(PyMOLHandle h, int x, int y, int modifiers)
 {
-    if (h) PyMOL_Drag(INST(h), x, y, modifiers);
+    if (!h) return;
+    lbOffset(h, x, y);
+    PyMOL_Drag(INST(h), x, y, modifiers);
+}
+
+void PyMOLBridge_SetLetterboxAspect(PyMOLHandle h, float aspect)
+{
+    if (!h) return;
+    PyMOLGlobals* G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    auto* r = static_cast<pymol::RendererMetal*>(G->Renderer);
+    if (r) r->setLetterboxAspect(aspect);
 }
 
 void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
@@ -335,18 +360,33 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
     // and never rotate/zoom — even though rendering fills the full viewport.
     // G->Option->winX/winY feed SceneRenderMetal's one-time OrthoReshape; set
     // them here (before SceneRenderMetal) so that reshape uses the real size.
-    static int s_lastW = 0, s_lastH = 0;
-    if (width != s_lastW || height != s_lastH) {
-        G->Option->winX = width;
-        G->Option->winY = height;
-        PyMOL_Reshape(INST(h), width, height, 0);
-        s_lastW = width;
-        s_lastH = height;
+    // Letterbox: when a loaded .pse asks for a specific viewport aspect, render
+    // the scene into a centered sub-rect of that aspect (PyMOL reshaped to the
+    // sub-rect so the projection matches), reproducing the session's saved
+    // framing. The surrounding bars are the cleared background. 0 = fill.
+    float lbAspect = renderer->letterboxAspect();
+    int vpW = width, vpH = height, ox = 0, oy = 0;
+    if (lbAspect > 0.0f && width > 0 && height > 0) {
+        float winAspect = (float)width / (float)height;
+        if (winAspect > lbAspect) { vpH = height; vpW = (int)(height * lbAspect + 0.5f); }
+        else { vpW = width; vpH = (int)(width / lbAspect + 0.5f); }
+        ox = (width - vpW) / 2;
+        oy = (height - vpH) / 2;
+    }
+
+    static int s_lastVpW = 0, s_lastVpH = 0;
+    if (vpW != s_lastVpW || vpH != s_lastVpH) {
+        G->Option->winX = vpW;
+        G->Option->winY = vpH;
+        PyMOL_Reshape(INST(h), vpW, vpH, 0);
+        s_lastVpW = vpW;
+        s_lastVpH = vpH;
     }
 
     // Mirror main_appkit.mm drawInMTKView (805-869); ordering is load-bearing.
     renderer->setDrawable(drawable, passDesc);
-    renderer->viewport(0, 0, width, height);
+    renderer->setLetterboxOrigin(ox, oy);
+    renderer->viewport(ox, oy, vpW, vpH);
     renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
