@@ -555,11 +555,27 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     float ndcy = 1.0 - 2.0 * in.uv.y;
     float3 p = float3(ndcx * (-ez) / u.projX, ndcy * (-ez) / u.projY, ez);
     float3 Ldir = normalize(float3(0.4, 0.4, 1.0)); // toward light (eye space)
-    float stepv = (-ez) * 0.010;
+    // Slope-scaled depth bias to suppress self-shadow ("shadow acne"). Estimate
+    // how fast the surface recedes per pixel here (linear-depth gradient over
+    // the 4 neighbors); grazing faces recede fast, so the march would otherwise
+    // re-detect its OWN originating surface and stripe it with comb artifacts.
+    // Flat-facing faces get a tiny bias (real contact shadows preserved); steep
+    // faces get a large bias (self-shadow rejected — they're already dark from
+    // the N·L lighting term anyway).
+    float zc = -ez;                                   // linear depth (positive)
+    float2 ir = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
+    float zr = post_linear_depth(depthTex.sample(s, in.uv + float2( ir.x, 0)), u.projA, u.projB);
+    float zl = post_linear_depth(depthTex.sample(s, in.uv + float2(-ir.x, 0)), u.projA, u.projB);
+    float zt = post_linear_depth(depthTex.sample(s, in.uv + float2(0,  ir.y)), u.projA, u.projB);
+    float zb = post_linear_depth(depthTex.sample(s, in.uv + float2(0, -ir.y)), u.projA, u.projB);
+    float slope = max(max(abs(zr - zc), abs(zl - zc)), max(abs(zt - zc), abs(zb - zc)));
+    float stepv = (-ez) * 0.012;
+    float bias = stepv * 1.5 + slope * 12.0;          // skip originating surface
     float occluded = 0.0;
     const int KS = 24;
     for (int i = 1; i <= KS; i++) {
-      float3 q = p + Ldir * (stepv * float(i));
+      // March starts a full bias past the surface, then steps outward.
+      float3 q = p + Ldir * (bias + stepv * float(i));
       if (q.z > -1e-4) break;                 // crossed in front of camera
       float2 nq = float2(u.projX * q.x / (-q.z), u.projY * q.y / (-q.z));
       float2 uvq = float2(0.5 * nq.x + 0.5, 0.5 - 0.5 * nq.y);
@@ -568,7 +584,9 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
       if (dq >= 0.99999) continue;            // background: not an occluder
       float zq = -u.projB / ((2.0 * dq - 1.0) + u.projA);
       float diff = zq - q.z; // > 0 when scene surface is closer than ray point
-      if (diff > stepv * 0.6 && diff < stepv * 6.0) { occluded = 1.0; break; }
+      // Occluder must be closer than the ray by more than the bias (rejects the
+      // originating surface) but not so far it's an unrelated background wall.
+      if (diff > bias && diff < bias + stepv * 6.0) { occluded = 1.0; break; }
     }
     color *= (1.0 - occluded * u.shadowIntensity);
   }
