@@ -118,21 +118,18 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        // Test affordance: fire SCROLL_FORWARD button events through
-        // PyMOL_Button — the exact calls the pinch/scroll zoom path makes — to
-        // verify scroll-forward maps to ZOOM IN. Format: "cx,cy[,ticks]".
+        // Test affordance: exercise the pinch zoom path (engine.zoomBy) — the
+        // exact call the pinch gesture makes — to verify it ZOOMS (not slabs).
+        // Format: "frac[,reps]" (frac>0 zooms in). Fires at t+4s so PyMOL's
+        // config_mouse has settled (irrelevant to zoomBy, but keeps it stable).
         if let z = ProcessInfo.processInfo.environment["PYMOL_AUTOZOOM"] {
-            let parts = z.split(separator: ",").compactMap { Int32($0) }
-            if parts.count >= 2 {
-                let cx = parts[0], cy = parts[1]
-                let ticks = parts.count >= 3 ? Int(parts[2]) : 12
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                    guard let self = self else { return }
-                    for _ in 0..<ticks {
-                        self.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN, x: cx, y: cy, modifiers: 0)
-                    }
-                    NSLog("PYMOL_AUTOZOOM: fired \(ticks) SCROLL_FORWARD at (\(cx),\(cy))")
-                }
+            let parts = z.split(separator: ",")
+            let frac = Float(parts.first ?? "0.1") ?? 0.1
+            let reps = parts.count >= 2 ? (Int(parts[1]) ?? 8) : 8
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self = self else { return }
+                for _ in 0..<reps { self.zoomBy(frac) }
+                NSLog("PYMOL_AUTOZOOM: zoomBy(\(frac)) x\(reps)")
             }
         }
 
@@ -256,6 +253,20 @@ final class PyMOLEngine: ObservableObject {
     func drag(x: Int32, y: Int32, modifiers: Int32) {
         guard let inst = instance else { return }
         PyMOLBridge_Drag(inst, x, y, modifiers)
+    }
+
+    // Explicit camera-dolly zoom: frac > 0 zooms IN, frac < 0 zooms OUT.
+    // Used by the pinch/scroll gestures instead of the scroll-wheel BUTTON path,
+    // because PyMOL's default three_button_viewing binds the bare wheel to
+    // 'slab' (clip), not zoom. The dolly distance is scaled by the current slab
+    // depth (front+back)/2 so the feel is scene-size-independent, mirroring
+    // cButModeZoomForward. get_view() here is the embedded 18-float layout
+    // (front=v[15], back=v[16]). move('z', +d) moves the camera in → zoom in.
+    func zoomBy(_ frac: Float) {
+        guard isReady, frac.isFinite, abs(frac) > 1e-5 else { return }
+        runPython("from pymol import cmd as _zc\n"
+            + "_zv = _zc.get_view()\n"
+            + "_zc.move('z', (_zv[15] + _zv[16]) * 0.5 * (\(frac)))")
     }
 
     func key(_ k: UInt8, x: Int32, y: Int32, modifiers: Int32) {

@@ -148,14 +148,14 @@ extension MetalViewport {
         private var mouseDownLoc: CGPoint = .zero
         private var didDrag = false
 
-        // Trackpad pinch (NSMagnificationGestureRecognizer) → zoom. We translate
-        // the continuous magnification into discrete scroll-wheel "ticks" and
-        // reuse PyMOL's proven scroll-zoom path (cButModeZoomForward/Backward,
-        // which also nudges the clip planes). magnification is cumulative from
-        // gesture start; emit one tick per kZoomStep of accumulated change.
-        private var magAccum: CGFloat = 0
+        // Trackpad pinch (NSMagnificationGestureRecognizer) → zoom via an
+        // explicit camera dolly (engine.zoomBy). We can't use the scroll-wheel
+        // BUTTON path: PyMOL's default three_button_viewing binds the bare wheel
+        // to 'slab' (clip), so it would change the slab, not zoom. magnification
+        // is cumulative from gesture start; feed the per-callback delta as a
+        // zoom fraction (spread = positive = zoom in).
         private var lastMag: CGFloat = 0
-        private let kZoomStep: CGFloat = 0.07
+        private let kZoomGain: CGFloat = 1.0
 
         // Trackpad two-finger drag (delivered as precise scrollWheel events) →
         // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
@@ -167,15 +167,18 @@ extension MetalViewport {
         private var panCursorY: Int32 = 0
         private var panEndDebounce: DispatchWorkItem?
         // Sign so the molecule follows the fingers (grab-and-move). Tunable.
+        // Y is negated: macOS scrollingDeltaY is opposite the on-screen pan we
+        // want (verified — up/down was inverted before the flip).
         private let kPanSignX: CGFloat = 1
-        private let kPanSignY: CGFloat = 1
+        private let kPanSignY: CGFloat = -1
         #endif
 
         #if os(iOS)
-        // Pinch → zoom: accumulate incremental scale change into scroll ticks.
+        // Pinch → zoom via explicit camera dolly (engine.zoomBy), not the wheel
+        // BUTTON path (which maps to 'slab'). Feed the per-callback change in the
+        // cumulative gesture.scale as a zoom fraction.
         private var pinchLastScale: CGFloat = 1.0
-        private var pinchAccum: CGFloat = 0
-        private let kPinchStep: CGFloat = 0.04
+        private let kZoomGain: CGFloat = 1.0
         #endif
 
         // MARK: - MTKViewDelegate
@@ -315,14 +318,13 @@ extension MetalViewport {
             let pt = pymolPoint(in: view, at: loc)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
-            // A real mouse wheel has no precise deltas → keep zoom-on-scroll.
-            // Use scrollingDeltaY (the modern, always-populated field) rather
-            // than the deprecated deltaY, which some events leave at 0.
+            // A real mouse wheel has no precise deltas → zoom (via the explicit
+            // dolly, since the bare-wheel BUTTON path maps to 'slab'). Use
+            // scrollingDeltaY (modern, always-populated) over deprecated deltaY.
             if !event.hasPreciseScrollingDeltas {
                 let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
                 guard wheel != 0 else { return }
-                let btn: Int32 = wheel > 0 ? PYMOL_BUTTON_SCROLL_FORWARD : PYMOL_BUTTON_SCROLL_REVERSE
-                engine?.button(btn, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: mods)
+                engine?.zoomBy(wheel > 0 ? 0.1 : -0.1)
                 return
             }
 
@@ -382,29 +384,15 @@ extension MetalViewport {
         }
 
         @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
-            guard let view = mtkView else { return }
-            let pt = pymolPoint(in: view, at: gesture.location(in: view))
-
             switch gesture.state {
             case .began:
                 lastMag = 0
-                magAccum = 0
             case .changed:
-                magAccum += gesture.magnification - lastMag
+                // Spreading fingers (magnification increasing) = zoom in.
+                let delta = gesture.magnification - lastMag
                 lastMag = gesture.magnification
-                // Spreading fingers (magnification > 0) zooms in = scroll forward.
-                while magAccum >= kZoomStep {
-                    engine?.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN,
-                                   x: pt.0, y: pt.1, modifiers: 0)
-                    magAccum -= kZoomStep
-                }
-                while magAccum <= -kZoomStep {
-                    engine?.button(PYMOL_BUTTON_SCROLL_REVERSE, state: PYMOL_BUTTON_DOWN,
-                                   x: pt.0, y: pt.1, modifiers: 0)
-                    magAccum += kZoomStep
-                }
+                engine?.zoomBy(Float(delta * kZoomGain))
             case .ended, .cancelled:
-                magAccum = 0
                 lastMag = 0
             default:
                 break
@@ -453,29 +441,17 @@ extension MetalViewport {
         }
 
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-            guard let view = mtkView else { return }
-            let pt = pymolPoint(in: view, at: gesture.location(in: view))
-
-            // Pinch → zoom via the scroll-wheel path. gesture.scale is cumulative
-            // (1.0 at start); convert its incremental change into discrete zoom
-            // ticks (NOT velocity, which fired erratically and only once).
+            // Pinch → zoom via explicit dolly. gesture.scale is cumulative (1.0
+            // at start); feed its per-callback change as a zoom fraction (NOT
+            // velocity, which fired erratically and only once).
             switch gesture.state {
             case .began:
                 pinchLastScale = 1.0
-                pinchAccum = 0
             case .changed:
-                pinchAccum += gesture.scale - pinchLastScale
+                let delta = gesture.scale - pinchLastScale
                 pinchLastScale = gesture.scale
-                while pinchAccum >= kPinchStep {
-                    engine?.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
-                    pinchAccum -= kPinchStep
-                }
-                while pinchAccum <= -kPinchStep {
-                    engine?.button(PYMOL_BUTTON_SCROLL_REVERSE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
-                    pinchAccum += kPinchStep
-                }
+                engine?.zoomBy(Float(delta * kZoomGain))
             case .ended, .cancelled:
-                pinchAccum = 0
                 pinchLastScale = 1.0
             default:
                 break
