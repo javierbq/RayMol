@@ -31,11 +31,13 @@ void PyMOLBridge_Drag(PyMOLHandle instance, int x, int y, int modifiers);
 void PyMOLBridge_SetLetterboxAspect(PyMOLHandle instance, float aspect);
 void PyMOLBridge_CapturePNG(PyMOLHandle instance, const char* path);
 // Hi-res offscreen render → PNG: reshape PyMOL to width×height, render the full
-// Metal pipeline (all reps + hardware-RT AO/shadows when metal_raytrace is on)
-// into offscreen targets at that resolution, write the PNG, then restore the
-// window size. Synchronous (blocks until the file is written). Runs on the main
-// thread, sequenced with the live draw loop.
-void PyMOLBridge_RenderHiResPNG(PyMOLHandle instance, const char* path, int width, int height);
+// Metal pipeline (all reps + hardware-RT AO/shadows) into offscreen targets at
+// that resolution, write the PNG, then restore the window size. Synchronous
+// (blocks until the file is written). Runs on the main thread, sequenced with
+// the live draw loop. rayTraced: -1 = use the current metal_raytrace setting
+// (WYSIWYG); 0 = force OFF; 1 = force ON for this export only (the live setting
+// is saved and restored, so the on-screen view is unchanged).
+void PyMOLBridge_RenderHiResPNG(PyMOLHandle instance, const char* path, int width, int height, int rayTraced);
 void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 
 // --- Context management ---

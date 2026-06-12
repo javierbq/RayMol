@@ -8,6 +8,7 @@
 #include "PyMOL.h"
 #include "PyMOLOptions.h"
 #include "P.h"
+#include "Setting.h"        // SettingGet/SetGlobal_b, cSetting_metal_raytrace
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
@@ -405,8 +406,25 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
     renderer->endFrame();
 }
 
+// Render one offscreen frame at the current (already-reshaped) size. path may be
+// empty for a throwaway warm-up frame (no PNG written; just accumulates the
+// ray-tracing geometry so the NEXT frame's beginFrame can build the AS).
+static void renderOneOffscreen(PyMOLHandle h, PyMOLGlobals* G,
+                               pymol::RendererMetal* renderer,
+                               int width, int height, const std::string& path)
+{
+    renderer->beginOffscreen(width, height, path);
+    renderer->beginFrame();
+    ImmBatch_SetActiveRenderer(renderer);
+    PyMOL_PushValidContext(INST(h));
+    SceneRenderMetal(G);
+    PyMOL_PopValidContext(INST(h));
+    ImmBatch_SetActiveRenderer(nullptr);
+    renderer->endOffscreen();   // runs post chain, commits, blocks, writes PNG
+}
+
 void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
-                                int width, int height)
+                                int width, int height, int rayTraced)
 {
     if (!h || !path || width < 1 || height < 1) return;
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
@@ -420,23 +438,35 @@ void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
     int savedW = G->Option->winX;
     int savedH = G->Option->winY;
 
+    // Ray-tracing control: -1 = WYSIWYG (leave the live setting), else force
+    // ON/OFF for this export only, restoring the live setting afterward so the
+    // on-screen view is unchanged.
+    int savedRT = SettingGetGlobal_b(G, cSetting_metal_raytrace) ? 1 : 0;
+    int desiredRT = (rayTraced < 0) ? savedRT : (rayTraced ? 1 : 0);
+    if (desiredRT != savedRT)
+        SettingSetGlobal_b(G, cSetting_metal_raytrace, desiredRT != 0);
+
     // Reshape PyMOL (projection + scene block) to the export resolution so the
     // scene is composed for that aspect, then render the full pipeline offscreen.
     G->Option->winX = width;
     G->Option->winY = height;
     PyMOL_Reshape(INST(h), width, height, 0);
 
-    renderer->beginOffscreen(width, height, std::string(path));
-    renderer->beginFrame();
-    ImmBatch_SetActiveRenderer(renderer);
-    PyMOL_PushValidContext(INST(h));
-    SceneRenderMetal(G);
-    PyMOL_PopValidContext(INST(h));
-    ImmBatch_SetActiveRenderer(nullptr);
-    renderer->endOffscreen();   // runs post chain, commits, blocks, writes PNG
+    // The RT acceleration structure is built (in beginFrame) from the PREVIOUS
+    // frame's accumulated geometry. When we're turning RT ON for this export and
+    // the live view had it OFF, no AS exists yet — render one throwaway frame
+    // first to accumulate the geometry, so the real frame's beginFrame can build
+    // the AS and the RT resolve pass runs. (Not needed when RT was already live:
+    // the draw loop keeps the AS current.)
+    if (desiredRT == 1 && savedRT == 0)
+        renderOneOffscreen(h, G, renderer, width, height, std::string());
 
-    // Restore the live window size. The renderer's post targets self-heal on
-    // the next setDrawable (drawable size != hi-res size → recreated).
+    renderOneOffscreen(h, G, renderer, width, height, std::string(path));
+
+    // Restore the live RT setting + window size. The renderer's post targets
+    // self-heal on the next setDrawable (drawable size != hi-res size → recreated).
+    if (desiredRT != savedRT)
+        SettingSetGlobal_b(G, cSetting_metal_raytrace, savedRT != 0);
     G->Option->winX = savedW;
     G->Option->winY = savedH;
     PyMOL_Reshape(INST(h), savedW, savedH, 0);

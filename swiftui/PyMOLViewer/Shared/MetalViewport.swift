@@ -185,6 +185,7 @@ extension MetalViewport {
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             viewportSize = size
+            engine?.viewportPixelSize = size
             engine?.reshape(width: Int(size.width), height: Int(size.height))
         }
 

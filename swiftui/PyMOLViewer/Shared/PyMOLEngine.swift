@@ -16,6 +16,10 @@ final class PyMOLEngine: ObservableObject {
     @Published var isReady = false
     @Published var sequenceVisible = true
 
+    // Current MTKView drawable size in backing pixels (updated by the viewport
+    // coordinator on resize). Used by the Export menu's "current size" render.
+    @Published var viewportPixelSize: CGSize = .zero
+
     // Representation inspector state.
     // Per-object active representations + their current setting values + color
     // override, populated by pollDetails()/parseObjectDetailFeedback().
@@ -161,6 +165,20 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Test affordance: exercise the Export menu's GPU hi-res render path with
+        // an explicit ray-traced flag — the exact call Save Image / Copy make.
+        // Format: "path,W,H[,rt]" (rt: -1 WYSIWYG default, 0 off, 1 force on).
+        if let e = ProcessInfo.processInfo.environment["PYMOL_AUTOEXPORT"] {
+            let parts = e.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count >= 3, let w = Int(parts[1]), let h = Int(parts[2]) {
+                let rt = parts.count >= 4 ? (Int(parts[3]) ?? -1) : -1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    self?.renderHiResPNG(parts[0], width: w, height: h, rayTraced: rt)
+                    NSLog("PYMOL_AUTOEXPORT: \(parts[0]) \(w)x\(h) rt=\(rt)")
+                }
+            }
+        }
+
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.pollFeedback()
@@ -237,11 +255,13 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Render the full Metal pipeline offscreen at an arbitrary resolution and
-    // write a PNG (Metal-accelerated export — all reps + hardware-RT AO/shadows
-    // when metal_raytrace is on). Synchronous; runs on the main thread.
-    func renderHiResPNG(_ path: String, width: Int, height: Int) {
+    // write a PNG (Metal-accelerated export — all reps + hardware-RT AO/shadows).
+    // Synchronous; runs on the main thread. rayTraced: -1 = use the current
+    // metal_raytrace setting (WYSIWYG); 0 = force off; 1 = force on for this
+    // export only (live view unchanged).
+    func renderHiResPNG(_ path: String, width: Int, height: Int, rayTraced: Int = -1) {
         guard let inst = instance else { return }
-        PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height))
+        PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height), Int32(rayTraced))
     }
 
     // Apply a Metal-renderer letterbox so a loaded .pse reproduces its saved
