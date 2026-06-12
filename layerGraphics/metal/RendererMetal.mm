@@ -564,9 +564,14 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
       float fragDepth = 0.5 + 0.5 * ndc.z;              // same 0.5+0.5 remap
       if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 &&
           fragDepth > 0.0 && fragDepth < 1.0) {
-        // Constant depth bias (light-space); tuned in Stage 4 with a normal
-        // offset. 3x3 PCF softens the shadow boundary.
-        float bias = 0.0015;
+        // Slope-scaled depth bias. The constant term covers the cartoon slab
+        // thickness (a thin two-faced ribbon would otherwise self-shadow its
+        // own back face — reads as a "wrong-order" band on a front strand). The
+        // slope term (light-space depth gradient) adds margin on faces grazing
+        // to the light. Clamped to limit peter-panning.
+        float2 dd = float2(dfdx(fragDepth), dfdy(fragDepth));
+        float bias = 0.006 + 2.5 * (abs(dd.x) + abs(dd.y));
+        bias = min(bias, 0.02);
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         float lit = 0.0;

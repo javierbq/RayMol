@@ -1849,7 +1849,13 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G)
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
   float radius = 10.0f;
-  if (ExecutiveGetExtent(G, "all", mn, mx, true, -1, false)) {
+  // Size the frustum to the non-solvent geometry: scattered crystallographic
+  // waters would otherwise inflate the box, coarsening shadow-map depth
+  // precision (→ slab self-shadow) and resolution. Fall back to all atoms.
+  bool gotExtent = ExecutiveGetExtent(G, "not solvent", mn, mx, true, -1, false);
+  if (!gotExtent)
+    gotExtent = ExecutiveGetExtent(G, "all", mn, mx, true, -1, false);
+  if (gotExtent) {
     glm::vec3 cw(
         (mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
     glm::vec3 dw(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]);
