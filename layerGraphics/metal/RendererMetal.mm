@@ -3,6 +3,35 @@
 #import <simd/simd.h>
 #include <algorithm>
 #include <cmath>
+#include "MyPNG.h"
+#include "Image.h"
+
+// Read a Metal BGRA8 texture and write it to a PNG via PyMOL's libpng writer.
+// Converts BGRA→RGBA and flips to PyMOL's bottom-up row order. Runs off the
+// render thread (command-buffer completion handler) after the GPU finishes.
+static void rtWriteTextureToPNG(id<MTLTexture> tex, const std::string& path)
+{
+  if (!tex) return;
+  NSUInteger w = tex.width, h = tex.height;
+  if (w == 0 || h == 0) return;
+  NSUInteger bpr = w * 4;
+  std::vector<uint8_t> bgra((size_t)bpr * h);
+  [tex getBytes:bgra.data() bytesPerRow:bpr
+     fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+  pymol::Image img((int)w, (int)h);
+  uint8_t* dst = img.bits();
+  for (NSUInteger y = 0; y < h; ++y) {
+    const uint8_t* s = bgra.data() + (size_t)y * bpr;
+    uint8_t* d = dst + (size_t)(h - 1 - y) * bpr;   // top-down -> bottom-up
+    for (NSUInteger x = 0; x < w; ++x) {
+      d[x * 4 + 0] = s[x * 4 + 2];   // R <- B
+      d[x * 4 + 1] = s[x * 4 + 1];   // G
+      d[x * 4 + 2] = s[x * 4 + 0];   // B <- R
+      d[x * 4 + 3] = s[x * 4 + 3];   // A
+    }
+  }
+  MyPNGWrite(path.c_str(), img, 0.0f, cMyPNG_FormatPNG, 1, 1.0f, 1.0f);
+}
 
 namespace pymol {
 
@@ -1434,6 +1463,33 @@ void RendererMetal::runPostChain()
   [enc setFragmentSamplerState:_postSampler atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [enc endEncoding];
+
+  // Pending rendered-frame PNG capture (png ray=0): copy the final
+  // post-processed color into a CPU-readable texture and write the PNG once the
+  // GPU completes. Captures at the current render resolution.
+  if (!_capturePath.empty() && sceneSrc) {
+    NSUInteger cw = sceneSrc.width, ch = sceneSrc.height;
+    if (!_captureTex || _captureTex.width != cw || _captureTex.height != ch) {
+      MTLTextureDescriptor* d = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                       width:cw height:ch mipmapped:NO];
+      d.usage = MTLTextureUsageShaderRead;
+      d.storageMode = MTLStorageModeShared;
+      _captureTex = [_device newTextureWithDescriptor:d];
+    }
+    id<MTLBlitCommandEncoder> be = [_cmdBuffer blitCommandEncoder];
+    [be copyFromTexture:sceneSrc sourceSlice:0 sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
+              toTexture:_captureTex destinationSlice:0 destinationLevel:0
+      destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [be endEncoding];
+    std::string path = _capturePath;
+    _capturePath.clear();
+    id<MTLTexture> capTex = _captureTex;
+    [_cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+      rtWriteTextureToPNG(capTex, path);
+    }];
+  }
 }
 
 void RendererMetal::beginTransparentOIT()

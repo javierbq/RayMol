@@ -7,6 +7,7 @@
 #include <array>
 #include <cstring>
 #include <stack>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -157,6 +158,11 @@ public:
   int letterboxOriginX() const { return _lbOriginX; }
   int letterboxOriginY() const { return _lbOriginY; }
   void setLetterboxOrigin(int x, int y) { _lbOriginX = x; _lbOriginY = y; }
+
+  // Request a PNG capture of the next RENDERED frame (png ray=0). The Metal
+  // app has no GL framebuffer for PyMOL's ScenePNG to read, so we grab the
+  // renderer's final offscreen color and write it via MyPNGWrite.
+  void requestPNGCapture(const std::string& path) { _capturePath = path; }
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -341,6 +347,8 @@ private:
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
   float _letterboxAspect = 0.f;       // saved-viewport W/H; 0 = fill window
   int _lbOriginX = 0, _lbOriginY = 0; // letterbox sub-rect origin (backing px)
+  std::string _capturePath;           // pending png ray=0 capture (empty = none)
+  id<MTLTexture> _captureTex = nil;   // CPU-readable copy for readback
 
   // --- Real-time ray tracing (cSetting_metal_raytrace) ---
   bool _rtSupported = false;      // [_device supportsRaytracing], set in ctor

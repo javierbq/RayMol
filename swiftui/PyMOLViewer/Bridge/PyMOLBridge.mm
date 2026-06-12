@@ -198,6 +198,15 @@ void PyMOLBridge_SetLetterboxAspect(PyMOLHandle h, float aspect)
     if (r) r->setLetterboxAspect(aspect);
 }
 
+void PyMOLBridge_CapturePNG(PyMOLHandle h, const char* path)
+{
+    if (!h || !path) return;
+    PyMOLGlobals* G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    auto* r = static_cast<pymol::RendererMetal*>(G->Renderer);
+    if (r) r->requestPNGCapture(std::string(path));
+}
+
 void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
 {
     if (h) PyMOL_Key(INST(h), k, x, y, modifiers);

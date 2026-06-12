@@ -182,8 +182,33 @@ final class PyMOLEngine: ObservableObject {
 
     func runCommand(_ command: String) {
         guard isReady else { return }
+        // A plain `png <file>` (ray=0) wants the RENDERED frame, but PyMOL's
+        // ScenePNG reads a GL framebuffer we don't have → it writes nothing.
+        // Capture the Metal render ourselves instead. `ray=1` still uses the
+        // (working) core CPU ray-trace path.
+        if maybeCaptureRenderedPNG(command) { return }
         PyMOLBridge_RunCommand(command)
         handleSessionViewport(for: command)
+    }
+
+    private func maybeCaptureRenderedPNG(_ command: String) -> Bool {
+        let t = command.trimmingCharacters(in: .whitespaces)
+        let lower = t.lowercased()
+        guard lower == "png" || lower.hasPrefix("png ") else { return false }
+        // Ray-traced export → let the core handle it (that path works).
+        if lower.replacingOccurrences(of: " ", with: "").contains("ray=1") { return false }
+        var rest = String(t.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        if let comma = rest.firstIndex(of: ",") { rest = String(rest[..<comma]) }
+        rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        guard !rest.isEmpty else { return false }
+        capturePNG((rest as NSString).expandingTildeInPath)
+        return true
+    }
+
+    // Save the next rendered Metal frame to a PNG (captures at window resolution).
+    func capturePNG(_ path: String) {
+        guard let inst = instance else { return }
+        PyMOLBridge_CapturePNG(inst, path)
     }
 
     // Apply a Metal-renderer letterbox so a loaded .pse reproduces its saved
