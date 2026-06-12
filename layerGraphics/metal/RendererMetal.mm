@@ -132,8 +132,12 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _depthStencilState(nil)
 {
   _modelviewMatrix = identityMatrix();
+  _modelviewInv = identityMatrix();
   _projectionMatrix = identityMatrix();
   std::memset(_uniformData, 0, sizeof(_uniformData));
+  // Hardware ray tracing capability (M-series Apple GPUs support it). Gated so
+  // metal_raytrace is a no-op on machines without it (zero regression).
+  _rtSupported = device != nil && [device supportsRaytracing];
 
   // Create initial depth stencil state
   applyDepthStencilState();
@@ -832,7 +836,7 @@ void RendererMetal::buildPostPipelines()
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-    float projY)
+    float projY, int rtEnabled)
 {
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
@@ -846,6 +850,8 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
   _projB = projB;
   _projX = projX;
   _projY = projY;
+  static bool noRT = getenv("PYMOL_NO_RT") != nullptr;
+  _rtEnabled = (rtEnabled && _rtSupported && !noRT) ? 1 : 0;
 }
 
 void RendererMetal::runPostChain()
@@ -1608,6 +1614,14 @@ void RendererMetal::loadMatrixf(const float* m)
   if (!m) return;
   Mat4& mat = (_matrixMode == 0) ? _modelviewMatrix : _projectionMatrix;
   std::memcpy(mat.data(), m, 16 * sizeof(float));
+  if (_matrixMode == 0) {
+    // Keep the inverse modelview current for ray tracing (eye → model space).
+    // Column-major layout matches simd_float4x4.
+    simd_float4x4 mv;
+    std::memcpy(&mv, _modelviewMatrix.data(), 16 * sizeof(float));
+    simd_float4x4 inv = simd_inverse(mv);
+    std::memcpy(_modelviewInv.data(), &inv, 16 * sizeof(float));
+  }
 }
 
 void RendererMetal::pushMatrix()

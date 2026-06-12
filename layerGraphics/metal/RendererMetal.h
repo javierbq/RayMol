@@ -147,7 +147,7 @@ public:
   void setPostParams(int fogEnabled, float fogStart, float fogEnd, float bgR,
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       int outlineEnabled, float projA, float projB, float projX,
-      float projY) override;
+      float projY, int rtEnabled) override;
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -323,6 +323,21 @@ private:
   id<MTLRenderPipelineState> _outlinePipeline = nil;
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
+
+  // --- Real-time ray tracing (cSetting_metal_raytrace) ---
+  bool _rtSupported = false;      // [_device supportsRaytracing], set in ctor
+  int  _rtEnabled = 0;            // requested (gated by _rtSupported)
+  bool _rtReady = false;          // instance acceleration structure is built
+  // Atom-sphere geometry accumulated each frame (model space, center+radius).
+  std::vector<float> _rtSpheres;  // x,y,z,r per sphere
+  uint64_t _rtSphereHash = 0;     // checksum of the built set (rebuild on change)
+  size_t _rtBuiltCount = 0;
+  id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
+  id<MTLAccelerationStructure> _rtInstanceAS = nil;     // one instance per atom
+  id<MTLBuffer> _rtProtoVerts = nil;
+  id<MTLBuffer> _rtProtoIndices = nil;
+  uint32_t _rtProtoIndexCount = 0;
+  id<MTLRenderPipelineState> _rtResolvePipeline = nil;  // fragment RT AO/shadow
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;
@@ -375,6 +390,7 @@ private:
   // Matrix stack — mode 0 = modelview, mode 1 = projection
   int _matrixMode = 0;  // 0x1700 = GL_MODELVIEW mapped to 0
   Mat4 _modelviewMatrix;
+  Mat4 _modelviewInv;   // inverse(modelview): eye → model/world (for RT rays)
   Mat4 _projectionMatrix;
   std::stack<Mat4> _modelviewStack;
   std::stack<Mat4> _projectionStack;

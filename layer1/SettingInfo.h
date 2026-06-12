@@ -909,6 +909,7 @@ enum {
   REC_b( 799, metal_shadows                           , global    , true ),  /* Metal screen-space directional shadows */
   REC_b( 800, metal_outline                           , global    , false ), /* Metal silhouette/toon outline post pass */
   REC_b( 801, metal_msaa                              , global    , true ),  /* Metal 4x MSAA scene rendering */
+  REC_b( 802, metal_raytrace                          , global    , false ), /* Metal real-time ray-traced AO + shadows */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION
