@@ -197,11 +197,36 @@ final class PyMOLEngine: ObservableObject {
         guard lower == "png" || lower.hasPrefix("png ") else { return false }
         // Ray-traced export → let the core handle it (that path works).
         if lower.replacingOccurrences(of: " ", with: "").contains("ray=1") { return false }
-        var rest = String(t.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-        if let comma = rest.firstIndex(of: ",") { rest = String(rest[..<comma]) }
-        rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-        guard !rest.isEmpty else { return false }
-        capturePNG((rest as NSString).expandingTildeInPath)
+
+        // Parse `png file[, width[, height[, ...]]]` — both positional and
+        // keyword (width=, height=) forms. Filename is the first arg.
+        let argStr = String(t.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        let args = argStr.split(separator: ",").map {
+            $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        }
+        guard let first = args.first, !first.isEmpty else { return false }
+        let path = (first as NSString).expandingTildeInPath
+
+        // Resolve explicit width/height: positional args 2 & 3, or width=/height=.
+        var w = 0, h = 0
+        for (i, a) in args.enumerated() {
+            let kv = a.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2 {
+                let key = kv[0].lowercased().trimmingCharacters(in: .whitespaces)
+                let val = Int(Double(kv[1].trimmingCharacters(in: .whitespaces)) ?? 0)
+                if key == "width" { w = val }
+                if key == "height" { h = val }
+            } else if i == 1 { w = Int(Double(a) ?? 0)
+            } else if i == 2 { h = Int(Double(a) ?? 0) }
+        }
+
+        // Explicit resolution → GPU hi-res offscreen render. Otherwise capture
+        // the live Metal frame at window resolution.
+        if w > 0 && h > 0 {
+            renderHiResPNG(path, width: w, height: h)
+        } else {
+            capturePNG(path)
+        }
         return true
     }
 
@@ -209,6 +234,14 @@ final class PyMOLEngine: ObservableObject {
     func capturePNG(_ path: String) {
         guard let inst = instance else { return }
         PyMOLBridge_CapturePNG(inst, path)
+    }
+
+    // Render the full Metal pipeline offscreen at an arbitrary resolution and
+    // write a PNG (Metal-accelerated export — all reps + hardware-RT AO/shadows
+    // when metal_raytrace is on). Synchronous; runs on the main thread.
+    func renderHiResPNG(_ path: String, width: Int, height: Int) {
+        guard let inst = instance else { return }
+        PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height))
     }
 
     // Apply a Metal-renderer letterbox so a loaded .pse reproduces its saved

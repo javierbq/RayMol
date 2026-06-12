@@ -163,6 +163,15 @@ public:
   // app has no GL framebuffer for PyMOL's ScenePNG to read, so we grab the
   // renderer's final offscreen color and write it via MyPNGWrite.
   void requestPNGCapture(const std::string& path) { _capturePath = path; }
+
+  // Hi-res offscreen render → PNG. beginOffscreen sizes the post targets to
+  // an arbitrary W×H, points the scene pass at them (no drawable), and arms
+  // the PNG capture; the caller then runs the normal beginFrame / scene-draw /
+  // endOffscreen sequence. endOffscreen runs the full post chain (skipping the
+  // drawable blit), commits, and blocks until the GPU has written the PNG.
+  // Targets self-heal to the window size on the next live setDrawable.
+  void beginOffscreen(int w, int h, const std::string& path);
+  void endOffscreen();
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -349,6 +358,7 @@ private:
   int _lbOriginX = 0, _lbOriginY = 0; // letterbox sub-rect origin (backing px)
   std::string _capturePath;           // pending png ray=0 capture (empty = none)
   id<MTLTexture> _captureTex = nil;   // CPU-readable copy for readback
+  bool _offscreen = false;            // hi-res offscreen render (no drawable)
 
   // --- Real-time ray tracing (cSetting_metal_raytrace) ---
   bool _rtSupported = false;      // [_device supportsRaytracing], set in ctor

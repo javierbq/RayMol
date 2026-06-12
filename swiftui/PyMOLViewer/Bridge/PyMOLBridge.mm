@@ -405,6 +405,43 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
     renderer->endFrame();
 }
 
+void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
+                                int width, int height)
+{
+    if (!h || !path || width < 1 || height < 1) return;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return;
+    auto *renderer = static_cast<pymol::RendererMetal *>(G->Renderer);
+    if (!renderer) return;
+
+    // Save the live window/scene-block size so we can restore it afterward.
+    // (The live RenderMetalFrame keys its reshape off these, so leaving them at
+    // the hi-res size would desync the on-screen scene block.)
+    int savedW = G->Option->winX;
+    int savedH = G->Option->winY;
+
+    // Reshape PyMOL (projection + scene block) to the export resolution so the
+    // scene is composed for that aspect, then render the full pipeline offscreen.
+    G->Option->winX = width;
+    G->Option->winY = height;
+    PyMOL_Reshape(INST(h), width, height, 0);
+
+    renderer->beginOffscreen(width, height, std::string(path));
+    renderer->beginFrame();
+    ImmBatch_SetActiveRenderer(renderer);
+    PyMOL_PushValidContext(INST(h));
+    SceneRenderMetal(G);
+    PyMOL_PopValidContext(INST(h));
+    ImmBatch_SetActiveRenderer(nullptr);
+    renderer->endOffscreen();   // runs post chain, commits, blocks, writes PNG
+
+    // Restore the live window size. The renderer's post targets self-heal on
+    // the next setDrawable (drawable size != hi-res size → recreated).
+    G->Option->winX = savedW;
+    G->Option->winY = savedH;
+    PyMOL_Reshape(INST(h), savedW, savedH, 0);
+}
+
 // --- Getters ---
 
 void *PyMOLBridge_GetGlobals(PyMOLHandle h)

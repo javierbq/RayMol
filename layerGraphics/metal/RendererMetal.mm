@@ -444,6 +444,52 @@ void RendererMetal::endFrame()
 }
 
 // ---------------------------------------------------------------------------
+#pragma mark - Hi-res offscreen render → PNG
+// ---------------------------------------------------------------------------
+
+// Size the post targets to an arbitrary W×H and point the scene pass at them.
+// There is no drawable: the caller runs beginFrame / scene-draw / endOffscreen,
+// and runPostChain (gated on !_offscreen) skips the drawable blit, leaving the
+// post-processed color in sceneSrc for the PNG capture block to write out.
+void RendererMetal::beginOffscreen(int w, int h, const std::string& path)
+{
+  if (w < 1) w = 1;
+  if (h < 1) h = 1;
+  _offscreen = true;
+  _drawable = nil;
+  _screenPassDesc = nil;
+  // Force target recreation at the requested resolution, then aim the scene
+  // pass + viewport at it. (ensurePostTargets early-returns if size matches.)
+  ensurePostTargets((NSUInteger)w, (NSUInteger)h);
+  _passDesc = _scenePassDesc;
+  setLetterboxOrigin(0, 0);
+  viewport(0, 0, w, h);
+  requestPNGCapture(path);
+}
+
+// End the offscreen render: close the scene encoder, run the full post chain
+// (which writes the PNG via the capture block), commit, and block until the
+// GPU finishes so the file exists on return. Leaves _offscreen=false; the next
+// live setDrawable recreates the targets at the window size.
+void RendererMetal::endOffscreen()
+{
+  if (_encoder) {
+    [_encoder endEncoding];
+    _encoder = nil;
+  }
+  if (_cmdBuffer && _sceneColor) {
+    runPostChain();
+  }
+  if (_cmdBuffer) {
+    [_cmdBuffer commit];
+    [_cmdBuffer waitUntilCompleted];  // completion handler writes the PNG
+    _cmdBuffer = nil;
+  }
+  _offscreen = false;
+  _passDesc = nil;
+}
+
+// ---------------------------------------------------------------------------
 #pragma mark - Post-processing (offscreen scene target + fullscreen passes)
 // ---------------------------------------------------------------------------
 
@@ -1436,33 +1482,38 @@ void RendererMetal::runPostChain()
 
   // Final pass → drawable: FXAA if available, else a 1:1 blit.
   // PYMOL_NO_AA forces the blit (A/B testing + user escape hatch).
-  _screenPassDesc.depthAttachment.texture = nil;
-  _screenPassDesc.stencilAttachment.texture = nil;
-  _screenPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  // Skipped entirely in offscreen mode — there is no drawable; the post chain
+  // output in sceneSrc feeds the PNG capture below directly. FXAA still ran as
+  // a ping-pong pass above if enabled, so the captured image is anti-aliased.
+  if (!_offscreen) {
+    _screenPassDesc.depthAttachment.texture = nil;
+    _screenPassDesc.stencilAttachment.texture = nil;
+    _screenPassDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
 
-  // Stage-1 debug: blit the raw shadow depth map to the drawable instead of the
-  // scene, so we can eyeball the light-POV depth. Env-gated; removed in S2.
-  static bool shadowDebug = getenv("PYMOL_SHADOW_DEBUG") != nullptr;
-  if (shadowDebug && _shadowDebugPipeline && _shadowDepth) {
-    id<MTLRenderCommandEncoder> dbg =
+    // Stage-1 debug: blit the raw shadow depth map to the drawable instead of
+    // the scene, so we can eyeball the light-POV depth. Env-gated; removed in S2.
+    static bool shadowDebug = getenv("PYMOL_SHADOW_DEBUG") != nullptr;
+    if (shadowDebug && _shadowDebugPipeline && _shadowDepth) {
+      id<MTLRenderCommandEncoder> dbg =
+          [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
+      [dbg setRenderPipelineState:_shadowDebugPipeline];
+      [dbg setFragmentTexture:_shadowDepth atIndex:1];
+      [dbg setFragmentSamplerState:_postSampler atIndex:0];
+      [dbg drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [dbg endEncoding];
+      return;
+    }
+
+    id<MTLRenderPipelineState> finalPipe =
+        (_fxaaPipeline && _aaEnabled && !noAA) ? _fxaaPipeline : _blitPipeline;
+    id<MTLRenderCommandEncoder> enc =
         [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
-    [dbg setRenderPipelineState:_shadowDebugPipeline];
-    [dbg setFragmentTexture:_shadowDepth atIndex:1];
-    [dbg setFragmentSamplerState:_postSampler atIndex:0];
-    [dbg drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [dbg endEncoding];
-    return;
+    [enc setRenderPipelineState:finalPipe];
+    [enc setFragmentTexture:sceneSrc atIndex:0];
+    [enc setFragmentSamplerState:_postSampler atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
   }
-
-  id<MTLRenderPipelineState> finalPipe =
-      (_fxaaPipeline && _aaEnabled && !noAA) ? _fxaaPipeline : _blitPipeline;
-  id<MTLRenderCommandEncoder> enc =
-      [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
-  [enc setRenderPipelineState:finalPipe];
-  [enc setFragmentTexture:sceneSrc atIndex:0];
-  [enc setFragmentSamplerState:_postSampler atIndex:0];
-  [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-  [enc endEncoding];
 
   // Pending rendered-frame PNG capture (png ray=0): copy the final
   // post-processed color into a CPU-readable texture and write the PNG once the
