@@ -27,6 +27,13 @@ struct MetalViewport: NSViewRepresentable {
         // call `coordinator?.handle...` on a nil coordinator and silently
         // no-op — mouse rotate/zoom/pan never reach PyMOL.
         view.coordinator = context.coordinator
+
+        // Trackpad pinch → zoom. Two-finger drag (scrollWheel) → translate;
+        // see handleScrollWheel. A real mouse wheel still zooms.
+        let magnify = NSMagnificationGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleMagnification(_:)))
+        view.addGestureRecognizer(magnify)
         return view
     }
 
@@ -97,15 +104,24 @@ struct MetalViewport: UIViewRepresentable {
         // Gesture recognizers for touch input
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
+        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
         let rotation = UIRotationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleRotation(_:)))
         let longPress = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
 
+        // One finger rotates; two fingers translate. Pinch (zoom) and the
+        // two-finger pan (translate) must recognize simultaneously so you can
+        // zoom and slide at once — that's the "pinch-and-zoom with translation".
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
+        twoPan.minimumNumberOfTouches = 2
+        twoPan.maximumNumberOfTouches = 2
+        twoPan.delegate = context.coordinator
+        pinch.delegate = context.coordinator
 
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(twoPan)
         view.addGestureRecognizer(pinch)
         view.addGestureRecognizer(rotation)
         view.addGestureRecognizer(longPress)
@@ -131,6 +147,35 @@ extension MetalViewport {
         // a drag (rotate). Point space, view coordinates.
         private var mouseDownLoc: CGPoint = .zero
         private var didDrag = false
+
+        // Trackpad pinch (NSMagnificationGestureRecognizer) → zoom. We translate
+        // the continuous magnification into discrete scroll-wheel "ticks" and
+        // reuse PyMOL's proven scroll-zoom path (cButModeZoomForward/Backward,
+        // which also nudges the clip planes). magnification is cumulative from
+        // gesture start; emit one tick per kZoomStep of accumulated change.
+        private var magAccum: CGFloat = 0
+        private var lastMag: CGFloat = 0
+        private let kZoomStep: CGFloat = 0.07
+
+        // Trackpad two-finger drag (delivered as precise scrollWheel events) →
+        // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
+        // the start, drag events that follow an accumulated synthetic cursor, and
+        // a MIDDLE-UP when the gesture (incl. momentum) ends. A real mouse wheel
+        // (no precise deltas) still zooms.
+        private var panActive = false
+        private var panCursorX: Int32 = 0
+        private var panCursorY: Int32 = 0
+        private var panEndDebounce: DispatchWorkItem?
+        // Sign so the molecule follows the fingers (grab-and-move). Tunable.
+        private let kPanSignX: CGFloat = 1
+        private let kPanSignY: CGFloat = 1
+        #endif
+
+        #if os(iOS)
+        // Pinch → zoom: accumulate incremental scale change into scroll ticks.
+        private var pinchLastScale: CGFloat = 1.0
+        private var pinchAccum: CGFloat = 0
+        private let kPinchStep: CGFloat = 0.04
         #endif
 
         // MARK: - MTKViewDelegate
@@ -266,10 +311,104 @@ extension MetalViewport {
         }
 
         func handleScrollWheel(_ event: NSEvent, in view: MTKView) {
-            let pt = pymolPoint(in: view, at: view.convert(event.locationInWindow, from: nil))
+            let loc = view.convert(event.locationInWindow, from: nil)
+            let pt = pymolPoint(in: view, at: loc)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
-            let btn: Int32 = event.deltaY > 0 ? PYMOL_BUTTON_SCROLL_FORWARD : PYMOL_BUTTON_SCROLL_REVERSE
-            engine?.button(btn, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: mods)
+
+            // A real mouse wheel has no precise deltas → keep zoom-on-scroll.
+            // Use scrollingDeltaY (the modern, always-populated field) rather
+            // than the deprecated deltaY, which some events leave at 0.
+            if !event.hasPreciseScrollingDeltas {
+                let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
+                guard wheel != 0 else { return }
+                let btn: Int32 = wheel > 0 ? PYMOL_BUTTON_SCROLL_FORWARD : PYMOL_BUTTON_SCROLL_REVERSE
+                engine?.button(btn, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: mods)
+                return
+            }
+
+            // Trackpad two-finger drag → translate (middle-drag).
+            let phase = event.phase
+            let momentum = event.momentumPhase
+            let scale = view.window?.backingScaleFactor ?? 2.0
+            let dx = Int32((event.scrollingDeltaX * scale * kPanSignX).rounded())
+            let dy = Int32((event.scrollingDeltaY * scale * kPanSignY).rounded())
+
+            // Start the synthetic middle-drag. Real trackpad gestures begin with
+            // phase == .began; synthetic/no-phase precise scrolls (and momentum
+            // that arrives without a prior .began) start on first delta.
+            if !panActive && (phase == .began || (phase == [] && momentum != .ended)) {
+                panActive = true
+                panCursorX = pt.0
+                panCursorY = pt.1
+                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN,
+                               x: panCursorX, y: panCursorY, modifiers: mods)
+            }
+
+            if panActive && (dx != 0 || dy != 0) {
+                // macOS views are bottom-left origin (matching PyMOL); a finger
+                // moving up has positive scrollingDeltaY, so add directly.
+                panCursorX += dx
+                panCursorY += dy
+                engine?.drag(x: panCursorX, y: panCursorY, modifiers: mods)
+            }
+
+            // End when the momentum glide finishes (the true end), or on cancel.
+            // We deliberately DON'T end at phase == .ended (fingers up): momentum
+            // events follow with phase == [] and would re-trigger the start
+            // condition, restarting the drag mid-glide. The debounce is the
+            // safety net for flicks that produce no momentum and for synthetic
+            // no-phase event streams.
+            if phase == .cancelled || momentum == .ended {
+                endTrackpadPan()
+            } else if panActive {
+                armPanEndDebounce()
+            }
+        }
+
+        private func armPanEndDebounce() {
+            panEndDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.endTrackpadPan() }
+            panEndDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        }
+
+        private func endTrackpadPan() {
+            panEndDebounce?.cancel()
+            panEndDebounce = nil
+            guard panActive else { return }
+            panActive = false
+            engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP,
+                           x: panCursorX, y: panCursorY, modifiers: 0)
+        }
+
+        @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
+            guard let view = mtkView else { return }
+            let pt = pymolPoint(in: view, at: gesture.location(in: view))
+
+            switch gesture.state {
+            case .began:
+                lastMag = 0
+                magAccum = 0
+            case .changed:
+                magAccum += gesture.magnification - lastMag
+                lastMag = gesture.magnification
+                // Spreading fingers (magnification > 0) zooms in = scroll forward.
+                while magAccum >= kZoomStep {
+                    engine?.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN,
+                                   x: pt.0, y: pt.1, modifiers: 0)
+                    magAccum -= kZoomStep
+                }
+                while magAccum <= -kZoomStep {
+                    engine?.button(PYMOL_BUTTON_SCROLL_REVERSE, state: PYMOL_BUTTON_DOWN,
+                                   x: pt.0, y: pt.1, modifiers: 0)
+                    magAccum += kZoomStep
+                }
+            case .ended, .cancelled:
+                magAccum = 0
+                lastMag = 0
+            default:
+                break
+            }
         }
 
         func handleKeyDown(_ event: NSEvent, in view: MTKView) {
@@ -315,13 +454,49 @@ extension MetalViewport {
 
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
             guard let view = mtkView else { return }
-            let center = gesture.location(in: view)
-            let pt = pymolPoint(in: view, at: center)
+            let pt = pymolPoint(in: view, at: gesture.location(in: view))
 
-            // Pinch = scroll wheel (zoom)
-            if gesture.state == .changed {
-                let btn: Int32 = gesture.velocity > 0 ? PYMOL_BUTTON_SCROLL_FORWARD : PYMOL_BUTTON_SCROLL_REVERSE
-                engine?.button(btn, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
+            // Pinch → zoom via the scroll-wheel path. gesture.scale is cumulative
+            // (1.0 at start); convert its incremental change into discrete zoom
+            // ticks (NOT velocity, which fired erratically and only once).
+            switch gesture.state {
+            case .began:
+                pinchLastScale = 1.0
+                pinchAccum = 0
+            case .changed:
+                pinchAccum += gesture.scale - pinchLastScale
+                pinchLastScale = gesture.scale
+                while pinchAccum >= kPinchStep {
+                    engine?.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
+                    pinchAccum -= kPinchStep
+                }
+                while pinchAccum <= -kPinchStep {
+                    engine?.button(PYMOL_BUTTON_SCROLL_REVERSE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
+                    pinchAccum += kPinchStep
+                }
+            case .ended, .cancelled:
+                pinchAccum = 0
+                pinchLastScale = 1.0
+            default:
+                break
+            }
+        }
+
+        // Two-finger drag → translate (middle-drag). The pan centroid is fed
+        // straight to PyMOL as the drag cursor, so the molecule follows the
+        // fingers. Recognizes simultaneously with pinch (see makeUIView).
+        @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
+            guard let view = mtkView else { return }
+            let pt = pymolPoint(in: view, at: gesture.location(in: view))
+            switch gesture.state {
+            case .began:
+                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
+            case .changed:
+                engine?.drag(x: pt.0, y: pt.1, modifiers: 0)
+            case .ended, .cancelled:
+                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: 0)
+            default:
+                break
             }
         }
 
@@ -345,3 +520,16 @@ extension MetalViewport {
         #endif
     }
 }
+
+#if os(iOS)
+// Allow pinch (zoom) and the two-finger pan (translate) to fire together, so
+// the user can zoom and slide in one continuous two-finger gesture.
+extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        let pinchPan = (g is UIPinchGestureRecognizer && other is UIPanGestureRecognizer)
+            || (g is UIPanGestureRecognizer && other is UIPinchGestureRecognizer)
+        return pinchPan
+    }
+}
+#endif

@@ -99,6 +99,43 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Test affordance: simulate a MIDDLE-drag through PyMOL_Button/Drag —
+        // the exact button/drag calls the trackpad two-finger pan gesture makes
+        // — to verify middle-drag maps to in-plane TRANSLATE. Format: "cx,cy".
+        if let d = ProcessInfo.processInfo.environment["PYMOL_AUTOPAN"] {
+            let parts = d.split(separator: ",").compactMap { Int32($0) }
+            if parts.count == 2 {
+                let cx = parts[0], cy = parts[1]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self = self else { return }
+                    self.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: cx, y: cy, modifiers: 0)
+                    for i in 1...30 {
+                        self.drag(x: cx + Int32(i) * 6, y: cy, modifiers: 0)
+                    }
+                    self.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP, x: cx + 180, y: cy, modifiers: 0)
+                    NSLog("PYMOL_AUTOPAN: simulated middle-drag from (\(cx),\(cy)) +180px")
+                }
+            }
+        }
+
+        // Test affordance: fire SCROLL_FORWARD button events through
+        // PyMOL_Button — the exact calls the pinch/scroll zoom path makes — to
+        // verify scroll-forward maps to ZOOM IN. Format: "cx,cy[,ticks]".
+        if let z = ProcessInfo.processInfo.environment["PYMOL_AUTOZOOM"] {
+            let parts = z.split(separator: ",").compactMap { Int32($0) }
+            if parts.count >= 2 {
+                let cx = parts[0], cy = parts[1]
+                let ticks = parts.count >= 3 ? Int(parts[2]) : 12
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self = self else { return }
+                    for _ in 0..<ticks {
+                        self.button(PYMOL_BUTTON_SCROLL_FORWARD, state: PYMOL_BUTTON_DOWN, x: cx, y: cy, modifiers: 0)
+                    }
+                    NSLog("PYMOL_AUTOZOOM: fired \(ticks) SCROLL_FORWARD at (\(cx),\(cy))")
+                }
+            }
+        }
+
         // Test affordance: after a few frames render, capture the Metal
         // framebuffer to a PNG (ray=0 => the rendered image, not CPU raytrace).
         if let p = ProcessInfo.processInfo.environment["PYMOL_AUTOPNG"] {
