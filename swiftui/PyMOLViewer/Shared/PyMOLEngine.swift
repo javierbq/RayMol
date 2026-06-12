@@ -228,6 +228,23 @@ final class PyMOLEngine: ObservableObject {
         if maybeCaptureRenderedPNG(command) { return }
         PyMOLBridge_RunCommand(command)
         handleSessionViewport(for: command)
+        maybeWidenClipForSurface(for: command)
+    }
+
+    // Whole-structure view fits (orient/reset, load/fetch auto_zoom) + showing a
+    // surface/mesh/dots set an atom-fit slab; those reps add a ~solvent_radius
+    // shell beyond the atoms, so the near plane slices the surface front (exposing
+    // the interior). After such a command, re-fit the view with a buffer so the
+    // whole surface stays visible (runs synchronously after the command — cmd.do
+    // is blocking). .pse loads restore their own exact view → excluded. Bare zoom
+    // / center are user-directed framing → not overridden.
+    private func maybeWidenClipForSurface(for command: String) {
+        let l = command.lowercased()
+        if l.contains(".pse") { return }
+        let triggers = ["orient", "reset", "load ", "fetch ",
+                        "show surface", "show mesh", "show dots"]
+        guard triggers.contains(where: { l.contains($0) }) else { return }
+        runPython("from pymol import appkit_inspector as _ai\n_ai.widen_clip_for_surface()")
     }
 
     private func maybeCaptureRenderedPNG(_ command: String) -> Bool {

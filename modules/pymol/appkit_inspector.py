@@ -131,3 +131,30 @@ def poll(objs):
         print('OBJDETAIL:' + json.dumps(_build(objs)))
     except Exception as e:
         print('OBJDETAIL_ERR:' + str(e))
+
+
+def widen_clip_for_surface(buffer=12.0):
+    """When a probe-extended rep (surface / mesh / dots) is shown, widen the
+    clipping slab so the rep's ~solvent_radius shell (~3 A beyond the atoms) isn't
+    front-clipped by the atom-fit slab that orient/reset/load set (which would
+    slice the surface front and expose the interior).
+
+    Re-fit tight to the visible content first (zoom buffer 0 — idempotent, keeps
+    the molecule the same size), THEN push the near/far planes out by `buffer`.
+    The zoom reset makes repeated calls non-accumulating; the direct plane move
+    (not a camera dolly) clears the shell without shrinking the molecule, and
+    moving BOTH planes keeps the slab centered so depth precision stays good.
+    No-op when no such rep is shown."""
+    try:
+        if (cmd.count_atoms('rep surface') + cmd.count_atoms('rep mesh')
+                + cmd.count_atoms('rep dots')) > 0:
+            cmd.zoom('visible', 0.0, complete=1)   # reset slab to tight visible fit
+            # `clip near, +d` moves the near plane TOWARD the viewer (front -= d);
+            # `clip far, -d` moves the far plane AWAY (back += d). Together they
+            # WIDEN the slab so the ~solvent_radius surface shell at both faces is
+            # inside it. (The opposite signs would narrow the slab and clip the
+            # surface — and the interior — away.)
+            cmd.clip('near', float(buffer))
+            cmd.clip('far', -float(buffer))
+    except Exception:
+        pass
