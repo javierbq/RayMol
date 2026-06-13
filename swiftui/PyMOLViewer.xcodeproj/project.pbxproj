@@ -62,7 +62,7 @@
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
-		"TEMP_785D42DB-7D64-490B-AEEE-9ECEF7465049" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_8E1B35E0-9761-4149-9AC3-FCA9A5381651" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -145,10 +145,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_05B4767C-446C-4A68-83A6-E64FEACBEEBF" /* swiftui */ = {
+		"TEMP_14489FE9-EB53-45CD-AFEF-43F6CBE27167" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_785D42DB-7D64-490B-AEEE-9ECEF7465049" /* PyMOLBridge.xcconfig */,
+				"TEMP_8E1B35E0-9761-4149-9AC3-FCA9A5381651" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -574,6 +574,7 @@
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
 				INFOPLIST_KEY_CFBundleDisplayName = PyMOL;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -600,6 +601,7 @@
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
 				INFOPLIST_KEY_CFBundleDisplayName = PyMOL;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -624,6 +626,7 @@
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
 				INFOPLIST_KEY_CFBundleDisplayName = PyMOL;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -668,6 +671,7 @@
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
 				INFOPLIST_KEY_CFBundleDisplayName = PyMOL;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -685,7 +689,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_785D42DB-7D64-490B-AEEE-9ECEF7465049" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_8E1B35E0-9761-4149-9AC3-FCA9A5381651" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -770,7 +774,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_785D42DB-7D64-490B-AEEE-9ECEF7465049" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_8E1B35E0-9761-4149-9AC3-FCA9A5381651" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

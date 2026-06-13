@@ -45,10 +45,24 @@ final class PyMOLEngine: ObservableObject {
         instance = PyMOLBridge_New()
         guard let inst = instance else { return }
 
+        // Point the embedded Python's TLS at the bundled CA bundle BEFORE init,
+        // so `fetch` (HTTPS to RCSB/PDB) can verify certificates — iOS has no
+        // system cert file reachable from the sandbox. Must precede Py init.
+        if let ca = Bundle.main.path(forResource: "cacert", ofType: "pem", inDirectory: "data") {
+            setenv("SSL_CERT_FILE", ca, 1)
+        }
+
         PyMOLBridge_InitPython(inst, resourcePath)
         PyMOLBridge_Start(inst)
 
         isReady = true
+
+        // `fetch` downloads into fetch_path; the process cwd is read-only on iOS,
+        // so point it at the writable Documents directory.
+        if let docs = FileManager.default.urls(for: .documentDirectory,
+                                               in: .userDomainMask).first {
+            runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(docs.path)')")
+        }
 
         // Test affordance (no-op unless env var set): auto-load a bundled
         // structure so a screenshot has content without UI typing.
