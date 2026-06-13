@@ -224,6 +224,17 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Gesture help")
             }
+            // Test-only hook (PYMOL_UITEST=1): surface the live selection size
+            // so XCUITest can assert tap-to-select / clear behavior. Invisible
+            // and non-interactive; absent in normal runs.
+            .overlay(alignment: .topLeading) {
+                if ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1" {
+                    Text(verbatim: "\(engine.selectedResidueKeys.count)")
+                        .accessibilityIdentifier("selectionCount")
+                        .opacity(0.02)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 
     // Shared control content (sequence + Console/Objects tabs), placed at the

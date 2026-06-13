@@ -1,10 +1,11 @@
-// PyMOLGestureUITests.swift — real-touch gesture coverage for the iOS app.
+// PyMOLGestureUITests.swift — real-touch gesture + selection coverage (iOS).
 //
-// These drive the app through the genuine UIKit gesture-recognizer path (the
-// one env-var injection can't reach): one-finger drag = rotate, pinch = zoom,
-// two-finger rotation = Z-roll, tap = pick. Each gesture is verified by
-// pixel-diffing the Metal-rendered viewport region before/after — XCUIScreen
-// captures the actual on-screen framebuffer, so a no-op gesture fails the test.
+// Drives the app through the genuine UIKit gesture-recognizer path (which the
+// layer env-var affordances bypass): one-finger drag = rotate, pinch = zoom,
+// two-finger rotation = Z-roll, tap = pick. Rotate/zoom/roll are verified by
+// pixel-diffing the Metal-rendered viewport (a no-op gesture fails); tap-pick
+// is verified via the PYMOL_UITEST-gated "selectionCount" accessibility hook
+// that mirrors the live 'sele' size.
 //
 // Run: xcodebuild test -scheme PyMOLViewer_iOS -sdk iphonesimulator \
 //        -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
@@ -20,20 +21,27 @@ final class PyMOLGestureUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        // Autoload a structure, force the panel closed (full-bleed viewport so
-        // gestures land on the scene), and skip the first-run gesture coach so
-        // it doesn't swallow the first drag.
         app.launchEnvironment["PYMOL_AUTOLOAD"] = "1ubq.cif"
-        app.launchEnvironment["PYMOL_AUTOPANEL"] = "closed"
+        app.launchEnvironment["PYMOL_AUTOPANEL"] = "closed"   // full-bleed viewport
+        app.launchEnvironment["PYMOL_UITEST"] = "1"           // expose selectionCount
         app.launchArguments += ["-ipadGestureCoachSeen", "YES"]
+        // Each test calls launch(...) so it can tune the scene.
+    }
+
+    /// Launch (or relaunch) the app, optionally overriding the scene / opening
+    /// the panel (for the sequence viewer), and wait for the molecule to render.
+    private func launch(scene: String? = nil, panelOpen: Bool = false) {
+        if let scene { app.launchEnvironment["PYMOL_AUTOCMD"] = scene }
+        if panelOpen { app.launchEnvironment["PYMOL_AUTOPANEL"] = "open" }
         app.launch()
         XCTAssertTrue(waitForRender(timeout: 30),
                       "molecule never rendered (embedded Python boot + load)")
     }
 
-    // MARK: - Gesture tests
+    // MARK: - Gesture tests (cartoon scene)
 
     func testOneFingerDragRotates() {
+        launch()
         let before = viewportSignature()
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.40))
         let end   = app.coordinate(withNormalizedOffset: CGVector(dx: 0.68, dy: 0.46))
@@ -45,6 +53,7 @@ final class PyMOLGestureUITests: XCTestCase {
     }
 
     func testPinchZooms() {
+        launch()
         let before = viewportSignature()
         app.pinch(withScale: 2.4, velocity: 1.5)   // scale > 1 = zoom in
         settle()
@@ -54,6 +63,7 @@ final class PyMOLGestureUITests: XCTestCase {
     }
 
     func testTwoFingerRotationRolls() {
+        launch()
         let before = viewportSignature()
         app.rotate(CGFloat.pi / 3.0, withVelocity: 1.0)   // ~60° Z-roll
         settle()
@@ -62,14 +72,36 @@ final class PyMOLGestureUITests: XCTestCase {
                       "two-finger rotation did not roll the view")
     }
 
-    func testTapKeepsAppResponsive() {
-        // Picking is hard to assert without scene introspection; this is a smoke
-        // check that a tap on the scene doesn't wedge the app.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).tap()
-        settle(0.6)
-        attach("after-tap")
-        XCTAssertEqual(app.state, .runningForeground,
-                       "app not responsive after a tap on the scene")
+    // MARK: - Click → residue selection (via the sequence viewer)
+    //
+    // NOTE on the 3D-scene tap: a tap directly on the Metal viewport to pick an
+    // atom can NOT be exercised here — XCUITest only delivers a *moving* touch to
+    // the MTKView's gesture recognizers, never a stationary tap/small-drag, so
+    // handleTap never fires under automation. That pick path is verified out of
+    // band (PYMOL_AUTOPICK → pink selection markers + sequence highlight). This
+    // test covers residue selection through the sequence viewer, which is a real
+    // SwiftUI element tap and exercises the same 'sele' → highlight machinery.
+
+    func testTapResidueInSequenceSelects() {
+        launch(panelOpen: true)   // show the sequence strip
+        let sel = app.staticTexts["selectionCount"]
+        XCTAssertTrue(sel.waitForExistence(timeout: 10),
+                      "selectionCount test hook not found (PYMOL_UITEST not honored?)")
+        XCTAssertEqual(sel.label, "0", "expected an empty selection at launch")
+
+        // Met1 ("M") is the only M in 1ubq's sequence — tap it in the viewer.
+        let m = app.staticTexts["M"].firstMatch
+        XCTAssertTrue(m.waitForExistence(timeout: 10), "sequence residue 'M' not found")
+        m.tap()
+        XCTAssertTrue(waitForCount(sel, satisfies: { $0 == 1 }, timeout: 6),
+                      "tapping a sequence residue did not select it")
+        attach("after-select")
+
+        // Tap it again → toggles the residue back off.
+        m.tap()
+        XCTAssertTrue(waitForCount(sel, satisfies: { $0 == 0 }, timeout: 6),
+                      "tapping the selected residue again did not deselect it")
+        attach("after-deselect")
     }
 
     // MARK: - Helpers
@@ -83,9 +115,19 @@ final class PyMOLGestureUITests: XCTestCase {
         add(att)
     }
 
+    /// Poll the selectionCount hook (the app refreshes 'sele' on a ~500ms timer).
+    private func waitForCount(_ el: XCUIElement, satisfies pred: (Int) -> Bool,
+                              timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if pred(Int(el.label) ?? -1) { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return false
+    }
+
     /// Downsample the central viewport band (excludes the status-bar clock at
-    /// the top and any panel/sequence chrome at the bottom) to a small grayscale
-    /// buffer, so comparisons reflect the rendered molecule rather than chrome.
+    /// the top and any panel chrome at the bottom) to a small grayscale buffer.
     private func viewportSignature() -> [UInt8] {
         guard let cg = XCUIScreen.main.screenshot().image.cgImage else { return [] }
         let w = cg.width, h = cg.height
@@ -102,7 +144,6 @@ final class PyMOLGestureUITests: XCTestCase {
         return buf
     }
 
-    /// True if more than `threshold` fraction of pixels changed appreciably.
     private func changed(_ a: [UInt8], _ b: [UInt8], threshold: Double = 0.06) -> Bool {
         guard !a.isEmpty, a.count == b.count else { return false }
         var diff = 0
@@ -110,7 +151,6 @@ final class PyMOLGestureUITests: XCTestCase {
         return Double(diff) / Double(a.count) > threshold
     }
 
-    /// Poll until the viewport band has bright pixels (molecule rendered).
     private func waitForRender(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
