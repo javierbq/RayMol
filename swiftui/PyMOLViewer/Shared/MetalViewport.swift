@@ -108,20 +108,28 @@ struct MetalViewport: UIViewRepresentable {
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
         let rotation = UIRotationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleRotation(_:)))
         let longPress = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
+        // Three-finger drag = CLIP (slab): vertical moves the slab through the
+        // scene, horizontal changes its thickness — synthesized as the same
+        // Shift+Right "clip" interaction the macOS trackpad gesture uses.
+        let clipPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClip(_:)))
 
-        // One finger rotates; two fingers translate. Pinch (zoom) and the
-        // two-finger pan (translate) must recognize simultaneously so you can
-        // zoom and slide at once — that's the "pinch-and-zoom with translation".
+        // One finger rotates; two fingers translate. Pinch (zoom), the two-finger
+        // pan (translate), and two-finger rotation (Z-roll) all recognize
+        // simultaneously so you can zoom + slide + roll in one gesture.
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
         twoPan.minimumNumberOfTouches = 2
         twoPan.maximumNumberOfTouches = 2
+        clipPan.minimumNumberOfTouches = 3
+        clipPan.maximumNumberOfTouches = 3
         twoPan.delegate = context.coordinator
         pinch.delegate = context.coordinator
+        rotation.delegate = context.coordinator
 
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(pan)
         view.addGestureRecognizer(twoPan)
+        view.addGestureRecognizer(clipPan)
         view.addGestureRecognizer(pinch)
         view.addGestureRecognizer(rotation)
         view.addGestureRecognizer(longPress)
@@ -191,6 +199,12 @@ extension MetalViewport {
         // cumulative gesture.scale as a zoom fraction.
         private var pinchLastScale: CGFloat = 1.0
         private let kZoomGain: CGFloat = 1.0
+        // Two-finger rotation → Z-axis roll. UIRotationGestureRecognizer.rotation
+        // is cumulative radians; feed the per-callback delta as a `turn z` (deg).
+        // Negated so a clockwise twist rolls the molecule clockwise on screen;
+        // flip kRollSign if it feels inverted.
+        private var lastRotation: CGFloat = 0
+        private let kRollSign: Float = -1
         #endif
 
         // MARK: - MTKViewDelegate
@@ -498,8 +512,43 @@ extension MetalViewport {
         }
 
         @objc func handleRotation(_ gesture: UIRotationGestureRecognizer) {
-            // Two-finger rotation = Z-axis rotation
-            // Could map to middle-drag with shift modifier
+            // Two-finger rotation → Z-axis roll (`turn z`). Per-callback delta of
+            // the cumulative gesture.rotation, in degrees. runPython (not run-
+            // Command) to avoid echoing into the log every frame.
+            switch gesture.state {
+            case .began:
+                lastRotation = 0
+            case .changed:
+                let delta = gesture.rotation - lastRotation
+                lastRotation = gesture.rotation
+                let deg = kRollSign * Float(delta) * 180.0 / .pi
+                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+            case .ended, .cancelled:
+                lastRotation = 0
+            default:
+                break
+            }
+        }
+
+        // Three-finger drag → CLIP. Synthesizes a Shift+Right-button drag, which
+        // PyMOL's three_button_viewing binds to 'clip' (vertical = move slab,
+        // horizontal = thickness) — the same interaction as the macOS Shift+two-
+        // finger trackpad gesture (touch has no Shift, so a 3-finger drag is the
+        // iPad idiom). The centroid feeds PyMOL's drag cursor.
+        @objc func handleClip(_ gesture: UIPanGestureRecognizer) {
+            guard let view = mtkView else { return }
+            let pt = pymolPoint(in: view, at: gesture.location(in: view))
+            let s = PYMOL_MOD_SHIFT
+            switch gesture.state {
+            case .began:
+                engine?.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: s)
+            case .changed:
+                engine?.drag(x: pt.0, y: pt.1, modifiers: s)
+            case .ended, .cancelled:
+                engine?.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: s)
+            default:
+                break
+            }
         }
 
         @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -524,9 +573,15 @@ extension MetalViewport {
 extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        let pinchPan = (g is UIPinchGestureRecognizer && other is UIPanGestureRecognizer)
-            || (g is UIPanGestureRecognizer && other is UIPinchGestureRecognizer)
-        return pinchPan
+        // The two-finger family — pinch (zoom), the 2-finger pan (translate), and
+        // rotation (Z-roll) — all compose into one continuous gesture. One-finger
+        // rotate and the 3-finger clip pan stay exclusive (don't match below).
+        func isTwoFinger(_ gr: UIGestureRecognizer) -> Bool {
+            if gr is UIPinchGestureRecognizer || gr is UIRotationGestureRecognizer { return true }
+            if let p = gr as? UIPanGestureRecognizer { return p.maximumNumberOfTouches == 2 }
+            return false
+        }
+        return isTwoFinger(g) && isTwoFinger(other)
     }
 }
 #endif
