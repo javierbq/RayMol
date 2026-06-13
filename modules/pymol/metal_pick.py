@@ -24,6 +24,34 @@ import math
 _MAX_PICK_NDC2 = 0.0100  # ~0.1 NDC radius
 
 
+def _pickdbg(ndc_x, ndc_y, aspect, best, ncand):
+    """Append a pick diagnostic line to PYMOL_PICKDEBUG (debug harness only).
+
+    Records the click NDC and, for the chosen atom, its resi and its PROJECTED
+    NDC (sx,sy). If the chosen atom's projected NDC ~= the click NDC but the
+    selected residue is not the one visibly under the cursor, the pick math and
+    the renderer disagree (the bug class we're chasing).
+    """
+    import os
+    path = os.environ.get('PYMOL_PICKDEBUG')
+    if not path:
+        return
+    try:
+        if best is None:
+            line = 'click ndc=(%.4f,%.4f) aspect=%.4f -> EMPTY (ncand=%d)\n' % (
+                ndc_x, ndc_y, aspect, ncand)
+        else:
+            d2, obj, chain, resi, resn, segi, name, sx, sy = best
+            line = ('click ndc=(%.4f,%.4f) aspect=%.4f -> %s/%s/%s`%s/%s '
+                    'projNDC=(%.4f,%.4f) d=%.4f ncand=%d\n' % (
+                        ndc_x, ndc_y, aspect, obj, chain, resn, resi, name,
+                        sx, sy, d2 ** 0.5, ncand))
+        with open(path, 'a') as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 def pick_at(ndc_x, ndc_y, aspect):
     from pymol import cmd
 
@@ -64,13 +92,21 @@ def pick_at(ndc_x, ndc_y, aspect):
         if tan_half <= 0.0:
             return
 
-        best = None  # (screen_d2, obj, chain, resi, resn, segi, name)
+        best = None  # (screen_d2, obj, chain, resi, resn, segi, name, sx, sy)
+        ncand = 0    # atoms whose projection fell within the pick radius
+        _ext = [1e9, -1e9, 1e9, -1e9]  # projected-NDC extent: sx_min,sx_max,sy_min,sy_max
 
         for obj in (cmd.get_names('objects', enabled_only=1) or []):
             if obj.startswith('_'):
                 continue
             try:
-                model = cmd.get_model(obj)
+                # Exclude solvent from picking: get_model(obj) returns EVERY atom
+                # (incl. hidden waters), so the screen-nearest one is often an
+                # invisible water => "wrong/none residue" selected when clicking a
+                # cartoon. (The `visible` selector would be the right filter but
+                # is unreliable on this build — it reports all atoms visible — so
+                # we exclude solvent explicitly, the dominant offender.)
+                model = cmd.get_model('(%s) and not solvent' % obj)
             except Exception:
                 continue
             if not model or not model.atom:
@@ -90,12 +126,35 @@ def pick_at(ndc_x, ndc_y, aspect):
                 half_w = half_h * aspect
                 sx = ex / half_w                # NDC x, +1 = right
                 sy = ey / half_h                # NDC y, +1 = up (bottom-left)
+                if sx < _ext[0]: _ext[0] = sx
+                if sx > _ext[1]: _ext[1] = sx
+                if sy < _ext[2]: _ext[2] = sy
+                if sy > _ext[3]: _ext[3] = sy
                 d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
                 if d2 > _MAX_PICK_NDC2:
                     continue
+                ncand += 1
                 if best is None or d2 < best[0]:
                     best = (d2, obj, at.chain or '', at.resi,
-                            at.resn, at.segi or (at.chain or ''), at.name)
+                            at.resn, at.segi or (at.chain or ''), at.name, sx, sy)
+
+        _pickdbg(ndc_x, ndc_y, aspect, best, ncand)
+        import os as _os
+        if _os.environ.get('PYMOL_PICKDEBUG'):
+            try:
+                _nv = cmd.count_atoms('visible')
+                _nt = cmd.count_atoms('all')
+                _nhv = cmd.count_atoms('resn HOH and visible')
+                with open(_os.environ['PYMOL_PICKDEBUG'], 'a') as _f:
+                    _f.write('  VIS total=%d visible=%d hoh_visible=%d\n' % (_nt, _nv, _nhv))
+                    _f.write('  params len(v)=%d fov=%.2f tan_half=%.4f aspect=%.4f '
+                             'pos=(%.2f,%.2f,%.2f) origin=(%.2f,%.2f,%.2f) '
+                             'projext sx=[%.3f,%.3f] sy=[%.3f,%.3f]\n' % (
+                                 len(v), fov_deg, tan_half, aspect,
+                                 tx, ty, tz, ox, oy, oz,
+                                 _ext[0], _ext[1], _ext[2], _ext[3]))
+            except Exception:
+                pass
 
         if best is None:
             # Empty-space click: empty the active 'sele' (set-mode clear),
@@ -105,7 +164,7 @@ def pick_at(ndc_x, ndc_y, aspect):
                 cmd.enable('sele')
             return
 
-        _, obj, chain, resi, resn, segi, name = best
+        _, obj, chain, resi, resn, segi, name, _sx, _sy = best
         print(' You clicked /%s/%s/%s`%s/%s' % (segi, chain, resn, resi, name))
 
         # Residue-level selection scoped to the picked object.
