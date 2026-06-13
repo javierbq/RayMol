@@ -46,6 +46,13 @@ void PyMOLBridge_PopValidContext(PyMOLHandle instance);
 
 // --- Python execution ---
 void PyMOLBridge_RunCommand(const char *command);
+
+// Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
+// on the current input and returns the completed string (extended to the
+// unambiguous prefix; the candidate list, when ambiguous, is printed to the
+// feedback log). Returns NULL if there's no completion. Caller frees with
+// PyMOLBridge_FreeFeedback.
+char *PyMOLBridge_Complete(const char *text);
 char *PyMOLBridge_GetFeedback(PyMOLHandle instance);
 void PyMOLBridge_FreeFeedback(char *str);
 

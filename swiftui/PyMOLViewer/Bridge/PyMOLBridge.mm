@@ -252,6 +252,39 @@ void PyMOLBridge_RunCommand(const char *command)
     PAutoUnblock(G, blk);
 }
 
+char *PyMOLBridge_Complete(const char *text)
+{
+    if (!text) return nullptr;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return nullptr;
+    int blk = PAutoBlock(G);
+    char *result = nullptr;
+    // cmd._parser.complete(text) — PyMOL's full CLI completion (commands, args,
+    // selections, settings, file paths). Same entry point the Qt GUI uses; the
+    // ambiguous-match candidate list is print()ed and reaches _get_feedback().
+    PyObject *pymol = PyImport_ImportModule("pymol");
+    if (pymol) {
+        PyObject *cmd = PyObject_GetAttrString(pymol, "cmd");
+        if (cmd) {
+            PyObject *parser = PyObject_GetAttrString(cmd, "_parser");
+            if (parser) {
+                PyObject *res = PyObject_CallMethod(parser, "complete", "s", text);
+                if (res && res != Py_None) {
+                    const char *s = PyUnicode_AsUTF8(res);
+                    if (s && s[0]) result = strdup(s);
+                }
+                Py_XDECREF(res);
+                Py_DECREF(parser);
+            }
+            Py_DECREF(cmd);
+        }
+        Py_DECREF(pymol);
+    }
+    if (PyErr_Occurred()) PyErr_Clear();
+    PAutoUnblock(G, blk);
+    return result;
+}
+
 void PyMOLBridge_RunPython(const char *code)
 {
     if (!code) return;

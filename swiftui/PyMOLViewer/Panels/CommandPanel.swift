@@ -36,7 +36,8 @@ struct CommandPanel: View {
                     text: $commandText,
                     onSubmit: submitCommand,
                     onUpArrow: historyBack,
-                    onDownArrow: historyForward
+                    onDownArrow: historyForward,
+                    onComplete: { engine.complete($0) }
                 )
             }
             .padding(.horizontal, 8)
@@ -123,6 +124,7 @@ struct CommandTextField: NSViewRepresentable {
     var onSubmit: () -> Void
     var onUpArrow: () -> Void
     var onDownArrow: () -> Void
+    var onComplete: (String) -> String?
 
     func makeNSView(context: Context) -> NSTextField {
         let field = CommandNSTextField()
@@ -181,6 +183,19 @@ struct CommandTextField: NSViewRepresentable {
                 onSubmit()
                 return true
             }
+            // Tab → PyMOL CLI completion. Replace the input with the completed
+            // string (cursor to end); the ambiguous candidate list, if any, the
+            // core prints to the feedback log. Always consume Tab (don't shift
+            // keyboard focus out of the field).
+            if selector == #selector(NSResponder.insertTab(_:)) {
+                let current = textView.string
+                if let completed = parent.onComplete(current), completed != current {
+                    textView.string = completed
+                    parent.text = completed
+                    textView.setSelectedRange(NSRange(location: (completed as NSString).length, length: 0))
+                }
+                return true
+            }
             return false
         }
     }
@@ -217,6 +232,7 @@ struct CommandTextField: UIViewRepresentable {
     var onSubmit: () -> Void
     var onUpArrow: () -> Void
     var onDownArrow: () -> Void
+    var onComplete: (String) -> String?
 
     func makeUIView(context: Context) -> UITextField {
         let field = UITextField()
@@ -238,9 +254,12 @@ struct CommandTextField: UIViewRepresentable {
         let downArrow = UIKeyCommand(input: UIKeyCommand.inputDownArrow,
                                      modifierFlags: [],
                                      action: #selector(Coordinator.handleDownArrow))
+        let tab = UIKeyCommand(input: "\t", modifierFlags: [],
+                               action: #selector(Coordinator.handleTab))
         field.addTarget(context.coordinator, action: #selector(Coordinator.textChanged(_:)),
                         for: .editingChanged)
-        context.coordinator.keyCommands = [upArrow, downArrow]
+        context.coordinator.field = field
+        context.coordinator.keyCommands = [upArrow, downArrow, tab]
 
         return field
     }
@@ -265,6 +284,7 @@ struct CommandTextField: UIViewRepresentable {
         var onUpArrow: () -> Void
         var onDownArrow: () -> Void
         var keyCommands: [UIKeyCommand] = []
+        weak var field: UITextField?
 
         init(_ parent: CommandTextField) {
             self.parent = parent
@@ -288,6 +308,14 @@ struct CommandTextField: UIViewRepresentable {
 
         @objc func handleDownArrow() {
             onDownArrow()
+        }
+
+        @objc func handleTab() {
+            let current = field?.text ?? parent.text
+            if let completed = parent.onComplete(current), completed != current {
+                field?.text = completed
+                parent.text = completed
+            }
         }
     }
 }

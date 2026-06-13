@@ -335,6 +335,17 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    // Tab autocomplete: run PyMOL's own CLI completion on the partial input and
+    // return the completed string (extended to the unambiguous prefix). The
+    // candidate list (when ambiguous) is printed to the feedback log by the core.
+    // Returns nil if there's no completion.
+    func complete(_ text: String) -> String? {
+        guard isReady, let c = PyMOLBridge_Complete(text) else { return nil }
+        defer { PyMOLBridge_FreeFeedback(c) }
+        let s = String(cString: c)
+        return s.isEmpty ? nil : s
+    }
+
     // Extract the file path from a `load <path>[, ...]` command (best effort).
     private func sessionPath(from command: String) -> String? {
         let t = command.trimmingCharacters(in: .whitespaces)
