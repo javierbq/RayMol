@@ -208,6 +208,16 @@ void PyMOLBridge_CapturePNG(PyMOLHandle h, const char* path)
     if (r) r->requestPNGCapture(std::string(path));
 }
 
+int PyMOLBridge_SupportsRayTracing(PyMOLHandle h)
+{
+    if (!h) return -1;
+    PyMOLGlobals* G = PyMOL_GetGlobals(INST(h));
+    if (!G) return -1;
+    auto* r = static_cast<pymol::RendererMetal*>(G->Renderer);
+    if (!r) return -1;
+    return r->rtSupported() ? 1 : 0;
+}
+
 void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
 {
     if (h) PyMOL_Key(INST(h), k, x, y, modifiers);

@@ -38,6 +38,10 @@ void PyMOLBridge_CapturePNG(PyMOLHandle instance, const char* path);
 // (WYSIWYG); 0 = force OFF; 1 = force ON for this export only (the live setting
 // is saved and restored, so the on-screen view is unchanged).
 void PyMOLBridge_RenderHiResPNG(PyMOLHandle instance, const char* path, int width, int height, int rayTraced);
+// Hardware ray-tracing capability of the active GPU. 1 = supported,
+// 0 = not supported, -1 = unknown (renderer not yet created). Lets the UI
+// gate the metal_raytrace toggle so it isn't offered where it does nothing.
+int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 
 // --- Context management ---

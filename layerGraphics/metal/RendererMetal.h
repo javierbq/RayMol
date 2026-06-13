@@ -164,6 +164,10 @@ public:
   // renderer's final offscreen color and write it via MyPNGWrite.
   void requestPNGCapture(const std::string& path) { _capturePath = path; }
 
+  // True iff this GPU supports hardware ray tracing (set in the ctor from
+  // [_device supportsRaytracing]). Lets the UI gate the metal_raytrace toggle.
+  bool rtSupported() const { return _rtSupported; }
+
   // Hi-res offscreen render → PNG. beginOffscreen sizes the post targets to
   // an arbitrary W×H, points the scene pass at them (no drawable), and arms
   // the PNG capture; the caller then runs the normal beginFrame / scene-draw /

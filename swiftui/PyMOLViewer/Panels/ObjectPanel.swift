@@ -1292,7 +1292,15 @@ private struct SceneCard: View {
                             .labelsHidden().frame(width: 28)
                     }
                     ForEach(SceneCatalog.params) { p in
-                        sceneRow(p.label) { sceneControl(p) }
+                        // Hardware ray tracing is unavailable on some GPUs
+                        // (Simulator, A-series iPads); gray the row out there
+                        // so the toggle doesn't read as a working control.
+                        let rtUnavailable = p.setting == "metal_raytrace" && !engine.rayTracingSupported
+                        sceneRow(rtUnavailable ? "\(p.label) (unavailable)" : p.label) {
+                            sceneControl(p)
+                        }
+                        .disabled(rtUnavailable)
+                        .opacity(rtUnavailable ? 0.45 : 1)
                     }
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)

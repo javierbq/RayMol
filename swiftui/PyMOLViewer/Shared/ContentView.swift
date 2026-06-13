@@ -355,7 +355,14 @@ struct ContentView: View {
     private var iosViewToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
             Menu {
-                iosViewToggle("Ray tracing", "metal_raytrace")
+                if engine.rayTracingSupported {
+                    iosViewToggle("Ray tracing", "metal_raytrace")
+                } else {
+                    // No hardware RT on this GPU (Simulator / A-series iPad);
+                    // the setting would be a no-op, so surface it as unavailable.
+                    Label("Ray tracing — unavailable", systemImage: "sparkles")
+                        .disabled(true)
+                }
                 iosViewToggle("Shadows", "metal_shadows")
                 iosViewToggle("Ambient occlusion", "metal_ssao")
                 iosViewToggle("Outline", "metal_outline")
@@ -434,7 +441,12 @@ struct ContentView: View {
                 Menu {
                     Button("Current View Size") { iosShareImage(scale: 1) }
                     Button("2× View") { iosShareImage(scale: 2) }
-                    Button("4K · 3840 × 2160") { iosShareImage(size: CGSize(width: 3840, height: 2160)) }
+                    // 4K is memory-heavy (esp. ray-traced); skip it on iPhone
+                    // where the smaller RAM budget makes the export likely to
+                    // be jettisoned. iPad keeps the full-resolution option.
+                    if hSize != .compact {
+                        Button("4K · 3840 × 2160") { iosShareImage(size: CGSize(width: 3840, height: 2160)) }
+                    }
                 } label: {
                     Label("Share Image", systemImage: "photo")
                 }

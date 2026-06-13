@@ -42,6 +42,11 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: PyMOL
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.education
+        # iOS orientations: portrait + both landscapes, no upside-down (a
+        # molecular viewer flipped 180° is disorienting and serves no purpose).
+        # Applied to iPhone and iPad; ignored on the macOS slice of this target.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
       configs:
         Debug:
           SWIFT_OPTIMIZATION_LEVEL: -Onone

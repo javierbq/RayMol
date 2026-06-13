@@ -302,6 +302,15 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height), Int32(rayTraced))
     }
 
+    // Whether the active GPU supports hardware ray tracing. The UI gates the
+    // metal_raytrace toggle on this so it isn't offered where it has no effect
+    // (iOS Simulator, A-series iPads). Defaults to true when unknown (renderer
+    // not yet created) so the control isn't hidden before the engine is ready.
+    var rayTracingSupported: Bool {
+        guard let inst = instance else { return true }
+        return PyMOLBridge_SupportsRayTracing(inst) != 0
+    }
+
     // Apply a Metal-renderer letterbox so a loaded .pse reproduces its saved
     // viewport aspect. Loading non-session content (or reinitialize) clears it.
     private func handleSessionViewport(for command: String) {
