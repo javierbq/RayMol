@@ -134,5 +134,31 @@ targets:
           [ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib "$RES/pymol.metallib" || echo "metallib skipped (runtime-compile fallback)"
     dependencies: []
     scheme:
-      testTargets: []
+      testTargets:
+        - PyMOLViewerUITests
       gatherCoverageData: false
+
+  # iOS UI-test target: real-touch gesture coverage (rotate/zoom/Z-roll/tap)
+  # through the genuine UIKit recognizer path, verified by pixel-diffing the
+  # Metal-rendered viewport. iOS-only; does not affect the macOS app.
+  PyMOLViewerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - PyMOLViewerUITests
+    dependencies:
+      - target: PyMOLViewer_iOS
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.pymol.viewer.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: PyMOLViewer_iOS
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # The project xcconfig + base settings link pymol_core + Python and set
+        # a C++ bridging header for the APP. A pure-Swift UI-test bundle must
+        # inherit NONE of that (else it dlopens @rpath/Python.framework and
+        # fails to load). Blank them out at the target level (highest priority).
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS: ""
+        OTHER_CPLUSPLUSFLAGS: ""
