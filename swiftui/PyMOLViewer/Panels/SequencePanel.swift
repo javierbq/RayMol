@@ -87,7 +87,10 @@ struct SequencePanel: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
+        // Scroll BOTH axes: horizontally through long sequences, vertically when
+        // several objects are loaded (otherwise extra object rows clip against a
+        // fixed-height container — the iPad sequence-bar overflow).
+        ScrollView([.horizontal, .vertical], showsIndicators: true) {
             content
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)

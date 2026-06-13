@@ -15,10 +15,10 @@ import UIKit
 // row count). One set of constants drives the action buttons, row height, and
 // the leading gutter (expand chevron / visibility toggle).
 #if os(iOS)
-private let kActBtnW: CGFloat = 34
-private let kActBtnH: CGFloat = 30
-private let kRowH: CGFloat = 38
-private let kGutterW: CGFloat = 30
+private let kActBtnW: CGFloat = 42
+private let kActBtnH: CGFloat = 40
+private let kRowH: CGFloat = 46
+private let kGutterW: CGFloat = 40
 #else
 private let kActBtnW: CGFloat = 22
 private let kActBtnH: CGFloat = 18
@@ -868,7 +868,15 @@ private struct LabeledSlider: View {
                        editing = began
                        if !began { onCommit(local) }
                    })
-                .controlSize(.mini)
+#if os(iOS)
+                .controlSize(.regular)
+                #else
+    #if os(iOS)
+            .controlSize(.regular)
+            #else
+            .controlSize(.mini)
+            #endif
+                #endif
             TextField("", text: $text)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(.trailing)

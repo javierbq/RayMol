@@ -92,18 +92,28 @@ struct ContentView: View {
     // MARK: - iPadOS: TabView with panels
 
     #if os(iOS)
-    @State private var selectedTab = 0
+    // Default to the Objects tab: a touch user tunes representations far more
+    // than they type commands, and it avoids greeting them with console log text.
+    @State private var selectedTab = 1
+    @State private var showFetch = false
+    @State private var fetchID = ""
+    // AI Chat is a non-functional placeholder; hide its tab until the backend
+    // exists so it doesn't occupy a top-level slot.
+    private let kShowChatTab = false
 
     private var iPadOSLayout: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Main viewport
+                // Main viewport — the star. Empty-state overlay guides first run.
                 MetalViewport()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay { if engine.objects.isEmpty { emptyStateView } }
 
                 if engine.sequenceVisible {
+                    // 64pt fits ~2 object rows; SequencePanel scrolls vertically
+                    // beyond that (was 44pt, which clipped a 2nd structure).
                     SequencePanel()
-                        .frame(height: 44)
+                        .frame(height: 64)
                 }
 
                 // Bottom panel area (swipeable tabs)
@@ -116,24 +126,107 @@ struct ContentView: View {
                         .tabItem { Label("Objects", systemImage: "cube") }
                         .tag(1)
 
-                    ChatPanel()
-                        .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }
-                        .tag(2)
+                    if kShowChatTab {
+                        ChatPanel()
+                            .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }
+                            .tag(2)
+                    }
                 }
                 .frame(height: 250)
             }
             .navigationTitle("PyMOL")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { iosOpenToolbar; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosViewToolbar; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
                 iosHandleImport(result)
             }
+            .alert("Fetch from PDB", isPresented: $showFetch) {
+                TextField("PDB ID (e.g. 1ubq)", text: $fetchID)
+                    .textInputAutocapitalization(.never)
+                Button("Fetch") { iosFetch() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Download a structure from the RCSB PDB.")
+            }
         }
+        .preferredColorScheme(.dark)   // consistent dark chrome (no white nav bar)
         .onAppear {
             initializeEngine()
         }
+    }
+
+    // First-run / empty state: a black viewport gives no guidance, so overlay a
+    // centered call-to-action when nothing is loaded. (ContentUnavailableView is
+    // iOS 17+; this is a hand-rolled equivalent for the iOS 16 target.)
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "atom")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+            Text("No structure loaded")
+                .font(.title2).fontWeight(.semibold)
+            Text("Open a molecular file or fetch one from the PDB.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                Button {
+                    showFileImporter = true
+                } label: {
+                    Label("Open File…", systemImage: "folder")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    fetchID = ""
+                    showFetch = true
+                } label: {
+                    Label("Fetch from PDB…", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 4)
+        }
+        .padding(28)
+        .frame(maxWidth: 420)
+        .allowsHitTesting(true)
+    }
+
+    // Toolbar "View" menu: the live display settings (formerly reachable only by
+    // leaving the viewport, switching to the Objects tab, and scrolling to the
+    // SCENE card). Toggles drive the same metal_* / depth_cue settings.
+    private var iosViewToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Menu {
+                iosViewToggle("Ray tracing", "metal_raytrace")
+                iosViewToggle("Shadows", "metal_shadows")
+                iosViewToggle("Ambient occlusion", "metal_ssao")
+                iosViewToggle("Outline", "metal_outline")
+                iosViewToggle("MSAA 4×", "metal_msaa")
+                iosViewToggle("Depth cue / fog", "depth_cue")
+                Divider()
+                Toggle(isOn: $engine.sequenceVisible) {
+                    Label("Sequence", systemImage: "textformat.abc")
+                }
+            } label: {
+                Label("View", systemImage: "slider.horizontal.3")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func iosViewToggle(_ label: String, _ setting: String) -> some View {
+        Toggle(label, isOn: Binding(
+            get: { (engine.sceneState.values[setting] ?? 0) != 0 },
+            set: { engine.runCommand("set \(setting), \($0 ? 1 : 0)") }))
+    }
+
+    private func iosFetch() {
+        let id = fetchID.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "'", with: "")
+        guard !id.isEmpty else { return }
+        engine.runCommand("fetch \(id), async=0, type=pdb")
     }
 
     // Open a molecule/session from Files. PyMOL load infers the format from the
