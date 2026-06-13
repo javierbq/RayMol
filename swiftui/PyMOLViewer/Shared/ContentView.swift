@@ -101,38 +101,39 @@ struct ContentView: View {
     // exists so it doesn't occupy a top-level slot.
     private let kShowChatTab = false
 
+    // Adaptive control surface: the controls follow the LONG axis so the 3D
+    // viewport stays maximal in both orientations — a resizable side column in
+    // landscape, a resizable bottom panel in portrait. `panelFrac` (committed at
+    // each drag end) is the panel's share of the short axis.
+    @State private var panelFrac: CGFloat = 0.33
+    @State private var committedFrac: CGFloat = 0.33
+    @AppStorage("ipadGestureCoachSeen") private var gestureCoachSeen = false
+    @State private var showGestureLegend = false
+
     private var iPadOSLayout: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Main viewport — the star. Empty-state overlay guides first run.
-                MetalViewport()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay { if engine.objects.isEmpty { emptyStateView } }
-
-                if engine.sequenceVisible {
-                    // 64pt fits ~2 object rows; SequencePanel scrolls vertically
-                    // beyond that (was 44pt, which clipped a 2nd structure).
-                    SequencePanel()
-                        .frame(height: 64)
-                }
-
-                // Bottom panel area (swipeable tabs)
-                TabView(selection: $selectedTab) {
-                    CommandPanel()
-                        .tabItem { Label("Console", systemImage: "terminal") }
-                        .tag(0)
-
-                    ObjectPanel()
-                        .tabItem { Label("Objects", systemImage: "cube") }
-                        .tag(1)
-
-                    if kShowChatTab {
-                        ChatPanel()
-                            .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }
-                            .tag(2)
+            GeometryReader { geo in
+                let landscape = geo.size.width > geo.size.height
+                let total = landscape ? geo.size.width : geo.size.height
+                let panel = min(max(total * panelFrac, landscape ? 300 : 200), total * 0.6)
+                Group {
+                    if landscape {
+                        HStack(spacing: 0) {
+                            viewportView
+                            resizeDivider(landscape: true, total: geo.size.width)
+                            panelContent.frame(width: panel)
+                        }
+                    } else {
+                        VStack(spacing: 0) {
+                            viewportView
+                            resizeDivider(landscape: false, total: geo.size.height)
+                            panelContent.frame(height: panel)
+                        }
                     }
                 }
-                .frame(height: 250)
+                .overlay(alignment: .center) {
+                    if !gestureCoachSeen && !engine.objects.isEmpty { gestureCoachOverlay }
+                }
             }
             .navigationTitle("PyMOL")
             .navigationBarTitleDisplayMode(.inline)
@@ -150,10 +151,129 @@ struct ContentView: View {
             } message: {
                 Text("Download a structure from the RCSB PDB.")
             }
+            .sheet(isPresented: $showGestureLegend) {
+                VStack(spacing: 16) {
+                    gestureLegendCard
+                    Button("Done") { showGestureLegend = false }
+                        .buttonStyle(.bordered)
+                }
+                .padding(24)
+                .presentationDetents([.medium, .large])
+            }
         }
         .preferredColorScheme(.dark)   // consistent dark chrome (no white nav bar)
         .onAppear {
             initializeEngine()
+        }
+    }
+
+    // The 3D viewport — primary in every orientation. Carries the empty-state CTA
+    // and a persistent "?" gesture-legend button.
+    private var viewportView: some View {
+        MetalViewport()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay { if engine.objects.isEmpty { emptyStateView } }
+            .overlay(alignment: .bottomTrailing) {
+                Button { showGestureLegend = true } label: {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(12)
+                }
+                .accessibilityLabel("Gesture help")
+            }
+    }
+
+    // Shared control content (sequence + Console/Objects tabs), placed at the
+    // bottom in portrait or in the side column in landscape.
+    private var panelContent: some View {
+        VStack(spacing: 0) {
+            if engine.sequenceVisible {
+                SequencePanel().frame(height: 64)
+                Divider()
+            }
+            TabView(selection: $selectedTab) {
+                CommandPanel()
+                    .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
+                ObjectPanel()
+                    .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
+                if kShowChatTab {
+                    ChatPanel()
+                        .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }.tag(2)
+                }
+            }
+        }
+        .background(Color(white: 0.11))
+    }
+
+    // Draggable splitter between viewport and panel. Drag toward the viewport
+    // (up in portrait / left in landscape) grows the panel; committed on release.
+    @ViewBuilder
+    private func resizeDivider(landscape: Bool, total: CGFloat) -> some View {
+        ZStack {
+            Color(white: 0.18)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.white.opacity(0.35))
+                .frame(width: landscape ? 4 : 44, height: landscape ? 44 : 4)
+        }
+        .frame(width: landscape ? 16 : nil, height: landscape ? nil : 20)
+        .frame(maxWidth: landscape ? nil : .infinity, maxHeight: landscape ? .infinity : nil)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { v in
+                    let d = landscape ? -v.translation.width : -v.translation.height
+                    panelFrac = min(max(committedFrac + d / total, 0.12), 0.6)
+                }
+                .onEnded { _ in committedFrac = panelFrac }
+        )
+    }
+
+    // MARK: Gesture legend / first-run coaching
+
+    private struct GestureHint: Identifiable {
+        let id = UUID(); let icon: String; let title: String; let detail: String
+    }
+    private var gestureHints: [GestureHint] { [
+        .init(icon: "hand.draw", title: "Rotate", detail: "Drag · one finger"),
+        .init(icon: "hand.point.up.left", title: "Pan", detail: "Drag · two fingers"),
+        .init(icon: "arrow.up.left.and.arrow.down.right.circle", title: "Zoom", detail: "Pinch"),
+        .init(icon: "arrow.clockwise", title: "Roll", detail: "Twist · two fingers"),
+        .init(icon: "scissors", title: "Clip / slab", detail: "Drag · three fingers"),
+        .init(icon: "hand.tap", title: "Select atom", detail: "Tap"),
+        .init(icon: "hand.point.up.braille", title: "Menu", detail: "Long-press"),
+    ] }
+
+    private var gestureLegendCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Touch gestures").font(.headline)
+            ForEach(gestureHints) { h in
+                HStack(spacing: 12) {
+                    Image(systemName: h.icon)
+                        .frame(width: 26).foregroundStyle(.tint)
+                    Text(h.title).fontWeight(.medium)
+                        .frame(width: 96, alignment: .leading)
+                    Text(h.detail).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .font(.subheadline)
+            }
+        }
+    }
+
+    private var gestureCoachOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+                .onTapGesture { gestureCoachSeen = true }
+            VStack(spacing: 18) {
+                gestureLegendCard
+                Button("Got it") { gestureCoachSeen = true }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(24)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .frame(maxWidth: 440)
+            .padding()
         }
     }
 
