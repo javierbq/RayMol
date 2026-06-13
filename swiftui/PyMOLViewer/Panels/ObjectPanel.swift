@@ -10,6 +10,22 @@ import AppKit
 import UIKit
 #endif
 
+// Touch-vs-pointer control sizing: the panel is dense for a mouse on macOS;
+// iPad needs larger hit targets (~Apple's 44pt guidance, balanced against the
+// row count). One set of constants drives the action buttons, row height, and
+// the leading gutter (expand chevron / visibility toggle).
+#if os(iOS)
+private let kActBtnW: CGFloat = 34
+private let kActBtnH: CGFloat = 30
+private let kRowH: CGFloat = 38
+private let kGutterW: CGFloat = 30
+#else
+private let kActBtnW: CGFloat = 22
+private let kActBtnH: CGFloat = 18
+private let kRowH: CGFloat = 24
+private let kGutterW: CGFloat = 18
+#endif
+
 // MARK: - Representation inspector: polled state models
 // (Inlined here rather than a separate file so they're in both app targets
 // without editing the Xcode project's explicit file references.)
@@ -567,7 +583,7 @@ private struct ObjectRowView: View {
                     .foregroundColor(entry.isEnabled ? PanelTheme.textColor : PanelTheme.disabledColor)
             }
             .buttonStyle(.plain)
-            .frame(width: 18)
+            .frame(width: kGutterW)
 
             // Object name
             Text(entry.displayName)
@@ -587,7 +603,7 @@ private struct ObjectRowView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
-        .frame(height: 24)
+        .frame(height: kRowH)
         .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
     }
 
@@ -607,7 +623,7 @@ private struct PanelButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 9, weight: .bold))
             .foregroundColor(PanelTheme.buttonText)
-            .frame(width: 22, height: 18)
+            .frame(width: kActBtnW, height: kActBtnH)
             .background(
                 configuration.isPressed
                     ? PanelTheme.buttonBackground.opacity(1.3)
@@ -631,7 +647,7 @@ private struct ActionMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 22, height: 18)
+        .frame(width: kActBtnW, height: kActBtnH)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
     }
@@ -678,7 +694,7 @@ private struct ShowButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 22, height: 18)
+        .frame(width: kActBtnW, height: kActBtnH)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
     }
@@ -706,7 +722,7 @@ private struct HideButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 22, height: 18)
+        .frame(width: kActBtnW, height: kActBtnH)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
     }
@@ -738,7 +754,7 @@ private struct LabelMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 22, height: 18)
+        .frame(width: kActBtnW, height: kActBtnH)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
     }
@@ -775,7 +791,7 @@ private struct ColorMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 22, height: 18)
+        .frame(width: kActBtnW, height: kActBtnH)
         .background(PanelTheme.buttonBackground)
         .cornerRadius(2)
     }
@@ -1027,7 +1043,7 @@ private struct ObjectRowContent: View {
                 .foregroundColor(entry.isEnabled ? PanelTheme.textColor : PanelTheme.disabledColor)
         }
         .buttonStyle(.plain)
-        .frame(width: 18)
+        .frame(width: kGutterW)
 
         Text(entry.displayName)
             .font(.system(size: 11))
@@ -1081,7 +1097,7 @@ private struct ObjectCard: View {
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .frame(height: 24)
+            .frame(height: kRowH)
             .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
 
             if expanded {

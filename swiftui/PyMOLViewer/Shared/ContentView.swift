@@ -124,11 +124,55 @@ struct ContentView: View {
             }
             .navigationTitle("PyMOL")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosExportToolbar }
+            .fileImporter(isPresented: $showFileImporter,
+                          allowedContentTypes: iosImportTypes,
+                          allowsMultipleSelection: false) { result in
+                iosHandleImport(result)
+            }
         }
         .onAppear {
             initializeEngine()
         }
+    }
+
+    // Open a molecule/session from Files. PyMOL load infers the format from the
+    // extension; common molecular types are listed (plus .data so anything is
+    // selectable). The picked file is security-scoped, so copy it to a temp path
+    // (no spaces) and load via runCommand (which also runs the surface-clip
+    // auto-widen and .pse view handling).
+    @State private var showFileImporter = false
+
+    private var iosImportTypes: [UTType] {
+        let exts = ["pdb", "ent", "cif", "mmcif", "mcif", "sdf", "mol", "mol2",
+                    "xyz", "pdbqt", "pqr", "mae", "pse", "ccp4", "mrc", "map",
+                    "dx", "mtz", "fasta", "pir"]
+        return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
+    }
+
+    private var iosOpenToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button {
+                showFileImporter = true
+            } label: {
+                Label("Open", systemImage: "folder")
+            }
+        }
+    }
+
+    private func iosHandleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
+        let safe = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import_\(UUID().uuidString.prefix(8)).\(ext)")
+        try? FileManager.default.removeItem(at: safe)
+        guard (try? FileManager.default.copyItem(at: url, to: safe)) != nil else { return }
+        let raw = url.deletingPathExtension().lastPathComponent
+        var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+        if name.isEmpty { name = "mol" }
+        engine.runCommand("load \(safe.path), \(name)")
     }
 
     // iPad export/share menu (the macOS Export menu lives in the window toolbar;
