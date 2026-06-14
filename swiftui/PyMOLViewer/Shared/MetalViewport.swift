@@ -121,18 +121,20 @@ struct MetalViewport: UIViewRepresentable {
         // Gesture recognizers for touch input
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
-        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
+        // TWO-finger drag = CLIP (slab): vertical moves the slab through the
+        // scene, horizontal changes its thickness — the Shift+Right "clip"
+        // interaction the macOS trackpad gesture uses (handleClip).
+        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClip(_:)))
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
         let rotation = UIRotationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleRotation(_:)))
         let longPress = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
-        // Three-finger drag = CLIP (slab): vertical moves the slab through the
-        // scene, horizontal changes its thickness — synthesized as the same
-        // Shift+Right "clip" interaction the macOS trackpad gesture uses.
-        let clipPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClip(_:)))
+        // THREE-finger drag = TRANSLATE (middle-drag); see handleTwoFingerPan.
+        let clipPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
 
-        // One finger rotates; two fingers translate. Pinch (zoom), the two-finger
-        // pan (translate), and two-finger rotation (Z-roll) all recognize
-        // simultaneously so you can zoom + slide + roll in one gesture.
+        // One finger rotates; TWO fingers clip (slab), THREE fingers translate.
+        // Pinch (zoom), the two-finger clip drag, and two-finger rotation
+        // (Z-roll) all recognize simultaneously so you can zoom + clip + roll in
+        // one gesture.
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
         twoPan.minimumNumberOfTouches = 2
