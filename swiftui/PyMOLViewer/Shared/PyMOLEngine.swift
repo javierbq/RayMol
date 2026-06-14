@@ -34,6 +34,13 @@ final class PyMOLEngine: ObservableObject {
     // it can never collide with a real object name.
     static let sceneDetailKey = "\u{1}scene"
 
+    // Reps the user toggled invisible but wants kept as listed "layers" (per
+    // object) so they stay in the inspector and can be toggled back on, instead
+    // of vanishing the moment they're hidden. Modified ONLY by explicit user
+    // actions (hide keeps, show/delete removes) — never by the detail poll — so
+    // there's no re-add race with the ~500ms poll.
+    @Published var keptHidden: [String: Set<String>] = [:]
+
     // The opaque PyMOL instance pointer
     private(set) var instance: PyMOLHandle?
 
@@ -65,7 +72,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v11  (full-bleed viewport: uses every pixel incl. under the notch)")
+            self?.feedbackLog.append(" [build] v15  (fix impostor near-clip: front atoms/sticks no longer sliced)")
         }
 
         // `fetch` downloads into fetch_path; the process cwd is read-only on iOS,

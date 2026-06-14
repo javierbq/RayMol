@@ -1088,12 +1088,17 @@ private struct ObjectCard: View {
 
     private var expanded: Bool { engine.expandedDetail == entry.name }
     private var reps: [RepState] { engine.objectDetails[entry.name] ?? [] }
-    private var activeReps: [String] {
-        RepCatalog.order.filter { r in reps.contains(where: { $0.rep == r }) }
+    // Reps currently SHOWN (have drawn atoms, from the poll).
+    private var activeSet: Set<String> { Set(reps.map { $0.rep }) }
+    // Reps hidden via the Visible toggle but kept listed as layers.
+    private var keptHidden: Set<String> { engine.keptHidden[entry.name] ?? [] }
+    // Layers shown in the inspector = shown ∪ kept-hidden, in catalog order.
+    private var listedReps: [String] {
+        RepCatalog.order.filter { activeSet.contains($0) || keptHidden.contains($0) }
     }
     private var currentRep: String? {
-        if let s = selectedRep, activeReps.contains(s) { return s }
-        return activeReps.first
+        if let s = selectedRep, listedReps.contains(s) { return s }
+        return listedReps.first
     }
 
     var body: some View {
@@ -1118,19 +1123,27 @@ private struct ObjectCard: View {
                     // Object/layer-level coloring (by element/chain/ss/spectrum/
                     // named) is the structure row's "C" button — not duplicated
                     // here. The per-rep grid below controls per-rep color overrides.
-                    if activeReps.isEmpty {
-                        Text("No representations shown")
-                            .font(.system(size: 10))
-                            .foregroundColor(PanelTheme.disabledColor)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        RepChips(objName: entry.name, active: activeReps,
-                                 current: currentRep, onSelect: { selectedRep = $0 })
-                        if let rep = currentRep,
-                           let spec = RepCatalog.spec(rep),
+                    // Always show the chips bar (it holds the "+" add menu) so a
+                    // layer can be added even after the last one is deleted.
+                    RepChips(objName: entry.name, listed: listedReps,
+                             active: activeSet, current: currentRep,
+                             onSelect: { selectedRep = $0 })
+                    if let rep = currentRep {
+                        // Always present (even when hidden): show/hide the layer
+                        // + delete it. Hiding keeps the layer listed so it can be
+                        // toggled back on; the X removes it.
+                        layerHeader(rep)
+                        // Full per-rep settings only while the layer is shown
+                        // (a hidden layer reports no state).
+                        if let spec = RepCatalog.spec(rep),
                            let st = reps.first(where: { $0.rep == rep }) {
                             RepPropertyGrid(objName: entry.name, spec: spec, state: st)
                         }
+                    } else {
+                        Text("No representations shown — tap + to add one.")
+                            .font(.system(size: 10))
+                            .foregroundColor(PanelTheme.disabledColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .padding(.leading, 18)
@@ -1145,32 +1158,71 @@ private struct ObjectCard: View {
         // Accordion: opening this card closes whatever else was open.
         engine.expandedDetail = expanded ? nil : entry.name
     }
+
+    // Visible toggle + delete (X) for the current layer. Shown whether the layer
+    // is visible or hidden — hiding keeps it listed (toggle back on to reset),
+    // the X removes the layer entirely.
+    @ViewBuilder
+    private func layerHeader(_ rep: String) -> some View {
+        let shown = activeSet.contains(rep)
+        HStack(spacing: 6) {
+            Text("Visible")
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
+                .frame(width: 78, alignment: .leading)
+            ToggleSetting(value: shown ? 1 : 0) { on in
+                if on {
+                    engine.runCommand("show \(rep), \(entry.name)")
+                    engine.keptHidden[entry.name]?.remove(rep)
+                } else {
+                    engine.runCommand("hide \(rep), \(entry.name)")
+                    engine.keptHidden[entry.name, default: []].insert(rep)
+                }
+            }
+            Spacer(minLength: 0)
+            Button {
+                engine.runCommand("hide \(rep), \(entry.name)")
+                engine.keptHidden[entry.name]?.remove(rep)
+                if selectedRep == rep { selectedRep = nil }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(PanelTheme.disabledColor)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete \(RepCatalog.display(rep)) layer")
+        }
+    }
 }
 
 // MARK: - Representation chips
 
 private struct RepChips: View {
     let objName: String
-    let active: [String]
+    let listed: [String]        // shown ∪ kept-hidden, in catalog order
+    let active: Set<String>     // currently shown (others are dimmed = hidden)
     let current: String?
     let onSelect: (String) -> Void
     @EnvironmentObject var engine: PyMOLEngine
 
+    // The "+" menu offers only reps not already listed as a layer.
     private var inactive: [String] {
-        RepCatalog.order.filter { !active.contains($0) }
+        RepCatalog.order.filter { !listed.contains($0) }
     }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(active, id: \.self) { rep in
+                ForEach(listed, id: \.self) { rep in
                     let sel = rep == current
+                    let shown = active.contains(rep)
                     Button(action: { onSelect(rep) }) {
                         Text(RepCatalog.display(rep))
                             .font(.system(size: 9, weight: sel ? .bold : .regular))
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(sel ? PanelTheme.selectionTextColor : PanelTheme.buttonBackground)
                             .foregroundColor(sel ? Color.black : PanelTheme.buttonText)
+                            .opacity(shown ? 1.0 : 0.4)   // hidden layers are dimmed
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -1179,6 +1231,7 @@ private struct RepChips: View {
                     ForEach(inactive, id: \.self) { rep in
                         Button(RepCatalog.display(rep)) {
                             engine.runCommand("show \(rep), \(objName)")
+                            engine.keptHidden[objName]?.remove(rep)
                             onSelect(rep)
                         }
                     }
@@ -1208,11 +1261,6 @@ private struct RepPropertyGrid: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            gridRow("Visible") {
-                ToggleSetting(value: state.visible ? 1 : 0) { on in
-                    engine.runCommand("\(on ? "show" : "hide") \(spec.rep), \(objName)")
-                }
-            }
             if !spec.colorSetting.isEmpty {
                 gridRow("Color") {
                     RepColorControl(objName: objName, rep: spec.rep,

@@ -99,17 +99,32 @@ private struct LogView: View {
                             .textSelection(.enabled)
                             .id(index)
                     }
+                    // Stable bottom anchor — scrolling to this always lands at the
+                    // very end (scrolling to the last row index was unreliable with
+                    // a LazyVStack and left the log pinned at the top).
+                    Color.clear.frame(height: 1).id(Self.bottomID)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(4)
             }
             .background(bgColor)
-            .onChange(of: entries.count) { _ in
-                if let last = entries.indices.last {
-                    withAnimation {
-                        proxy.scrollTo(last, anchor: .bottom)
-                    }
-                }
+            // Initial content (the startup banner) is present before this view
+            // appears, so no count change fires for it — scroll on appear too.
+            .onAppear { scrollToBottom(proxy, animated: false) }
+            .onChange(of: entries.count) { _ in scrollToBottom(proxy) }
+        }
+    }
+
+    private static let bottomID = "LOG_BOTTOM"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        // Defer one runloop so the newly appended row is laid out before we
+        // scroll, otherwise the proxy stops short of the true bottom.
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(Self.bottomID, anchor: .bottom)
             }
         }
     }

@@ -155,8 +155,10 @@ struct ContentView: View {
             // notch / Dynamic Island and behind the (transparent) nav bar. The
             // toolbar buttons are chrome and stay within the safe area, so they
             // remain tappable and clear of the notch while the 3D view fills
-            // behind them.
-            .ignoresSafeArea()
+            // behind them. Ignore only the CONTAINER region (notch/bars) — NOT
+            // the keyboard — so keyboard avoidance still pushes the console +
+            // command field up above the on-screen keyboard.
+            .ignoresSafeArea(.container, edges: .all)
             .navigationTitle(hSize == .compact ? "" : "PyMOL")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -174,7 +176,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .toolbar { iosOpenToolbar; iosViewToolbar; iosPanelToggle; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosPanelToggle; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -262,23 +264,19 @@ struct ContentView: View {
             }
     }
 
-    // Shared control content (sequence + Console/Objects tabs), placed at the
-    // bottom in portrait or in the side column in landscape.
+    // Shared control content: Console / Objects / Sequence as exclusive tabs
+    // (Sequence is its own tab now — not a strip and not a toolbar/Export item).
     private var panelContent: some View {
-        VStack(spacing: 0) {
-            if engine.sequenceVisible {
-                SequencePanel().frame(height: 64)
-                Divider()
-            }
-            TabView(selection: $selectedTab) {
-                CommandPanel()
-                    .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
-                ObjectPanel()
-                    .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
-                if kShowChatTab {
-                    ChatPanel()
-                        .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }.tag(2)
-                }
+        TabView(selection: $selectedTab) {
+            CommandPanel()
+                .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
+            ObjectPanel()
+                .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
+            SequencePanel()
+                .tabItem { Label("Sequence", systemImage: "textformat.abc") }.tag(2)
+            if kShowChatTab {
+                ChatPanel()
+                    .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }.tag(3)
             }
         }
         .background(Color(white: 0.11))
@@ -397,20 +395,6 @@ struct ContentView: View {
         .allowsHitTesting(true)
     }
 
-    // Sequence-viewer toggle. (The display-settings "View" menu that used to live
-    // here duplicated the Objects → SCENE card, so it was removed; the SCENE card
-    // is now the single home for render settings. Sequence isn't in that card, so
-    // it stays here as a standalone toggle.)
-    private var iosViewToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            Button {
-                engine.sequenceVisible.toggle()
-            } label: {
-                Label("Sequence", systemImage: "textformat.abc")
-            }
-            .tint(engine.sequenceVisible ? .accentColor : .secondary)
-        }
-    }
 
     private func iosFetch() {
         let id = fetchID.trimmingCharacters(in: .whitespaces)
@@ -490,9 +474,6 @@ struct ContentView: View {
                     iosShareSession()
                 } label: {
                     Label("Share Session (.pse)", systemImage: "doc.text")
-                }
-                Toggle(isOn: $engine.sequenceVisible) {
-                    Label("Sequence", systemImage: "textformat.abc")
                 }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
