@@ -2585,6 +2585,12 @@ vertex VBOVertexOut vbo_vertex(
   VBOVertexOut out;
   float4 eyePos = uniforms.modelview * float4(in.position, 1.0);
   out.position = uniforms.projection * eyePos;
+  // PyMOL's projection is GL-convention (clip Z in [-1,1]); the impostors write
+  // window depth explicitly as 0.5+0.5*ndcz ([0,1]). Remap the rasterized VBO z
+  // the same way so VBO geometry (cartoon/surface) and impostors (spheres/
+  // cylinders) share one depth convention and occlude correctly. (Also un-clips
+  // the GL near half.)
+  out.position.z = 0.5 * (out.position.z + out.position.w);
   // Carry the eye-space normal + raw color; lighting is done PER-FRAGMENT
   // (Phong) in vbo_fragment. Per-vertex (Gouraud) lighting baked the shade
   // into the interpolated color, which faceted the coarse cartoon mesh
@@ -2608,6 +2614,7 @@ vertex VBOVertexOutUnlit vbo_vertex_unlit(
 {
   VBOVertexOutUnlit out;
   out.position = uniforms.projection * (uniforms.modelview * float4(in.position, 1.0));
+  out.position.z = 0.5 * (out.position.z + out.position.w);  // GL z [-1,1] -> Metal [0,1]
   out.color = in.color;
   out.pointSize = max(uniforms.pointSize, 1.0);
   return out;
@@ -2635,6 +2642,7 @@ vertex VBOVertexOutUnlit vbo_vertex_unlit_flat(
 {
   VBOVertexOutUnlit out;
   out.position = uniforms.projection * (uniforms.modelview * float4(in.position, 1.0));
+  out.position.z = 0.5 * (out.position.z + out.position.w);  // GL z [-1,1] -> Metal [0,1]
   out.color = flatColor;
   out.pointSize = max(uniforms.pointSize, 1.0);
   return out;
@@ -3294,6 +3302,10 @@ vertex SphereVOut sphere_impostor_vertex(SphereIn in [[stage_in]],
   out.sphere_center = tmppos.xyz / tmppos.w;
   out.point = eyePos.xyz / eyePos.w;
   out.position = u.projection * eyePos;
+  // GL->Metal clip-z remap (matches the VBO and the impostor fragment depth) so
+  // the near half of the frustum (GL ndcz [-1,0)) isn't clipped — front atoms
+  // stay visible instead of being sliced off by Metal's z>=0 clip volume.
+  out.position.z = 0.5 * (out.position.z + out.position.w);
   return out;
 }
 
@@ -3661,6 +3673,10 @@ vertex CylVOut cyl_impostor_vertex(CylIn in [[stage_in]],
     inset = u.projection * inset;
     if (inset.z / inset.w > -1.0) pos.z = -pos.w;
   }
+  // GL->Metal clip-z remap, AFTER the GL-convention near clamp above: the GL
+  // near plane (ndcz -1) maps to Metal z 0, so the near half of the box isn't
+  // clipped away (front sticks stay visible). Matches the VBO + fragment depth.
+  pos.z = 0.5 * (pos.z + pos.w);
   o.position = pos;
   o.radius = radius / uniformglscale;
   return o;
@@ -4040,6 +4056,7 @@ vertex TubeOut bezier_tube_vertex(
   float4 eye = U.modelview * float4(world, 1.0);
   TubeOut o;
   o.position = U.projection * eye;
+  o.position.z = 0.5 * (o.position.z + o.position.w);  // GL z [-1,1] -> Metal [0,1]
   o.eyeNormal = normalize((U.modelview * float4(radial, 0.0)).xyz);
   o.color = U.color;
   return o;
