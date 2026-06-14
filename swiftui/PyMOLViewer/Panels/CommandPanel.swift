@@ -227,95 +227,49 @@ private class CommandNSTextField: NSTextField {
 
 #else // iOS / iPadOS
 
-struct CommandTextField: UIViewRepresentable {
+// SwiftUI-native field: reliable .onSubmit (the software-keyboard Return/Send
+// submits), proper focus, and automatic keyboard avoidance (the UIKit-
+// representable version didn't submit, focused unreliably, and got covered by
+// the keyboard at the bottom of the panel). A "↑" history button replaces the
+// hardware up-arrow (touch keyboards have no arrows; the old UIKeyCommands were
+// never actually installed, so nothing usable is lost). Tab-completion is
+// offered via a "⇥" button.
+struct CommandTextField: View {
     @Binding var text: String
     var onSubmit: () -> Void
     var onUpArrow: () -> Void
     var onDownArrow: () -> Void
     var onComplete: (String) -> String?
 
-    func makeUIView(context: Context) -> UITextField {
-        let field = UITextField()
-        field.delegate = context.coordinator
-        field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        field.textColor = .white
-        field.backgroundColor = UIColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1)
-        field.borderStyle = .none
-        field.placeholder = "Enter command..."
-        field.autocapitalizationType = .none
-        field.autocorrectionType = .no
-        field.spellCheckingType = .no
-        field.returnKeyType = .send
+    @FocusState private var focused: Bool
 
-        // Up/down arrow via hardware keyboard
-        let upArrow = UIKeyCommand(input: UIKeyCommand.inputUpArrow,
-                                   modifierFlags: [],
-                                   action: #selector(Coordinator.handleUpArrow))
-        let downArrow = UIKeyCommand(input: UIKeyCommand.inputDownArrow,
-                                     modifierFlags: [],
-                                     action: #selector(Coordinator.handleDownArrow))
-        let tab = UIKeyCommand(input: "\t", modifierFlags: [],
-                               action: #selector(Coordinator.handleTab))
-        field.addTarget(context.coordinator, action: #selector(Coordinator.textChanged(_:)),
-                        for: .editingChanged)
-        context.coordinator.field = field
-        context.coordinator.keyCommands = [upArrow, downArrow, tab]
+    var body: some View {
+        HStack(spacing: 4) {
+            TextField("Enter command…", text: $text)
+                .focused($focused)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .submitLabel(.send)
+                .onSubmit {
+                    onSubmit()
+                    focused = true   // keep focus so multiple commands can be entered
+                }
+                .font(.system(.body, design: .monospaced))
+                .foregroundColor(.white)
 
-        return field
-    }
+            Button {
+                if let c = onComplete(text), c != text { text = c }
+            } label: { Image(systemName: "arrow.right.to.line").font(.system(size: 13)) }
+                .buttonStyle(.plain).foregroundColor(.gray)
+                .accessibilityLabel("Complete")
 
-    func updateUIView(_ uiView: UITextField, context: Context) {
-        if uiView.text != text {
-            uiView.text = text
-        }
-        context.coordinator.onSubmit = onSubmit
-        context.coordinator.onUpArrow = onUpArrow
-        context.coordinator.onDownArrow = onDownArrow
-        context.coordinator.parent = self
-    }
+            Button { onUpArrow() } label: {
+                Image(systemName: "chevron.up").font(.system(size: 13))
+            }.buttonStyle(.plain).foregroundColor(.gray).accessibilityLabel("Previous command")
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, UITextFieldDelegate {
-        var parent: CommandTextField
-        var onSubmit: () -> Void
-        var onUpArrow: () -> Void
-        var onDownArrow: () -> Void
-        var keyCommands: [UIKeyCommand] = []
-        weak var field: UITextField?
-
-        init(_ parent: CommandTextField) {
-            self.parent = parent
-            self.onSubmit = parent.onSubmit
-            self.onUpArrow = parent.onUpArrow
-            self.onDownArrow = parent.onDownArrow
-        }
-
-        @objc func textChanged(_ sender: UITextField) {
-            parent.text = sender.text ?? ""
-        }
-
-        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-            onSubmit()
-            return true
-        }
-
-        @objc func handleUpArrow() {
-            onUpArrow()
-        }
-
-        @objc func handleDownArrow() {
-            onDownArrow()
-        }
-
-        @objc func handleTab() {
-            let current = field?.text ?? parent.text
-            if let completed = parent.onComplete(current), completed != current {
-                field?.text = completed
-                parent.text = completed
-            }
+            Button { onDownArrow() } label: {
+                Image(systemName: "chevron.down").font(.system(size: 13))
+            }.buttonStyle(.plain).foregroundColor(.gray).accessibilityLabel("Next command")
         }
     }
 }

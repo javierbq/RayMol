@@ -104,6 +104,11 @@ final class PyMOLGestureUITests: XCTestCase {
         attach("after-deselect")
     }
 
+    // NOTE: a command-field Return test was tried but XCUITest cannot focus the
+    // command TextField on the simulator (synthetic taps don't engage keyboard
+    // focus here — same class of limitation as the Metal-view taps). The fix
+    // (native SwiftUI TextField + .onSubmit(.send)) is verified on-device.
+
     // MARK: - Helpers
 
     private func settle(_ s: TimeInterval = 1.0) { Thread.sleep(forTimeInterval: s) }
