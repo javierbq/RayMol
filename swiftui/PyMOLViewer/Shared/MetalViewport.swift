@@ -121,20 +121,23 @@ struct MetalViewport: UIViewRepresentable {
         // Gesture recognizers for touch input
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
-        // TWO-finger drag = CLIP (slab): vertical moves the slab through the
-        // scene, horizontal changes its thickness — the Shift+Right "clip"
-        // interaction the macOS trackpad gesture uses (handleClip).
-        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClip(_:)))
+        // TWO-finger drag = TRANSLATE (move). Composes with pinch (zoom) and
+        // two-finger rotation (Z-roll) so one two-finger gesture pans + zooms +
+        // rolls together — the standard "move and zoom" touch idiom.
+        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
         let rotation = UIRotationGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleRotation(_:)))
         let longPress = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
-        // THREE-finger drag = TRANSLATE (middle-drag); see handleTwoFingerPan.
-        let clipPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
+        // THREE-finger drag = CLIP (slab): vertical moves the slab through the
+        // scene, horizontal changes its thickness — the Shift+Right "clip"
+        // interaction the macOS trackpad gesture uses (handleClip). Exclusive
+        // (not in the two-finger compose family below).
+        let clipPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClip(_:)))
 
-        // One finger rotates; TWO fingers clip (slab), THREE fingers translate.
-        // Pinch (zoom), the two-finger clip drag, and two-finger rotation
-        // (Z-roll) all recognize simultaneously so you can zoom + clip + roll in
-        // one gesture.
+        // One finger rotates; TWO fingers translate + zoom + roll (compose);
+        // THREE fingers clip (slab). Pinch (zoom), the two-finger pan
+        // (translate), and two-finger rotation (Z-roll) all recognize
+        // simultaneously so you can move + zoom + roll in one gesture.
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
         twoPan.minimumNumberOfTouches = 2
@@ -224,6 +227,12 @@ extension MetalViewport {
         // flip kRollSign if it feels inverted.
         private var lastRotation: CGFloat = 0
         private let kRollSign: Float = -1
+        // Last position fed to a multi-finger drag (translate / clip). On release
+        // the touches lift unevenly and the pan recognizer's centroid jumps to the
+        // remaining finger; replaying that jumped location as the button-UP would
+        // translate/clip by a phantom delta (the structure "jumps" on release). We
+        // send the UP at this last dragged point instead, making release a no-op.
+        private var lastDragPt: (Int32, Int32)?
         #endif
 
         // MARK: - MTKViewDelegate
@@ -552,21 +561,38 @@ extension MetalViewport {
             }
         }
 
-        // Two-finger drag → translate (middle-drag). The pan centroid is fed
-        // straight to PyMOL as the drag cursor, so the molecule follows the
-        // fingers. Recognizes simultaneously with pinch (see makeUIView).
-        // Three-finger drag = TRANSLATE (middle-drag). Feed the raw gesture
-        // location (no Y flip): with the flip, vertical translate ran inverted.
+        // Two-finger drag = TRANSLATE (middle-drag). The centroid is fed to
+        // PyMOL as the drag cursor so the molecule follows the fingers.
+        //
+        // Y MUST be flipped to PyMOL's bottom-up window convention. PyMOL's
+        // cButModeTransXY (SceneMouse.cpp) translates the scene by +(y-LastY):
+        // for grab-and-move (finger up -> molecule up) the window y has to
+        // INCREASE going up. UIKit is top-down (y increases going DOWN), and the
+        // iOS pymolPoint does not flip, so raw coords invert vertical translate.
+        // Flipping the location here (height - y) restores the correct sign.
+        // (handleTap already flips Y the same way for picking; macOS gets this
+        // for free because NSView is bottom-up.)
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView else { return }
-            let pt = pymolPoint(in: view, at: gesture.location(in: view))
+            let loc = gesture.location(in: view)
+            let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
             switch gesture.state {
             case .began:
+                lastDragPt = pt
                 engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
             case .changed:
+                // Once a finger lifts, the recognizer's centroid jumps to the
+                // remaining finger; that jumped drag would translate the scene
+                // (the "jump on release"). Only feed drags with both fingers down.
+                guard gesture.numberOfTouches >= 2 else { break }
+                lastDragPt = pt
                 engine?.drag(x: pt.0, y: pt.1, modifiers: 0)
             case .ended, .cancelled:
-                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: 0)
+                // Release at the LAST dragged point, not the (possibly jumped)
+                // end centroid — see lastDragPt. Avoids the "jump on release".
+                let up = lastDragPt ?? pt
+                engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP, x: up.0, y: up.1, modifiers: 0)
+                lastDragPt = nil
             default:
                 break
             }
@@ -602,11 +628,20 @@ extension MetalViewport {
             let s = PYMOL_MOD_SHIFT
             switch gesture.state {
             case .began:
+                lastDragPt = pt
                 engine?.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: s)
             case .changed:
+                // Only feed drags while all three fingers are down (same
+                // uneven-lift centroid-jump guard as the translate handler).
+                guard gesture.numberOfTouches >= 3 else { break }
+                lastDragPt = pt
                 engine?.drag(x: pt.0, y: pt.1, modifiers: s)
             case .ended, .cancelled:
-                engine?.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: s)
+                // Release at the last dragged point — same uneven-lift jump fix
+                // as the translate handler (see lastDragPt).
+                let up = lastDragPt ?? pt
+                engine?.button(PYMOL_BUTTON_RIGHT, state: PYMOL_BUTTON_UP, x: up.0, y: up.1, modifiers: s)
+                lastDragPt = nil
             default:
                 break
             }
@@ -629,8 +664,9 @@ extension MetalViewport {
 }
 
 #if os(iOS)
-// Allow pinch (zoom) and the two-finger pan (translate) to fire together, so
-// the user can zoom and slide in one continuous two-finger gesture.
+// Allow pinch (zoom), the two-finger pan (translate), and two-finger rotation
+// (Z-roll) to fire together, so one continuous two-finger gesture moves + zooms
+// + rolls the structure (the standard touch idiom).
 extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {

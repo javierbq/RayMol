@@ -57,6 +57,13 @@ final class PyMOLEngine: ObservableObject {
 
         isReady = true
 
+        // Build marker — lets us confirm the device is running THIS binary (not a
+        // cached/stale install) when verifying gesture-direction fixes. Bump the
+        // tag whenever gesture behavior changes; it shows at the top of the log.
+        DispatchQueue.main.async { [weak self] in
+            self?.feedbackLog.append(" [build] gestures=v6  (2=move+zoom+roll, 3=clip; no jump on release)")
+        }
+
         // `fetch` downloads into fetch_path; the process cwd is read-only on iOS,
         // so point it at the writable Documents directory.
         if let docs = FileManager.default.urls(for: .documentDirectory,
