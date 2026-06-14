@@ -555,7 +555,11 @@ extension MetalViewport {
         // fingers. Recognizes simultaneously with pinch (see makeUIView).
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView else { return }
-            let pt = pymolPoint(in: view, at: gesture.location(in: view))
+            // PyMOL's middle-drag translate uses a bottom-up Y (matching its NDC),
+            // but UIKit's gesture Y is top-down — so two-finger drag tracked
+            // OPPOSITE to the fingers vertically. Flip Y so it follows up/down.
+            let loc = gesture.location(in: view)
+            let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
             switch gesture.state {
             case .began:
                 engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
