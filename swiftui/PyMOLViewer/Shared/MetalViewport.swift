@@ -555,13 +555,11 @@ extension MetalViewport {
         // Two-finger drag → translate (middle-drag). The pan centroid is fed
         // straight to PyMOL as the drag cursor, so the molecule follows the
         // fingers. Recognizes simultaneously with pinch (see makeUIView).
+        // Three-finger drag = TRANSLATE (middle-drag). Feed the raw gesture
+        // location (no Y flip): with the flip, vertical translate ran inverted.
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView else { return }
-            // PyMOL's middle-drag translate uses a bottom-up Y (matching its NDC),
-            // but UIKit's gesture Y is top-down — so two-finger drag tracked
-            // OPPOSITE to the fingers vertically. Flip Y so it follows up/down.
-            let loc = gesture.location(in: view)
-            let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
+            let pt = pymolPoint(in: view, at: gesture.location(in: view))
             switch gesture.state {
             case .began:
                 engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
