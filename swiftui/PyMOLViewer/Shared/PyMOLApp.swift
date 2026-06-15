@@ -30,6 +30,7 @@ struct PyMOLApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(engine)
+                .environmentObject(engine.playback)
             #if os(macOS)
                 // Bring the app/window to the front on launch (a GUI app should
                 // foreground itself; also lets it be launched from a terminal).

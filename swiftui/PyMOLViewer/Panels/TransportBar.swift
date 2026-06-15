@@ -24,6 +24,9 @@ enum TimelineTheme {
 
 struct TransportBar: View {
     @EnvironmentObject var engine: PyMOLEngine
+    // Observe the isolated playback object so frame ticks re-render ONLY this
+    // bar (not the inspector/menus, which observe `engine`).
+    @EnvironmentObject var playback: PlaybackState
 
     /// iPhone collapsed state: render the 1-line peek instead of the full bar.
     var compactPeek: Bool = false
@@ -132,23 +135,23 @@ struct TransportBar: View {
 
     private func playPauseButton(size: CGFloat) -> some View {
         Button(action: { engine.togglePlay() }) {
-            Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
+            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundColor(TimelineTheme.accent)
                 .frame(width: 44, height: 36)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(engine.isPlaying ? "Pause" : "Play")
+        .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
     }
 
     private var scrubber: some View {
         Slider(
             value: Binding(
-                get: { Double(min(max(engine.currentFrame, 1), max(engine.frameCount, 1))) },
+                get: { Double(min(max(playback.currentFrame, 1), max(playback.frameCount, 1))) },
                 set: { engine.scrub(to: Int($0.rounded())) }
             ),
-            in: 1...Double(max(engine.frameCount, 2)),
+            in: 1...Double(max(playback.frameCount, 2)),
             step: 1,
             onEditingChanged: { editing in if !editing { engine.endScrub() } }
         )
@@ -157,7 +160,7 @@ struct TransportBar: View {
     }
 
     private var counter: some View {
-        Text("\(engine.currentFrame) / \(engine.frameCount)")
+        Text("\(playback.currentFrame) / \(playback.frameCount)")
             .font(.system(size: 12, weight: .medium, design: .monospaced))
             .foregroundColor(TimelineTheme.text)
             .lineLimit(1)
@@ -165,21 +168,21 @@ struct TransportBar: View {
     }
 
     private var loopButton: some View {
-        Button(action: { engine.setMovieLoop(!engine.movieLoop) }) {
+        Button(action: { engine.setMovieLoop(!playback.movieLoop) }) {
             Image(systemName: "repeat")
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(engine.movieLoop ? TimelineTheme.accent : TimelineTheme.dim)
+                .foregroundColor(playback.movieLoop ? TimelineTheme.accent : TimelineTheme.dim)
                 .frame(width: 40, height: 36)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(engine.movieLoop ? "Looping on" : "Looping off")
+        .accessibilityLabel(playback.movieLoop ? "Looping on" : "Looping off")
     }
 
     private var fpsMenu: some View {
         Menu {
             Picker("Frame rate", selection: Binding(
-                get: { engine.movieFPS },
+                get: { playback.movieFPS },
                 set: { engine.setMovieFPS($0) })) {
                 Text("30 fps").tag(30.0)
                 Text("15 fps").tag(15.0)
@@ -197,7 +200,7 @@ struct TransportBar: View {
     private var overflowMenu: some View {
         Menu {
             Picker("Frame rate", selection: Binding(
-                get: { engine.movieFPS },
+                get: { playback.movieFPS },
                 set: { engine.setMovieFPS($0) })) {
                 Text("30 fps").tag(30.0)
                 Text("15 fps").tag(15.0)
@@ -226,7 +229,7 @@ struct TransportBar: View {
     }
 
     private var fpsLabel: String {
-        let f = engine.movieFPS
+        let f = playback.movieFPS
         return f == f.rounded() ? String(Int(f)) : String(format: "%.1f", f)
     }
 

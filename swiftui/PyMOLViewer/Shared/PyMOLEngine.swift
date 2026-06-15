@@ -5,6 +5,18 @@ import Foundation
 import Combine
 import MetalKit
 
+/// Frequently-changing movie/timeline playback state, kept in its OWN
+/// ObservableObject so the ≈10/s frame ticks during playback re-render only the
+/// TransportBar (the lone observer) and not the inspector/menus that observe
+/// PyMOLEngine. Mirrors the core; updated by PyMOLEngine.parsePlaybackFeedback.
+final class PlaybackState: ObservableObject {
+    @Published var currentFrame: Int = 1   // 1-based, == cmd.get_frame()
+    @Published var frameCount: Int = 1     // == cmd.count_frames()
+    @Published var isPlaying: Bool = false // == cmd.get_movie_playing()
+    @Published var movieFPS: Double = 15   // == movie_fps setting
+    @Published var movieLoop: Bool = true  // == movie_loop setting
+}
+
 final class PyMOLEngine: ObservableObject {
     static let shared = PyMOLEngine()
 
@@ -49,14 +61,20 @@ final class PyMOLEngine: ObservableObject {
 
     // MARK: Timeline / playback (states · trajectories · movies)
     // In PyMOL these are ONE concept: a 1-based movie frame index that maps
-    // (via mset) to a coordinate state. The transport bar binds to these; the
-    // CORE drives frame advance (cmd.mplay → SceneIdle, ticked every Metal
-    // frame), so Swift only scrubs (cmd.frame) and mirrors core state here.
-    @Published var currentFrame: Int = 1     // 1-based, == cmd.get_frame()
-    @Published var frameCount: Int = 1       // == cmd.count_frames()
-    @Published var isPlaying: Bool = false   // == cmd.get_movie_playing()
-    @Published var movieFPS: Double = 15     // == movie_fps setting
-    @Published var movieLoop: Bool = true    // == movie_loop setting
+    // (via mset) to a coordinate state. The CORE drives frame advance
+    // (cmd.mplay → SceneIdle, ticked every Metal frame); Swift only scrubs
+    // (cmd.frame) and mirrors core state.
+    //
+    // The per-frame state lives in a SEPARATE ObservableObject so the ≈10/s
+    // frame ticks during playback re-render ONLY the TransportBar (which
+    // observes `playback`) and NOT the inspector/menus (which observe `engine`).
+    // Re-rendering the inspector on every tick was resetting open menus to the
+    // top and dropping in-flight button touches during playback.
+    let playback = PlaybackState()
+    // Lightweight gate the rest of the UI observes to show/hide the transport
+    // bar. Flips only when a multi-state object appears/disappears, so it does
+    // NOT cause per-frame re-renders of views that observe `engine`.
+    @Published var hasTimeline: Bool = false
     // While the user drags the scrubber, the poll must NOT overwrite
     // currentFrame (classic two-way-binding fight). Set on drag start, cleared
     // shortly after release so the next poll can re-sync.
@@ -95,7 +113,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v20  (Timeline: states/NMR/trajectories + movie builder/export)")
+            self?.feedbackLog.append(" [build] v21  (fix menu autoscroll + buttons-during-play; add side-chain control)")
         }
 
         // `fetch` downloads into fetch_path; the process cwd is read-only on iOS,
@@ -263,7 +281,7 @@ final class PyMOLEngine: ObservableObject {
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
             // When idle, the cheaper 500ms pollObjects() discovery suffices.
-            if self.isPlaying { self.pollPlayback() }
+            if self.playback.isPlaying { self.pollPlayback() }
         }
     }
 
@@ -454,9 +472,9 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import cmd as _m\n_m.\(call)")
     }
 
-    func play() { movieCmd("mplay()"); isPlaying = true }
-    func pause() { movieCmd("mstop()"); isPlaying = false }
-    func togglePlay() { isPlaying ? pause() : play() }
+    func play() { movieCmd("mplay()"); playback.isPlaying = true }
+    func pause() { movieCmd("mstop()"); playback.isPlaying = false }
+    func togglePlay() { playback.isPlaying ? pause() : play() }
 
     func rewindMovie() { movieCmd("rewind()") }
     func endingMovie() { movieCmd("ending()") }
@@ -465,9 +483,9 @@ final class PyMOLEngine: ObservableObject {
 
     // Live scrub: clamp, set immediately for snappy UI, throttle the core call.
     func scrub(to frame: Int) {
-        let f = max(1, min(frame, max(frameCount, 1)))
+        let f = max(1, min(frame, max(playback.frameCount, 1)))
         isScrubbing = true
-        currentFrame = f
+        playback.currentFrame = f
         scrubReleaseWork?.cancel()
         guard f != lastScrubFrame else { return }
         lastScrubFrame = f
@@ -487,12 +505,12 @@ final class PyMOLEngine: ObservableObject {
 
     func setMovieFPS(_ fps: Double) {
         let f = max(0.1, fps)
-        movieFPS = f
+        playback.movieFPS = f
         movieCmd("set('movie_fps', \(f))")
     }
 
     func setMovieLoop(_ on: Bool) {
-        movieLoop = on
+        playback.movieLoop = on
         movieCmd("set('movie_loop', \(on ? 1 : 0))")
     }
 
@@ -799,11 +817,14 @@ final class PyMOLEngine: ObservableObject {
         let curScene = (root["cur_scene"] as? String) ?? ""
 
         DispatchQueue.main.async {
-            self.objectDetails = details
-            self.sceneState = scene
-            self.objectMeta = meta
-            self.sceneNames = scenes
-            self.currentScene = curScene
+            // Equality-guard: the ~500ms poll re-emits identical detail most of
+            // the time; re-publishing unchanged values re-renders the inspector
+            // and resets any open menu to the top. Only assign on real changes.
+            if self.objectDetails != details { self.objectDetails = details }
+            if self.sceneState != scene { self.sceneState = scene }
+            if self.objectMeta != meta { self.objectMeta = meta }
+            if self.sceneNames != scenes { self.sceneNames = scenes }
+            if self.currentScene != curScene { self.currentScene = curScene }
         }
     }
 
@@ -821,14 +842,24 @@ final class PyMOLEngine: ObservableObject {
         let fps = (root["fps"] as? NSNumber)?.doubleValue ?? 15
 
         DispatchQueue.main.async {
-            self.frameCount = count
-            self.isPlaying = playing
-            self.movieLoop = loop
-            if fps > 0 { self.movieFPS = fps }
+            // Equality-guard every assignment: a @Published set fires the
+            // publisher even when the value is unchanged, so unguarded writes
+            // here would re-render the transport bar on every poll. Only the
+            // genuinely-changing currentFrame ticks during playback.
+            let pb = self.playback
+            if pb.frameCount != count { pb.frameCount = count }
+            if pb.isPlaying != playing { pb.isPlaying = playing }
+            if pb.movieLoop != loop { pb.movieLoop = loop }
+            if fps > 0 && pb.movieFPS != fps { pb.movieFPS = fps }
             // Don't fight an active drag; otherwise track the core frame.
             if !self.isScrubbing {
-                self.currentFrame = min(max(frame, 1), count)
+                let f = min(max(frame, 1), count)
+                if pb.currentFrame != f { pb.currentFrame = f }
             }
+            // The transport-bar visibility gate (observed by `engine`) flips
+            // only when crossing the 1-frame threshold — not per frame.
+            let has = count > 1
+            if self.hasTimeline != has { self.hasTimeline = has }
         }
     }
 }

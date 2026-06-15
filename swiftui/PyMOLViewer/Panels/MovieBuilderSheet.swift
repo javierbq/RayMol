@@ -126,7 +126,7 @@ struct MovieBuilderSheet: View {
 
     private var statesTab: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if engine.frameCount <= 1 && stateMaxStates <= 1 {
+            if engine.playback.frameCount <= 1 && stateMaxStates <= 1 {
                 Text("Load a multi-state object (NMR ensemble or trajectory) to animate states.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -178,7 +178,7 @@ struct MovieBuilderSheet: View {
             Button {
                 engine.captureKeyframe()
             } label: {
-                Label("Capture camera keyframe @ frame \(engine.currentFrame)",
+                Label("Capture camera keyframe @ frame \(engine.playback.currentFrame)",
                       systemImage: "camera.viewfinder")
             }
             Button(role: .destructive) {

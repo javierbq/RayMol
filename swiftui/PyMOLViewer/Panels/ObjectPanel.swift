@@ -694,6 +694,21 @@ private struct ShowButton: View {
 
     var body: some View {
         Menu {
+            // Side chains: show non-backbone atoms (the `sidechain` selection),
+            // with the cartoon side-chain helper so it composes cleanly with a
+            // cartoon. A common daily-use shortcut absent from the plain rep list.
+            Menu("side chains") {
+                Button("as sticks") {
+                    engine.runCommand("show sticks, (\(name)) and sidechain; set cartoon_side_chain_helper, 1, \(name)")
+                }
+                Button("as lines") {
+                    engine.runCommand("show lines, (\(name)) and sidechain")
+                }
+                Button("as spheres") {
+                    engine.runCommand("show spheres, (\(name)) and sidechain")
+                }
+            }
+            Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
                 if opt.label == "---" {
                     Divider()
@@ -722,6 +737,10 @@ private struct HideButton: View {
 
     var body: some View {
         Menu {
+            Button("side chains") {
+                engine.runCommand("hide sticks, (\(name)) and sidechain; hide lines, (\(name)) and sidechain")
+            }
+            Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
                 if opt.label == "---" {
                     Divider()
@@ -1187,7 +1206,10 @@ private struct ObjectCard: View {
     private func stateRow() -> some View {
         let total = max(entry.stateCount, 1)
         let meta = engine.objectMeta[entry.name]
-        let cur = min(max(meta?.state ?? engine.currentFrame, 1), total)
+        // Use the object's effective state from the poll; default to 1 (avoid
+        // depending on playback.currentFrame so the inspector doesn't re-render
+        // on every frame tick during playback).
+        let cur = min(max(meta?.state ?? 1, 1), total)
         VStack(spacing: 3) {
             HStack(spacing: 6) {
                 Text("State")
@@ -1617,7 +1639,10 @@ extension PyMOLEngine {
         }
 
         DispatchQueue.main.async {
-            self.objects = entries
+            // Guard: the ~500ms poll usually returns the same object list;
+            // re-assigning an equal array still fires @Published and re-renders
+            // the panel (resetting open menus). Only assign on real changes.
+            if self.objects != entries { self.objects = entries }
         }
     }
 }

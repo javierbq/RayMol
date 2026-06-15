@@ -57,7 +57,7 @@ struct ContentView: View {
                     MetalViewport()
                         .frame(minWidth: 400, minHeight: 360)
                         .layoutPriority(1)
-                    if engine.frameCount > 1 {
+                    if engine.hasTimeline {
                         Divider()
                         TransportBar()
                     }
@@ -290,7 +290,7 @@ struct ContentView: View {
             // there's more than one frame. A collapsing peek on iPhone; a pinned
             // full-width bar on iPad.
             .overlay(alignment: .bottom) {
-                if engine.frameCount > 1 { transportOverlay }
+                if engine.hasTimeline { transportOverlay }
             }
             .overlay(alignment: .bottomTrailing) {
                 Button { showGestureLegend = true } label: {
@@ -301,7 +301,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Gesture help")
                 // Keep the help button clear of the transport bar.
-                .padding(.bottom, engine.frameCount > 1 ? 56 : 0)
+                .padding(.bottom, engine.hasTimeline ? 56 : 0)
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible

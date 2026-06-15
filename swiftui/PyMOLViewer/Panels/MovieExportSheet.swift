@@ -266,8 +266,8 @@ struct MovieExportSheet: View {
                     }
                     labeled("Frames") {
                         HStack(spacing: 12) {
-                            Stepper("First: \(first)", value: $first, in: 1...max(engine.frameCount, 1))
-                            Stepper("Last: \(last)", value: $last, in: 1...max(engine.frameCount, 1))
+                            Stepper("First: \(first)", value: $first, in: 1...max(engine.playback.frameCount, 1))
+                            Stepper("Last: \(last)", value: $last, in: 1...max(engine.playback.frameCount, 1))
                         }.font(.system(size: 13))
                     }
                     Toggle(isOn: $rayMode) {
@@ -302,10 +302,10 @@ struct MovieExportSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(TimelineTheme.accent)
-                .disabled(exporter.isExporting || engine.frameCount <= 1)
+                .disabled(exporter.isExporting || engine.playback.frameCount <= 1)
             }.padding(16)
         }
-        .onAppear { last = max(engine.frameCount, 1); first = 1 }
+        .onAppear { last = max(engine.playback.frameCount, 1); first = 1 }
         .onChange(of: exporter.finishedURL) { url in
             if let url = url { deliver(url) }
         }
@@ -319,7 +319,7 @@ struct MovieExportSheet: View {
     private func runExport() {
         let p = presets[presetIdx]
         exporter.start(engine: engine, format: format, width: p.w, height: p.h,
-                       first: first, last: last, fps: Int(engine.movieFPS.rounded()),
+                       first: first, last: last, fps: Int(engine.playback.movieFPS.rounded()),
                        rayTraced: rayMode)
     }
 
