@@ -216,6 +216,10 @@ struct ContentView: View {
             // visible (the panel's ScrollView covers any remaining overflow);
             // restore the user's size when everything collapses.
             .onChange(of: engine.expandedDetail) { detail in
+                // Poll the just-expanded object's rep detail immediately so its
+                // representation list shows at once (don't wait for the next
+                // ~500ms poll tick, which a heavy surface build can delay).
+                if detail != nil { engine.refreshExpandedDetail() }
                 withAnimation(.easeInOut(duration: 0.22)) {
                     if detail != nil {
                         panelFrac = 0.6

@@ -898,6 +898,14 @@ final class PyMOLEngine: ObservableObject {
     // Query active reps + per-rep settings + scene globals for the currently
     // EXPANDED object cards only (collapsed cards cost nothing). Emits an
     // OBJDETAIL feedback line via the bundled appkit_inspector module.
+    // Public trigger: poll the expanded object's rep detail RIGHT NOW instead of
+    // waiting up to ~500ms for the next pollObjects tick. Called when a card is
+    // expanded so the rep list appears immediately (otherwise a heavy surface
+    // build can starve the timer and the card lingers on "No representations").
+    func refreshExpandedDetail() {
+        pollDetails()
+    }
+
     private func pollDetails() {
         // Always run (cheap when nothing expanded — just the ~8 scene gets) so
         // the Scene card stays fresh; per-object rep detail is queried only for
