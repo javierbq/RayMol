@@ -42,7 +42,7 @@ REP_COLOR = {
 
 SCENE_SETTINGS = ['metal_raytrace', 'metal_shadows', 'metal_ssao', 'metal_outline',
                   'metal_msaa', 'depth_cue', 'fog', 'field_of_view', 'surface_quality',
-                  'all_states']
+                  'all_states', 'mouse_selection_mode']
 
 
 def _num(setting, obj):

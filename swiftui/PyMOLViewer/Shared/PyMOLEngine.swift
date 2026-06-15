@@ -17,6 +17,8 @@ final class PlaybackState: ObservableObject {
     @Published var movieLoop: Bool = true  // == movie_loop setting
 }
 
+enum MeasureKind: String { case distance, angle, dihedral }
+
 final class PyMOLEngine: ObservableObject {
     static let shared = PyMOLEngine()
 
@@ -44,6 +46,12 @@ final class PyMOLEngine: ObservableObject {
     // Saved scenes (ordered) + the current scene name, for the Scenes strip.
     @Published var sceneNames: [String] = []
     @Published var currentScene: String = ""
+    // Live atom-count preview for the selection builder (nil = not previewing).
+    @Published var selectionPreviewCount: Int? = nil
+    // Interactive measurement: nil = off; otherwise taps pick atoms for a
+    // distance/angle/dihedral. measureStatus is the prompt/result shown in the UI.
+    @Published var measureMode: MeasureKind? = nil
+    @Published var measureStatus: String = ""
     // The single detail view that is currently open (accordion: at most one).
     // nil = none, `sceneDetailKey` = the SCENE card, otherwise an object name.
     // Drives which object the detail poll queries (collapsed = cheap).
@@ -113,7 +121,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v21  (fix menu autoscroll + buttons-during-play; add side-chain control)")
+            self?.feedbackLog.append(" [build] v24  (selection mode: atom/residue/chain/segment/object/molecule)")
         }
 
         // `fetch` downloads into fetch_path; the process cwd is read-only on iOS,
@@ -543,6 +551,81 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_movie as _am\n_am.capture_keyframe()")
     }
 
+    // MARK: - Selection builder support
+
+    // Preview how many atoms a selection expression would match, without
+    // creating a lasting selection. Emits SELPREVIEW:<n> (or :err). The caller
+    // debounces. Uses a throwaway '_pv' selection.
+    func previewSelection(_ expr: String) {
+        let e = expr.replacingOccurrences(of: "\\", with: "")
+        runPython(
+            "from pymol import cmd as _c\n"
+            + "try:\n"
+            + "    _n = _c.select('_pv', r'''\(e)''')\n"
+            + "    print('SELPREVIEW:%d' % int(_n))\n"
+            + "    _c.delete('_pv')\n"
+            + "except Exception:\n"
+            + "    print('SELPREVIEW:err')")
+    }
+
+    // Create/overwrite a named selection and enable it.
+    func createSelection(name: String, expr: String) {
+        let n = name.replacingOccurrences(of: "'", with: "")
+        let e = expr.replacingOccurrences(of: "\\", with: "")
+        runPython("from pymol import cmd as _c\n_c.select(r'''\(n)''', r'''\(e)''', enable=1)")
+    }
+
+    // Rename an object/selection.
+    func renameObject(_ old: String, to newName: String) {
+        let o = old.replacingOccurrences(of: "'", with: "")
+        let n = newName.replacingOccurrences(of: "'", with: "")
+        guard !n.isEmpty else { return }
+        runPython("from pymol import cmd as _c\n_c.set_name(r'''\(o)''', r'''\(n)''')")
+    }
+
+    // MARK: - Interactive measurement
+
+    func setMeasureMode(_ k: MeasureKind?) {
+        measureMode = k
+        if let k = k {
+            runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
+        } else {
+            runPython("from pymol import appkit_measure as _am\n_am.reset()")
+        }
+    }
+
+    // A tap while in measure mode: accumulate an atom pick (NDC in [-1,1]).
+    func measurePick(ndcX: Float, ndcY: Float, aspect: Float) {
+        runPython("from pymol import appkit_measure as _am\n_am.pick(\(ndcX), \(ndcY), \(aspect))")
+    }
+
+    func clearMeasurements() {
+        runPython("from pymol import appkit_measure as _am\n_am.clear_all()")
+    }
+
+    // Parse MEASURE:<json> {kind,count,need,value?} → measureStatus text.
+    func parseMeasureFeedback(_ line: String) {
+        let js = String(line.dropFirst("MEASURE:".count))
+        guard let data = js.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        let kind = root["kind"] as? String ?? "distance"
+        let count = (root["count"] as? NSNumber)?.intValue ?? 0
+        let need = (root["need"] as? NSNumber)?.intValue ?? 2
+        let value = (root["value"] as? NSNumber)?.doubleValue
+        let unit = kind == "distance" ? " Å" : "°"
+        let status: String
+        if let v = value {
+            let s = (v == v.rounded()) ? String(Int(v)) : String(format: kind == "distance" ? "%.2f" : "%.1f", v)
+            status = "\(kind.capitalized): \(s)\(unit)  ·  tap to start another"
+        } else if count == 0 {
+            status = "Tap \(need) atoms"
+        } else {
+            status = "Tap \(need - count) more atom\(need - count == 1 ? "" : "s")"
+        }
+        DispatchQueue.main.async { self.measureStatus = status }
+    }
+
     // Fetch per-object residue sequences (one guide atom per residue) and emit
     // a SEQPANEL: feedback line parsed into `sequences`. Run via raw Python so
     // the command isn't echoed to the log.
@@ -703,6 +786,14 @@ final class PyMOLEngine: ObservableObject {
                     parsePlaybackFeedback(line)
                 } else if line.hasPrefix("PLAYBACK_ERR:") {
                     // swallow (don't flood the log with poll errors)
+                } else if line.hasPrefix("SELPREVIEW:") {
+                    let v = String(line.dropFirst("SELPREVIEW:".count))
+                    let count = Int(v)
+                    DispatchQueue.main.async { self.selectionPreviewCount = count }
+                } else if line.hasPrefix("MEASURE:") {
+                    parseMeasureFeedback(line)
+                } else if line.hasPrefix("MEASURE_ERR:") {
+                    // swallow
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
                         self.feedbackLog.append(line)

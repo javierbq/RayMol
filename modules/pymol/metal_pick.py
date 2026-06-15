@@ -67,13 +67,16 @@ def _pickdbg(ndc_x, ndc_y, aspect, best, ncand):
         pass
 
 
-def pick_at(ndc_x, ndc_y, aspect):
+def _pick_atom(ndc_x, ndc_y, aspect):
+    """Project all DRAWN atoms and return the front-most atom under the click as
+    (screen_d2, obj, chain, resi, resn, segi, name, sx, sy), or None for empty
+    space. Shared by pick_at (residue toggle) and appkit_measure (atom picks)."""
     from pymol import cmd
 
     try:
         v = cmd.get_view()
         if not v:
-            return
+            return None
 
         if len(v) >= 25:
             # 4x4 column-major rotation -> 3x3 rows (model -> camera).
@@ -183,9 +186,29 @@ def pick_at(ndc_x, ndc_y, aspect):
             except Exception:
                 pass
 
+        return best
+
+    except Exception as e:
+        print('metal_pick error: %s' % e)
+        return None
+
+
+def atom_expr(best):
+    """Atom-precise selection expression for a _pick_atom result tuple."""
+    _, obj, chain, resi, resn, segi, name, _sx, _sy = best
+    expr = '%s and resi %s and name %s' % (obj, resi, name)
+    if chain:
+        expr += ' and chain %s' % chain
+    return '(%s)' % expr
+
+
+def pick_at(ndc_x, ndc_y, aspect):
+    """Default tap: residue-level toggle into the active 'sele'."""
+    from pymol import cmd
+    try:
+        best = _pick_atom(ndc_x, ndc_y, aspect)
         if best is None:
-            # Empty-space click: empty the active 'sele' (set-mode clear),
-            # matching SelectorCreate(name,'none') in the original.
+            # Empty-space click: empty the active 'sele' (set-mode clear).
             if 'sele' in (cmd.get_names('selections') or []):
                 cmd.select('sele', 'none')
                 cmd.enable('sele')
@@ -194,11 +217,29 @@ def pick_at(ndc_x, ndc_y, aspect):
         _, obj, chain, resi, resn, segi, name, _sx, _sy = best
         print(' You clicked /%s/%s/%s`%s/%s' % (segi, chain, resn, resi, name))
 
-        # Residue-level selection scoped to the picked object.
+        # Honor mouse_selection_mode (0 atom, 1 residue, 2 chain, 3 segment,
+        # 4 object, 5 molecule, 6 C-alpha) — what a click expands the pick to.
+        try:
+            mode = int(cmd.get_setting_int('mouse_selection_mode'))
+        except Exception:
+            mode = 1
+        atom = '%s and resi %s and name %s' % (obj, resi, name)
         if chain:
-            expr = '(%s and chain %s and resi %s)' % (obj, chain, resi)
-        else:
-            expr = '(%s and resi %s)' % (obj, resi)
+            atom += ' and chain %s' % chain
+        res = ('%s and chain %s and resi %s' % (obj, chain, resi)) if chain \
+            else ('%s and resi %s' % (obj, resi))
+        if mode == 0:                                   # atom
+            expr = '(%s)' % atom
+        elif mode == 2:                                 # chain
+            expr = ('(%s and chain %s)' % (obj, chain)) if chain else '(%s)' % obj
+        elif mode == 3:                                 # segment
+            expr = ('(%s and segi %s)' % (obj, segi)) if segi else '(%s)' % obj
+        elif mode == 4:                                 # object
+            expr = '(%s)' % obj
+        elif mode == 5:                                 # molecule
+            expr = '(bymol (%s))' % atom
+        else:                                           # 1 residue / 6 C-alpha
+            expr = '(%s)' % res
 
         # Toggle into/out of 'sele' (additive — matches Seeker toggle).
         exists = 'sele' in (cmd.get_names('selections') or [])

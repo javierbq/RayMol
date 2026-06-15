@@ -317,7 +317,11 @@ extension MetalViewport {
                         "mouseUp loc=(%.1f,%.1f) bounds=(%.1f,%.1f) backing=%.2f -> ndc=(%.4f,%.4f) aspect=%.4f",
                         loc.x, loc.y, w, h, view.window?.backingScaleFactor ?? 0,
                         ndcX, ndcY, Float(w / h)))
-                    engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                    if engine?.measureMode != nil {
+                        engine?.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                    } else {
+                        engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                    }
                 }
             }
         }
@@ -523,7 +527,11 @@ extension MetalViewport {
             guard w > 0, h > 0 else { return }
             let ndcX = Float(p.x / w) * 2 - 1
             let ndcY = 1 - Float(p.y / h) * 2
-            engine.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+            if engine.measureMode != nil {
+                engine.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+            } else {
+                engine.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+            }
         }
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {

@@ -57,6 +57,9 @@ struct ContentView: View {
                     MetalViewport()
                         .frame(minWidth: 400, minHeight: 360)
                         .layoutPriority(1)
+                        .overlay(alignment: .top) {
+                            if engine.measureMode != nil { measureOverlay }
+                        }
                     if engine.hasTimeline {
                         Divider()
                         TransportBar()
@@ -86,6 +89,14 @@ struct ContentView: View {
         }
         .toolbar {
             exportMenu
+            ToolbarItem {
+                Button {
+                    engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
+                } label: {
+                    Label("Measure", systemImage: engine.measureMode == nil ? "ruler" : "ruler.fill")
+                }
+                .help("Measure distance / angle / dihedral by tapping atoms")
+            }
             panelToggles
         }
         .sheet(isPresented: $showCustomSizeSheet) {
@@ -178,6 +189,12 @@ struct ContentView: View {
             // the keyboard — so keyboard avoidance still pushes the console +
             // command field up above the on-screen keyboard.
             .ignoresSafeArea(.container, edges: .all)
+            // Measurement bar docks in the top safe area (below the status bar /
+            // Dynamic Island / nav bar) and insets the viewport while active —
+            // NOT a full-bleed overlay, which would slide under the notch.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if engine.measureMode != nil { measureOverlay }
+            }
             .navigationTitle(hSize == .compact ? "" : "PyMOL")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -195,7 +212,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .toolbar { iosOpenToolbar; iosPanelToggle; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosPanelToggle; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -246,6 +263,11 @@ struct ContentView: View {
                     if s == "export" { showExportSheet = true }
                 }
             }
+            if let m = ProcessInfo.processInfo.environment["PYMOL_AUTOMEASURE"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                    engine.setMeasureMode(MeasureKind(rawValue: m) ?? .distance)
+                }
+            }
             if let e = ProcessInfo.processInfo.environment["PYMOL_AUTOEXPORTMOVIE"] {
                 let parts = e.split(separator: ",").map(String.init)
                 let fmt: MovieExporter.Format = (parts.first == "gif") ? .gif : .mp4
@@ -269,6 +291,17 @@ struct ContentView: View {
     // Panel show/hide toggle — lets the viewport go full-bleed. In the toolbar
     // (standard inspector-toggle spot) so it never conflicts with the resize
     // divider's drag gesture.
+    private var iosMeasureToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button {
+                engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
+            } label: {
+                Image(systemName: engine.measureMode == nil ? "ruler" : "ruler.fill")
+            }
+            .accessibilityLabel("Measure")
+        }
+    }
+
     private var iosPanelToggle: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
@@ -542,6 +575,20 @@ struct ContentView: View {
                     Label("Ray-traced (AO + shadows)", systemImage: "sparkles")
                 }
                 Divider()
+                Menu {
+                    Button("PDB (.pdb)") { iosShareStructure(ext: "pdb") }
+                    Button("mmCIF (.cif)") { iosShareStructure(ext: "cif") }
+                    Button("MOL2 (.mol2)") { iosShareStructure(ext: "mol2") }
+                    Button("SDF (.sdf)") { iosShareStructure(ext: "sdf") }
+                    Button("XYZ (.xyz)") { iosShareStructure(ext: "xyz") }
+                    Divider()
+                    // 3D models that work on this NO_OPENGL / libxml-off build
+                    // (CPU-ray export path). glTF/COLLADA/STL are unavailable.
+                    Button("VRML (.wrl)") { iosShareStructure(ext: "wrl") }
+                    Button("POV-Ray (.pov)") { iosShareStructure(ext: "pov") }
+                } label: {
+                    Label("Share Structure", systemImage: "atom")
+                }
                 Button {
                     iosShareSession()
                 } label: {
@@ -551,6 +598,16 @@ struct ContentView: View {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
         }
+    }
+
+    // Write the whole scene to a structure/3D file in the requested format and
+    // hand it to the share sheet. cmd.save infers the format from the extension.
+    private func iosShareStructure(ext: String) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PyMOL_structure.\(ext)")
+        try? FileManager.default.removeItem(at: url)
+        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
     }
 
     // MARK: iPad export helpers
@@ -663,6 +720,11 @@ struct ContentView: View {
                 Divider()
 
                 Button {
+                    saveStructure()
+                } label: {
+                    Label("Save Structure As…", systemImage: "atom")
+                }
+                Button {
                     saveSession()
                 } label: {
                     Label("Save Session (.pse)…", systemImage: "doc.text")
@@ -755,6 +817,22 @@ struct ContentView: View {
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
     }
 
+    // Save the whole scene to a molecular or 3D file. cmd.save infers the format
+    // from the extension; the user types the extension (.pdb/.cif/.mol2/.sdf/.xyz
+    // /.mae/.pqr molecular, or .wrl/.pov 3D — glTF/COLLADA/STL aren't available
+    // on this libxml-off / NO_OPENGL build).
+    private func saveStructure() {
+        let panel = NSSavePanel()
+        let exts = ["pdb", "cif", "sdf", "mol", "mol2", "xyz", "mae", "pqr", "wrl", "pov"]
+        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
+        panel.allowsOtherFileTypes = true
+        panel.nameFieldStringValue = "structure.pdb"
+        panel.canCreateDirectories = true
+        panel.title = "Save Structure As"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+    }
+
     private func shareImage() {
         let size = exportSize(scale: 2)
         let w = Int(size.width.rounded()), h = Int(size.height.rounded())
@@ -776,6 +854,38 @@ struct ContentView: View {
         picker.show(relativeTo: .zero, of: anchor, preferredEdge: .minY)
     }
     #endif
+
+    // MARK: - Measurement overlay (shared)
+
+    // A thin bar over the top of the viewport while measure mode is active:
+    // pick the measurement type, see the live prompt/result, clear, or exit.
+    private var measureOverlay: some View {
+        HStack(spacing: 10) {
+            Picker("", selection: Binding(
+                get: { engine.measureMode ?? .distance },
+                set: { engine.setMeasureMode($0) })) {
+                Text("Distance").tag(MeasureKind.distance)
+                Text("Angle").tag(MeasureKind.angle)
+                Text("Dihedral").tag(MeasureKind.dihedral)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 240)
+            Text(engine.measureStatus)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(TimelineTheme.text)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Spacer(minLength: 0)
+            Button { engine.clearMeasurements() } label: {
+                Image(systemName: "trash").foregroundColor(TimelineTheme.text)
+            }.buttonStyle(.plain).help("Delete all measurements")
+            Button { engine.setMeasureMode(nil) } label: {
+                Image(systemName: "xmark.circle.fill").foregroundColor(TimelineTheme.dim)
+            }.buttonStyle(.plain).accessibilityLabel("Exit measure mode")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(TimelineTheme.bar)
+        .tint(TimelineTheme.accent)
+    }
 
     // MARK: - Initialization
 
