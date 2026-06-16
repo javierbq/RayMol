@@ -1143,6 +1143,53 @@ final class PyMOLEngine: ObservableObject {
         DispatchQueue.main.async { self.aiKeyConfigured = !trimmed.isEmpty }
     }
 
+    // Deliver the full AI provider configuration to the embedded backend. Sets
+    // the active provider, and for Vertex the project/region/model + bearer
+    // token; for Anthropic the single key. Secrets are handed over base64 so
+    // quotes/specials can't break out of the Python string literal. Called on
+    // app start (with Keychain-stored values) and whenever AI settings change.
+    // aiKeyConfigured reflects whether the *active* provider has its credential.
+    func applyAISettings(provider: String,
+                         anthropicKey: String,
+                         vertexProject: String,
+                         vertexRegion: String,
+                         vertexModel: String,
+                         vertexToken: String) {
+        guard isReady else { return }
+        let prov = (provider == "vertex") ? "vertex" : "anthropic"
+
+        func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
+
+        if prov == "vertex" {
+            // Vertex: set config (project/region/model) + token, then provider.
+            let region = vertexRegion.isEmpty ? "us-east5" : vertexRegion
+            runPython(
+                "import base64\n"
+                + "from pymol import ai_chat as _ai\n"
+                + "_proj = base64.b64decode('\(b64(vertexProject))').decode('utf-8')\n"
+                + "_reg = base64.b64decode('\(b64(region))').decode('utf-8')\n"
+                + "_mdl = base64.b64decode('\(b64(vertexModel))').decode('utf-8')\n"
+                + "_tok = base64.b64decode('\(b64(vertexToken))').decode('utf-8')\n"
+                + "_ai.set_vertex_config(_proj, _reg, _mdl if _mdl else None)\n"
+                + "_ai.set_api_key(_tok, 'vertex')\n"
+                + "_ai.set_provider('vertex')"
+            )
+            let configured = !vertexProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !vertexToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            DispatchQueue.main.async { self.aiKeyConfigured = configured }
+        } else {
+            // Anthropic: set the key + provider (matches the existing path).
+            runPython(
+                "import base64\n"
+                + "from pymol import ai_chat as _ai\n"
+                + "_ai.set_api_key(base64.b64decode('\(b64(anthropicKey))').decode('utf-8'), 'anthropic')\n"
+                + "_ai.set_provider('anthropic')"
+            )
+            let configured = !anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            DispatchQueue.main.async { self.aiKeyConfigured = configured }
+        }
+    }
+
     // Send a user message to the AI backend. ai_chat._on_user_message spawns its
     // own worker thread and returns immediately, so this does NOT block the
     // render loop. The user text is handed over base64-encoded so any quotes /

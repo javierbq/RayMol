@@ -37,30 +37,46 @@ struct ChatQuestion: Identifiable {
 
 // MARK: - Keychain helper (API key storage, macOS + iOS)
 
-/// Minimal Keychain wrapper for the Anthropic API key. Stored as a generic
-/// password under this app's service so it persists across launches and never
-/// touches UserDefaults / disk in cleartext.
+/// Minimal Keychain wrapper for the AI credentials. Each value is stored as a
+/// generic password under this app's service so it persists across launches and
+/// never touches UserDefaults / disk in cleartext.
+///
+/// Accounts:
+///   - "anthropic_api_key"   — the direct-Anthropic key (saveAPIKey/loadAPIKey)
+///   - "ai_provider"         — "anthropic" | "vertex" (the active provider)
+///   - "vertex.project"      — GCP project id
+///   - "vertex.region"       — GCP region (default "us-east5")
+///   - "vertex.model"        — Vertex publisher model id (with @version)
+///   - "vertex.token"        — GCP access token / Vertex API key (the secret)
 enum KeychainHelper {
     private static let service = "PyMOLViewer.AI"
     private static let account = "anthropic_api_key"
 
-    static func saveAPIKey(_ key: String) {
-        let data = Data(key.utf8)
-        // Delete any existing item first, then add (simplest upsert).
+    // Distinct accounts for the provider choice + Vertex config.
+    static let providerAccount = "ai_provider"
+    static let vertexProjectAccount = "vertex.project"
+    static let vertexRegionAccount = "vertex.region"
+    static let vertexModelAccount = "vertex.model"
+    static let vertexTokenAccount = "vertex.token"
+
+    // MARK: generic per-account get/set
+
+    /// Upsert a value under `account` (empty string clears it).
+    static func setValue(_ value: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
-        guard !key.isEmpty else { return }   // empty == "clear the key"
+        guard !value.isEmpty else { return }   // empty == "clear"
         var add = query
-        add[kSecValueData as String] = data
+        add[kSecValueData as String] = Data(value.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    static func loadAPIKey() -> String {
+    static func value(account: String) -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -71,9 +87,25 @@ enum KeychainHelper {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data,
-              let key = String(data: data, encoding: .utf8) else { return "" }
-        return key
+              let s = String(data: data, encoding: .utf8) else { return "" }
+        return s
     }
+
+    // MARK: Anthropic key (existing API, preserved)
+
+    static func saveAPIKey(_ key: String) { setValue(key, account: account) }
+    static func loadAPIKey() -> String { value(account: account) }
+}
+
+// MARK: - AI provider model
+
+/// The selectable AI backends. rawValue matches what pymol.ai_chat.set_provider
+/// expects ("anthropic" / "vertex").
+enum AIProvider: String, CaseIterable, Identifiable {
+    case anthropic
+    case vertex
+    var id: String { rawValue }
+    var display: String { self == .anthropic ? "Anthropic" : "Vertex AI" }
 }
 
 // MARK: - Chat Panel
@@ -103,11 +135,11 @@ struct ChatPanel: View {
         .onAppear { deliverStoredKey() }
     }
 
-    // Push the Keychain-stored key into the backend once the engine is ready
-    // (so the very first message works without re-opening Settings).
+    // Push the Keychain-stored provider + credentials into the backend once the
+    // engine is ready (so the very first message works without re-opening
+    // Settings).
     private func deliverStoredKey() {
-        let key = KeychainHelper.loadAPIKey()
-        if !key.isEmpty { engine.setAIKey(key) }
+        AISettings.deliverStored(engine: engine)
     }
 
     // MARK: - Header
@@ -130,7 +162,7 @@ struct ChatPanel: View {
                     .foregroundColor(engine.aiKeyConfigured ? accentBlue : Color.gray)
             }
             .buttonStyle(.plain)
-            .help("Set Anthropic API key")
+            .help("Set AI provider & credentials")
 
             Button(action: { engine.clearChat() }) {
                 Image(systemName: "trash")
@@ -185,7 +217,7 @@ struct ChatPanel: View {
                 .multilineTextAlignment(.center)
 
             if !engine.aiKeyConfigured {
-                Button("Set Anthropic API key…") { showKeySheet = true }
+                Button("Set AI provider & credentials…") { showKeySheet = true }
                     .font(.system(size: 11))
                     .buttonStyle(.plain)
                     .foregroundColor(accentBlue)
@@ -287,32 +319,47 @@ struct ChatPanel: View {
 
 // MARK: - API key entry sheet
 
-/// SecureField for the Anthropic key, persisted to the Keychain and pushed to
-/// the Python backend. Reachable from the ChatPanel header on macOS + iOS.
+/// Provider picker + credentials, persisted to the Keychain and pushed to the
+/// Python backend. Anthropic → a single key; Vertex AI → project / region /
+/// access token / model. Reachable from the ChatPanel header on macOS + iOS.
 struct AIKeySheet: View {
     @EnvironmentObject var engine: PyMOLEngine
     @Environment(\.dismiss) private var dismiss
-    @State private var key: String = ""
+
+    @State private var provider: AIProvider = .anthropic
+    @State private var key: String = ""             // Anthropic key
+    @State private var vertexProject: String = ""
+    @State private var vertexRegion: String = "us-east5"
+    @State private var vertexModel: String = ""
+    @State private var vertexToken: String = ""
+
+    private let defaultVertexModel = "claude-sonnet-4-5@20250929"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Anthropic API Key").font(.headline)
+                Text("AI Provider").font(.headline)
                 Spacer()
                 Button("Done") { save(); dismiss() }
             }
-            SecureField("sk-ant-…", text: $key)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-            Text("Your key is stored locally in the device Keychain and sent only to the Anthropic API. It is never logged or uploaded anywhere else.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+            Picker("Provider", selection: $provider) {
+                ForEach(AIProvider.allCases) { p in
+                    Text(p.display).tag(p)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if provider == .anthropic {
+                anthropicFields
+            } else {
+                vertexFields
+            }
+
             HStack {
                 Button("Clear", role: .destructive) {
-                    key = ""
+                    if provider == .anthropic { key = "" }
+                    else { vertexToken = "" }
                     save()
                     dismiss()
                 }
@@ -322,14 +369,128 @@ struct AIKeySheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 360)
-        .onAppear { key = KeychainHelper.loadAPIKey() }
+        .frame(minWidth: 380)
+        .onAppear { loadFromKeychain() }
+    }
+
+    private var anthropicFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SecureField("sk-ant-…", text: $key)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            Text("Your key is stored locally in the device Keychain and sent only to the Anthropic API. It is never logged or uploaded anywhere else.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var vertexFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Project ID (my-gcp-project)", text: $vertexProject)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            TextField("Region (us-east5)", text: $vertexRegion)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            SecureField("Access token / API key", text: $vertexToken)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            TextField("Model (\(defaultVertexModel))", text: $vertexModel)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            Text("GCP access token (gcloud auth print-access-token) or Vertex API key; stored in Keychain. Access tokens expire ~1h.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func loadFromKeychain() {
+        let saved = KeychainHelper.value(account: KeychainHelper.providerAccount)
+        provider = AIProvider(rawValue: saved) ?? .anthropic
+        key = KeychainHelper.loadAPIKey()
+        vertexProject = KeychainHelper.value(account: KeychainHelper.vertexProjectAccount)
+        let region = KeychainHelper.value(account: KeychainHelper.vertexRegionAccount)
+        vertexRegion = region.isEmpty ? "us-east5" : region
+        vertexModel = KeychainHelper.value(account: KeychainHelper.vertexModelAccount)
+        vertexToken = KeychainHelper.value(account: KeychainHelper.vertexTokenAccount)
     }
 
     private func save() {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        KeychainHelper.saveAPIKey(trimmed)
-        engine.setAIKey(trimmed)
+        AISettings.persistAndDeliver(
+            engine: engine,
+            provider: provider,
+            anthropicKey: key,
+            vertexProject: vertexProject,
+            vertexRegion: vertexRegion,
+            vertexModel: vertexModel.isEmpty ? defaultVertexModel : vertexModel,
+            vertexToken: vertexToken)
+    }
+}
+
+// MARK: - AI settings persistence + delivery (shared by AIKeySheet + SettingsSheet)
+
+/// One place that writes the AI credentials to the Keychain and pushes them to
+/// the Python backend, so the ChatPanel sheet and the Settings sheet stay in
+/// sync. Trims inputs, persists, then calls engine.applyAISettings.
+enum AISettings {
+    static func persistAndDeliver(engine: PyMOLEngine,
+                                  provider: AIProvider,
+                                  anthropicKey: String,
+                                  vertexProject: String,
+                                  vertexRegion: String,
+                                  vertexModel: String,
+                                  vertexToken: String) {
+        let aKey = anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project = vertexProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        var region = vertexRegion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if region.isEmpty { region = "us-east5" }
+        let model = vertexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = vertexToken.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        KeychainHelper.setValue(provider.rawValue, account: KeychainHelper.providerAccount)
+        KeychainHelper.saveAPIKey(aKey)
+        KeychainHelper.setValue(project, account: KeychainHelper.vertexProjectAccount)
+        KeychainHelper.setValue(region, account: KeychainHelper.vertexRegionAccount)
+        KeychainHelper.setValue(model, account: KeychainHelper.vertexModelAccount)
+        KeychainHelper.setValue(token, account: KeychainHelper.vertexTokenAccount)
+
+        engine.applyAISettings(provider: provider.rawValue,
+                               anthropicKey: aKey,
+                               vertexProject: project,
+                               vertexRegion: region,
+                               vertexModel: model,
+                               vertexToken: token)
+    }
+
+    /// Push whatever is in the Keychain to the backend (called on appear so the
+    /// first message works without reopening settings).
+    static func deliverStored(engine: PyMOLEngine) {
+        let provRaw = KeychainHelper.value(account: KeychainHelper.providerAccount)
+        let provider = AIProvider(rawValue: provRaw) ?? .anthropic
+        let region = KeychainHelper.value(account: KeychainHelper.vertexRegionAccount)
+        persistAndDeliver(
+            engine: engine,
+            provider: provider,
+            anthropicKey: KeychainHelper.loadAPIKey(),
+            vertexProject: KeychainHelper.value(account: KeychainHelper.vertexProjectAccount),
+            vertexRegion: region.isEmpty ? "us-east5" : region,
+            vertexModel: KeychainHelper.value(account: KeychainHelper.vertexModelAccount),
+            vertexToken: KeychainHelper.value(account: KeychainHelper.vertexTokenAccount))
     }
 }
 

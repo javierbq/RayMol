@@ -1831,6 +1831,14 @@ struct SettingsSheet: View {
     @State private var search = ""
     @State private var aiKey = ""
 
+    // AI provider + Vertex credentials (loaded from / persisted to the Keychain).
+    @State private var aiProvider: AIProvider = .anthropic
+    @State private var vertexProject = ""
+    @State private var vertexRegion = "us-east5"
+    @State private var vertexModel = ""
+    @State private var vertexToken = ""
+    private let defaultVertexModel = "claude-sonnet-4-5@20250929"
+
     private var filtered: [SettingItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if q.isEmpty { return engine.settingsCatalog }
@@ -1875,7 +1883,7 @@ struct SettingsSheet: View {
         }
         .onAppear {
             if engine.settingsCatalog.isEmpty { engine.loadSettingsCatalog() }
-            aiKey = KeychainHelper.loadAPIKey()
+            loadAISettings()
         }
         #if os(iOS)
         .presentationDetents([.large])
@@ -1884,36 +1892,98 @@ struct SettingsSheet: View {
         #endif
     }
 
-    // "AI" section: paste the Anthropic API key (stored in the Keychain and
-    // delivered to the embedded pymol.ai_chat backend). Same store the ChatPanel
-    // key button uses, so the two stay in sync.
+    // "AI" section: pick the provider (Anthropic / Vertex AI) and enter its
+    // credentials (stored in the Keychain and delivered to the embedded
+    // pymol.ai_chat backend). Same store the ChatPanel key sheet uses, so the
+    // two stay in sync.
     private var aiSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("AI").font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                SecureField("Anthropic API key (sk-ant-…)", text: $aiKey)
+
+            Picker("Provider", selection: $aiProvider) {
+                ForEach(AIProvider.allCases) { p in Text(p.display).tag(p) }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: aiProvider) { _ in saveAISettings() }
+
+            if aiProvider == .anthropic {
+                HStack(spacing: 8) {
+                    SecureField("Anthropic API key (sk-ant-…)", text: $aiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .onSubmit { saveAISettings() }
+                    Button("Save") { saveAISettings() }
+                        .buttonStyle(.borderedProminent)
+                }
+                Text("Stored locally in the device Keychain; sent only to the Anthropic API. Used by the AI Chat panel.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                TextField("Project ID (my-gcp-project)", text: $vertexProject)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
-                    .onSubmit { saveAIKey() }
-                Button("Save") { saveAIKey() }
-                    .buttonStyle(.borderedProminent)
+                    .onSubmit { saveAISettings() }
+                TextField("Region (us-east5)", text: $vertexRegion)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .onSubmit { saveAISettings() }
+                HStack(spacing: 8) {
+                    SecureField("Access token / API key", text: $vertexToken)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .onSubmit { saveAISettings() }
+                    Button("Save") { saveAISettings() }
+                        .buttonStyle(.borderedProminent)
+                }
+                TextField("Model (\(defaultVertexModel))", text: $vertexModel)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .onSubmit { saveAISettings() }
+                Text("GCP access token (gcloud auth print-access-token) or Vertex API key; stored in Keychain. Access tokens expire ~1h.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            Text("Stored locally in the device Keychain; sent only to the Anthropic API. Used by the AI Chat panel.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
     }
 
-    private func saveAIKey() {
-        let trimmed = aiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        KeychainHelper.saveAPIKey(trimmed)
-        engine.setAIKey(trimmed)
+    private func loadAISettings() {
+        let savedProv = KeychainHelper.value(account: KeychainHelper.providerAccount)
+        aiProvider = AIProvider(rawValue: savedProv) ?? .anthropic
+        aiKey = KeychainHelper.loadAPIKey()
+        vertexProject = KeychainHelper.value(account: KeychainHelper.vertexProjectAccount)
+        let region = KeychainHelper.value(account: KeychainHelper.vertexRegionAccount)
+        vertexRegion = region.isEmpty ? "us-east5" : region
+        vertexModel = KeychainHelper.value(account: KeychainHelper.vertexModelAccount)
+        vertexToken = KeychainHelper.value(account: KeychainHelper.vertexTokenAccount)
+    }
+
+    private func saveAISettings() {
+        AISettings.persistAndDeliver(
+            engine: engine,
+            provider: aiProvider,
+            anthropicKey: aiKey,
+            vertexProject: vertexProject,
+            vertexRegion: vertexRegion,
+            vertexModel: vertexModel.isEmpty ? defaultVertexModel : vertexModel,
+            vertexToken: vertexToken)
     }
 }
 

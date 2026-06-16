@@ -54,9 +54,19 @@ _ai_config = {
     'provider': 'anthropic',
     'api_keys': {
         'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
+        # Vertex bearer credential (GCP access token or Vertex API key).
+        'vertex': os.environ.get('VERTEX_API_KEY', ''),
     },
     'models': {
         'anthropic': 'claude-sonnet-4-6',
+        # Vertex publisher model id (note the @version suffix — Vertex-specific).
+        'vertex': 'claude-sonnet-4-5@20250929',
+    },
+    # Vertex AI (Claude-on-Vertex) target: GCP project + region. The model lives
+    # in the URL, not the body (see _call_vertex).
+    'vertex': {
+        'project': os.environ.get('VERTEX_PROJECT', ''),
+        'region': os.environ.get('VERTEX_REGION', '') or 'us-east5',
     },
 }
 
@@ -125,6 +135,14 @@ def _init(cmd_module):
         if val:
             _ai_config['api_keys'][provider] = val
 
+    # Vertex AI project/region (analogous per-provider env seeding).
+    _vertex_project = os.environ.get('VERTEX_PROJECT', '')
+    if _vertex_project:
+        _ai_config['vertex']['project'] = _vertex_project
+    _vertex_region = os.environ.get('VERTEX_REGION', '')
+    if _vertex_region:
+        _ai_config['vertex']['region'] = _vertex_region
+
     # Bind a UI sink. In the SwiftUI/Metal app (PYMOL_AI_SINK=swift, incl. iOS
     # which has no AppKit) use the headless print()-tag sink; otherwise prefer
     # the AppKit panel (ai_chat_ui) and fall back to the headless sink if PyObjC
@@ -172,6 +190,35 @@ def set_api_key(key, provider='anthropic'):
         os.environ['ANTHROPIC_API_KEY'] = key
 
 
+def set_provider(name):
+    """Set the active LLM provider ('anthropic' or 'vertex').
+
+    Called by the SwiftUI app's AI settings when the user picks a provider.
+    Unknown names are ignored (the previous provider stays active) so a typo
+    can't silently break the chat.
+    """
+    global _ai_config
+    name = (name or '').strip().lower()
+    if name in ('anthropic', 'vertex'):
+        _ai_config['provider'] = name
+
+
+def set_vertex_config(project, region, model=None):
+    """Set the Vertex AI target (GCP project + region), and optionally the model.
+
+    The bearer credential (GCP access token or Vertex API key) is delivered
+    separately via set_api_key(token, 'vertex'). Used by the SwiftUI app to push
+    the user's Keychain-stored Vertex settings to the backend after init.
+    """
+    global _ai_config
+    _ai_config['vertex']['project'] = (project or '').strip()
+    region = (region or '').strip()
+    if region:
+        _ai_config['vertex']['region'] = region
+    if model:
+        _ai_config['models']['vertex'] = model.strip()
+
+
 def ai_config(args='', _self=None):
     """Show or set AI provider configuration.
 
@@ -191,6 +238,10 @@ def ai_config(args='', _self=None):
         print(f"  provider : {provider}")
         print(f"  key      : {masked_key}")
         print(f"  model    : {model}")
+        if provider == 'vertex':
+            vx = _ai_config.get('vertex', {})
+            print(f"  project  : {vx.get('project') or '(not set)'}")
+            print(f"  region   : {vx.get('region') or '(not set)'}")
         print(f"  sdk      : {'claude-agent-sdk' if _HAS_SDK else 'urllib (fallback)'}")
         return
 
@@ -436,15 +487,38 @@ def _worker_impl_fallback():
             _ui.update_on_main_thread(role, text, [])
 
     try:
-        key = _ai_config['api_keys'].get('anthropic', '')
-        model = _ai_config['models'].get('anthropic', '')
+        provider = _ai_config.get('provider', 'anthropic')
+
+        # Vertex AI (Claude-on-Vertex) requires project + region + a bearer
+        # credential. Surface a clear error (like the no-key path) if any is
+        # missing rather than firing a doomed request.
+        if provider == 'vertex':
+            token = _ai_config['api_keys'].get('vertex', '')
+            model = _ai_config['models'].get('vertex', '')
+            project = _ai_config['vertex'].get('project', '')
+            region = _ai_config['vertex'].get('region', '')
+            missing = [n for n, v in (('project', project), ('region', region),
+                                      ('access token / API key', token)) if not v]
+            if missing:
+                _ui_msg('error',
+                        "Vertex AI is selected but " + ", ".join(missing)
+                        + " is not set. Open AI settings and fill in the Vertex "
+                          "Project ID, Region, and access token.")
+                _ui_status('')
+                return
+        else:
+            key = _ai_config['api_keys'].get('anthropic', '')
+            model = _ai_config['models'].get('anthropic', '')
 
         max_tool_rounds = 5
         for _round in range(max_tool_rounds):
             api_messages = _build_api_messages()
 
             try:
-                body = _call_anthropic(api_messages, key, model)
+                if provider == 'vertex':
+                    body = _call_vertex(api_messages, token, model, project, region)
+                else:
+                    body = _call_anthropic(api_messages, key, model)
             except Exception as exc:
                 _ui_msg('error', f"API call failed: {exc}")
                 _ui_status('')
@@ -667,3 +741,54 @@ def _call_anthropic(messages, key, model):
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode('utf-8', errors='replace')
         raise RuntimeError(f"Anthropic HTTP {exc.code}: {error_body}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Fallback Vertex AI (Claude-on-Vertex) call (urllib, no SDK)
+# ---------------------------------------------------------------------------
+
+def _call_vertex(messages, token, model, project, region):
+    """Call Claude on Google Cloud Vertex AI (rawPredict). Returns the body dict.
+
+    The response shape is identical to the Anthropic Messages API (content
+    blocks / stop_reason / tool_use), so the worker's parsing is unchanged.
+
+    Differences from _call_anthropic:
+      - model lives in the URL (publisher path), NOT the JSON body;
+      - the body adds "anthropic_version": "vertex-2023-10-16";
+      - auth is a Bearer token (a GCP access token, typically from
+        `gcloud auth print-access-token`, or a Vertex API key) — there is no
+        x-api-key and no anthropic-version header.
+    """
+    url = (
+        f'https://{region}-aiplatform.googleapis.com/v1/projects/{project}'
+        f'/locations/{region}/publishers/anthropic/models/{model}:rawPredict'
+    )
+
+    payload = {
+        'anthropic_version': 'vertex-2023-10-16',
+        'max_tokens': 4096,
+        'system': SYSTEM_PROMPT,
+        'messages': messages,
+    }
+
+    if TOOL_DEFINITIONS:
+        payload['tools'] = TOOL_DEFINITIONS
+
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}',
+        },
+        method='POST',
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f"Vertex HTTP {exc.code}: {error_body}") from exc
