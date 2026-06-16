@@ -302,32 +302,23 @@ struct ContentView: View {
     @AppStorage("ipadGestureCoachSeen") private var gestureCoachSeen = false
     @State private var showGestureLegend = false
 
+    // iPad (regular size class) mac-style layout state. The left column stacks the
+    // terminal (CommandPanel) on top, the sequence (SequencePanel) under it, then
+    // the viewport — matching the desktop app. `termH` is the resizable terminal
+    // height (drag the divider beneath it); the sequence strip auto-sizes to its
+    // row count; the right column (Objects / Raymond) has a fixed ideal width.
+    @State private var termH: CGFloat = 110
+    @State private var committedTermH: CGFloat = 110
+
     private var iPadOSLayout: some View {
         NavigationStack {
             GeometryReader { geo in
                 let compact = hSize == .compact
-                let landscape = geo.size.width > geo.size.height
-                let side = !compact && landscape   // side column only on a wide iPad
-                let total = side ? geo.size.width : geo.size.height
-                let panelSize = min(max(total * panelFrac, side ? 280 : 200),
-                                    total * (side ? 0.45 : 0.92))
                 Group {
-                    if side {
-                        HStack(spacing: 0) {
-                            viewportView
-                            if !panelCollapsed {
-                                resizeDivider(landscape: true, total: geo.size.width)
-                                panelContent.frame(width: panelSize)
-                            }
-                        }
+                    if compact {
+                        iPhoneLayout(geo: geo)
                     } else {
-                        VStack(spacing: 0) {
-                            viewportView
-                            if !panelCollapsed {
-                                resizeDivider(landscape: false, total: geo.size.height)
-                                panelContent.frame(height: panelSize)
-                            }
-                        }
+                        iPadMacStyleLayout(geo: geo)
                     }
                 }
                 .overlay(alignment: .center) {
@@ -359,6 +350,9 @@ struct ContentView: View {
                 // representation list shows at once (don't wait for the next
                 // ~500ms poll tick, which a heavy surface build can delay).
                 if detail != nil { engine.refreshExpandedDetail() }
+                // Only the iPhone (compact) bottom panel auto-grows; the iPad
+                // mac-style right column scrolls its own content at fixed width.
+                guard hSize == .compact else { return }
                 withAnimation(.easeInOut(duration: 0.22)) {
                     if detail != nil {
                         panelFrac = 0.6
@@ -384,7 +378,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosPanelToggle; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosPanelToggle; iosPadPanelMenu; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -427,6 +421,11 @@ struct ContentView: View {
                 if hSize == .compact {
                     panelCollapsed = true
                     engine.sequenceVisible = false
+                } else {
+                    // iPad (regular): default to the mac-style arrangement with the
+                    // sequence strip visible under the terminal, so the stacked
+                    // terminal + sequence sit above the viewport like the desktop.
+                    engine.sequenceVisible = true
                 }
                 // Test affordance (screenshot harness): force the panel open so
                 // the responsive layout can be captured without a tap, which
@@ -468,6 +467,116 @@ struct ContentView: View {
         }
     }
 
+    // MARK: iPhone (compact) layout — UNCHANGED
+
+    // The original iPhone arrangement: the 3D viewport fills the screen and a
+    // single resizable/collapsible control panel (TabView of Console / Objects /
+    // Sequence / Raymond) docks at the bottom. Selecting a tab and dragging the
+    // divider behave exactly as before.
+    @ViewBuilder
+    private func iPhoneLayout(geo: GeometryProxy) -> some View {
+        let total = geo.size.height
+        let panelSize = min(max(total * panelFrac, 200), total * 0.92)
+        VStack(spacing: 0) {
+            viewportView
+            if !panelCollapsed {
+                resizeDivider(landscape: false, total: geo.size.height)
+                panelContent.frame(height: panelSize)
+            }
+        }
+    }
+
+    // MARK: iPad (regular size class) layout — mac-style stack
+
+    // Mirrors the desktop macOSLayout: a left column with the terminal
+    // (CommandPanel) on TOP, the sequence (SequencePanel) directly under it (when
+    // visible), then the 3D viewport filling the rest; and a right column holding
+    // Objects + Raymond. In LANDSCAPE the right column sits beside the left one
+    // (like the Mac). In PORTRAIT the same left stack is kept (terminal + sequence
+    // ABOVE the viewport, matching the Mac) with the right column as a narrower
+    // trailing strip. Panes are shown/hidden via the toolbar's per-pane menu and
+    // the terminal height is drag-resizable.
+    @ViewBuilder
+    private func iPadMacStyleLayout(geo: GeometryProxy) -> some View {
+        let landscape = geo.size.width > geo.size.height
+        // Right column width: a comfortable 340pt in landscape; a narrower 300pt
+        // trailing strip in portrait so the stacked left column keeps its room.
+        let rightW: CGFloat = landscape ? 340 : 300
+        // Terminal height clamped to a sane band (a couple lines up to ~1/3 of the
+        // height) so it can't crowd out the viewport.
+        let maxTerm = max(140, geo.size.height * 0.33)
+        let clampedTermH = min(max(termH, 60), maxTerm)
+        let showRight = showObjectPanel || showChatPanel
+
+        HStack(spacing: 0) {
+            // Left column: terminal (top) / sequence (under) / viewport (rest).
+            VStack(spacing: 0) {
+                if showCommandPanel {
+                    CommandPanel()
+                        .frame(height: clampedTermH)
+                    // Drag the divider beneath the terminal to resize it.
+                    termResizeDivider(maxTerm: maxTerm)
+                }
+                if engine.sequenceVisible {
+                    SequencePanel()
+                        .frame(height: ipadSequenceHeight)
+                    Divider()
+                }
+                viewportView
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Right column: Objects + (Raymond) chat, stacked with a divider —
+            // matching the Mac's 300pt inspector column. Only occupies width when
+            // at least one of its panels is enabled.
+            if showRight {
+                Divider()
+                VStack(spacing: 0) {
+                    if showObjectPanel {
+                        ObjectPanel()
+                            .frame(maxHeight: .infinity)
+                    }
+                    if showChatPanel {
+                        if showObjectPanel { Divider() }
+                        ChatPanel()
+                            .frame(maxHeight: .infinity)
+                    }
+                }
+                .frame(width: rightW)
+                .background(Color(white: 0.11))
+            }
+        }
+    }
+
+    // Sequence strip height on iPad: 1–5 sequence rows (~26pt each + 8pt padding),
+    // matching the macOS layout's seqH cap so the strip can't grow into the viewport.
+    private var ipadSequenceHeight: CGFloat {
+        let rows = min(max(engine.sequences.count, 1), 5)
+        return CGFloat(rows) * 26 + 8
+    }
+
+    // Horizontal drag handle under the terminal that resizes its height. Dragging
+    // down grows the terminal; committed on release. Clamped to [60, maxTerm].
+    @ViewBuilder
+    private func termResizeDivider(maxTerm: CGFloat) -> some View {
+        ZStack {
+            Color(white: 0.18)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.white.opacity(0.35))
+                .frame(width: 44, height: 4)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 20)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { v in
+                    termH = min(max(committedTermH + v.translation.height, 60), maxTerm)
+                }
+                .onEnded { _ in committedTermH = termH }
+        )
+    }
+
     // Panel show/hide toggle — lets the viewport go full-bleed. In the toolbar
     // (standard inspector-toggle spot) so it never conflicts with the resize
     // divider's drag gesture.
@@ -483,13 +592,45 @@ struct ContentView: View {
     }
 
     private var iosPanelToggle: some ToolbarContent {
+        // iPhone (compact) only: collapse/expand the single bottom control panel.
+        // The iPad mac-style layout uses iosPadPanelMenu (per-pane toggles) instead.
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { panelCollapsed.toggle() }
-            } label: {
-                Image(systemName: panelCollapsed ? "square.split.1x2" : "square.split.1x2.fill")
+            if hSize == .compact {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { panelCollapsed.toggle() }
+                } label: {
+                    Image(systemName: panelCollapsed ? "square.split.1x2" : "square.split.1x2.fill")
+                }
+                .accessibilityLabel(panelCollapsed ? "Show controls" : "Hide controls")
             }
-            .accessibilityLabel(panelCollapsed ? "Show controls" : "Hide controls")
+        }
+    }
+
+    // iPad (regular size class): per-pane visibility toggles in a single menu,
+    // mirroring the macOS toolbar's panelToggles (Sequence / Objects / Console /
+    // Raymond). Lets the user stack the terminal + sequence above the viewport
+    // and show/hide the Objects + Raymond right column — the desktop arrangement.
+    private var iosPadPanelMenu: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            if hSize != .compact {
+                Menu {
+                    Toggle(isOn: $showCommandPanel) {
+                        Label("Console", systemImage: "terminal")
+                    }
+                    Toggle(isOn: $engine.sequenceVisible) {
+                        Label("Sequence", systemImage: "textformat.abc")
+                    }
+                    Toggle(isOn: $showObjectPanel) {
+                        Label("Objects", systemImage: "cube")
+                    }
+                    Toggle(isOn: $showChatPanel) {
+                        Label("Raymond", systemImage: "bubble.left.and.bubble.right")
+                    }
+                } label: {
+                    Image(systemName: "sidebar.squares.right")
+                }
+                .accessibilityLabel("Panels")
+            }
         }
     }
 
