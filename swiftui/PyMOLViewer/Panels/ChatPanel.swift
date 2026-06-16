@@ -244,7 +244,7 @@ struct ChatPanel: View {
                 .font(.system(size: 28))
                 .foregroundColor(accentBlue.opacity(0.5))
 
-            Text("Ask RayMol AI for help with\nvisualization, analysis, or scripting")
+            Text("Ask Raymond for help with\nvisualization, analysis, or scripting")
                 .font(.system(size: 12))
                 .foregroundColor(Color.gray)
                 .multilineTextAlignment(.center)

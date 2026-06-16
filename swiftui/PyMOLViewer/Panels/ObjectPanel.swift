@@ -256,7 +256,7 @@ private struct ColorOption {
 }
 
 private let colorOptions: [ColorOption] = [
-    ColorOption(label: "by element",  command: "util.cbag",  swatch: nil),
+    ColorOption(label: "by element",  command: "util.cnc",   swatch: nil),
     ColorOption(label: "by chain",    command: "util.cbc",   swatch: nil),
     ColorOption(label: "by ss",       command: "util.cbss",  swatch: nil),
     ColorOption(label: "spectrum",    command: "spectrum",    swatch: nil),
@@ -645,12 +645,14 @@ private struct ObjectRowView: View {
             .buttonStyle(.plain)
             .frame(width: kGutterW)
 
-            // Object name
+            // Object name — tapping it toggles enable, same as the checkbox.
             Text(entry.displayName)
                 .font(.system(size: 11))
                 .foregroundColor(entry.isSelection ? PanelTheme.selectionTextColor : PanelTheme.textColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .contentShape(Rectangle())
+                .onTapGesture { toggleEnabled() }
 
             Spacer(minLength: 4)
 
@@ -665,6 +667,8 @@ private struct ObjectRowView: View {
         .padding(.vertical, 2)
         .frame(height: kRowH)
         .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        // Long-press (iOS) / right-click (macOS) opens the action menu.
+        .contextMenu { actionMenuContent(actionMenuItems, name: entry.name, engine: engine) }
     }
 
     private func toggleEnabled() {
@@ -693,7 +697,25 @@ private struct PanelButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Action (A) Menu Button
+// MARK: - Action (A) Menu
+
+/// Builds the hierarchical Action ("A") menu items. A FREE function so both the
+/// "A" button AND the object row's long-press context menu present the same menu.
+@ViewBuilder
+private func actionMenuContent(_ items: [ActionMenuItem], name: String, engine: PyMOLEngine) -> some View {
+    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+        switch item {
+        case .action(let label, let key):
+            Button(label) { runActionCommand(key, name: name, engine: engine) }
+        case .separator:
+            Divider()
+        case .submenu(let label, let children):
+            Menu(label) {
+                AnyView(actionMenuContent(children, name: name, engine: engine))  // AnyView breaks recursive opaque-type inference
+            }
+        }
+    }
+}
 
 private struct ActionMenuButton: View {
     let name: String
@@ -701,7 +723,7 @@ private struct ActionMenuButton: View {
 
     var body: some View {
         Menu {
-            actionMenuContent(items: actionMenuItems)
+            actionMenuContent(actionMenuItems, name: name, engine: engine)
         } label: {
             Text("A")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -713,25 +735,6 @@ private struct ActionMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-    }
-
-    @ViewBuilder
-    private func actionMenuContent(items: [ActionMenuItem]) -> some View {
-        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-            switch item {
-            case .action(let label, let key):
-                Button(label) {
-                    runActionCommand(key, name: name, engine: engine)
-                }
-            case .separator:
-                Divider()
-            case .submenu(let label, let children):
-                Menu(label) {
-                    // Use AnyView to break recursive opaque type inference
-                    AnyView(actionMenuContent(items: children))
-                }
-            }
-        }
     }
 }
 
@@ -1101,7 +1104,7 @@ private struct ObjectColorRow: View {
                 .foregroundColor(PanelTheme.headerColor)
             Spacer()
             Menu {
-                Button("by element") { engine.runCommand("python\ncmd.util.cbag('\(objName)')\npython end") }
+                Button("by element") { engine.runCommand("python\ncmd.util.cnc('\(objName)')\npython end") }
                 Button("by chain")   { engine.runCommand("python\ncmd.util.cbc('\(objName)')\npython end") }
                 Button("by ss")      { engine.runCommand("python\ncmd.util.cbss('\(objName)')\npython end") }
                 Button("spectrum")   { engine.runCommand("spectrum count, selection=\(objName)") }
@@ -1148,6 +1151,8 @@ private struct ObjectRowContent: View {
             .foregroundColor(entry.isSelection ? PanelTheme.selectionTextColor : PanelTheme.textColor)
             .lineLimit(1)
             .truncationMode(.tail)
+            .contentShape(Rectangle())
+            .onTapGesture { toggleEnabled() }   // tap name = toggle enable
 
         Spacer(minLength: 4)
 
@@ -1202,6 +1207,8 @@ private struct ObjectCard: View {
             .padding(.vertical, 2)
             .frame(height: kRowH)
             .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+            // Long-press (iOS) / right-click (macOS) opens the action menu.
+            .contextMenu { actionMenuContent(actionMenuItems, name: entry.name, engine: engine) }
 
             if expanded {
                 VStack(spacing: 3) {
