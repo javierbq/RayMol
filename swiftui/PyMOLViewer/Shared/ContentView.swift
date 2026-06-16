@@ -62,6 +62,16 @@ struct ContentView: View {
         }
     }
 
+    // Full-app frosted-glass overlay shown whenever the AI ("Raymond") is busy.
+    // Covers the entire window/screen (including side panels) and blocks input.
+    // Attached at the same points as busyOverlay in both layouts.
+    @ViewBuilder private var raymondOverlay: some View {
+        if engine.chatBusy {
+            RaymondDrivingOverlay()
+                .transition(.opacity)
+        }
+    }
+
     // Shared empty-state CTA visuals (atom icon + title + Open/Fetch buttons),
     // used by both the iOS overlay and the macOS overlay so the two platforms
     // read identically. The Open/Fetch actions differ per platform (iOS fileImporter
@@ -177,6 +187,8 @@ struct ContentView: View {
             }
         }
         .overlay { busyOverlay }
+        .overlay { raymondOverlay }
+        .animation(.easeInOut(duration: 0.2), value: engine.chatBusy)
         .alert("Fetch from PDB", isPresented: $showMacFetch) {
             TextField("PDB ID (e.g. 1ubq)", text: $macFetchID)
             Button("Fetch") { macFetch() }
@@ -400,6 +412,12 @@ struct ContentView: View {
             .sheet(isPresented: $showSettingsSheet) { SettingsSheet() }
         }
         .preferredColorScheme(.dark)   // consistent dark chrome (no white nav bar)
+        // Cover the ENTIRE screen (viewport + bottom panel/tabs + toolbar) with
+        // the "Raymond is driving" glass while the AI runs. Attached here on the
+        // outer NavigationStack — not on viewportView — so the panels are covered
+        // and blocked too (the busy overlay only needs the viewport).
+        .overlay { raymondOverlay }
+        .animation(.easeInOut(duration: 0.2), value: engine.chatBusy)
         .onAppear {
             initializeEngine()
             // iPhone (compact): start full-screen with the panel collapsed and
@@ -1128,5 +1146,97 @@ struct CalculatingOverlay: View {
             .padding(28)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+// Full-bleed frosted-glass overlay shown while the AI assistant ("Raymond") is
+// driving. It (a) blocks ALL interaction with the app underneath, (b) states
+// clearly that Raymond is driving, (c) shows a live elapsed timer, and (d) has
+// a Stop button that cooperatively cancels the running AI turn.
+struct RaymondDrivingOverlay: View {
+    @EnvironmentObject var engine: PyMOLEngine
+
+    // Prefer the steering-wheel glyph; fall back to "sparkles" on OS versions
+    // where it isn't available (kept symbolic so it renders on iOS + macOS).
+    private var iconName: String {
+        #if canImport(UIKit)
+        return UIImage(systemName: "steeringwheel") != nil ? "steeringwheel" : "sparkles"
+        #else
+        return NSImage(systemSymbolName: "steeringwheel", accessibilityDescription: nil) != nil
+            ? "steeringwheel" : "sparkles"
+        #endif
+    }
+
+    private func elapsedString(_ now: Date) -> String {
+        guard let start = engine.chatStartedAt else { return "0:00" }
+        let secs = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", secs / 60, secs % 60)
+    }
+
+    var body: some View {
+        ZStack {
+            // Slight dim UNDER the glass for contrast, then the frosted material.
+            // The material rectangle fills the whole screen and, with a content
+            // shape + a no-op gesture, swallows EVERY tap/click/drag so the app
+            // underneath is fully inert. The centered card sits ON TOP in the
+            // ZStack, so the Stop button still receives its own hits.
+            Color.black.opacity(0.25)
+                .ignoresSafeArea()
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0))    // absorb stray hits
+
+            // Centered card on the glass.
+            VStack(spacing: 18) {
+                Image(systemName: iconName)
+                    .font(.system(size: 52, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.tint)
+
+                Text("Raymond is driving")
+                    .font(.title2).fontWeight(.semibold)
+
+                // Live status subtitle from the backend ("Thinking…"/"Working…").
+                if !engine.chatStatus.isEmpty {
+                    Text(engine.chatStatus)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Elapsed timer — ticks once per second from chatStartedAt.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Label(elapsedString(context.date), systemImage: "clock")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                Button(role: .destructive) {
+                    engine.stopRaymond()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .frame(minWidth: 120)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.large)
+                .keyboardShortcut(.cancelAction)
+                .padding(.top, 4)
+            }
+            .padding(32)
+            .frame(maxWidth: 360)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.3), radius: 24, y: 8)
+        }
+        // Belt-and-suspenders: ensure the whole overlay participates in hit
+        // testing (the absorbing rectangle above is what actually blocks the
+        // layers below; the card's Stop button keeps its own hits).
+        .allowsHitTesting(true)
     }
 }

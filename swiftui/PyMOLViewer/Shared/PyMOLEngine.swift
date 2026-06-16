@@ -51,6 +51,9 @@ final class PyMOLEngine: ObservableObject {
     @Published var chatMessages: [ChatMessage] = []
     @Published var chatBusy: Bool = false       // worker active → typing indicator
     @Published var chatStatus: String = ""      // "Thinking..." / "Executing..."
+    // When the AI worker became busy (false→true transition). Drives the elapsed
+    // timer in the "Raymond is driving" overlay; nil whenever Raymond is idle.
+    @Published var chatStartedAt: Date? = nil
     @Published var chatQuestions: [ChatQuestion] = []  // follow-up button groups
     // The user's Anthropic API key has been delivered to the backend at least
     // once this session (so the chat panel can hint when it's missing).
@@ -947,13 +950,22 @@ final class PyMOLEngine: ObservableObject {
                 } else if line.hasPrefix("AIBUSY:") {
                     let busy = line.hasSuffix("1")
                     DispatchQueue.main.async {
-                        if self.chatBusy != busy { self.chatBusy = busy }
-                        if !busy { self.chatStatus = "" }
+                        if self.chatBusy != busy {
+                            // Stamp the start time on a false→true transition so
+                            // the overlay's elapsed timer counts from "now".
+                            if busy { self.chatStartedAt = Date() }
+                            self.chatBusy = busy
+                        }
+                        if !busy {
+                            self.chatStatus = ""
+                            self.chatStartedAt = nil
+                        }
                     }
                 } else if line.hasPrefix("AIDONE:") {
                     DispatchQueue.main.async {
                         self.chatBusy = false
                         self.chatStatus = ""
+                        self.chatStartedAt = nil
                     }
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
@@ -1210,6 +1222,9 @@ final class PyMOLEngine: ObservableObject {
         // (the backend also echoes AICHAT:user:, which we de-dup on arrival).
         appendChat(ChatMessage(role: .user, content: trimmed, timestamp: Date()))
         chatBusy = true
+        // Stamp the start time now so the overlay timer starts immediately (the
+        // backend's AIBUSY:1 only re-stamps on a transition, which we just made).
+        chatStartedAt = Date()
         let b64 = Data(trimmed.utf8).base64EncodedString()
         runPython(
             "import base64\n"
@@ -1218,11 +1233,26 @@ final class PyMOLEngine: ObservableObject {
         )
     }
 
+    // Stop the running AI ("Raymond"). Cooperative: the Python worker checks the
+    // cancel flag at round boundaries (it can't interrupt an in-flight HTTP call),
+    // so we ALSO optimistically clear the busy state here for immediate UI
+    // feedback — the overlay disappears at once even though the backend may take
+    // until its next round to fully wind down (it then emits AIBUSY:0/AIDONE).
+    func stopRaymond() {
+        runPython("from pymol import ai_chat as _ai; _ai.request_cancel()")
+        DispatchQueue.main.async {
+            self.chatBusy = false
+            self.chatStatus = ""
+            self.chatStartedAt = nil
+        }
+    }
+
     func clearChat() {
         chatMessages.removeAll()
         chatQuestions.removeAll()
         chatStatus = ""
         chatBusy = false
+        chatStartedAt = nil
         runPython("from pymol import ai_chat as _ai\n_ai.clear_conversation()")
     }
 
