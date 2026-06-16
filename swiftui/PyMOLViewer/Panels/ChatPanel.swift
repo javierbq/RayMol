@@ -65,6 +65,34 @@ enum KeychainHelper {
 
     // MARK: generic per-account get/set
 
+    // iOS stores these in the Keychain (entitlement-governed, no prompt). macOS
+    // uses a 0600 file under Application Support instead: a re-signed debug build
+    // is NOT recognized by the login-keychain item's ACL, so SecItem reads there
+    // prompt for the keychain password on EVERY rebuild (and that password is
+    // often out of sync). These are the user's own AI credentials on their own
+    // machine, so a 0600 file is an acceptable, prompt-free store.
+#if os(macOS)
+    private static var storeDir: URL {
+        let base = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                    ?? URL(fileURLWithPath: NSHomeDirectory()))
+            .appendingPathComponent("RayMol/ai", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        return base
+    }
+    /// Upsert a value under `account` (empty string clears it).
+    static func setValue(_ value: String, account: String) {
+        let url = storeDir.appendingPathComponent(account)
+        guard !value.isEmpty else { try? FileManager.default.removeItem(at: url); return }
+        try? Data(value.utf8).write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    static func value(account: String) -> String {
+        let url = storeDir.appendingPathComponent(account)
+        guard let data = try? Data(contentsOf: url) else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+#else
     /// Upsert a value under `account` (empty string clears it).
     static func setValue(_ value: String, account: String) {
         let query: [String: Any] = [
@@ -94,6 +122,7 @@ enum KeychainHelper {
               let s = String(data: data, encoding: .utf8) else { return "" }
         return s
     }
+#endif
 
     // MARK: Anthropic key (existing API, preserved)
 
