@@ -12,6 +12,10 @@ import asyncio
 import json
 import base64
 import os
+import sys
+import io
+import tempfile
+import traceback
 
 # ---------------------------------------------------------------------------
 # SDK availability check
@@ -65,28 +69,37 @@ TOOL_DEFINITIONS = [
         }
     },
     {
-        "name": "execute_command",
+        "name": "run_python",
         "description": (
-            "Run one or more PyMOL commands (newline-separated) and return the "
-            "result of each plus any console output. THIS IS HOW YOU ACT — use "
-            "it to fetch/load, show/hide, color, select, orient/zoom, "
-            "align/super, set, label, delete, etc. Batch related commands in a "
-            "single call. The commands run for real and the scene updates; the "
-            "returned output lets you confirm success and read values (atom "
-            "counts, distances, settings) before your next step."
+            "THIS IS HOW YOU ACT. Execute a block of Python code inside the live "
+            "PyMOL session and return whatever it printed plus any traceback. The "
+            "code runs in a PERSISTENT namespace (variables/imports survive across "
+            "calls in this conversation) preloaded with: `cmd` (the PyMOL API — "
+            "cmd.fetch, cmd.show, cmd.color, cmd.align, cmd.alter, cmd.get_model, "
+            "cmd.do(\"...\") for command-language, etc.), `np` (numpy), `Bio` "
+            "(Biopython, if available), and `WORKDIR` (a writable temp directory "
+            "string you may read/write). The code RUNS FOR REAL and the scene "
+            "updates. Use print(...) to surface values you need (atom counts, "
+            "RMSD, residue lists) so you can verify and self-correct. Drive every "
+            "action this way: load/fetch, show/hide, color/spectrum, select, "
+            "orient/zoom, align/super, set, label, alter, analysis with numpy/Bio, "
+            "etc. If something raises, you will see the full traceback — fix it and "
+            "try again."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "command": {
+                "code": {
                     "type": "string",
                     "description": (
-                        "One or more PyMOL commands separated by newlines. "
-                        "Example: 'fetch 1ubq\\nshow cartoon\\ncolor green, ss h'"
+                        "Python source to execute. Example: "
+                        "'cmd.fetch(\"1ubq\"); cmd.show_as(\"cartoon\"); "
+                        "cmd.util.cbc(); cmd.orient(); "
+                        "print(cmd.count_atoms(\"all\"))'"
                     )
                 }
             },
-            "required": ["command"]
+            "required": ["code"]
         }
     },
     {
@@ -207,65 +220,110 @@ def _impl_get_session_state(cmd):
     return _run_on_main(_gather)
 
 
-def _impl_execute_command(command_text, cmd):
-    """Execute PyMOL commands and return per-line status + real console output.
+# ---------------------------------------------------------------------------
+# Persistent Python execution namespace (one per conversation/process)
+# ---------------------------------------------------------------------------
+#
+# The run_python tool exec()s the model's code in THIS dict so variables,
+# imports, and intermediate results persist across tool calls within a session.
+# It is built lazily on first use and reused thereafter. WORKDIR is a per-session
+# temp directory the model may read/write (created once, reused).
 
-    Runs on the WORKER thread (NOT _run_on_main). cmd.do() is thread-safe — from
-    a non-GUI thread it only ENQUEUES each command into PyMOL's command queue
-    (it does not execute it), and it releases the API lock on return. We then
-    cmd.sync() to WAIT for the render loop (main thread) to drain and execute
-    that queue before reading the feedback buffer; otherwise we'd report 'OK'
-    and empty output before anything actually ran (the bug where a tool call
-    claimed success while the scene was unchanged). During the wait, cmd.sync()
-    polls via threading.Event().wait(), which releases the GIL, and it holds
-    neither the GIL nor the API lock — so the main render thread is free to grab
-    both inside PyMOL_Idle -> PFlush and run the commands. This is why we must
-    NOT hop to the main thread here: the main thread IS the render thread and
-    cannot drain its own queue while blocked inside this call. sync() returns
-    when the queue empties or after the timeout, so it never hangs.
+_py_namespace = None
+
+
+def _get_py_namespace(cmd):
+    """Return the persistent run_python namespace, building it on first use.
+
+    Preloads `cmd` (PyMOL API), `np` (numpy, guarded), `Bio` (biopython,
+    guarded — a missing Bio must NOT break the tool), and `WORKDIR` (a reusable
+    per-session temp dir). The dict lives at module scope so user variables
+    survive across calls in a conversation.
     """
-    lines = [l.strip() for l in command_text.splitlines() if l.strip()]
-    if not lines:
-        return "No commands to execute."
+    global _py_namespace
+    if _py_namespace is not None:
+        # Keep cmd fresh in case the module is re-init'd with a new handle.
+        _py_namespace['cmd'] = cmd
+        return _py_namespace
 
-    results = []
-    feedback_lines = []
+    workdir = tempfile.mkdtemp(prefix='raymol_ai_')
 
-    # Drain stale feedback so we only report output from THESE commands.
+    ns = {
+        '__name__': '__raymol_ai__',
+        '__builtins__': __builtins__,
+        'cmd': cmd,
+        'WORKDIR': workdir,
+    }
+
+    # numpy — bundled on macOS, may be absent on iOS. Guard it.
     try:
-        cmd._get_feedback()
+        import numpy as _np
+        ns['np'] = _np
     except Exception:
-        pass
+        ns['np'] = None
 
-    for line in lines:
-        try:
-            cmd.do(line, 0, 1)
-            results.append(f"OK: {line}")
-        except Exception as exc:
-            results.append(f"Error: {line} => {exc}")
+    # Biopython — pure-python subset bundled; some submodules need numpy and may
+    # be unavailable. Importing the top-level package must never raise here.
+    try:
+        import Bio as _Bio
+        ns['Bio'] = _Bio
+    except Exception:
+        ns['Bio'] = None
 
-    # Wait for the queued commands to actually execute on the render thread
-    # before reading the console output they produced.
+    _py_namespace = ns
+    return _py_namespace
+
+
+def _impl_run_python(code, cmd):
+    """Exec model-authored Python in the live session; return stdout + traceback.
+
+    Runs on the WORKER thread (NOT _run_on_main). The code may call cmd.do(...)
+    or mutate the session via the cmd.* API; those enqueue onto PyMOL's command
+    queue (cmd.do from a non-GUI thread only ENQUEUES). After exec we cmd.sync()
+    to WAIT for the render loop (main thread) to drain and run that queue before
+    returning, so the scene actually changes before the model sees "done". We do
+    NOT hop to the main thread: the main thread IS the render thread and cannot
+    drain its own queue while blocked inside this call; sync() releases the GIL
+    and the API lock while it waits, so the render thread is free to run the
+    queued work, and it returns on empty-queue or timeout (never hangs).
+
+    sys.stdout/stderr are redirected to capture print() output; on exception the
+    full traceback is appended. The combined text is returned so the model can
+    verify results and self-correct.
+    """
+    if not code or not str(code).strip():
+        return "No code to execute."
+
+    ns = _get_py_namespace(cmd)
+
+    buf = io.StringIO()
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    tb_text = ''
+    sys.stdout = buf
+    sys.stderr = buf
+    try:
+        exec(compile(code, '<run_python>', 'exec'), ns, ns)
+    except Exception:
+        tb_text = traceback.format_exc()
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+    # Wait for any queued cmd.do/mutations to actually run on the render thread.
     try:
         cmd.sync(3.0)
     except Exception:
         pass
 
-    try:
-        fb = cmd._get_feedback()
-        if fb:
-            for item in fb:
-                parts = item if isinstance(item, (list, tuple)) else [item]
-                for s in parts:
-                    if isinstance(s, str) and s.strip():
-                        feedback_lines.append(s.strip())
-    except Exception:
-        pass
-
-    output = "\n".join(results)
-    if feedback_lines:
-        output += "\n\nConsole output:\n" + "\n".join(feedback_lines)
-    return output if output else "No commands executed."
+    out = buf.getvalue()
+    parts = []
+    if out.strip():
+        parts.append(out.rstrip())
+    if tb_text:
+        parts.append("Traceback (the code raised — fix and retry):\n" + tb_text.rstrip())
+    if not parts:
+        return "(ran successfully; no output)"
+    return "\n".join(parts)
 
 
 def _impl_capture_viewport(width, height, cmd):
@@ -339,21 +397,22 @@ if _HAS_SDK:
             return {"content": [{"type": "text", "text": f"Error: {exc}"}], "is_error": True}
 
     @tool(
-        "execute_command",
-        "Execute one or more PyMOL commands and return the result of each. "
-        "Commands are separated by newlines and executed sequentially. Each "
-        "command is run via cmd.do() on the main thread. Returns 'OK' or an "
-        "error message for each command. Use this when you need to run a "
-        "command and confirm it succeeded, rather than putting commands in "
-        "the JSON 'script' field which executes silently.",
-        {"command": str},
+        "run_python",
+        "THIS IS HOW YOU ACT. Execute Python code inside the live PyMOL session "
+        "and return its printed output plus any traceback. The namespace is "
+        "persistent across calls and preloaded with `cmd` (PyMOL API), `np` "
+        "(numpy), `Bio` (biopython, if available), and `WORKDIR` (a writable "
+        "temp dir). The code runs for real and the scene updates. Use print() to "
+        "surface values you need. Drive every action this way (fetch/show/color/"
+        "align/alter/analysis); on error you get the full traceback to self-correct.",
+        {"code": str},
     )
-    async def sdk_execute_command(args):
-        command_text = args.get("command", "")
-        if not command_text:
-            return {"content": [{"type": "text", "text": "No commands to execute."}], "is_error": True}
+    async def sdk_run_python(args):
+        code = args.get("code", "")
+        if not code:
+            return {"content": [{"type": "text", "text": "No code to execute."}], "is_error": True}
         try:
-            result = await asyncio.to_thread(_impl_execute_command, command_text, _cmd)
+            result = await asyncio.to_thread(_impl_run_python, code, _cmd)
             return {"content": [{"type": "text", "text": result}]}
         except Exception as exc:
             return {"content": [{"type": "text", "text": f"Error: {exc}"}], "is_error": True}
@@ -406,7 +465,7 @@ if _HAS_SDK:
     pymol_server = create_sdk_mcp_server(
         name="pymol",
         version="1.0.0",
-        tools=[sdk_get_session_state, sdk_execute_command, sdk_capture_viewport, sdk_search_pdb],
+        tools=[sdk_get_session_state, sdk_run_python, sdk_capture_viewport, sdk_search_pdb],
     )
 
 
@@ -419,9 +478,9 @@ def _tool_get_session_state(tool_input, cmd):
     return json.dumps(result, indent=2)
 
 
-def _tool_execute_command(tool_input, cmd):
-    command_text = tool_input.get("command", "")
-    return _impl_execute_command(command_text, cmd)
+def _tool_run_python(tool_input, cmd):
+    code = tool_input.get("code", "")
+    return _impl_run_python(code, cmd)
 
 
 def _tool_capture_viewport(tool_input, cmd):
@@ -449,7 +508,7 @@ def _tool_search_pdb(tool_input, cmd):
 
 _TOOL_HANDLERS = {
     "get_session_state": _tool_get_session_state,
-    "execute_command": _tool_execute_command,
+    "run_python": _tool_run_python,
     "capture_viewport": _tool_capture_viewport,
     "search_pdb": _tool_search_pdb,
 }

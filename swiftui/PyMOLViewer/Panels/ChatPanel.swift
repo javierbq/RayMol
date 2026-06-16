@@ -150,7 +150,7 @@ struct ChatPanel: View {
                 .foregroundColor(accentBlue)
                 .font(.system(size: 12))
 
-            Text("AI Chat")
+            Text("Raymond")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(Color(red: 0.9, green: 0.9, blue: 0.9))
 
@@ -267,7 +267,7 @@ struct ChatPanel: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("Ask RayMol AI...", text: $inputText)
+            TextField("Ask Raymond...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 #if os(macOS)

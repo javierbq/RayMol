@@ -93,7 +93,6 @@ RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "response": {"type": "string"},
-        "script": {"type": "string"},
         "questions": {
             "type": "array",
             "items": {
@@ -425,7 +424,7 @@ async def _agent_query():
         if pymol_server is not None:
             allowed_tools = [
                 "mcp__pymol__get_session_state",
-                "mcp__pymol__execute_command",
+                "mcp__pymol__run_python",
                 "mcp__pymol__capture_viewport",
                 "mcp__pymol__search_pdb",
             ]
@@ -461,7 +460,6 @@ async def _agent_query():
             parsed = _parse_structured_response(full_text)
 
         response_text = parsed.get('response', ''.join(streaming_text) or '(no response)')
-        script = parsed.get('script', '')
         questions = parsed.get('questions', [])
 
         # Store assistant response in conversation history
@@ -469,12 +467,10 @@ async def _agent_query():
             {'type': 'text', 'text': json.dumps(parsed)}
         ]})
 
-        # Final UI update with the structured response text
+        # Final UI update with the structured response text. All actions are
+        # performed through the run_python tool during the agentic loop above;
+        # there is no "script" field to execute here.
         _ui_msg('assistant', response_text)
-
-        if script:
-            _ui_status('Executing...')
-            _execute_script(script)
 
         if questions and _has_ui and _ui is not None:
             _ui.show_question_buttons(questions)
@@ -518,13 +514,21 @@ def _worker_impl_fallback():
             if missing:
                 _ui_msg('error',
                         "Vertex AI is selected but " + ", ".join(missing)
-                        + " is not set. Open AI settings and fill in the Vertex "
-                          "Project ID, Region, and access token.")
+                        + " is not set. Open AI settings (the key icon in the "
+                          "top-right of the chat) and fill in the Vertex Project "
+                          "ID, Region, and access token.")
                 _ui_status('')
                 return
         else:
             key = _ai_config['api_keys'].get('anthropic', '')
             model = _ai_config['models'].get('anthropic', '')
+            if not key:
+                _ui_msg('error',
+                        "No Anthropic API key set. Open AI settings (the key icon "
+                        "in the top-right of the chat) and paste your Anthropic API "
+                        "key, or run: ai_config key=YOUR_ANTHROPIC_API_KEY")
+                _ui_status('')
+                return
 
         # Working message list for THIS turn. Seeded from the clean cross-turn
         # history (text only) + the just-added user message, then extended with
@@ -536,7 +540,9 @@ def _worker_impl_fallback():
         turn_messages = _build_api_messages()
 
         max_tool_rounds = 8
-        cmd_errors = []
+        py_errors = []          # run_python tracebacks/errors, surfaced to the user
+        tool_calls_made = 0     # how many tools actually ran this turn
+        retried_empty = False   # have we already retried after an empty first turn?
         for _round in range(max_tool_rounds):
             try:
                 if provider == 'vertex':
@@ -571,16 +577,21 @@ def _worker_impl_fallback():
                 _ui_status('Working...')
                 tool_results = []
                 for tu in tool_uses:
+                    tool_calls_made += 1
                     try:
                         result = execute_tool(tu['name'], tu['input'], _cmd)
                     except Exception as exc:
                         result = json.dumps({"error": str(exc)})
                     result_str = result if isinstance(result, str) else json.dumps(result)
-                    # Surface execute_command failures to the user, not just the model.
-                    if tu.get('name') == 'execute_command':
-                        for ln in result_str.splitlines():
-                            if ln.startswith('Error:'):
-                                cmd_errors.append(ln[len('Error:'):].strip())
+                    # Surface run_python failures/tracebacks to the user, not just
+                    # the model: the code now IS the action channel, so a raised
+                    # exception is what the user would otherwise see as "nothing
+                    # happened". Capture the traceback summary line.
+                    if tu.get('name') == 'run_python' and 'Traceback' in result_str:
+                        # The last non-empty line of a traceback is the exception.
+                        tb_lines = [ln for ln in result_str.splitlines() if ln.strip()]
+                        if tb_lines:
+                            py_errors.append(tb_lines[-1].strip())
                     tool_results.append({
                         'type': 'tool_result',
                         'tool_use_id': tu['id'],
@@ -592,26 +603,38 @@ def _worker_impl_fallback():
             # Final turn (end_turn / max_tokens / etc.) — parse and display.
             parsed = _parse_structured_response(full_text)
             response_text = (parsed.get('response') or '').strip()
-            script = parsed.get('script', '')
             questions = parsed.get('questions', [])
 
-            if script:
-                _ui_status('Executing...')
-                cmd_errors.extend(_execute_script(script))
+            # Empty turn on the FIRST round (no tool call, no prose, no question):
+            # the model returned nothing actionable. Retry ONCE with a brief nudge
+            # before giving up, instead of emitting a misleading "nothing to do".
+            if (not tool_calls_made and not response_text and not questions
+                    and not retried_empty):
+                retried_empty = True
+                turn_messages.append({
+                    'role': 'user',
+                    'content': (
+                        "Perform the request by calling run_python, or ask a "
+                        "clarifying question — do not return an empty reply."
+                    ),
+                })
+                continue  # give it one more round
 
-            # Never leave a silent empty bubble: if there's no prose and no
-            # question, acknowledge whatever ran (or that nothing did).
+            # Never leave a silent empty bubble.
             if not response_text and not questions:
-                response_text = "Done." if (script or _round > 0) \
-                    else "I didn't have anything to do there — try rephrasing?"
+                if tool_calls_made:
+                    response_text = "Done."
+                else:
+                    response_text = ("I'm not sure how to act on that yet — could "
+                                     "you rephrase or add a bit more detail?")
 
             if response_text:
                 _ui_msg('assistant', response_text)
 
-            if cmd_errors:
-                shown = "\n".join("- " + e for e in cmd_errors[:6])
-                extra = "" if len(cmd_errors) <= 6 else f"\n...and {len(cmd_errors) - 6} more"
-                _ui_msg('error', "Some commands didn't run cleanly:\n" + shown + extra)
+            if py_errors:
+                shown = "\n".join("- " + e for e in py_errors[:6])
+                extra = "" if len(py_errors) <= 6 else f"\n...and {len(py_errors) - 6} more"
+                _ui_msg('error', "Some Python steps raised errors:\n" + shown + extra)
 
             if questions and _has_ui and _ui is not None:
                 _ui.show_question_buttons(questions)
@@ -681,18 +704,17 @@ def _build_api_messages():
 
 
 def _parse_structured_response(text):
-    """Extract JSON {response, script, questions} from the model's text.
+    """Extract JSON {response, questions} from the model's text.
 
     The model is instructed to respond with JSON. This function tries to
     extract it, with a fallback to treating the entire text as a plain
-    response (no script, no questions).
+    response (no questions).
     """
     text = text.strip()
 
     # Try direct JSON parse. strict=False allows literal control chars (real
-    # newlines/tabs) inside strings — the model often emits a real newline in
-    # the `script` field instead of \n, which would otherwise fail the parse
-    # and silently drop the action (the "replies but does nothing" symptom).
+    # newlines/tabs) inside strings, which the model occasionally emits inside
+    # the `response` text and which would otherwise fail the parse.
     try:
         parsed = json.loads(text, strict=False)
         if isinstance(parsed, dict) and 'response' in parsed:
@@ -730,53 +752,7 @@ def _parse_structured_response(text):
                     break
 
     # Fallback: plain text response
-    return {'response': text, 'script': '', 'questions': []}
-
-
-def _execute_script(script):
-    """Execute a multi-line PyMOL script from the worker thread.
-
-    Each non-empty, non-comment line runs via _cmd.do(line, 0, 1) — a C
-    extension that takes the PyMOL API lock internally, so it is safe from the
-    worker thread (the lock serializes against the render loop). Returns a list
-    of human-readable error strings (empty when everything ran cleanly) so the
-    caller can SURFACE failures to the user instead of silently swallowing them.
-    """
-    errors = []
-    if not script or not _cmd:
-        return errors
-
-    # Drain stale feedback so we only attribute errors to THIS script.
-    try:
-        _cmd._get_feedback()
-    except Exception:
-        pass
-
-    for line in script.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        try:
-            _cmd.do(line, 0, 1)
-        except Exception as exc:
-            errors.append(f"{line} => {exc}")
-
-    # PyMOL reports most command failures via the feedback buffer rather than
-    # by raising, so scan it for error lines too.
-    try:
-        fb = _cmd._get_feedback()
-        if fb:
-            for item in fb:
-                parts = item if isinstance(item, (list, tuple)) else [item]
-                for s in parts:
-                    if isinstance(s, str) and s.strip():
-                        low = s.strip()
-                        if 'error' in low.lower() or low.lower().startswith('selector'):
-                            errors.append(low)
-    except Exception:
-        pass
-
-    return errors
+    return {'response': text, 'questions': []}
 
 
 # ---------------------------------------------------------------------------

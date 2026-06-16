@@ -544,7 +544,7 @@ struct ContentView: View {
                 .tabItem { Label("Sequence", systemImage: "textformat.abc") }.tag(2)
             if kShowChatTab {
                 ChatPanel()
-                    .tabItem { Label("AI Chat", systemImage: "bubble.left.and.bubble.right") }.tag(3)
+                    .tabItem { Label("Raymond", systemImage: "bubble.left.and.bubble.right") }.tag(3)
             }
         }
         .background(Color(white: 0.11))
@@ -857,7 +857,7 @@ struct ContentView: View {
                 Label("Console", systemImage: "terminal")
             }
             Toggle(isOn: $showChatPanel) {
-                Label("AI Chat", systemImage: "bubble.left.and.bubble.right")
+                Label("Raymond", systemImage: "bubble.left.and.bubble.right")
             }
         }
     }
