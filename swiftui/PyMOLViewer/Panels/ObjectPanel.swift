@@ -1834,16 +1834,6 @@ struct SettingsSheet: View {
     @EnvironmentObject var engine: PyMOLEngine
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
-    @State private var aiKey = ""
-
-    // AI provider + Vertex credentials (loaded from / persisted to the Keychain).
-    @State private var aiProvider: AIProvider = .anthropic
-    @State private var vertexProject = ""
-    @State private var vertexRegion = "us-east5"
-    @State private var vertexModel = ""
-    @State private var vertexToken = ""
-    @State private var vertexSAKey = ""   // service-account JSON
-    private let defaultVertexModel = "claude-sonnet-4-5@20250929"
 
     private var filtered: [SettingItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1858,8 +1848,6 @@ struct SettingsSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }
             }.padding(16)
-
-            aiSection
 
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -1889,7 +1877,6 @@ struct SettingsSheet: View {
         }
         .onAppear {
             if engine.settingsCatalog.isEmpty { engine.loadSettingsCatalog() }
-            loadAISettings()
         }
         #if os(iOS)
         .presentationDetents([.large])
@@ -1898,116 +1885,6 @@ struct SettingsSheet: View {
         #endif
     }
 
-    // "AI" section: pick the provider (Anthropic / Vertex AI) and enter its
-    // credentials (stored in the Keychain and delivered to the embedded
-    // pymol.ai_chat backend). Same store the ChatPanel key sheet uses, so the
-    // two stay in sync.
-    private var aiSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("AI").font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Picker("Provider", selection: $aiProvider) {
-                ForEach(AIProvider.allCases) { p in Text(p.display).tag(p) }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: aiProvider) { _ in saveAISettings() }
-
-            if aiProvider == .anthropic {
-                HStack(spacing: 8) {
-                    SecureField("Anthropic API key (sk-ant-…)", text: $aiKey)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .onSubmit { saveAISettings() }
-                    Button("Save") { saveAISettings() }
-                        .buttonStyle(.borderedProminent)
-                }
-                Text("Stored locally in the device Keychain; sent only to the Anthropic API. Used by the AI Chat panel.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                TextField("Project ID (my-gcp-project)", text: $vertexProject)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .onSubmit { saveAISettings() }
-                TextField("Region (us-east5)", text: $vertexRegion)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .onSubmit { saveAISettings() }
-
-                // Service-account JSON (preferred): mints + auto-refreshes
-                // tokens on-device, so no expiring gcloud token to paste hourly.
-                Text("Service Account JSON (recommended)")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $vertexSAKey)
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(minHeight: 80, maxHeight: 140)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4)))
-
-                HStack(spacing: 8) {
-                    SecureField("Access token (fallback; optional)", text: $vertexToken)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .onSubmit { saveAISettings() }
-                    Button("Save") { saveAISettings() }
-                        .buttonStyle(.borderedProminent)
-                }
-                TextField("Model (\(defaultVertexModel))", text: $vertexModel)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .onSubmit { saveAISettings() }
-                Text("Paste a service-account JSON key to mint + auto-refresh tokens on-device, or a GCP access token (gcloud auth print-access-token; expires ~1h). Stored in the Keychain.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-    }
-
-    private func loadAISettings() {
-        let savedProv = KeychainHelper.value(account: KeychainHelper.providerAccount)
-        aiProvider = AIProvider(rawValue: savedProv) ?? .anthropic
-        aiKey = KeychainHelper.loadAPIKey()
-        vertexProject = KeychainHelper.value(account: KeychainHelper.vertexProjectAccount)
-        let region = KeychainHelper.value(account: KeychainHelper.vertexRegionAccount)
-        vertexRegion = region.isEmpty ? "us-east5" : region
-        vertexModel = KeychainHelper.value(account: KeychainHelper.vertexModelAccount)
-        vertexToken = KeychainHelper.value(account: KeychainHelper.vertexTokenAccount)
-        vertexSAKey = KeychainHelper.value(account: KeychainHelper.vertexSAKeyAccount)
-    }
-
-    private func saveAISettings() {
-        AISettings.persistAndDeliver(
-            engine: engine,
-            provider: aiProvider,
-            anthropicKey: aiKey,
-            vertexProject: vertexProject,
-            vertexRegion: vertexRegion,
-            vertexModel: vertexModel.isEmpty ? defaultVertexModel : vertexModel,
-            vertexToken: vertexToken,
-            vertexSAKey: vertexSAKey)
-    }
 }
 
 private struct SettingRow: View {
