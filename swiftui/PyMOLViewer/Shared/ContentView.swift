@@ -1180,13 +1180,14 @@ struct RaymondDrivingOverlay: View {
             // shape + a no-op gesture, swallows EVERY tap/click/drag so the app
             // underneath is fully inert. The centered card sits ON TOP in the
             // ZStack, so the Stop button still receives its own hits.
-            Color.black.opacity(0.25)
+            Color.black.opacity(0.12)
                 .ignoresSafeArea()
             Rectangle()
                 .fill(.ultraThinMaterial)
+                .opacity(0.7)            // a tad more transparent — let the scene show through
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0))    // absorb stray hits
+                .gesture(DragGesture(minimumDistance: 0))    // absorb stray hits (opacity doesn't affect hit-testing)
 
             // Centered card on the glass.
             VStack(spacing: 18) {

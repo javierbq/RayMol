@@ -77,7 +77,7 @@
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
 		F16058D96E2773BE9A24C323 /* RayMol.svg */ = {isa = PBXFileReference; path = RayMol.svg; sourceTree = "<group>"; };
-		"TEMP_B05C9AFE-CD7B-4CC1-8853-C9188898DB7C" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_02348BF2-1619-4F00-941A-BD9B0FD8B997" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -165,10 +165,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_5075DFB1-7F2A-44C3-8170-2348FEF64E4A" /* swiftui */ = {
+		"TEMP_B3C39EA9-65F6-49CA-93AD-0ABF4240DBFF" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_B05C9AFE-CD7B-4CC1-8853-C9188898DB7C" /* PyMOLBridge.xcconfig */,
+				"TEMP_02348BF2-1619-4F00-941A-BD9B0FD8B997" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -799,7 +799,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B05C9AFE-CD7B-4CC1-8853-C9188898DB7C" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_02348BF2-1619-4F00-941A-BD9B0FD8B997" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -884,7 +884,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B05C9AFE-CD7B-4CC1-8853-C9188898DB7C" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_02348BF2-1619-4F00-941A-BD9B0FD8B997" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
