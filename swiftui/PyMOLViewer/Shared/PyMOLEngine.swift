@@ -1154,14 +1154,19 @@ final class PyMOLEngine: ObservableObject {
                          vertexProject: String,
                          vertexRegion: String,
                          vertexModel: String,
-                         vertexToken: String) {
+                         vertexToken: String,
+                         vertexSAKey: String = "") {
         guard isReady else { return }
         let prov = (provider == "vertex") ? "vertex" : "anthropic"
 
         func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
 
         if prov == "vertex" {
-            // Vertex: set config (project/region/model) + token, then provider.
+            // Vertex: set config (project/region/model) + credential, then
+            // provider. The credential is a pasted service-account JSON (the
+            // backend mints + auto-refreshes tokens on-device from it) and/or a
+            // manual access token kept as a fallback. Both are handed over
+            // base64 so quotes / newlines / the JSON's `=`/`%` survive intact.
             let region = vertexRegion.isEmpty ? "us-east5" : vertexRegion
             runPython(
                 "import base64\n"
@@ -1170,12 +1175,16 @@ final class PyMOLEngine: ObservableObject {
                 + "_reg = base64.b64decode('\(b64(region))').decode('utf-8')\n"
                 + "_mdl = base64.b64decode('\(b64(vertexModel))').decode('utf-8')\n"
                 + "_tok = base64.b64decode('\(b64(vertexToken))').decode('utf-8')\n"
+                + "_sa = base64.b64decode('\(b64(vertexSAKey))').decode('utf-8')\n"
                 + "_ai.set_vertex_config(_proj, _reg, _mdl if _mdl else None)\n"
                 + "_ai.set_api_key(_tok, 'vertex')\n"
+                + "_ai.set_vertex_sa_key(_sa)\n"
                 + "_ai.set_provider('vertex')"
             )
-            let configured = !vertexProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !vertexToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasProject = !vertexProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasCred = !vertexToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !vertexSAKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let configured = hasProject && hasCred
             DispatchQueue.main.async { self.aiKeyConfigured = configured }
         } else {
             // Anthropic: set the key + provider (matches the existing path).

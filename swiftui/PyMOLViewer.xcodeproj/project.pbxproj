@@ -77,7 +77,7 @@
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
 		F16058D96E2773BE9A24C323 /* RayMol.svg */ = {isa = PBXFileReference; path = RayMol.svg; sourceTree = "<group>"; };
-		"TEMP_78BA6697-984F-4034-9408-F251192B817F" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_DEDE2CA2-754C-496C-9FC9-B77A3BA9D696" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -165,10 +165,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_3D5ABC9E-FB63-4A0E-B3CA-4ABDEEEFFC2B" /* swiftui */ = {
+		"TEMP_E628CA19-681A-44C7-B688-10B93EB66C7D" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_78BA6697-984F-4034-9408-F251192B817F" /* PyMOLBridge.xcconfig */,
+				"TEMP_DEDE2CA2-754C-496C-9FC9-B77A3BA9D696" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -322,7 +322,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
 		2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -398,7 +398,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting — iOS has no site-packages bundling, so ship them in a\n# dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).\nditto \"$SRCROOT/vendor_py\" \"$CODESIGNING_FOLDER_PATH/pyvendor\"\n";
 		};
 		88BA34A4D715F3339CB65D98 /* iOS: Prepare Python binary modules */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -417,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
 		9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -455,7 +455,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting — iOS has no site-packages bundling, so ship them in a\n# dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).\nditto \"$SRCROOT/vendor_py\" \"$CODESIGNING_FOLDER_PATH/pyvendor\"\n";
 		};
 		BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -493,7 +493,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\nditto \"$SRCROOT/../data\" \"$RES/data\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting; bridge adds <res>/pyvendor to sys.path (same dir name\n# as the iOS build, so the bridge path logic is platform-agnostic).\nditto \"$SRCROOT/vendor_py\" \"$RES/pyvendor\"\n";
 		};
 		D05A0E7275F836613C62A558 /* iOS: Install Python stdlib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -531,7 +531,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\nditto \"$SRCROOT/../data\" \"$RES/data\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting; bridge adds <res>/pyvendor to sys.path (same dir name\n# as the iOS build, so the bridge path logic is platform-agnostic).\nditto \"$SRCROOT/vendor_py\" \"$RES/pyvendor\"\n";
 		};
 		D6E180B4CFF12A0215D1E81F /* iOS: Embed Python.framework */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -759,7 +759,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_78BA6697-984F-4034-9408-F251192B817F" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_DEDE2CA2-754C-496C-9FC9-B77A3BA9D696" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -844,7 +844,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_78BA6697-984F-4034-9408-F251192B817F" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_DEDE2CA2-754C-496C-9FC9-B77A3BA9D696" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

@@ -67,6 +67,11 @@ _ai_config = {
     'vertex': {
         'project': os.environ.get('VERTEX_PROJECT', ''),
         'region': os.environ.get('VERTEX_REGION', '') or 'us-east5',
+        # Parsed service-account JSON (dict) for on-device token minting. When
+        # set, _call_vertex mints a fresh, auto-refreshing access token from it
+        # instead of using the manual api_keys['vertex'] bearer (which stays as
+        # a fallback for users who paste a gcloud token). See ai_vertex_auth.
+        'sa_key': None,
     },
 }
 
@@ -219,6 +224,46 @@ def set_vertex_config(project, region, model=None):
         _ai_config['models']['vertex'] = model.strip()
 
 
+def set_vertex_sa_key(json_str):
+    """Store a Google service-account JSON key for on-device token minting.
+
+    *json_str* is the raw contents of the downloaded SA key file. We parse and
+    stash the dict in _ai_config['vertex']['sa_key']; _call_vertex then mints a
+    fresh, auto-refreshing Vertex access token from it (via ai_vertex_auth) for
+    every request, so the user never has to paste short-lived gcloud tokens.
+
+    Passing an empty string clears the stored key (falls back to the manual
+    access-token field). A malformed JSON is reported but does NOT raise, so a
+    bad paste can't break delivery of the rest of the AI settings.
+    """
+    global _ai_config
+    json_str = (json_str or '').strip()
+    if not json_str:
+        _ai_config['vertex']['sa_key'] = None
+        try:
+            from pymol import ai_vertex_auth
+            ai_vertex_auth.invalidate()
+        except Exception:
+            pass
+        return
+    try:
+        info = json.loads(json_str)
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"Vertex service-account JSON is not valid JSON: {exc}")
+        return
+    if not isinstance(info, dict) or 'private_key' not in info or 'client_email' not in info:
+        print("Vertex service-account JSON is missing required fields "
+              "('client_email', 'private_key').")
+        return
+    _ai_config['vertex']['sa_key'] = info
+    # New credentials → drop any token cached from a previous SA key.
+    try:
+        from pymol import ai_vertex_auth
+        ai_vertex_auth.invalidate()
+    except Exception:
+        pass
+
+
 def ai_config(args='', _self=None):
     """Show or set AI provider configuration.
 
@@ -242,6 +287,10 @@ def ai_config(args='', _self=None):
             vx = _ai_config.get('vertex', {})
             print(f"  project  : {vx.get('project') or '(not set)'}")
             print(f"  region   : {vx.get('region') or '(not set)'}")
+            sa = vx.get('sa_key')
+            sa_desc = (f"on-device minting ({sa.get('client_email')})"
+                       if isinstance(sa, dict) else '(not set)')
+            print(f"  sa_key   : {sa_desc}")
         print(f"  sdk      : {'claude-agent-sdk' if _HAS_SDK else 'urllib (fallback)'}")
         return
 
@@ -285,11 +334,14 @@ def _on_user_message(text):
     # doomed background thread and gives an immediate, provider-correct error.
     provider = _ai_config.get('provider', 'anthropic')
     if provider == 'vertex':
-        cred = _ai_config['api_keys'].get('vertex', '')
+        # A pasted service-account JSON (on-device minting) OR a manual access
+        # token both count as a valid Vertex credential.
+        cred = _ai_config['vertex'].get('sa_key') or _ai_config['api_keys'].get('vertex', '')
         error_msg = (
-            "No Vertex access token set. Open AI settings and paste a GCP access "
-            "token (gcloud auth print-access-token) or a Vertex API key. "
-            "(Access tokens expire ~1h.)"
+            "No Vertex credential set. Open AI settings and either paste a "
+            "service-account JSON key (recommended — auto-mints + refreshes "
+            "tokens on-device) or a GCP access token "
+            "(gcloud auth print-access-token; expires ~1h)."
         )
     else:
         cred = _ai_config['api_keys'].get('anthropic', '')
@@ -506,20 +558,26 @@ def _worker_impl_fallback():
         provider = _ai_config.get('provider', 'anthropic')
 
         # Vertex AI (Claude-on-Vertex) requires project + region + a bearer
-        # credential. Surface a clear error (like the no-key path) if any is
-        # missing rather than firing a doomed request.
+        # credential. The credential is either a pasted service-account JSON
+        # (on-device minting, preferred) OR a manual access token. Surface a
+        # clear error (like the no-key path) if any piece is missing rather than
+        # firing a doomed request.
         if provider == 'vertex':
             token = _ai_config['api_keys'].get('vertex', '')
+            sa_key = _ai_config['vertex'].get('sa_key')
             model = _ai_config['models'].get('vertex', '')
             project = _ai_config['vertex'].get('project', '')
             region = _ai_config['vertex'].get('region', '')
+            have_cred = bool(sa_key) or bool(token)
             missing = [n for n, v in (('project', project), ('region', region),
-                                      ('access token / API key', token)) if not v]
+                                      ('service-account JSON or access token', have_cred))
+                       if not v]
             if missing:
                 _ui_msg('error',
                         "Vertex AI is selected but " + ", ".join(missing)
                         + " is not set. Open AI settings and fill in the Vertex "
-                          "Project ID, Region, and access token.")
+                          "Project ID, Region, and a credential (a service-account "
+                          "JSON key, or an access token).")
                 _ui_status('')
                 return
         else:
@@ -836,7 +894,16 @@ def _call_vertex(messages, token, model, project, region):
       - auth is a Bearer token (a GCP access token, typically from
         `gcloud auth print-access-token`, or a Vertex API key) — there is no
         x-api-key and no anthropic-version header.
+
+    If a service-account JSON key was pasted (_ai_config['vertex']['sa_key']),
+    we mint a fresh, auto-refreshing access token from it on-device and use that
+    as the Bearer; otherwise the manual *token* argument is used as a fallback.
     """
+    # Prefer an on-device-minted token from a pasted service-account JSON.
+    sa_key = _ai_config['vertex'].get('sa_key')
+    if sa_key:
+        from pymol import ai_vertex_auth
+        token = ai_vertex_auth.mint(sa_key)
     # The 'global' endpoint has NO region prefix in the host; regional
     # locations (us-east5, europe-west1, ...) do.
     host = ('aiplatform.googleapis.com' if region == 'global'
