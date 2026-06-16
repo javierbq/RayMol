@@ -40,6 +40,25 @@ _has_ui = False
 _ui = None  # the bound UI sink module (ai_chat_ui on AppKit, ai_chat_swift in-app)
 _messages = []  # list of {'role': str, 'content': str | list}
 
+# Cooperative cancellation flag. Set True by request_cancel() (driven from the
+# "Stop" button in the SwiftUI "Raymond is driving" overlay) and reset to False
+# at the START of each new user turn. The worker checks it at round boundaries —
+# it cannot interrupt an in-flight urllib request, so cancellation takes effect
+# at the next round (good enough; the UI optimistically clears the busy overlay
+# immediately for responsiveness).
+_cancel_requested = False
+
+
+def request_cancel():
+    """Ask the running worker to stop at the next round boundary.
+
+    Cooperative: the worker checks `_cancel_requested` at the top of each loop
+    round and right after running tools. We can't cleanly interrupt an in-flight
+    HTTP call, so a cancel takes effect at the next boundary.
+    """
+    global _cancel_requested
+    _cancel_requested = True
+
 # When the embedding sets PYMOL_AI_SINK=swift (the SwiftUI/Metal app, incl. iOS),
 # force the headless print()-based sink AND the urllib HTTP path: the embedded
 # interpreter cannot run the claude_agent_sdk subprocess, so the in-app path must
@@ -320,7 +339,10 @@ def _toggle_panel():
 
 def _on_user_message(text):
     """Main entry point called by the UI when the user submits a message."""
-    global _messages
+    global _messages, _cancel_requested
+
+    # Clear any stale cancel request from a prior turn before starting this one.
+    _cancel_requested = False
 
     _messages.append({'role': 'user', 'content': text})
 
@@ -602,6 +624,13 @@ def _worker_impl_fallback():
         tool_calls_made = 0     # how many tools actually ran this turn
         retried_empty = False   # have we already retried after an empty first turn?
         for _round in range(max_tool_rounds):
+            # Cooperative cancellation: the user hit "Stop" in the overlay. Bail
+            # at the round boundary (we can't interrupt an in-flight HTTP call).
+            if _cancel_requested:
+                _ui_msg('assistant', "Stopped.")
+                _ui_status('')
+                return
+
             try:
                 if provider == 'vertex':
                     body = _call_vertex(turn_messages, token, model, project, region)
@@ -656,6 +685,14 @@ def _worker_impl_fallback():
                         'content': result_str,
                     })
                 turn_messages.append({'role': 'user', 'content': tool_results})
+
+                # Cancellation may have been requested while the tools ran; stop
+                # before issuing another (potentially expensive) model call.
+                if _cancel_requested:
+                    _ui_msg('assistant', "Stopped.")
+                    _ui_status('')
+                    return
+
                 continue  # next round
 
             # Final turn (end_turn / max_tokens / etc.) — parse and display.

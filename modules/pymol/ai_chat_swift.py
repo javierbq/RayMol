@@ -94,8 +94,17 @@ def set_busy(busy):
 
 
 def is_cancel_requested():
-    """No cancel affordance in the headless sink (yet); never cancel."""
-    return False
+    """Reflect ai_chat's cooperative cancel flag (set by the Stop button).
+
+    The fallback worker checks ai_chat._cancel_requested directly at round
+    boundaries; this mirrors it so any consumer of the sink API sees the same
+    state. Imported lazily to avoid a circular import at module load.
+    """
+    try:
+        from pymol import ai_chat
+        return bool(getattr(ai_chat, '_cancel_requested', False))
+    except Exception:
+        return False
 
 
 def update_on_main_thread(role, content, results, status=None):
