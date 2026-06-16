@@ -1842,6 +1842,7 @@ struct SettingsSheet: View {
     @State private var vertexRegion = "us-east5"
     @State private var vertexModel = ""
     @State private var vertexToken = ""
+    @State private var vertexSAKey = ""   // service-account JSON
     private let defaultVertexModel = "claude-sonnet-4-5@20250929"
 
     private var filtered: [SettingItem] {
@@ -1942,8 +1943,23 @@ struct SettingsSheet: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .onSubmit { saveAISettings() }
+
+                // Service-account JSON (preferred): mints + auto-refreshes
+                // tokens on-device, so no expiring gcloud token to paste hourly.
+                Text("Service Account JSON (recommended)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $vertexSAKey)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(minHeight: 80, maxHeight: 140)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4)))
+
                 HStack(spacing: 8) {
-                    SecureField("Access token / API key", text: $vertexToken)
+                    SecureField("Access token (fallback; optional)", text: $vertexToken)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                         #if os(iOS)
@@ -1960,7 +1976,7 @@ struct SettingsSheet: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .onSubmit { saveAISettings() }
-                Text("GCP access token (gcloud auth print-access-token) or Vertex API key; stored in Keychain. Access tokens expire ~1h.")
+                Text("Paste a service-account JSON key to mint + auto-refresh tokens on-device, or a GCP access token (gcloud auth print-access-token; expires ~1h). Stored in the Keychain.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1978,6 +1994,7 @@ struct SettingsSheet: View {
         vertexRegion = region.isEmpty ? "us-east5" : region
         vertexModel = KeychainHelper.value(account: KeychainHelper.vertexModelAccount)
         vertexToken = KeychainHelper.value(account: KeychainHelper.vertexTokenAccount)
+        vertexSAKey = KeychainHelper.value(account: KeychainHelper.vertexSAKeyAccount)
     }
 
     private func saveAISettings() {
@@ -1988,7 +2005,8 @@ struct SettingsSheet: View {
             vertexProject: vertexProject,
             vertexRegion: vertexRegion,
             vertexModel: vertexModel.isEmpty ? defaultVertexModel : vertexModel,
-            vertexToken: vertexToken)
+            vertexToken: vertexToken,
+            vertexSAKey: vertexSAKey)
     }
 }
 

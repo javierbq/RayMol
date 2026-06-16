@@ -90,6 +90,11 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     NSString *pythonHome  = [resPath stringByAppendingPathComponent:@"python"];   // contains lib/python3.13
     NSString *modulesPath = [resPath stringByAppendingPathComponent:@"modules"];
     NSString *dataPath    = [resPath stringByAppendingPathComponent:@"data"];
+    // Pure-Python third-party packages bundled with the app (rsa + pyasn1, used
+    // by pymol.ai_vertex_auth to mint Vertex AI tokens on-device from a pasted
+    // service-account JSON). Kept in a dedicated dir so it works identically on
+    // iOS (which, unlike macOS, has no site-packages bundling step for numpy).
+    NSString *vendorPath  = [resPath stringByAppendingPathComponent:@"pyvendor"];
 
     // Modern PyConfig boot (mirrors layer5/main_appkit.mm). NOT isolated: PyMOL
     // relies on a normally-populated sys.path + site.py. config.home must be the
@@ -117,6 +122,10 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
         PyObject *p = PyUnicode_FromString([modulesPath UTF8String]);
         PyList_Insert(sysPath, 0, p);
         Py_DECREF(p);
+        // Vendored pure-Python packages (rsa, pyasn1) after the PyMOL modules.
+        PyObject *v = PyUnicode_FromString([vendorPath UTF8String]);
+        PyList_Insert(sysPath, 1, v);
+        Py_DECREF(v);
     }
 
     setenv("PYMOL_PATH", [resPath UTF8String], 1);

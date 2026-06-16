@@ -121,6 +121,29 @@ targets:
             echo "${RELATIVE_EXT%.so}.fwork" > "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin"
           }
           PYTHON_VER=$(ls -1 "$CODESIGNING_FOLDER_PATH/python/lib")
+
+          # Cross-compiled numpy (best-effort): copy the SDK-correct slice into
+          # site-packages, then framework-wrap each numpy .so exactly like the
+          # stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in
+          # the bundle; the .fwork redirect points the import at the framework).
+          # numpy ships no iOS wheels — these slices are built by
+          # scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).
+          # Guarded: if the slice is absent the app still builds + runs WITHOUT
+          # numpy (Task 1 / on-device Vertex minting does not depend on it).
+          if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi
+          NP_SRC="$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy"
+          if [ -d "$NP_SRC" ]; then
+            SP="$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages"
+            mkdir -p "$SP"
+            rsync -a --delete "$NP_SRC/" "$SP/numpy/"
+            find "$SP/numpy" -name "*.so" | while read FULL_EXT; do
+              install_dylib "python/lib/$PYTHON_VER/site-packages/" "$FULL_EXT"
+            done
+            echo "numpy ($NP_SLICE) bundled + framework-wrapped"
+          else
+            echo "numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy"
+          fi
+
           find "$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload" -name "*.so" | while read FULL_EXT; do
             install_dylib "python/lib/$PYTHON_VER/lib-dynload/" "$FULL_EXT"
           done
@@ -134,6 +157,10 @@ targets:
           set -e
           ditto "$SRCROOT/../modules" "$CODESIGNING_FOLDER_PATH/modules"
           ditto "$SRCROOT/../data" "$CODESIGNING_FOLDER_PATH/data"
+          # Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex
+          # token minting — iOS has no site-packages bundling, so ship them in a
+          # dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).
+          ditto "$SRCROOT/vendor_py" "$CODESIGNING_FOLDER_PATH/pyvendor"
       # macOS runtime packaging: payload under Contents/Resources (so the shared
       # bridge's config.home=<resourcePath>/python resolves to it). Guarded to
       # macOS so the iOS build is unaffected.
@@ -147,6 +174,10 @@ targets:
           rsync -au --delete "$SRCROOT/../deps_macos/python-standalone/python/" "$RES/python/"
           ditto "$SRCROOT/../modules" "$RES/modules"
           ditto "$SRCROOT/../data" "$RES/data"
+          # Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex
+          # token minting; bridge adds <res>/pyvendor to sys.path (same dir name
+          # as the iOS build, so the bridge path logic is platform-agnostic).
+          ditto "$SRCROOT/vendor_py" "$RES/pyvendor"
       - name: "macOS: Build + bundle pymol.metallib"
         basedOnDependencyAnalysis: false
         script: |

@@ -47,7 +47,8 @@ struct ChatQuestion: Identifiable {
 ///   - "vertex.project"      — GCP project id
 ///   - "vertex.region"       — GCP region (default "us-east5")
 ///   - "vertex.model"        — Vertex publisher model id (with @version)
-///   - "vertex.token"        — GCP access token / Vertex API key (the secret)
+///   - "vertex.token"        — GCP access token / Vertex API key (a fallback secret)
+///   - "vertex.sa_key"       — service-account JSON key (on-device token minting)
 enum KeychainHelper {
     private static let service = "PyMOLViewer.AI"
     private static let account = "anthropic_api_key"
@@ -58,6 +59,9 @@ enum KeychainHelper {
     static let vertexRegionAccount = "vertex.region"
     static let vertexModelAccount = "vertex.model"
     static let vertexTokenAccount = "vertex.token"
+    // Full service-account JSON key. When present, the backend mints + refreshes
+    // Vertex access tokens on-device from it (no expiring gcloud token needed).
+    static let vertexSAKeyAccount = "vertex.sa_key"
 
     // MARK: generic per-account get/set
 
@@ -332,6 +336,7 @@ struct AIKeySheet: View {
     @State private var vertexRegion: String = "us-east5"
     @State private var vertexModel: String = ""
     @State private var vertexToken: String = ""
+    @State private var vertexSAKey: String = ""     // service-account JSON
 
     private let defaultVertexModel = "claude-sonnet-4-5@20250929"
 
@@ -359,7 +364,7 @@ struct AIKeySheet: View {
             HStack {
                 Button("Clear", role: .destructive) {
                     if provider == .anthropic { key = "" }
-                    else { vertexToken = "" }
+                    else { vertexToken = ""; vertexSAKey = "" }
                     save()
                     dismiss()
                 }
@@ -401,7 +406,22 @@ struct AIKeySheet: View {
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
-            SecureField("Access token / API key", text: $vertexToken)
+
+            // Service-account JSON (preferred): mints + auto-refreshes tokens
+            // on-device, so no expiring gcloud token to paste hourly.
+            Text("Service Account JSON (recommended)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            TextEditor(text: $vertexSAKey)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(minHeight: 90, maxHeight: 150)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4)))
+
+            SecureField("Access token (fallback; optional)", text: $vertexToken)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 #if os(iOS)
@@ -413,7 +433,7 @@ struct AIKeySheet: View {
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
-            Text("GCP access token (gcloud auth print-access-token) or Vertex API key; stored in Keychain. Access tokens expire ~1h.")
+            Text("Paste a service-account JSON key to mint + auto-refresh tokens on-device. Or paste a GCP access token (gcloud auth print-access-token; expires ~1h). Stored only in the device Keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -428,6 +448,7 @@ struct AIKeySheet: View {
         vertexRegion = region.isEmpty ? "us-east5" : region
         vertexModel = KeychainHelper.value(account: KeychainHelper.vertexModelAccount)
         vertexToken = KeychainHelper.value(account: KeychainHelper.vertexTokenAccount)
+        vertexSAKey = KeychainHelper.value(account: KeychainHelper.vertexSAKeyAccount)
     }
 
     private func save() {
@@ -438,7 +459,8 @@ struct AIKeySheet: View {
             vertexProject: vertexProject,
             vertexRegion: vertexRegion,
             vertexModel: vertexModel.isEmpty ? defaultVertexModel : vertexModel,
-            vertexToken: vertexToken)
+            vertexToken: vertexToken,
+            vertexSAKey: vertexSAKey)
     }
 }
 
@@ -454,13 +476,17 @@ enum AISettings {
                                   vertexProject: String,
                                   vertexRegion: String,
                                   vertexModel: String,
-                                  vertexToken: String) {
+                                  vertexToken: String,
+                                  vertexSAKey: String = "") {
         let aKey = anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let project = vertexProject.trimmingCharacters(in: .whitespacesAndNewlines)
         var region = vertexRegion.trimmingCharacters(in: .whitespacesAndNewlines)
         if region.isEmpty { region = "us-east5" }
         let model = vertexModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let token = vertexToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The SA JSON is multi-line; only trim the outer whitespace, never the
+        // interior (the PEM newlines inside private_key must survive).
+        let saKey = vertexSAKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         KeychainHelper.setValue(provider.rawValue, account: KeychainHelper.providerAccount)
         KeychainHelper.saveAPIKey(aKey)
@@ -468,13 +494,15 @@ enum AISettings {
         KeychainHelper.setValue(region, account: KeychainHelper.vertexRegionAccount)
         KeychainHelper.setValue(model, account: KeychainHelper.vertexModelAccount)
         KeychainHelper.setValue(token, account: KeychainHelper.vertexTokenAccount)
+        KeychainHelper.setValue(saKey, account: KeychainHelper.vertexSAKeyAccount)
 
         engine.applyAISettings(provider: provider.rawValue,
                                anthropicKey: aKey,
                                vertexProject: project,
                                vertexRegion: region,
                                vertexModel: model,
-                               vertexToken: token)
+                               vertexToken: token,
+                               vertexSAKey: saKey)
     }
 
     /// Push whatever is in the Keychain to the backend (called on appear so the
@@ -490,7 +518,8 @@ enum AISettings {
             vertexProject: KeychainHelper.value(account: KeychainHelper.vertexProjectAccount),
             vertexRegion: region.isEmpty ? "us-east5" : region,
             vertexModel: KeychainHelper.value(account: KeychainHelper.vertexModelAccount),
-            vertexToken: KeychainHelper.value(account: KeychainHelper.vertexTokenAccount))
+            vertexToken: KeychainHelper.value(account: KeychainHelper.vertexTokenAccount),
+            vertexSAKey: KeychainHelper.value(account: KeychainHelper.vertexSAKeyAccount))
     }
 }
 
