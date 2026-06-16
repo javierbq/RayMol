@@ -298,7 +298,7 @@ struct ContentView: View {
                 let side = !compact && landscape   // side column only on a wide iPad
                 let total = side ? geo.size.width : geo.size.height
                 let panelSize = min(max(total * panelFrac, side ? 280 : 200),
-                                    total * (side ? 0.45 : 0.6))
+                                    total * (side ? 0.45 : 0.92))
                 Group {
                     if side {
                         HStack(spacing: 0) {
@@ -352,6 +352,21 @@ struct ContentView: View {
                         panelFrac = 0.6
                         committedFrac = 0.6
                     } else {
+                        panelFrac = collapsedFrac
+                        committedFrac = collapsedFrac
+                    }
+                }
+            }
+            // AI Chat needs near-full height to be usable, so selecting that tab
+            // grows the bottom panel to fill; leaving it (while still chat-sized)
+            // restores the remembered normal size. Compact (iPhone) only.
+            .onChange(of: selectedTab) { tab in
+                guard hSize == .compact else { return }
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    if tab == 3 {
+                        panelFrac = 0.92
+                        committedFrac = 0.92
+                    } else if committedFrac >= 0.85 {
                         panelFrac = collapsedFrac
                         committedFrac = collapsedFrac
                     }
@@ -552,7 +567,9 @@ struct ContentView: View {
             DragGesture(minimumDistance: 2)
                 .onChanged { v in
                     let d = landscape ? -v.translation.width : -v.translation.height
-                    panelFrac = min(max(committedFrac + d / total, 0.12), 0.6)
+                    // Bottom panel can grow to near-full (0.92) so content like AI
+                    // Chat can use all the space; the iPad side column stays ≤0.45.
+                    panelFrac = min(max(committedFrac + d / total, 0.12), landscape ? 0.45 : 0.92)
                 }
                 .onEnded { _ in
                     committedFrac = panelFrac

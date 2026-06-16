@@ -769,12 +769,13 @@ private struct ShowButton: View {
             }
         } label: {
             Text("S")
+                .frame(width: kActBtnW, height: kActBtnH)
+                .background(PanelTheme.buttonBackground)
+                .cornerRadius(2)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: kActBtnW, height: kActBtnH)
-        .background(PanelTheme.buttonBackground)
-        .cornerRadius(2)
     }
 }
 
@@ -801,12 +802,13 @@ private struct HideButton: View {
             }
         } label: {
             Text("H")
+                .frame(width: kActBtnW, height: kActBtnH)
+                .background(PanelTheme.buttonBackground)
+                .cornerRadius(2)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: kActBtnW, height: kActBtnH)
-        .background(PanelTheme.buttonBackground)
-        .cornerRadius(2)
     }
 }
 
@@ -833,12 +835,13 @@ private struct LabelMenuButton: View {
             }
         } label: {
             Text("L")
+                .frame(width: kActBtnW, height: kActBtnH)
+                .background(PanelTheme.buttonBackground)
+                .cornerRadius(2)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: kActBtnW, height: kActBtnH)
-        .background(PanelTheme.buttonBackground)
-        .cornerRadius(2)
     }
 }
 
@@ -870,12 +873,13 @@ private struct ColorMenuButton: View {
             }
         } label: {
             Text("C")
+                .frame(width: kActBtnW, height: kActBtnH)
+                .background(PanelTheme.buttonBackground)
+                .cornerRadius(2)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: kActBtnW, height: kActBtnH)
-        .background(PanelTheme.buttonBackground)
-        .cornerRadius(2)
     }
 
     private func applyColor(command: String) {
@@ -1395,6 +1399,7 @@ private struct RepChips: View {
                         .background(PanelTheme.buttonBackground)
                         .foregroundColor(PanelTheme.buttonText)
                         .clipShape(Capsule())
+                        .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
