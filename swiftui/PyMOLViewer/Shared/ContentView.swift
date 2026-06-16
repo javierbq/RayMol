@@ -14,7 +14,9 @@ struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @State private var showObjectPanel = true
     @State private var showCommandPanel = true
-    @State private var showChatPanel = false
+    // Surface the AI chat in the right column by default (the toolbar toggle can
+    // hide it). The backend is wired to the headless ai_chat_swift sink.
+    @State private var showChatPanel = true
 
     // Export menu state. exportRayTraced persists across launches; when on, all
     // image exports are ray-traced (AO + shadows) regardless of the live view.
@@ -25,6 +27,13 @@ struct ContentView: View {
     @State private var showCustomSizeSheet = false
     @State private var customWidth = "3840"
     @State private var customHeight = "2160"
+
+    #if os(macOS)
+    // macOS empty-state "Fetch from PDB…" alert state (the Open File… path uses an
+    // NSOpenPanel directly, so it needs no presentation state).
+    @State private var showMacFetch = false
+    @State private var macFetchID = ""
+    #endif
 
     // Export render-option toggles (shared by the iOS + macOS export menus).
     @ViewBuilder private var renderOptionToggles: some View {
@@ -53,23 +62,65 @@ struct ContentView: View {
         }
     }
 
+    // Shared empty-state CTA visuals (atom icon + title + Open/Fetch buttons),
+    // used by both the iOS overlay and the macOS overlay so the two platforms
+    // read identically. The Open/Fetch actions differ per platform (iOS fileImporter
+    // + alert; macOS NSOpenPanel + alert), so they're injected as closures.
+    @ViewBuilder
+    private func emptyStateContent(title: String,
+                                   onOpen: @escaping () -> Void,
+                                   onFetch: @escaping () -> Void) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "atom")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.title2).fontWeight(.semibold)
+            Text("Open a molecular file or fetch one from the PDB.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                Button(action: onOpen) {
+                    Label("Open File…", systemImage: "folder")
+                }
+                .buttonStyle(.borderedProminent)
+                Button(action: onFetch) {
+                    Label("Fetch from PDB…", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 4)
+        }
+        .padding(28)
+        .frame(maxWidth: 420)
+        .allowsHitTesting(true)
+    }
+
     // MARK: - macOS: HSplitView with sidebar
 
     #if os(macOS)
     private var macOSLayout: some View {
-        HSplitView {
-            // Left column: sequence viewer + terminal stacked ABOVE the 3D
-            // viewport in a VSplitView so each is drag-resizable, and each is
-            // hideable via the toolbar toggles.
-            VSplitView {
-                if engine.sequenceVisible {
-                    SequencePanel()
-                        .frame(minHeight: 30, idealHeight: 84, maxHeight: 240)
-                }
+        // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
+        // strip can't grow into the viewport. minHeight is set a few pt below the
+        // cap so the VSplitView still hands the user a draggable splitter (a strict
+        // min == max would freeze it).
+        let seqRows = min(max(engine.sequences.count, 1), 5)
+        let seqH = CGFloat(seqRows) * 26 + 8
 
+        return HSplitView {
+            // Left column: terminal on TOP, sequence directly under it, then the
+            // 3D viewport, stacked in a VSplitView so each is drag-resizable and
+            // each is hideable via the toolbar toggles.
+            VSplitView {
                 if showCommandPanel {
                     CommandPanel()
-                        .frame(minHeight: 50, idealHeight: 110, maxHeight: 400)
+                        .frame(minHeight: 44, idealHeight: 80, maxHeight: 300)
+                }
+
+                if engine.sequenceVisible {
+                    SequencePanel()
+                        .frame(minHeight: 24, idealHeight: seqH, maxHeight: seqH)
                 }
 
                 // The viewport takes the remaining (majority of) space, with the
@@ -82,34 +133,57 @@ struct ContentView: View {
                         .overlay(alignment: .top) {
                             if engine.measureMode != nil { measureOverlay }
                         }
+                        // Mouse-mode legend as a compact floating card at the
+                        // bottom-trailing corner, so it's reachable even when the
+                        // right column is collapsed (where MousePanel used to live).
+                        .overlay(alignment: .bottomTrailing) {
+                            MousePanel()
+                                .frame(width: 220)
+                                .background(.ultraThinMaterial,
+                                            in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+                                .padding(8)
+                        }
                     if engine.hasTimeline {
                         Divider()
                         TransportBar()
                     }
                 }
+                // Empty-state CTA when nothing is loaded (mirrors the iOS overlay).
+                .overlay { if engine.objects.isEmpty { macEmptyState } }
             }
 
-            // Right column: objects + (chat) + mouse legend
-            VStack(spacing: 0) {
-                if showObjectPanel {
-                    ObjectPanel()
-                        .frame(minHeight: 150)
+            // Right column: objects + (chat). Only exists (and only occupies its
+            // 300pt width) when at least one of its panels is shown — when both are
+            // off the HSplitView collapses to just the left column. The mouse
+            // legend moved to the floating viewport overlay (above) so it stays
+            // reachable regardless.
+            if showObjectPanel || showChatPanel {
+                VStack(spacing: 0) {
+                    if showObjectPanel {
+                        ObjectPanel()
+                            .frame(minHeight: 150)
+                    }
+
+                    if showChatPanel {
+                        Divider()
+                        ChatPanel()
+                            .frame(minHeight: 200)
+                    }
                 }
-
-                if showChatPanel {
-                    Divider()
-                    ChatPanel()
-                        .frame(minHeight: 200)
-                }
-
-                Spacer(minLength: 0)
-
-                MousePanel()
-                    .frame(height: 60)
+                .frame(width: 300)
             }
-            .frame(width: 300)
         }
         .overlay { busyOverlay }
+        .alert("Fetch from PDB", isPresented: $showMacFetch) {
+            TextField("PDB ID (e.g. 1ubq)", text: $macFetchID)
+            Button("Fetch") { macFetch() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Download a structure from the RCSB PDB.")
+        }
         .toolbar {
             exportMenu
             ToolbarItem {
@@ -128,6 +202,49 @@ struct ContentView: View {
         .onAppear {
             initializeEngine()
         }
+    }
+
+    // macOS empty-state CTA, mirroring the iOS overlay visuals. "Open File…" uses
+    // an NSOpenPanel; "Fetch from PDB…" presents the macFetch alert.
+    private var macEmptyState: some View {
+        emptyStateContent(
+            title: "No structure loaded",
+            onOpen: { macOpenFile() },
+            onFetch: { macFetchID = ""; showMacFetch = true }
+        )
+    }
+
+    // Allowed import types — same molecular/map/session extension set the iOS
+    // empty-state file picker uses (iosImportTypes), so the two platforms accept
+    // identical files.
+    private var macImportTypes: [UTType] {
+        let exts = ["pdb", "ent", "cif", "mmcif", "mcif", "sdf", "mol", "mol2",
+                    "xyz", "pdbqt", "pqr", "mae", "pse", "ccp4", "mrc", "map",
+                    "dx", "mtz", "fasta", "pir"]
+        return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
+    }
+
+    // Open a molecule/session via NSOpenPanel and load it. PyMOL infers the format
+    // from the extension; the object name is the filename stem (sanitized).
+    private func macOpenFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = macImportTypes
+        panel.title = "Open Structure"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let raw = url.deletingPathExtension().lastPathComponent
+        var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+        if name.isEmpty { name = "mol" }
+        engine.runCommand("load \(url.path), \(name)")
+    }
+
+    private func macFetch() {
+        let id = macFetchID.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "'", with: "")
+        guard !id.isEmpty else { return }
+        engine.runCommand("fetch \(id), async=0, type=pdb")
     }
     #endif
 
@@ -151,9 +268,9 @@ struct ContentView: View {
     // Test affordance (PYMOL_AUTOEXPORTMOVIE="mp4|gif,first,last"): run a headless
     // movie export and copy the result to /tmp so the harness can validate it.
     @StateObject private var exportTester = MovieExporter()
-    // AI Chat is a non-functional placeholder; hide its tab until the backend
-    // exists so it doesn't occupy a top-level slot.
-    private let kShowChatTab = false
+    // AI Chat tab. The backend (pymol.ai_chat → Claude/Anthropic) is wired to the
+    // headless ai_chat_swift sink, so the chat is functional; surface its tab.
+    private let kShowChatTab = true
 
     // Adaptive control surface. Placement + sizing depend on size class AND
     // orientation: a resizable SIDE column only on a regular-width iPad in
@@ -219,7 +336,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if engine.measureMode != nil { measureOverlay }
             }
-            .navigationTitle(hSize == .compact ? "" : "PyMOL")
+            .navigationTitle(hSize == .compact ? "" : "RayMol")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             // Auto-grow the panel when a detail view opens so its options are
@@ -499,36 +616,11 @@ struct ContentView: View {
     // centered call-to-action when nothing is loaded. (ContentUnavailableView is
     // iOS 17+; this is a hand-rolled equivalent for the iOS 16 target.)
     private var emptyStateView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "atom")
-                .font(.system(size: 56))
-                .foregroundStyle(.secondary)
-            Text("No structure loaded")
-                .font(.title2).fontWeight(.semibold)
-            Text("Open a molecular file or fetch one from the PDB.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 12) {
-                Button {
-                    showFileImporter = true
-                } label: {
-                    Label("Open File…", systemImage: "folder")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    fetchID = ""
-                    showFetch = true
-                } label: {
-                    Label("Fetch from PDB…", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.top, 4)
-        }
-        .padding(28)
-        .frame(maxWidth: 420)
-        .allowsHitTesting(true)
+        emptyStateContent(
+            title: "No structure loaded",
+            onOpen: { showFileImporter = true },
+            onFetch: { fetchID = ""; showFetch = true }
+        )
     }
 
 
@@ -651,7 +743,7 @@ struct ContentView: View {
     // hand it to the share sheet. cmd.save infers the format from the extension.
     private func iosShareStructure(ext: String) {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PyMOL_structure.\(ext)")
+            .appendingPathComponent("RayMol_structure.\(ext)")
         try? FileManager.default.removeItem(at: url)
         engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
         if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
@@ -670,7 +762,7 @@ struct ContentView: View {
     // main thread via `done` (nil if it didn't write).
     private func iosRenderPNG(width: Int, height: Int, done: @escaping (URL?) -> Void) {
         guard width > 0, height > 0 else { done(nil); return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("PyMOL.png")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.png")
         try? FileManager.default.removeItem(at: url)
         engine.runHeavy("Rendering image…") {
             if exportTransparent {
@@ -709,7 +801,7 @@ struct ContentView: View {
     }
 
     private func iosShareSession() {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("PyMOL.pse")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.pse")
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
     }

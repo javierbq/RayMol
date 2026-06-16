@@ -35,6 +35,15 @@ struct MetalViewport: NSViewRepresentable {
             action: #selector(Coordinator.handleMagnification(_:)))
         view.addGestureRecognizer(magnify)
 
+        // Trackpad two-finger twist → Z-axis roll. Only acts while the engine's
+        // "Trackpad" mouse mode is on (engine.trackpadMode), mirroring the iOS
+        // two-finger rotation gesture. Otherwise it's a no-op so it never fights
+        // the classic per-button mouse modes.
+        let rotate = NSRotationGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleRotationGesture(_:)))
+        view.addGestureRecognizer(rotate)
+
         // Click-debug harness (PYMOL_AUTOCLICK="ndcx,ndcy[;ndcx,ndcy...]"): after
         // the scene renders, synthesize real clicks at the given NDC points
         // through the genuine mouse path. Each click's mouse→NDC math and the
@@ -186,6 +195,13 @@ extension MetalViewport {
         // zoom fraction (spread = positive = zoom in).
         private var lastMag: CGFloat = 0
         private let kZoomGain: CGFloat = 1.0
+
+        // Trackpad two-finger twist → Z-roll (Trackpad mode only). NSRotationGesture
+        // .rotation is cumulative radians; feed the per-callback delta as `turn z`.
+        // Negated so a clockwise twist rolls the molecule clockwise on screen, to
+        // match the iOS handleRotation sign.
+        private var lastRoll: CGFloat = 0
+        private let kRollSign: Float = -1
 
         // Trackpad two-finger drag (delivered as precise scrollWheel events) →
         // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
@@ -509,6 +525,27 @@ extension MetalViewport {
                 engine?.zoomBy(Float(delta * kZoomGain))
             case .ended, .cancelled:
                 lastMag = 0
+            default:
+                break
+            }
+        }
+
+        // Trackpad two-finger twist → Z-axis roll, mirroring the iOS handleRotation
+        // gesture. Gated on engine.trackpadMode so it never disturbs the classic
+        // per-button mouse modes. runPython (not runCommand) to avoid echoing
+        // `turn z` into the feedback log every frame.
+        @objc func handleRotationGesture(_ gesture: NSRotationGestureRecognizer) {
+            guard engine?.trackpadMode == true else { return }
+            switch gesture.state {
+            case .began:
+                lastRoll = 0
+            case .changed:
+                let delta = gesture.rotation - lastRoll
+                lastRoll = gesture.rotation
+                let deg = kRollSign * Float(delta) * 180.0 / .pi
+                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+            case .ended, .cancelled:
+                lastRoll = 0
             default:
                 break
             }

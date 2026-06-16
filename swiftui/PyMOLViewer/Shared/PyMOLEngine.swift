@@ -41,7 +41,27 @@ final class PyMOLEngine: ObservableObject {
     // delay so quick ops never flash it; busyLabel describes the operation.
     @Published var isBusy = false
     @Published var busyLabel = ""
-    @Published var sequenceVisible = true
+    @Published var sequenceVisible = false
+
+    // MARK: AI chat (Claude/Anthropic backend in pymol.ai_chat)
+    // The Python backend runs the LLM loop on its own worker thread and reports
+    // back via tagged feedback lines (AICHAT:/AISTATUS:/AIQUESTIONS:/AIBUSY:/
+    // AIDONE:) drained by pollFeedback. These published fields are the SwiftUI
+    // chat panel's source of truth.
+    @Published var chatMessages: [ChatMessage] = []
+    @Published var chatBusy: Bool = false       // worker active → typing indicator
+    @Published var chatStatus: String = ""      // "Thinking..." / "Executing..."
+    @Published var chatQuestions: [ChatQuestion] = []  // follow-up button groups
+    // The user's Anthropic API key has been delivered to the backend at least
+    // once this session (so the chat panel can hint when it's missing).
+    @Published var aiKeyConfigured: Bool = false
+
+    // macOS "Trackpad" mouse mode: when on, the MetalViewport trackpad gesture
+    // handlers (scroll/pinch) drive rotate/pan/zoom/roll/clip directly, mirroring
+    // the iOS touch defaults, rather than routing the bare wheel to PyMOL's
+    // mouse_mode binding (slab). Toggled by selecting "Trackpad" in MousePanel;
+    // the chosen mode is persisted via @AppStorage in MousePanel.
+    @Published var trackpadMode: Bool = false
 
     // Current MTKView drawable size in backing pixels (updated by the viewport
     // coordinator on resize). Used by the Export menu's "current size" render.
@@ -917,6 +937,24 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("SETVAL:") {
                     parseSetValFeedback(line)
+                } else if line.hasPrefix("AICHAT:") {
+                    parseChatMessageFeedback(line)
+                } else if line.hasPrefix("AISTATUS:") {
+                    let s = String(line.dropFirst("AISTATUS:".count))
+                    DispatchQueue.main.async { if self.chatStatus != s { self.chatStatus = s } }
+                } else if line.hasPrefix("AIQUESTIONS:") {
+                    parseChatQuestionsFeedback(line)
+                } else if line.hasPrefix("AIBUSY:") {
+                    let busy = line.hasSuffix("1")
+                    DispatchQueue.main.async {
+                        if self.chatBusy != busy { self.chatBusy = busy }
+                        if !busy { self.chatStatus = "" }
+                    }
+                } else if line.hasPrefix("AIDONE:") {
+                    DispatchQueue.main.async {
+                        self.chatBusy = false
+                        self.chatStatus = ""
+                    }
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
                         self.feedbackLog.append(line)
@@ -1083,6 +1121,111 @@ final class PyMOLEngine: ObservableObject {
             let has = count > 1
             if self.hasTimeline != has { self.hasTimeline = has }
         }
+    }
+
+    // MARK: - AI chat
+
+    // Deliver the user's Anthropic API key to the embedded backend. Called on
+    // app start (with the Keychain-stored key) and whenever the key changes in
+    // Settings. ai_chat.set_api_key() stores it in _ai_config AND os.environ so
+    // the urllib Messages-API path picks it up. Never logged.
+    func setAIKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isReady else { return }
+        // Hand the key off via base64 so quotes/specials in the key can't break
+        // out of the Python string literal.
+        let b64 = Data(trimmed.utf8).base64EncodedString()
+        runPython(
+            "import base64\n"
+            + "from pymol import ai_chat as _ai\n"
+            + "_ai.set_api_key(base64.b64decode('\(b64)').decode('utf-8'))"
+        )
+        DispatchQueue.main.async { self.aiKeyConfigured = !trimmed.isEmpty }
+    }
+
+    // Send a user message to the AI backend. ai_chat._on_user_message spawns its
+    // own worker thread and returns immediately, so this does NOT block the
+    // render loop. The user text is handed over base64-encoded so any quotes /
+    // newlines / triple-quotes survive intact.
+    func sendChatMessage(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isReady, !trimmed.isEmpty else { return }
+        // Optimistically show the user's bubble + typing indicator immediately
+        // (the backend also echoes AICHAT:user:, which we de-dup on arrival).
+        appendChat(ChatMessage(role: .user, content: trimmed, timestamp: Date()))
+        chatBusy = true
+        let b64 = Data(trimmed.utf8).base64EncodedString()
+        runPython(
+            "import base64\n"
+            + "from pymol import ai_chat as _ai\n"
+            + "_ai._on_user_message(base64.b64decode('\(b64)').decode('utf-8'))"
+        )
+    }
+
+    func clearChat() {
+        chatMessages.removeAll()
+        chatQuestions.removeAll()
+        chatStatus = ""
+        chatBusy = false
+        runPython("from pymol import ai_chat as _ai\n_ai.clear_conversation()")
+    }
+
+    // Answer a follow-up question group by sending the chosen option(s) as a
+    // normal user message (the backend has no dedicated answer channel).
+    func answerChatQuestion(_ answer: String) {
+        chatQuestions.removeAll()
+        sendChatMessage(answer)
+    }
+
+    private func appendChat(_ msg: ChatMessage) {
+        DispatchQueue.main.async {
+            // De-dup the backend's echo of a message we already optimistically
+            // appended (same role + content back-to-back).
+            if let last = self.chatMessages.last,
+               last.role == msg.role, last.content == msg.content {
+                return
+            }
+            self.chatMessages.append(msg)
+            if self.chatMessages.count > 300 {
+                self.chatMessages.removeFirst(self.chatMessages.count - 300)
+            }
+        }
+    }
+
+    // AICHAT:<role>:<base64>  (role ∈ user|assistant|result|error|clear)
+    private func parseChatMessageFeedback(_ line: String) {
+        let body = String(line.dropFirst("AICHAT:".count))
+        guard let colon = body.firstIndex(of: ":") else { return }
+        let role = String(body[..<colon])
+        let b64 = String(body[body.index(after: colon)...])
+        if role == "clear" {
+            DispatchQueue.main.async {
+                self.chatMessages.removeAll()
+                self.chatQuestions.removeAll()
+            }
+            return
+        }
+        guard let data = Data(base64Encoded: b64),
+              let text = String(data: data, encoding: .utf8) else { return }
+        let r: ChatMessage.Role
+        switch role {
+        case "user": r = .user
+        case "error": r = .error
+        default: r = .assistant   // assistant + result render as assistant text
+        }
+        appendChat(ChatMessage(role: r, content: text, timestamp: Date()))
+    }
+
+    // AIQUESTIONS:<base64 json> — [{text, type?, options[]}]
+    private func parseChatQuestionsFeedback(_ line: String) {
+        let b64 = String(line.dropFirst("AIQUESTIONS:".count))
+        guard let data = Data(base64Encoded: b64) else { return }
+        struct RawQ: Decodable { let text: String; let type: String?; let options: [String] }
+        guard let raws = try? JSONDecoder().decode([RawQ].self, from: data) else { return }
+        let qs = raws.map { ChatQuestion(text: $0.text,
+                                         multiple: ($0.type ?? "single") == "multiple",
+                                         options: $0.options) }
+        DispatchQueue.main.async { self.chatQuestions = qs }
     }
 }
 

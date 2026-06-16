@@ -28,7 +28,7 @@ struct CommandPanel: View {
 
             // Command input bar
             HStack(spacing: 4) {
-                Text("PyMOL>")
+                Text("RayMol>")
                     .font(.system(.body, design: .monospaced))
                     .foregroundColor(promptColor)
 
@@ -56,7 +56,7 @@ struct CommandPanel: View {
         commandHistory.append(trimmed)
         historyIndex = commandHistory.count
 
-        engine.feedbackLog.append("PyMOL>\(trimmed)")
+        engine.feedbackLog.append("RayMol>\(trimmed)")
         engine.runCommand(trimmed)
 
         commandText = ""

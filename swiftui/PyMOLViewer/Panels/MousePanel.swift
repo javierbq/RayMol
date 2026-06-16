@@ -139,10 +139,29 @@ private let allModes: [MouseModeDefinition] = [
     ]),
 ]
 
-/// The default ring of modes users cycle through.
+/// The default ring of (real PyMOL) modes users cycle through.
 private let modeRing = ["three_button_viewing", "three_button_editing",
                         "three_button_motions", "three_button_lights",
                         "three_button_maestro"]
+
+/// Synthetic mode key for the macOS "Trackpad" gesture mode. Not a PyMOL
+/// mouse_mode — selecting it flips engine.trackpadMode (which re-routes the
+/// MetalViewport trackpad gestures to rotate/pan/zoom/roll/clip) instead of
+/// issuing a `mouse <mode>` command.
+private let kTrackpadKey = "trackpad"
+
+/// Gesture-oriented legend shown while Trackpad mode is active (rotate / move /
+/// zoom / roll / clip), in place of the L/M/R button matrix.
+private struct TrackpadGestureHint: Identifiable {
+    let id = UUID(); let icon: String; let title: String; let detail: String
+}
+private let trackpadGestureHints: [TrackpadGestureHint] = [
+    .init(icon: "hand.draw", title: "Rotate", detail: "Drag"),
+    .init(icon: "hand.point.up.left", title: "Move", detail: "Two-finger pan"),
+    .init(icon: "arrow.up.left.and.arrow.down.right.circle", title: "Zoom", detail: "Pinch"),
+    .init(icon: "arrow.clockwise", title: "Roll", detail: "Two-finger twist"),
+    .init(icon: "scissors", title: "Clip", detail: "Shift + two-finger"),
+]
 
 private let selectionModeNames = [
     "Atoms", "Residues", "Chains", "Segments",
@@ -154,7 +173,13 @@ private let selectionModeNames = [
 struct MousePanel: View {
     @EnvironmentObject var engine: PyMOLEngine
 
+    // Persisted across launches. macOS defaults to "Trackpad" (the last display-
+    // ring index); iOS defaults to the first real mode. selectionMode persists too.
+    #if os(macOS)
+    @AppStorage("macMouseModeIndex") private var selectedModeIndex: Int = -1
+    #else
     @State private var selectedModeIndex: Int = 0
+    #endif
     @State private var selectionModeIndex: Int = 1  // Residues default
 
     private let bgColor = Color(red: 0.149, green: 0.149, blue: 0.161)  // #262629
@@ -163,9 +188,40 @@ struct MousePanel: View {
     private let modifierColor = Color(red: 1.0, green: 0.3, blue: 0.3)
     private let labelColor = Color(red: 0.6, green: 0.6, blue: 0.6)
 
+    // The keys shown in the mode picker. macOS appends the synthetic "Trackpad"
+    // entry; iOS shows the real PyMOL modes only.
+    private var displayRing: [String] {
+        #if os(macOS)
+        return modeRing + [kTrackpadKey]
+        #else
+        return modeRing
+        #endif
+    }
+
+    /// Effective selected index, clamped into the display ring. On macOS the
+    /// persisted default (-1) resolves to the Trackpad entry (last index).
+    private var effectiveModeIndex: Int {
+        if displayRing.indices.contains(selectedModeIndex) { return selectedModeIndex }
+        #if os(macOS)
+        return displayRing.count - 1   // Trackpad
+        #else
+        return 0
+        #endif
+    }
+
+    private func displayName(_ key: String) -> String {
+        if key == kTrackpadKey { return "Trackpad" }
+        return allModes.first { $0.key == key }?.displayName ?? key
+    }
+
+    private var isTrackpad: Bool {
+        displayRing.indices.contains(effectiveModeIndex)
+            && displayRing[effectiveModeIndex] == kTrackpadKey
+    }
+
     private var currentMode: MouseModeDefinition {
-        let ringKey = modeRing.indices.contains(selectedModeIndex)
-            ? modeRing[selectedModeIndex] : modeRing[0]
+        let ringKey = displayRing.indices.contains(effectiveModeIndex)
+            ? displayRing[effectiveModeIndex] : modeRing[0]
         return allModes.first { $0.key == ringKey } ?? allModes[0]
     }
 
@@ -180,10 +236,16 @@ struct MousePanel: View {
                 .padding(.horizontal, 6)
                 .padding(.top, 4)
 
-            // Button/modifier grid
-            actionGrid
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
+            // Trackpad: gesture legend. Otherwise the L/M/R button matrix.
+            if isTrackpad {
+                trackpadLegend
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+            } else {
+                actionGrid
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+            }
 
             // Selection mode
             selectionRow
@@ -191,15 +253,24 @@ struct MousePanel: View {
                 .padding(.bottom, 4)
         }
         .background(bgColor)
-        .onChange(of: selectedModeIndex) { newIndex in
-            let ringKey = modeRing.indices.contains(newIndex)
-                ? modeRing[newIndex] : modeRing[0]
-            if let mode = allModes.first(where: { $0.key == ringKey }) {
-                engine.runCommand("mouse \(mode.key)")
-            }
-        }
+        .onAppear { applyMode(effectiveModeIndex) }
+        .onChange(of: selectedModeIndex) { applyMode($0) }
         .onChange(of: selectionModeIndex) { newIndex in
             engine.runCommand("set mouse_selection_mode, \(newIndex)")
+        }
+    }
+
+    /// Apply the mode at `index`: flip engine.trackpadMode and, for real PyMOL
+    /// modes, issue the `mouse <key>` command. The synthetic Trackpad entry only
+    /// flips the flag (no PyMOL mouse_mode change).
+    private func applyMode(_ index: Int) {
+        guard displayRing.indices.contains(index) else { return }
+        let key = displayRing[index]
+        if key == kTrackpadKey {
+            engine.trackpadMode = true
+        } else {
+            engine.trackpadMode = false
+            engine.runCommand("mouse \(key)")
         }
     }
 
@@ -212,11 +283,13 @@ struct MousePanel: View {
                 .foregroundColor(headerColor)
 
             #if os(macOS)
-            Picker("", selection: $selectedModeIndex) {
-                ForEach(modeRing.indices, id: \.self) { i in
-                    let key = modeRing[i]
-                    let name = allModes.first { $0.key == key }?.displayName ?? key
-                    Text(name).tag(i)
+            // NB: `Binding` is shadowed by a private typealias in this file
+            // (the mouse-button tuple), so fully qualify the SwiftUI Binding.
+            Picker("", selection: SwiftUI.Binding(
+                get: { effectiveModeIndex },
+                set: { selectedModeIndex = $0 })) {
+                ForEach(displayRing.indices, id: \.self) { i in
+                    Text(displayName(displayRing[i])).tag(i)
                 }
             }
             .pickerStyle(.menu)
@@ -225,19 +298,42 @@ struct MousePanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             #else
             Menu {
-                ForEach(modeRing.indices, id: \.self) { i in
-                    let key = modeRing[i]
-                    let name = allModes.first { $0.key == key }?.displayName ?? key
-                    Button(name) { selectedModeIndex = i }
+                ForEach(displayRing.indices, id: \.self) { i in
+                    Button(displayName(displayRing[i])) { selectedModeIndex = i }
                 }
             } label: {
-                Text(currentMode.displayName)
+                Text(displayName(displayRing[effectiveModeIndex]))
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(actionColor)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             #endif
         }
+    }
+
+    // MARK: - Trackpad gesture legend
+
+    /// Compact gesture-oriented legend shown in Trackpad mode (no L/M/R matrix).
+    private var trackpadLegend: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(trackpadGestureHints) { h in
+                HStack(spacing: 5) {
+                    Image(systemName: h.icon)
+                        .font(.system(size: 9))
+                        .foregroundColor(actionColor)
+                        .frame(width: 14)
+                    Text(h.title)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(headerColor)
+                        .frame(width: 42, alignment: .leading)
+                    Text(h.detail)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(labelColor)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Action grid

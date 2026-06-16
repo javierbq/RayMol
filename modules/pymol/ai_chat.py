@@ -37,7 +37,18 @@ if not _HAS_SDK:
 
 _cmd = None
 _has_ui = False
+_ui = None  # the bound UI sink module (ai_chat_ui on AppKit, ai_chat_swift in-app)
 _messages = []  # list of {'role': str, 'content': str | list}
+
+# When the embedding sets PYMOL_AI_SINK=swift (the SwiftUI/Metal app, incl. iOS),
+# force the headless print()-based sink AND the urllib HTTP path: the embedded
+# interpreter cannot run the claude_agent_sdk subprocess, so the in-app path must
+# be the hand-rolled Messages API call.
+_FORCE_SWIFT_SINK = (os.environ.get('PYMOL_AI_SINK', '').lower() == 'swift')
+if _FORCE_SWIFT_SINK:
+    _HAS_SDK = False
+    import urllib.request  # noqa: F401  (ensure fallback deps are available)
+    import urllib.error    # noqa: F401
 
 _ai_config = {
     'provider': 'anthropic',
@@ -102,7 +113,7 @@ RESPONSE_SCHEMA = {
 
 def _init(cmd_module):
     """Initialize the AI chat module, registering commands and optional UI."""
-    global _cmd, _has_ui
+    global _cmd, _has_ui, _ui
 
     _cmd = cmd_module
 
@@ -114,14 +125,51 @@ def _init(cmd_module):
         if val:
             _ai_config['api_keys'][provider] = val
 
-    try:
-        from pymol import ai_chat_ui
+    # Bind a UI sink. In the SwiftUI/Metal app (PYMOL_AI_SINK=swift, incl. iOS
+    # which has no AppKit) use the headless print()-tag sink; otherwise prefer
+    # the AppKit panel (ai_chat_ui) and fall back to the headless sink if PyObjC
+    # / AppKit is unavailable.
+    _ui = None
+    _has_ui = False
+    if _FORCE_SWIFT_SINK:
+        try:
+            from pymol import ai_chat_swift as _sink
+            _ui = _sink
+        except ImportError:
+            _ui = None
+    else:
+        try:
+            from pymol import ai_chat_ui as _sink
+            _ui = _sink
+        except ImportError:
+            try:
+                from pymol import ai_chat_swift as _sink
+                _ui = _sink
+            except ImportError:
+                _ui = None
+
+    if _ui is not None:
         _has_ui = True
-        ai_chat_ui._init()
-    except ImportError:
-        _has_ui = False
+        try:
+            _ui._init()
+        except Exception:
+            pass
 
     cmd_module.extend('ai_config', ai_config)
+
+
+def set_api_key(key, provider='anthropic'):
+    """Set the API key for *provider* (default anthropic) at runtime.
+
+    Used by the SwiftUI app to deliver the user's Keychain-stored key to the
+    backend after init. Also mirrors it into os.environ so any code path that
+    re-reads ANTHROPIC_API_KEY (and the SDK, if ever present) sees it.
+    """
+    global _ai_config
+    key = (key or '').strip()
+    _ai_config['api_keys'][provider] = key
+    if provider == 'anthropic' and key:
+        os.environ['ANTHROPIC_API_KEY'] = key
 
 
 def ai_config(args='', _self=None):
@@ -165,9 +213,8 @@ def ai_config(args='', _self=None):
 
 def _toggle_panel():
     """Toggle the AI chat panel, if the UI module is available."""
-    if _has_ui:
-        from pymol import ai_chat_ui
-        ai_chat_ui.toggle()
+    if _has_ui and _ui is not None:
+        _ui.toggle()
     else:
         print("Chat panel requires macOS with pyobjc-framework-Cocoa.")
 
@@ -178,30 +225,29 @@ def _on_user_message(text):
 
     _messages.append({'role': 'user', 'content': text})
 
-    if _has_ui:
-        from pymol import ai_chat_ui
-        ai_chat_ui.show_message('user', text)
-        ai_chat_ui.show_status('Thinking...')
+    if _has_ui and _ui is not None:
+        _ui.show_message('user', text)
+        _ui.show_status('Thinking...')
 
     key = _ai_config['api_keys'].get('anthropic', '')
     if not key:
         error_msg = (
             "No API key set. "
-            "Run: ai_config key=YOUR_ANTHROPIC_API_KEY"
+            "Paste your Anthropic API key in Settings (stored in the Keychain), "
+            "or run: ai_config key=YOUR_ANTHROPIC_API_KEY"
         )
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.show_message('assistant', error_msg)
-            ai_chat_ui.show_status('')
+        if _has_ui and _ui is not None:
+            _ui.show_message('error', error_msg)
+            _ui.show_status('')
+            _ui.set_busy(False)
         else:
             print(error_msg)
         return
 
     global _worker_active
     if _worker_active:
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.show_message('assistant', 'Still processing the previous request...')
+        if _has_ui and _ui is not None:
+            _ui.show_message('assistant', 'Still processing the previous request...')
         return
     _worker_active = True
     t = threading.Thread(target=_worker, daemon=True)
@@ -212,9 +258,8 @@ def clear_conversation():
     """Reset the conversation history and clear the UI (if available)."""
     global _messages
     _messages = []
-    if _has_ui:
-        from pymol import ai_chat_ui
-        ai_chat_ui.clear_messages()
+    if _has_ui and _ui is not None:
+        _ui.clear_messages()
 
 
 _worker_active = False
@@ -226,9 +271,8 @@ _worker_active = False
 def _worker():
     """Background thread: dispatch to SDK or fallback worker."""
     global _worker_active
-    if _has_ui:
-        from pymol import ai_chat_ui
-        ai_chat_ui.set_busy(True)
+    if _has_ui and _ui is not None:
+        _ui.set_busy(True)
     try:
         if _HAS_SDK:
             _worker_impl_sdk()
@@ -236,9 +280,8 @@ def _worker():
             _worker_impl_fallback()
     finally:
         _worker_active = False
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.set_busy(False)
+        if _has_ui and _ui is not None:
+            _ui.set_busy(False)
 
 
 # ---------------------------------------------------------------------------
@@ -259,14 +302,12 @@ async def _agent_query():
     global _messages
 
     def _ui_status(text):
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.update_on_main_thread(None, None, None, status=text)
+        if _has_ui and _ui is not None:
+            _ui.update_on_main_thread(None, None, None, status=text)
 
     def _ui_msg(role, text):
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.update_on_main_thread(role, text, [])
+        if _has_ui and _ui is not None:
+            _ui.update_on_main_thread(role, text, [])
 
     try:
         # Ensure ANTHROPIC_API_KEY is set in the environment for the SDK
@@ -368,9 +409,8 @@ async def _agent_query():
             _ui_status('Executing...')
             _execute_script(script)
 
-        if questions and _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.show_question_buttons(questions)
+        if questions and _has_ui and _ui is not None:
+            _ui.show_question_buttons(questions)
 
         _ui_status('')
 
@@ -388,14 +428,12 @@ def _worker_impl_fallback():
     global _messages
 
     def _ui_status(text):
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.show_status(text)
+        if _has_ui and _ui is not None:
+            _ui.show_status(text)
 
     def _ui_msg(role, text):
-        if _has_ui:
-            from pymol import ai_chat_ui
-            ai_chat_ui.update_on_main_thread(role, text, [])
+        if _has_ui and _ui is not None:
+            _ui.update_on_main_thread(role, text, [])
 
     try:
         key = _ai_config['api_keys'].get('anthropic', '')
@@ -462,9 +500,8 @@ def _worker_impl_fallback():
                 _ui_status('Executing...')
                 _execute_script(script)
 
-            if questions and _has_ui:
-                from pymol import ai_chat_ui
-                ai_chat_ui.show_question_buttons(questions)
+            if questions and _has_ui and _ui is not None:
+                _ui.show_question_buttons(questions)
 
             _ui_status('')
             break

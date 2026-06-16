@@ -1826,6 +1826,7 @@ struct SettingsSheet: View {
     @EnvironmentObject var engine: PyMOLEngine
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    @State private var aiKey = ""
 
     private var filtered: [SettingItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1840,6 +1841,8 @@ struct SettingsSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }
             }.padding(16)
+
+            aiSection
 
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -1867,12 +1870,47 @@ struct SettingsSheet: View {
                 .listStyle(.plain)
             }
         }
-        .onAppear { if engine.settingsCatalog.isEmpty { engine.loadSettingsCatalog() } }
+        .onAppear {
+            if engine.settingsCatalog.isEmpty { engine.loadSettingsCatalog() }
+            aiKey = KeychainHelper.loadAPIKey()
+        }
         #if os(iOS)
         .presentationDetents([.large])
         #else
         .frame(width: 460, height: 560)
         #endif
+    }
+
+    // "AI" section: paste the Anthropic API key (stored in the Keychain and
+    // delivered to the embedded pymol.ai_chat backend). Same store the ChatPanel
+    // key button uses, so the two stay in sync.
+    private var aiSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AI").font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                SecureField("Anthropic API key (sk-ant-…)", text: $aiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .onSubmit { saveAIKey() }
+                Button("Save") { saveAIKey() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Text("Stored locally in the device Keychain; sent only to the Anthropic API. Used by the AI Chat panel.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    private func saveAIKey() {
+        let trimmed = aiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        KeychainHelper.saveAPIKey(trimmed)
+        engine.setAIKey(trimmed)
     }
 }
 

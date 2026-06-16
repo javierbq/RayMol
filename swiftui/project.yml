@@ -44,7 +44,13 @@ targets:
         # resolution. Without it the app is letterboxed at a legacy size on
         # physical devices (the Simulator is more lenient).
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: PyMOL
+        # User-facing app brand. CFBundleDisplayName = Springboard/home-screen
+        # name (iOS) — a supported INFOPLIST_KEY_*. CFBundleName (macOS title
+        # bar + app menu) is NOT a supported INFOPLIST_KEY_* and the generated
+        # plist always overwrites it with PRODUCT_NAME (= PyMOLViewer), so it's
+        # forced to RayMol in a post-build step below. Bundle id + PRODUCT_NAME
+        # + on-disk PyMOLViewer.app are unchanged.
+        INFOPLIST_KEY_CFBundleDisplayName: RayMol
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.education
         # iOS orientations: portrait + both landscapes, no upside-down (a
         # molecular viewer flipped 180° is disorienting and serves no purpose).
@@ -61,6 +67,19 @@ targets:
     # PLATFORM_NAME so the macOS target is unaffected. The xcframework has no
     # macOS slice, so a native embed dependency can't be used on a shared target.
     postBuildScripts:
+      # User-facing app brand: force CFBundleName = RayMol. The generated
+      # Info.plist derives CFBundleName from PRODUCT_NAME (= PyMOLViewer) and
+      # there is no INFOPLIST_KEY_* for it, so set it directly on the built
+      # plist. Runs on BOTH platforms (macOS title bar / app menu + iOS).
+      # PRODUCT_NAME, bundle id, and the on-disk PyMOLViewer.app are unchanged.
+      - name: "Brand: set CFBundleName = RayMol"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
+          /usr/bin/plutil -replace CFBundleName -string "RayMol" "$PLIST"
+          echo "CFBundleName -> RayMol ($PLIST)"
       - name: "iOS: Embed Python.framework"
         basedOnDependencyAnalysis: false
         script: |

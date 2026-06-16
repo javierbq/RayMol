@@ -65,7 +65,7 @@ final class MovieExporter: ObservableObject {
         let tmp = FileManager.default.temporaryDirectory
         frameDir = tmp.appendingPathComponent("pymol_frames_\(UUID().uuidString.prefix(6))")
         try? FileManager.default.createDirectory(at: frameDir!, withIntermediateDirectories: true)
-        outURL = tmp.appendingPathComponent("PyMOL_movie.\(format == .mp4 ? "mp4" : "gif")")
+        outURL = tmp.appendingPathComponent("RayMol_movie.\(format == .mp4 ? "mp4" : "gif")")
         try? FileManager.default.removeItem(at: outURL!)
 
         guard setupEncoder() else {
