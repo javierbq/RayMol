@@ -56,6 +56,14 @@ struct PyMOLApp: App {
                 // Accessibility. PYMOL_AUTOLANDSCAPE=left|right; absent = as-is.
                 .onAppear { Self.forceOrientationIfRequested() }
             #endif
+                // Open a file handed to RayMol by the OS (Finder double-click /
+                // "Open With", iOS Files / Share-sheet "Open in RayMol"). The
+                // registered document types (see project.yml) route these here.
+                // PyMOL infers the format from the extension; the object name is
+                // the sanitized filename stem. Engine init runs in ContentView's
+                // .onAppear, so on a cold launch the URL may arrive before the
+                // engine is ready — loadOpenedFile retries briefly until it is.
+                .onOpenURL { url in loadOpenedFile(url, into: engine) }
         }
         #if os(macOS)
         .windowStyle(.titleBar)
@@ -79,4 +87,38 @@ struct PyMOLApp: App {
         }
     }
     #endif
+}
+
+// Load a file the OS handed to RayMol via .onOpenURL (Finder double-click /
+// "Open With" on macOS; Files / Share-sheet "Open in RayMol" on iOS). The OS may
+// deliver the URL before the engine has finished initializing (cold launch from a
+// file), so retry on the main queue until the engine is ready (capped so a failed
+// init never loops forever). The URL may be security-scoped (iOS document picker /
+// inbox), so copy it into the temp dir before handing the path to PyMOL, which
+// infers the format from the extension. The object name is the sanitized stem.
+@MainActor
+private func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
+    guard engine.isReady else {
+        guard attempt < 40 else { return }   // ~10s cap (40 × 250ms)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            loadOpenedFile(url, into: engine, attempt: attempt + 1)
+        }
+        return
+    }
+    let scoped = url.startAccessingSecurityScopedResource()
+    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
+    let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("open_\(UUID().uuidString.prefix(8)).\(ext)")
+    try? FileManager.default.removeItem(at: temp)
+    let path: String
+    if (try? FileManager.default.copyItem(at: url, to: temp)) != nil {
+        path = temp.path
+    } else {
+        path = url.path   // fall back to the original path (e.g. local macOS file)
+    }
+    let raw = url.deletingPathExtension().lastPathComponent
+    var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+    if name.isEmpty { name = "mol" }
+    engine.runCommand("load \(path), \(name)")
 }

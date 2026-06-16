@@ -15,6 +15,9 @@ build_xcode_device
 build_xcode_ios
 build_xcode_mac
 deps_ios
+# per-build derivedData (e.g. swiftui/dd_macos, swiftui/dd_ios)
+dd_macos
+dd_ios
 *.egg-info
 
 # per-user Xcode UI state (should never be tracked)

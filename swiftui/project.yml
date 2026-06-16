@@ -80,6 +80,34 @@ targets:
           [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
           /usr/bin/plutil -replace CFBundleName -string "RayMol" "$PLIST"
           echo "CFBundleName -> RayMol ($PLIST)"
+      # Register RayMol as a handler/default for molecular file formats. The
+      # generated Info.plist (GENERATE_INFOPLIST_FILE=YES) has no INFOPLIST_KEY_*
+      # for the complex CFBundleDocumentTypes / UTImportedTypeDeclarations arrays,
+      # so inject them directly on the built plist (both macOS + iOS). RayMol owns
+      # .pse (LSHandlerRank=Owner); the structure/small-molecule/map families are
+      # declared as imported UTIs (conforming to public.data, plus public.text for
+      # the text-based ones) so RayMol becomes a first-class handler and the
+      # default where nothing else claims the type. macOS registration happens via
+      # lsregister; iOS surfaces these in Files / Open-in.
+      - name: "Brand: register molecular document types"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
+          /usr/bin/plutil -replace CFBundleDocumentTypes -json '[
+            {"CFBundleTypeName":"PyMOL Session","CFBundleTypeRole":"Editor","LSHandlerRank":"Owner","LSItemContentTypes":["org.pymol.pse"]},
+            {"CFBundleTypeName":"Molecular Structure","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.structure"]},
+            {"CFBundleTypeName":"Small Molecule","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.small-molecule"]},
+            {"CFBundleTypeName":"Electron Density / Map","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.map"]}
+          ]' "$PLIST"
+          /usr/bin/plutil -replace UTImportedTypeDeclarations -json '[
+            {"UTTypeIdentifier":"org.pymol.pse","UTTypeDescription":"PyMOL Session","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["pse"]}},
+            {"UTTypeIdentifier":"org.pymol.structure","UTTypeDescription":"Molecular Structure","UTTypeConformsTo":["public.data","public.text"],"UTTypeTagSpecification":{"public.filename-extension":["pdb","ent","cif","mmcif","mcif","mmtf"]}},
+            {"UTTypeIdentifier":"org.pymol.small-molecule","UTTypeDescription":"Small Molecule","UTTypeConformsTo":["public.data","public.text"],"UTTypeTagSpecification":{"public.filename-extension":["sdf","mol","mol2","xyz","mae"]}},
+            {"UTTypeIdentifier":"org.pymol.map","UTTypeDescription":"Electron Density / Map","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["ccp4","mtz","dx","xplor","map","mrc"]}}
+          ]' "$PLIST"
+          echo "CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST"
       - name: "iOS: Embed Python.framework"
         basedOnDependencyAnalysis: false
         script: |
