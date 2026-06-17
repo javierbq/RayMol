@@ -1848,6 +1848,9 @@ struct SettingsSheet: View {
     @EnvironmentObject private var themeManager: ThemeManager   // re-render on theme switch
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    // Experimental feature flags (app-level, persisted). Same key the ContentView
+    // gates read, so toggling here shows/hides all Raymond UI immediately.
+    @AppStorage("raymol.experimental.aiAgent") private var aiAgentEnabled = false
 
     private var filtered: [SettingItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1862,6 +1865,19 @@ struct SettingsSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }
             }.padding(16)
+
+            // Experimental features (app-level). AI Assistant is opt-in.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("EXPERIMENTAL")
+                    .font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+                Toggle(isOn: $aiAgentEnabled) {
+                    Label("AI Assistant (Raymond)", systemImage: "bubble.left.and.bubble.right")
+                }
+                Text("Adds the Raymond AI panel that can drive RayMol. Requires your own API key.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16).padding(.bottom, 10)
+            Divider()
 
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)

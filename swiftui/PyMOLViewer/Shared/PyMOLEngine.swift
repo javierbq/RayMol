@@ -70,6 +70,11 @@ final class PyMOLEngine: ObservableObject {
     // coordinator on resize). Used by the Export menu's "current size" render.
     @Published var viewportPixelSize: CGSize = .zero
 
+    // While true (set during a panel-divider drag), the MetalViewport freezes its
+    // drawable size so a fast drag doesn't reallocate all offscreen targets every
+    // frame (choppy + OOM). Cleared on release → one reshape at the final size.
+    var suppressDrawableResize = false
+
     // Representation inspector state.
     // Per-object active representations + their current setting values + color
     // override, populated by pollDetails()/parseObjectDetailFeedback().

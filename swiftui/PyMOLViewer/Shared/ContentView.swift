@@ -20,6 +20,10 @@ struct ContentView: View {
     // Surface the AI chat in the right column by default (the toolbar toggle can
     // hide it). The backend is wired to the headless ai_chat_swift sink.
     @State private var showChatPanel = true
+    // Raymond (AI agent) is an EXPERIMENTAL feature, OFF by default. When off,
+    // ALL Raymond UI is hidden (panel, tabs, toggles, driving overlay). Enabled
+    // via Settings → Experimental. Persisted app-wide.
+    @AppStorage("raymol.experimental.aiAgent") private var aiAgentEnabled = false
 
     // Export menu state. exportRayTraced persists across launches; when on, all
     // image exports are ray-traced (AO + shadows) regardless of the live view.
@@ -69,7 +73,7 @@ struct ContentView: View {
     // Covers the entire window/screen (including side panels) and blocks input.
     // Attached at the same points as busyOverlay in both layouts.
     @ViewBuilder private var raymondOverlay: some View {
-        if engine.chatBusy {
+        if aiAgentEnabled && engine.chatBusy {
             RaymondDrivingOverlay()
                 .transition(.opacity)
         }
@@ -207,14 +211,14 @@ struct ContentView: View {
                     .environmentObject(engine)
                     .environmentObject(themeManager)
                     .frame(width: 340)
-            } else if showObjectPanel || showChatPanel {
+            } else if showObjectPanel || (showChatPanel && aiAgentEnabled) {
                 VStack(spacing: 0) {
                     if showObjectPanel {
                         ObjectPanel()
                             .frame(minHeight: 150)
                     }
 
-                    if showChatPanel {
+                    if showChatPanel && aiAgentEnabled {
                         Divider()
                         ChatPanel()
                             .frame(minHeight: 200)
@@ -316,6 +320,10 @@ struct ContentView: View {
     @State private var showBuilderSheet = false
     @State private var showExportSheet = false
     @State private var showSettingsSheet = false
+    // The panel + viewport FRAME resize live while dragging the divider, but the
+    // Metal DRAWABLE is frozen during the drag (engine.suppressDrawableResize) so
+    // the renderer doesn't reallocate all offscreen targets (MSAA/SSAO/shadow/RT/
+    // OIT/post) every frame — the choppy/OOM cause. One reshape fires on release.
     // Test affordance (PYMOL_AUTOEXPORTMOVIE="mp4|gif,first,last"): run a headless
     // movie export and copy the result to /tmp so the harness can validate it.
     @StateObject private var exportTester = MovieExporter()
@@ -587,7 +595,7 @@ struct ContentView: View {
         // land* state; iPad uses the show* bools (see consoleBinding etc.).
         let cTerm = consoleBinding.wrappedValue
         let cObj  = objectsBinding.wrappedValue
-        let cRay  = raymondBinding.wrappedValue
+        let cRay  = raymondBinding.wrappedValue && aiAgentEnabled   // experimental gate
         let showRight = cObj || cRay
         // Portrait bottom-panel height (Objects + Raymond below the viewer),
         // resizable via the same divider/panelFrac the iPhone layout uses.
@@ -775,7 +783,9 @@ struct ContentView: View {
             paneRow("Console",  "terminal",                       consoleBinding)
             paneRow("Sequence", "textformat.abc",                 $engine.sequenceVisible)
             paneRow("Objects",  "cube",                           objectsBinding)
-            paneRow("Raymond",  "bubble.left.and.bubble.right",   raymondBinding)
+            if aiAgentEnabled {
+                paneRow("Raymond",  "bubble.left.and.bubble.right",   raymondBinding)
+            }
         }
         .padding(6)
         .frame(minWidth: 240)
@@ -868,7 +878,7 @@ struct ContentView: View {
                 .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
             SequencePanel()
                 .tabItem { Label("Sequence", systemImage: "textformat.abc") }.tag(2)
-            if kShowChatTab {
+            if kShowChatTab && aiAgentEnabled {
                 ChatPanel()
                     .tabItem { Label("Raymond", systemImage: "bubble.left.and.bubble.right") }.tag(3)
             }
@@ -892,6 +902,12 @@ struct ContentView: View {
         .gesture(
             DragGesture(minimumDistance: 2)
                 .onChanged { v in
+                    // Freeze the Metal drawable for the duration of the drag so the
+                    // renderer doesn't reallocate all offscreen targets every frame
+                    // (the choppy/OOM cause). The panel + viewport frame still
+                    // resize live (cheap SwiftUI); the viewport content just scales
+                    // until release, when one reshape snaps it crisp.
+                    engine.suppressDrawableResize = true
                     let d = landscape ? -v.translation.width : -v.translation.height
                     // Bottom panel can grow to near-full (0.92) so content like AI
                     // Chat can use all the space; the iPad side column stays ≤0.45.
@@ -899,9 +915,9 @@ struct ContentView: View {
                 }
                 .onEnded { _ in
                     committedFrac = panelFrac
-                    // Remember the manual size only while collapsed, so it's what
-                    // we restore to after an auto-grown detail view closes.
                     if engine.expandedDetail == nil { collapsedFrac = panelFrac }
+                    // Resume live drawable sizing → exactly one reshape at the final size.
+                    engine.suppressDrawableResize = false
                 }
         )
     }
@@ -1241,8 +1257,10 @@ struct ContentView: View {
             Toggle(isOn: $showCommandPanel) {
                 Label("Console", systemImage: "terminal")
             }
-            Toggle(isOn: $showChatPanel) {
-                Label("Raymond", systemImage: "bubble.left.and.bubble.right")
+            if aiAgentEnabled {
+                Toggle(isOn: $showChatPanel) {
+                    Label("Raymond", systemImage: "bubble.left.and.bubble.right")
+                }
             }
         }
     }

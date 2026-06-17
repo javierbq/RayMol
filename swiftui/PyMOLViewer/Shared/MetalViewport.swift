@@ -264,8 +264,31 @@ extension MetalViewport {
             engine?.reshape(width: Int(size.width), height: Int(size.height))
         }
 
+        private var wasSuppressed = false
+
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
+            // Panel-resize drag: while suppressed, freeze the drawable size so the
+            // renderer doesn't reallocate offscreen targets on every frame (choppy
+            // + OOM). On resume, snap the drawable to the current bounds ONCE,
+            // which fires drawableSizeWillChange → a single reshape.
+            let suppress = engine.suppressDrawableResize
+            if suppress != wasSuppressed {
+                wasSuppressed = suppress
+                view.autoResizeDrawable = !suppress
+                if !suppress {
+                    #if os(iOS)
+                    let scale = view.contentScaleFactor
+                    #else
+                    let scale = view.window?.backingScaleFactor ?? 2.0
+                    #endif
+                    let target = CGSize(width: view.bounds.width * scale,
+                                        height: view.bounds.height * scale)
+                    if target.width > 0, target.height > 0, target != view.drawableSize {
+                        view.drawableSize = target   // → drawableSizeWillChange → one reshape
+                    }
+                }
+            }
             // Build RendererMetal on the first frame (bridge no-ops thereafter),
             // then hand off this frame's drawable + pass descriptor and render.
             engine.setupMetalRenderer(view: view)
