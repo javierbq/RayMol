@@ -30,3 +30,4 @@ xcuserdata
 .claude/
 .superpowers/
 *-this-session-is-being-continued-*.txt
+build_ios_dd/
