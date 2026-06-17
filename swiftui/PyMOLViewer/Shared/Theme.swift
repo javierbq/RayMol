@@ -155,11 +155,12 @@ extension Color {
 // MARK: - Curated presets
 
 extension Theme {
-    // Stable IDs so persistence (active-id) survives relaunch.
-    static let midnightID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-    static let paperID    = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
-    static let terminalID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
-    static let systemID   = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+    // Stable IDs so persistence (active-id) survives relaunch. classicID reuses
+    // the old Midnight slot so anyone previously on Midnight lands on Classic.
+    static let classicID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    static let paperID   = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    static let sunsetID  = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
+    static let dawnID    = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
 
     /// Chain color cycle (distinct, color-blind-leaning hues).
     static let defaultChainCycle: [RGBA] = [
@@ -176,16 +177,18 @@ extension Theme {
         "I": RGBA(0.58, 0.00, 0.58)
     ]
 
-    static let midnight = Theme(
-        id: midnightID, name: "Midnight", builtIn: true, appearance: .dark,
-        accent: RGBA(0.29, 0.565, 0.851), bubble: RGBA(0.29, 0.565, 0.851),
-        selectionName: RGBA(0.30, 1.00, 1.00), tabTint: RGBA(0.29, 0.565, 0.851),
+    /// Classic PyMOL: black viewport, neutral dark chrome, standard PyMOL
+    /// element/chain colors, no real-time shadows — the canonical look.
+    static let classic = Theme(
+        id: classicID, name: "Classic", builtIn: true, appearance: .dark,
+        accent: RGBA(0.30, 0.60, 0.95), bubble: RGBA(0.30, 0.60, 0.95),
+        selectionName: RGBA(0.95, 0.35, 0.85), tabTint: RGBA(0.30, 0.60, 0.95),
         viewportBackground: RGBA(0.0, 0.0, 0.0),
-        terminalFont: FontSpec(family: .monospaced, size: 11), terminalText: RGBA(0.0, 1.0, 0.0),
-        panelBackground: RGBA(0.15, 0.15, 0.17), panelText: RGBA(0.85, 0.85, 0.85),
+        terminalFont: FontSpec(family: .monospaced, size: 11), terminalText: RGBA(0.85, 0.85, 0.85),
+        panelBackground: RGBA(0.13, 0.13, 0.15), panelText: RGBA(0.88, 0.88, 0.90),
         chainCycle: defaultChainCycle, elementColors: defaultElementColors,
         defaultStyle: .cartoon, outline: false, flatSheets: false, fancyHelices: false,
-        rayTrace: false, shadows: true)
+        rayTrace: false, shadows: false)
 
     static let paper = Theme(
         id: paperID, name: "Paper", builtIn: true, appearance: .light,
@@ -198,22 +201,39 @@ extension Theme {
         defaultStyle: .cartoon, outline: true, flatSheets: true, fancyHelices: false,
         rayTrace: false, shadows: true)
 
-    static let terminal = Theme(
-        id: terminalID, name: "Terminal", builtIn: true, appearance: .dark,
-        accent: RGBA(0.20, 0.90, 0.40), bubble: RGBA(0.10, 0.40, 0.15),
-        selectionName: RGBA(0.20, 0.90, 0.40), tabTint: RGBA(0.20, 0.90, 0.40),
-        viewportBackground: RGBA(0.0, 0.05, 0.0),
-        terminalFont: FontSpec(family: .monospaced, size: 12), terminalText: RGBA(0.20, 1.0, 0.30),
-        panelBackground: RGBA(0.04, 0.07, 0.04), panelText: RGBA(0.20, 0.90, 0.40),
+    /// Sunset: warm dusk — deep plum viewport, orange/magenta accents, fancy
+    /// helices + shadows for a rich dark look.
+    static let sunset = Theme(
+        id: sunsetID, name: "Sunset", builtIn: true, appearance: .dark,
+        accent: RGBA(1.00, 0.55, 0.25), bubble: RGBA(0.85, 0.35, 0.45),
+        selectionName: RGBA(1.00, 0.40, 0.70), tabTint: RGBA(1.00, 0.55, 0.25),
+        viewportBackground: RGBA(0.09, 0.06, 0.13),
+        terminalFont: FontSpec(family: .monospaced, size: 11), terminalText: RGBA(1.00, 0.78, 0.55),
+        panelBackground: RGBA(0.16, 0.11, 0.16), panelText: RGBA(0.95, 0.90, 0.86),
         chainCycle: defaultChainCycle, elementColors: defaultElementColors,
-        defaultStyle: .sticks, outline: false, flatSheets: false, fancyHelices: false)
+        defaultStyle: .cartoon, outline: false, flatSheets: false, fancyHelices: true,
+        rayTrace: false, shadows: true)
 
-    /// System = Midnight chrome but appearance follows the OS.
-    static var system: Theme {
-        var t = midnight
-        t.id = systemID; t.name = "System"; t.appearance = .system
-        return t
+    /// Dawn: soft sunrise — warm off-white viewport, coral accents, outline +
+    /// flat sheets for a clean light look.
+    static let dawn = Theme(
+        id: dawnID, name: "Dawn", builtIn: true, appearance: .light,
+        accent: RGBA(0.95, 0.45, 0.35), bubble: RGBA(0.95, 0.50, 0.40),
+        selectionName: RGBA(0.90, 0.40, 0.25), tabTint: RGBA(0.95, 0.45, 0.35),
+        viewportBackground: RGBA(1.0, 0.97, 0.93),
+        terminalFont: FontSpec(family: .monospaced, size: 11), terminalText: RGBA(0.35, 0.20, 0.15),
+        panelBackground: RGBA(0.98, 0.94, 0.90), panelText: RGBA(0.22, 0.15, 0.13),
+        chainCycle: defaultChainCycle, elementColors: defaultElementColors,
+        defaultStyle: .cartoon, outline: true, flatSheets: true, fancyHelices: false,
+        rayTrace: false, shadows: true)
+
+    static let builtInPresets: [Theme] = [classic, paper, sunset, dawn]
+
+    /// SwiftUI color scheme derived from the chrome (panel) luminance, so native
+    /// controls always match the palette — no separate appearance toggle to fight
+    /// it. (The `appearance` field is retained for Codable back-compat only.)
+    var resolvedColorScheme: ColorScheme {
+        let l = 0.2126 * panelBackground.r + 0.7152 * panelBackground.g + 0.0722 * panelBackground.b
+        return l < 0.5 ? .dark : .light
     }
-
-    static let builtInPresets: [Theme] = [midnight, paper, terminal, system]
 }

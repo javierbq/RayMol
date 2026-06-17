@@ -42,6 +42,11 @@ final class PyMOLEngine: ObservableObject {
     @Published var isBusy = false
     @Published var busyLabel = ""
     @Published var sequenceVisible = false
+    // True while the Theme studio preview is active: the viewport shows the
+    // reserved __theme_preview example, so the sequence panel must read THAT
+    // object (it's underscore-prefixed → excluded from public_objects) to stay
+    // in sync with the displayed structure instead of the user's hidden objects.
+    var themePreviewActive = false
 
     // MARK: AI chat (Claude/Anthropic backend in pymol.ai_chat)
     // The Python backend runs the LLM loop on its own worker thread and reports
@@ -646,13 +651,18 @@ final class PyMOLEngine: ObservableObject {
         // data/demo/pept.pdb is bundled on both platforms (project.yml ditto data/).
         let path = Bundle.main.path(forResource: "pept", ofType: "pdb", inDirectory: "data/demo")
             ?? Bundle.main.path(forResource: "pept", ofType: "pdb") ?? ""
+        themePreviewActive = true
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.begin(r'''\(path)''')")
+        if sequenceVisible { fetchSequences() }
     }
 
     /// Re-apply the themed cartoon+sticks rep to the example after a live edit.
     func refreshThemePreview() {
         guard isReady else { return }
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.style()")
+        // Re-publish the example's sequence so chain/element color edits recolor
+        // the sequence strip live, keeping it in sync with the previewed structure.
+        if sequenceVisible { fetchSequences() }
     }
 
     /// Delete the example and restore the captured session, then refresh panels.
@@ -663,6 +673,7 @@ final class PyMOLEngine: ObservableObject {
     /// changes never restyle existing objects.)
     func endThemePreview() {
         guard isReady else { return }
+        themePreviewActive = false
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.restore()")
         applyTheme(ThemeManager.shared.active)
         refreshAfterRestore()
@@ -892,19 +903,25 @@ final class PyMOLEngine: ObservableObject {
         // Swift reads the file (same process TMPDIR) on seeing it.
         // Each residue carries its guide-atom color index; a color table maps
         // index -> RGB so the panel can reflect the real molecular coloring.
+        // While the theme studio preview is active, read the reserved example
+        // object (excluded from public_objects) so the strip matches the viewport.
+        let names = themePreviewActive
+            ? "['__theme_preview']"
+            : "list(_sc.get_names('public_objects') or [])"
         runPython(
             "import json, os, tempfile\n"
             + "from pymol import cmd as _sc\n"
             + "_out = []\n"
             + "_cols = {}\n"
-            + "for _o in (_sc.get_names('public_objects') or []):\n"
+            + "for _o in \(names):\n"
             + "    _r = []\n"
             + "    try:\n"
             + "        _sc.iterate('(%s) and guide' % _o, '_r.append((chain, resi, resn, str(color)))', space={'_r': _r})\n"
             + "    except Exception:\n"
             + "        pass\n"
             + "    if _r:\n"
-            + "        _out.append({'name': _o, 'residues': _r})\n"
+            + "        _name = 'example' if _o == '__theme_preview' else _o\n"
+            + "        _out.append({'name': _name, 'residues': _r})\n"
             + "        for _t in _r:\n"
             + "            _cols[_t[3]] = None\n"
             + "for _ci in list(_cols.keys()):\n"

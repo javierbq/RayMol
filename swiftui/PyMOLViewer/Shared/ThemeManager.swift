@@ -35,7 +35,7 @@ final class ThemeManager: ObservableObject {
         // Resolve active by stored id (preset or custom), default Midnight.
         let storedID = d.string(forKey: activeKey).flatMap { UUID(uuidString: $0) }
         let pool = Theme.builtInPresets + loadedCustom
-        active = pool.first(where: { $0.id == storedID }) ?? Theme.midnight
+        active = pool.first(where: { $0.id == storedID }) ?? Theme.classic
         firstBoot = d.object(forKey: firstBootKey) == nil
     }
 
@@ -51,8 +51,8 @@ final class ThemeManager: ObservableObject {
     func saveCustom(_ theme: Theme, engine: PyMOLEngine? = nil) {
         var t = theme
         t.builtIn = false
-        if t.id == Theme.midnightID || t.id == Theme.paperID
-            || t.id == Theme.terminalID || t.id == Theme.systemID {
+        if t.id == Theme.classicID || t.id == Theme.paperID
+            || t.id == Theme.sunsetID || t.id == Theme.dawnID {
             t.id = UUID()   // never overwrite a preset id
         }
         if let i = custom.firstIndex(where: { $0.id == t.id }) {
@@ -67,7 +67,7 @@ final class ThemeManager: ObservableObject {
     func deleteCustom(_ theme: Theme) {
         custom.removeAll { $0.id == theme.id }
         persistCustom()
-        if active.id == theme.id { active = Theme.midnight; persistActive() }
+        if active.id == theme.id { active = Theme.classic; persistActive() }
     }
 
     func markFirstBootDone() {

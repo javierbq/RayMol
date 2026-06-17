@@ -23,6 +23,9 @@ struct ThemeStudioPanel: View {
     #else
     @State private var showCustomize = false
     #endif
+    // The Presets gallery auto-collapses after a theme is picked so the Customize
+    // section rises and gets more room (tap the Presets header to re-expand).
+    @State private var presetsExpanded = true
     @State private var saveName = ""
     @State private var showSavePrompt = false
 
@@ -36,28 +39,44 @@ struct ThemeStudioPanel: View {
         VStack(spacing: 0) {
             header
             Divider()
-            // Presets rendered OUTSIDE the Form (a LazyVGrid inside a macOS Form
-            // section mis-sized its cells, esp. when the Customize disclosure
-            // collapsed) so we control the layout deterministically.
+            // Fixed (non-scrolling): presets + the Customize toggle. Only the
+            // Customize editor scrolls (it's the long part), so the panel never
+            // forces the window/column taller than available and the rest stays put.
             presetsBlock
-            Divider()
-            // Customize editor + Save in a Form (auto control/label alignment).
-            Form {
-                Section {
-                    DisclosureGroup("Customize", isExpanded: $showCustomize) { editor }
+            Divider().padding(.horizontal, 16)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showCustomize.toggle() }
+            } label: {
+                HStack {
+                    Text("Customize").foregroundColor(panelText)
+                    Spacer()
+                    Image(systemName: showCustomize ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold)).foregroundColor(panelDim)
                 }
-                Section {
-                    Button { saveName = ""; showSavePrompt = true } label: {
-                        Label("Save as Preset…", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+                .contentShape(Rectangle())
             }
-            #if os(iOS)
-            .scrollContentBackground(.hidden)
-            #endif
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+
+            if showCustomize {
+                ScrollView {                                  // ONLY the settings scroll
+                    VStack(alignment: .leading, spacing: 12) { editor }
+                        .padding(.horizontal, 16).padding(.vertical, 4)
+                }
+                .frame(maxHeight: .infinity)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            Divider()
+            Button { saveName = ""; showSavePrompt = true } label: {
+                Label("Save as Preset…", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal, 16).padding(.vertical, 10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(panelBg)
         .onAppear { working = themeManager.active }
         .alert("Name your theme", isPresented: $showSavePrompt) {
@@ -112,21 +131,56 @@ struct ThemeStudioPanel: View {
     // MARK: - Galleries
 
     // Presets + custom themes, rendered in the panel's own VStack (not a Form).
+    // Collapsible: a tap on the header toggles it, and selecting a theme collapses
+    // it automatically (the compact header then shows the active theme's chip).
     private var presetsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Presets")
-                .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
-            presetGallery
-            if !themeManager.custom.isEmpty {
-                Text("My Themes")
-                    .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
-                    .padding(.top, 6)
-                customGallery
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { presetsExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("Presets")
+                        .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
+                    if !presetsExpanded {
+                        miniSwatch(themeManager.active)
+                        Text(themeManager.active.name)
+                            .font(.system(size: 12, weight: .medium)).foregroundColor(panelText)
+                    }
+                    Spacer()
+                    Image(systemName: presetsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold)).foregroundColor(panelDim)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if presetsExpanded {
+                presetGallery
+                if !themeManager.custom.isEmpty {
+                    Text("My Themes")
+                        .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
+                        .padding(.top, 6)
+                    customGallery
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    // Small color chip for the collapsed-header "active theme" indicator.
+    private func miniSwatch(_ t: Theme) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 5).fill(t.viewportBackground.color)
+            HStack(spacing: 2) {
+                Circle().fill(t.accent.color).frame(width: 7, height: 7)
+                Circle().fill(t.selectionName.color).frame(width: 7, height: 7)
+                Circle().fill(t.terminalText.color).frame(width: 7, height: 7)
+            }
+        }
+        .frame(width: 40, height: 24)
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
     }
 
     // FIXED-width cells (min == max) so the 64pt swatches don't float inside
@@ -174,6 +228,8 @@ struct ThemeStudioPanel: View {
             working = t
             themeManager.select(t, engine: engine)
             engine.refreshThemePreview()
+            // Collapse the gallery so Customize moves up and gets the space.
+            withAnimation(.easeInOut(duration: 0.2)) { presetsExpanded = false }
         }
     }
 
@@ -183,16 +239,15 @@ struct ThemeStudioPanel: View {
     private let elementOrder = ["N", "O", "S", "P", "H", "F", "CL", "BR", "I"]
 
     @ViewBuilder private var editor: some View {
-        // Appearance lives here now (folded out of the top to stop fighting the
-        // preset selection — the preset sets it, and you override it here).
-        Picker("Appearance", selection: Binding(
-            get: { working.appearance },
-            set: { working.appearance = $0; live() })) {
-            ForEach(Appearance.allCases) { Text($0.label).tag($0) }
-        }
-        .pickerStyle(.segmented)
-
+        // No appearance toggle: the app's light/dark scheme is derived from the
+        // theme's chrome luminance (Theme.resolvedColorScheme), so native controls
+        // always match the palette. Edit the Viewport/panel colors to change the
+        // look — dark colors make a dark theme, light colors a light theme.
         groupLabel("Chrome")
+        // The app/chrome color: panel background drives the whole UI surface AND
+        // the derived light/dark scheme (dark color → dark UI, light → light).
+        ColorPicker("App background", selection: bind(\.panelBackground))
+        ColorPicker("App text", selection: bind(\.panelText))
         ColorPicker("Accent", selection: bind(\.accent))
         ColorPicker("Chat bubble", selection: bind(\.bubble))
         ColorPicker("Selection name", selection: bind(\.selectionName))

@@ -346,6 +346,9 @@ private let actionMenuItems: [ActionMenuItem] = [
     .action(label: "Assign Sec. Struc.",  key: "dss"),
     .separator,
     .submenu(label: "Hydrogens", children: [
+        .action(label: "hide",             key: "h_hide"),
+        .action(label: "show",             key: "h_show"),
+        .separator,
         .action(label: "add",              key: "h_add"),
         .action(label: "add polar",        key: "h_add_polar"),
         .separator,
@@ -444,6 +447,8 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "gen_symm_8":         cmd = "symexp \(n)_, \(n), \(n), cutoff=8, segi=1"
     case "gen_symm_20":        cmd = "symexp \(n)_, \(n), \(n), cutoff=20, segi=1"
     // Hydrogens
+    case "h_hide":             cmd = "hide everything, (\(n)) and hydro"
+    case "h_show":             cmd = "show sticks, (\(n)) and hydro"
     case "h_add":              cmd = "h_add \(n); sort \(n) extend 1"
     case "h_add_polar":        cmd = "h_add \(n) & (don.|acc.); sort \(n) extend 1"
     case "h_remove":           cmd = "remove (\(n)) and hydro"
@@ -756,11 +761,15 @@ private struct ShowButton: View {
             // with the cartoon side-chain helper so it composes cleanly with a
             // cartoon. A common daily-use shortcut absent from the plain rep list.
             Menu("side chains") {
+                // Include `name CA` so the CA–CB bond is drawn (PyMOL's `sidechain`
+                // selection excludes the alpha-carbon, leaving sidechains floating
+                // off the backbone); cartoon_side_chain_helper yields the CA from
+                // the cartoon so the stick connects cleanly. Hydrogens excluded.
                 Button("as sticks") {
-                    engine.runCommand("show sticks, (\(name)) and sidechain; set cartoon_side_chain_helper, 1, \(name)")
+                    engine.runCommand("show sticks, (\(name)) and (sidechain or name CA) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
                 }
                 Button("as lines") {
-                    engine.runCommand("show lines, (\(name)) and sidechain")
+                    engine.runCommand("show lines, (\(name)) and (sidechain or name CA) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
                 }
                 Button("as spheres") {
                     engine.runCommand("show spheres, (\(name)) and sidechain")
@@ -797,7 +806,7 @@ private struct HideButton: View {
     var body: some View {
         Menu {
             Button("side chains") {
-                engine.runCommand("hide sticks, (\(name)) and sidechain; hide lines, (\(name)) and sidechain")
+                engine.runCommand("hide sticks, (\(name)) and (sidechain or name CA); hide lines, (\(name)) and (sidechain or name CA)")
             }
             Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in

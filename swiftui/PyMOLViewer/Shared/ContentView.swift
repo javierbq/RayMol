@@ -247,7 +247,7 @@ struct ContentView: View {
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
         }
-        .preferredColorScheme(themeManager.active.appearance.colorScheme)
+        .preferredColorScheme(themeManager.active.resolvedColorScheme)
         .tint(themeManager.active.tabTint.color)
         .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
         .onChange(of: showThemeStudio) { open in
@@ -256,6 +256,10 @@ struct ContentView: View {
         .onAppear {
             initializeEngine()
             maybePresentFirstBootTheme()
+            autoSelectThemeFromEnv()
+            if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+            }
         }
     }
 
@@ -400,14 +404,15 @@ struct ContentView: View {
                     if !gestureCoachSeen && !engine.objects.isEmpty { gestureCoachOverlay }
                 }
             }
-            // Full-bleed: the viewport uses every pixel, including under the
-            // notch / Dynamic Island and behind the (transparent) nav bar. The
-            // toolbar buttons are chrome and stay within the safe area, so they
-            // remain tappable and clear of the notch while the 3D view fills
-            // behind them. Ignore only the CONTAINER region (notch/bars) — NOT
-            // the keyboard — so keyboard avoidance still pushes the console +
+            // Full-bleed on iPhone: the viewport uses every pixel, including under
+            // the notch / Dynamic Island and behind the (transparent) nav bar, for
+            // an immersive 3D view. iPad keeps the standard safe area so the
+            // iPadOS 26 floating-toolbar capsule reserves its space and never
+            // overlaps the Objects panel / terminal (it floats over content that
+            // ignores the safe area). Ignore only the CONTAINER region (notch/bars)
+            // — NOT the keyboard — so keyboard avoidance still pushes the console +
             // command field up above the on-screen keyboard.
-            .ignoresSafeArea(.container, edges: .all)
+            .ignoresSafeArea(.container, edges: (hSize == .regular && vSize == .regular) ? [] : .all)
             // Measurement bar docks in the top safe area (below the status bar /
             // Dynamic Island / nav bar) and insets the viewport while active —
             // NOT a full-bleed overlay, which would slide under the notch.
@@ -480,7 +485,7 @@ struct ContentView: View {
             .sheet(isPresented: $showExportSheet) { MovieExportSheet() }
             .sheet(isPresented: $showSettingsSheet) { SettingsSheet() }
         }
-        .preferredColorScheme(themeManager.active.appearance.colorScheme)
+        .preferredColorScheme(themeManager.active.resolvedColorScheme)
         .tint(themeManager.active.tabTint.color)
         .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
         .onChange(of: showThemeStudio) { open in
@@ -521,8 +526,10 @@ struct ContentView: View {
                     if s == "builder" { showBuilderSheet = true }
                     if s == "export" { showExportSheet = true }
                     if s == "settings" { showSettingsSheet = true }
+                    if s == "theme" { withAnimation { showThemeStudio = true } }
                 }
             }
+            autoSelectThemeFromEnv()
             if let m = ProcessInfo.processInfo.environment["PYMOL_AUTOMEASURE"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
                     engine.setMeasureMode(MeasureKind(rawValue: m) ?? .distance)
@@ -1515,6 +1522,14 @@ struct ContentView: View {
     // Deferred so the engine/window is up before the panel animates in. On
     // iPhone portrait the bottom region is collapsed by default, so un-collapse
     // it too or the inline studio won't be visible.
+    // Test affordance (PYMOL_AUTOTHEME=Classic|Paper|Sunset|Dawn): select a built-in
+    // preset by name on launch so the screenshot harness can verify each look.
+    private func autoSelectThemeFromEnv() {
+        guard let name = ProcessInfo.processInfo.environment["PYMOL_AUTOTHEME"] else { return }
+        guard let t = themeManager.presets.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { themeManager.select(t, engine: engine) }
+    }
+
     private func maybePresentFirstBootTheme() {
         guard themeManager.firstBoot else { return }
         themeManager.markFirstBootDone()
