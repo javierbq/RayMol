@@ -36,11 +36,13 @@ struct ThemeStudioPanel: View {
         VStack(spacing: 0) {
             header
             Divider()
+            // Presets rendered OUTSIDE the Form (a LazyVGrid inside a macOS Form
+            // section mis-sized its cells, esp. when the Customize disclosure
+            // collapsed) so we control the layout deterministically.
+            presetsBlock
+            Divider()
+            // Customize editor + Save in a Form (auto control/label alignment).
             Form {
-                Section("Presets") { presetGallery }
-                if !themeManager.custom.isEmpty {
-                    Section("My Themes") { customGallery }
-                }
                 Section {
                     DisclosureGroup("Customize", isExpanded: $showCustomize) { editor }
                 }
@@ -109,26 +111,45 @@ struct ThemeStudioPanel: View {
 
     // MARK: - Galleries
 
-    // Wrapping grid so swatches reflow to the panel width (no horizontal-scroll
-    // truncation of the last preset, which clipped "System" on iPad).
-    private var swatchColumns: [GridItem] { [GridItem(.adaptive(minimum: 74), spacing: 10)] }
+    // Presets + custom themes, rendered in the panel's own VStack (not a Form).
+    private var presetsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Presets")
+                .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
+            presetGallery
+            if !themeManager.custom.isEmpty {
+                Text("My Themes")
+                    .font(.system(size: 12, weight: .semibold)).foregroundColor(panelDim)
+                    .padding(.top, 6)
+                customGallery
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    // FIXED-width cells (min == max) so the 64pt swatches don't float inside
+    // grow-to-fill adaptive cells; leftover width trails (left-aligned), and the
+    // row wraps consistently at any panel width.
+    private var swatchColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 72, maximum: 72), spacing: 12, alignment: .top)]
+    }
 
     private var presetGallery: some View {
-        LazyVGrid(columns: swatchColumns, alignment: .leading, spacing: 10) {
+        LazyVGrid(columns: swatchColumns, alignment: .leading, spacing: 12) {
             ForEach(themeManager.presets) { t in swatch(t) }
         }
-        .padding(.vertical, 4)
     }
 
     private var customGallery: some View {
-        LazyVGrid(columns: swatchColumns, alignment: .leading, spacing: 10) {
+        LazyVGrid(columns: swatchColumns, alignment: .leading, spacing: 12) {
             ForEach(themeManager.custom) { t in
                 swatch(t).contextMenu {
                     Button("Delete", role: .destructive) { themeManager.deleteCustom(t) }
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 
     private func swatch(_ t: Theme) -> some View {
