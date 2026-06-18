@@ -816,6 +816,10 @@ def get_pymol_version():
 
 
 def get_sources(subdirs, suffixes=(".c", ".cpp", ".mm")):
+    # Objective-C++ (.mm) sources are Apple-only (Metal / AppKit); never
+    # feed them to a non-Apple toolchain.
+    if not MAC:
+        suffixes = tuple(s for s in suffixes if s != ".mm")
     return sorted(
         [f for d in subdirs for s in suffixes for f in glob.glob(d + "/*" + s)]
     )

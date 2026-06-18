@@ -42,6 +42,15 @@ Z* -------------------------------------------------------------------
 #include "Vector.h"
 #include "main.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+#ifdef PYMOL_OPENMP
+#include <omp.h>
+#endif
+
 #ifdef NT
 #undef NT
 #endif
@@ -3314,11 +3323,21 @@ static int SurfaceJobRun(PyMOLGlobals* G, SurfaceJob* I)
 
     I->N = 0;
 
+    const bool surf_timing = getenv("PYMOL_SURFACE_TIMING") != nullptr;
+    double t_soldot0 = surf_timing ? UtilGetSeconds(G) : 0.0;
+
     sol_dot = SolventDotNew(G, I->coord.data(), I->atomInfo, probe_radius, ssp,
         present_vla, circumscribe, I->surfaceMode, I->surfaceSolvent,
         I->cavityCull, I->allVisibleFlag, I->maxVdw, I->cavityMode,
         I->cavityRadius, I->cavityCutoff);
     CHECKOK(ok, sol_dot);
+    if (surf_timing && sol_dot) {
+      fprintf(stderr,
+          "SURFACE_TIMING: stage=solvent_dot nAtom=%d nDot=%d ms=%.3f\n",
+          (int) I->atomInfo.size(), sol_dot->nDot,
+          (UtilGetSeconds(G) - t_soldot0) * 1000.0);
+      fflush(stderr);
+    }
     ok &= !G->Interrupt;
     if (ok) {
       if (!I->surfaceSolvent) {
@@ -3516,9 +3535,16 @@ static int SurfaceJobRun(PyMOLGlobals* G, SurfaceJob* I)
         float cutoff = point_sep * 5.0F;
         if ((cutoff > probe_radius) && (!I->surfaceSolvent))
           cutoff = probe_radius;
+        double t_tri0 = surf_timing ? UtilGetSeconds(G) : 0.0;
         I->T = TrianglePointsToSurface(G, I->V.data(), I->VN.data(), I->N,
             cutoff, &I->NT, I->S, nullptr, I->cavityMode);
         CHECKOK(ok, !I->T.empty());
+        if (surf_timing) {
+          fprintf(stderr,
+              "SURFACE_TIMING: stage=triangulate nVert=%d nTri=%d ms=%.3f\n",
+              I->N, I->NT, (UtilGetSeconds(G) - t_tri0) * 1000.0);
+          fflush(stderr);
+        }
         PRINTFB(G, FB_RepSurface, FB_Blather)
         " RepSurface: %i triangles.\n", I->NT ENDFB(G);
       }
@@ -4496,6 +4522,230 @@ static int SolventDotMarkDotsWithinProbeRadius(PyMOLGlobals* G, SolventDot* I,
   return ok;
 }
 
+/* ===================================================================
+ * Prototype: parallelized solvent-dot sampling (env-flagged)
+ *
+ * The per-atom solvent-dot sampling loop is embarrassingly parallel: every
+ * atom samples a fixed set of sphere points and tests each against a
+ * read-only neighbor map.  The only serial dependency in the original code
+ * is that accepted dots are appended into shared output arrays in atom
+ * order.  The parallel path below preserves that exact ordering (each thread
+ * owns a contiguous atom range and writes to a thread-local buffer; buffers
+ * are merged in thread/atom order), so it produces bit-identical output to
+ * the serial path and therefore an identical downstream triangulation.
+ *
+ * Controlled at runtime (no rebuild needed to A/B):
+ *   PYMOL_SURFACE_PARALLEL = unset|0|off  -> serial reference (default)
+ *                          = 1|on         -> parallel
+ *                          = verify        -> run both, compare, use serial
+ *   PYMOL_SURFACE_THREADS  = N            -> override thread count
+ * =================================================================== */
+
+/* Serial reference implementation of the per-atom solvent-dot sampling loop,
+ * factored out of SolventDotNew so the verify path can reuse it. Writes
+ * accepted dots/normals into the caller-provided arrays. */
+static int SolventDotComputeMainLoopSerial(PyMOLGlobals* G, SolventDot* I,
+    MapType* map, std::vector<SurfaceJobAtomInfo>& atom_info, float* coord,
+    int n_coord, int* present, SphereRec* sp, float probe_radius, int* dotCnt,
+    int stopDot, float* dotOut, float* normalOut, int* nDotOut)
+{
+  int ok = true;
+  SurfaceJobAtomInfo* a_atom_info = atom_info.data();
+  for (int a = 0; ok && a < n_coord; a++) {
+    OrthoBusyFast(G, a, n_coord * 5);
+    if ((!present) || (present[a])) {
+      int skip_flag = false;
+      ok = SolventDotFilterOutSameXYZ(
+          G, map, atom_info.data(), a_atom_info, coord, a, present, &skip_flag);
+      if (ok && !skip_flag) {
+        ok = SolventDotGetDotsAroundVertexInSphere(G, I, map, atom_info.data(),
+            a_atom_info, coord, a, present, sp, probe_radius, dotCnt, stopDot,
+            dotOut, normalOut, nDotOut);
+      }
+    }
+    a_atom_info++;
+  }
+  return ok;
+}
+
+#ifdef PYMOL_OPENMP
+/* Parallel implementation. Each thread processes a contiguous range of atoms
+ * into thread-local buffers, which are then concatenated in thread order.
+ * With explicit contiguous ranges and dynamic threads disabled, the merged
+ * order is exactly the serial atom order. */
+static int SolventDotComputeMainLoopParallel(PyMOLGlobals* G, SolventDot* I,
+    MapType* map, std::vector<SurfaceJobAtomInfo>& atom_info, float* coord,
+    int n_coord, int* present, SphereRec* sp, float probe_radius, int* dotCnt,
+    int stopDot, float* dotOut, float* normalOut, int* nDotOut, int nthreads)
+{
+  if (nthreads < 1)
+    nthreads = 1;
+  if (nthreads > n_coord)
+    nthreads = (n_coord > 0) ? n_coord : 1;
+
+  std::vector<std::vector<float>> tDot(nthreads);
+  std::vector<std::vector<float>> tNorm(nthreads);
+
+  omp_set_dynamic(0);
+#pragma omp parallel num_threads(nthreads)
+  {
+    int tid = omp_get_thread_num();
+    int nt = omp_get_num_threads();
+    int chunk = (n_coord + nt - 1) / nt;
+    int lo = tid * chunk;
+    int hi = lo + chunk;
+    if (hi > n_coord)
+      hi = n_coord;
+
+    std::vector<float>& vd = tDot[tid];
+    std::vector<float>& vn = tNorm[tid];
+    /* per-atom scratch, reused across this thread's atoms */
+    std::vector<float> sd(sp->nDot * 3);
+    std::vector<float> sn(sp->nDot * 3);
+    SurfaceJobAtomInfo* ainfo = atom_info.data();
+
+    for (int a = lo; a < hi; a++) {
+      if (G->Interrupt)
+        continue;
+      if ((!present) || (present[a])) {
+        SurfaceJobAtomInfo* a_atom_info = ainfo + a;
+        int skip_flag = false;
+        SolventDotFilterOutSameXYZ(G, map, atom_info.data(), a_atom_info, coord,
+            a, present, &skip_flag);
+        if (!skip_flag) {
+          int localN = 0, localCnt = 0;
+          /* identical per-atom computation as the serial path */
+          SolventDotGetDotsAroundVertexInSphere(G, I, map, atom_info.data(),
+              a_atom_info, coord, a, present, sp, probe_radius, &localCnt,
+              sp->nDot, sd.data(), sn.data(), &localN);
+          if (localN > 0) {
+            vd.insert(vd.end(), sd.begin(), sd.begin() + localN * 3);
+            vn.insert(vn.end(), sn.begin(), sn.begin() + localN * 3);
+          }
+        }
+      }
+    }
+  }
+
+  /* Merge thread-local buffers in atom order, reproducing the serial append
+   * order and the global stopDot cap. */
+  for (int t = 0; t < nthreads; t++) {
+    int navail = (int) (tDot[t].size() / 3);
+    int room = stopDot - *dotCnt;
+    int take = (navail < room) ? navail : room;
+    if (take > 0) {
+      memcpy(dotOut + (*nDotOut) * 3, tDot[t].data(),
+          (size_t) take * 3 * sizeof(float));
+      memcpy(normalOut + (*nDotOut) * 3, tNorm[t].data(),
+          (size_t) take * 3 * sizeof(float));
+      *nDotOut += take;
+      *dotCnt += take;
+    }
+  }
+  return true;
+}
+#endif
+
+/* Dispatch the solvent-dot main loop based on the runtime flag. */
+static int SolventDotMainLoop(PyMOLGlobals* G, SolventDot* I, MapType* map,
+    std::vector<SurfaceJobAtomInfo>& atom_info, float* coord, int n_coord,
+    int* present, SphereRec* sp, float probe_radius, int* dotCnt, int stopDot)
+{
+  int mode = 0; /* 0 = serial (default), 1 = parallel, 2 = verify */
+#ifdef PYMOL_OPENMP
+  int nthreads = omp_get_max_threads();
+  {
+    const char* e = getenv("PYMOL_SURFACE_PARALLEL");
+    if (e && *e) {
+      if (!strcmp(e, "verify"))
+        mode = 2;
+      else if (strcmp(e, "0") && strcmp(e, "off"))
+        mode = 1;
+    }
+    const char* tn = getenv("PYMOL_SURFACE_THREADS");
+    if (tn && atoi(tn) > 0)
+      nthreads = atoi(tn);
+  }
+#else
+  (void) stopDot;
+#endif
+
+  const bool timing = getenv("PYMOL_SURFACE_TIMING") != nullptr;
+  double t0 = timing ? UtilGetSeconds(G) : 0.0;
+
+  if (mode == 0) {
+    int rc = SolventDotComputeMainLoopSerial(G, I, map, atom_info, coord,
+        n_coord, present, sp, probe_radius, dotCnt, stopDot, I->dot,
+        I->dotNormal, &I->nDot);
+    if (timing) {
+      fprintf(stderr, "SURFACE_TIMING: stage=dot_loop mode=serial threads=1 "
+                      "ms=%.3f\n",
+          (UtilGetSeconds(G) - t0) * 1000.0);
+      fflush(stderr);
+    }
+    return rc;
+  }
+#ifdef PYMOL_OPENMP
+  if (mode == 1) {
+    int rc = SolventDotComputeMainLoopParallel(G, I, map, atom_info, coord,
+        n_coord, present, sp, probe_radius, dotCnt, stopDot, I->dot,
+        I->dotNormal, &I->nDot, nthreads);
+    if (timing) {
+      fprintf(stderr, "SURFACE_TIMING: stage=dot_loop mode=parallel "
+                      "threads=%d ms=%.3f\n",
+          nthreads, (UtilGetSeconds(G) - t0) * 1000.0);
+      fflush(stderr);
+    }
+    return rc;
+  }
+
+  /* mode == 2: verify — run both into separate buffers and compare. The
+   * serial result is used downstream so behavior is unchanged in verify. */
+  {
+    float* parDot = VLAlloc(float, (stopDot + 1) * 3);
+    float* parNorm = VLAlloc(float, (stopDot + 1) * 3);
+    int parN = 0, parCnt = 0;
+    int ok = true;
+
+    ok &= SolventDotComputeMainLoopParallel(G, I, map, atom_info, coord,
+        n_coord, present, sp, probe_radius, &parCnt, stopDot, parDot, parNorm,
+        &parN, nthreads);
+    ok &= SolventDotComputeMainLoopSerial(G, I, map, atom_info, coord, n_coord,
+        present, sp, probe_radius, dotCnt, stopDot, I->dot, I->dotNormal,
+        &I->nDot);
+
+    int nmism = 0;
+    double maxd = 0.0;
+    if (parN != I->nDot) {
+      fprintf(stderr,
+          "SURFACE_VERIFY: COUNT MISMATCH serial=%d parallel=%d threads=%d\n",
+          I->nDot, parN, nthreads);
+    } else {
+      for (int k = 0; k < I->nDot * 3; k++) {
+        double d = fabs((double) I->dot[k] - (double) parDot[k]);
+        double dn = fabs((double) I->dotNormal[k] - (double) parNorm[k]);
+        if (d > maxd)
+          maxd = d;
+        if (dn > maxd)
+          maxd = dn;
+        if (I->dot[k] != parDot[k] || I->dotNormal[k] != parNorm[k])
+          nmism++;
+      }
+      fprintf(stderr,
+          "SURFACE_VERIFY: nDot=%d threads=%d mismatched_floats=%d "
+          "max_abs_diff=%g %s\n",
+          I->nDot, nthreads, nmism, maxd,
+          (nmism == 0) ? "IDENTICAL" : "DIFFER");
+    }
+    fflush(stderr);
+    VLAFreeP(parDot);
+    VLAFreeP(parNorm);
+    return ok;
+  }
+#endif
+  return true;
+}
+
 static SolventDot* SolventDotNew(PyMOLGlobals* G, float* coord,
     std::vector<SurfaceJobAtomInfo>& atom_info, float probe_radius,
     SphereRec* sp, int* present, int circumscribe, int surface_mode,
@@ -4540,24 +4790,8 @@ static SolventDot* SolventDotNew(PyMOLGlobals* G, float* coord,
     if (map && ok) {
       ok &= MapSetupExpress(map);
       if (ok) {
-        int a;
-        int skip_flag;
-        SurfaceJobAtomInfo* a_atom_info = atom_info.data();
-        for (a = 0; ok && a < n_coord; a++) {
-          OrthoBusyFast(G, a, n_coord * 5);
-          if ((!present) || (present[a])) {
-            skip_flag = false;
-            ok = SolventDotFilterOutSameXYZ(G, map, atom_info.data(),
-                a_atom_info, coord, a, present, &skip_flag);
-            if (ok && !skip_flag) {
-              ok = SolventDotGetDotsAroundVertexInSphere(G, I, map,
-                  atom_info.data(), a_atom_info, coord, a, present, sp,
-                  probe_radius, &dotCnt, stopDot, I->dot, I->dotNormal,
-                  &I->nDot);
-            }
-          }
-          a_atom_info++;
-        }
+        ok = SolventDotMainLoop(G, I, map, atom_info, coord, n_coord, present,
+            sp, probe_radius, &dotCnt, stopDot);
       }
 
       /* for each pair of proximal atoms, circumscribe a circle for their
