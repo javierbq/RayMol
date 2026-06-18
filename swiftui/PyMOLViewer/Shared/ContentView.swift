@@ -25,6 +25,16 @@ enum RayMolBuild {
     }()
 }
 
+// macOS File-menu commands (defined on the App scene) post these; ContentView's
+// macOS layout observes them and runs the matching open/save/export action, so
+// the native menu items share the toolbar's logic + get standard shortcuts.
+extension Notification.Name {
+    static let raymolOpenFile     = Notification.Name("raymol.menu.openFile")
+    static let raymolFetch        = Notification.Name("raymol.menu.fetch")
+    static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
+    static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
@@ -186,7 +196,7 @@ struct ContentView: View {
             VSplitView {
                 if showCommandPanel {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                        .frame(minHeight: 44, idealHeight: 80, maxHeight: 300)
+                        .frame(minHeight: 44, idealHeight: 60, maxHeight: 150)
                 }
 
                 if engine.sequenceVisible {
@@ -262,6 +272,11 @@ struct ContentView: View {
             macMeasureToolbar
             panelToggles
         }
+        // Native File-menu commands → reuse the same actions as the toolbar.
+        .onReceive(NotificationCenter.default.publisher(for: .raymolOpenFile)) { _ in macOpenFile() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
         }

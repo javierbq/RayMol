@@ -69,6 +69,26 @@ struct PyMOLApp: App {
         #if os(macOS)
         .windowStyle(.titleBar)
         .defaultSize(width: 1200, height: 800)
+        // Native File menu: Open / Fetch / Save Session / Export Image, with
+        // standard shortcuts. Buttons post notifications that ContentView's macOS
+        // layout handles (reusing the toolbar's open/save/export logic).
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Open…") {
+                    NotificationCenter.default.post(name: .raymolOpenFile, object: nil)
+                }.keyboardShortcut("o", modifiers: .command)
+                Button("Fetch from PDB…") {
+                    NotificationCenter.default.post(name: .raymolFetch, object: nil)
+                }.keyboardShortcut("o", modifiers: [.command, .shift])
+                Divider()
+                Button("Save Session…") {
+                    NotificationCenter.default.post(name: .raymolSaveSession, object: nil)
+                }.keyboardShortcut("s", modifiers: .command)
+                Button("Export Image…") {
+                    NotificationCenter.default.post(name: .raymolExportImage, object: nil)
+                }.keyboardShortcut("e", modifiers: [.command, .shift])
+            }
+        }
         #endif
     }
 
