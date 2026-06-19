@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Developer ID / direct-distribution entitlements (NOT the App Store
+       sandbox build). Hardened Runtime is required for notarization; these two
+       exceptions let the embedded standalone CPython load its bundled extension
+       modules and dylibs. No App Sandbox here — sandbox is App Store only. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

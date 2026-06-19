@@ -588,9 +588,11 @@ final class PyMOLEngine: ObservableObject {
             // Read the session's 'main' [W,H] (→ letterbox via SESSIONVP) AND fix
             // the camera: modern .pse files store a 25-float SceneViewType, but
             // our embedded core is 18-float and mis-restores it (front/back
-            // flip). Transpose the stored col-major 4x4 rotation into our
-            // row-major 3x3 and re-apply via set_view so the framing matches the
-            // session exactly. (18-float sessions restore natively — left alone.)
+            // flip). Convert the stored col-major 4x4 rotation into the 18-float
+            // set_view's 9-float rotation, which is ALSO column-major (same as
+            // get_view — do NOT transpose, or the restored camera orientation
+            // differs from the saved one). Take the 4x4's upper-left 3x3 in the
+            // same column-major order. (18-float sessions restore natively.)
             runPython(
                 "import pickle, os\n"
                 + "from pymol import cmd as _sc\n"
@@ -603,7 +605,7 @@ final class PyMOLEngine: ObservableObject {
                 + "        _R = [0.0]*9\n"
                 + "        for _i in range(3):\n"
                 + "            for _j in range(3):\n"
-                + "                _R[_i*3+_j] = _v[_j*4+_i]\n"
+                + "                _R[_i*3+_j] = _v[_i*4+_j]\n"
                 + "        _sc.set_view(_R + list(_v[16:19]) + list(_v[19:22]) + list(_v[22:24]) + [_v[24]])\n"
                 + "except Exception:\n"
                 + "    pass")
