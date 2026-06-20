@@ -16,13 +16,9 @@ struct ThemeStudioPanel: View {
     var onClose: () -> Void = {}
 
     @State private var working: Theme = ThemeManager.shared.active
-    // macOS has a full-height side column, so open Customize by default (fills
-    // the space). iOS/iPad use a shorter bottom panel — keep it collapsed.
-    #if os(macOS)
+    // Customize open by default everywhere — on mobile the studio opens to a
+    // ~60%-height sheet (set in ContentView) so there's room for it.
     @State private var showCustomize = true
-    #else
-    @State private var showCustomize = false
-    #endif
     // The Presets gallery auto-collapses after a theme is picked so the Customize
     // section rises and gets more room (tap the Presets header to re-expand).
     @State private var presetsExpanded = true

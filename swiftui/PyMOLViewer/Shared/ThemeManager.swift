@@ -14,6 +14,9 @@ final class ThemeManager: ObservableObject {
     @Published var firstBoot: Bool
 
     private let activeKey = "raymol.theme.activeID"
+    private let activeFullKey = "raymol.theme.activeFull"  // full JSON of the live
+        // active theme — captures unsaved customizations so the exact current look
+        // survives the app being purged from memory (id alone reverts to the preset).
     private let customKey = "raymol.theme.custom"
     private let firstBootKey = "raymol.theme.didFirstBoot"
 
@@ -32,10 +35,16 @@ final class ThemeManager: ObservableObject {
             loadedCustom = []
         }
         custom = loadedCustom
-        // Resolve active by stored id (preset or custom), default Midnight.
-        let storedID = d.string(forKey: activeKey).flatMap { UUID(uuidString: $0) }
-        let pool = Theme.builtInPresets + loadedCustom
-        active = pool.first(where: { $0.id == storedID }) ?? Theme.classic
+        // Prefer the full cached active theme (preserves unsaved customizations
+        // across an app purge); fall back to id lookup, then Classic.
+        if let data = d.data(forKey: activeFullKey),
+           let full = try? JSONDecoder().decode(Theme.self, from: data) {
+            active = full
+        } else {
+            let storedID = d.string(forKey: activeKey).flatMap { UUID(uuidString: $0) }
+            let pool = Theme.builtInPresets + loadedCustom
+            active = pool.first(where: { $0.id == storedID }) ?? Theme.classic
+        }
         firstBoot = d.object(forKey: firstBootKey) == nil
     }
 
@@ -87,6 +96,11 @@ final class ThemeManager: ObservableObject {
 
     private func persistActive() {
         UserDefaults.standard.set(active.id.uuidString, forKey: activeKey)
+        // Cache the FULL theme (incl. live, unsaved edits) so a purge restores the
+        // exact current look rather than the base preset the id points at.
+        if let data = try? JSONEncoder().encode(active) {
+            UserDefaults.standard.set(data, forKey: activeFullKey)
+        }
     }
     private func persistCustom() {
         if let data = try? JSONEncoder().encode(custom) {

@@ -397,6 +397,10 @@ struct ContentView: View {
     @State private var panelFrac: CGFloat = 0.28
     @State private var committedFrac: CGFloat = 0.28
     @State private var panelCollapsed = false
+    // Panel fraction to restore after the Theme Studio closes (it temporarily
+    // opens to ~60% of the screen so the viewport/studio split matches the spec).
+    @State private var fracBeforeThemeStudio: CGFloat? = nil
+    private let themeStudioFrac: CGFloat = 0.6
     // Panel share to return to when no detail view is open. While a detail view
     // (SCENE or an object card) is expanded the panel auto-grows to its max so
     // the options are visible; collapsing restores this remembered size.
@@ -535,7 +539,22 @@ struct ContentView: View {
         .tint(themeManager.active.tabTint.color)
         .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
         .onChange(of: showThemeStudio) { open in
-            if open { engine.beginThemePreview() } else { engine.endThemePreview() }
+            if open {
+                engine.beginThemePreview()
+                // Mobile: open the studio to a ~60% sheet (viewport ~40% above),
+                // matching the spec; restore the prior panel size on close.
+                fracBeforeThemeStudio = panelFrac
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    panelCollapsed = false
+                    panelFrac = themeStudioFrac
+                }
+            } else {
+                engine.endThemePreview()
+                if let prior = fracBeforeThemeStudio {
+                    withAnimation(.easeInOut(duration: 0.2)) { panelFrac = prior }
+                    fracBeforeThemeStudio = nil
+                }
+            }
         }
         // Cover the ENTIRE screen (viewport + bottom panel/tabs + toolbar) with
         // the "Raymond is driving" glass while the AI runs. Attached here on the
