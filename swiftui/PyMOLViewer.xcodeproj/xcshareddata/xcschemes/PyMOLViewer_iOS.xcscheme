@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
    LastUpgradeVersion = "1500"
-   version = "1.3">
+   version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
-      buildImplicitDependencies = "YES">
+      buildImplicitDependencies = "YES"
+      runPostActionsOnFailure = "NO">
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -15,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "5C02477A5F60954358D0D615"
-               BuildableName = "RayMol.app"
+               BuildableName = "PyMOLViewer.app"
                BlueprintName = "PyMOLViewer_iOS"
                ReferencedContainer = "container:PyMOLViewer.xcodeproj">
             </BuildableReference>
@@ -26,19 +27,21 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES">
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      onlyGenerateCoverageForSpecifiedTargets = "NO">
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "RayMol.app"
+            BuildableName = "PyMOLViewer.app"
             BlueprintName = "PyMOLViewer_iOS"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
          <TestableReference
-            skipped = "NO">
+            skipped = "NO"
+            parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A8AA9F6242B9A29B6AAA26F7"
@@ -48,6 +51,8 @@
             </BuildableReference>
          </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -64,11 +69,13 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "RayMol.app"
+            BuildableName = "PyMOLViewer.app"
             BlueprintName = "PyMOLViewer_iOS"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -81,11 +88,13 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "RayMol.app"
+            BuildableName = "PyMOLViewer.app"
             BlueprintName = "PyMOLViewer_iOS"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </ProfileAction>
    <AnalyzeAction
       buildConfiguration = "Debug">
