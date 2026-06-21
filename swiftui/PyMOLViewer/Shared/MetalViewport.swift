@@ -32,6 +32,17 @@ struct MetalViewport: NSViewRepresentable {
         // no-op — mouse rotate/zoom/pan never reach PyMOL.
         view.coordinator = context.coordinator
 
+        // Repaint when the app re-activates or the system wakes from sleep: the
+        // display can discard the drawable's contents while asleep/locked, and
+        // the on-demand gate (a static scene flags no redisplay) would otherwise
+        // leave the viewport black until the next interaction.
+        NotificationCenter.default.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
+
         // Trackpad pinch → zoom. Two-finger drag (scrollWheel) → translate;
         // see handleScrollWheel. A real mouse wheel still zooms.
         let magnify = NSMagnificationGestureRecognizer(
@@ -134,6 +145,12 @@ struct MetalViewport: UIViewRepresentable {
         view.isMultipleTouchEnabled = true
         context.coordinator.engine = engine
         context.coordinator.mtkView = view
+        // Repaint when the app returns to the foreground: backgrounding can
+        // discard the drawable, and the on-demand gate would otherwise leave a
+        // static scene's viewport black until the next touch.
+        NotificationCenter.default.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
 
         // Gesture recognizers for touch input
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
@@ -189,6 +206,23 @@ extension MetalViewport {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
         private var viewportSize: CGSize = .zero
+        // Set when the app/display wakes (unlock, system wake, re-activate). The
+        // next draw(in:) then renders unconditionally, bypassing the on-demand
+        // gate, to repaint a drawable whose contents were discarded during sleep.
+        fileprivate var forceRedraw = false
+
+        // Wake/activate -> force one repaint. Also kicks an immediate draw() in
+        // case the display link hasn't resumed ticking yet.
+        @objc fileprivate func handleWake() {
+            forceRedraw = true
+            DispatchQueue.main.async { [weak self] in self?.mtkView?.draw() }
+        }
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+            #if os(macOS)
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
+            #endif
+        }
         #if os(macOS)
         // Track the mouse-down point to distinguish a click (pick/select) from
         // a drag (rotate). Point space, view coordinates.
@@ -309,7 +343,12 @@ extension MetalViewport {
             // battery/thermal win. The last presented frame stays on screen.
             // Mirrors the legacy AppKit loop (main_appkit.mm). The first frame
             // always renders (defensive against a blank start before any redisplay).
-            if hasRenderedOnce, let inst = engine.instance,
+            // forceRedraw bypasses the gate after a wake/activate: the display can
+            // discard the drawable's contents during sleep, and since the scene is
+            // unchanged the redisplay flag alone wouldn't repaint it (-> a black
+            // viewport until the next interaction). It's cleared only once a frame
+            // actually renders below, so a not-yet-ready drawable doesn't drop it.
+            if !forceRedraw, hasRenderedOnce, let inst = engine.instance,
                PyMOLBridge_GetRedisplay(inst, 1) == 0 {
                 return
             }
@@ -319,6 +358,7 @@ extension MetalViewport {
             engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
                                     width: Int(size.width), height: Int(size.height))
             hasRenderedOnce = true
+            forceRedraw = false
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
