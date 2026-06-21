@@ -17,7 +17,11 @@ struct MetalViewport: NSViewRepresentable {
         view.delegate = context.coordinator
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float_stencil8
-        view.preferredFramesPerSecond = 60
+        // Allow ProMotion (120Hz) on capable displays; the system clamps this to
+        // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
+        // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
+        // costs a cheap idle poll when nothing is moving.
+        view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         context.coordinator.engine = engine
@@ -27,6 +31,17 @@ struct MetalViewport: NSViewRepresentable {
         // call `coordinator?.handle...` on a nil coordinator and silently
         // no-op — mouse rotate/zoom/pan never reach PyMOL.
         view.coordinator = context.coordinator
+
+        // Repaint when the app re-activates or the system wakes from sleep: the
+        // display can discard the drawable's contents while asleep/locked, and
+        // the on-demand gate (a static scene flags no redisplay) would otherwise
+        // leave the viewport black until the next interaction.
+        NotificationCenter.default.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
 
         // Trackpad pinch → zoom. Two-finger drag (scrollWheel) → translate;
         // see handleScrollWheel. A real mouse wheel still zooms.
@@ -120,12 +135,22 @@ struct MetalViewport: UIViewRepresentable {
         view.delegate = context.coordinator
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float_stencil8
-        view.preferredFramesPerSecond = 60
+        // Allow ProMotion (120Hz) on capable displays; the system clamps this to
+        // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
+        // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
+        // costs a cheap idle poll when nothing is moving.
+        view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         view.isMultipleTouchEnabled = true
         context.coordinator.engine = engine
         context.coordinator.mtkView = view
+        // Repaint when the app returns to the foreground: backgrounding can
+        // discard the drawable, and the on-demand gate would otherwise leave a
+        // static scene's viewport black until the next touch.
+        NotificationCenter.default.addObserver(
+            context.coordinator, selector: #selector(Coordinator.handleWake),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
 
         // Gesture recognizers for touch input
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
@@ -181,6 +206,23 @@ extension MetalViewport {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
         private var viewportSize: CGSize = .zero
+        // Set when the app/display wakes (unlock, system wake, re-activate). The
+        // next draw(in:) then renders unconditionally, bypassing the on-demand
+        // gate, to repaint a drawable whose contents were discarded during sleep.
+        fileprivate var forceRedraw = false
+
+        // Wake/activate -> force one repaint. Also kicks an immediate draw() in
+        // case the display link hasn't resumed ticking yet.
+        @objc fileprivate func handleWake() {
+            forceRedraw = true
+            DispatchQueue.main.async { [weak self] in self?.mtkView?.draw() }
+        }
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+            #if os(macOS)
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
+            #endif
+        }
         #if os(macOS)
         // Track the mouse-down point to distinguish a click (pick/select) from
         // a drag (rotate). Point space, view coordinates.
@@ -265,6 +307,7 @@ extension MetalViewport {
         }
 
         private var wasSuppressed = false
+        private var hasRenderedOnce = false
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
@@ -292,12 +335,30 @@ extension MetalViewport {
             // Build RendererMetal on the first frame (bridge no-ops thereafter),
             // then hand off this frame's drawable + pass descriptor and render.
             engine.setupMetalRenderer(view: view)
+            engine.idle()
+            // On-demand rendering: after idle() (which advances movies/animations
+            // and sets PyMOL's redisplay flag), skip the GPU-expensive frame when
+            // nothing needs redrawing — a static structure then costs only a cheap
+            // idle poll instead of a full render every tick, the bulk of the
+            // battery/thermal win. The last presented frame stays on screen.
+            // Mirrors the legacy AppKit loop (main_appkit.mm). The first frame
+            // always renders (defensive against a blank start before any redisplay).
+            // forceRedraw bypasses the gate after a wake/activate: the display can
+            // discard the drawable's contents during sleep, and since the scene is
+            // unchanged the redisplay flag alone wouldn't repaint it (-> a black
+            // viewport until the next interaction). It's cleared only once a frame
+            // actually renders below, so a not-yet-ready drawable doesn't drop it.
+            if !forceRedraw, hasRenderedOnce, let inst = engine.instance,
+               PyMOLBridge_GetRedisplay(inst, 1) == 0 {
+                return
+            }
             guard let drawable = view.currentDrawable,
                   let passDesc = view.currentRenderPassDescriptor else { return }
-            engine.idle()
             let size = view.drawableSize
             engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
                                     width: Int(size.width), height: Int(size.height))
+            hasRenderedOnce = true
+            forceRedraw = false
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.

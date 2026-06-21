@@ -285,7 +285,16 @@ public:
   virtual void setPostParams(int fogEnabled, float fogStart, float fogEnd,
       float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
       int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-      float projY, int rtEnabled = 0)
+      float projY, int rtEnabled = 0, int tonemapEnabled = 0,
+      float exposure = 1.0f, int rtShadowEnabled = 0)
+  {
+  }
+
+  // PyMOL lighting model (ambient/direct/reflect/specular/shininess). Default:
+  // no-op (the GL renderer reads these settings itself). The Metal renderer
+  // uploads them into its lit shaders so the Scene lighting sliders take effect.
+  virtual void setLightingParams(float ambient, float direct, float reflect,
+      float specular, float shininess)
   {
   }
 

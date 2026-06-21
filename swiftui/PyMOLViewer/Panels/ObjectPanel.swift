@@ -173,10 +173,13 @@ enum SceneCatalog {
     static let groups = ["Lighting & Quality", "Camera"]
     static let params: [SceneParam] = [
         SceneParam(setting: "metal_raytrace", label: "Ray tracing", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_rt_shadows", label: "RT hard shadows", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_shadows", label: "Shadows", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_ssao",    label: "Ambient occlusion", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_outline", label: "Outline", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_msaa",    label: "MSAA 4×", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_tonemap", label: "Filmic tone-map", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Lighting & Quality"),
         SceneParam(setting: "depth_cue",     label: "Depth cue / fog", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "all_states",    label: "Overlay all states", kind: .toggle, group: "Lighting & Quality"),
         // Lighting (made real-time on Metal in Phase 3; tunable here in Phase 2).

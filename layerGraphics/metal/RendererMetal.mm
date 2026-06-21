@@ -527,6 +527,28 @@ fragment float4 post_blit(PostVOut in [[stage_in]],
   return src.sample(s, in.uv);
 }
 
+// Filmic tone-map + exposure. Applies an exposure multiplier then the ACES
+// approximation (Narkowicz 2015), mapping scene radiance to display so bright
+// specular highlights roll off smoothly instead of clipping flat, and an
+// exposure < 1 tames washed-out bright backgrounds. Runs before FXAA (whose
+// luma math assumes ~[0,1] display values). Milestone 1 operates on the
+// existing 8-bit LDR scene color; promoting the scene chain to RGBA16Float is a
+// follow-up that lets highlights exceed 1.0 before the roll-off.
+struct ToneU { float exposure; float tonemap; float _p0, _p1; };
+fragment float4 post_tonemap(PostVOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]],
+    constant ToneU& u [[buffer(0)]]) {
+  // Exposure is an independent control: it scales scene radiance whether or not
+  // filmic tone-mapping is on. With tone-map on, apply the ACES curve (which
+  // rolls highlights off smoothly); with it off, just clamp the exposed color.
+  float3 c = src.sample(s, in.uv).rgb * u.exposure;
+  if (u.tonemap > 0.5) {
+    const float a = 2.51, b = 0.03, cc = 2.43, d = 0.59, e = 0.14;
+    c = (c * (a * c + b)) / (c * (cc * c + d) + e);
+  }
+  return float4(saturate(c), 1.0);
+}
+
 // Weighted-blended OIT resolve: composite accumulated transparent color over
 // the (already post-processed) opaque color. reveal = Π(1-α) = transmittance.
 fragment float4 oit_resolve(PostVOut in [[stage_in]],
@@ -793,11 +815,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _sceneColor = [_device newTextureWithDescriptor:cd];
   _postColor = [_device newTextureWithDescriptor:cd];
 
-  // Raw RT ambient-occlusion term (single channel). Kept in its own float
-  // texture so the composite pass can depth-aware-blur it — that blur is what
-  // removes the Monte-Carlo speckle the raw AO estimate would otherwise show.
+  // Raw RT terms: ambient occlusion in .r, traced light-visibility (hard
+  // shadow) in .g. Kept in its own float texture so the composite pass can
+  // depth-aware-blur both — that blur is what removes the Monte-Carlo speckle
+  // the raw estimates would otherwise show. RG (not R) so the metal_rt_shadows
+  // path can carry the traced shadow term alongside AO at no extra pass.
   MTLTextureDescriptor* aod = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Float
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
                                    width:w height:h mipmapped:NO];
   aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   aod.storageMode = MTLStorageModePrivate;
@@ -955,6 +979,7 @@ void RendererMetal::buildPostPipelines()
     return p;
   };
   _blitPipeline = mkpipe(@"post_blit");
+  _tonemapPipeline = mkpipe(@"post_tonemap");
   _fxaaPipeline = mkpipe(@"post_fxaa");
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
   _oitResolvePipeline = mkpipe(@"oit_resolve");
@@ -965,8 +990,12 @@ void RendererMetal::buildPostPipelines()
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-    float projY, int rtEnabled)
+    float projY, int rtEnabled, int tonemapEnabled, float exposure,
+    int rtShadowEnabled)
 {
+  _tonemapEnabled = tonemapEnabled;
+  _exposure = exposure;
+  _rtShadowEnabled = rtShadowEnabled;
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
   _fogEnd = fogEnd;
@@ -981,6 +1010,16 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
   _projY = projY;
   static bool noRT = getenv("PYMOL_NO_RT") != nullptr;
   _rtEnabled = (rtEnabled && _rtSupported && !noRT) ? 1 : 0;
+}
+
+void RendererMetal::setLightingParams(float ambient, float direct,
+    float reflect, float specular, float shininess)
+{
+  _lightAmbient = ambient;
+  _lightDirect = direct;
+  _lightReflect = reflect;
+  _lightSpecular = specular;
+  _lightShininess = shininess;
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,7 +1053,7 @@ struct RTU {
   float4 bgFog;            // bg.rgb, fogEnabled
   float projA, projB, projX, projY;
   float fogStart, fogEnd, aoRadius, aoIntensity;
-  float shadowIntensity, nSamples, frame, _pad;
+  float shadowIntensity, nSamples, frame, rtShadow; // rtShadow>0.5: trace shadows
   float4x4 lightViewProj;  // eye-space light view*proj for shadow-map sampling
 };
 
@@ -1090,7 +1129,27 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
-  return float4(ao, ao, ao, 1.0);
+
+  // Traced hard shadow toward the key light (model space), written to .g.
+  // Reuses the same instance AS that already holds spheres + tessellated
+  // cylinders + cartoon/surface triangles, so the shadow is cast uniformly by
+  // every representation — no shadow-map resolution/peter-panning. vis = 1 lit,
+  // 0 occluded. Back-facing fragments skip the ray (vis=1); the composite
+  // faceGate zeroes their cast-shadow term so diffuse alone darkens them.
+  float vis = 1.0;
+  if (u.rtShadow > 0.5) {
+    float3 Lm = normalize(u.lightDirModel.xyz);
+    if (dot(nModel, Lm) > 0.0) {
+      ray sr;
+      sr.origin = origin;            // already pModel + nModel*bias
+      sr.direction = Lm;
+      sr.min_distance = bias;
+      sr.max_distance = 1.0e4;       // full directional shadow, not just contact
+      auto sres = it.intersect(sr, accel);
+      if (sres.type != intersection_type::none) vis = 0.0;
+    }
+  }
+  return float4(ao, vis, 0.0, 1.0);
 }
 
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
@@ -1121,7 +1180,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   // closeness so AO doesn't bleed across object silhouettes.
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
-  float aoSum = 0.0, wSum = 0.0;
+  float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -1129,15 +1188,28 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       if (dn >= 0.99999) continue;
       float ezn = -u.projB / ((2.0 * dn - 1.0) + u.projA);
       float w = exp(-abs(ezn - ez) / ztol);
-      aoSum += aoTex.sample(s, uv).r * w;
+      float2 rg = aoTex.sample(s, uv).rg;
+      aoSum += rg.r * w;
+      visSum += rg.g * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
+  float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
   col *= ao;
 
-  // Cast shadows: sample the SHADOW MAP (PCF + face/separation gates mirror
-  // post_ssao_fog so RT and non-RT shadows look identical).
-  if (u.shadowIntensity > 0.0) {
+  // Cast shadows. Two paths share the shadowIntensity gate:
+  //  - metal_rt_shadows (u.rtShadow): use the hard shadow ray traced in rt_ao
+  //    (visibility in .g), gated by a model-space faceGate so only lit faces
+  //    receive a cast-shadow term (back faces are darkened by diffuse alone).
+  //  - otherwise: the original shadow-map PCF (unchanged fallback), kept so the
+  //    default RT path and non-RT-capable GPUs are byte-for-byte identical.
+  if (u.shadowIntensity > 0.0 && u.rtShadow > 0.5) {
+    float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+    float3 Lm = normalize(u.lightDirModel.xyz);
+    float faceGate = smoothstep(0.0, 0.35, dot(nModel, Lm));
+    float shadow = (1.0 - vis) * faceGate;
+    col *= (1.0 - shadow * u.shadowIntensity);
+  } else if (u.shadowIntensity > 0.0) {
     float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
     float4 lc = u.lightViewProj * float4(pEye, 1.0);     // eye -> light clip
@@ -1436,11 +1508,11 @@ void RendererMetal::ensureRayTracingAS()
     NSError* err = nil;
     id<MTLLibrary> lib = [_device newLibraryWithSource:kRTSrc options:nil error:&err];
     if (lib) {
-      // Pass A: raw AO -> R16Float.
+      // Pass A: raw AO (.r) + traced light-visibility (.g) -> RG16Float.
       MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
       pa.vertexFunction = [lib newFunctionWithName:@"rt_vertex"];
       pa.fragmentFunction = [lib newFunctionWithName:@"rt_ao"];
-      pa.colorAttachments[0].pixelFormat = MTLPixelFormatR16Float;
+      pa.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
       _rtAOPipeline = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
       // Pass B: blur AO + shadow/fog composite -> BGRA8.
       MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
@@ -1477,7 +1549,7 @@ void RendererMetal::runPostChain()
       float bgFog[4];
       float projA, projB, projX, projY;
       float fogStart, fogEnd, aoRadius, aoIntensity;
-      float shadowIntensity, nSamples, frame, _pad;
+      float shadowIntensity, nSamples, frame, rtShadow;
       float lightViewProj[16];   // eye-space light VP for shadow-map sampling
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
@@ -1498,7 +1570,10 @@ void RendererMetal::runPostChain()
     // trace more rays since each export frame stands alone.
     u.nSamples = _offscreen ? 48.0f : 16.0f;
     u.frame = 0.0f;            // deterministic: AO identical every frame (no shimmer)
-    u._pad = 0.0f;
+    // metal_rt_shadows: trace a hard shadow ray in rt_ao instead of sampling the
+    // shadow map in rt_composite. Only meaningful when shadows are on (the
+    // composite still gates on shadowIntensity). Default off -> shadow-map path.
+    u.rtShadow = _rtShadowEnabled ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
 
     // Pass A: trace AO -> _rtAO (R16Float).
@@ -1625,6 +1700,33 @@ void RendererMetal::runPostChain()
     [e3 setFragmentBytes:&u length:sizeof(u) atIndex:0];
     [e3 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e3 endEncoding];
+    sceneSrc = dst;
+  }
+
+  // Pass 3.5: exposure + (optional) filmic tone-map. Runs after OIT/outline but
+  // BEFORE the final FXAA/blit (FXAA's luma math assumes display values). Placed
+  // ahead of the !_offscreen block so the offscreen PNG capture (which reads
+  // sceneSrc directly) is processed identically to the live view. Exposure is
+  // independent of the tone-map toggle, so the pass also runs when exposure != 1.
+  bool exposureActive = (_exposure < 0.999f || _exposure > 1.001f);
+  if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    struct { float exposure; float tonemap; float _p0, _p1; } u;
+    u.exposure = _exposure;
+    u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
+    u._p0 = u._p1 = 0.0f;
+    MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> et =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [et setRenderPipelineState:_tonemapPipeline];
+    [et setFragmentTexture:sceneSrc atIndex:0];
+    [et setFragmentSamplerState:_postSampler atIndex:0];
+    [et setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    [et drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [et endEncoding];
     sceneSrc = dst;
   }
 
@@ -2505,6 +2607,12 @@ void RendererMetal::endBatch()
   uniforms.pointSize = _pointSize > 0.0f ? _pointSize : 1.0f;
   uniforms._pad[0] = uniforms._pad[1] = uniforms._pad[2] = 0.0f;
   [_encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+  // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
+  // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
+  // it). Scoped so the local doesn't clash across multiple draw paths.
+  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess };
+    [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Always use the built-in batch pipeline for batch rendering.
   // _currentPipeline is for VBO draws with a different vertex layout.
@@ -2645,19 +2753,20 @@ struct VBOVertexOut {
   float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
 };
 
-// PyMOL default two-light model (matches the sphere/cylinder impostors and
-// data/shaders/compute_color_for_light.fs): ambient .14, headlight direct .45,
-// key reflect .481, specular .5, shininess 55. Two-sided: the interpolated
+// PyMOL two-light model. The ambient/direct/reflect/specular/shininess come
+// from the live PyMOL settings (Scene lighting sliders) via LightU, instead of
+// hard-coded constants, so the sliders take effect. Two-sided: the interpolated
 // normal is flipped to face the viewer so cartoon undersides / surface
 // interiors light up instead of going dark.
-static float3 vbo_shade(float3 baseColor, float3 nEye) {
+struct LightU { float ambient, direct, reflect, spec, shininess; };
+static float3 vbo_shade(float3 baseColor, float3 nEye, LightU lt) {
   float3 normal = normalize(nEye);
   if (normal.z < 0.0) normal = -normal;
-  const float ambient    = 0.14;
-  const float direct     = 0.45;
-  const float reflect    = 0.481;
-  const float spec_value = 0.5;
-  const float shininess  = 55.0;
+  float ambient    = lt.ambient;
+  float direct     = lt.direct;
+  float reflect    = lt.reflect;
+  float spec_value = lt.spec;
+  float shininess  = max(lt.shininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
   const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
   float intensity = ambient;
@@ -2707,9 +2816,10 @@ vertex VBOVertexOut vbo_vertex(
   return out;
 }
 
-fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]])
+fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]])
 {
-  return float4(vbo_shade(in.color.rgb, in.normalEye), in.color.a);
+  return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
 }
 
 // Unlit: flat color, no lighting. Used for lines/ribbon (GL_LINES) and dots
@@ -2780,9 +2890,9 @@ vertex CapFillOut cap_fill_vertex(uint vid [[vertex_id]]) {
 fragment float4 cap_fill_fragment(constant float4& interiorColor [[buffer(0)]]) {
   // The cut cross-section faces the viewer, so light it with a +Z normal
   // through the shared two-light model (matches desktop's interior_normal
-  // {0,0,1}). Without this the cap is a flat, unlit, dark patch while the
-  // surface around it is lit — "light not reaching the interior".
-  return float4(vbo_shade(interiorColor.rgb, float3(0.0, 0.0, 1.0)), interiorColor.a);
+  // {0,0,1}). Caps use the default lighting (a minor flat fill).
+  LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0};
+  return float4(vbo_shade(interiorColor.rgb, float3(0.0, 0.0, 1.0), lt), interiorColor.a);
 }
 
 // Weighted-blended OIT output (McGuire/Bavoil). Transparent geometry writes
@@ -2796,9 +2906,10 @@ static float oit_weight(float a, float z) {
   return clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 *
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
-fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]])
+fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]])
 {
-  float4 c = float4(vbo_shade(in.color.rgb, in.normalEye), in.color.a);
+  float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
   o.accum = float4(c.rgb * c.a, c.a) * w;
@@ -3463,6 +3574,12 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   uniforms.pointSize = _pointSize > 0.0f ? _pointSize : 1.0f;
   uniforms._pad[0] = uniforms._pad[1] = uniforms._pad[2] = 0.0f;
   [_encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+  // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
+  // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
+  // it). Scoped so the local doesn't clash across multiple draw paths.
+  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess };
+    [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -3512,6 +3629,12 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
       [_encoder setCullMode:MTLCullModeNone];
       [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
       [_encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+  // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
+  // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
+  // it). Scoped so the local doesn't clash across multiple draw paths.
+  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess };
+    [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
       [_encoder drawPrimitives:toMTL(mode)
                    vertexStart:0
                    vertexCount:static_cast<NSUInteger>(vertexCount)];
@@ -3777,6 +3900,8 @@ struct SphereU {
   float depthZeroToOne; // 1 if clip Z already [0,1]; else apply 0.5+0.5 remap
   float interiorCap;    // 1 = cap the slab cross-section with a solid interior color
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else atom*0.45)
+  // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
+  float lAmbient, lDirect, lReflect, lSpecular, lShininess;
 };
 struct SphereVOut {
   float4 position [[position]];
@@ -3879,13 +4004,13 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
   }
   float3 normal = normalize(ipoint - in.sphere_center);
 
-  // PyMOL default two-light model (see data/shaders/compute_color_for_light.fs):
-  // ambient .14, headlight direct .45, key reflect .481, specular .5, shine 55.
-  const float ambient    = 0.14;
-  const float direct     = 0.45;
-  const float reflect    = 0.481;
-  const float spec_value = 0.5;
-  const float shininess  = 55.0;
+  // PyMOL two-light model, driven by the live ambient/direct/reflect/specular/
+  // shininess settings (Scene sliders) uploaded in SphereU.
+  float ambient    = u.lAmbient;
+  float direct     = u.lDirect;
+  float reflect    = u.lReflect;
+  float spec_value = u.lSpecular;
+  float shininess  = max(u.lShininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
   const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
   float intensity = ambient;
@@ -4087,9 +4212,13 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     float depthZeroToOne;
     float interiorCap;
     float interiorColor[4];
+    float lAmbient, lDirect, lReflect, lSpecular, lShininess;
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
+  u.lAmbient = _lightAmbient; u.lDirect = _lightDirect;
+  u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
+  u.lShininess = _lightShininess;
   u.sphere_size_scale = call.sphereSizeScale;
   u.ortho = (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
@@ -4145,6 +4274,8 @@ struct CylU {
   float inv_height;
   float interiorCap;    // 1 = cap the slab cross-section with a solid interior color
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else bond*0.45)
+  // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
+  float lAmbient, lDirect, lReflect, lSpecular, lShininess;
 };
 struct CylVOut {
   float4 position [[position]];
@@ -4321,12 +4452,12 @@ static void cyl_shade(CylVOut in, constant CylU& u,
     return;
   }
 
-  // PyMOL default two-light model (identical to the sphere impostor).
-  const float ambient    = 0.14;
-  const float direct     = 0.45;
-  const float reflect    = 0.481;
-  const float spec_value = 0.5;
-  const float shininess  = 55.0;
+  // PyMOL two-light model, driven by the live lighting settings in CylU.
+  float ambient    = u.lAmbient;
+  float direct     = u.lDirect;
+  float reflect    = u.lReflect;
+  float spec_value = u.lSpecular;
+  float shininess  = max(u.lShininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
   const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
   float intensity = ambient;
@@ -4540,9 +4671,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     float inv_height;
     float interiorCap;
     float interiorColor[4];
+    float lAmbient, lDirect, lReflect, lSpecular, lShininess;
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
+  u.lAmbient = _lightAmbient; u.lDirect = _lightDirect;
+  u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
+  u.lShininess = _lightShininess;
   u.uni_radius = call.uniRadius;
   u.ortho = (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
@@ -4623,14 +4758,17 @@ vertex TubeOut bezier_tube_vertex(
   return o;
 }
 
-fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]]) {
-  // PyMOL default two-light model (same as the impostors). Two-sided via the
-  // view vector: orient the normal toward the camera (eye-space +z) so both the
-  // outer surface and the open tube ends/interior are lit, never black.
+struct LightU { float ambient, direct, reflect, spec, shininess; };
+fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]]) {
+  // PyMOL two-light model driven by the live lighting settings (Scene sliders).
+  // Two-sided via the view vector: orient the normal toward the camera
+  // (eye-space +z) so both the outer surface and the open tube ends/interior
+  // are lit, never black.
   float3 nrm = normalize(in.eyeNormal);
   if (nrm.z < 0.0) nrm = -nrm;
-  const float ambient = 0.14, direct = 0.45, reflectv = 0.481;
-  const float spec_value = 0.5, shininess = 55.0;
+  float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
+  float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
   const float3 L0 = float3(0.0,0.0,1.0);
   const float3 L1 = normalize(float3(0.4,0.4,1.0));
   float intensity = ambient, specular = 0.0;
@@ -4756,6 +4894,10 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   u._p0 = u._p1 = u._p2 = 0.0f;
   u.color[0] = r; u.color[1] = g; u.color[2] = b; u.color[3] = 1.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+  // Lighting (Scene sliders) for bezier_tube_fragment at fragment buffer(0).
+  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess };
+    [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];
   [_encoder drawPatches:4

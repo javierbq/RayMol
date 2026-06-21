@@ -1970,9 +1970,21 @@ void SceneRenderMetal(PyMOLGlobals* G)
     int aaEnabled = SettingGetGlobal_i(G, cSetting_antialias_shader) != 0 ? 1 : 0;
     int outlineEnabled = SettingGetGlobal_b(G, cSetting_metal_outline) ? 1 : 0;
     int rtEnabled = SettingGetGlobal_b(G, cSetting_metal_raytrace) ? 1 : 0;
+    int tonemapEnabled = SettingGetGlobal_b(G, cSetting_metal_tonemap) ? 1 : 0;
+    float exposure = SettingGetGlobal_f(G, cSetting_metal_exposure);
+    int rtShadowEnabled = SettingGetGlobal_b(G, cSetting_metal_rt_shadows) ? 1 : 0;
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],
-        proj[14], proj[0], proj[5], rtEnabled);
+        proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure,
+        rtShadowEnabled);
+    // Lighting model — the Metal lit shaders read these instead of hard-coded
+    // constants, so the Scene-panel lighting sliders take effect.
+    G->Renderer->setLightingParams(
+        SettingGetGlobal_f(G, cSetting_ambient),
+        SettingGetGlobal_f(G, cSetting_direct),
+        SettingGetGlobal_f(G, cSetting_reflect),
+        SettingGetGlobal_f(G, cSetting_specular),
+        SettingGetGlobal_f(G, cSetting_shininess));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next setDrawable (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.
