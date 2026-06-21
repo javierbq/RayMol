@@ -364,12 +364,32 @@ final class PyMOLEngine: ObservableObject {
         // Test affordance: exercise the Export menu's GPU hi-res render path with
         // an explicit ray-traced flag — the exact call Save Image / Copy make.
         // Format: "path,W,H[,rt]" (rt: -1 WYSIWYG default, 0 off, 1 force on).
+        //
+        // Determinism (GitHub issue #19): the exported background must reflect the
+        // caller's requested bg_rgb on every run. Three things set the background
+        // at launch — PYMOL_AUTOCMD (synchronous, at init), the persisted theme
+        // (applied from ContentView.onAppear), and PYMOL_AUTOTHEME (at +2.5s) —
+        // so a fixed-delay export raced them and captured navy/cream/peach
+        // depending on ordering. We therefore (1) fire AFTER the theme paths have
+        // settled and (2) re-assert PYMOL_AUTOCMD synchronously on the same
+        // main-thread turn as the (synchronous) render, so the caller's explicit
+        // settings — bg_color included — are authoritative at scene-clear time.
         if let e = ProcessInfo.processInfo.environment["PYMOL_AUTOEXPORT"] {
             let parts = e.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.count >= 3, let w = Int(parts[1]), let h = Int(parts[2]) {
                 let rt = parts.count >= 4 ? (Int(parts[3]) ?? -1) : -1
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-                    self?.renderHiResPNG(parts[0], width: w, height: h, rayTraced: rt)
+                let autoCmd = ProcessInfo.processInfo.environment["PYMOL_AUTOCMD"]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                    guard let self = self else { return }
+                    // Re-assert the caller's explicit state last, so neither the
+                    // persisted theme nor PYMOL_AUTOTHEME can clobber the requested
+                    // background between init and this render.
+                    if let c = autoCmd {
+                        for one in c.split(separator: ";") {
+                            self.runCommand(one.trimmingCharacters(in: .whitespaces))
+                        }
+                    }
+                    self.renderHiResPNG(parts[0], width: w, height: h, rayTraced: rt)
                     NSLog("PYMOL_AUTOEXPORT: \(parts[0]) \(w)x\(h) rt=\(rt)")
                 }
             }
