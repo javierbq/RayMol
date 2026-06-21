@@ -534,14 +534,19 @@ fragment float4 post_blit(PostVOut in [[stage_in]],
 // luma math assumes ~[0,1] display values). Milestone 1 operates on the
 // existing 8-bit LDR scene color; promoting the scene chain to RGBA16Float is a
 // follow-up that lets highlights exceed 1.0 before the roll-off.
-struct ToneU { float exposure; float _p0, _p1, _p2; };
+struct ToneU { float exposure; float tonemap; float _p0, _p1; };
 fragment float4 post_tonemap(PostVOut in [[stage_in]],
     texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]],
     constant ToneU& u [[buffer(0)]]) {
+  // Exposure is an independent control: it scales scene radiance whether or not
+  // filmic tone-mapping is on. With tone-map on, apply the ACES curve (which
+  // rolls highlights off smoothly); with it off, just clamp the exposed color.
   float3 c = src.sample(s, in.uv).rgb * u.exposure;
-  const float a = 2.51, b = 0.03, cc = 2.43, d = 0.59, e = 0.14;
-  float3 mapped = saturate((c * (a * c + b)) / (c * (cc * c + d) + e));
-  return float4(mapped, 1.0);
+  if (u.tonemap > 0.5) {
+    const float a = 2.51, b = 0.03, cc = 2.43, d = 0.59, e = 0.14;
+    c = (c * (a * c + b)) / (c * (cc * c + d) + e);
+  }
+  return float4(saturate(c), 1.0);
 }
 
 // Weighted-blended OIT resolve: composite accumulated transparent color over
@@ -1698,15 +1703,18 @@ void RendererMetal::runPostChain()
     sceneSrc = dst;
   }
 
-  // Pass 3.5: filmic tone-map + exposure (cSetting_metal_tonemap). Runs after
-  // OIT/outline but BEFORE the final FXAA/blit (FXAA's luma math assumes display
-  // values). Placed ahead of the !_offscreen block so the offscreen PNG capture
-  // (which reads sceneSrc directly) is tone-mapped identically to the live view.
-  if (_tonemapEnabled && _tonemapPipeline) {
+  // Pass 3.5: exposure + (optional) filmic tone-map. Runs after OIT/outline but
+  // BEFORE the final FXAA/blit (FXAA's luma math assumes display values). Placed
+  // ahead of the !_offscreen block so the offscreen PNG capture (which reads
+  // sceneSrc directly) is processed identically to the live view. Exposure is
+  // independent of the tone-map toggle, so the pass also runs when exposure != 1.
+  bool exposureActive = (_exposure < 0.999f || _exposure > 1.001f);
+  if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
-    struct { float exposure; float _p0, _p1, _p2; } u;
+    struct { float exposure; float tonemap; float _p0, _p1; } u;
     u.exposure = _exposure;
-    u._p0 = u._p1 = u._p2 = 0.0f;
+    u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
+    u._p0 = u._p1 = 0.0f;
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
     pd.colorAttachments[0].texture = dst;
     pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
