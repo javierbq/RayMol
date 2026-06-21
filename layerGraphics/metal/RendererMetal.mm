@@ -527,6 +527,23 @@ fragment float4 post_blit(PostVOut in [[stage_in]],
   return src.sample(s, in.uv);
 }
 
+// Filmic tone-map + exposure. Applies an exposure multiplier then the ACES
+// approximation (Narkowicz 2015), mapping scene radiance to display so bright
+// specular highlights roll off smoothly instead of clipping flat, and an
+// exposure < 1 tames washed-out bright backgrounds. Runs before FXAA (whose
+// luma math assumes ~[0,1] display values). Milestone 1 operates on the
+// existing 8-bit LDR scene color; promoting the scene chain to RGBA16Float is a
+// follow-up that lets highlights exceed 1.0 before the roll-off.
+struct ToneU { float exposure; float _p0, _p1, _p2; };
+fragment float4 post_tonemap(PostVOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]],
+    constant ToneU& u [[buffer(0)]]) {
+  float3 c = src.sample(s, in.uv).rgb * u.exposure;
+  const float a = 2.51, b = 0.03, cc = 2.43, d = 0.59, e = 0.14;
+  float3 mapped = saturate((c * (a * c + b)) / (c * (cc * c + d) + e));
+  return float4(mapped, 1.0);
+}
+
 // Weighted-blended OIT resolve: composite accumulated transparent color over
 // the (already post-processed) opaque color. reveal = Π(1-α) = transmittance.
 fragment float4 oit_resolve(PostVOut in [[stage_in]],
@@ -955,6 +972,7 @@ void RendererMetal::buildPostPipelines()
     return p;
   };
   _blitPipeline = mkpipe(@"post_blit");
+  _tonemapPipeline = mkpipe(@"post_tonemap");
   _fxaaPipeline = mkpipe(@"post_fxaa");
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
   _oitResolvePipeline = mkpipe(@"oit_resolve");
@@ -965,8 +983,10 @@ void RendererMetal::buildPostPipelines()
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-    float projY, int rtEnabled)
+    float projY, int rtEnabled, int tonemapEnabled, float exposure)
 {
+  _tonemapEnabled = tonemapEnabled;
+  _exposure = exposure;
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
   _fogEnd = fogEnd;
@@ -1625,6 +1645,30 @@ void RendererMetal::runPostChain()
     [e3 setFragmentBytes:&u length:sizeof(u) atIndex:0];
     [e3 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e3 endEncoding];
+    sceneSrc = dst;
+  }
+
+  // Pass 3.5: filmic tone-map + exposure (cSetting_metal_tonemap). Runs after
+  // OIT/outline but BEFORE the final FXAA/blit (FXAA's luma math assumes display
+  // values). Placed ahead of the !_offscreen block so the offscreen PNG capture
+  // (which reads sceneSrc directly) is tone-mapped identically to the live view.
+  if (_tonemapEnabled && _tonemapPipeline) {
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    struct { float exposure; float _p0, _p1, _p2; } u;
+    u.exposure = _exposure;
+    u._p0 = u._p1 = u._p2 = 0.0f;
+    MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> et =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [et setRenderPipelineState:_tonemapPipeline];
+    [et setFragmentTexture:sceneSrc atIndex:0];
+    [et setFragmentSamplerState:_postSampler atIndex:0];
+    [et setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    [et drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [et endEncoding];
     sceneSrc = dst;
   }
 

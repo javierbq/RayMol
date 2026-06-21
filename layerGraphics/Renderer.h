@@ -285,7 +285,8 @@ public:
   virtual void setPostParams(int fogEnabled, float fogStart, float fogEnd,
       float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
       int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-      float projY, int rtEnabled = 0)
+      float projY, int rtEnabled = 0, int tonemapEnabled = 0,
+      float exposure = 1.0f)
   {
   }
 

@@ -911,6 +911,8 @@ enum {
   REC_b( 801, metal_msaa                              , global    , true ),  /* Metal 4x MSAA scene rendering */
   REC_b( 802, metal_raytrace                          , global    , false ), /* Metal real-time ray-traced AO + shadows */
   REC_b( 803, metal_interior_cap                      , object    , false ), /* Metal: fill (cap) the slab cross-section of clipped spheres/sticks with a solid interior color */
+  REC_b( 804, metal_tonemap                           , global    , false ), /* Metal filmic (ACES) tone-mapping + exposure post pass */
+  REC_f( 805, metal_exposure                          , global    , 1.0F ),  /* Metal tone-map exposure multiplier (1.0 = neutral) */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

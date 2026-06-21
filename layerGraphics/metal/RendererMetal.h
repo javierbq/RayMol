@@ -149,7 +149,8 @@ public:
   void setPostParams(int fogEnabled, float fogStart, float fogEnd, float bgR,
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       int outlineEnabled, float projA, float projB, float projX,
-      float projY, int rtEnabled) override;
+      float projY, int rtEnabled, int tonemapEnabled = 0,
+      float exposure = 1.0f) override;
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
@@ -395,6 +396,11 @@ private:
   int _aaEnabled = 1;          // FXAA (cSetting_antialias_shader != 0)
   int _outlineEnabled = 0;     // silhouette outline (cSetting_metal_outline)
   id<MTLRenderPipelineState> _outlinePipeline = nil;
+  // Filmic tone-map + exposure post pass (cSetting_metal_tonemap/_exposure).
+  // Milestone 1: operates on the existing LDR scene color (no float promotion).
+  int _tonemapEnabled = 0;
+  float _exposure = 1.0f;
+  id<MTLRenderPipelineState> _tonemapPipeline = nil;
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
   float _letterboxAspect = 0.f;       // saved-viewport W/H; 0 = fill window
