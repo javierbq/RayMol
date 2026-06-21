@@ -17,7 +17,11 @@ struct MetalViewport: NSViewRepresentable {
         view.delegate = context.coordinator
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float_stencil8
-        view.preferredFramesPerSecond = 60
+        // Allow ProMotion (120Hz) on capable displays; the system clamps this to
+        // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
+        // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
+        // costs a cheap idle poll when nothing is moving.
+        view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         context.coordinator.engine = engine
@@ -120,7 +124,11 @@ struct MetalViewport: UIViewRepresentable {
         view.delegate = context.coordinator
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float_stencil8
-        view.preferredFramesPerSecond = 60
+        // Allow ProMotion (120Hz) on capable displays; the system clamps this to
+        // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
+        // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
+        // costs a cheap idle poll when nothing is moving.
+        view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
         view.isMultipleTouchEnabled = true
@@ -265,6 +273,7 @@ extension MetalViewport {
         }
 
         private var wasSuppressed = false
+        private var hasRenderedOnce = false
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
@@ -292,12 +301,24 @@ extension MetalViewport {
             // Build RendererMetal on the first frame (bridge no-ops thereafter),
             // then hand off this frame's drawable + pass descriptor and render.
             engine.setupMetalRenderer(view: view)
+            engine.idle()
+            // On-demand rendering: after idle() (which advances movies/animations
+            // and sets PyMOL's redisplay flag), skip the GPU-expensive frame when
+            // nothing needs redrawing — a static structure then costs only a cheap
+            // idle poll instead of a full render every tick, the bulk of the
+            // battery/thermal win. The last presented frame stays on screen.
+            // Mirrors the legacy AppKit loop (main_appkit.mm). The first frame
+            // always renders (defensive against a blank start before any redisplay).
+            if hasRenderedOnce, let inst = engine.instance,
+               PyMOLBridge_GetRedisplay(inst, 1) == 0 {
+                return
+            }
             guard let drawable = view.currentDrawable,
                   let passDesc = view.currentRenderPassDescriptor else { return }
-            engine.idle()
             let size = view.drawableSize
             engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
                                     width: Int(size.width), height: Int(size.height))
+            hasRenderedOnce = true
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
