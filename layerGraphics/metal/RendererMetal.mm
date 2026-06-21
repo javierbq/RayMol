@@ -810,11 +810,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _sceneColor = [_device newTextureWithDescriptor:cd];
   _postColor = [_device newTextureWithDescriptor:cd];
 
-  // Raw RT ambient-occlusion term (single channel). Kept in its own float
-  // texture so the composite pass can depth-aware-blur it — that blur is what
-  // removes the Monte-Carlo speckle the raw AO estimate would otherwise show.
+  // Raw RT terms: ambient occlusion in .r, traced light-visibility (hard
+  // shadow) in .g. Kept in its own float texture so the composite pass can
+  // depth-aware-blur both — that blur is what removes the Monte-Carlo speckle
+  // the raw estimates would otherwise show. RG (not R) so the metal_rt_shadows
+  // path can carry the traced shadow term alongside AO at no extra pass.
   MTLTextureDescriptor* aod = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Float
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
                                    width:w height:h mipmapped:NO];
   aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   aod.storageMode = MTLStorageModePrivate;
@@ -983,10 +985,12 @@ void RendererMetal::buildPostPipelines()
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
-    float projY, int rtEnabled, int tonemapEnabled, float exposure)
+    float projY, int rtEnabled, int tonemapEnabled, float exposure,
+    int rtShadowEnabled)
 {
   _tonemapEnabled = tonemapEnabled;
   _exposure = exposure;
+  _rtShadowEnabled = rtShadowEnabled;
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
   _fogEnd = fogEnd;
@@ -1034,7 +1038,7 @@ struct RTU {
   float4 bgFog;            // bg.rgb, fogEnabled
   float projA, projB, projX, projY;
   float fogStart, fogEnd, aoRadius, aoIntensity;
-  float shadowIntensity, nSamples, frame, _pad;
+  float shadowIntensity, nSamples, frame, rtShadow; // rtShadow>0.5: trace shadows
   float4x4 lightViewProj;  // eye-space light view*proj for shadow-map sampling
 };
 
@@ -1110,7 +1114,27 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
-  return float4(ao, ao, ao, 1.0);
+
+  // Traced hard shadow toward the key light (model space), written to .g.
+  // Reuses the same instance AS that already holds spheres + tessellated
+  // cylinders + cartoon/surface triangles, so the shadow is cast uniformly by
+  // every representation — no shadow-map resolution/peter-panning. vis = 1 lit,
+  // 0 occluded. Back-facing fragments skip the ray (vis=1); the composite
+  // faceGate zeroes their cast-shadow term so diffuse alone darkens them.
+  float vis = 1.0;
+  if (u.rtShadow > 0.5) {
+    float3 Lm = normalize(u.lightDirModel.xyz);
+    if (dot(nModel, Lm) > 0.0) {
+      ray sr;
+      sr.origin = origin;            // already pModel + nModel*bias
+      sr.direction = Lm;
+      sr.min_distance = bias;
+      sr.max_distance = 1.0e4;       // full directional shadow, not just contact
+      auto sres = it.intersect(sr, accel);
+      if (sres.type != intersection_type::none) vis = 0.0;
+    }
+  }
+  return float4(ao, vis, 0.0, 1.0);
 }
 
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
@@ -1141,7 +1165,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   // closeness so AO doesn't bleed across object silhouettes.
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
-  float aoSum = 0.0, wSum = 0.0;
+  float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -1149,15 +1173,28 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       if (dn >= 0.99999) continue;
       float ezn = -u.projB / ((2.0 * dn - 1.0) + u.projA);
       float w = exp(-abs(ezn - ez) / ztol);
-      aoSum += aoTex.sample(s, uv).r * w;
+      float2 rg = aoTex.sample(s, uv).rg;
+      aoSum += rg.r * w;
+      visSum += rg.g * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
+  float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
   col *= ao;
 
-  // Cast shadows: sample the SHADOW MAP (PCF + face/separation gates mirror
-  // post_ssao_fog so RT and non-RT shadows look identical).
-  if (u.shadowIntensity > 0.0) {
+  // Cast shadows. Two paths share the shadowIntensity gate:
+  //  - metal_rt_shadows (u.rtShadow): use the hard shadow ray traced in rt_ao
+  //    (visibility in .g), gated by a model-space faceGate so only lit faces
+  //    receive a cast-shadow term (back faces are darkened by diffuse alone).
+  //  - otherwise: the original shadow-map PCF (unchanged fallback), kept so the
+  //    default RT path and non-RT-capable GPUs are byte-for-byte identical.
+  if (u.shadowIntensity > 0.0 && u.rtShadow > 0.5) {
+    float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+    float3 Lm = normalize(u.lightDirModel.xyz);
+    float faceGate = smoothstep(0.0, 0.35, dot(nModel, Lm));
+    float shadow = (1.0 - vis) * faceGate;
+    col *= (1.0 - shadow * u.shadowIntensity);
+  } else if (u.shadowIntensity > 0.0) {
     float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
     float4 lc = u.lightViewProj * float4(pEye, 1.0);     // eye -> light clip
@@ -1456,11 +1493,11 @@ void RendererMetal::ensureRayTracingAS()
     NSError* err = nil;
     id<MTLLibrary> lib = [_device newLibraryWithSource:kRTSrc options:nil error:&err];
     if (lib) {
-      // Pass A: raw AO -> R16Float.
+      // Pass A: raw AO (.r) + traced light-visibility (.g) -> RG16Float.
       MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
       pa.vertexFunction = [lib newFunctionWithName:@"rt_vertex"];
       pa.fragmentFunction = [lib newFunctionWithName:@"rt_ao"];
-      pa.colorAttachments[0].pixelFormat = MTLPixelFormatR16Float;
+      pa.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
       _rtAOPipeline = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
       // Pass B: blur AO + shadow/fog composite -> BGRA8.
       MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
@@ -1497,7 +1534,7 @@ void RendererMetal::runPostChain()
       float bgFog[4];
       float projA, projB, projX, projY;
       float fogStart, fogEnd, aoRadius, aoIntensity;
-      float shadowIntensity, nSamples, frame, _pad;
+      float shadowIntensity, nSamples, frame, rtShadow;
       float lightViewProj[16];   // eye-space light VP for shadow-map sampling
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
@@ -1518,7 +1555,10 @@ void RendererMetal::runPostChain()
     // trace more rays since each export frame stands alone.
     u.nSamples = _offscreen ? 48.0f : 16.0f;
     u.frame = 0.0f;            // deterministic: AO identical every frame (no shimmer)
-    u._pad = 0.0f;
+    // metal_rt_shadows: trace a hard shadow ray in rt_ao instead of sampling the
+    // shadow map in rt_composite. Only meaningful when shadows are on (the
+    // composite still gates on shadowIntensity). Default off -> shadow-map path.
+    u.rtShadow = _rtShadowEnabled ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
 
     // Pass A: trace AO -> _rtAO (R16Float).

@@ -1972,9 +1972,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     int rtEnabled = SettingGetGlobal_b(G, cSetting_metal_raytrace) ? 1 : 0;
     int tonemapEnabled = SettingGetGlobal_b(G, cSetting_metal_tonemap) ? 1 : 0;
     float exposure = SettingGetGlobal_f(G, cSetting_metal_exposure);
+    int rtShadowEnabled = SettingGetGlobal_b(G, cSetting_metal_rt_shadows) ? 1 : 0;
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],
-        proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure);
+        proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure,
+        rtShadowEnabled);
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next setDrawable (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.

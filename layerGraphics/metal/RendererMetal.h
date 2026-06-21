@@ -150,7 +150,7 @@ public:
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       int outlineEnabled, float projA, float projB, float projX,
       float projY, int rtEnabled, int tonemapEnabled = 0,
-      float exposure = 1.0f) override;
+      float exposure = 1.0f, int rtShadowEnabled = 0) override;
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
@@ -412,6 +412,7 @@ private:
   // --- Real-time ray tracing (cSetting_metal_raytrace) ---
   bool _rtSupported = false;      // [_device supportsRaytracing], set in ctor
   int  _rtEnabled = 0;            // requested (gated by _rtSupported)
+  int  _rtShadowEnabled = 0;      // metal_rt_shadows: traced hard shadow ray
   bool _rtReady = false;          // instance acceleration structure is built
   // Atom-sphere geometry accumulated each frame (model space, center+radius).
   std::vector<float> _rtSpheres;  // x,y,z,r per sphere

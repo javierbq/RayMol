@@ -913,6 +913,7 @@ enum {
   REC_b( 803, metal_interior_cap                      , object    , false ), /* Metal: fill (cap) the slab cross-section of clipped spheres/sticks with a solid interior color */
   REC_b( 804, metal_tonemap                           , global    , false ), /* Metal filmic (ACES) tone-mapping + exposure post pass */
   REC_f( 805, metal_exposure                          , global    , 1.0F ),  /* Metal tone-map exposure multiplier (1.0 = neutral) */
+  REC_b( 806, metal_rt_shadows                         , global    , false ), /* Metal: trace hard shadow rays (needs metal_raytrace) instead of shadow-map PCF */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION
