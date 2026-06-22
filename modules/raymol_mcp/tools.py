@@ -16,30 +16,33 @@ import io
 import json
 import os
 import tempfile
+import threading
 import traceback
 import urllib.parse
 import urllib.request
 
 # Persistent namespace for run_python; seeded on first use.
 _py_ns = None
+_py_ns_lock = threading.Lock()
 
 
 def _namespace():
     global _py_ns
-    if _py_ns is None:
-        from pymol import cmd
-        ns = {"__name__": "__mcp_exec__", "cmd": cmd}
-        try:
-            import numpy as np
-            ns["np"] = np
-        except Exception:
-            pass
-        try:
-            import Bio
-            ns["Bio"] = Bio
-        except Exception:
-            pass
-        _py_ns = ns
+    with _py_ns_lock:
+        if _py_ns is None:
+            from pymol import cmd
+            ns = {"__name__": "__mcp_exec__", "cmd": cmd}
+            try:
+                import numpy as np
+                ns["np"] = np
+            except Exception:
+                pass
+            try:
+                import Bio
+                ns["Bio"] = Bio
+            except Exception:
+                pass
+            _py_ns = ns
     return _py_ns
 
 
@@ -104,11 +107,12 @@ def _get_session_state(args):
 
 def _capture_viewport(args):
     from pymol import cmd
-    width = int(args.get("width", 640))
-    height = int(args.get("height", 480))
-    path = os.path.join(tempfile.gettempdir(),
-                        "raymol_mcp_capture_%d.png" % os.getpid())
+    path = None
     try:
+        width = int(args.get("width", 640))
+        height = int(args.get("height", 480))
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="raymol_mcp_capture_")
+        os.close(fd)
         cmd.ray(width, height)          # CPU ray-trace into the image buffer
         cmd.png(path, dpi=72, prior=1)  # write the already-rendered image
         with open(path, "rb") as f:
@@ -118,26 +122,27 @@ def _capture_viewport(args):
     except Exception:
         return _error(traceback.format_exc())
     finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        if path is not None:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _search_pdb(args):
     query = args.get("query", "")
-    limit = int(args.get("limit", 10))
     if not query:
         return _error("missing 'query'")
-    body = {
-        "query": {"type": "terminal", "service": "full_text",
-                  "parameters": {"value": query}},
-        "return_type": "entry",
-        "request_options": {"paginate": {"start": 0, "rows": limit}},
-    }
-    url = ("https://search.rcsb.org/rcsbsearch/v2/query?json="
-           + urllib.parse.quote(json.dumps(body)))
     try:
+        limit = int(args.get("limit", 10))
+        body = {
+            "query": {"type": "terminal", "service": "full_text",
+                      "parameters": {"value": query}},
+            "return_type": "entry",
+            "request_options": {"paginate": {"start": 0, "rows": limit}},
+        }
+        url = ("https://search.rcsb.org/rcsbsearch/v2/query?json="
+               + urllib.parse.quote(json.dumps(body)))
         with urllib.request.urlopen(url, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         ids = [r["identifier"] for r in data.get("result_set", [])]
