@@ -676,6 +676,11 @@ struct ContentView: View {
         if landscape {
             // LANDSCAPE (iPad + iPhone landscape): left stack (terminal/sequence/
             // viewport) beside a right side column (Objects + Raymond) — the Mac.
+            // iPhone is full-bleed (ignoresSafeArea, for the immersive viewport),
+            // so the floating top toolbar overlaps the panels — reserve top space
+            // for the side panels there so the toolbar never hides the first
+            // object / sequence row (iPad reserves the safe area already).
+            let panelTopInset: CGFloat = isPhoneLandscape ? 46 : 0
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     if cTerm {
@@ -688,6 +693,9 @@ struct ContentView: View {
                     }
                     viewportView
                 }
+                // Push the console/sequence below the toolbar only when one is
+                // shown; a bare viewport stays full-bleed/immersive.
+                .padding(.top, (cTerm || engine.sequenceVisible) ? panelTopInset : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if showThemeStudio {
                     Divider()
@@ -705,6 +713,9 @@ struct ContentView: View {
                             ChatPanel().frame(maxHeight: .infinity)
                         }
                     }
+                    // Reserve top space so the floating toolbar doesn't hide the
+                    // Objects panel header / first object on iPhone (full-bleed).
+                    .padding(.top, panelTopInset)
                     .frame(width: rightW)
                     .background(themeChromeBg)
                 }
@@ -885,10 +896,34 @@ struct ContentView: View {
 
     // The 3D viewport — primary in every orientation. Carries the empty-state CTA
     // and a persistent "?" gesture-legend button.
+    // True while a cold-launch session restore is showing its last-scene
+    // snapshot — suppresses the empty "open a file" state during the reload.
+    private var hasRestoreSnapshot: Bool {
+        #if os(iOS)
+        return engine.restoreSnapshot != nil
+        #else
+        return false
+        #endif
+    }
+
     private var viewportView: some View {
         MetalViewport()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay { if engine.objects.isEmpty && !showThemeStudio { emptyStateView } }
+            .overlay { if engine.objects.isEmpty && !showThemeStudio && !hasRestoreSnapshot { emptyStateView } }
+            // Cold-launch restore: cover the viewport with the last-scene snapshot
+            // until the reloaded session has rendered (see restoreAutosaveIfAvailable).
+            .overlay {
+                #if os(iOS)
+                if let snap = engine.restoreSnapshot {
+                    Image(uiImage: snap)
+                        .resizable().scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped().allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+                #endif
+            }
+            .animation(.easeOut(duration: 0.35), value: hasRestoreSnapshot)
             // Timeline transport: floats over the bottom of the viewport when
             // there's more than one frame. A collapsing peek on iPhone; a pinned
             // full-width bar on iPad.

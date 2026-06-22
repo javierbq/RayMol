@@ -81,6 +81,13 @@ struct PyMOLApp: App {
                 // also fires for transient interruptions (app-switcher peek,
                 // Control Center) where we don't want to save.
                 .onChange(of: scenePhase) { phase in
+                    // Grab the viewport snapshot on .inactive (still foreground —
+                    // iOS blocks Metal work once .background), then save the full
+                    // session on .background. The snapshot is only USED on restore
+                    // when a .background autosave actually happened, so capturing
+                    // it during transient .inactive (Control Center, switcher peek)
+                    // is harmless.
+                    if phase == .inactive { engine.captureRestoreSnapshot() }
                     if phase == .background { engine.autosaveSession() }
                 }
             #endif

@@ -44,7 +44,15 @@ final class PyMOLEngine: ObservableObject {
     // delay so quick ops never flash it; busyLabel describes the operation.
     @Published var isBusy = false
     @Published var busyLabel = ""
-    @Published var sequenceVisible = false
+    @Published var sequenceVisible = false {
+        // Showing the strip must (re)fetch the sequence data — toggling the
+        // panel on (menu/toolbar) only flipped this bool, so the strip rendered
+        // empty until an unrelated load/refresh happened to repopulate it (the
+        // "sequence only shows when the console is open" bug). Fetch on the
+        // false→true edge; fetchSequences() no-ops until the engine is ready,
+        // and the load path re-fetches then.
+        didSet { if sequenceVisible && !oldValue { fetchSequences() } }
+    }
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
     // object (it's underscore-prefixed → excluded from public_objects) to stay
@@ -175,6 +183,11 @@ final class PyMOLEngine: ObservableObject {
     // takes precedence over the autosaved scene (don't merge the old session
     // underneath the opened document).
     var launchOpenRequested = false
+    // A snapshot of the viewport captured alongside the autosave, shown over the
+    // viewport while the session reloads on cold launch so the user sees their
+    // last scene instead of the empty "open a file" state flashing. Cleared once
+    // the restored scene has had time to render.
+    @Published var restoreSnapshot: UIImage?
     #endif
 
     private init() {}
@@ -470,8 +483,15 @@ final class PyMOLEngine: ObservableObject {
         return appDir.appendingPathComponent("autosave.pse")
     }
 
+    // Viewport snapshot saved next to the .pse, shown during the cold-launch
+    // reload so the empty state never flashes.
+    private var autosaveImageURL: URL? {
+        autosaveURL?.deletingLastPathComponent().appendingPathComponent("autosave.png")
+    }
+
     private func clearAutosave() {
         if let url = autosaveURL { try? FileManager.default.removeItem(at: url) }
+        if let img = autosaveImageURL { try? FileManager.default.removeItem(at: img) }
         UserDefaults.standard.set(false, forKey: Self.autosaveDefaultsKey)
     }
 
@@ -493,6 +513,29 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         let saved = FileManager.default.fileExists(atPath: url.path)
         UserDefaults.standard.set(saved, forKey: Self.autosaveDefaultsKey)
+        // The viewport snapshot is captured separately on `.inactive` (see
+        // captureRestoreSnapshot) — iOS forbids GPU/Metal work once the app is
+        // already in `.background`, so it must be grabbed while still foreground.
+    }
+
+    /// Capture a snapshot of the current viewport for the cold-launch restore
+    /// overlay. Must run while the app is still foreground (scenePhase
+    /// `.inactive`, just before `.background`): iOS blocks Metal command-buffer
+    /// submission in the background, so capturing there yields nothing. Cheap
+    /// and idempotent; skipped for an empty scene.
+    func captureRestoreSnapshot() {
+        guard isReady, !objects.isEmpty, let img = autosaveImageURL else { return }
+        // Offscreen render (NOT capturePNG): the live drawable is already gone by
+        // the time scenePhase hits .inactive, so reading it yields nothing.
+        // renderHiResPNG builds its own offscreen target — and .inactive is still
+        // foreground, so the GPU submit is permitted (it isn't in .background).
+        // Half-screen resolution keeps the one-off render cheap; it's only a
+        // placeholder shown briefly during the cold-launch reload.
+        let scale = UIScreen.main.scale
+        let sz = UIScreen.main.bounds.size
+        let w = max(Int(sz.width * scale / 2), 1)
+        let h = max(Int(sz.height * scale / 2), 1)
+        renderHiResPNG(img.path, width: w, height: h, rayTraced: 0)
     }
 
     /// Reload the autosaved session on cold launch. One-shot per process, and
@@ -509,8 +552,22 @@ final class PyMOLEngine: ObservableObject {
               let url = autosaveURL,
               FileManager.default.fileExists(atPath: url.path) else { return }
         didRestoreAutosave = true
+        // Show the last-scene snapshot over the viewport immediately so the
+        // empty "open a file" state never flashes while the .pse reloads.
+        if let img = autosaveImageURL,
+           let data = try? Data(contentsOf: img),
+           let snap = UIImage(data: data) {
+            restoreSnapshot = snap
+        }
         runCommand("load \(url.path)")
         refreshAfterRestore()
+        // Clear the snapshot once the restored scene has had time to build and
+        // render its first frame; cross-fade so the handoff is seamless.
+        if restoreSnapshot != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                self?.restoreSnapshot = nil   // ContentView fades it via .animation(value:)
+            }
+        }
     }
     #endif
 
