@@ -24,6 +24,7 @@ struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
     #if os(iOS)
     @UIApplicationDelegateAdaptor(OrientationLockDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     #endif
 
     init() {
@@ -64,7 +65,25 @@ struct PyMOLApp: App {
                 // the sanitized filename stem. Engine init runs in ContentView's
                 // .onAppear, so on a cold launch the URL may arrive before the
                 // engine is ready — loadOpenedFile retries briefly until it is.
-                .onOpenURL { url in loadOpenedFile(url, into: engine) }
+                .onOpenURL { url in
+                    #if os(iOS)
+                    // A launch-to-open-a-file takes precedence over the autosaved
+                    // scene: flag it before the (possibly retried) load so the
+                    // cold-launch restore doesn't merge the old session underneath.
+                    engine.launchOpenRequested = true
+                    #endif
+                    loadOpenedFile(url, into: engine)
+                }
+            #if os(iOS)
+                // iOS purges backgrounded apps to reclaim memory; persist the
+                // session on the way out so the next cold launch can resume it.
+                // .background (not .inactive) is the debounced signal — .inactive
+                // also fires for transient interruptions (app-switcher peek,
+                // Control Center) where we don't want to save.
+                .onChange(of: scenePhase) { phase in
+                    if phase == .background { engine.autosaveSession() }
+                }
+            #endif
         }
         #if os(macOS)
         .windowStyle(.titleBar)

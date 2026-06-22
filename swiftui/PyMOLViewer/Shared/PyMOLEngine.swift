@@ -4,6 +4,9 @@
 import Foundation
 import Combine
 import MetalKit
+#if os(iOS)
+import UIKit
+#endif
 
 /// Frequently-changing movie/timeline playback state, kept in its OWN
 /// ObservableObject so the ≈10/s frame ticks during playback re-render only the
@@ -160,6 +163,19 @@ final class PyMOLEngine: ObservableObject {
     private var pendingHeavyClearFrames = 0
     // Backstop that clears a stuck overlay if the render loop ever stalls.
     private var busyBackstop: DispatchWorkItem?
+
+    #if os(iOS)
+    // iOS session auto-save / resume. iOS purges backgrounded apps to reclaim
+    // memory (jetsam), and the whole session lives only in the in-memory core,
+    // so without this the user loses their work on the next cold launch. We
+    // snapshot a full .pse on background and silently reload it on cold launch.
+    // One-shot per process so a warm foreground (memory intact) never re-restores.
+    private var didRestoreAutosave = false
+    // Set by .onOpenURL: the app was launched to open a specific file, which
+    // takes precedence over the autosaved scene (don't merge the old session
+    // underneath the opened document).
+    var launchOpenRequested = false
+    #endif
 
     private init() {}
 
@@ -395,6 +411,17 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        #if os(iOS)
+        // Cold-launch resume: reload the session iOS purged when the app was
+        // backgrounded. Skipped when a test affordance scripts the scene
+        // (PYMOL_AUTOLOAD/PYMOL_AUTOCMD imply deterministic screenshot content)
+        // and when launched to open a specific file (handled by .onOpenURL).
+        let env = ProcessInfo.processInfo.environment
+        if env["PYMOL_AUTOLOAD"] == nil && env["PYMOL_AUTOCMD"] == nil {
+            restoreAutosaveIfAvailable()
+        }
+        #endif
+
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -422,6 +449,70 @@ final class PyMOLEngine: ObservableObject {
         instance = nil
         isReady = false
     }
+
+    #if os(iOS)
+    // MARK: - Session auto-save / resume (iOS)
+
+    private static let autosaveDefaultsKey = "raymol.autosave.present"
+
+    // Persistent home for the rolling autosave. A subfolder of Library survives
+    // across launches (unlike tmp, which iOS may purge) and isn't surfaced in
+    // the Files app. The directory name is intentionally space-free: the path is
+    // passed through PyMOL's `load`/`save` command parser, and the conventional
+    // "Application Support" location's space risks argument-splitting ambiguity.
+    // Created on first access.
+    private var autosaveURL: URL? {
+        guard let dir = FileManager.default.urls(
+            for: .libraryDirectory, in: .userDomainMask).first else { return nil }
+        let appDir = dir.appendingPathComponent("RayMolState", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: appDir, withIntermediateDirectories: true)
+        return appDir.appendingPathComponent("autosave.pse")
+    }
+
+    private func clearAutosave() {
+        if let url = autosaveURL { try? FileManager.default.removeItem(at: url) }
+        UserDefaults.standard.set(false, forKey: Self.autosaveDefaultsKey)
+    }
+
+    /// Snapshot the full session to the autosave .pse. Called when the app is
+    /// backgrounded (scenePhase → .background), the point at which iOS may
+    /// subsequently terminate the process. An empty scene clears any prior
+    /// autosave so the user isn't resurrected into a scene they deliberately
+    /// cleared. The save runs synchronously on the main thread because the
+    /// embedded core's GIL model is not safe off-main (see runHeavy), and is
+    /// wrapped in a background-task assertion so a large session finishes
+    /// writing within iOS's background grace window.
+    func autosaveSession() {
+        guard isReady, let url = autosaveURL else { return }
+        guard !objects.isEmpty else { clearAutosave(); return }
+
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
+        defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
+
+        runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
+        let saved = FileManager.default.fileExists(atPath: url.path)
+        UserDefaults.standard.set(saved, forKey: Self.autosaveDefaultsKey)
+    }
+
+    /// Reload the autosaved session on cold launch. One-shot per process, and
+    /// suppressed when the launch is opening a specific file. Routing through
+    /// runCommand("load …pse") reuses handleSessionViewport, which restores the
+    /// saved camera and letterbox aspect; refreshAfterRestore republishes the
+    /// panels. The .pse carries its own scene settings (bg_color, metal_*), so
+    /// we deliberately do NOT re-assert the active theme here — that would
+    /// override the saved scene and the goal is to resume it exactly. Loading
+    /// into the empty cold-launch scene reproduces the prior session exactly.
+    func restoreAutosaveIfAvailable() {
+        guard isReady, !didRestoreAutosave, !launchOpenRequested else { return }
+        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
+              let url = autosaveURL,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        didRestoreAutosave = true
+        runCommand("load \(url.path)")
+        refreshAfterRestore()
+    }
+    #endif
 
     // MARK: - Commands
 
