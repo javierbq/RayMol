@@ -1283,6 +1283,19 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("SETVAL:") {
                     parseSetValFeedback(line)
+                } else if line.hasPrefix("MCP:") {
+                    #if os(macOS)
+                    let body = String(line.dropFirst("MCP:".count))
+                    if let colon = body.firstIndex(of: ":") {
+                        let kind = String(body[..<colon])
+                        let b64 = String(body[body.index(after: colon)...])
+                        let detail = Data(base64Encoded: b64)
+                            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                        DispatchQueue.main.async {
+                            MCPServerManager.shared.handleFeedbackEvent(kind, detail)
+                        }
+                    }
+                    #endif
                 } else if !line.isEmpty {
                     DispatchQueue.main.async {
                         self.feedbackLog.append(line)

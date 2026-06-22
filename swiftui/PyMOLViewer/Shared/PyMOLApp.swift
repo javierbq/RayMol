@@ -22,6 +22,9 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
 @main
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
+    #if os(macOS)
+    @StateObject private var mcp = MCPServerManager.shared
+    #endif
     #if os(iOS)
     @UIApplicationDelegateAdaptor(OrientationLockDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
@@ -51,6 +54,8 @@ struct PyMOLApp: App {
                 // Bring the app/window to the front on launch (a GUI app should
                 // foreground itself; also lets it be launched from a terminal).
                 .onAppear { NSApplication.shared.activate(ignoringOtherApps: true) }
+                .environmentObject(mcp)
+                .onAppear { mcp.bind(engine: engine) }
             #endif
             #if os(iOS)
                 // Test affordance (screenshot harness): force device orientation,
