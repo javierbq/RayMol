@@ -116,8 +116,10 @@ def _capture_viewport(args):
         height = int(args.get("height", 480))
         fd, path = tempfile.mkstemp(suffix=".png", prefix="raymol_mcp_capture_")
         os.close(fd)
-        cmd.ray(width, height)          # CPU ray-trace into the image buffer
-        cmd.png(path, dpi=72, prior=1)  # write the already-rendered image
+        # ray=1 ray-traces and writes the PNG in one synchronous call. A separate
+        # cmd.ray + cmd.png(prior=1) fails with "no prior image available" when
+        # driven from the MCP server thread.
+        cmd.png(path, width=width, height=height, ray=1)
         with open(path, "rb") as f:
             data = base64.b64encode(f.read()).decode("ascii")
         return {"content": [{"type": "image", "data": data,
@@ -125,7 +127,7 @@ def _capture_viewport(args):
     except Exception:
         return _error(traceback.format_exc())
     finally:
-        if path is not None:
+        if path:
             try:
                 os.remove(path)
             except OSError:
