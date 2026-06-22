@@ -62,6 +62,7 @@ class TestHttpAuth(unittest.TestCase):
         with self.assertRaises(rq.HTTPError) as ctx:
             self._post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, "wrong")
         self.assertEqual(ctx.exception.code, 401)
+        ctx.exception.close()
 
     def test_initialize_over_http_sets_session_and_counts_client(self):
         resp = self._post({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -69,6 +70,7 @@ class TestHttpAuth(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertTrue(resp.headers.get("Mcp-Session-Id"))
         payload = json.loads(resp.read())
+        resp.close()
         self.assertEqual(payload["result"]["serverInfo"]["name"], "raymol")
         self.assertEqual(server.status()["clients"], 1)
 

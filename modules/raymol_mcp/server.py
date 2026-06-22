@@ -106,7 +106,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path.rstrip("/") not in ("/mcp", ""):
+        if self.path.rstrip("/") != "/mcp":
             return self._reject(404, "not found")
         if not self._authed():
             return self._reject(401, "unauthorized")
@@ -180,9 +180,12 @@ def stop():
         _sessions = set()
         _httpd.shutdown()
         _httpd.server_close()
+        worker = _thread
         _httpd = None
         _thread = None
         _port = None
+        if worker is not None:
+            worker.join(timeout=2)
         events.server_stopped()
 
 
