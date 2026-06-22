@@ -603,6 +603,3 @@ if True:
         print(*args, **kw)
 
     cmd.extend('print', _print_statement)
-
-    from pymol import ai_chat
-    ai_chat._init(cmd)
