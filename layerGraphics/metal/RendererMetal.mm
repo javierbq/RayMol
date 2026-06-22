@@ -3839,6 +3839,12 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   matrices.pointSize = _pointSize > 0.0f ? _pointSize : 1.0f;
   matrices._pad[0] = matrices._pad[1] = matrices._pad[2] = 0.0f;
   [_encoder setVertexBytes:&matrices length:sizeof(matrices) atIndex:1];
+  // Lighting (Scene sliders) for the lit vbo_fragment at fragment buffer(0).
+  // Without this, indexed lit geometry (molecular surfaces) reads an unbound
+  // LightU (ambient/direct = 0) and renders black. Mirrors drawVBO.
+  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess };
+    [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
