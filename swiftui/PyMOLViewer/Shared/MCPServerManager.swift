@@ -146,12 +146,13 @@ final class MCPServerManager: ObservableObject {
         }
         // noteUserInitiatedConnect sets UI state — keep it synchronous on the main thread.
         noteUserInitiatedConnect()
+        // pushTrusted calls runPython which must run on the main thread (PyMOLBridge PAutoBlock).
+        pushTrusted()
         // Capture values before leaving the main thread.
         let capturedPort = port
         let capturedToken = token
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            self.pushTrusted()
             self.installSkillFile()
             let url = "http://127.0.0.1:\(capturedPort)/mcp"
             let header = "Authorization: Bearer \(capturedToken)"
