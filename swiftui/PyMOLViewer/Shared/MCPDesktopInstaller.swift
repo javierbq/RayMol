@@ -78,7 +78,9 @@ enum MCPDesktopInstaller {
         zip.currentDirectoryURL = staging
         zip.arguments = ["-j", out.path, manifest.path]
         do { try zip.run(); zip.waitUntilExit() } catch { return nil }
-        return zip.terminationStatus == 0 ? out : nil
+        guard zip.terminationStatus == 0 else { return nil }
+        try? fm.removeItem(at: staging)
+        return out
     }
 }
 #endif

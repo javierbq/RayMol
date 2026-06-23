@@ -1,11 +1,13 @@
 // MCPConnectSheet.swift — guided "Connect an AI app" sheet (macOS).
 #if os(macOS) && !RAYMOL_MAS_RESTRICTED
+import AppKit
 import SwiftUI
 
 struct MCPConnectSheet: View {
     @EnvironmentObject var mcp: MCPServerManager
     @Environment(\.dismiss) private var dismiss
     @State private var result: String?
+    @State private var macResult: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -55,10 +57,29 @@ struct MCPConnectSheet: View {
             }
             Divider()
 
-            HStack {
-                Text("Claude for Mac").foregroundStyle(.secondary)
-                Spacer()
-                Text("Coming soon").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Claude for Mac").fontWeight(.medium)
+                HStack {
+                    Button("Install for Claude (.mcpb)") {
+                        mcp.noteUserInitiatedConnect()
+                        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                            ?? FileManager.default.temporaryDirectory
+                        if let url = MCPDesktopInstaller.writeMcpb(to: dir) {
+                            NSWorkspace.shared.open(url)   // Claude shows its install prompt
+                            macResult = "Opened \(url.lastPathComponent) — confirm the install in Claude, then restart it."
+                        } else {
+                            macResult = "Couldn't build the .mcpb. Try 'Set it up for me'."
+                        }
+                    }.disabled(!mcp.isRunning)
+                    Button("Set it up for me") {
+                        mcp.noteUserInitiatedConnect()
+                        macResult = MCPDesktopInstaller.installViaConfig().message
+                    }.disabled(!mcp.isRunning)
+                }
+                if let macResult {
+                    Text(macResult).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             HStack { Spacer(); Button("Done") { dismiss() } }
