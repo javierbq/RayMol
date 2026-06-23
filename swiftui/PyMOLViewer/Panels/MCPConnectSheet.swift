@@ -37,7 +37,7 @@ struct MCPConnectSheet: View {
                     Text("not found").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Connect") { result = mcp.connectClaudeCode().message }
+                Button("Connect") { mcp.connectClaudeCode { msg in result = msg } }
                     .disabled(!mcp.isRunning)
             }
             if let port = mcp.port {

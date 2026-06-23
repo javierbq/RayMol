@@ -139,31 +139,44 @@ final class MCPServerManager: ObservableObject {
 
     var claudeCLIPath: String? { Self.findClaude() }
 
-    @discardableResult
-    func connectClaudeCode() -> (ok: Bool, message: String) {
+    func connectClaudeCode(completion: @escaping (String) -> Void) {
         guard isRunning, let port = port else {
-            return (false, "Turn on the MCP server first.")
+            completion("Turn on the MCP server first.")
+            return
         }
+        // noteUserInitiatedConnect sets UI state — keep it synchronous on the main thread.
         noteUserInitiatedConnect()
-        pushTrusted()
-        installSkillFile()
-        let url = "http://127.0.0.1:\(port)/mcp"
-        let header = "Authorization: Bearer \(token)"
-        let manual = "claude mcp add --transport http raymol \(url) "
-            + "--header \"\(header)\" --scope user"
-        guard let claude = Self.findClaude() else {
-            return (false, "Claude Code CLI not found. Run this in a terminal:\n\n\(manual)")
+        // Capture values before leaving the main thread.
+        let capturedPort = port
+        let capturedToken = token
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.pushTrusted()
+            self.installSkillFile()
+            let url = "http://127.0.0.1:\(capturedPort)/mcp"
+            let header = "Authorization: Bearer \(capturedToken)"
+            let manual = "claude mcp add --transport http raymol \(url) "
+                + "--header \"\(header)\" --scope user"
+            guard let claude = Self.findClaude() else {
+                DispatchQueue.main.async {
+                    completion("Claude Code CLI not found. Run this in a terminal:\n\n\(manual)")
+                }
+                return
+            }
+            _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])  // idempotent
+            let (code, out) = Self.runClaude(claude, [
+                "mcp", "add", "--transport", "http", "raymol", url,
+                "--header", header, "--scope", "user",
+            ])
+            let msg: String
+            if code == 0 {
+                msg = "Connected. In Claude Code, run /mcp (or restart it) to pick up RayMol, "
+                    + "then ask it to load and view a structure."
+            } else {
+                msg = "claude exited \(code): \(out)\n\nManual command:\n\(manual)"
+            }
+            DispatchQueue.main.async { completion(msg) }
         }
-        _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])  // idempotent
-        let (code, out) = Self.runClaude(claude, [
-            "mcp", "add", "--transport", "http", "raymol", url,
-            "--header", header, "--scope", "user",
-        ])
-        if code == 0 {
-            return (true, "Connected. In Claude Code, run /mcp (or restart it) to pick up RayMol, "
-                + "then ask it to load and view a structure.")
-        }
-        return (false, "claude exited \(code): \(out)\n\nManual command:\n\(manual)")
     }
 
     private func installSkillFile() {
