@@ -11,6 +11,13 @@ configFiles:
   Debug: PyMOLBridge.xcconfig
   Release: PyMOLBridge.xcconfig
 
+# Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
+# shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -262,7 +269,11 @@ targets:
           RES="$CODESIGNING_FOLDER_PATH/Contents/Resources"
           /usr/bin/python3 "$SRCROOT/../scripts/compile_metal_shaders.py" --sdk macosx --output "/tmp/pymol_macos.metallib" || true
           [ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib "$RES/pymol.metallib" || echo "metallib skipped (runtime-compile fallback)"
-    dependencies: []
+    dependencies:
+      # macOS-only: Sparkle has no iOS slice, so platformFilter keeps it out of
+      # the iOS build. All Swift usage is additionally guarded by #if os(macOS).
+      - package: Sparkle
+        platformFilter: macOS
     scheme:
       testTargets:
         - PyMOLViewerUITests
