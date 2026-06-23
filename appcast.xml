@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>RayMol</title>
+    <link>https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml</link>
+    <description>RayMol macOS updates</description>
+    <language>en</language>
+    <item>
+      <title>RayMol 1.1.0</title>
+      <sparkle:releaseNotesLink>https://github.com/javierbq/RayMol/releases/tag/v1.1.0</sparkle:releaseNotesLink>
+      <pubDate>Tue, 23 Jun 2026 06:53:15 +0000</pubDate>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.1.0/RayMol-1.1.0.dmg" type="application/octet-stream" sparkle:edSignature="ZTJfD5CsBOadGcqzNyG13DXzQhW22nVUfwRHLeb0YOvgHt0JzdIYrluRl3JXNPmNesF8gT/+jH28W772UEApBw==" length="62313940" />
+    </item>
+  </channel>
+</rss>
