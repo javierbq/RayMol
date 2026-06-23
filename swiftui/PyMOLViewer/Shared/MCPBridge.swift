@@ -24,6 +24,19 @@ enum MCPBridge {
             }
             // Notifications (no id) and 202s produce no line.
         }
+        // Claude closed our stdin (it quit) — tell the server to terminate our
+        // session so the connected-client count updates immediately instead of
+        // waiting for the idle sweep.
+        if let sid = sessionId, let h = handoff(),
+           let url = URL(string: "http://127.0.0.1:\(h.port)/mcp") {
+            var req = URLRequest(url: url)
+            req.httpMethod = "DELETE"
+            req.setValue("Bearer \(h.token)", forHTTPHeaderField: "Authorization")
+            req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id")
+            let sem = DispatchSemaphore(value: 0)
+            URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+            _ = sem.wait(timeout: .now() + 5)
+        }
     }
 
     // MARK: handoff

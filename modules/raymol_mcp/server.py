@@ -30,8 +30,8 @@ INSTRUCTIONS = (
     "at a time and capturing the viewport to verify results."
 )
 
-# A session is considered closed after this many seconds with no request. 90s tolerates normal between-task idleness; the sweep runs every SWEEP_INTERVAL.
-SESSION_TTL = 90.0
+# A session is dropped after this many seconds with no request. Claude Code sends no keepalive when idle, so 300s avoids flapping the count during normal between-task idleness; the desktop bridge sends an explicit DELETE on quit for instant cleanup.
+SESSION_TTL = 300.0
 SWEEP_INTERVAL = 20.0
 
 _lock = threading.Lock()

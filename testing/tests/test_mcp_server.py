@@ -99,24 +99,27 @@ class TestSessionExpiry(unittest.TestCase):
         server._sessions = {}
 
     def test_prune_removes_idle_and_emits_disconnect(self):
-        server._sessions = {"old": 100.0, "fresh": 195.0}
+        now = 10000.0
+        server._sessions = {"old": now - (server.SESSION_TTL + 10),  # idle past TTL
+                            "fresh": now - 5.0}                        # fresh
         buf = io.StringIO()
         with redirect_stdout(buf):
-            dead = server._prune_idle(now=200.0)  # TTL is 90; old idle 100>90, fresh idle 5
+            dead = server._prune_idle(now=now)
         self.assertEqual(dead, ["old"])
         self.assertIn("fresh", server._sessions)
         self.assertIn("MCP:disconnect:", buf.getvalue())
 
     def test_prune_keeps_all_fresh(self):
-        server._sessions = {"a": 150.0, "b": 195.0}
-        dead = server._prune_idle(now=200.0)
+        now = 10000.0
+        server._sessions = {"a": now - 5.0, "b": now - (server.SESSION_TTL - 5)}
+        dead = server._prune_idle(now=now)
         self.assertEqual(dead, [])
         self.assertEqual(set(server._sessions), {"a", "b"})
 
     def test_touch_refreshes_last_seen(self):
         server._sessions = {"a": 0.0}
-        server._touch("a")            # sets to monotonic now (large)
-        dead = server._prune_idle(now=server._sessions["a"] + 1.0)  # 1s after touch < TTL
+        server._touch("a")
+        dead = server._prune_idle(now=server._sessions["a"] + 1.0)
         self.assertEqual(dead, [])
 
 
