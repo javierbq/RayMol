@@ -65,9 +65,14 @@ echo "== Publish GitHub release v$VERSION =="
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
   gh release upload "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" --clobber
 else
-  gh release create "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" \
-    --title "RayMol $VERSION" \
-    --notes "Automatic updates are here. RayMol now checks for new versions and installs them with one click — no more manual DMG downloads. Built on the open-source PyMOL engine."
+  if [ -n "${NOTES_FILE:-}" ]; then
+    gh release create "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" \
+      --title "RayMol $VERSION" --notes-file "$NOTES_FILE"
+  else
+    gh release create "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" \
+      --title "RayMol $VERSION" \
+      --notes "${NOTES:-Automatic updates are here. RayMol now checks for new versions and installs them with one click — no more manual DMG downloads. Built on the open-source PyMOL engine.}"
+  fi
 fi
 
 echo "DONE → https://github.com/$REPO/releases/tag/v$VERSION"

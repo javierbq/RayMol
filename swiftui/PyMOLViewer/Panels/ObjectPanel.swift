@@ -181,6 +181,10 @@ enum SceneCatalog {
         SceneParam(setting: "metal_tonemap", label: "Filmic tone-map", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Lighting & Quality"),
         SceneParam(setting: "depth_cue",     label: "Depth cue / fog", kind: .toggle, group: "Lighting & Quality"),
+        // grid_mode is an int (0=off, 1=by object, 2=by state); the toggle maps
+        // off→0 / on→1 and reads on for any non-zero mode. Lays each object out
+        // in its own viewport cell (Metal grid support added in 1.2.0).
+        SceneParam(setting: "grid_mode",     label: "Grid", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "all_states",    label: "Overlay all states", kind: .toggle, group: "Lighting & Quality"),
         // Lighting (made real-time on Metal in Phase 3; tunable here in Phase 2).
         SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting & Quality"),
@@ -491,10 +495,46 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
         return
     case "copy":               cmd = "copy \(n)_copy, \(n)"
     case "delete":             cmd = "delete \(n)"
+    // Global ("all" row) actions
+    case "deselect":           cmd = "deselect"
+    case "hide_everything":    cmd = "hide everything, \(n)"
+    case "reset_view":         cmd = "reset"
     default:                   return
     }
     engine.runCommand(cmd)
 }
+
+/// Action ("A") menu for the global "all" row — a focused, scene-wide subset.
+/// Reuses the per-object action keys (all valid with name "all"); deliberately
+/// omits per-object items (Rename / Duplicate / Delete) and adds global ones
+/// (Deselect, Hide everything, Reset camera).
+private let allActionMenuItems: [ActionMenuItem] = [
+    .action(label: "Zoom",          key: "zoom"),
+    .action(label: "Orient",        key: "orient"),
+    .action(label: "Center",        key: "center"),
+    .action(label: "Reset camera",  key: "reset_view"),
+    .separator,
+    .action(label: "Deselect",      key: "deselect"),
+    .action(label: "Hide everything", key: "hide_everything"),
+    .separator,
+    .action(label: "Assign Sec. Struc.", key: "dss"),
+    .action(label: "Remove Waters",      key: "remove_waters"),
+    .submenu(label: "Hydrogens", children: [
+        .action(label: "add",        key: "h_add"),
+        .action(label: "add polar",  key: "h_add_polar"),
+        .action(label: "remove",     key: "h_remove"),
+    ]),
+    .submenu(label: "Find", children: [
+        .action(label: "polar contacts (any)", key: "find_polar_any"),
+        .action(label: "salt bridges",         key: "find_salt_bridge"),
+    ]),
+    .submenu(label: "Preset", children: [
+        .action(label: "pretty",         key: "preset_pretty"),
+        .action(label: "technical",      key: "preset_technical"),
+        .action(label: "ball and stick", key: "preset_ball_and_stick"),
+        .action(label: "default",        key: "preset_default"),
+    ]),
+]
 
 // MARK: - Theme
 
@@ -584,6 +624,9 @@ struct ObjectPanel: View {
 
                     // Objects section — each is an expandable inspector card
                     if !objects.isEmpty {
+                        // Global "all" controls (A/S/H/L/C on the whole scene),
+                        // pinned above the per-object cards.
+                        AllControlsRow()
                         ForEach(Array(objects.enumerated()), id: \.element.id) { index, obj in
                             ObjectCard(entry: obj, isAlt: index % 2 == 1)
                         }
@@ -720,6 +763,49 @@ private struct ObjectRowView: View {
         } else {
             engine.runCommand("enable \(entry.name)")
         }
+    }
+}
+
+// MARK: - Global "all" controls row
+
+/// Pinned row above the object list giving the same A/S/H/L/C controls as an
+/// object row but acting on the whole scene (selection "all") — mirrors desktop
+/// PyMOL's "all" row for quick global Show/Hide/Label/Color and scene actions.
+/// Show/Hide/Label/Color reuse the per-object menus with name "all"; the Action
+/// (A) menu uses the global subset `allActionMenuItems`.
+private struct AllControlsRow: View {
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 2) {
+            // No enable checkbox — "all" is a selection, not a toggleable object.
+            Spacer().frame(width: kGutterW)
+            Text("all")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(PanelTheme.textColor)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Menu {
+                actionMenuContent(allActionMenuItems, name: "all", engine: engine)
+            } label: {
+                Text("A")
+                    .frame(width: kActBtnW, height: kActBtnH)
+                    .background(PanelTheme.buttonBackground)
+                    .cornerRadius(2)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            ShowButton(name: "all")
+            HideButton(name: "all")
+            LabelMenuButton(name: "all")
+            ColorMenuButton(name: "all")
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(PanelTheme.rowBackground)
+        .contextMenu { actionMenuContent(allActionMenuItems, name: "all", engine: engine) }
     }
 }
 
@@ -1094,12 +1180,28 @@ private struct SegmentedSetting: View {
 private struct ToggleSetting: View {
     let value: Double
     let onToggle: (Bool) -> Void
+    // Optimistic local state. Previously the switch derived its position directly
+    // from `value` (a ~500ms-lagged poll) on EVERY re-render, so it flickered /
+    // snapped back: opening the panel, a rotation-driven refresh, or the gap
+    // between a tap and the next poll would re-render with the stale value and
+    // flip the switch (and its tint) back. Driving the switch from local @State
+    // that changes ONLY on a user flip or a genuine polled-value change makes a
+    // re-render with an unchanged value a no-op for the switch.
+    @State private var isOn = false
     var body: some View {
-        Toggle("", isOn: Binding(get: { value > 0.5 }, set: { onToggle($0) }))
+        Toggle("", isOn: $isOn)
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.mini)
             .tint(PanelTheme.selectionTextColor)
+            .onAppear { isOn = value > 0.5 }
+            .onChange(of: value) { v in
+                let want = v > 0.5
+                if want != isOn { isOn = want }          // adopt real external changes
+            }
+            .onChange(of: isOn) { on in
+                if on != (value > 0.5) { onToggle(on) }   // user flip → push once
+            }
     }
 }
 

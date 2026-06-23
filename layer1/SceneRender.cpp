@@ -1884,6 +1884,40 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G)
  * render() methods dispatch CGO draws through CGORenderGL which
  * already routes VBOs to RendererMetal via drawVBOViaMetal().
  *========================================================================*/
+
+/**
+ * Point the Metal renderer's viewport + scissor at grid cell `slot` within the
+ * scene viewport rect `vp` (Metal top-left backing px), and set grid->slot /
+ * cur_viewport_size accordingly. Cell (col,row): col runs left→right, row 0 is
+ * at the TOP, matching the GL grid layout. Integer scaling on the cell
+ * boundaries avoids 1-px gaps between adjacent cells. Shared by the geometry
+ * pass (SceneRenderMetal) and the selection overlay (SceneRenderMetalSelections)
+ * so the per-cell math lives in exactly one place.
+ */
+static void SceneSetMetalGridCell(
+    PyMOLGlobals* G, GridInfo* grid, const Rect2D& vp, int slot)
+{
+  int abs_slot = slot - grid->first_slot; // 0-based
+  int col = abs_slot % grid->n_col;
+  int row = abs_slot / grid->n_col;
+  int vpX = vp.offset.x;
+  int vpY = vp.offset.y;
+  int vpW = static_cast<int>(vp.extent.width);
+  int vpH = static_cast<int>(vp.extent.height);
+  int x0 = vpX + (col * vpW) / grid->n_col;
+  int x1 = vpX + ((col + 1) * vpW) / grid->n_col;
+  int y0 = vpY + (row * vpH) / grid->n_row;
+  int y1 = vpY + ((row + 1) * vpH) / grid->n_row;
+  int cw = x1 - x0;
+  int ch = y1 - y0;
+  G->Renderer->viewport(x0, y0, cw, ch);
+  G->Renderer->enable(pymol::Capability::ScissorTest);
+  G->Renderer->scissor(x0, y0, cw, ch);
+  grid->slot = slot;
+  grid->cur_viewport_size = Extent2D{
+      static_cast<std::uint32_t>(cw), static_cast<std::uint32_t>(ch)};
+}
+
 void SceneRenderMetal(PyMOLGlobals* G)
 {
   if (!G->Renderer)
@@ -1925,6 +1959,23 @@ void SceneRenderMetal(PyMOLGlobals* G)
 
   // --- Matrix setup ---
   auto aspRat = SceneGetAspectRatio(G);
+
+  // Grid layout (grid_mode): compute the cell layout BEFORE the projection so
+  // the per-cell aspect ratio (aspRat *= asp_adjust) feeds both the projection
+  // matrix AND the post-process params (proj[0]/[5]). This mirrors the GL
+  // SceneRender path (which does the same aspRat *= grid.asp_adjust). All cells
+  // share one projection — only the viewport changes per slot — because every
+  // cell has identical dimensions (window / n_col x n_row).
+  auto grid_mode = SettingGet<GridMode>(G, cSetting_grid_mode);
+  if (grid_mode != GridMode::NoGrid) {
+    int grid_size = SceneGetGridSize(G, grid_mode);
+    GridUpdate(&I->grid, aspRat, grid_mode, grid_size);
+    if (I->grid.active)
+      aspRat *= I->grid.asp_adjust;
+  } else {
+    I->grid.active = false;
+  }
+
   SceneProjectionMatrix(
       G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
   ScenePrepareMatrix(G, 0);
@@ -2013,15 +2064,6 @@ void SceneRenderMetal(PyMOLGlobals* G)
   auto scene_extent = SceneGetExtent(G);
   auto context = ScenePrepareUnitContext(scene_extent);
 
-  // Grid (usually inactive for simple scenes)
-  auto grid_mode = SettingGet<GridMode>(G, cSetting_grid_mode);
-  if (grid_mode != GridMode::NoGrid) {
-    int grid_size = SceneGetGridSize(G, grid_mode);
-    GridUpdate(&I->grid, aspRat, grid_mode, grid_size);
-  } else {
-    I->grid.active = false;
-  }
-
   // Transparency alpha CGO
   if (SettingGet<bool>(G, cSetting_transparency_global_sort) &&
       SettingGet<bool>(G, cSetting_transparency_mode)) {
@@ -2035,7 +2077,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // into the depth map, so the post pass can PCF-sample real cast shadows. The
   // light VP is loaded as PROJECTION (camera MODELVIEW kept), the renderer
   // routes draws to depth-only pipelines, then restores the scene pass. ---
-  if (SettingGetGlobal_b(G, cSetting_metal_shadows)) {
+  // Skipped in grid mode: the shadow map is a single global texture, so it
+  // can't be made per-cell, and a shared map would leak shadows between cells
+  // (an object visible only in cell B darkening an object in cell A). Grid mode
+  // therefore renders unshadowed (geometry-only parity for now).
+  if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G);
     const float* mvp = SceneGetModelViewMatrixPtr(G);
     G->Renderer->setLightViewProjEye(glm::value_ptr(lightVP_eye));
@@ -2057,14 +2103,54 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // --- Render objects: opaque first, then transparent via order-independent
   // transparency (weighted-blended). The transparent pass accumulates into the
   // OIT targets between begin/endTransparentOIT; endFrame resolves them. ---
-  for (auto pass : {RenderPass::Opaque, RenderPass::Antialias}) {
-    SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
-        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+  if (I->grid.active) {
+    // Grid mode: lay each slot's object(s) out in its own viewport cell.
+    // SceneRenderAll already filters objects by grid->slot (SceneGetDrawFlag),
+    // so we just set grid->slot + the cell viewport/scissor per iteration and
+    // replay the same passes. Scissor clips each cell so nothing bleeds across
+    // borders. Post-effects (SSAO/outline/OIT-resolve/FXAA) stay global — they
+    // run once over the whole frame in endFrame; minor seams at cell edges are
+    // acceptable for this geometry-first parity pass.
+    int vpX = 0, vpY = 0, vpW = I->Width, vpH = I->Height;
+    G->Renderer->getViewportRect(vpX, vpY, vpW, vpH);
+    Rect2D sceneVP{vpX, vpY, static_cast<std::uint32_t>(vpW),
+        static_cast<std::uint32_t>(vpH)};
+    I->grid.cur_view = sceneVP;
+
+    for (int slot = I->grid.first_slot; slot <= I->grid.last_slot; ++slot) {
+      SceneSetMetalGridCell(G, &I->grid, sceneVP, slot);
+      for (auto pass : {RenderPass::Opaque, RenderPass::Antialias}) {
+        SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
+            &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+      }
+    }
+    // Transparent OIT wraps every cell: all cells accumulate into the
+    // full-frame OIT targets, resolved once in endFrame.
+    G->Renderer->beginTransparentOIT();
+    for (int slot = I->grid.first_slot; slot <= I->grid.last_slot; ++slot) {
+      SceneSetMetalGridCell(G, &I->grid, sceneVP, slot);
+      SceneRenderAll(G, &context, normal, nullptr, RenderPass::Transparent,
+          false, 0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast);
+    }
+    G->Renderer->endTransparentOIT();
+
+    // Restore the full scene viewport and drop the scissor so the fullscreen
+    // post chain in endFrame (OIT resolve, SSAO, outline, FXAA) covers the
+    // whole frame instead of being clipped to the last cell.
+    G->Renderer->disable(pymol::Capability::ScissorTest);
+    G->Renderer->viewport(vpX, vpY, vpW, vpH);
+    I->grid.slot = 0;
+  } else {
+    for (auto pass : {RenderPass::Opaque, RenderPass::Antialias}) {
+      SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
+          &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+    }
+    G->Renderer->beginTransparentOIT();
+    SceneRenderAll(G, &context, normal, nullptr, RenderPass::Transparent, false,
+        0.0f, &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+    G->Renderer->endTransparentOIT();
   }
-  G->Renderer->beginTransparentOIT();
-  SceneRenderAll(G, &context, normal, nullptr, RenderPass::Transparent, false,
-      0.0f, &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
-  G->Renderer->endTransparentOIT();
 
   // --- Render selection indicators ---
   // Collect selected atom positions and draw them as pink points
@@ -2075,31 +2161,54 @@ void SceneRenderMetal(PyMOLGlobals* G)
     SceneRenderMetalSelections(G);
 }
 
+// Draw a batch of selection-indicator points (overlay, no depth test) at the
+// given world coordinates with the active theme's selection color.
+static void SceneDrawMetalSelectionPoints(
+    PyMOLGlobals* G, const std::vector<float>& coords)
+{
+  if (coords.empty())
+    return;
+  int nPoints = (int)(coords.size() / 3);
+  G->Renderer->disable(pymol::Capability::DepthTest);
+  G->Renderer->pointSize(12.0f); // Retina: need ~2x for visible size
+  G->Renderer->beginBatch(pymol::PrimitiveType::Points);
+  G->Renderer->batchColor4f(G->Renderer->selColor[0], G->Renderer->selColor[1],
+      G->Renderer->selColor[2], 1.0f);
+  for (int i = 0; i < nPoints; i++)
+    G->Renderer->batchVertex3f(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]);
+  G->Renderer->endBatch();
+  G->Renderer->enable(pymol::Capability::DepthTest);
+}
+
 void SceneRenderMetalSelections(PyMOLGlobals* G)
 {
   if (!G->Renderer || !G->Renderer->isRenderReady())
     return;
 
-  // Collect selected atom coordinates via Executive helper
+  CScene* I = G->Scene;
+
+  if (I->grid.active) {
+    // Grid mode: draw each cell's selection markers inside that cell's viewport.
+    // ExecutiveGetSelectionCoords filters by the current grid->slot (via
+    // SceneGetDrawFlagGrid), so per slot it returns only that cell object's
+    // selected atoms — projected with the same camera into the cell viewport.
+    int vpX = 0, vpY = 0, vpW = I->Width, vpH = I->Height;
+    G->Renderer->getViewportRect(vpX, vpY, vpW, vpH);
+    Rect2D sceneVP{vpX, vpY, static_cast<std::uint32_t>(vpW),
+        static_cast<std::uint32_t>(vpH)};
+    for (int slot = I->grid.first_slot; slot <= I->grid.last_slot; ++slot) {
+      SceneSetMetalGridCell(G, &I->grid, sceneVP, slot);
+      std::vector<float> coords;
+      ExecutiveGetSelectionCoords(G, coords);
+      SceneDrawMetalSelectionPoints(G, coords);
+    }
+    G->Renderer->disable(pymol::Capability::ScissorTest);
+    G->Renderer->viewport(vpX, vpY, vpW, vpH);
+    I->grid.slot = 0;
+    return;
+  }
+
   std::vector<float> coords;
   ExecutiveGetSelectionCoords(G, coords);
-
-  if (coords.empty())
-    return;
-
-  int nPoints = (int)(coords.size() / 3);
-
-  // Render selection indicators as squares (overlay, no depth test). Color is
-  // the active theme's selection color (Renderer::selColor; defaults to pink).
-  G->Renderer->disable(pymol::Capability::DepthTest);
-  G->Renderer->pointSize(12.0f);  // Retina: need ~2x for visible size
-
-  G->Renderer->beginBatch(pymol::PrimitiveType::Points);
-  G->Renderer->batchColor4f(G->Renderer->selColor[0], G->Renderer->selColor[1],
-                            G->Renderer->selColor[2], 1.0f);
-  for (int i = 0; i < nPoints; i++)
-    G->Renderer->batchVertex3f(coords[i*3], coords[i*3+1], coords[i*3+2]);
-  G->Renderer->endBatch();
-
-  G->Renderer->enable(pymol::Capability::DepthTest);
+  SceneDrawMetalSelectionPoints(G, coords);
 }

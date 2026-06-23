@@ -18,6 +18,14 @@ final class MCPServerManager: ObservableObject {
     private let preferredPort = 51737
     private weak var engine: PyMOLEngine?
     private var pulseWork: DispatchWorkItem?
+    // When the "Claude is controlling RayMol" banner first appeared in the current
+    // burst of tool activity — used to keep it on screen long enough to read even
+    // when a tool call finishes almost instantly (see scheduleClearBanner).
+    private var activeToolShownAt: Date?
+    // Minimum on-screen time from first appearance, plus a short trailing linger
+    // after the last tool call ends, so quick actions don't flash past.
+    private let bannerMinVisible: TimeInterval = 2.5
+    private let bannerTrailingLinger: TimeInterval = 1.0
     private var trustedThisSession = false
     private var userInitiatedConnectAt: Date?
 
@@ -112,10 +120,13 @@ final class MCPServerManager: ObservableObject {
         case "action":
             lastAction = detail
             logLine(detail)
+            if !activeTool { activeToolShownAt = Date() }
             activeTool = true
-            pulse()
+            // A tool call is in progress — keep the banner up and re-arm the
+            // backstop in case the matching "actionend" never arrives.
+            scheduleBannerBackstop()
         case "actionend":
-            activeTool = false
+            scheduleClearBanner()
         default:
             break
         }
@@ -126,13 +137,30 @@ final class MCPServerManager: ObservableObject {
         if activityLog.count > 200 { activityLog.removeFirst(activityLog.count - 200) }
     }
 
-    // Hold activeTool true briefly so the pulse is visible; a backstop in case an
-    // actionend line is ever missed.
-    private func pulse() {
+    // Backstop: if an "actionend" is ever missed, clear the banner a few seconds
+    // after the last "action". Re-armed on every "action".
+    private func scheduleBannerBackstop() {
         pulseWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in self?.activeTool = false }
+        let w = DispatchWorkItem { [weak self] in self?.clearActiveTool() }
         pulseWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: w)
+    }
+
+    // On "actionend", keep the banner visible until it's been shown at least
+    // bannerMinVisible (so an instant tool call doesn't just flash) and at least
+    // bannerTrailingLinger past the last action (so it doesn't vanish mid-glance).
+    private func scheduleClearBanner() {
+        pulseWork?.cancel()
+        let shown = activeToolShownAt.map { Date().timeIntervalSince($0) } ?? bannerMinVisible
+        let remaining = max(bannerMinVisible - shown, bannerTrailingLinger)
+        let w = DispatchWorkItem { [weak self] in self?.clearActiveTool() }
+        pulseWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: w)
+    }
+
+    private func clearActiveTool() {
+        activeTool = false
+        activeToolShownAt = nil
     }
 
     // MARK: Connect (Claude Code)

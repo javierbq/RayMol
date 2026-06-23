@@ -2,7 +2,9 @@
 
 **RayMol** is a native molecular visualization app for macOS, iPad, and iPhone —
 real-time Metal rendering (cartoon, sticks, spheres, surfaces), hardware ray
-tracing, themes, measurements, movies, and PyMOL scripting.
+tracing, themes, measurements, movies, PyMOL scripting, and — on macOS —
+control by your own Claude (Claude Code or the Claude app) via a built-in MCP
+server.
 
 ## Getting help
 
@@ -16,9 +18,12 @@ version (Settings shows it), and the steps to reproduce.
 
 - **Opening structures:** use **Open File** for local `.pdb`/`.cif`/`.pse` and
   related formats, or **Fetch from PDB** to download by 4-letter PDB ID.
-- **The AI assistant (Raymond):** optional and off by default. Enable it in
-  Settings → Experimental; it requires your own API key (Anthropic or Google
-  Vertex AI), stored securely in your device Keychain.
+- **Drive RayMol with Claude (macOS):** RayMol has a built-in MCP server, so you
+  can control it from your own Claude — either Claude Code or the Claude desktop
+  app. It's off by default; turn it on under the **Connect** menu, then choose
+  **Connect an AI app…** to link Claude. No API key is required — it uses your
+  existing Claude. The server is local-only (127.0.0.1), token-protected, and
+  asks you to approve each connection before it can drive the app.
 - **Privacy:** see the [Privacy Policy](https://raymol.io/privacy).
 
 ---

@@ -737,17 +737,10 @@ final class PyMOLEngine: ObservableObject {
     private func handleSessionViewport(for command: String) {
         let lower = command.lowercased()
         if lower.contains(".pse"), let path = sessionPath(from: command) {
-            // grid_mode (objects laid out in side-by-side cells) is not yet
-            // supported by the Metal renderer — it renders a single viewport, so a
-            // grid session would show NOTHING (only the selection overlay, which
-            // ignores grid). Reset it so the session renders (objects overlaid)
-            // and tell the user. See GitHub issue: grid-mode Metal support.
-            runPython(
-                "from pymol import cmd as _g\n"
-                + "if int(_g.get('grid_mode') or 0):\n"
-                + "    _g.set('grid_mode', 0)\n"
-                + "    print('RayMol: grid_mode is not supported yet — disabled so the "
-                + "session renders (objects overlaid).')\n")
+            // grid_mode (objects laid out in side-by-side cells) is now rendered
+            // natively by the Metal renderer (per-slot viewport loop in
+            // SceneRenderMetal), so the session keeps whatever grid_mode it saved
+            // — no reset needed. See GitHub issue: grid-mode Metal support.
             // Read the session's 'main' [W,H] (→ letterbox via SESSIONVP) AND fix
             // the camera: modern .pse files store a 25-float SceneViewType, but
             // our embedded core is 18-float and mis-restores it (front/back
@@ -865,6 +858,22 @@ final class PyMOLEngine: ObservableObject {
         let clean = id.replacingOccurrences(of: "'", with: "")
         runCommand("fetch \(clean), async=0, type=pdb")
         runPython("from pymol import raymol_theme as _rt; _rt.apply_to('\(clean)')")
+    }
+
+    /// Clear the whole session (File ▸ Clear Session): wipe all objects, selections,
+    /// and camera via `reinitialize`, then re-apply RayMol's theme defaults
+    /// (bg/palette/render toggles) so the empty viewport keeps the app's look
+    /// instead of PyMOL's bare defaults. The objects panel refreshes on the next
+    /// poll tick.
+    func clearSession() {
+        guard isReady else { return }
+        runCommand("reinitialize")
+        // reinitialize also resets engine settings to defaults — restore the
+        // fetch_path that initialize() set (the writable temp dir) so a post-clear
+        // `fetch` doesn't fall back to cwd (which can fail or prompt for file
+        // access), then re-apply the RayMol theme.
+        runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(NSTemporaryDirectory())')")
+        applyTheme(ThemeManager.shared.active)
     }
 
     // MARK: - Theme studio live preview

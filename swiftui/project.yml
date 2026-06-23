@@ -52,8 +52,8 @@ targets:
         PRODUCT_NAME: RayMol
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol
         INFOPLIST_GENERATION_MODE: GeneratedFile
-        MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: 5
+        MARKETING_VERSION: "1.2.0"
+        CURRENT_PROJECT_VERSION: 6
         GENERATE_INFOPLIST_FILE: YES
         # Generate a launch screen so iOS renders at the device's NATIVE
         # resolution. Without it the app is letterboxed at a legacy size on
