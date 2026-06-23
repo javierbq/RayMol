@@ -270,10 +270,11 @@ targets:
           /usr/bin/python3 "$SRCROOT/../scripts/compile_metal_shaders.py" --sdk macosx --output "/tmp/pymol_macos.metallib" || true
           [ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib "$RES/pymol.metallib" || echo "metallib skipped (runtime-compile fallback)"
     dependencies:
-      # macOS-only: Sparkle has no iOS slice, so platformFilter keeps it out of
-      # the iOS build. All Swift usage is additionally guarded by #if os(macOS).
+      # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
+      # out of the iOS build. All Swift usage is additionally guarded by
+      # #if os(macOS) && !RAYMOL_MAS_RESTRICTED.
       - package: Sparkle
-        platformFilter: macOS
+        platforms: [macOS]
     scheme:
       testTargets:
         - PyMOLViewerUITests

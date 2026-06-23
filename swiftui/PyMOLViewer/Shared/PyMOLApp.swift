@@ -24,6 +24,7 @@ struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @StateObject private var mcp = MCPServerManager.shared
+    @StateObject private var updater = RayMolUpdater()
     #endif
     #if os(iOS)
     @UIApplicationDelegateAdaptor(OrientationLockDelegate.self) private var appDelegate
@@ -106,6 +107,13 @@ struct PyMOLApp: App {
         // standard shortcuts. Buttons post notifications that ContentView's macOS
         // layout handles (reusing the toolbar's open/save/export logic).
         .commands {
+            #if os(macOS) && !RAYMOL_MAS_RESTRICTED
+            // Sparkle auto-update (Developer-ID/DMG build only; the Mac App Store
+            // build updates through Apple). Placed in the app menu next to About.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+            }
+            #endif
             CommandGroup(after: .newItem) {
                 Button("Open…") {
                     NotificationCenter.default.post(name: .raymolOpenFile, object: nil)
