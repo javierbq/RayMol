@@ -30,6 +30,7 @@ INSTRUCTIONS = (
     "at a time and capturing the viewport to verify results."
 )
 
+# A session is considered closed after this many seconds with no request. 90s tolerates normal between-task idleness; the sweep runs every SWEEP_INTERVAL.
 SESSION_TTL = 90.0
 SWEEP_INTERVAL = 20.0
 
@@ -65,7 +66,10 @@ def _prune_idle(now=None):
 
 def _sweep_loop():
     while not _stop_sweeper.wait(SWEEP_INTERVAL):
-        _prune_idle()
+        try:
+            _prune_idle()
+        except Exception:
+            pass  # never let a sweep error kill the thread
 
 
 def _summary(name, args):
@@ -218,21 +222,23 @@ def stop():
         if _httpd is None:
             return
         _stop_sweeper.set()
-        for sid in list(_sessions):
-            events.client_disconnected(sid)
-        _sessions = {}
+        sids = list(_sessions.keys())
+        _sessions = {}                      # cleared first: a waking sweeper finds nothing
         _httpd.shutdown()
         _httpd.server_close()
         worker = _thread
+        sweeper = _sweeper
         _httpd = None
         _thread = None
+        _sweeper = None
         _port = None
         _trusted = False
         if worker is not None:
             worker.join(timeout=2)
-        if _sweeper is not None:
-            _sweeper.join(timeout=2)
-        _sweeper = None
+        if sweeper is not None:
+            sweeper.join(timeout=2)
+        for s in sids:
+            events.client_disconnected(s)
         events.server_stopped()
 
 
