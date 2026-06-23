@@ -68,6 +68,14 @@ public:
 
   // Viewport and clear
   virtual void viewport(int x, int y, int w, int h) = 0;
+  // Reports the renderer's current viewport rect (the one last set by
+  // viewport()). SceneRenderMetal needs this to subdivide the scene viewport
+  // into grid_mode cells. Default: report nothing (GL path reads GL_VIEWPORT
+  // itself). Returns true if x/y/w/h were filled.
+  virtual bool getViewportRect(int& x, int& y, int& w, int& h) const
+  {
+    return false;
+  }
   virtual void clear(bool color, bool depth, bool stencil) = 0;
   virtual void clearColor(float r, float g, float b, float a) = 0;
   virtual void scissor(int x, int y, int w, int h) = 0;

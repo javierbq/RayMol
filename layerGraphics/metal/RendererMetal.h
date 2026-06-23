@@ -36,6 +36,7 @@ public:
 
   // Viewport and clear
   void viewport(int x, int y, int w, int h) override;
+  bool getViewportRect(int& x, int& y, int& w, int& h) const override;
   void clear(bool color, bool depth, bool stencil) override;
   void clearColor(float r, float g, float b, float a) override;
   void scissor(int x, int y, int w, int h) override;

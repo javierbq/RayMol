@@ -1959,6 +1959,15 @@ void RendererMetal::viewport(int x, int y, int w, int h)
   }
 }
 
+bool RendererMetal::getViewportRect(int& x, int& y, int& w, int& h) const
+{
+  x = static_cast<int>(_viewport.originX);
+  y = static_cast<int>(_viewport.originY);
+  w = static_cast<int>(_viewport.width);
+  h = static_cast<int>(_viewport.height);
+  return true;
+}
+
 void RendererMetal::clear(bool color, bool depth, bool stencil)
 {
   // In Metal, clears happen via the render pass descriptor's load actions.

@@ -67,6 +67,77 @@ def _pickdbg(ndc_x, ndc_y, aspect, best, ncand):
         pass
 
 
+def _grid_layout(size, aspect):
+    """Choose (n_col, n_row) for `size` grid cells at window aspect (W/H).
+    Mirrors the C++ GridUpdate (layer1/Scene.cpp) exactly so picking agrees with
+    what the Metal renderer drew."""
+    if size < 1:
+        return (1, 1)
+    n_row = n_col = 1
+    while (n_row * n_col) < size:
+        asp1 = aspect * (n_row + 1.0) / n_col
+        asp2 = aspect * n_row / (n_col + 1.0)
+        if asp1 < 1.0:
+            asp1 = 1.0 / asp1
+        if asp2 < 1.0:
+            asp2 = 1.0 / asp2
+        if abs(asp1) > abs(asp2):
+            n_col += 1
+        else:
+            n_row += 1
+    while (n_col - 1) * n_row >= size and size:
+        n_col -= 1
+    while (n_row - 1) * n_col >= size and size:
+        n_row -= 1
+    return (n_col, n_row)
+
+
+def _grid_pick_context(ndc_x, ndc_y, aspect):
+    """When grid_mode=1 (by-object) is active with 2+ objects, map a full-window
+    click NDC to its grid cell and return
+    (target_obj, cell_ndc_x, cell_ndc_y, cell_aspect):
+      - target_obj: the object laid out in the clicked cell ('' if none).
+      - cell_ndc_x/y: the click re-expressed in that cell's NDC.
+      - cell_aspect: that cell's aspect (window_aspect * n_row/n_col).
+    Returns None when grid isn't cell-mapped (caller projects the whole window).
+
+    The slot→object mapping mirrors the core: grid-eligible enabled objects take
+    slots in scene order, cell layout is GridUpdate, cells run col left→right and
+    row 0 at the TOP. (By-object only; grid_mode 2/3 fall through to whole-window
+    picking, and disabled-object/group gaps aren't modeled — the common case is
+    all-enabled objects.)"""
+    from pymol import cmd
+    try:
+        if int(cmd.get_setting_int('grid_mode')) != 1:
+            return None
+    except Exception:
+        return None
+    objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+            if not o.startswith('_')]
+    size = len(objs)
+    try:
+        grid_max = int(cmd.get_setting_int('grid_max'))
+    except Exception:
+        grid_max = -1
+    if grid_max >= 0:
+        size = min(size, grid_max)
+    if size < 2 or aspect <= 0.0:
+        return None
+    n_col, n_row = _grid_layout(size, aspect)
+    if n_col < 1 or n_row < 1:
+        return None
+    u = (ndc_x + 1.0) * 0.5 * n_col        # [0, n_col), x: +1 = right
+    t = (1.0 - ndc_y) * 0.5 * n_row        # [0, n_row), 0 = top row
+    col = min(max(int(u), 0), n_col - 1)
+    row = min(max(int(t), 0), n_row - 1)
+    slot = row * n_col + col               # 0-based, matches abs_grid_slot
+    cell_ndc_x = (u - col) * 2.0 - 1.0
+    cell_ndc_y = 1.0 - (t - row) * 2.0
+    cell_aspect = aspect * (float(n_row) / float(n_col))
+    target = objs[slot] if 0 <= slot < len(objs) else ''
+    return (target, cell_ndc_x, cell_ndc_y, cell_aspect)
+
+
 def _pick_atom(ndc_x, ndc_y, aspect):
     """Project all DRAWN atoms and return the front-most atom under the click as
     (screen_d2, obj, chain, resi, resn, segi, name, sx, sy), or None for empty
@@ -115,12 +186,27 @@ def _pick_atom(ndc_x, ndc_y, aspect):
         if tan_half <= 0.0:
             return
 
+        # Grid mode (by-object): the renderer draws each object in its own
+        # viewport cell, so a full-window projection wouldn't line up with what
+        # the user sees. Map the click to its cell, restrict the search to that
+        # cell's object, and project with the cell's NDC + aspect. tan_half is
+        # aspect-independent (FOV only), so reassigning `aspect` below is safe.
+        pick_objs = None
+        gctx = _grid_pick_context(ndc_x, ndc_y, aspect)
+        if gctx is not None:
+            target_obj, ndc_x, ndc_y, aspect = gctx
+            if not target_obj:
+                return None  # empty cell → treat as empty-space click
+            pick_objs = [target_obj]
+
         best = None  # (screen_d2, obj, chain, resi, resn, segi, name, sx, sy)
         cands = []   # (d2, depth, obj, chain, resi, resn, segi, name, sx, sy)
         ncand = 0    # atoms whose projection fell within the pick radius
         _ext = [1e9, -1e9, 1e9, -1e9]  # projected-NDC extent: sx_min,sx_max,sy_min,sy_max
 
-        for obj in (cmd.get_names('objects', enabled_only=1) or []):
+        if pick_objs is None:
+            pick_objs = (cmd.get_names('objects', enabled_only=1) or [])
+        for obj in pick_objs:
             if obj.startswith('_'):
                 continue
             # Skip non-molecule objects (distance/angle measurements, maps, CGOs,

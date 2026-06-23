@@ -8616,6 +8616,12 @@ void ExecutiveGetSelectionCoords(PyMOLGlobals* G, std::vector<float>& coords)
       if (rec1.type != cExecObject || rec1.obj->type != cObjectMolecule)
         continue;
 
+      // In grid mode, only collect coords for objects belonging to the cell
+      // currently being rendered (G->Scene->grid.slot). When grid is inactive
+      // this returns true for every object, so the non-grid path is unchanged.
+      if (!SceneGetDrawFlagGrid(G, &G->Scene->grid, rec1.obj->grid_slot))
+        continue;
+
       auto* obj = static_cast<ObjectMolecule*>(rec1.obj);
       int curState = obj->getCurrentState();
       if (curState < 0) curState = 0;
