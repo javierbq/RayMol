@@ -21,6 +21,7 @@
 		4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F059BB95517CE91BD3E26E /* ContentView.swift */; };
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
+		4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
 		48E340346AD8FF81AF09F501 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
@@ -59,6 +60,7 @@
 		EC4EF850FC58B240AD02346F /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
+		F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
 		F5F9A2124F71FDC7541A6BF8 /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
 		F6C4DEEFED66EB440E6359AF /* PyMOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D965CB609C447033E5DB0046 /* PyMOLApp.swift */; };
@@ -90,6 +92,7 @@
 		589928DEEE69075B965DB9F2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
 		7D3E805AC2D63B01AB7EE29C /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
@@ -110,7 +113,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_F0A1BC3E-58B6-4A23-AC74-6C7D6C6E435B" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_E294D10C-C91C-4378-A744-0926BD81E371" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -190,6 +193,7 @@
 			children = (
 				75F059BB95517CE91BD3E26E /* ContentView.swift */,
 				1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */,
+				786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */,
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				D965CB609C447033E5DB0046 /* PyMOLApp.swift */,
@@ -221,10 +225,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_F46A39E7-B1EC-4DAC-9819-8455EB740913" /* swiftui */ = {
+		"TEMP_183A7846-1789-46A3-9B45-75BAB9FB0CE2" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_F0A1BC3E-58B6-4A23-AC74-6C7D6C6E435B" /* PyMOLBridge.xcconfig */,
+				"TEMP_E294D10C-C91C-4378-A744-0926BD81E371" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -733,6 +737,7 @@
 				4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */,
 				B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */,
 				55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */,
+				4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */,
 				77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */,
 				64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */,
 				90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */,
@@ -762,6 +767,7 @@
 				3F96563B0EA8F919B068A421 /* ContentView.swift in Sources */,
 				42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */,
 				E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */,
+				F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */,
 				F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */,
 				3ECB633FC33E73F4767D3AF5 /* MCPServerManager.swift in Sources */,
 				DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */,
@@ -942,7 +948,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_F0A1BC3E-58B6-4A23-AC74-6C7D6C6E435B" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_E294D10C-C91C-4378-A744-0926BD81E371" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1027,7 +1033,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_F0A1BC3E-58B6-4A23-AC74-6C7D6C6E435B" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_E294D10C-C91C-4378-A744-0926BD81E371" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
