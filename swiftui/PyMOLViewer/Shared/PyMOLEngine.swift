@@ -867,6 +867,17 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import raymol_theme as _rt; _rt.apply_to('\(clean)')")
     }
 
+    /// Clear the whole session (File ▸ Clear Session): wipe all objects, selections,
+    /// and camera via `reinitialize`, then re-apply RayMol's theme defaults
+    /// (bg/palette/render toggles) so the empty viewport keeps the app's look
+    /// instead of PyMOL's bare defaults. The objects panel refreshes on the next
+    /// poll tick.
+    func clearSession() {
+        guard isReady else { return }
+        runCommand("reinitialize")
+        applyTheme(ThemeManager.shared.active)
+    }
+
     // MARK: - Theme studio live preview
     //
     // While the Theme studio is open we snapshot the full session in memory and

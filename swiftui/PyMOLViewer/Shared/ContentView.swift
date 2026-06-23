@@ -43,6 +43,7 @@ enum RayMolBuild {
 extension Notification.Name {
     static let raymolOpenFile     = Notification.Name("raymol.menu.openFile")
     static let raymolFetch        = Notification.Name("raymol.menu.fetch")
+    static let raymolClearSession = Notification.Name("raymol.menu.clearSession")
     static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
     static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
@@ -71,6 +72,8 @@ struct ContentView: View {
     // NSOpenPanel directly, so it needs no presentation state).
     @State private var showMacFetch = false
     @State private var macFetchID = ""
+    // Drag-and-drop: true while a file is hovered over the viewport (draws a border).
+    @State private var isViewportDropTargeted = false
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -240,6 +243,19 @@ struct ContentView: View {
                 }
                 // Empty-state CTA when nothing is loaded (mirrors the iOS overlay).
                 .overlay { if engine.objects.isEmpty && !showThemeStudio { macEmptyState } }
+                // Drag a .pdb/.cif/.pse/etc. onto the viewport to load it (same
+                // path as File ▸ Open / Finder "Open With"). Highlight while hovered.
+                .onDrop(of: [.fileURL], isTargeted: $isViewportDropTargeted) { providers in
+                    handleViewportDrop(providers)
+                }
+                .overlay {
+                    if isViewportDropTargeted {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(themeManager.active.tabTint.color, lineWidth: 3)
+                            .padding(2)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
 
             // Right column: objects + (chat). Only exists (and only occupies its
@@ -287,6 +303,7 @@ struct ContentView: View {
         // Native File-menu commands → reuse the same actions as the toolbar.
         .onReceive(NotificationCenter.default.publisher(for: .raymolOpenFile)) { _ in macOpenFile() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in engine.clearSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
         #if !RAYMOL_MAS_RESTRICTED
@@ -345,6 +362,22 @@ struct ContentView: View {
                     "xyz", "pdbqt", "pqr", "mae", "pse", "ccp4", "mrc", "map",
                     "dx", "mtz", "fasta", "pir"]
         return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
+    }
+
+    // Drag-and-drop: load each dropped file URL through the same path as the Open
+    // menu / Finder "Open With" — loadOpenedFile handles security scope, temp copy,
+    // name sanitizing, and engine-not-ready retry. A dropped .pse restores a session.
+    private func handleViewportDrop(_ providers: [NSItemProvider]) -> Bool {
+        let engine = self.engine
+        var accepted = false
+        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+            accepted = true
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.isFileURL else { return }
+                Task { @MainActor in loadOpenedFile(url, into: engine) }
+            }
+        }
+        return accepted
     }
 
     // Open a molecule/session via NSOpenPanel and load it. PyMOL infers the format

@@ -45,8 +45,25 @@ struct PyMOLApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        #if os(macOS)
+        // Single, unique window (`Window`, not `WindowGroup`): RayMol's engine is
+        // one shared PyMOL session, so a second window would only duplicate the
+        // same view and stay in sync. `Window` drops the "New Window" command and
+        // re-focuses the existing window instead. Per-window sessions: issue #29.
+        Window("RayMol", id: "raymol-main") { rootView }
+            .windowStyle(.titleBar)
+            .defaultSize(width: 1200, height: 800)
+            .commands { macCommands }
+        #else
+        WindowGroup { rootView }
+        #endif
+    }
+
+    // Content of the single window, shared by the macOS `Window` and iOS
+    // `WindowGroup`: engine/theme injection, OS file-open, and the iOS
+    // orientation + scene-phase hooks.
+    @ViewBuilder private var rootView: some View {
+        ContentView()
                 .environmentObject(engine)
                 .environmentObject(engine.playback)
                 .environmentObject(ThemeManager.shared)
@@ -99,13 +116,17 @@ struct PyMOLApp: App {
                 }
             #endif
         }
-        #if os(macOS)
-        .windowStyle(.titleBar)
-        .defaultSize(width: 1200, height: 800)
-        // Native File menu: Open / Fetch / Save Session / Export Image, with
-        // standard shortcuts. Buttons post notifications that ContentView's macOS
-        // layout handles (reusing the toolbar's open/save/export logic).
-        .commands {
+    #if os(macOS)
+    // Native menus (macOS only). File: Open / Fetch / Save / Export. App menu:
+    // website + GitHub links, plus Check for Updates on the Developer-ID build.
+    // Connect: MCP server control. Buttons post notifications ContentView's macOS
+    // layout observes (reusing the toolbar's open/save/export logic).
+    @CommandsBuilder private var macCommands: some Commands {
+            // Custom About panel: standard panel with clickable website + GitHub
+            // links in the credits (replaces the default About menu item).
+            CommandGroup(replacing: .appInfo) {
+                Button("About RayMol") { showAboutPanel() }
+            }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             // Sparkle auto-update (Developer-ID/DMG build only; the Mac App Store
             // build updates through Apple). Placed in the app menu next to About.
@@ -127,6 +148,10 @@ struct PyMOLApp: App {
                 Button("Export Image…") {
                     NotificationCenter.default.post(name: .raymolExportImage, object: nil)
                 }.keyboardShortcut("e", modifiers: [.command, .shift])
+                Divider()
+                Button("Clear Session") {
+                    NotificationCenter.default.post(name: .raymolClearSession, object: nil)
+                }
             }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             CommandMenu("Connect") {
@@ -154,8 +179,30 @@ struct PyMOLApp: App {
             }
             #endif
         }
-        #endif
+
+    // Standard About panel with clickable website + GitHub links in the credits.
+    private func showAboutPanel() {
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        let base: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: para,
+        ]
+        func link(_ text: String, _ urlString: String) -> NSAttributedString {
+            var attrs = base
+            if let url = URL(string: urlString) { attrs[.link] = url }
+            return NSAttributedString(string: text, attributes: attrs)
+        }
+        let credits = NSMutableAttributedString(
+            string: "Molecular visualization built on the open-source PyMOL engine.\n\n",
+            attributes: base)
+        credits.append(link("raymol.io", "https://raymol.io"))
+        credits.append(NSAttributedString(string: "      ·      ", attributes: base))
+        credits.append(link("GitHub", "https://github.com/javierbq/RayMol"))
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
+    #endif
 
     #if os(iOS)
     private static func forceOrientationIfRequested() {
@@ -183,7 +230,7 @@ struct PyMOLApp: App {
 // inbox), so copy it into the temp dir before handing the path to PyMOL, which
 // infers the format from the extension. The object name is the sanitized stem.
 @MainActor
-private func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
+func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     guard engine.isReady else {
         guard attempt < 40 else { return }   // ~10s cap (40 × 250ms)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
