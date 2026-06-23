@@ -113,7 +113,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_6383D182-30D2-43CD-9659-3787A8F775A9" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_5002B105-2B8E-4D61-8547-43F4466B8862" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -225,10 +225,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_EA9D43A4-9DB8-4766-AEF8-78C55DC79494" /* swiftui */ = {
+		"TEMP_B15D54CB-8CE4-471F-87BB-0E95DACC381C" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_6383D182-30D2-43CD-9659-3787A8F775A9" /* PyMOLBridge.xcconfig */,
+				"TEMP_5002B105-2B8E-4D61-8547-43F4466B8862" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -526,7 +526,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting — iOS has no site-packages bundling, so ship them in a\n# dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).\nditto \"$SRCROOT/vendor_py\" \"$CODESIGNING_FOLDER_PATH/pyvendor\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n";
 		};
 		88BA34A4D715F3339CB65D98 /* iOS: Prepare Python binary modules */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -583,7 +583,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting — iOS has no site-packages bundling, so ship them in a\n# dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).\nditto \"$SRCROOT/vendor_py\" \"$CODESIGNING_FOLDER_PATH/pyvendor\"\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nditto \"$SRCROOT/../modules\" \"$CODESIGNING_FOLDER_PATH/modules\"\nditto \"$SRCROOT/../data\" \"$CODESIGNING_FOLDER_PATH/data\"\n";
 		};
 		B07CD62C5BBE02F19894A460 /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -640,7 +640,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\n# Mac App Store build: drop the MCP server package (compiled out of the app).\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) rm -rf \"$RES/modules/raymol_mcp\" ;; esac\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting; bridge adds <res>/pyvendor to sys.path (same dir name\n# as the iOS build, so the bridge path logic is platform-agnostic).\nditto \"$SRCROOT/vendor_py\" \"$RES/pyvendor\"\n# Mac App Store code-signing of the embedded Python. python-standalone\n# ships its own signatures (foreign team, no app-sandbox), and Xcode's\n# final signing doesn't re-sign files under Resources/. So re-sign every\n# embedded Mach-O with OUR identity + hardened runtime here (before the\n# bundle is sealed): nested EXECUTABLES (bin/) get the app-sandbox +\n# inherit entitlement (Apple requires every nested executable to carry\n# app-sandbox — error 90296); libraries (.dylib/.so) get our signature\n# without entitlements. Runs only when signing (skipped for unsigned CLI).\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  ENT=\"$SRCROOT/PyMOLViewer/RayMolPython.entitlements\"\n  # Executables under the embedded python's bin/.\n  find \"$RES/python/bin\" -type f 2>/dev/null | while read -r f; do\n    /usr/bin/file \"$f\" | /usr/bin/grep -q \"Mach-O.*executable\" && \\\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n        -o runtime --timestamp=none --entitlements \"$ENT\" \"$f\" || true\n  done\n  # All embedded libraries / extension modules.\n  find \"$RES/python\" \\( -name \"*.dylib\" -o -name \"*.so\" \\) -type f | while read -r f; do\n    /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n      -o runtime --timestamp=none \"$f\" || true\n  done\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\n# Mac App Store build: drop the MCP server package (compiled out of the app).\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) rm -rf \"$RES/modules/raymol_mcp\" ;; esac\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Mac App Store code-signing of the embedded Python. python-standalone\n# ships its own signatures (foreign team, no app-sandbox), and Xcode's\n# final signing doesn't re-sign files under Resources/. So re-sign every\n# embedded Mach-O with OUR identity + hardened runtime here (before the\n# bundle is sealed): nested EXECUTABLES (bin/) get the app-sandbox +\n# inherit entitlement (Apple requires every nested executable to carry\n# app-sandbox — error 90296); libraries (.dylib/.so) get our signature\n# without entitlements. Runs only when signing (skipped for unsigned CLI).\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  ENT=\"$SRCROOT/PyMOLViewer/RayMolPython.entitlements\"\n  # Executables under the embedded python's bin/.\n  find \"$RES/python/bin\" -type f 2>/dev/null | while read -r f; do\n    /usr/bin/file \"$f\" | /usr/bin/grep -q \"Mach-O.*executable\" && \\\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n        -o runtime --timestamp=none --entitlements \"$ENT\" \"$f\" || true\n  done\n  # All embedded libraries / extension modules.\n  find \"$RES/python\" \\( -name \"*.dylib\" -o -name \"*.so\" \\) -type f | while read -r f; do\n    /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n      -o runtime --timestamp=none \"$f\" || true\n  done\nfi\n";
 		};
 		D05A0E7275F836613C62A558 /* iOS: Install Python stdlib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -678,7 +678,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\n# Mac App Store build: drop the MCP server package (compiled out of the app).\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) rm -rf \"$RES/modules/raymol_mcp\" ;; esac\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex\n# token minting; bridge adds <res>/pyvendor to sys.path (same dir name\n# as the iOS build, so the bridge path logic is platform-agnostic).\nditto \"$SRCROOT/vendor_py\" \"$RES/pyvendor\"\n# Mac App Store code-signing of the embedded Python. python-standalone\n# ships its own signatures (foreign team, no app-sandbox), and Xcode's\n# final signing doesn't re-sign files under Resources/. So re-sign every\n# embedded Mach-O with OUR identity + hardened runtime here (before the\n# bundle is sealed): nested EXECUTABLES (bin/) get the app-sandbox +\n# inherit entitlement (Apple requires every nested executable to carry\n# app-sandbox — error 90296); libraries (.dylib/.so) get our signature\n# without entitlements. Runs only when signing (skipped for unsigned CLI).\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  ENT=\"$SRCROOT/PyMOLViewer/RayMolPython.entitlements\"\n  # Executables under the embedded python's bin/.\n  find \"$RES/python/bin\" -type f 2>/dev/null | while read -r f; do\n    /usr/bin/file \"$f\" | /usr/bin/grep -q \"Mach-O.*executable\" && \\\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n        -o runtime --timestamp=none --entitlements \"$ENT\" \"$f\" || true\n  done\n  # All embedded libraries / extension modules.\n  find \"$RES/python\" \\( -name \"*.dylib\" -o -name \"*.so\" \\) -type f | while read -r f; do\n    /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n      -o runtime --timestamp=none \"$f\" || true\n  done\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\nmkdir -p \"$RES\"\nrsync -au --delete \"$SRCROOT/../deps_macos/python-standalone/python/\" \"$RES/python/\"\nditto \"$SRCROOT/../modules\" \"$RES/modules\"\n# Mac App Store build: drop the MCP server package (compiled out of the app).\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) rm -rf \"$RES/modules/raymol_mcp\" ;; esac\nditto \"$SRCROOT/../data\" \"$RES/data\"\n# Mac App Store code-signing of the embedded Python. python-standalone\n# ships its own signatures (foreign team, no app-sandbox), and Xcode's\n# final signing doesn't re-sign files under Resources/. So re-sign every\n# embedded Mach-O with OUR identity + hardened runtime here (before the\n# bundle is sealed): nested EXECUTABLES (bin/) get the app-sandbox +\n# inherit entitlement (Apple requires every nested executable to carry\n# app-sandbox — error 90296); libraries (.dylib/.so) get our signature\n# without entitlements. Runs only when signing (skipped for unsigned CLI).\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  ENT=\"$SRCROOT/PyMOLViewer/RayMolPython.entitlements\"\n  # Executables under the embedded python's bin/.\n  find \"$RES/python/bin\" -type f 2>/dev/null | while read -r f; do\n    /usr/bin/file \"$f\" | /usr/bin/grep -q \"Mach-O.*executable\" && \\\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n        -o runtime --timestamp=none --entitlements \"$ENT\" \"$f\" || true\n  done\n  # All embedded libraries / extension modules.\n  find \"$RES/python\" \\( -name \"*.dylib\" -o -name \"*.so\" \\) -type f | while read -r f; do\n    /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n      -o runtime --timestamp=none \"$f\" || true\n  done\nfi\n";
 		};
 		D6E180B4CFF12A0215D1E81F /* iOS: Embed Python.framework */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -948,7 +948,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_6383D182-30D2-43CD-9659-3787A8F775A9" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_5002B105-2B8E-4D61-8547-43F4466B8862" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1033,7 +1033,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_6383D182-30D2-43CD-9659-3787A8F775A9" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_5002B105-2B8E-4D61-8547-43F4466B8862" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

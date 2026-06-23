@@ -233,10 +233,6 @@ targets:
           set -e
           ditto "$SRCROOT/../modules" "$CODESIGNING_FOLDER_PATH/modules"
           ditto "$SRCROOT/../data" "$CODESIGNING_FOLDER_PATH/data"
-          # Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex
-          # token minting — iOS has no site-packages bundling, so ship them in a
-          # dedicated dir the bridge adds to sys.path (resolves <res>/pyvendor).
-          ditto "$SRCROOT/vendor_py" "$CODESIGNING_FOLDER_PATH/pyvendor"
       # macOS runtime packaging: payload under Contents/Resources (so the shared
       # bridge's config.home=<resourcePath>/python resolves to it). Guarded to
       # macOS so the iOS build is unaffected.
@@ -252,10 +248,6 @@ targets:
           # Mac App Store build: drop the MCP server package (compiled out of the app).
           case "${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}" in *RAYMOL_MAS_RESTRICTED*) rm -rf "$RES/modules/raymol_mcp" ;; esac
           ditto "$SRCROOT/../data" "$RES/data"
-          # Vendored pure-Python packages (rsa + pyasn1) for on-device Vertex
-          # token minting; bridge adds <res>/pyvendor to sys.path (same dir name
-          # as the iOS build, so the bridge path logic is platform-agnostic).
-          ditto "$SRCROOT/vendor_py" "$RES/pyvendor"
           # Mac App Store code-signing of the embedded Python. python-standalone
           # ships its own signatures (foreign team, no app-sandbox), and Xcode's
           # final signing doesn't re-sign files under Resources/. So re-sign every
