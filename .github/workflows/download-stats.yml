@@ -1,0 +1,63 @@
+name: Download stats
+
+# Records GitHub release download counts (per version, per asset) to a secret
+# gist once a day, building a time series for tracking growth.
+#
+# Setup (one-time):
+#   - Repo variable GIST_ID  = the gist id holding raymol-download-stats.csv
+#   - Repo secret  GIST_TOKEN = a PAT with the **gist** scope (fine-grained:
+#                               Account permissions → Gists → Read and write)
+# The release counts are read with the built-in GITHUB_TOKEN; GIST_TOKEN is used
+# only to write the gist.
+
+on:
+  schedule:
+    - cron: "17 12 * * *"   # daily ~12:17 UTC (off the hour to dodge cron load)
+  workflow_dispatch: {}      # allow manual runs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: download-stats
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Snapshot today's per-version download counts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%F)
+          # One CSV row per (release tag, asset): date,tag,asset,download_count
+          gh api "/repos/${GITHUB_REPOSITORY}/releases" --paginate --jq \
+            ".[] | .tag_name as \$t | .assets[] | [\"${DATE}\", \$t, .name, .download_count] | @csv" \
+            > today.csv
+          echo "Snapshot for ${DATE}:"
+          cat today.csv
+
+      - name: Append to gist time series
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.GIST_ID }}
+          FILE: raymol-download-stats.csv
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%F)
+          # Current gist content (empty -> seed a header).
+          gh api "/gists/${GIST_ID}" --jq ".files[\"${FILE}\"].content" > current.csv || true
+          if [ ! -s current.csv ]; then
+            echo "date,tag,asset,download_count" > current.csv
+          fi
+          # Drop any rows already recorded for today so re-runs update in place,
+          # then append today's snapshot. Header (line 1) is always preserved.
+          { head -n1 current.csv; tail -n +2 current.csv | grep -v "^\"${DATE}\"," || true; } > merged.csv
+          cat today.csv >> merged.csv
+          # PATCH the gist with the merged content.
+          jq -n --arg c "$(cat merged.csv)" \
+            "{files: {\"${FILE}\": {content: \$c}}}" \
+            | gh api -X PATCH "/gists/${GIST_ID}" --input - --jq '.html_url'
+          echo "Updated gist with $(($(wc -l < merged.csv) - 1)) total rows."
