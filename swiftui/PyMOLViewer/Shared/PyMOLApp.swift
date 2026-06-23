@@ -19,7 +19,6 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
 }
 #endif
 
-@main
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
