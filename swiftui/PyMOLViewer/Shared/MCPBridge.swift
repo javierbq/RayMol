@@ -55,8 +55,7 @@ enum MCPBridge {
         let task = URLSession.shared.dataTask(with: req) { body, resp, _ in
             if let http = resp as? HTTPURLResponse {
                 if let sid = http.value(forHTTPHeaderField: "Mcp-Session-Id") { sessionId = sid }
-                if http.statusCode == 200 { out = body }
-                else if http.statusCode == 202 { out = Data() }  // notification accepted, no body
+                out = (http.statusCode == 202) ? Data() : (body ?? Data())
             }
             sem.signal()
         }
