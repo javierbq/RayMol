@@ -43,7 +43,7 @@ REP_COLOR = {
 SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_ssao',
                   'metal_outline', 'metal_msaa', 'metal_tonemap', 'metal_exposure',
                   'depth_cue', 'fog', 'field_of_view', 'surface_quality',
-                  'all_states', 'mouse_selection_mode',
+                  'grid_mode', 'all_states', 'mouse_selection_mode',
                   'ambient', 'direct', 'reflect', 'specular', 'shininess',
                   'ray_opaque_background']
 
