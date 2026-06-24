@@ -1015,11 +1015,14 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
     float projY, int rtEnabled, int tonemapEnabled, float exposure,
-    int rtShadowEnabled)
+    int rtShadowEnabled, float outlineR, float outlineG, float outlineB,
+    float outlineWidth)
 {
   _tonemapEnabled = tonemapEnabled;
   _exposure = exposure;
   _rtShadowEnabled = rtShadowEnabled;
+  _outlineR = outlineR; _outlineG = outlineG; _outlineB = outlineB;
+  _outlineWidth = outlineWidth;
   _postFogEnabled = fogEnabled;
   _fogStart = fogStart;
   _fogEnd = fogEnd;
@@ -1709,8 +1712,8 @@ void RendererMetal::runPostChain()
     u.projA = _projA; u.projB = _projB;
     u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
-    u.colR = 0.0f; u.colG = 0.0f; u.colB = 0.0f;   // black contour
-    u.thickness = 1.4f;
+    u.colR = _outlineR; u.colG = _outlineG; u.colB = _outlineB;
+    u.thickness = _outlineWidth;
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
     pd.colorAttachments[0].texture = dst;
     pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;

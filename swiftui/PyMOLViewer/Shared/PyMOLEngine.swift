@@ -1417,6 +1417,8 @@ final class PyMOLEngine: ObservableObject {
             for (k, v) in sc {
                 if k == "bg", let arr = v as? [Any] {
                     scene.bg = arr.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+                } else if k == "outline_rgb", let arr = v as? [Any] {
+                    scene.outlineColor = arr.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
                 } else {
                     scene.values[k] = (v as? NSNumber)?.doubleValue ?? 0
                 }

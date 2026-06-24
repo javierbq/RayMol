@@ -2032,10 +2032,16 @@ void SceneRenderMetal(PyMOLGlobals* G)
     int tonemapEnabled = SettingGetGlobal_b(G, cSetting_metal_tonemap) ? 1 : 0;
     float exposure = SettingGetGlobal_f(G, cSetting_metal_exposure);
     int rtShadowEnabled = SettingGetGlobal_b(G, cSetting_metal_rt_shadows) ? 1 : 0;
+    // Outline contour color (resolved from the color setting, same ColorGet
+    // pattern as bg_rgb above) and thickness in px — both Scene-panel tunable.
+    const float* outlineCol =
+        ColorGet(G, SettingGetGlobal_color(G, cSetting_metal_outline_color));
+    float outlineWidth = SettingGetGlobal_f(G, cSetting_metal_outline_width);
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],
         proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure,
-        rtShadowEnabled);
+        rtShadowEnabled, outlineCol[0], outlineCol[1], outlineCol[2],
+        outlineWidth);
     // Lighting model — the Metal lit shaders read these instead of hard-coded
     // constants, so the Scene-panel lighting sliders take effect.
     G->Renderer->setLightingParams(

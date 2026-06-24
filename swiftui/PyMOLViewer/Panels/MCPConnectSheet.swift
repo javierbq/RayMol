@@ -41,11 +41,20 @@ struct MCPConnectSheet: View {
                     .disabled(!mcp.isRunning)
             }
             if let port = mcp.port {
-                Text("Manual command:").font(.caption)
+                HStack {
+                    Text("Manual command:").font(.caption)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(manualCommand(port), forType: .string)
+                        result = "Connection details copied to clipboard."
+                    } label: {
+                        Label("Copy connection details", systemImage: "doc.on.doc")
+                    }
+                    .font(.caption).controlSize(.small)
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text("claude mcp add --transport http raymol "
-                        + "http://127.0.0.1:\(port)/mcp "
-                        + "--header \"Authorization: Bearer \(mcp.token)\" --scope user")
+                    Text(manualCommand(port))
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled).padding(8)
                 }
@@ -85,6 +94,12 @@ struct MCPConnectSheet: View {
             HStack { Spacer(); Button("Done") { dismiss() } }
         }
         .padding(20).frame(width: 470)
+    }
+
+    private func manualCommand(_ port: Int) -> String {
+        "claude mcp add --transport http raymol "
+            + "http://127.0.0.1:\(port)/mcp "
+            + "--header \"Authorization: Bearer \(mcp.token)\" --scope user"
     }
 }
 #endif
