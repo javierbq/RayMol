@@ -1957,6 +1957,14 @@ void SceneRenderMetal(PyMOLGlobals* G)
   ExecutiveUpdateSceneMembers(G);
   SceneUpdate(G, false);
 
+  // Advance any in-progress view animation (zoom/orient/center/set_view with
+  // animate, scene transitions, etc.) BEFORE deriving the matrices from
+  // I->m_view below. The GL SceneRender path does this; without it the Metal
+  // renderer set up animations that never ticked, so animated camera commands
+  // appeared to do nothing. The MTKView renders continuously, so the animation
+  // plays out across frames from here.
+  SceneUpdateAnimation(G);
+
   // --- Matrix setup ---
   auto aspRat = SceneGetAspectRatio(G);
 

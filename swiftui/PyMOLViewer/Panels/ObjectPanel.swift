@@ -776,14 +776,26 @@ private struct ObjectRowView: View {
 private struct AllControlsRow: View {
     @EnvironmentObject var engine: PyMOLEngine
 
+    // The objects shown in the panel (selections excluded) — "all current objects".
+    private var objects: [ObjectEntry] { engine.objects.filter { !$0.isSelection } }
+    private var allEnabled: Bool { !objects.isEmpty && objects.allSatisfy { $0.isEnabled } }
+
     var body: some View {
         HStack(spacing: 2) {
-            // No enable checkbox — "all" is a selection, not a toggleable object.
-            Spacer().frame(width: kGutterW)
+            // Enable/disable ALL objects at once (mirrors desktop PyMOL's "all" row).
+            Button(action: { toggleAll() }) {
+                Image(systemName: allEnabled ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12))
+                    .foregroundColor(allEnabled ? PanelTheme.textColor : PanelTheme.disabledColor)
+            }
+            .buttonStyle(.plain)
+            .frame(width: kGutterW)
             Text("all")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundColor(PanelTheme.textColor)
                 .lineLimit(1)
+                .contentShape(Rectangle())
+                .onTapGesture { toggleAll() }
             Spacer(minLength: 4)
             Menu {
                 actionMenuContent(allActionMenuItems, name: "all", engine: engine)
@@ -806,6 +818,17 @@ private struct AllControlsRow: View {
         .frame(height: kRowH)
         .background(PanelTheme.rowBackground)
         .contextMenu { actionMenuContent(allActionMenuItems, name: "all", engine: engine) }
+    }
+
+    // Enable or disable every object in one shot. Iterating get_names('objects')
+    // targets exactly the current objects (not the "all" atom-selection), so it
+    // works regardless of how enable/disable interpret the "all" keyword.
+    private func toggleAll() {
+        let action = allEnabled ? "disable" : "enable"
+        engine.runPython(
+            "from pymol import cmd as _c\n"
+            + "for _o in (_c.get_names('objects') or []):\n"
+            + "    _c.\(action)(_o)\n")
     }
 }
 
