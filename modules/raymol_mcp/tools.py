@@ -91,10 +91,16 @@ def _get_session_state(args):
     try:
         objects = []
         for name in cmd.get_names("objects"):
+            otype = cmd.get_type(name)
+            # Only molecule objects are valid atom-selections. A measurement,
+            # map, CGO or group name fed to count_atoms('(name)') raises a C++
+            # "Invalid selection name" Selector-Error (same gotcha metal_pick.py
+            # documents), which would otherwise abort the whole call.
             objects.append({
                 "name": name,
-                "type": cmd.get_type(name),
-                "atoms": cmd.count_atoms("(%s)" % name),
+                "type": otype,
+                "atoms": (cmd.count_atoms("(%s)" % name)
+                          if otype == "object:molecule" else 0),
             })
         state = {
             "objects": objects,
