@@ -914,6 +914,8 @@ enum {
   REC_b( 804, metal_tonemap                           , global    , false ), /* Metal filmic (ACES) tone-mapping + exposure post pass */
   REC_f( 805, metal_exposure                          , global    , 1.0F ),  /* Metal tone-map exposure multiplier (1.0 = neutral) */
   REC_b( 806, metal_rt_shadows                         , global    , false ), /* Metal: trace hard shadow rays (needs metal_raytrace) instead of shadow-map PCF */
+  REC_c( 807, metal_outline_color                     , global    , "0x000000" ), /* Metal outline contour color (color setting, like ray_trace_color) */
+  REC_f( 808, metal_outline_width                     , global    , 1.4F ),  /* Metal outline thickness in pixels (post-pass neighbor sample step) */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

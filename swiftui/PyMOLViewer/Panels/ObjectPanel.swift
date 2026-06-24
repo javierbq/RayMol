@@ -42,6 +42,7 @@ struct RepState: Equatable {
 struct SceneState: Equatable {
     var values: [String: Double] = [:]   // setting name → value (toggles 0/1)
     var bg: [Double] = [0, 0, 0]         // background r,g,b in 0…1
+    var outlineColor: [Double] = [0, 0, 0]  // metal_outline_color r,g,b in 0…1
 }
 
 /// Per-object state metadata for the inspector STATE row (multi-state objects).
@@ -177,6 +178,7 @@ enum SceneCatalog {
         SceneParam(setting: "metal_shadows", label: "Shadows", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_ssao",    label: "Ambient occlusion", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_outline", label: "Outline", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_outline_width", label: "Outline width", kind: .slider, min: 0.5, max: 5.0, step: 0.1, decimals: 1, group: "Lighting & Quality"),
         SceneParam(setting: "metal_msaa",    label: "MSAA 4×", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_tonemap", label: "Filmic tone-map", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Lighting & Quality"),
@@ -1719,6 +1721,18 @@ private struct SceneCard: View {
                         }
                         .disabled(rtUnavailable)
                         .opacity(rtUnavailable ? 0.45 : 1)
+                        // Keep the outline contour color directly under its toggle.
+                        if p.setting == "metal_outline" {
+                            sceneRow("Outline color") {
+                                ColorPicker("", selection: Binding(
+                                    get: { Color(.sRGB,
+                                                 red: engine.sceneState.outlineColor.count > 0 ? engine.sceneState.outlineColor[0] : 0,
+                                                 green: engine.sceneState.outlineColor.count > 1 ? engine.sceneState.outlineColor[1] : 0,
+                                                 blue: engine.sceneState.outlineColor.count > 2 ? engine.sceneState.outlineColor[2] : 0) },
+                                    set: { setOutlineColor($0) }))
+                                    .labelsHidden().frame(width: 28)
+                            }
+                        }
                     }
                     Button { showSettings = true } label: {
                         HStack(spacing: 6) {
@@ -1765,6 +1779,10 @@ private struct SceneCard: View {
 
     private func setBackground(_ color: Color) {
         engine.runCommand("set_color _bgcol, \(rgb01List(color))\nbg_color _bgcol")
+    }
+
+    private func setOutlineColor(_ color: Color) {
+        engine.runCommand("set_color _outlinecol, \(rgb01List(color))\nset metal_outline_color, _outlinecol")
     }
 
     @ViewBuilder

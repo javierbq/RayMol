@@ -294,7 +294,8 @@ public:
       float bgR, float bgG, float bgB, int aoEnabled, int shadowEnabled,
       int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
       float projY, int rtEnabled = 0, int tonemapEnabled = 0,
-      float exposure = 1.0f, int rtShadowEnabled = 0)
+      float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
+      float outlineG = 0.0f, float outlineB = 0.0f, float outlineWidth = 1.4f)
   {
   }
 

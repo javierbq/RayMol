@@ -37,6 +37,7 @@ struct MCPStatusView: View {
 
 private struct MCPStatusPopover: View {
     @EnvironmentObject var mcp: MCPServerManager
+    @State private var quickResult: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -72,12 +73,46 @@ private struct MCPStatusPopover: View {
                 .frame(maxHeight: 110)
             }
             Divider()
+            // One-click connect for the two common clients (skips the sheet).
+            // Both auto-trust the session (noteUserInitiatedConnect / pushTrusted).
+            Text("Quick connect").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Button {
+                    mcp.connectClaudeCode { msg in quickResult = msg }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "terminal")
+                        Text("Claude Code")
+                        if mcp.claudeCLIPath != nil {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green).font(.caption2)
+                        }
+                    }
+                }
+                Button {
+                    mcp.noteUserInitiatedConnect()
+                    quickResult = MCPDesktopInstaller.installViaConfig().message
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "menubar.dock.rectangle")
+                        Text("Claude App")
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!mcp.isRunning)
+            if let quickResult {
+                Text(quickResult).font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).lineLimit(3)
+            }
+            Divider()
             Button("Connect an AI app…") {
                 NotificationCenter.default.post(name: .mcpOpenConnectSheet, object: nil)
             }
         }
         .padding(12)
-        .frame(width: 250)
+        .frame(width: 280)
     }
 }
 #endif

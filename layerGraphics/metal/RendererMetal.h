@@ -151,7 +151,9 @@ public:
       float bgG, float bgB, int aoEnabled, int shadowEnabled, int aaEnabled,
       int outlineEnabled, float projA, float projB, float projX,
       float projY, int rtEnabled, int tonemapEnabled = 0,
-      float exposure = 1.0f, int rtShadowEnabled = 0) override;
+      float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
+      float outlineG = 0.0f, float outlineB = 0.0f,
+      float outlineWidth = 1.4f) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess) override;
 
@@ -398,6 +400,9 @@ private:
   int _shadowEnabled = 1;      // screen-space shadows (cSetting_metal_shadows)
   int _aaEnabled = 1;          // FXAA (cSetting_antialias_shader != 0)
   int _outlineEnabled = 0;     // silhouette outline (cSetting_metal_outline)
+  // Outline contour color + thickness in px (cSetting_metal_outline_color/_width).
+  float _outlineR = 0.f, _outlineG = 0.f, _outlineB = 0.f;
+  float _outlineWidth = 1.4f;
   id<MTLRenderPipelineState> _outlinePipeline = nil;
   // Filmic tone-map + exposure post pass (cSetting_metal_tonemap/_exposure).
   // Milestone 1: operates on the existing LDR scene color (no float promotion).

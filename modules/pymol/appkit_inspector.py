@@ -41,7 +41,8 @@ REP_COLOR = {
 }
 
 SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_ssao',
-                  'metal_outline', 'metal_msaa', 'metal_tonemap', 'metal_exposure',
+                  'metal_outline', 'metal_outline_width', 'metal_msaa',
+                  'metal_tonemap', 'metal_exposure',
                   'depth_cue', 'fog', 'field_of_view', 'surface_quality',
                   'grid_mode', 'all_states', 'mouse_selection_mode',
                   'ambient', 'direct', 'reflect', 'specular', 'shininess',
@@ -86,26 +87,48 @@ def _rep_color(obj, setting):
 
 
 def _bg_rgb():
-    """bg_rgb may be a hex string ('0x000000') or an (r,g,b) tuple → [r,g,b] floats."""
+    """Background color → [r,g,b] floats. `bg_rgb` resolves to a hex string, an
+    (r,g,b) tuple, OR a named color / index — the last happens after the panel
+    runs `bg_color <name>` (cmd.get returns the name, e.g. '_bgcol'). Resolve it
+    the same robust way as any other color setting so the swatch never falls
+    back to black for a non-hex background."""
+    return _color_setting_rgb('bg_rgb')
+
+
+def _color_setting_rgb(setting, fallback=(0.0, 0.0, 0.0)):
+    """Resolve a color-type global setting (e.g. metal_outline_color) to [r,g,b]
+    floats in 0…1. Handles (r,g,b) tuples, '0xRRGGBB' hex, color names, and
+    numeric color indices."""
     try:
-        v = cmd.get('bg_rgb')
+        v = cmd.get(setting)
     except Exception:
-        return [0.0, 0.0, 0.0]
+        return list(fallback)
     if isinstance(v, (list, tuple)):
         try:
             return [float(x) for x in v][:3]
         except Exception:
-            return [0.0, 0.0, 0.0]
+            return list(fallback)
     s = str(v).strip()
-    if s[:2] in ('0x', '0X'):
-        s = s[2:]
-    if len(s) == 6:
+    if s[:2] in ('0x', '0X') and len(s) == 8:
         try:
-            return [int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0,
-                    int(s[4:6], 16) / 255.0]
+            return [int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0,
+                    int(s[6:8], 16) / 255.0]
         except Exception:
             pass
-    return [0.0, 0.0, 0.0]
+    try:
+        ci = int(float(s))
+    except Exception:
+        try:
+            ci = cmd.get_color_index(s)
+        except Exception:
+            return list(fallback)
+    try:
+        t = cmd.get_color_tuple(ci)
+    except Exception:
+        return list(fallback)
+    if not t or t == -1:
+        return list(fallback)
+    return [float(t[0]), float(t[1]), float(t[2])]
 
 
 def _build(objs):
@@ -125,6 +148,7 @@ def _build(objs):
         detail[o] = reps
     scene = {s: _num(s, '') for s in SCENE_SETTINGS}
     scene['bg'] = _bg_rgb()
+    scene['outline_rgb'] = _color_setting_rgb('metal_outline_color')
     # Per-object state metadata for the inspector STATE row: the effective
     # current state (the object's 'state' setting, which resolves to the global
     # frame's state when not pinned) and whether all states are overlaid.
