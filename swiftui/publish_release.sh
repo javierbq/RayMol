@@ -28,6 +28,36 @@ APPCAST="$ROOT/appcast.xml"
 SIGN_UPDATE="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*Sparkle/bin/sign_update' 2>/dev/null | head -1)"
 [ -x "$SIGN_UPDATE" ] || { echo "ERROR: sign_update not found; run 'xcodebuild -resolvePackageDependencies' first"; exit 1; }
 
+# --- Preflight (hardening after the 1.2.1 publish got tripped up) -------------
+# 1. Keep the Mac awake for the whole run. A sleep/lock cycle mid-publish can
+#    evict the keychain credentials sign_update needs and force a fresh, easily-
+#    missed authorization prompt (sign_update then hangs). -w $$ ties caffeinate's
+#    lifetime to this script, so it stops automatically when we exit.
+caffeinate -dims -w "$$" &
+
+# 2. The login keychain must be unlocked — sign_update reads the Sparkle EdDSA
+#    key from it. Fail fast with a clear message instead of hanging deep in the
+#    run on an unattended keychain prompt.
+if ! security show-keychain-info "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+  echo "ERROR: login keychain is locked. Unlock it and re-run, e.g.:"
+  echo "  security unlock-keychain \"\$HOME/Library/Keychains/login.keychain-db\""
+  exit 1
+fi
+
+# 3. Snapshot the release notes NOW, before the long sign/upload. The GitHub
+#    release is created at the END of this script; if the working tree changes
+#    in between (a branch switch or checkout — which is exactly what broke the
+#    1.2.1 create), NOTES_FILE can vanish. Copy it to a stable temp path up front
+#    and create the release from that, independent of the live checkout.
+NOTES_SNAPSHOT=""
+if [ -n "${NOTES_FILE:-}" ]; then
+  [ -f "$NOTES_FILE" ] || { echo "ERROR: NOTES_FILE not found: $NOTES_FILE"; exit 1; }
+  NOTES_SNAPSHOT="$(mktemp -t raymol-relnotes)"
+  cp "$NOTES_FILE" "$NOTES_SNAPSHOT"
+  echo "  notes snapshot → $NOTES_SNAPSHOT"
+fi
+# ------------------------------------------------------------------------------
+
 echo "== EdDSA-sign the DMG =="
 # sign_update prints an attribute fragment, e.g.:
 #   sparkle:edSignature="…" length="12345"
@@ -72,9 +102,9 @@ echo "== Publish GitHub release v$VERSION =="
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
   gh release upload "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" --clobber
 else
-  if [ -n "${NOTES_FILE:-}" ]; then
+  if [ -n "$NOTES_SNAPSHOT" ]; then
     gh release create "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" \
-      --title "RayMol $VERSION" --notes-file "$NOTES_FILE"
+      --title "RayMol $VERSION" --notes-file "$NOTES_SNAPSHOT"
   else
     gh release create "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" \
       --title "RayMol $VERSION" \

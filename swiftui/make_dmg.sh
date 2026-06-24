@@ -41,6 +41,26 @@ VERSION="${VERSION:-1.0.0}"
 : "${DEVID:?Set DEVID to your 'Developer ID Application: NAME (TEAMID)' identity}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-RayMol-notary}"
 
+# --- Preflight (hardening after the 1.2.1 build got tripped up) ---------------
+# Keep the Mac awake for the whole run. This script has two multi-minute Apple
+# notarization waits; a sleep/lock cycle during one of them locked the keychain
+# and evicted the notary credential, so the 2nd notarization failed AFTER the
+# app was already built, signed, and notarized. -w $$ stops caffeinate on exit.
+caffeinate -dims -w "$$" &
+
+# Verify the notary credential is reachable BEFORE the long build + first
+# notarization, so a missing/locked profile fails in seconds instead of ~40 min
+# in. (notarytool reads the profile from the keychain; this also surfaces a
+# locked keychain immediately.)
+if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  echo "ERROR: notary profile '$NOTARY_PROFILE' is not reachable (missing or keychain locked)."
+  echo "  Re-store it:  xcrun notarytool store-credentials $NOTARY_PROFILE \\"
+  echo "                  --apple-id <id> --team-id VT99UQUQ89 --password <app-specific-pw>"
+  echo "  Then verify:  xcrun notarytool history --keychain-profile $NOTARY_PROFILE"
+  exit 1
+fi
+# ------------------------------------------------------------------------------
+
 echo "== 1/8  Build Release app (unsigned; we Developer-ID-sign below) =="
 xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
