@@ -61,15 +61,22 @@ cat > "$APPCAST" <<XML
 XML
 echo "  wrote $APPCAST"
 
+# Stable-named copy of the DMG so the website can link a FIXED url that always
+# serves the newest release: https://github.com/$REPO/releases/latest/download/RayMol.dmg
+# (the versioned RayMol-$VERSION.dmg name changes every release, so it can't be
+# used with the /latest/ redirect). Same notarized+stapled bytes, second name.
+STABLE_DMG="$ROOT/RayMol.dmg"
+cp "$DMG" "$STABLE_DMG"
+
 echo "== Publish GitHub release v$VERSION =="
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
-  gh release upload "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" --clobber
+  gh release upload "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" --clobber
 else
   if [ -n "${NOTES_FILE:-}" ]; then
-    gh release create "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" \
+    gh release create "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" \
       --title "RayMol $VERSION" --notes-file "$NOTES_FILE"
   else
-    gh release create "v$VERSION" "$DMG" "$APPCAST" -R "$REPO" \
+    gh release create "v$VERSION" "$DMG" "$STABLE_DMG" "$APPCAST" -R "$REPO" \
       --title "RayMol $VERSION" \
       --notes "${NOTES:-Automatic updates are here. RayMol now checks for new versions and installs them with one click — no more manual DMG downloads. Built on the open-source PyMOL engine.}"
   fi
