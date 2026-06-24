@@ -6,13 +6,25 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.1.0</title>
-      <sparkle:releaseNotesLink>https://github.com/javierbq/RayMol/releases/tag/v1.1.0</sparkle:releaseNotesLink>
-      <pubDate>Tue, 23 Jun 2026 06:53:15 +0000</pubDate>
-      <sparkle:version>5</sparkle:version>
-      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <title>RayMol 1.3.0</title>
+      <description xml:lang="en" sparkle:format="markdown"><![CDATA[
+## RayMol 1.3.0
+
+New rendering controls, one-click AI connection, and export fixes.
+
+- **Outline color & width.** The real-time silhouette outline is now fully customizable — choose any contour color and set its thickness right from the Scene panel (it was previously fixed at a thin black line).
+- **One-click AI connect.** The RayMol MCP menu adds **Claude Code** and **Claude App** quick-connect buttons, plus a **Copy connection details** button — no more walking through the setup sheet by hand.
+- **Fixed: background color swatch.** After choosing a background with the color picker, the swatch could incorrectly show black; it now reflects the actual background color.
+- **Fixed: image export dropping the surface.** Offscreen and transparent-background PNG exports no longer cut out the molecular surface (a race with the deferred surface build).
+- **Cleaner update notes.** Release notes now render as formatted text directly in the in-app updater dialog.
+
+Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
+]]></description>
+      <pubDate>Wed, 24 Jun 2026 20:29:56 +0000</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.1.0/RayMol-1.1.0.dmg" type="application/octet-stream" sparkle:edSignature="ZTJfD5CsBOadGcqzNyG13DXzQhW22nVUfwRHLeb0YOvgHt0JzdIYrluRl3JXNPmNesF8gT/+jH28W772UEApBw==" length="62313940" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.3.0/RayMol-1.3.0.dmg" type="application/octet-stream" sparkle:edSignature="1XKOpwm70DYboIxdSdh/iM3Jef0foo194qnjxo15G3FaFmm3eaFtKJ4J9S9ZioFpZ4Lrf4c0QmN0vrPeVnmJCQ==" length="62409793" />
     </item>
   </channel>
 </rss>
