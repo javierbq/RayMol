@@ -8,11 +8,16 @@
 # is what installed RayMol.app polls (SUFeedURL in Info.plist).
 #
 # Usage:
-#   VERSION=1.1.0 BUILD=5 bash swiftui/publish_release.sh
+#   VERSION=1.1.0 BUILD=5 NOTES_FILE=docs/release-notes/v1.1.0.md \
+#     bash swiftui/publish_release.sh
 #
-# VERSION = marketing version (CFBundleShortVersionString)
-# BUILD   = CFBundleVersion (CURRENT_PROJECT_VERSION) — Sparkle compares on this,
-#           so it MUST increase every release.
+# VERSION   = marketing version (CFBundleShortVersionString)
+# BUILD     = CFBundleVersion (CURRENT_PROJECT_VERSION) — Sparkle compares on this,
+#             so it MUST increase every release.
+# NOTES_FILE = Markdown release notes. Embedded into the appcast as
+#             <description sparkle:format="markdown"> so Sparkle renders them
+#             natively in the update dialog (no GitHub web page), and also used
+#             as the GitHub release body. Optional; falls back to a short blurb.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -66,7 +71,6 @@ echo "  $SIGFRAG"
 
 URL="https://github.com/$REPO/releases/download/v$VERSION/RayMol-$VERSION.dmg"
 PUBDATE="$(date -u +"%a, %d %b %Y %H:%M:%S +0000")"
-NOTESLINK="https://github.com/$REPO/releases/tag/v$VERSION"
 
 echo "== Write appcast.xml =="
 cat > "$APPCAST" <<XML
@@ -79,7 +83,9 @@ cat > "$APPCAST" <<XML
     <language>en</language>
     <item>
       <title>RayMol $VERSION</title>
-      <sparkle:releaseNotesLink>$NOTESLINK</sparkle:releaseNotesLink>
+      <description xml:lang="en" sparkle:format="markdown"><![CDATA[
+__RELEASE_NOTES_CDATA__
+]]></description>
       <pubDate>$PUBDATE</pubDate>
       <sparkle:version>$BUILD</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
@@ -89,6 +95,25 @@ cat > "$APPCAST" <<XML
   </channel>
 </rss>
 XML
+
+# Splice the release notes into the appcast's <description> as Markdown. This is
+# done here (not in the heredoc above) on purpose: the notes contain backticks
+# and may contain '$', which an unquoted heredoc would mangle. Python inserts the
+# bytes verbatim and guards the CDATA section against a literal ']]>'.
+python3 - "$APPCAST" "${NOTES_SNAPSHOT:-}" <<'PY'
+import sys
+appcast_path, notes_path = sys.argv[1], sys.argv[2]
+if notes_path:
+    with open(notes_path, encoding="utf-8") as f:
+        notes = f.read().strip()
+else:
+    notes = "Bug fixes and improvements. See the in-app release notes for details."
+notes = notes.replace("]]>", "]] >")  # CDATA cannot contain the literal ]]>
+with open(appcast_path, encoding="utf-8") as f:
+    xml = f.read()
+with open(appcast_path, "w", encoding="utf-8") as f:
+    f.write(xml.replace("__RELEASE_NOTES_CDATA__", notes))
+PY
 echo "  wrote $APPCAST"
 
 # Stable-named copy of the DMG so the website can link a FIXED url that always
