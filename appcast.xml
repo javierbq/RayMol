@@ -6,25 +6,23 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.3.0</title>
+      <title>RayMol 1.3.1</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.3.0
+## RayMol 1.3.1
 
-New rendering controls, one-click AI connection, and export fixes.
+A patch release fixing camera actions on the Metal renderer.
 
-- **Outline color & width.** The real-time silhouette outline is now fully customizable — choose any contour color and set its thickness right from the Scene panel (it was previously fixed at a thin black line).
-- **One-click AI connect.** The RayMol MCP menu adds **Claude Code** and **Claude App** quick-connect buttons, plus a **Copy connection details** button — no more walking through the setup sheet by hand.
-- **Fixed: background color swatch.** After choosing a background with the color picker, the swatch could incorrectly show black; it now reflects the actual background color.
-- **Fixed: image export dropping the surface.** Offscreen and transparent-background PNG exports no longer cut out the molecular surface (a race with the deferred surface build).
-- **Cleaner update notes.** Release notes now render as formatted text directly in the in-app updater dialog.
+- **Fixed: Zoom / Orient / Center now animate.** The Objects-panel **A** (Actions) menu's camera commands run as animated view moves, but the Metal renderer wasn't advancing the animation each frame, so they appeared to do nothing. They now play to their target. (This fix existed for 1.3.0 but was left out of the shipped 1.3.0 build; 1.3.1 ships it.)
+
+Includes everything from 1.3.0: outline color & width controls, one-click AI connect (Claude Code / Claude App) with Copy connection details, the background-swatch fix, and the offscreen/transparent-background export fixes.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Wed, 24 Jun 2026 20:29:56 +0000</pubDate>
-      <sparkle:version>8</sparkle:version>
-      <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+      <pubDate>Thu, 25 Jun 2026 06:37:51 +0000</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.3.0/RayMol-1.3.0.dmg" type="application/octet-stream" sparkle:edSignature="1XKOpwm70DYboIxdSdh/iM3Jef0foo194qnjxo15G3FaFmm3eaFtKJ4J9S9ZioFpZ4Lrf4c0QmN0vrPeVnmJCQ==" length="62409793" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.3.1/RayMol-1.3.1.dmg" type="application/octet-stream" sparkle:edSignature="IfFCKG78S2AlVZ6CPM2B/qJWtF/g+NpNorODEFZMSAgAIzHvuG/YBc3hAiqPCtEiTFy0AlOBMz4ffCciNmUHAA==" length="62427646" />
     </item>
   </channel>
 </rss>
