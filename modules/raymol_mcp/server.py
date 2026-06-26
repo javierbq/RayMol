@@ -10,6 +10,7 @@ worker used. Never call the C bridge from here.
 """
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -162,7 +163,10 @@ class _Handler(BaseHTTPRequestHandler):
         if is_init:
             session_id = uuid.uuid4().hex
             _sessions[session_id] = time.monotonic()
-            events.client_connected(session_id)
+            # Skip the connect event (which raises the "Allow" prompt) when
+            # auto-trust is on for testing — there is nothing to approve.
+            if not _trusted:
+                events.client_connected(session_id)
         elif session_id and session_id in _sessions:
             _touch(session_id)
 
@@ -201,7 +205,12 @@ def start(port, token):
         if _httpd is not None:
             return _port
         _token = token
-        _trusted = False
+        # Dev/testing auto-trust: when RAYMOL_MCP_AUTOTRUST=1 is present in the
+        # process environment, skip the interactive "Allow" approval. This env var
+        # is NEVER set in a shipped build (apps launched via Finder / `open` have
+        # no such variable), so production always requires the user's explicit
+        # click. Set it only when launching the binary directly for testing.
+        _trusted = os.environ.get("RAYMOL_MCP_AUTOTRUST") == "1"
         bind_port = port if port else 0
         _httpd = ThreadingHTTPServer(("127.0.0.1", bind_port), _Handler)
         _port = _httpd.server_address[1]
