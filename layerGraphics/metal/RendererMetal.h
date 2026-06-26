@@ -321,6 +321,11 @@ private:
   id<MTLSamplerState> _postSampler = nil;
   void ensurePostTargets(NSUInteger w, NSUInteger h);
   void buildPostPipelines();
+  // Create/resize the MetalFX spatial scaler for the given in/out sizes (no-op
+  // if MetalFX is unsupported on this device; the caller then falls back to the
+  // bilinear blit). Signature uses only NSUInteger so the header needn't import
+  // MetalFX (the typed id<MTLFXSpatialScaler> lives in _upscaler / the .mm).
+  void ensureUpscaler(NSUInteger inW, NSUInteger inH, NSUInteger outW, NSUInteger outH);
   void runPostChain();
 
   // Real-time ray tracing: build the shared unit-icosphere primitive
@@ -435,6 +440,12 @@ private:
   // byte-identical. Forced to 1 for offscreen export.
   int _upscaleEnabled = 0;
   float _renderScale = 1.0f;
+  // MetalFX spatial scaler (typed id<MTLFXSpatialScaler>; untyped here to keep
+  // MetalFX out of the header). Recreated when in/out sizes change. When nil/
+  // unsupported the present path falls back to the bilinear blit.
+  id _upscaler = nil;
+  NSUInteger _upInW = 0, _upInH = 0, _upOutW = 0, _upOutH = 0;
+  int _metalfxSupported = -1;  // -1 unknown, 0 no, 1 yes (cached per device)
   // Offscreen-export-only pass: rewrites the framebuffer alpha from scene depth
   // (background = far -> alpha 0) so a transparent-background PNG can be written
   // on the Metal fast path. Gated on _offscreen && transparent clear (_clearA<0.5).

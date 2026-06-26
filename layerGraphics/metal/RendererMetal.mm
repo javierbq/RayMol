@@ -1,6 +1,7 @@
 #include "RendererMetal.h"
 
 #import <simd/simd.h>
+#import <MetalFX/MetalFX.h>   // MTLFXSpatialScaler (metal_upscale); macOS 13 / iOS 16+
 #include <algorithm>
 #include <cmath>
 #include "MyPNG.h"
@@ -312,6 +313,8 @@ RendererMetal::~RendererMetal()
   [_lineBuffer release];
   _lineBuffer = nil;
   _lineBufferSize = 0;
+  [(id)_upscaler release];   // MetalFX spatial scaler (MRC)
+  _upscaler = nil;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +345,45 @@ void RendererMetal::setDrawable(
   if (rh < 1) rh = 1;
   ensurePostTargets(rw, rh);
   _passDesc = _scenePassDesc;
+}
+
+void RendererMetal::ensureUpscaler(NSUInteger inW, NSUInteger inH,
+                                   NSUInteger outW, NSUInteger outH)
+{
+  if (_metalfxSupported == 0)
+    return;  // known-unsupported device: caller uses the bilinear fallback
+  if (inW == 0 || inH == 0 || outW == 0 || outH == 0)
+    return;
+  if (@available(macOS 13.0, iOS 16.0, *)) {
+    if (_metalfxSupported < 0)
+      _metalfxSupported = [MTLFXSpatialScalerDescriptor supportsDevice:_device] ? 1 : 0;
+    if (_metalfxSupported != 1)
+      return;
+    if (_upscaler && _upInW == inW && _upInH == inH &&
+        _upOutW == outW && _upOutH == outH)
+      return;  // existing scaler already matches the requested in/out sizes
+    MTLFXSpatialScalerDescriptor* d = [[MTLFXSpatialScalerDescriptor alloc] init];
+    d.inputWidth = inW;
+    d.inputHeight = inH;
+    d.outputWidth = outW;
+    d.outputHeight = outH;
+    // Scene color + drawable are both BGRA8Unorm (display-referred LDR), so use
+    // the perceptual color mode.
+    d.colorTextureFormat = _sceneColor ? _sceneColor.pixelFormat : MTLPixelFormatBGRA8Unorm;
+    d.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+    d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+    id<MTLFXSpatialScaler> ns = [d newSpatialScalerWithDevice:_device];  // +1 (MRC)
+    [d release];
+    if (ns) {
+      [(id)_upscaler release];
+      _upscaler = ns;  // take ownership of the +1 from new...
+      _upInW = inW; _upInH = inH; _upOutW = outW; _upOutH = outH;
+    } else {
+      _metalfxSupported = 0;  // creation failed -> permanently fall back
+    }
+  } else {
+    _metalfxSupported = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1982,15 +2024,34 @@ void RendererMetal::runPostChain()
       return;
     }
 
-    id<MTLRenderPipelineState> finalPipe =
-        (_fxaaPipeline && _aaEnabled && !noAA) ? _fxaaPipeline : _blitPipeline;
-    id<MTLRenderCommandEncoder> enc =
-        [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
-    [enc setRenderPipelineState:finalPipe];
-    [enc setFragmentTexture:sceneSrc atIndex:0];
-    [enc setFragmentSamplerState:_postSampler atIndex:0];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [enc endEncoding];
+    // Reduced-resolution present (metal_upscale): upscale sceneSrc (rendered at
+    // _renderScale) to the native drawable. Prefer the MetalFX spatial scaler
+    // (sharp, recovers edge detail); fall back to the FXAA/blit pass (bilinear)
+    // when MetalFX is unavailable or the scaler couldn't be created. When upscale
+    // is off (_renderScale==1, the default) doUpscale is false and this is the
+    // unchanged final-blit path.
+    id<MTLTexture> drawTex = _drawable ? _drawable.texture : nil;
+    bool doUpscale = (_upscaleEnabled && _renderScale < 0.999f && sceneSrc && drawTex);
+    if (doUpscale)
+      ensureUpscaler(sceneSrc.width, sceneSrc.height, drawTex.width, drawTex.height);
+    if (doUpscale && _upscaler) {
+      if (@available(macOS 13.0, iOS 16.0, *)) {
+        id<MTLFXSpatialScaler> sc = (id<MTLFXSpatialScaler>)_upscaler;
+        sc.colorTexture = sceneSrc;
+        sc.outputTexture = drawTex;
+        [sc encodeToCommandBuffer:_cmdBuffer];  // NOT a render-encoder pass
+      }
+    } else {
+      id<MTLRenderPipelineState> finalPipe =
+          (_fxaaPipeline && _aaEnabled && !noAA) ? _fxaaPipeline : _blitPipeline;
+      id<MTLRenderCommandEncoder> enc =
+          [_cmdBuffer renderCommandEncoderWithDescriptor:_screenPassDesc];
+      [enc setRenderPipelineState:finalPipe];
+      [enc setFragmentTexture:sceneSrc atIndex:0];
+      [enc setFragmentSamplerState:_postSampler atIndex:0];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [enc endEncoding];
+    }
   }
 
   // Pending rendered-frame PNG capture (png ray=0): copy the final

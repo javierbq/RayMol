@@ -62,7 +62,7 @@ PYMOL_PYTHON_DYLIB[sdk=iphoneos*] = $(SRCROOT)/../deps_ios/Python.xcframework/io
 PYMOL_PYTHON_DYLIB[sdk=iphonesimulator*] = $(SRCROOT)/../deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Python
 
 // Core library (always linked)
-PYMOL_CORE_LDFLAGS = -lpymol_core -framework Metal -framework MetalKit -framework CoreVideo
+PYMOL_CORE_LDFLAGS = -lpymol_core -framework Metal -framework MetalKit -framework CoreVideo -framework MetalFX
 
 // macOS: full dependency set. libomp.a is linked STATICALLY (by absolute path,
 // so the linker uses the archive, not the .dylib) to resolve the OpenMP symbols

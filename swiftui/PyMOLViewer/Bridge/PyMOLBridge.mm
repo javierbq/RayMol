@@ -413,6 +413,10 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle h, void *mtkViewPtr)
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G || G->Renderer) return;   // idempotent: build the renderer once
     MTKView *v = (__bridge MTKView *)mtkViewPtr;
+    // MetalFX upscaling (cSetting_metal_upscale) needs to write the drawable
+    // texture from a compute/ML pass, so it can't be framebuffer-only. This is
+    // benign for the normal render path (the final blit still works).
+    v.framebufferOnly = NO;
     g_metalDevice = v.device ?: MTLCreateSystemDefaultDevice();
     g_metalQueue = [g_metalDevice newCommandQueue];
     G->HaveGUI = true;               // mirror main_appkit.mm:688
