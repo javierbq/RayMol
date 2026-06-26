@@ -2054,12 +2054,13 @@ void SceneRenderMetal(PyMOLGlobals* G)
     float dofRange = SettingGetGlobal_f(G, cSetting_metal_dof_range);
     int temporalAO = SettingGetGlobal_b(G, cSetting_metal_temporal_ao) ? 1 : 0;
     int upscaleEnabled = SettingGetGlobal_b(G, cSetting_metal_upscale) ? 1 : 0;
+    float dofAperture = SettingGetGlobal_f(G, cSetting_metal_dof_aperture);
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],
         proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure,
         rtShadowEnabled, outlineCol[0], outlineCol[1], outlineCol[2],
         outlineWidth, dofEnabled, dofFocus, dofRange, temporalAO,
-        upscaleEnabled);
+        upscaleEnabled, dofAperture);
     // Lighting model — the Metal lit shaders read these instead of hard-coded
     // constants, so the Scene-panel lighting sliders take effect.
     G->Renderer->setLightingParams(

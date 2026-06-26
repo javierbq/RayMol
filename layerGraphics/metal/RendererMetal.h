@@ -155,7 +155,7 @@ public:
       float outlineG = 0.0f, float outlineB = 0.0f,
       float outlineWidth = 1.4f, int dofEnabled = 0, float dofFocus = 0.0f,
       float dofRange = 14.0f, int temporalAO = 0,
-      int upscaleEnabled = 0) override;
+      int upscaleEnabled = 0, float dofAperture = 14.0f) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
 
@@ -430,6 +430,7 @@ private:
   int _dofEnabled = 0;
   float _dofFocus = 0.0f;   // eye-space focus distance; <=0 => auto (screen center)
   float _dofRange = 14.0f;  // eye-space distance over which CoC ramps to max blur
+  float _dofAperture = 14.0f;  // cSetting_metal_dof_aperture: max blur radius (px)
   id<MTLRenderPipelineState> _dofPipeline = nil;
   // Temporal AO accumulation (cSetting_metal_temporal_ao): EMA the RT-AO buffer
   // across frames while the view is still. Default off; RT-path only.

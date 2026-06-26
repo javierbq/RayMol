@@ -1155,11 +1155,12 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float projY, int rtEnabled, int tonemapEnabled, float exposure,
     int rtShadowEnabled, float outlineR, float outlineG, float outlineB,
     float outlineWidth, int dofEnabled, float dofFocus, float dofRange,
-    int temporalAO, int upscaleEnabled)
+    int temporalAO, int upscaleEnabled, float dofAperture)
 {
   _dofEnabled = dofEnabled;
   _dofFocus = dofFocus;
   _dofRange = dofRange;
+  _dofAperture = dofAperture;
   _temporalAOEnabled = temporalAO;
   _upscaleEnabled = upscaleEnabled;
   _tonemapEnabled = tonemapEnabled;
@@ -1903,7 +1904,7 @@ void RendererMetal::runPostChain()
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     u.focusDist = _dofFocus;
     u.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
-    u.maxRadiusPx = 14.0f;
+    u.maxRadiusPx = (_dofAperture > 0.0f) ? _dofAperture : 14.0f;
     u._pad = 0.0f;
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
     pd.colorAttachments[0].texture = dst;

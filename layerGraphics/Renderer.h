@@ -297,7 +297,7 @@ public:
       float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
       float outlineG = 0.0f, float outlineB = 0.0f, float outlineWidth = 1.4f,
       int dofEnabled = 0, float dofFocus = 0.0f, float dofRange = 14.0f,
-      int temporalAO = 0, int upscaleEnabled = 0)
+      int temporalAO = 0, int upscaleEnabled = 0, float dofAperture = 14.0f)
   {
   }
 
