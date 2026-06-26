@@ -921,6 +921,7 @@ enum {
   REC_f( 811, metal_dof_focus                         , global    , 0.0F ),  /* Metal DOF focus distance in eye-space units; 0 = auto (center of interest) */
   REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum */
   REC_b( 813, metal_temporal_ao                       , global    , false ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
+  REC_b( 814, metal_upscale                           , global    , false ), /* Metal: render the scene at reduced resolution and upscale to native (mobile perf; bilinear, MetalFX follow-up) */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

@@ -154,7 +154,8 @@ public:
       float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
       float outlineG = 0.0f, float outlineB = 0.0f,
       float outlineWidth = 1.4f, int dofEnabled = 0, float dofFocus = 0.0f,
-      float dofRange = 14.0f, int temporalAO = 0) override;
+      float dofRange = 14.0f, int temporalAO = 0,
+      int upscaleEnabled = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
 
@@ -428,6 +429,12 @@ private:
   // Temporal AO accumulation (cSetting_metal_temporal_ao): EMA the RT-AO buffer
   // across frames while the view is still. Default off; RT-path only.
   int _temporalAOEnabled = 0;
+  // Reduced-resolution rendering + upscale (cSetting_metal_upscale). When on,
+  // the scene + post chain render at _renderScale and the final blit upscales to
+  // the native drawable (fragment-bound perf win). _renderScale==1 (default) is
+  // byte-identical. Forced to 1 for offscreen export.
+  int _upscaleEnabled = 0;
+  float _renderScale = 1.0f;
   // Offscreen-export-only pass: rewrites the framebuffer alpha from scene depth
   // (background = far -> alpha 0) so a transparent-background PNG can be written
   // on the Metal fast path. Gated on _offscreen && transparent clear (_clearA<0.5).

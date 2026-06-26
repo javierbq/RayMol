@@ -331,7 +331,16 @@ void RendererMetal::setDrawable(
   // Render the scene into offscreen targets sized to the drawable; the existing
   // scene-draw code keys off _passDesc, so point it at the offscreen descriptor.
   id<MTLTexture> tex = drawable.texture;
-  ensurePostTargets(tex.width, tex.height);
+  // Reduced-resolution rendering (metal_upscale): size the scene + post-chain
+  // targets at _renderScale of the drawable; the final blit upscales to the
+  // native drawable. _renderScale==1 (upscale off, the default) is byte-identical.
+  // Forced to native when a frame PNG capture is pending so exports stay full-res.
+  _renderScale = (_upscaleEnabled && _capturePath.empty()) ? 0.667f : 1.0f;
+  NSUInteger rw = (NSUInteger)lround(tex.width * _renderScale);
+  NSUInteger rh = (NSUInteger)lround(tex.height * _renderScale);
+  if (rw < 1) rw = 1;
+  if (rh < 1) rh = 1;
+  ensurePostTargets(rw, rh);
   _passDesc = _scenePassDesc;
 }
 
@@ -470,6 +479,7 @@ void RendererMetal::beginOffscreen(int w, int h, const std::string& path)
   _offscreen = true;
   _drawable = nil;
   _screenPassDesc = nil;
+  _renderScale = 1.0f;  // offscreen export always renders at full requested res
   // Force target recreation at the requested resolution, then aim the scene
   // pass + viewport at it. (ensurePostTargets early-returns if size matches.)
   ensurePostTargets((NSUInteger)w, (NSUInteger)h);
@@ -1103,12 +1113,13 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     float projY, int rtEnabled, int tonemapEnabled, float exposure,
     int rtShadowEnabled, float outlineR, float outlineG, float outlineB,
     float outlineWidth, int dofEnabled, float dofFocus, float dofRange,
-    int temporalAO)
+    int temporalAO, int upscaleEnabled)
 {
   _dofEnabled = dofEnabled;
   _dofFocus = dofFocus;
   _dofRange = dofRange;
   _temporalAOEnabled = temporalAO;
+  _upscaleEnabled = upscaleEnabled;
   _tonemapEnabled = tonemapEnabled;
   _exposure = exposure;
   _rtShadowEnabled = rtShadowEnabled;
@@ -2121,14 +2132,18 @@ void RendererMetal::endShadowPass()
 
 void RendererMetal::viewport(int x, int y, int w, int h)
 {
-  _viewport = {
-      static_cast<double>(x), static_cast<double>(y),
-      static_cast<double>(w), static_cast<double>(h), 0.0, 1.0};
+  // Scale incoming (native backing-pixel) rects to the reduced render resolution
+  // when metal_upscale is on (matches the _renderScale-sized targets). s==1 (the
+  // default) leaves coordinates unchanged. Aspect is preserved (uniform scale),
+  // so the projection matrix from SceneRender still matches.
+  const double s = _renderScale;
+  const double vx = x * s, vy = y * s, vw = w * s, vh = h * s;
+  _viewport = {vx, vy, vw, vh, 0.0, 1.0};
 
   // Also update scissor to match if scissor is not explicitly set
   _scissorRect = {
-      static_cast<NSUInteger>(x), static_cast<NSUInteger>(y),
-      static_cast<NSUInteger>(w), static_cast<NSUInteger>(h)};
+      static_cast<NSUInteger>(llround(vx)), static_cast<NSUInteger>(llround(vy)),
+      static_cast<NSUInteger>(llround(vw)), static_cast<NSUInteger>(llround(vh))};
 
   if (_encoder) {
     [_encoder setViewport:_viewport];
@@ -2194,9 +2209,10 @@ void RendererMetal::clearColor(float r, float g, float b, float a)
 
 void RendererMetal::scissor(int x, int y, int w, int h)
 {
+  const double s = _renderScale;  // match the reduced render resolution (s==1 default)
   _scissorRect = {
-      static_cast<NSUInteger>(x), static_cast<NSUInteger>(y),
-      static_cast<NSUInteger>(w), static_cast<NSUInteger>(h)};
+      static_cast<NSUInteger>(llround(x * s)), static_cast<NSUInteger>(llround(y * s)),
+      static_cast<NSUInteger>(llround(w * s)), static_cast<NSUInteger>(llround(h * s))};
 
   if (_encoder && _scissorEnabled) {
     [_encoder setScissorRect:_scissorRect];
