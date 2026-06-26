@@ -312,6 +312,87 @@ def atom_expr(best):
     return '(%s)' % expr
 
 
+def _eye_distance(selection):
+    """Mean eye-space (camera) distance of `selection`'s atoms, or None.
+
+    Uses the same camera math as _pick_atom: eye = R*(model-origin) + pos, so the
+    eye-space Z is R_row2 . (model-origin) + pos.z, and the positive distance in
+    front of the camera is -eye.z. R_row2 = (v[2], v[6], v[10]); pos.z = v[18]."""
+    from pymol import cmd
+    v = cmd.get_view()
+    if not v:
+        return None
+    if len(v) >= 25:
+        r20, r21, r22 = v[2], v[6], v[10]
+        tz = v[18]
+        ox, oy, oz = v[19], v[20], v[21]
+    else:  # legacy 18-float layout
+        r20, r21, r22 = v[2], v[5], v[8]
+        tz = v[11]
+        ox, oy, oz = v[12], v[13], v[14]
+    # Gather coords via iterate_state (cmd.get_coords returns None in the
+    # embedded build). acc = [sum_of_eye_z, atom_count].
+    acc = [0.0, 0]
+    # NOTE: `p` and `s` are reserved in iterate/alter expressions (atom property
+    # and setting objects), so the camera params go in `cam`, not `p`.
+    expr = ('acc[0] += cam[0]*(x-cam[3]) + cam[1]*(y-cam[4]) + cam[2]*(z-cam[5]) + cam[6]; '
+            'acc[1] += 1')
+    try:
+        cmd.iterate_state(1, selection, expr,
+                          space={'acc': acc,
+                                 'cam': (r20, r21, r22, ox, oy, oz, tz)})
+    except Exception:
+        return None
+    if acc[1] == 0:
+        return None
+    return -(acc[0] / acc[1])
+
+
+def dof_focus(selection='pk1', enable=1, _self=None):
+    """
+DESCRIPTION
+
+    Aim the Metal depth-of-field focal plane at "selection" by setting
+    metal_dof_focus to its eye-space distance. With enable=1 also turns
+    metal_dof on. An empty selection (or one with no atoms) reverts to AUTO
+    focus on the center of interest (metal_dof_focus = 0).
+
+USAGE
+
+    dof_focus [ selection [, enable ]]
+
+EXAMPLES
+
+    dof_focus organic       # focus on the ligand
+    dof_focus pk1           # focus on the last picked atom
+    dof_focus               # auto (center of interest) if nothing is picked
+    """
+    from pymol import cmd
+    c = _self or cmd
+    sel = (selection or '').strip()
+    n = 0
+    if sel:
+        try:
+            n = c.count_atoms('(%s)' % sel)
+        except Exception:
+            n = 0
+    if n == 0:
+        c.set('metal_dof_focus', 0.0)  # auto: center of interest
+    else:
+        d = _eye_distance('(%s)' % sel)
+        if d and d > 0.0:
+            c.set('metal_dof_focus', float(d))
+    if int(enable):
+        c.set('metal_dof', 1)
+
+
+try:  # expose `dof_focus` as a PyMOL command when this module is imported
+    from pymol import cmd as _cmd_reg
+    _cmd_reg.extend('dof_focus', dof_focus)
+except Exception:
+    pass
+
+
 def pick_at(ndc_x, ndc_y, aspect):
     """Default tap: residue-level toggle into the active 'sele'."""
     from pymol import cmd
@@ -359,6 +440,17 @@ def pick_at(ndc_x, ndc_y, aspect):
         else:
             cmd.select('sele', '(?sele) or %s' % expr)
         cmd.enable('sele')
+
+        # Click-to-focus: when depth-of-field is on, also aim its focal plane at
+        # the clicked atom (the issue's "focus to a picked atom"). Non-intrusive
+        # — only fires while metal_dof is enabled; otherwise a click just selects.
+        try:
+            if int(cmd.get_setting_int('metal_dof')):
+                d = _eye_distance('(%s)' % atom)
+                if d and d > 0.0:
+                    cmd.set('metal_dof_focus', float(d))
+        except Exception:
+            pass
 
     except Exception as e:
         print('metal_pick error: %s' % e)

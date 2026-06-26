@@ -2039,6 +2039,18 @@ void SceneRenderMetal(PyMOLGlobals* G)
     float outlineWidth = SettingGetGlobal_f(G, cSetting_metal_outline_width);
     int dofEnabled = SettingGetGlobal_b(G, cSetting_metal_dof) ? 1 : 0;
     float dofFocus = SettingGetGlobal_f(G, cSetting_metal_dof_focus);
+    if (dofFocus <= 0.0f) {
+      // Auto-focus on the center of interest (the rotation origin) rather than
+      // the screen-center pixel. The origin's eye-space distance is
+      // -(modelview * origin).z (mv is column-major: row 2 = mv[2,6,10,14]).
+      // If this can't be resolved to a positive distance, dofFocus stays 0 and
+      // the shader falls back to sampling the center-pixel depth.
+      float origin[3];
+      SceneOriginGet(G, origin);
+      float ez = mv[2] * origin[0] + mv[6] * origin[1] + mv[10] * origin[2] + mv[14];
+      if (-ez > 0.0f)
+        dofFocus = -ez;
+    }
     float dofRange = SettingGetGlobal_f(G, cSetting_metal_dof_range);
     int temporalAO = SettingGetGlobal_b(G, cSetting_metal_temporal_ao) ? 1 : 0;
     int upscaleEnabled = SettingGetGlobal_b(G, cSetting_metal_upscale) ? 1 : 0;
