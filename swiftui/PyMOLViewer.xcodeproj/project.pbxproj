@@ -113,7 +113,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_5CD9B1A3-3A99-4D7F-81D8-BAABA047A399" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_0C24F179-1B4D-4B3A-974E-B52A9268AD54" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -225,10 +225,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_6C17689C-9A96-4B72-A478-1AEE7393F5DD" /* swiftui */ = {
+		"TEMP_F145257D-ADEA-4346-948D-BDF51DC60073" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_5CD9B1A3-3A99-4D7F-81D8-BAABA047A399" /* PyMOLBridge.xcconfig */,
+				"TEMP_0C24F179-1B4D-4B3A-974E-B52A9268AD54" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -252,6 +252,7 @@
 				AAD907DBCD08F79F40554C45 /* iOS: Bundle PyMOL modules + data */,
 				CD8CDE496B92B386AFFAF903 /* macOS: Bundle Python + modules + data */,
 				9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */,
+				B650AF53FA2F4FEAA543F840 /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
 			);
 			buildRules = (
 			);
@@ -280,6 +281,7 @@
 				888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */,
 				D4BACCBE2A1F237569400BDF /* macOS: Bundle Python + modules + data */,
 				BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */,
+				383CF53EC37C88EB8111EAAB /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
 			);
 			buildRules = (
 			);
@@ -452,6 +454,25 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\ncase \"${PLATFORM_NAME:-}\" in macosx) ;; *) echo \"Sparkle keys skipped ($PLATFORM_NAME)\"; exit 0 ;; esac\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) echo \"Sparkle keys skipped (MAS build)\"; exit 0 ;; esac\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace SUFeedURL -string \"https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml\" \"$PLIST\"\n/usr/bin/plutil -replace SUPublicEDKey -string \"V+5+HSmGNq4JQXW6tDbODBtV3z0Sn/nk/qFyycc2Blg=\" \"$PLIST\"\n/usr/bin/plutil -replace SUEnableAutomaticChecks -bool true \"$PLIST\"\n/usr/bin/plutil -replace SUScheduledCheckInterval -integer 86400 \"$PLIST\"\necho \"Sparkle keys -> $PLIST\"\n";
 		};
+		383CF53EC37C88EB8111EAAB /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "macOS: Bundle Homebrew dylibs into Frameworks (@rpath)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\" \\\n    --sign-identity \"$EXPANDED_CODE_SIGN_IDENTITY\" --hardened\nelse\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nfi\n";
+		};
 		5A3D7B8949638CD664D6F729 /* iOS: Install Python stdlib */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -603,6 +624,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -e\ncase \"${PLATFORM_NAME:-}\" in macosx) ;; *) echo \"Sparkle keys skipped ($PLATFORM_NAME)\"; exit 0 ;; esac\ncase \"${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}\" in *RAYMOL_MAS_RESTRICTED*) echo \"Sparkle keys skipped (MAS build)\"; exit 0 ;; esac\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace SUFeedURL -string \"https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml\" \"$PLIST\"\n/usr/bin/plutil -replace SUPublicEDKey -string \"V+5+HSmGNq4JQXW6tDbODBtV3z0Sn/nk/qFyycc2Blg=\" \"$PLIST\"\n/usr/bin/plutil -replace SUEnableAutomaticChecks -bool true \"$PLIST\"\n/usr/bin/plutil -replace SUScheduledCheckInterval -integer 86400 \"$PLIST\"\necho \"Sparkle keys -> $PLIST\"\n";
+		};
+		B650AF53FA2F4FEAA543F840 /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "macOS: Bundle Homebrew dylibs into Frameworks (@rpath)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\" \\\n    --sign-identity \"$EXPANDED_CODE_SIGN_IDENTITY\" --hardened\nelse\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nfi\n";
 		};
 		BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -948,7 +988,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_5CD9B1A3-3A99-4D7F-81D8-BAABA047A399" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_0C24F179-1B4D-4B3A-974E-B52A9268AD54" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1033,7 +1073,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_5CD9B1A3-3A99-4D7F-81D8-BAABA047A399" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_0C24F179-1B4D-4B3A-974E-B52A9268AD54" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
