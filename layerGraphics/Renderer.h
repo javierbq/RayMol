@@ -295,7 +295,9 @@ public:
       int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
       float projY, int rtEnabled = 0, int tonemapEnabled = 0,
       float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
-      float outlineG = 0.0f, float outlineB = 0.0f, float outlineWidth = 1.4f)
+      float outlineG = 0.0f, float outlineB = 0.0f, float outlineWidth = 1.4f,
+      int dofEnabled = 0, float dofFocus = 0.0f, float dofRange = 14.0f,
+      int temporalAO = 0)
   {
   }
 
@@ -303,7 +305,7 @@ public:
   // no-op (the GL renderer reads these settings itself). The Metal renderer
   // uploads them into its lit shaders so the Scene lighting sliders take effect.
   virtual void setLightingParams(float ambient, float direct, float reflect,
-      float specular, float shininess)
+      float specular, float shininess, float sssWrap = 0.0f)
   {
   }
 

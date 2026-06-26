@@ -2037,11 +2037,15 @@ void SceneRenderMetal(PyMOLGlobals* G)
     const float* outlineCol =
         ColorGet(G, SettingGetGlobal_color(G, cSetting_metal_outline_color));
     float outlineWidth = SettingGetGlobal_f(G, cSetting_metal_outline_width);
+    int dofEnabled = SettingGetGlobal_b(G, cSetting_metal_dof) ? 1 : 0;
+    float dofFocus = SettingGetGlobal_f(G, cSetting_metal_dof_focus);
+    float dofRange = SettingGetGlobal_f(G, cSetting_metal_dof_range);
+    int temporalAO = SettingGetGlobal_b(G, cSetting_metal_temporal_ao) ? 1 : 0;
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],
         proj[14], proj[0], proj[5], rtEnabled, tonemapEnabled, exposure,
         rtShadowEnabled, outlineCol[0], outlineCol[1], outlineCol[2],
-        outlineWidth);
+        outlineWidth, dofEnabled, dofFocus, dofRange, temporalAO);
     // Lighting model — the Metal lit shaders read these instead of hard-coded
     // constants, so the Scene-panel lighting sliders take effect.
     G->Renderer->setLightingParams(
@@ -2049,7 +2053,8 @@ void SceneRenderMetal(PyMOLGlobals* G)
         SettingGetGlobal_f(G, cSetting_direct),
         SettingGetGlobal_f(G, cSetting_reflect),
         SettingGetGlobal_f(G, cSetting_specular),
-        SettingGetGlobal_f(G, cSetting_shininess));
+        SettingGetGlobal_f(G, cSetting_shininess),
+        SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next setDrawable (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.

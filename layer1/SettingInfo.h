@@ -916,6 +916,11 @@ enum {
   REC_b( 806, metal_rt_shadows                         , global    , false ), /* Metal: trace hard shadow rays (needs metal_raytrace) instead of shadow-map PCF */
   REC_c( 807, metal_outline_color                     , global    , "0x000000" ), /* Metal outline contour color (color setting, like ray_trace_color) */
   REC_f( 808, metal_outline_width                     , global    , 1.4F ),  /* Metal outline thickness in pixels (post-pass neighbor sample step) */
+  REC_f( 809, metal_sss_wrap                          , global    , 0.0F ),  /* Metal wrapped/subsurface diffuse term; 0 = pure Lambert (identical), up to ~1 wraps light around the terminator for a soft waxy look */
+  REC_b( 810, metal_dof                               , global    , false ), /* Metal depth-of-field post pass (circle-of-confusion blur by distance from focus) */
+  REC_f( 811, metal_dof_focus                         , global    , 0.0F ),  /* Metal DOF focus distance in eye-space units; 0 = auto (center of interest) */
+  REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum */
+  REC_b( 813, metal_temporal_ao                       , global    , false ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

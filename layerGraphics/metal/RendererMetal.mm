@@ -806,6 +806,70 @@ fragment float4 post_shadow_debug(PostVOut in [[stage_in]],
   float dpt = shadowTex.sample(s, in.uv);
   return float4(dpt, dpt, dpt, 1.0);
 }
+
+// Depth-of-field: circle-of-confusion blur by each pixel's distance from a focal
+// plane. CoC grows with |eyeDist - focus| / range; a golden-angle disk gather of
+// the composited color, depth-similarity weighted (the same exp(-|dz|/ztol) idea
+// as the RT composite) so sharp foreground does not bleed onto blurred regions.
+// focusDist<=0 => auto-focus on the screen-center pixel's depth.
+struct DofU {
+  float projA, projB;     // projection[10]/[14] for linear eye depth
+  float invW, invH;       // 1/resolution
+  float focusDist;        // eye-space focus distance; <=0 => auto (screen center)
+  float focusRange;       // eye-space distance over which CoC ramps 0->1
+  float maxRadiusPx;      // blur radius in px at CoC=1
+  float _pad;
+};
+fragment float4 post_dof(PostVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    constant DofU& u [[buffer(0)]]) {
+  float3 base = colorTex.sample(s, in.uv).rgb;
+  float centerEye = post_linear_depth(depthTex.sample(s, in.uv), u.projA, u.projB);
+  float focus = u.focusDist > 0.0 ? u.focusDist
+      : post_linear_depth(depthTex.sample(s, float2(0.5, 0.5)), u.projA, u.projB);
+  float coc = clamp(abs(centerEye - focus) / max(u.focusRange, 1e-3), 0.0, 1.0);
+  float radius = coc * u.maxRadiusPx;
+  if (radius < 0.5) return float4(base, 1.0);
+  const int N = 16;
+  float3 sum = base;
+  float wsum = 1.0;
+  float ztol = max(0.10 * max(centerEye, focus), 0.5);
+  float2 texel = float2(u.invW, u.invH);
+  for (int i = 0; i < N; ++i) {
+    float t = (float(i) + 0.5) / float(N);
+    float ang = float(i) * 2.39996323; // golden angle
+    float2 dir = float2(cos(ang), sin(ang)) * sqrt(t);
+    float2 off = dir * radius * texel;
+    float3 c = colorTex.sample(s, in.uv + off).rgb;
+    float zs = post_linear_depth(depthTex.sample(s, in.uv + off), u.projA, u.projB);
+    float w = exp(-abs(zs - centerEye) / ztol);
+    sum += c * w;
+    wsum += w;
+  }
+  return float4(sum / wsum, 1.0);
+}
+
+// Temporal AO accumulation: EMA the per-frame raw RT AO (.r) + traced shadow
+// (.g) into a history buffer. reset>0.5 takes the current frame fully (the view
+// or geometry changed); otherwise blends current into history by alpha. Writes
+// the RG16Float accumulation target read by the RT composite pass.
+struct AoAccumU { float alpha; float reset; float _p0; float _p1; };
+fragment float4 post_ao_accum(PostVOut in [[stage_in]],
+    texture2d<float> curTex [[texture(0)]],
+    texture2d<float> histTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    constant AoAccumU& u [[buffer(0)]]) {
+  float2 cur = curTex.sample(s, in.uv).rg;
+  float2 hist = histTex.sample(s, in.uv).rg;
+  // On reset take the current frame DIRECTLY — do not mix(hist, cur, 1.0): the
+  // history texture is uninitialized (NaN) on the first frame, and mix computes
+  // hist*(1-a)+cur*a, where NaN*0 = NaN would poison even the reset output and
+  // propagate black through the feedback loop.
+  float2 outv = u.reset > 0.5 ? cur : mix(hist, cur, u.alpha);
+  return float4(outv.x, outv.y, 0.0, 1.0);
+}
 )";
 
 void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
@@ -825,10 +889,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_sceneColorMS release];  [_sceneDepthMS release];
   [_oitAccum release];      [_oitReveal release];
   [_rtAO release];
+  [_rtAOHistory release];   [_rtAOAccum release];
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = nil;
   _rtAO = nil;
+  _rtAOHistory = _rtAOAccum = nil;
+  _rtAOHistoryValid = false;  // resized AO targets: history is stale, hard-reset
 
   MTLTextureDescriptor* cd = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -849,6 +916,10 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   aod.storageMode = MTLStorageModePrivate;
   _rtAO = [_device newTextureWithDescriptor:aod];
+  // Temporal-AO history + accumulation targets (same RG16Float layout as _rtAO).
+  _rtAOHistory = [_device newTextureWithDescriptor:aod];
+  _rtAOAccum = [_device newTextureWithDescriptor:aod];
+  _rtAOHistoryValid = false;
 
   MTLTextureDescriptor* dd = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
@@ -1008,7 +1079,22 @@ void RendererMetal::buildPostPipelines()
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
   _oitResolvePipeline = mkpipe(@"oit_resolve");
   _outlinePipeline = mkpipe(@"post_outline");
+  _dofPipeline = mkpipe(@"post_dof");
   _shadowDebugPipeline = mkpipe(@"post_shadow_debug");
+  // Temporal-AO accumulate pipeline writes the RG16Float accumulation target, so
+  // it cannot use mkpipe (which hardcodes BGRA8). Built inline with that format.
+  {
+    id<MTLFunction> afn = [lib newFunctionWithName:@"post_ao_accum"];
+    if (vfn && afn) {
+      MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+      psd.vertexFunction = vfn; psd.fragmentFunction = afn;
+      psd.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
+      NSError* e = nil;
+      _rtAOAccumPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&e];
+      if (!_rtAOAccumPipeline)
+        NSLog(@"RendererMetal: post_ao_accum pipeline failed: %@", e);
+    }
+  }
 }
 
 void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
@@ -1016,8 +1102,13 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
     int aaEnabled, int outlineEnabled, float projA, float projB, float projX,
     float projY, int rtEnabled, int tonemapEnabled, float exposure,
     int rtShadowEnabled, float outlineR, float outlineG, float outlineB,
-    float outlineWidth)
+    float outlineWidth, int dofEnabled, float dofFocus, float dofRange,
+    int temporalAO)
 {
+  _dofEnabled = dofEnabled;
+  _dofFocus = dofFocus;
+  _dofRange = dofRange;
+  _temporalAOEnabled = temporalAO;
   _tonemapEnabled = tonemapEnabled;
   _exposure = exposure;
   _rtShadowEnabled = rtShadowEnabled;
@@ -1040,13 +1131,14 @@ void RendererMetal::setPostParams(int fogEnabled, float fogStart, float fogEnd,
 }
 
 void RendererMetal::setLightingParams(float ambient, float direct,
-    float reflect, float specular, float shininess)
+    float reflect, float specular, float shininess, float sssWrap)
 {
   _lightAmbient = ambient;
   _lightDirect = direct;
   _lightReflect = reflect;
   _lightSpecular = specular;
   _lightShininess = shininess;
+  _sssWrap = sssWrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,7 +1230,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
   float3 origin = pModel + nModel * bias;
 
   int N = max(int(u.nSamples), 1);
-  float rot = rt_hash(in.uv * 1024.0);   // per-pixel Cranley-Patterson rotation
+  float rot = rt_hash(in.uv * 1024.0 + u.frame); // per-pixel Cranley-Patterson rotation; +frame jitters per-frame for temporal AO (frame=0 => identical to before)
   float occ = 0.0;
   for (int i = 0; i < N; ++i) {
     float2 hx = rt_hammersley(uint(i), uint(N));
@@ -1596,7 +1688,13 @@ void RendererMetal::runPostChain()
     // shimmer-free; for the single-shot offscreen PNG (no temporal smoothing)
     // trace more rays since each export frame stands alone.
     u.nSamples = _offscreen ? 48.0f : 16.0f;
-    u.frame = 0.0f;            // deterministic: AO identical every frame (no shimmer)
+    // Temporal AO: when enabled (and not a single-shot offscreen export), advance
+    // the frame counter so rt_ao jitters each frame; the accumulate pass below
+    // EMAs successive frames toward offscreen quality. Off => frame 0, which is
+    // bit-identical to the previous frame-stable behavior (no shimmer).
+    bool doTemporalAO = _temporalAOEnabled && !_offscreen && _rtAOAccumPipeline
+        && _rtAOHistory && _rtAOAccum;
+    u.frame = doTemporalAO ? (float)(_aoFrameCounter++ & 1023) : 0.0f;
     // metal_rt_shadows: trace a hard shadow ray in rt_ao instead of sampling the
     // shadow map in rt_composite. Only meaningful when shadows are on (the
     // composite still gates on shadowIntensity). Default off -> shadow-map path.
@@ -1622,6 +1720,42 @@ void RendererMetal::runPostChain()
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [ea endEncoding];
 
+    // Pass A.5 (temporal AO only): EMA the freshly-traced _rtAO into history, so
+    // a held-still view converges toward offscreen quality. Hard-reset (take the
+    // current frame fully) on the first frame, a geometry change (_rtSphereHash),
+    // or any camera move (_modelviewInv delta) so changes clear with no ghost.
+    // Pass B then composites the accumulated AO instead of the single raw frame.
+    id<MTLTexture> aoForComposite = _rtAO;
+    if (doTemporalAO) {
+      bool camMoved = false;
+      for (int i = 0; i < 16; ++i)
+        if (fabsf(_modelviewInv[i] - _modelviewInvPrev[i]) > 1e-6f) { camMoved = true; break; }
+      bool reset = !_rtAOHistoryValid || camMoved || (_rtSphereHash != _rtAOHashPrev);
+      struct { float alpha; float reset; float p0; float p1; } au;
+      au.alpha = 0.1f; au.reset = reset ? 1.0f : 0.0f; au.p0 = au.p1 = 0.0f;
+      MTLRenderPassDescriptor* pacc = [[MTLRenderPassDescriptor alloc] init];
+      pacc.colorAttachments[0].texture = _rtAOAccum;
+      pacc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      pacc.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> eacc =
+          [_cmdBuffer renderCommandEncoderWithDescriptor:pacc];
+      [eacc setRenderPipelineState:_rtAOAccumPipeline];
+      [eacc setFragmentTexture:_rtAO atIndex:0];
+      [eacc setFragmentTexture:_rtAOHistory atIndex:1];
+      [eacc setFragmentSamplerState:_postSampler atIndex:0];
+      [eacc setFragmentBytes:&au length:sizeof(au) atIndex:0];
+      [eacc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [eacc endEncoding];
+      // Persist the accumulation as next frame's history.
+      id<MTLBlitCommandEncoder> blit = [_cmdBuffer blitCommandEncoder];
+      [blit copyFromTexture:_rtAOAccum toTexture:_rtAOHistory];
+      [blit endEncoding];
+      aoForComposite = _rtAOAccum;
+      _rtAOHistoryValid = true;
+      _rtAOHashPrev = _rtSphereHash;
+      _modelviewInvPrev = _modelviewInv;
+    }
+
     // Pass B: depth-aware-blur the AO + shadow/fog composite -> _postColor.
     MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
     pd.colorAttachments[0].texture = _postColor;
@@ -1633,7 +1767,7 @@ void RendererMetal::runPostChain()
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
     [er setFragmentTexture:_shadowDepth atIndex:2];
-    [er setFragmentTexture:_rtAO atIndex:3];
+    [er setFragmentTexture:aoForComposite atIndex:3];
     [er setFragmentSamplerState:_postSampler atIndex:0];
     [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
@@ -1699,6 +1833,38 @@ void RendererMetal::runPostChain()
     [e2 setFragmentSamplerState:_postSampler atIndex:0];
     [e2 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e2 endEncoding];
+    sceneSrc = dst;
+  }
+
+  // Pass 2.5: depth-of-field — CoC blur by distance from the focal plane. Runs
+  // on the fully-composited (opaque + OIT) color, before outlines. Default off
+  // (_dofEnabled) => skipped entirely, so the default render is unchanged.
+  if (_dofEnabled && _dofPipeline && _sceneDepth) {
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    struct {
+      float projA, projB, invW, invH;
+      float focusDist, focusRange, maxRadiusPx, _pad;
+    } u;
+    u.projA = _projA; u.projB = _projB;
+    u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
+    u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
+    u.focusDist = _dofFocus;
+    u.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
+    u.maxRadiusPx = 14.0f;
+    u._pad = 0.0f;
+    MTLRenderPassDescriptor* pd = [[MTLRenderPassDescriptor alloc] init];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> ed =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [ed setRenderPipelineState:_dofPipeline];
+    [ed setFragmentTexture:sceneSrc atIndex:0];
+    [ed setFragmentTexture:_sceneDepth atIndex:1];
+    [ed setFragmentSamplerState:_postSampler atIndex:0];
+    [ed setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    [ed drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [ed endEncoding];
     sceneSrc = dst;
   }
 
@@ -2670,8 +2836,8 @@ void RendererMetal::endBatch()
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess };
+  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Always use the built-in batch pipeline for batch rendering.
@@ -2818,7 +2984,12 @@ struct VBOVertexOut {
 // hard-coded constants, so the sliders take effect. Two-sided: the interpolated
 // normal is flipped to face the viewer so cartoon undersides / surface
 // interiors light up instead of going dark.
-struct LightU { float ambient, direct, reflect, spec, shininess; };
+struct LightU { float ambient, direct, reflect, spec, shininess, wrap; };
+// Wrapped diffuse: at w=0 this is saturate(n)=max(n,0) for unit-vector dots,
+// i.e. pixel-identical to the old `n>0 ? n : 0` Lambert. w>0 lets light bleed
+// past the terminator (soft subsurface/waxy look). Specular stays gated on the
+// raw dot so highlights are unaffected.
+static float wrap_diffuse(float ndl, float w) { return saturate((ndl + w) / (1.0 + w)); }
 static float3 vbo_shade(float3 baseColor, float3 nEye, LightU lt) {
   float3 normal = normalize(nEye);
   if (normal.z < 0.0) normal = -normal;
@@ -2832,10 +3003,10 @@ static float3 vbo_shade(float3 baseColor, float3 nEye, LightU lt) {
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
-  if (n0 > 0.0) intensity += direct * n0;
+  intensity += direct * wrap_diffuse(n0, lt.wrap);
   float n1 = dot(normal, L1);
+  intensity += reflect * wrap_diffuse(n1, lt.wrap);
   if (n1 > 0.0) {
-    intensity += reflect * n1;
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
     specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
@@ -2951,7 +3122,7 @@ fragment float4 cap_fill_fragment(constant float4& interiorColor [[buffer(0)]]) 
   // The cut cross-section faces the viewer, so light it with a +Z normal
   // through the shared two-light model (matches desktop's interior_normal
   // {0,0,1}). Caps use the default lighting (a minor flat fill).
-  LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0};
+  LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0, 0.0};
   return float4(vbo_shade(interiorColor.rgb, float3(0.0, 0.0, 1.0), lt), interiorColor.a);
 }
 
@@ -3637,8 +3808,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess };
+  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
@@ -3692,8 +3863,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess };
+  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
       [_encoder drawPrimitives:toMTL(mode)
                    vertexStart:0
@@ -3864,8 +4035,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment at fragment buffer(0).
   // Without this, indexed lit geometry (molecular surfaces) reads an unbound
   // LightU (ambient/direct = 0) and renders black. Mirrors drawVBO.
-  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess };
+  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
@@ -3967,7 +4138,7 @@ struct SphereU {
   float interiorCap;    // 1 = cap the slab cross-section with a solid interior color
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else atom*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
-  float lAmbient, lDirect, lReflect, lSpecular, lShininess;
+  float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
 };
 struct SphereVOut {
   float4 position [[position]];
@@ -4082,10 +4253,10 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
-  if (n0 > 0.0) intensity += direct * n0;
+  intensity += direct * saturate((n0 + u.lSSSWrap) / (1.0 + u.lSSSWrap));
   float n1 = dot(normal, L1);
+  intensity += reflect * saturate((n1 + u.lSSSWrap) / (1.0 + u.lSSSWrap));
   if (n1 > 0.0) {
-    intensity += reflect * n1;
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
     specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
@@ -4278,13 +4449,14 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     float depthZeroToOne;
     float interiorCap;
     float interiorColor[4];
-    float lAmbient, lDirect, lReflect, lSpecular, lShininess;
+    float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
   u.lAmbient = _lightAmbient; u.lDirect = _lightDirect;
   u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
   u.lShininess = _lightShininess;
+  u.lSSSWrap = _sssWrap;
   u.sphere_size_scale = call.sphereSizeScale;
   u.ortho = (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
@@ -4341,7 +4513,7 @@ struct CylU {
   float interiorCap;    // 1 = cap the slab cross-section with a solid interior color
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else bond*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
-  float lAmbient, lDirect, lReflect, lSpecular, lShininess;
+  float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
 };
 struct CylVOut {
   float4 position [[position]];
@@ -4529,10 +4701,10 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
-  if (n0 > 0.0) intensity += direct * n0;
+  intensity += direct * saturate((n0 + u.lSSSWrap) / (1.0 + u.lSSSWrap));
   float n1 = dot(normal, L1);
+  intensity += reflect * saturate((n1 + u.lSSSWrap) / (1.0 + u.lSSSWrap));
   if (n1 > 0.0) {
-    intensity += reflect * n1;
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
     specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
@@ -4737,13 +4909,14 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     float inv_height;
     float interiorCap;
     float interiorColor[4];
-    float lAmbient, lDirect, lReflect, lSpecular, lShininess;
+    float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
   u.lAmbient = _lightAmbient; u.lDirect = _lightDirect;
   u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
   u.lShininess = _lightShininess;
+  u.lSSSWrap = _sssWrap;
   u.uni_radius = call.uniRadius;
   u.ortho = (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
@@ -4824,7 +4997,7 @@ vertex TubeOut bezier_tube_vertex(
   return o;
 }
 
-struct LightU { float ambient, direct, reflect, spec, shininess; };
+struct LightU { float ambient, direct, reflect, spec, shininess, wrap; };
 fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
     constant LightU& lt [[buffer(0)]]) {
   // PyMOL two-light model driven by the live lighting settings (Scene sliders).
@@ -4839,10 +5012,10 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
   const float3 L1 = normalize(float3(0.4,0.4,1.0));
   float intensity = ambient, specular = 0.0;
   float n0 = dot(nrm, L0);
-  if (n0 > 0.0) intensity += direct * n0;
+  intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
   float n1 = dot(nrm, L1);
+  intensity += reflectv * saturate((n1 + lt.wrap) / (1.0 + lt.wrap));
   if (n1 > 0.0) {
-    intensity += reflectv * n1;
     float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
     specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
   }
@@ -4961,8 +5134,8 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   u.color[0] = r; u.color[1] = g; u.color[2] = b; u.color[3] = 1.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
   // Lighting (Scene sliders) for bezier_tube_fragment at fragment buffer(0).
-  { struct { float a, d, r, s, sh; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess };
+  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];

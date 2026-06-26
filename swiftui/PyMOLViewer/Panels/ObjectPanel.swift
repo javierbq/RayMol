@@ -182,6 +182,11 @@ enum SceneCatalog {
         SceneParam(setting: "metal_msaa",    label: "MSAA 4×", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_tonemap", label: "Filmic tone-map", kind: .toggle, group: "Lighting & Quality"),
         SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_sss_wrap", label: "Subsurface wrap", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_temporal_ao", label: "Temporal AO (RT)", kind: .toggle, group: "Lighting & Quality"),
+        SceneParam(setting: "metal_dof", label: "Depth of field", kind: .toggle, group: "Camera"),
+        SceneParam(setting: "metal_dof_focus", label: "DOF focus (0=auto)", kind: .slider, min: 0, max: 120, step: 1, decimals: 0, group: "Camera"),
+        SceneParam(setting: "metal_dof_range", label: "DOF range", kind: .slider, min: 1, max: 60, step: 0.5, decimals: 1, group: "Camera"),
         SceneParam(setting: "depth_cue",     label: "Depth cue / fog", kind: .toggle, group: "Lighting & Quality"),
         // grid_mode is an int (0=off, 1=by object, 2=by state); the toggle maps
         // off→0 / on→1 and reads on for any non-zero mode. Lays each object out

@@ -71,6 +71,9 @@ struct PyMOLApp: App {
                 // Bring the app/window to the front on launch (a GUI app should
                 // foreground itself; also lets it be launched from a terminal).
                 .onAppear { NSApplication.shared.activate(ignoringOtherApps: true) }
+                // Window title reflects the open .pse document (falls back to the
+                // app name when nothing is tracked).
+                .navigationTitle(engine.currentSessionURL?.lastPathComponent ?? "RayMol")
             #endif
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
                 .environmentObject(mcp)
@@ -142,9 +145,14 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolFetch, object: nil)
                 }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Divider()
-                Button("Save Session…") {
+                // ⌘S overwrites the open .pse with no panel (Save As if never saved).
+                Button("Save Session") {
                     NotificationCenter.default.post(name: .raymolSaveSession, object: nil)
                 }.keyboardShortcut("s", modifiers: .command)
+                // ⇧⌘S always shows the Save panel and updates the tracked document.
+                Button("Save Session As…") {
+                    NotificationCenter.default.post(name: .raymolSaveSessionAs, object: nil)
+                }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("Export Image…") {
                     NotificationCenter.default.post(name: .raymolExportImage, object: nil)
                 }.keyboardShortcut("e", modifiers: [.command, .shift])
@@ -241,6 +249,10 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
     let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
+    // Track an opened .pse as the current document (so ⌘S overwrites it). Capture
+    // the ORIGINAL url, never the temp copy loaded below. Covers Finder open +
+    // drag-drop, which both funnel here. A non-.pse structure clears the document.
+    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
     let temp = FileManager.default.temporaryDirectory
         .appendingPathComponent("open_\(UUID().uuidString.prefix(8)).\(ext)")
     try? FileManager.default.removeItem(at: temp)

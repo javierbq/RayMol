@@ -153,9 +153,10 @@ public:
       float projY, int rtEnabled, int tonemapEnabled = 0,
       float exposure = 1.0f, int rtShadowEnabled = 0, float outlineR = 0.0f,
       float outlineG = 0.0f, float outlineB = 0.0f,
-      float outlineWidth = 1.4f) override;
+      float outlineWidth = 1.4f, int dofEnabled = 0, float dofFocus = 0.0f,
+      float dofRange = 14.0f, int temporalAO = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
-      float specular, float shininess) override;
+      float specular, float shininess, float sssWrap = 0.0f) override;
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
@@ -292,6 +293,15 @@ private:
   id<MTLTexture> _sceneDepth = nil;  // resolved (single-sample), post chain reads
   id<MTLTexture> _postColor = nil;   // ping-pong target for intermediate passes
   id<MTLTexture> _rtAO = nil;        // R16Float raw RT AO term (blurred in composite)
+  // Temporal AO accumulation (cSetting_metal_temporal_ao): EMA the per-frame raw
+  // RT-AO into _rtAOAccum (read by the composite), kept in _rtAOHistory for the
+  // next frame. RG16Float to mirror _rtAO (.r AO, .g traced shadow).
+  id<MTLTexture> _rtAOHistory = nil;
+  id<MTLTexture> _rtAOAccum = nil;
+  id<MTLRenderPipelineState> _rtAOAccumPipeline = nil;
+  bool _rtAOHistoryValid = false;    // false => next accumulate hard-resets (alpha 1)
+  uint64_t _rtAOHashPrev = 0;        // _rtSphereHash last accumulate (geometry reset)
+  uint32_t _aoFrameCounter = 0;      // advances RTU.frame so each frame jitters AO
   // MSAA: when _sampleCount > 1 the scene renders to these multisampled targets
   // and resolves into _sceneColor/_sceneDepth. Opaque pipelines use
   // _sampleCount; OIT + post pipelines stay single-sample.
@@ -409,6 +419,15 @@ private:
   int _tonemapEnabled = 0;
   float _exposure = 1.0f;
   id<MTLRenderPipelineState> _tonemapPipeline = nil;
+  // Depth-of-field post pass (cSetting_metal_dof/_dof_focus/_dof_range). Default
+  // off => the DOF stage is skipped entirely (no regression).
+  int _dofEnabled = 0;
+  float _dofFocus = 0.0f;   // eye-space focus distance; <=0 => auto (screen center)
+  float _dofRange = 14.0f;  // eye-space distance over which CoC ramps to max blur
+  id<MTLRenderPipelineState> _dofPipeline = nil;
+  // Temporal AO accumulation (cSetting_metal_temporal_ao): EMA the RT-AO buffer
+  // across frames while the view is still. Default off; RT-path only.
+  int _temporalAOEnabled = 0;
   // Offscreen-export-only pass: rewrites the framebuffer alpha from scene depth
   // (background = far -> alpha 0) so a transparent-background PNG can be written
   // on the Metal fast path. Gated on _offscreen && transparent clear (_clearA<0.5).
@@ -419,6 +438,7 @@ private:
   // Defaults match the values the shaders previously hard-coded.
   float _lightAmbient = 0.14f, _lightDirect = 0.45f, _lightReflect = 0.481f;
   float _lightSpecular = 0.5f, _lightShininess = 55.0f;
+  float _sssWrap = 0.0f;  // cSetting_metal_sss_wrap: 0 = pure Lambert (identity)
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
   float _letterboxAspect = 0.f;       // saved-viewport W/H; 0 = fill window
@@ -500,6 +520,7 @@ private:
   int _matrixMode = 0;  // 0x1700 = GL_MODELVIEW mapped to 0
   Mat4 _modelviewMatrix;
   Mat4 _modelviewInv;   // inverse(modelview): eye → model/world (for RT rays)
+  Mat4 _modelviewInvPrev{};  // previous-frame _modelviewInv (temporal-AO reset)
   Mat4 _projectionMatrix;
   std::stack<Mat4> _modelviewStack;
   std::stack<Mat4> _projectionStack;

@@ -119,6 +119,12 @@ final class PyMOLEngine: ObservableObject {
     // there's no re-add race with the ~500ms poll.
     @Published var keptHidden: [String: Set<String>] = [:]
 
+    // The .pse session file the user currently has open (Finder open / drag-drop /
+    // Open… of a .pse, or the destination of a Save As). nil = never-saved session
+    // (or a non-.pse structure was opened). Drives ⌘S overwrite vs Save As, and the
+    // macOS window title. Cleared by Clear Session.
+    @Published var currentSessionURL: URL? = nil
+
     // MARK: Timeline / playback (states · trajectories · movies)
     // In PyMOL these are ONE concept: a 1-based movie frame index that maps
     // (via mset) to a coordinate state. The CORE drives frame advance
@@ -810,6 +816,20 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_RunPython(code)
     }
 
+    /// Write the whole session to `url` (a .pse) via cmd.save (the only path to the
+    /// C++ saver is runPython — there's no Swift cmd.save wrapper) and track it as
+    /// the open document so a subsequent ⌘S overwrites it with no panel. Raw triple
+    /// quotes tolerate spaces/quotes in the path.
+    /// NOTE: writes a plain URL — works for the Developer-ID build and for any
+    /// Save-As-chosen URL (auto write-granted). A sandboxed/MAS build that silently
+    /// overwrites a Finder-opened file would additionally need a security-scoped
+    /// bookmark resolved here.
+    /// TODO: security-scoped bookmark for sandboxed overwrite.
+    func saveSession(to url: URL) {
+        runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        currentSessionURL = url
+    }
+
     // MARK: - Theme
 
     /// Push a theme's molecular/viewport defaults into PyMOL. Chrome is handled
@@ -874,6 +894,8 @@ final class PyMOLEngine: ObservableObject {
     /// poll tick.
     func clearSession() {
         guard isReady else { return }
+        // No document is open after a clear — the next ⌘S becomes a Save As.
+        currentSessionURL = nil
         runCommand("reinitialize")
         // reinitialize also resets engine settings to defaults — restore the
         // fetch_path that initialize() set (the writable temp dir) so a post-clear

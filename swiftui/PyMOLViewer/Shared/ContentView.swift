@@ -45,6 +45,7 @@ extension Notification.Name {
     static let raymolFetch        = Notification.Name("raymol.menu.fetch")
     static let raymolClearSession = Notification.Name("raymol.menu.clearSession")
     static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
+    static let raymolSaveSessionAs = Notification.Name("raymol.menu.saveSessionAs")
     static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
 }
@@ -305,6 +306,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
         .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in engine.clearSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSessionAs)) { _ in saveSessionAs() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
         #if !RAYMOL_MAS_RESTRICTED
         .onReceive(NotificationCenter.default.publisher(for: .mcpOpenConnectSheet)) { _ in
@@ -394,6 +396,9 @@ struct ContentView: View {
         var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
         if name.isEmpty { name = "mol" }
         engine.loadStructure(path: url.path, name: name)
+        // Track an opened .pse as the current document so ⌘S overwrites it; a
+        // non-.pse structure clears the tracked document.
+        engine.currentSessionURL = (url.pathExtension.lowercased() == "pse") ? url : nil
     }
 
     private func macFetch() {
@@ -1548,14 +1553,31 @@ struct ContentView: View {
         }
     }
 
+    // ⌘S: overwrite the currently-open .pse with no panel. Falls back to Save As
+    // when no document is tracked (never-saved session, or a non-.pse was opened).
     private func saveSession() {
+        if let url = engine.currentSessionURL {
+            engine.saveSession(to: url)
+        } else {
+            saveSessionAs()
+        }
+    }
+
+    // ⇧⌘S: always show the Save panel, prefilled from the tracked document when
+    // there is one, then save to the chosen URL and make it the open document.
+    private func saveSessionAs() {
         let panel = NSSavePanel()
         if let pse = UTType(filenameExtension: "pse") { panel.allowedContentTypes = [pse] }
-        panel.nameFieldStringValue = "session.pse"
+        if let current = engine.currentSessionURL {
+            panel.directoryURL = current.deletingLastPathComponent()
+            panel.nameFieldStringValue = current.lastPathComponent
+        } else {
+            panel.nameFieldStringValue = "session.pse"
+        }
         panel.canCreateDirectories = true
         panel.title = "Save Session"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
+        engine.saveSession(to: url)
     }
 
     // Save the whole scene to a molecular or 3D file. cmd.save infers the format
