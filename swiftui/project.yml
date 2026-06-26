@@ -105,6 +105,12 @@ targets:
       # app menu + iOS).
       - name: "Brand: set CFBundleName = RayMol"
         basedOnDependencyAnalysis: false
+        # Declare the generated Info.plist as an input so Xcode's build graph
+        # schedules this script AFTER Info.plist processing. Without this edge the
+        # script races plist generation and its plutil edits can be silently
+        # overwritten (this is what dropped the Sparkle keys from a 1.3.2 build).
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
         script: |
           set -e
           PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
@@ -117,6 +123,11 @@ targets:
       # key in the developer's login keychain (used by swiftui/publish_release.sh).
       - name: "Sparkle: inject auto-update Info.plist keys (macOS, non-MAS)"
         basedOnDependencyAnalysis: false
+        # Input dependency on the generated Info.plist forces this to run AFTER
+        # plist processing (see note above). make_dmg.sh ALSO re-asserts these
+        # keys before signing as a release-time guarantee; this fixes dev builds.
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
         script: |
           set -e
           case "${PLATFORM_NAME:-}" in macosx) ;; *) echo "Sparkle keys skipped ($PLATFORM_NAME)"; exit 0 ;; esac
@@ -139,6 +150,10 @@ targets:
       # lsregister; iOS surfaces these in Files / Open-in.
       - name: "Brand: register molecular document types"
         basedOnDependencyAnalysis: false
+        # Input dependency on the generated Info.plist forces this to run AFTER
+        # plist processing (see note above) — same race that dropped these arrays.
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
         script: |
           set -e
           PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"

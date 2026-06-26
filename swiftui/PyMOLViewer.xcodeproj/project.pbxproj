@@ -113,7 +113,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_60693208-2FF6-494F-829C-BF4C125DE6F5" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_03B571A9-06D3-40CC-836B-ED6AD5F1FC33" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -225,10 +225,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_004374C2-16A5-42B8-8957-3272D5C59A73" /* swiftui */ = {
+		"TEMP_CD615F0D-0EFE-4DA1-97C1-83FC21FA859A" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_60693208-2FF6-494F-829C-BF4C125DE6F5" /* PyMOLBridge.xcconfig */,
+				"TEMP_03B571A9-06D3-40CC-836B-ED6AD5F1FC33" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -406,6 +406,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Brand: register molecular document types";
 			outputFileListPaths = (
@@ -425,6 +426,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Brand: set CFBundleName = RayMol";
 			outputFileListPaths = (
@@ -444,6 +446,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Sparkle: inject auto-update Info.plist keys (macOS, non-MAS)";
 			outputFileListPaths = (
@@ -520,6 +523,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Brand: register molecular document types";
 			outputFileListPaths = (
@@ -615,6 +619,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Sparkle: inject auto-update Info.plist keys (macOS, non-MAS)";
 			outputFileListPaths = (
@@ -748,6 +753,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Brand: set CFBundleName = RayMol";
 			outputFileListPaths = (
@@ -988,7 +994,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_60693208-2FF6-494F-829C-BF4C125DE6F5" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_03B571A9-06D3-40CC-836B-ED6AD5F1FC33" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1073,7 +1079,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_60693208-2FF6-494F-829C-BF4C125DE6F5" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_03B571A9-06D3-40CC-836B-ED6AD5F1FC33" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
