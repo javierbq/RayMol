@@ -278,6 +278,30 @@ targets:
           RES="$CODESIGNING_FOLDER_PATH/Contents/Resources"
           /usr/bin/python3 "$SRCROOT/../scripts/compile_metal_shaders.py" --sdk macosx --output "/tmp/pymol_macos.metallib" || true
           [ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib "$RES/pymol.metallib" || echo "metallib skipped (runtime-compile fallback)"
+      # macOS portability: freetype/libpng are linked out of Homebrew (-lfreetype
+      # -lpng16 from /opt/homebrew/lib in PyMOLBridge.xcconfig), so the linker
+      # bakes /opt/homebrew/.../libfreetype.6.dylib into the binary as a hard load
+      # command. On any Mac without those exact Homebrew kegs (every end user, a
+      # clean VM, the App Store sandbox) dyld can't find them and aborts at launch
+      # ("Library not loaded ... Namespace DYLD ... Library missing"). This step
+      # copies those dylibs into Contents/Frameworks and rewrites the load
+      # commands + ids to @rpath, adding @executable_path/../Frameworks to the
+      # binary's runpath, so the app is self-contained. Idempotent: a second run
+      # finds nothing to rewrite. The script signs only the copied dylibs (when
+      # signing); the main binary is sealed by Xcode's final CodeSign / make_dmg.
+      - name: "macOS: Bundle Homebrew dylibs into Frameworks (@rpath)"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in macosx*) ;; *) exit 0 ;; esac
+          set -e
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+            /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
+              "$CODESIGNING_FOLDER_PATH" \
+              --sign-identity "$EXPANDED_CODE_SIGN_IDENTITY" --hardened
+          else
+            /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
+              "$CODESIGNING_FOLDER_PATH"
+          fi
     dependencies:
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by

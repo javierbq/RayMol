@@ -62,6 +62,16 @@ fi
 # ------------------------------------------------------------------------------
 
 echo "== 1/8  Build Release app (unsigned; we Developer-ID-sign below) =="
+# Regenerate the Xcode project from project.yml first: this script builds the
+# .xcodeproj directly (unlike build.sh, it does not run xcodegen), so without
+# this a project.yml change — e.g. the Homebrew-dylib bundling post-build phase
+# that makes the app self-contained — would silently NOT make it into the
+# release build. Skipped (with a warning) if xcodegen is unavailable.
+if command -v xcodegen >/dev/null 2>&1; then
+  ( cd "$SWIFTUI" && xcodegen generate >/dev/null )
+else
+  echo "  WARNING: xcodegen not found — building the existing .xcodeproj as-is."
+fi
 xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
   CODE_SIGNING_ALLOWED=NO build >/dev/null
