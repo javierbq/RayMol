@@ -619,6 +619,9 @@ struct ObjectPanel: View {
     @EnvironmentObject private var themeManager: ThemeManager   // re-render on theme switch
     @State private var showSelectionBuilder = false
     @State private var renameText = ""
+    // Independent collapse state for the three top-level sections (Scene starts
+    // collapsed, matching the previous default).
+    @State private var openSections: Set<String> = ["objects", "selections"]
 
     var body: some View {
         panelBody
@@ -643,75 +646,70 @@ struct ObjectPanel: View {
 
     private var panelBody: some View {
         VStack(spacing: 0) {
-            // Header bar
-            HStack {
-                Text("Objects")
+            // Panel-wide toolbar: the selection-pick mode and refresh act on the
+            // whole panel, so they live here rather than in any one section header.
+            HStack(spacing: 8) {
+                Text("Inspector")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(PanelTheme.headerColor)
                 Spacer()
                 selectionModeMenu
-                Button(action: { showSelectionBuilder = true }) {
-                    Image(systemName: "plus.viewfinder")
-                        .font(.system(size: 11))
-                        .foregroundColor(PanelTheme.headerColor)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("New selection")
-                .help("New selection / selection builder")
                 Button(action: { refreshObjects() }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10))
                         .foregroundColor(PanelTheme.headerColor)
                 }
                 .buttonStyle(.plain)
+                .help("Refresh")
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
 
             Divider()
 
-            // Object/selection list
             ScrollView(.vertical) {
-                LazyVStack(spacing: 1) {
+                LazyVStack(spacing: 0) {
                     let objects = engine.objects.filter { !$0.isSelection }
                     let selections = engine.objects.filter { $0.isSelection }
 
-                    // Global scene parameters (collapsible, pinned on top)
-                    SceneCard()
+                    // SCENE — global display settings.
+                    sectionHeader("SCENE", id: "scene", tag: "global") { EmptyView() }
+                    if openSections.contains("scene") { SceneCard() }
 
-                    // Objects section — each is an expandable inspector card
-                    if !objects.isEmpty {
-                        // Global "all" controls (A/S/H/L/C on the whole scene),
-                        // pinned above the per-object cards.
-                        AllControlsRow()
-                        ForEach(Array(objects.enumerated()), id: \.element.id) { index, obj in
-                            ObjectCard(entry: obj, isAlt: index % 2 == 1)
+                    // OBJECTS — the loaded molecules + the global "all" row.
+                    sectionHeader("OBJECTS", id: "objects",
+                                  tag: objects.isEmpty ? nil : "\(objects.count)") { EmptyView() }
+                    if openSections.contains("objects") {
+                        if objects.isEmpty {
+                            emptyHint("No objects loaded")
+                        } else {
+                            AllControlsRow()
+                            ForEach(Array(objects.enumerated()), id: \.element.id) { index, obj in
+                                ObjectCard(entry: obj, isAlt: index % 2 == 1)
+                            }
                         }
                     }
 
-                    // Selections section
-                    if !selections.isEmpty {
-                        HStack {
-                            Text("Selections")
-                                .font(.system(size: 11, weight: .bold))
+                    // SELECTIONS — named atom selections; the + opens the builder.
+                    sectionHeader("SELECTIONS", id: "selections",
+                                  tag: selections.isEmpty ? nil : "\(selections.count)") {
+                        Button(action: { showSelectionBuilder = true }) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11))
                                 .foregroundColor(PanelTheme.headerColor)
-                            Spacer()
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.top, 6)
-                        .padding(.bottom, 2)
-
-                        ForEach(Array(selections.enumerated()), id: \.element.id) { index, obj in
-                            ObjectRowView(entry: obj, isAlt: index % 2 == 1)
-                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New selection")
+                        .help("New selection / selection builder")
                     }
-
-                    // Empty state
-                    if engine.objects.isEmpty {
-                        Text("No objects loaded")
-                            .font(.system(size: 11))
-                            .foregroundColor(PanelTheme.disabledColor)
-                            .padding(.top, 20)
+                    if openSections.contains("selections") {
+                        if selections.isEmpty {
+                            emptyHint("No selections")
+                        } else {
+                            ForEach(Array(selections.enumerated()), id: \.element.id) { index, obj in
+                                ObjectRowView(entry: obj, isAlt: index % 2 == 1)
+                            }
+                        }
                     }
                 }
                 .padding(.vertical, 2)
@@ -724,6 +722,48 @@ struct ObjectPanel: View {
         .onAppear {
             refreshObjects()
         }
+    }
+
+    // One shared header for the three top-level sections (chevron + title +
+    // optional count tag + an optional trailing control). Tapping toggles collapse.
+    @ViewBuilder
+    private func sectionHeader<Trailing: View>(_ title: String, id: String, tag: String?,
+                                               @ViewBuilder trailing: () -> Trailing) -> some View {
+        let open = openSections.contains(id)
+        HStack(spacing: 6) {
+            Button { toggleSection(id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9)).foregroundColor(PanelTheme.headerColor)
+                    Text(title)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(PanelTheme.headerColor)
+                    if let tag {
+                        Text(tag).font(.system(size: 9)).foregroundColor(PanelTheme.disabledColor)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            trailing()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(PanelTheme.background)
+    }
+
+    private func emptyHint(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundColor(PanelTheme.disabledColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+    }
+
+    private func toggleSection(_ id: String) {
+        if openSections.contains(id) { openSections.remove(id) } else { openSections.insert(id) }
     }
 
     // Pick-granularity menu (mouse_selection_mode): what a viewport tap selects.
@@ -779,6 +819,8 @@ private struct ObjectRowView: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            // Align with object rows, which lead with a disclosure chevron.
+            Spacer().frame(width: 13)
             // Enable/disable toggle
             Button(action: { toggleEnabled() }) {
                 Image(systemName: entry.isEnabled ? "checkmark.square.fill" : "square")
@@ -839,6 +881,8 @@ private struct AllControlsRow: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            // Align with object rows, which lead with a disclosure chevron.
+            Spacer().frame(width: 13)
             // Enable/disable ALL objects at once (mirrors desktop PyMOL's "all" row).
             Button(action: { toggleAll() }) {
                 Image(systemName: allEnabled ? "checkmark.square.fill" : "square")
@@ -1777,56 +1821,30 @@ private struct SceneCard: View {
     @State private var showSettings = false
     // Per-sub-group expand state; the heavier groups start collapsed.
     @State private var openGroups: Set<String> = ["Canvas", "Camera", "Lighting", "Effects"]
-    // Collapsed by default and part of the accordion: at most one detail view
-    // (SCENE or an object card) is open at a time. This is the single home for
-    // display settings now (the redundant toolbar "View" menu was removed).
-    private var expanded: Bool { engine.expandedDetail == PyMOLEngine.sceneDetailKey }
-
+    // Rendered as the BODY of the SCENE section; the collapsible header now lives
+    // in ObjectPanel (shared with Objects / Selections).
     var body: some View {
-        VStack(spacing: 0) {
-            Button(action: {
-                engine.expandedDetail = expanded ? nil : PyMOLEngine.sceneDetailKey
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9)).foregroundColor(PanelTheme.headerColor)
-                    Text("SCENE")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(PanelTheme.headerColor)
+        VStack(spacing: 3) {
+            SceneStrip()
+            Divider().background(PanelTheme.disabledColor.opacity(0.3))
+            ForEach(SceneCatalog.groups, id: \.self) { group in
+                sceneGroup(group)
+            }
+            Button { showSettings = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text("All settings…")
                     Spacer()
-                    Text("global").font(.system(size: 9)).foregroundColor(PanelTheme.disabledColor)
                 }
-                .padding(.horizontal, 6).frame(height: 22)
-                .background(PanelTheme.background)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(PanelTheme.selectionTextColor)
+                .padding(.top, 4).padding(.bottom, 6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            if expanded {
-                VStack(spacing: 3) {
-                    SceneStrip()
-                    Divider().background(PanelTheme.disabledColor.opacity(0.3))
-                    ForEach(SceneCatalog.groups, id: \.self) { group in
-                        sceneGroup(group)
-                    }
-                    Button { showSettings = true } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "slider.horizontal.3")
-                            Text("All settings…")
-                            Spacer()
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(PanelTheme.selectionTextColor)
-                        .padding(.top, 4).padding(.bottom, 6)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    Divider().background(PanelTheme.disabledColor.opacity(0.3))
-                }
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(PanelTheme.rowAltBackground.opacity(0.6))
-            }
         }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(PanelTheme.rowAltBackground.opacity(0.6))
         .sheet(isPresented: $showSettings) { SettingsSheet() }
     }
 
