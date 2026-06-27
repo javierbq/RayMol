@@ -6,23 +6,33 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.3.2</title>
+      <title>RayMol 1.4.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.3.2
+## RayMol 1.4.0
 
-A critical fix for a startup crash that prevented 1.3.1 from launching on most Macs.
+New Metal rendering effects and a redesigned settings panel.
 
-- **Fixed: app quit immediately on launch with "Library not loaded".** The 1.3.1 build linked its font and image libraries (freetype, libpng) from a developer Homebrew path that isn't present on a normal Mac, so the app crashed at startup before its window ever appeared. RayMol now bundles those libraries inside the app, so it launches on any supported Mac with nothing else installed.
+### Rendering
+- **Depth of field.** Photographic focus blur (bokeh) with adjustable focus distance, range, and aperture — *Scene ▸ Camera*.
+- **Subsurface wrap.** Soft light-wrap past the terminator for a waxier, more lifelike surface — *Scene ▸ Lighting*.
+- **Temporal ambient occlusion.** Ray-traced AO that accumulates to a clean result while the view is still — *Scene ▸ Shadows & AO* (needs Ray tracing).
+- **Reduced-resolution upscale.** MetalFX upscaling to keep things smooth on slower GPUs — *Scene ▸ Quality*.
 
-If you downloaded 1.3.1 and it wouldn't open, grab this build (the DMG below) and it will work. Everything from 1.3.1 is included: animated Zoom / Orient / Center camera actions, outline color & width controls, one-click AI connect, and the offscreen/transparent-background export fixes.
+### Redesigned inspector panel
+- Scene settings are reorganized into clear, collapsible groups — **Canvas, Camera, Lighting, Shadows & AO, Effects, Quality** — with dependent options tucked under their toggle and a **(?)** explainer on every control.
+- **Scene, Objects, and Selections** are now consistent collapsible sections with aligned rows.
+
+### Also
+- Session save / ⌘S improvements.
+- The macOS app is now fully self-contained (no external library dependencies).
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Fri, 26 Jun 2026 02:27:20 +0000</pubDate>
-      <sparkle:version>11</sparkle:version>
-      <sparkle:shortVersionString>1.3.2</sparkle:shortVersionString>
+      <pubDate>Sat, 27 Jun 2026 06:27:56 +0000</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.3.2/RayMol-1.3.2.dmg" type="application/octet-stream" sparkle:edSignature="x4bokhizyOo/FAyWABBgHB+yUcCP2Gowb7u0S+qIke6HKWcUK1MPIOZqEP1azkysSZC8LHtIiNE5HGMex+JjAQ==" length="62635639" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.4.0/RayMol-1.4.0.dmg" type="application/octet-stream" sparkle:edSignature="1JoY2iE9recsApBeU9ihVtMlILbpj7XY/gNxb9fdtlg/J40lmnACRTVOAXmLMzNMhNvNtTQJt6do4+6rPRrVCA==" length="59247802" />
     </item>
   </channel>
 </rss>
