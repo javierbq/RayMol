@@ -61,8 +61,12 @@ PYMOL_LIB_PATH_FLAGS[sdk=iphonesimulator*] = -L$(PYMOL_BUILD_IOS) -L$(PYMOL_IOS_
 PYMOL_PYTHON_DYLIB[sdk=iphoneos*] = $(SRCROOT)/../deps_ios/Python.xcframework/ios-arm64/Python.framework/Python
 PYMOL_PYTHON_DYLIB[sdk=iphonesimulator*] = $(SRCROOT)/../deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Python
 
-// Core library (always linked)
-PYMOL_CORE_LDFLAGS = -lpymol_core -framework Metal -framework MetalKit -framework CoreVideo -framework MetalFX
+// Core library (always linked). MetalFX (metal_upscale) is absent from the iOS
+// Simulator SDK, so link it only for device + macOS; the renderer's
+// !TARGET_OS_SIMULATOR guard drops all MetalFX usage on the simulator.
+METALFX_LDFLAGS = -framework MetalFX
+METALFX_LDFLAGS[sdk=iphonesimulator*] =
+PYMOL_CORE_LDFLAGS = -lpymol_core -framework Metal -framework MetalKit -framework CoreVideo $(METALFX_LDFLAGS)
 
 // macOS: full dependency set. libomp.a is linked STATICALLY (by absolute path,
 // so the linker uses the archive, not the .dylib) to resolve the OpenMP symbols

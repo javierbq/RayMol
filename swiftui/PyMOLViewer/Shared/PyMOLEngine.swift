@@ -206,7 +206,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v30  (Live-RT grain fix + Calculating overlay + immediate inspector poll)")
+            self?.feedbackLog.append(" [build] v31  (Reset-effects button + always-visible exposure; sim MetalFX guard)")
         }
 
         // `fetch` downloads into fetch_path. Use the temp directory: it's always

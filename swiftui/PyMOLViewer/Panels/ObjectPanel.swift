@@ -239,8 +239,12 @@ enum SceneCatalog {
                    help: "Thickness of the outline, in pixels."),
         SceneParam(setting: "metal_tonemap", label: "Filmic tone-map", kind: .toggle, group: "Effects",
                    help: "ACES filmic tone-mapping for a cinematic look with a softer highlight rolloff."),
-        SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Effects", dependsOn: "metal_tonemap",
-                   help: "Brightness multiplier applied by the tone-map. 1.0 = neutral."),
+        // Always shown (NOT gated behind metal_tonemap): the renderer applies
+        // exposure independently of the tone-map toggle (RendererMetal runs the
+        // pass whenever exposure != 1), so hiding the slider when tone-map is off
+        // could strand a dimmed value with no way to fix it in the UI.
+        SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Effects",
+                   help: "Brightness multiplier (1.0 = neutral). Applies whether or not filmic tone-map is on."),
         SceneParam(setting: "depth_cue",  label: "Depth cue / fog", kind: .toggle, group: "Effects",
                    help: "Fade distant parts of the scene into the background to convey depth."),
 
@@ -1875,8 +1879,42 @@ private struct SceneCard: View {
                 ForEach(SceneCatalog.params.filter { $0.group == group }) { p in
                     if visible(p) { paramRow(p) }
                 }
+                if group == "Effects" { resetEffectsButton }
             }
         }
+    }
+
+    // One-tap restore of the Effects group to its built-in defaults. Filmic
+    // tone-map (white → ~80% grey via ACES) and a dimmed exposure muddle the
+    // whole frame, and the iOS autosave persists that look across launches with
+    // no obvious cause — this gives an obvious way back to a neutral render.
+    private var resetEffectsButton: some View {
+        Button { resetEffects() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.counterclockwise")
+                Text("Reset effects to defaults")
+                Spacer()
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(PanelTheme.selectionTextColor)
+            .padding(.leading, 10).padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // Effects-group defaults, from layer1/SettingInfo.h. The ~500ms scene-state
+    // poll re-syncs the toggles/sliders to these values after the sets land.
+    private func resetEffects() {
+        let defaults: [(String, String)] = [
+            ("metal_outline", "0"),
+            ("metal_outline_width", "1.4"),
+            ("metal_outline_color", "0x000000"),
+            ("metal_tonemap", "0"),
+            ("metal_exposure", "1.0"),
+            ("depth_cue", "1"),
+        ]
+        for (k, v) in defaults { engine.runCommand("set \(k), \(v)") }
     }
 
     // Dependent rows (dependsOn set) are hidden while their parent toggle is off.

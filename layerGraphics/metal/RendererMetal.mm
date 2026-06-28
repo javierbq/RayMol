@@ -1,7 +1,11 @@
 #include "RendererMetal.h"
 
 #import <simd/simd.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_SIMULATOR
 #import <MetalFX/MetalFX.h>   // MTLFXSpatialScaler (metal_upscale); macOS 13 / iOS 16+
+                              // — absent from the iOS Simulator SDK, so guarded.
+#endif
 #include <algorithm>
 #include <cmath>
 #include "MyPNG.h"
@@ -452,6 +456,12 @@ void RendererMetal::setDrawable(
 void RendererMetal::ensureUpscaler(NSUInteger inW, NSUInteger inH,
                                    NSUInteger outW, NSUInteger outH)
 {
+#if TARGET_OS_SIMULATOR
+  // MetalFX is absent from the iOS Simulator SDK — force the bilinear fallback.
+  _metalfxSupported = 0;
+  (void)inW; (void)inH; (void)outW; (void)outH;
+  return;
+#else
   if (_metalfxSupported == 0)
     return;  // known-unsupported device: caller uses the bilinear fallback
   if (inW == 0 || inH == 0 || outW == 0 || outH == 0)
@@ -486,6 +496,7 @@ void RendererMetal::ensureUpscaler(NSUInteger inW, NSUInteger inH,
   } else {
     _metalfxSupported = 0;
   }
+#endif  // !TARGET_OS_SIMULATOR
 }
 
 // ---------------------------------------------------------------------------
@@ -2171,6 +2182,7 @@ void RendererMetal::runPostChain()
     bool doUpscale = (_upscaleEnabled && _renderScale < 0.999f && sceneSrc && drawTex);
     if (doUpscale)
       ensureUpscaler(sceneSrc.width, sceneSrc.height, drawTex.width, drawTex.height);
+#if !TARGET_OS_SIMULATOR
     if (doUpscale && _upscaler) {
       if (@available(macOS 13.0, iOS 16.0, *)) {
         id<MTLFXSpatialScaler> sc = (id<MTLFXSpatialScaler>)_upscaler;
@@ -2178,7 +2190,9 @@ void RendererMetal::runPostChain()
         sc.outputTexture = drawTex;
         [sc encodeToCommandBuffer:_cmdBuffer];  // NOT a render-encoder pass
       }
-    } else {
+    } else
+#endif  // !TARGET_OS_SIMULATOR — sim has no MetalFX; always takes the blit path
+    {
       id<MTLRenderPipelineState> finalPipe =
           (_fxaaPipeline && _aaEnabled && !noAA) ? _fxaaPipeline : _blitPipeline;
       id<MTLRenderCommandEncoder> enc =
