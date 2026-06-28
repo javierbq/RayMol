@@ -8,7 +8,16 @@ import Foundation
 
 enum MCPBridge {
     private static let protocolVersion = "2025-06-18"
+    // sessionId is written from the URLSession completion queue and read on the
+    // run() loop thread, so guard it with a lock for safe cross-thread visibility.
     private static var sessionId: String? = nil
+    private static let sessionIdLock = NSLock()
+    private static func getSessionId() -> String? {
+        sessionIdLock.lock(); defer { sessionIdLock.unlock() }; return sessionId
+    }
+    private static func setSessionId(_ s: String) {
+        sessionIdLock.lock(); sessionId = s; sessionIdLock.unlock()
+    }
 
     static func run() {
         while let line = readLine(strippingNewline: true) {
@@ -27,7 +36,7 @@ enum MCPBridge {
         // Claude closed our stdin (it quit) — tell the server to terminate our
         // session so the connected-client count updates immediately instead of
         // waiting for the idle sweep.
-        if let sid = sessionId, let h = handoff(),
+        if let sid = getSessionId(), let h = handoff(),
            let url = URL(string: "http://127.0.0.1:\(h.port)/mcp") {
             var req = URLRequest(url: url)
             req.httpMethod = "DELETE"
@@ -62,18 +71,24 @@ enum MCPBridge {
         req.httpBody = raw
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(h.token)", forHTTPHeaderField: "Authorization")
-        if let sid = sessionId { req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id") }
+        if let sid = getSessionId() { req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id") }
         let sem = DispatchSemaphore(value: 0)
         var out: Data? = nil
         let task = URLSession.shared.dataTask(with: req) { body, resp, _ in
             if let http = resp as? HTTPURLResponse {
-                if let sid = http.value(forHTTPHeaderField: "Mcp-Session-Id") { sessionId = sid }
+                if let sid = http.value(forHTTPHeaderField: "Mcp-Session-Id") { setSessionId(sid) }
                 out = (http.statusCode == 202) ? Data() : (body ?? Data())
             }
             sem.signal()
         }
         task.resume()
-        _ = sem.wait(timeout: .now() + 120)
+        if sem.wait(timeout: .now() + 120) == .timedOut {
+            // Cancel so the abandoned task's completion can't write `out`/sessionId
+            // off-thread later; don't read `out` here (it could be racing). On
+            // success the completion ran fully before signaling, so `out` is safe.
+            task.cancel()
+            return nil
+        }
         return out
     }
 

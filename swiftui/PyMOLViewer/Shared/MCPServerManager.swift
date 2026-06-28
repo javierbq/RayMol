@@ -230,9 +230,14 @@ final class MCPServerManager: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
-        do { try proc.run(); proc.waitUntilExit() } catch { return (-1, "\(error)") }
+        do { try proc.run() } catch { return (-1, "\(error)") }
+        // Drain the pipe to EOF BEFORE waiting. stdout+stderr share one pipe, so a
+        // chatty child can fill the ~64KB buffer and block on write while we block
+        // in waitUntilExit() — a classic deadlock. readDataToEndOfFile() returns
+        // when the child closes the pipe (i.e. exits), so read first, then wait.
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
                          encoding: .utf8) ?? ""
+        proc.waitUntilExit()
         return (proc.terminationStatus, out)
     }
 

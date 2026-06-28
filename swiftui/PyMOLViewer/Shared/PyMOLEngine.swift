@@ -436,6 +436,7 @@ final class PyMOLEngine: ObservableObject {
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.pollFeedback()
+            self.drainMCPMainQueue()
             self.pollObjects()
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
@@ -1058,11 +1059,17 @@ final class PyMOLEngine: ObservableObject {
     // creating a lasting selection. Emits SELPREVIEW:<n> (or :err). The caller
     // debounces. Uses a throwaway '_pv' selection.
     func previewSelection(_ expr: String) {
-        let e = expr.replacingOccurrences(of: "\\", with: "")
+        // Pass the expression as base64 and decode in Python, so a selection
+        // string containing quotes / ''' / backslashes can neither break the
+        // literal nor inject code (the old strip-backslashes + r'''…''' was both
+        // lossy and injectable via an embedded ''').
+        let b64 = Data(expr.utf8).base64EncodedString()
         runPython(
-            "from pymol import cmd as _c\n"
+            "import base64 as _b64\n"
+            + "from pymol import cmd as _c\n"
+            + "_e = _b64.b64decode('\(b64)').decode('utf-8')\n"
             + "try:\n"
-            + "    _n = _c.select('_pv', r'''\(e)''')\n"
+            + "    _n = _c.select('_pv', _e)\n"
             + "    print('SELPREVIEW:%d' % int(_n))\n"
             + "    _c.delete('_pv')\n"
             + "except Exception:\n"
@@ -1071,17 +1078,24 @@ final class PyMOLEngine: ObservableObject {
 
     // Create/overwrite a named selection and enable it.
     func createSelection(name: String, expr: String) {
-        let n = name.replacingOccurrences(of: "'", with: "")
-        let e = expr.replacingOccurrences(of: "\\", with: "")
-        runPython("from pymol import cmd as _c\n_c.select(r'''\(n)''', r'''\(e)''', enable=1)")
+        // base64 the name + expression (see previewSelection): injection-safe.
+        let nb = Data(name.utf8).base64EncodedString()
+        let eb = Data(expr.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
+            + "_c.select(_b64.b64decode('\(nb)').decode('utf-8'), "
+            + "_b64.b64decode('\(eb)').decode('utf-8'), enable=1)")
     }
 
     // Rename an object/selection.
     func renameObject(_ old: String, to newName: String) {
-        let o = old.replacingOccurrences(of: "'", with: "")
-        let n = newName.replacingOccurrences(of: "'", with: "")
-        guard !n.isEmpty else { return }
-        runPython("from pymol import cmd as _c\n_c.set_name(r'''\(o)''', r'''\(n)''')")
+        guard !newName.isEmpty else { return }
+        // base64 both names (see previewSelection): injection-safe. The C core
+        // sanitizes the decoded name via ObjectMakeValidName.
+        let ob = Data(old.utf8).base64EncodedString()
+        let nb = Data(newName.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
+            + "_c.set_name(_b64.b64decode('\(ob)').decode('utf-8'), "
+            + "_b64.b64decode('\(nb)').decode('utf-8'))")
     }
 
     // MARK: - Interactive measurement
@@ -1111,9 +1125,12 @@ final class PyMOLEngine: ObservableObject {
     }
 
     func setSetting(_ name: String, _ value: String) {
-        let n = name.replacingOccurrences(of: "'", with: "")
-        let v = value.replacingOccurrences(of: "'", with: "")
-        runPython("from pymol import appkit_settings as _as\n_as.set_value(r'''\(n)''', r'''\(v)''')")
+        // base64 the name + value (see previewSelection): injection-safe.
+        let nb = Data(name.utf8).base64EncodedString()
+        let vb = Data(value.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import appkit_settings as _as\n"
+            + "_as.set_value(_b64.b64decode('\(nb)').decode('utf-8'), "
+            + "_b64.b64decode('\(vb)').decode('utf-8'))")
     }
 
     // Read the settings catalog JSON the bridge wrote to the temp dir.
@@ -1346,6 +1363,21 @@ final class PyMOLEngine: ObservableObject {
                 }
             }
         }
+    }
+
+    // Run MCP tool work queued from the in-process server's HTTP request threads
+    // on THIS (main) thread — the only thread where touching the embedded core is
+    // safe (off-main cmd calls race SceneRenderMetal / corrupt the interpreter).
+    // raymol_mcp.mainthread.run_on_main enqueues from the handler thread and blocks
+    // until we drain here, once per ~100ms Timer tick. Gated on the server running
+    // so there's no per-tick bridge call when MCP is off. A queued op runs
+    // synchronously (it can block this tick — the same on-main invariant runHeavy
+    // relies on); when idle the drain is an instant empty-queue check.
+    private func drainMCPMainQueue() {
+        #if os(macOS) && !RAYMOL_MAS_RESTRICTED
+        guard isReady, MCPServerManager.shared.isRunning else { return }
+        PyMOLBridge_RunPython("import raymol_mcp.mainthread as _mt; _mt.drain_main_thread_queue()")
+        #endif
     }
 
     private var objectPollCounter = 0

@@ -35,12 +35,17 @@ INSTRUCTIONS = (
 SESSION_TTL = 300.0
 SWEEP_INTERVAL = 20.0
 
-_lock = threading.Lock()
+_lock = threading.Lock()            # guards server lifecycle (start/stop)
 _httpd = None
 _thread = None
 _port = None
 _token = None
 _sessions = {}  # sid -> last_seen (monotonic)
+# Guards _sessions, mutated from request-handler threads + the sweeper thread.
+# Lock rules: never hold it across events.* (which does blocking stdout I/O) or
+# httpd.shutdown(); if both locks are needed, take _lock first (never nest _lock
+# inside _sessions_lock) — request handlers only ever take _sessions_lock.
+_sessions_lock = threading.Lock()
 _trusted = False
 _stop_sweeper = threading.Event()
 _sweeper = None
@@ -51,16 +56,15 @@ def set_trusted(value):
     _trusted = bool(value)
 
 
-def _touch(sid):
-    if sid:
-        _sessions[sid] = time.monotonic()
-
-
 def _prune_idle(now=None):
     now = time.monotonic() if now is None else now
-    dead = [s for s, t in list(_sessions.items()) if now - t > SESSION_TTL]
+    with _sessions_lock:
+        dead = [s for s, t in _sessions.items() if now - t > SESSION_TTL]
+        for s in dead:
+            _sessions.pop(s, None)
+    # Emit OUTSIDE the lock (events.* does blocking stdout I/O). pop-then-emit
+    # means each sid disconnects exactly once even if do_DELETE races us.
     for s in dead:
-        _sessions.pop(s, None)
         events.client_disconnected(s)
     return dead
 
@@ -162,13 +166,19 @@ class _Handler(BaseHTTPRequestHandler):
         is_init = isinstance(message, dict) and message.get("method") == "initialize"
         if is_init:
             session_id = uuid.uuid4().hex
-            _sessions[session_id] = time.monotonic()
+            with _sessions_lock:
+                _sessions[session_id] = time.monotonic()
             # Skip the connect event (which raises the "Allow" prompt) when
             # auto-trust is on for testing — there is nothing to approve.
             if not _trusted:
                 events.client_connected(session_id)
-        elif session_id and session_id in _sessions:
-            _touch(session_id)
+        elif session_id:
+            # Atomic check-and-touch: refresh last_seen only for a KNOWN session,
+            # under one lock so a concurrent sweep can't prune between the
+            # membership test and the update (which would resurrect the session).
+            with _sessions_lock:
+                if session_id in _sessions:
+                    _sessions[session_id] = time.monotonic()
 
         response = handle_jsonrpc(message, session_id or "")
 
@@ -191,8 +201,13 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._reject(401, "unauthorized")
         session_id = self.headers.get("Mcp-Session-Id")
-        if session_id and session_id in _sessions:
-            _sessions.pop(session_id, None)
+        # Atomic pop-once so a concurrent sweep can't also pop+emit for this sid
+        # (double client_disconnected). Emit outside the lock (blocking I/O).
+        existed = False
+        if session_id:
+            with _sessions_lock:
+                existed = _sessions.pop(session_id, None) is not None
+        if existed:
             events.client_disconnected(session_id)
         self.send_response(204)
         self.send_header("Content-Length", "0")
@@ -231,8 +246,9 @@ def stop():
         if _httpd is None:
             return
         _stop_sweeper.set()
-        sids = list(_sessions.keys())
-        _sessions = {}                      # cleared first: a waking sweeper finds nothing
+        with _sessions_lock:                # cleared first: a waking sweeper finds nothing
+            sids = list(_sessions.keys())
+            _sessions.clear()
         _httpd.shutdown()
         _httpd.server_close()
         worker = _thread
@@ -246,10 +262,13 @@ def stop():
             worker.join(timeout=2)
         if sweeper is not None:
             sweeper.join(timeout=2)
-        for s in sids:
-            events.client_disconnected(s)
-        events.server_stopped()
+    # Emit disconnects/stopped OUTSIDE both locks (events.* does blocking I/O).
+    for s in sids:
+        events.client_disconnected(s)
+    events.server_stopped()
 
 
 def status():
-    return {"running": _httpd is not None, "port": _port, "clients": len(_sessions)}
+    with _sessions_lock:
+        n = len(_sessions)
+    return {"running": _httpd is not None, "port": _port, "clients": n}

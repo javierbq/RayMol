@@ -1,13 +1,15 @@
 """MCP tool definitions + dispatcher for the RayMol MCP server.
 
-Tools call PyMOL's ``cmd`` API directly, imported LAZILY inside functions so this
-module imports standalone (for unit tests) without a built PyMOL. They run on the
-MCP server's Python thread (a real threading.Thread), so cmd's API lock serialises
-access safely -- the same model the old Raymond worker used. Never call the C
-bridge (PyMOLBridge_*) from here; only the Python ``cmd`` API.
+Tools call PyMOL's ``cmd`` API, imported LAZILY inside functions so this module
+imports standalone (for unit tests) without a built PyMOL. Handlers run on the
+MCP server's HTTP request-handler threads, but every ``cmd``-touching body is
+run via ``mainthread.run_on_main`` so it executes on the app's MAIN thread — the
+only thread where the embedded core is safe to touch (it races
+``SceneRenderMetal`` otherwise; see mainthread.py). Never call the C bridge
+(PyMOLBridge_*) from here; only the Python ``cmd`` API.
 
-``capture_viewport`` renders with the CPU ray-tracer (cmd.ray) because cmd.png
-without ray reads a GL framebuffer the Metal app does not have.
+``capture_viewport`` renders with the CPU ray-tracer (cmd.png ray=1) because
+cmd.png without ray reads a GL framebuffer the Metal app does not have.
 """
 
 import base64
@@ -20,6 +22,8 @@ import threading
 import traceback
 import urllib.parse
 import urllib.request
+
+from raymol_mcp.mainthread import run_on_main
 
 # Persistent namespace for run_python; seeded on first use.
 _py_ns = None
@@ -60,11 +64,15 @@ def _run_pymol_command(args):
     cmd_str = args.get("command", "")
     if not cmd_str:
         return _error("missing 'command'")
-    from pymol import cmd
-    try:
+
+    def _body():
+        from pymol import cmd
         cmd.do(cmd_str)
         cmd.sync()
         return _text("ok")
+
+    try:
+        return run_on_main(_body)
     except Exception:
         return _error(traceback.format_exc())
 
@@ -73,22 +81,29 @@ def _run_python(args):
     code = args.get("code", "")
     if not code:
         return _error("missing 'code'")
-    ns = _namespace()
-    buf = io.StringIO()
+
+    def _body():
+        ns = _namespace()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                exec(code, ns)
+            from pymol import cmd
+            cmd.sync()
+            out = buf.getvalue()
+            return _text(out if out else "ok")
+        except Exception:
+            return _error(buf.getvalue() + "\n" + traceback.format_exc())
+
     try:
-        with contextlib.redirect_stdout(buf):
-            exec(code, ns)
-        from pymol import cmd
-        cmd.sync()
-        out = buf.getvalue()
-        return _text(out if out else "ok")
+        return run_on_main(_body)
     except Exception:
-        return _error(buf.getvalue() + "\n" + traceback.format_exc())
+        return _error(traceback.format_exc())
 
 
 def _get_session_state(args):
-    from pymol import cmd
-    try:
+    def _body():
+        from pymol import cmd
         objects = []
         for name in cmd.get_names("objects"):
             otype = cmd.get_type(name)
@@ -110,22 +125,32 @@ def _get_session_state(args):
             "n_frames": cmd.count_frames(),
         }
         return _text(json.dumps(state, indent=2))
+
+    try:
+        return run_on_main(_body)
     except Exception:
         return _error(traceback.format_exc())
 
 
 def _capture_viewport(args):
-    from pymol import cmd
     path = None
     try:
-        width = int(args.get("width", 640))
-        height = int(args.get("height", 480))
+        # Clamp to a sane maximum: width/height come straight from the caller and
+        # feed a CPU ray-trace, so an unbounded size is a multi-minute / OOM DoS.
+        width = max(1, min(int(args.get("width", 640)), 2048))
+        height = max(1, min(int(args.get("height", 480)), 2048))
         fd, path = tempfile.mkstemp(suffix=".png", prefix="raymol_mcp_capture_")
         os.close(fd)
+
         # ray=1 ray-traces and writes the PNG in one synchronous call. A separate
         # cmd.ray + cmd.png(prior=1) fails with "no prior image available" when
-        # driven from the MCP server thread.
-        cmd.png(path, width=width, height=height, ray=1)
+        # driven from the MCP server thread. Runs on the main thread (touches the
+        # scene/renderer); the tempfile create/read/cleanup stay off-main.
+        def _render():
+            from pymol import cmd
+            cmd.png(path, width=width, height=height, ray=1)
+        run_on_main(_render)
+
         with open(path, "rb") as f:
             data = base64.b64encode(f.read()).decode("ascii")
         return {"content": [{"type": "image", "data": data,
