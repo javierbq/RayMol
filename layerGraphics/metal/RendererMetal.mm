@@ -357,7 +357,7 @@ RendererMetal::~RendererMetal()
   [_sceneColorMS release];   [_sceneDepthMS release];
   [_oitAccum release];       [_oitReveal release];
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
-  [_shadowDepth release];    [_captureTex release];     [_labelAtlas release];
+  [_shadowDepth release];    [_labelAtlas release];
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
   [_scenePassDesc release];  [_oitPassDesc release];    [_shadowPassDesc release];
@@ -2196,30 +2196,31 @@ void RendererMetal::runPostChain()
   // GPU completes. Captures at the current render resolution.
   if (!_capturePath.empty() && sceneSrc) {
     NSUInteger cw = sceneSrc.width, ch = sceneSrc.height;
-    if (!_captureTex || _captureTex.width != cw || _captureTex.height != ch) {
-      MTLTextureDescriptor* d = [MTLTextureDescriptor
-          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                       width:cw height:ch mipmapped:NO];
-      d.usage = MTLTextureUsageShaderRead;
-      d.storageMode = MTLStorageModeShared;
-      // MRC: release the previous-size capture copy before reallocating. The
-      // completion handler below captures the old texture into `capTex`, and the
-      // copied block holds its own retain, so this release is safe.
-      [_captureTex release];
-      _captureTex = [_device newTextureWithDescriptor:d];
-    }
+    // Allocate a FRESH staging texture per capture (not a shared ivar): two
+    // captures a frame or two apart would otherwise blit into the same texture
+    // while the prior completion handler is still reading it off the GPU thread
+    // — a data race producing a torn/garbled PNG.
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:cw height:ch mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;
+    id<MTLTexture> capTex = [_device newTextureWithDescriptor:d];  // +1 (owned here)
     id<MTLBlitCommandEncoder> be = [_cmdBuffer blitCommandEncoder];
     [be copyFromTexture:sceneSrc sourceSlice:0 sourceLevel:0
            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
-              toTexture:_captureTex destinationSlice:0 destinationLevel:0
+              toTexture:capTex destinationSlice:0 destinationLevel:0
       destinationOrigin:MTLOriginMake(0, 0, 0)];
     [be endEncoding];
     std::string path = _capturePath;
     _capturePath.clear();
-    id<MTLTexture> capTex = _captureTex;
     [_cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
       rtWriteTextureToPNG(capTex, path);
     }];
+    // MRC: the copied handler block retained capTex and releases it when the
+    // block is destroyed (after it runs), so drop our +1 now — the texture stays
+    // alive for exactly this capture's handler and is then freed once.
+    [capTex release];
   }
 }
 

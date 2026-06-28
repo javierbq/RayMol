@@ -103,14 +103,25 @@ def _append_log(text):
     full_text = storage.string()
     lines = full_text.split("\n")
     if len(lines) > _MAX_LINES:
-        # Find the character index where we keep from
-        keep_from = 0
         remove_count = len(lines) - _TRUNCATE_TO
-        for i in range(remove_count):
-            keep_from += len(lines[i]) + 1  # +1 for newline
-        storage.beginEditing()
-        storage.deleteCharactersInRange_((0, keep_from))
-        storage.endEditing()
+        # Compute the cut point in NSString (UTF-16) units, NOT Python code-point
+        # lengths: a non-BMP char (emoji) is 1 in Python len() but 2 UTF-16 units,
+        # so summing len(line) would under-count and deleteCharactersInRange_ would
+        # cut mid-character and garble the log. Walk the NSString's own newlines.
+        ns = storage.string()
+        total = ns.length()
+        keep_from = 0
+        found = 0
+        while found < remove_count:
+            r = ns.rangeOfString_options_range_("\n", 0, (keep_from, total - keep_from))
+            if r.length == 0:  # no more newlines
+                break
+            keep_from = r.location + 1
+            found += 1
+        if keep_from > 0:
+            storage.beginEditing()
+            storage.deleteCharactersInRange_((0, keep_from))
+            storage.endEditing()
 
     # Auto-scroll to bottom
     _log_text_view.scrollRangeToVisible_((storage.length(), 0))
@@ -179,15 +190,19 @@ class CommandInputDelegate(AppKit.NSObject):
             return True
 
         if sel == b'insertTab:' or sel_name == 'insertTab:':
-            # Basic tab completion placeholder
+            # Tab completion. cmd has no .complete(); the parser does, and it
+            # returns the COMPLETED STRING (or None), printing the options to the
+            # feedback log itself when there are several. (The old _cmd.complete()
+            # raised AttributeError that the bare except swallowed → Tab did nothing.)
             text = control.stringValue()
             if text:
                 try:
-                    completions = _cmd.complete(text)
-                    if completions and len(completions) == 1:
-                        control.setStringValue_(completions[0])
-                    elif completions:
-                        _append_log("  ".join(completions) + "\n")
+                    completed = _cmd._parser.complete(text)
+                    if completed and completed != text:
+                        control.setStringValue_(completed)
+                        editor = control.currentEditor()
+                        if editor:
+                            editor.moveToEndOfDocument_(None)
                 except Exception:
                     pass
             return True

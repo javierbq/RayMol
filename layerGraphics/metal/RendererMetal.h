@@ -487,7 +487,6 @@ private:
   float _letterboxAspect = 0.f;       // saved-viewport W/H; 0 = fill window
   int _lbOriginX = 0, _lbOriginY = 0; // letterbox sub-rect origin (backing px)
   std::string _capturePath;           // pending png ray=0 capture (empty = none)
-  id<MTLTexture> _captureTex = nil;   // CPU-readable copy for readback
   bool _offscreen = false;            // hi-res offscreen render (no drawable)
 
   // --- Real-time ray tracing (cSetting_metal_raytrace) ---
