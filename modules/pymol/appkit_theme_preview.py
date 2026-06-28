@@ -26,6 +26,13 @@ def begin(path):
     except Exception as e:
         _saved = None
         print("THEMEPREVIEW_ERR:snapshot:" + str(e))
+    # Never mutate the scene unless we hold a valid snapshot to restore from. If
+    # get_session failed (and we have no prior snapshot), bailing here keeps the
+    # user's real scene intact — otherwise disable("all") below would hide it with
+    # no way back (restore() with _saved is None only deletes the preview object).
+    if _saved is None:
+        print("THEMEPREVIEW_ERR:begin:no snapshot, scene left untouched")
+        return
     try:
         cmd.delete(OBJ)
         cmd.load(path, OBJ)

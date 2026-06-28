@@ -258,19 +258,19 @@ def _add_file_menu(menubar):
     menu.setAutoenablesItems_(False)
 
     _menu_action(menu, "Open...", 'openFile:', 'o')
-    _menu_action(menu, "Get PDB...", 'fetchPDB_:', 'f', _CMD_SHIFT)
+    _menu_action(menu, "Get PDB...", 'fetchPDB:', 'f', _CMD_SHIFT)
     _sep(menu)
-    _menu_action(menu, "Save Session", 'saveSessionQuick_:', 's')
+    _menu_action(menu, "Save Session", 'saveSessionQuick:', 's')
     _menu_action(menu, "Save Session As...", 'saveSession:', 's', _CMD_SHIFT)
     _sep(menu)
 
     # Export Image As submenu
     export_img = _submenu(menu, "Export Image As")
-    _menu_action(export_img, "PNG...", 'exportPNG_:')
+    _menu_action(export_img, "PNG...", 'exportPNG:')
 
     _sep(menu)
 
-    _menu_action(menu, "Run Script...", 'runScript_:')
+    _menu_action(menu, "Run Script...", 'runScript:')
     _sep(menu)
 
     # Reinitialize submenu

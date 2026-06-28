@@ -245,9 +245,17 @@ struct SequencePanel: View {
         shift = mods.contains(.shift)
         ctrl = mods.contains(.control)
         #endif
-        if shift, let a = anchorIndex {
-            let lo = min(a, idx), hi = max(a, idx)
-            applyToggle(residues: Array(flat[lo...hi]), add: true)
+        if shift, let a = anchorIndex, !flat.isEmpty {
+            // `idx` is resolved against the current `flat`, but `a` was captured on
+            // an earlier click; if `flat` shrank since then (an object was removed/
+            // replaced), `a` can be >= flat.count. Clamp both ends so the range
+            // subscript can never trap out of bounds.
+            let n = flat.count
+            let lo = max(0, min(min(a, idx), n - 1))
+            let hi = max(0, min(max(a, idx), n - 1))
+            if lo <= hi {
+                applyToggle(residues: Array(flat[lo...hi]), add: true)
+            }
         } else {
             anchorIndex = idx
             let isSelected = engine.selectedResidueKeys.contains(r.selKey)
