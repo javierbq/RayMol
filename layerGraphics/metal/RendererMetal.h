@@ -321,6 +321,15 @@ private:
   MTLRenderPassDescriptor* _scenePassDesc = nil;
   MTLRenderPassDescriptor* _screenPassDesc = nil;
   NSUInteger _rtW = 0, _rtH = 0;
+  // Live render-target height, captured in setDrawable. Pixel-radius post passes
+  // (DoF aperture, outline thickness) are authored against the live resolution;
+  // offscreen exports run at a higher _rtH, so scaling those radii by
+  // _rtH/_liveRefH keeps the effect resolution-relative (WYSIWYG). 0 until the
+  // first live frame, where the scale is 1 (live appearance unchanged).
+  NSUInteger _liveRefH = 0;
+  float pixelRadiusScale() const {
+    return (_liveRefH > 0) ? (float)_rtH / (float)_liveRefH : 1.0f;
+  }
   id<MTLRenderPipelineState> _blitPipeline = nil;
   id<MTLRenderPipelineState> _ssaoPipeline = nil;
   id<MTLRenderPipelineState> _fxaaPipeline = nil;

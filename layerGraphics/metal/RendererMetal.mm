@@ -441,6 +441,11 @@ void RendererMetal::setDrawable(
   if (rw < 1) rw = 1;
   if (rh < 1) rh = 1;
   ensurePostTargets(rw, rh);
+  // Remember the live render height so pixel-radius post passes (DoF/outline)
+  // scale up for hi-res offscreen exports (which size _rtH directly via
+  // beginOffscreen and never touch _liveRefH). On the live path this keeps
+  // pixelRadiusScale()==1, so the on-screen appearance is unchanged.
+  _liveRefH = rh;
   _passDesc = _scenePassDesc;
 }
 
@@ -2030,7 +2035,10 @@ void RendererMetal::runPostChain()
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     u.focusDist = _dofFocus;
     u.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
-    u.maxRadiusPx = (_dofAperture > 0.0f) ? _dofAperture : 14.0f;
+    // Resolution-relative: the aperture is authored in px at the live resolution,
+    // so scale it for hi-res exports (pixelRadiusScale()==1 on the live view) —
+    // otherwise the bokeh nearly vanishes in 2x/4K Copy/Save output (#48).
+    u.maxRadiusPx = ((_dofAperture > 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
     u._pad = 0.0f;
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = dst;
@@ -2059,7 +2067,9 @@ void RendererMetal::runPostChain()
     u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     u.colR = _outlineR; u.colG = _outlineG; u.colB = _outlineB;
-    u.thickness = _outlineWidth;
+    // Resolution-relative thickness so outlines aren't hairline-thin in hi-res
+    // exports (pixelRadiusScale()==1 on the live view; see #48).
+    u.thickness = _outlineWidth * pixelRadiusScale();
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = dst;
     pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
