@@ -13,10 +13,14 @@ configFiles:
 
 # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
 # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
+# RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
+# (MAS forbids self-update + Sparkle's helpers fail sandbox validation, error 90296).
+# The Developer-ID/DMG build keeps Sparkle for auto-update.
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.6.0
+# RAYMOL_SPARKLE_END
 
 settings:
   base:
@@ -188,6 +192,21 @@ targets:
           if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi
           mkdir -p "$CODESIGNING_FOLDER_PATH/python/lib"
           rsync -au --delete "$SRCROOT/../deps_ios/Python.xcframework/$SLICE/lib/" "$CODESIGNING_FOLDER_PATH/python/lib/"
+          # App Review compliance (mirrors the macOS prune; mostly defensive on iOS
+          # since BeeWare ships no Tk binaries and its stdlib already omits the
+          # itms-services token):
+          #  (2.5.1) Drop any Tcl/Tk binaries + the dead pure-Python tkinter package
+          #  so the bundle carries zero Tk references. The native Metal/SwiftUI app
+          #  never launches the legacy pmg_tk Tkinter GUI.
+          PYLIB="$CODESIGNING_FOLDER_PATH/python/lib"
+          rm -rf "$PYLIB"/libtcl*.dylib "$PYLIB"/libtk*.dylib \
+                 "$PYLIB"/tcl* "$PYLIB"/tk* "$PYLIB"/itcl* "$PYLIB"/thread* \
+                 "$PYLIB"/python*/tkinter
+          rm -f  "$PYLIB"/python*/lib-dynload/_tkinter*.so
+          #  (2.5.2) Strip 'itms-services' from urllib/parse.py's uses_netloc. No-op
+          #  on the current BeeWare build, but guarantees parity if a future stdlib
+          #  bump reintroduces the literal Apple's static scanner flags.
+          /usr/bin/sed -i '' "s/, 'itms-services'//g" "$PYLIB"/python*/urllib/parse.py
       - name: "iOS: Prepare Python binary modules"
         basedOnDependencyAnalysis: false
         script: |
@@ -259,6 +278,21 @@ targets:
           RES="$CODESIGNING_FOLDER_PATH/Contents/Resources"
           mkdir -p "$RES"
           rsync -au --delete "$SRCROOT/../deps_macos/python-standalone/python/" "$RES/python/"
+          # App Review compliance — prune from the embedded Python before signing:
+          #  (2.5.1) The bundled Tcl/Tk's libtcl9tk9.0.dylib references the private
+          #  AppKit symbol _NSWindowDidOrderOnScreenNotification. The native
+          #  Metal/SwiftUI app never launches the legacy pmg_tk Tkinter GUI, so the
+          #  whole Tcl/Tk stack is dead weight. Remove it.
+          PYLIB="$RES/python/lib"
+          rm -rf "$PYLIB"/libtcl*.dylib "$PYLIB"/libtk*.dylib \
+                 "$PYLIB"/tcl* "$PYLIB"/tk* "$PYLIB"/itcl* "$PYLIB"/thread* \
+                 "$PYLIB"/python*/tkinter
+          rm -f  "$PYLIB"/python*/lib-dynload/_tkinter*.so
+          #  (2.5.2) CPython's stdlib urllib/parse.py lists 'itms-services' in
+          #  uses_netloc; Apple's static scanner reads that literal as the app
+          #  installing executable code via itms-services://. RayMol never uses the
+          #  scheme — strip the token (no functional effect on URL parsing we do).
+          /usr/bin/sed -i '' "s/, 'itms-services'//g" "$PYLIB"/python*/urllib/parse.py
           ditto "$SRCROOT/../modules" "$RES/modules"
           # Mac App Store build: drop the MCP server package (compiled out of the app).
           case "${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}" in *RAYMOL_MAS_RESTRICTED*) rm -rf "$RES/modules/raymol_mcp" ;; esac
@@ -317,12 +351,14 @@ targets:
             /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
               "$CODESIGNING_FOLDER_PATH"
           fi
+# RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
     dependencies:
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
       # #if os(macOS) && !RAYMOL_MAS_RESTRICTED.
       - package: Sparkle
         platforms: [macOS]
+# RAYMOL_SPARKLE_END
     scheme:
       testTargets:
         - PyMOLViewerUITests
