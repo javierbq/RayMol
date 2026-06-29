@@ -58,11 +58,16 @@ struct MovieBuilderControls: View {
             }
             .pickerStyle(.segmented)
 
-            switch tab {
-            case .camera: cameraTab
-            case .states: statesTab
-            case .scenes: scenesTab
+            // Fixed-height content area so Build & Play sits at the SAME spot
+            // for every tab (Camera / States / Scenes), not jumping by content.
+            Group {
+                switch tab {
+                case .camera: cameraTab
+                case .states: statesTab
+                case .scenes: scenesTab
+                }
             }
+            .frame(minHeight: 156, alignment: .top)
 
             Divider()
             commonActions
@@ -121,8 +126,6 @@ struct MovieBuilderControls: View {
                 Text("No scenes saved. Store scenes in the Scenes tab first.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Scenes (tap to include; none = all)")
-                    .font(.caption).foregroundStyle(.secondary)
                 FlowChips(items: engine.sceneNames, selected: selectedScenes) { name in
                     if selectedScenes.contains(name) { selectedScenes.remove(name) }
                     else { selectedScenes.insert(name) }
@@ -131,9 +134,9 @@ struct MovieBuilderControls: View {
             HStack(alignment: .top, spacing: 12) {
                 menuPicker("Seconds / scene", $sceneSeconds, [("2 s", 2), ("4 s", 4), ("8 s", 8), ("12 s", 12)])
             }
-            Toggle("Loop", isOn: $sceneLoop).tint(TimelineTheme.accent)
-            Text("Strings scenes into a movie with interpolated camera transitions.")
-                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Loop  ·  tap scenes to include (none = all)", isOn: $sceneLoop)
+                .font(.system(size: 15))
+                .tint(TimelineTheme.accent)
         }
     }
 

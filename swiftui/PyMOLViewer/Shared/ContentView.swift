@@ -1185,19 +1185,16 @@ struct ContentView: View {
             }
         } else {
             List {
-                Section("Display") {
+                // Single ungrouped section — no per-item headers for one-row items.
+                Section {
                     Toggle(isOn: $engine.sequenceVisible) {
                         Label("Show sequence", systemImage: "textformat.abc")
                     }
-                }
-                Section("Scene & rendering") {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { settingsSceneOpen = true }
                     } label: {
                         settingsRow("Display settings", "slider.horizontal.3")
                     }
-                }
-                Section("Appearance") {
                     Button {
                         if !showThemeStudio { panelCollapsed = false }
                         withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = true }
@@ -1205,23 +1202,27 @@ struct ContentView: View {
                         settingsRow("Themes", "paintpalette")
                     }
                 }
-                Section("Reset") {
-                    Button { engine.runCommand("reset") } label: {
-                        Label("Reset view", systemImage: "arrow.counterclockwise")
+                // Reset actions — all on one row.
+                Section {
+                    HStack(spacing: 8) {
+                        settingsResetButton("Reset view", "arrow.counterclockwise") {
+                            engine.runCommand("reset")
+                        }
+                        settingsResetButton("Effects", "circle.lefthalf.filled") {
+                            engine.resetEffects()
+                        }
+                        settingsResetButton("Clear", "trash", danger: true) {
+                            showClearSessionConfirm = true
+                        }
                     }
-                    Button { engine.resetEffects() } label: {
-                        Label("Reset effects", systemImage: "circle.lefthalf.filled")
-                    }
-                    Button(role: .destructive) { showClearSessionConfirm = true } label: {
-                        Label("Clear session…", systemImage: "trash")
-                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                 }
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .compactListSections()
             .environment(\.defaultMinListRowHeight, 38)
-            // Clear the floating tab-bar pill so the Reset section stays reachable.
+            // Clear the floating tab-bar pill so the Reset row stays reachable.
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 56) }
         }
     }
@@ -1235,6 +1236,22 @@ struct ContentView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    // Compact icon+label button; three sit on one row in the Reset section.
+    private func settingsResetButton(_ title: String, _ icon: String,
+                                     danger: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 15))
+                Text(title).font(.system(size: 11)).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .foregroundStyle(danger ? Color.red : TimelineTheme.accent)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Color.gray.opacity(0.13)))
+        }
+        .buttonStyle(.plain)
     }
 
     // Draggable splitter between viewport and panel. Drag toward the viewport
