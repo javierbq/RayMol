@@ -50,6 +50,18 @@ extension Notification.Name {
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
 }
 
+private extension View {
+    /// Tighten inter-section spacing on grouped lists (iOS 17+); no-op elsewhere.
+    @ViewBuilder func compactListSections() -> some View {
+        #if os(iOS)
+        if #available(iOS 17.0, *) { self.listSectionSpacing(.compact) }
+        else { self }
+        #else
+        self
+        #endif
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
@@ -1198,6 +1210,8 @@ struct ContentView: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            .compactListSections()
+            .environment(\.defaultMinListRowHeight, 38)
             // Clear the floating tab-bar pill so the Reset section stays reachable.
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 56) }
         }
@@ -1449,6 +1463,14 @@ struct ContentView: View {
                 } label: {
                     Label("Copy Image", systemImage: "doc.on.clipboard")
                 }
+                // Export the authored movie (Movie tab). Disabled until there's
+                // a timeline to render.
+                Button {
+                    showExportSheet = true
+                } label: {
+                    Label("Export Movie…", systemImage: "film")
+                }
+                .disabled(engine.playback.frameCount <= 1)
                 // Render options in a submenu whose toggles DON'T dismiss the
                 // menu (flip both before exporting). dismiss-disabled is iOS-only.
                 #if os(iOS)

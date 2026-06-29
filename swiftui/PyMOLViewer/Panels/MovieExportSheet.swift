@@ -263,20 +263,12 @@ final class MovieExporter: ObservableObject {
 
 // MARK: - Reusable controls
 
-// Which portion of the export form to render. The MovieExportSheet shows `.all`
-// (frames + format + render together); the Movie tab's top nav drives `.frames`
-// vs `.export` so the two read/write the SAME instance's state (kept mounted).
-enum MovieExportMode { case all, frames, export }
-
-// The export form, reused by both the MovieExportSheet and the Movie content
-// tab's MoviePane. Self-contained (owns its MovieExporter); each embedding gets
-// its own instance.
+// The export form (presented by MovieExportSheet from the top Export menu /
+// transport overflow). Self-contained (owns its MovieExporter). Renders the
+// full timeline — no frame-range picker.
 struct MovieExportControls: View {
     @EnvironmentObject var engine: PyMOLEngine
     @StateObject private var exporter = MovieExporter()
-
-    /// Which fields to show (Movie tab splits Frames / Export into nav steps).
-    var mode: MovieExportMode = .all
 
     private struct SizePreset: Identifiable { let id = UUID(); let name: String; let w: Int; let h: Int }
     private let presets = [SizePreset(name: "720p", w: 1280, h: 720),
@@ -285,79 +277,56 @@ struct MovieExportControls: View {
 
     @State private var format: MovieExporter.Format = .mp4
     @State private var presetIdx = 0
-    @State private var first = 1
-    @State private var last = 1
     @State private var rayMode = false
 
-    private var showFrames: Bool { mode != .export }
-    private var showExport: Bool { mode != .frames }
-    private var total: Int { max(last - first + 1, 1) }
+    private var frameCount: Int { max(engine.playback.frameCount, 1) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            if showFrames {
-                labeled("Frame range") {
-                    HStack(spacing: 12) {
-                        Stepper("First: \(first)", value: $first, in: 1...max(engine.playback.frameCount, 1))
-                        Stepper("Last: \(last)", value: $last, in: 1...max(engine.playback.frameCount, 1))
-                    }.font(.system(size: 13))
-                }
-                Text(engine.playback.frameCount <= 1
-                     ? "Nothing to render yet — author an animation in Animate (a camera roll works from a single structure)."
-                     : "\(total) of \(engine.playback.frameCount) frames at \(Int(engine.playback.movieFPS.rounded())) fps.")
-                    .font(.caption).foregroundStyle(.secondary)
+            labeled("Format") {
+                Picker("", selection: $format) {
+                    ForEach(MovieExporter.Format.allCases) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
             }
-
-            if showExport {
-                labeled("Format") {
-                    Picker("", selection: $format) {
-                        ForEach(MovieExporter.Format.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
-                }
-                labeled("Size") {
-                    Picker("", selection: $presetIdx) {
-                        ForEach(presets.indices, id: \.self) { i in
-                            Text("\(presets[i].name)  ·  \(presets[i].w)×\(presets[i].h)").tag(i)
-                        }
-                    }.pickerStyle(.segmented)
-                }
-                Toggle(isOn: $rayMode) {
-                    Label("Ray-traced frames (slow)", systemImage: "sparkles")
-                }.tint(TimelineTheme.accent)
-                if rayMode {
-                    Text("Ray-tracing every frame is much slower — use a short range first.")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-
-                if exporter.isExporting {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ProgressView(value: exporter.progress)
-                            .tint(TimelineTheme.accent)
-                        Text("Rendering frame \(Int(exporter.progress * Double(total)))/\(total)…")
-                            .font(.caption).foregroundStyle(.secondary)
+            labeled("Size") {
+                Picker("", selection: $presetIdx) {
+                    ForEach(presets.indices, id: \.self) { i in
+                        Text("\(presets[i].name)  ·  \(presets[i].w)×\(presets[i].h)").tag(i)
                     }
-                }
-                if let err = exporter.errorText {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
-
-                Button(action: runExport) {
-                    Label(exporter.isExporting ? "Rendering…" : "Render & Export",
-                          systemImage: "film")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(TimelineTheme.accent)
-                .disabled(exporter.isExporting || engine.playback.frameCount <= 1)
+                }.pickerStyle(.segmented)
             }
-        }
-        .onAppear { last = max(engine.playback.frameCount, 1); first = 1 }
-        .onChange(of: engine.playback.frameCount) { n in
-            // Keep the range valid as the timeline appears/changes (e.g. after a
-            // camera roll is built from the Animate section just above).
-            last = max(n, 1); first = min(first, last)
+            Toggle(isOn: $rayMode) {
+                Label("Ray-traced frames (slow)", systemImage: "sparkles")
+            }.tint(TimelineTheme.accent)
+            if rayMode {
+                Text("Ray-tracing every frame is much slower.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            Text("\(frameCount) frames at \(Int(engine.playback.movieFPS.rounded())) fps.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            if exporter.isExporting {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: exporter.progress)
+                        .tint(TimelineTheme.accent)
+                    Text("Rendering frame \(Int(exporter.progress * Double(frameCount)))/\(frameCount)…")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let err = exporter.errorText {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+
+            Button(action: runExport) {
+                Label(exporter.isExporting ? "Rendering…" : "Render & Export",
+                      systemImage: "film")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(TimelineTheme.accent)
+            .disabled(exporter.isExporting || engine.playback.frameCount <= 1)
         }
         .onChange(of: exporter.finishedURL) { url in
             if let url = url { deliver(url) }
@@ -367,7 +336,7 @@ struct MovieExportControls: View {
     private func runExport() {
         let p = presets[presetIdx]
         exporter.start(engine: engine, format: format, width: p.w, height: p.h,
-                       first: first, last: last, fps: Int(engine.playback.movieFPS.rounded()),
+                       first: 1, last: frameCount, fps: Int(engine.playback.movieFPS.rounded()),
                        rayTraced: rayMode)
     }
 
@@ -435,42 +404,21 @@ struct MovieExportSheet: View {
 
 // MARK: - Movie content tab
 
-// The unified Movie flow as an in-panel content tab (iPhone bottom tab bar),
-// with a segmented top nav between the three steps — Animate (author a
-// camera/state/scene movie) · Frames (pick the range) · Export (render to
-// MP4/GIF). Frames + Export share one MovieExportControls instance (kept
-// mounted) so the chosen range carries into the render. The transport bar
-// handles playback of what's built.
+// The Movie content tab authors an animation (camera / state / scene movie)
+// that plays on the transport. Rendering to a file lives in the top Export
+// menu → "Export Movie" (enabled once there's something to play), so this pane
+// is purely the builder.
 struct MoviePane: View {
-    enum Step: String, CaseIterable, Identifiable {
-        case animate = "Animate", frames = "Frames", export = "Export"
-        var id: String { rawValue }
-    }
-    @State private var step: Step = .animate
-
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $step) {
-                ForEach(Step.allCases) { Text($0.rawValue).tag($0) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                MovieBuilderControls()
+                Text("Build & Play to preview on the transport. To save a file, use the Export menu (top-right) → Export Movie.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if step == .animate {
-                        MovieBuilderControls()
-                    } else {
-                        // Same instance across Frames↔Export so the range persists.
-                        MovieExportControls(mode: step == .frames ? .frames : .export)
-                    }
-                }
-                .padding(16)
-                // Clear the floating tab-bar pill so the action button stays reachable.
-                .padding(.bottom, 56)
-            }
+            .padding(16)
+            // Clear the floating tab-bar pill so the controls stay reachable.
+            .padding(.bottom, 56)
         }
     }
 }
