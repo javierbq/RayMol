@@ -261,11 +261,13 @@ final class MovieExporter: ObservableObject {
     }
 }
 
-// MARK: - Sheet
+// MARK: - Reusable controls
 
-struct MovieExportSheet: View {
+// The export form, reused by both the MovieExportSheet and the Movie content
+// tab's MoviePane. Self-contained (owns its MovieExporter); each embedding gets
+// its own instance.
+struct MovieExportControls: View {
     @EnvironmentObject var engine: PyMOLEngine
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var exporter = MovieExporter()
 
     private struct SizePreset: Identifiable { let id = UUID(); let name: String; let w: Int; let h: Int }
@@ -280,77 +282,69 @@ struct MovieExportSheet: View {
     @State private var rayMode = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Export Movie").font(.headline)
-                Spacer()
-                Button("Done") { dismiss() }
-            }.padding(16)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    labeled("Format") {
-                        Picker("", selection: $format) {
-                            ForEach(MovieExporter.Format.allCases) { Text($0.rawValue).tag($0) }
-                        }.pickerStyle(.segmented)
+        VStack(alignment: .leading, spacing: 18) {
+            labeled("Format") {
+                Picker("", selection: $format) {
+                    ForEach(MovieExporter.Format.allCases) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
+            }
+            labeled("Size") {
+                Picker("", selection: $presetIdx) {
+                    ForEach(presets.indices, id: \.self) { i in
+                        Text("\(presets[i].name)  ·  \(presets[i].w)×\(presets[i].h)").tag(i)
                     }
-                    labeled("Size") {
-                        Picker("", selection: $presetIdx) {
-                            ForEach(presets.indices, id: \.self) { i in
-                                Text("\(presets[i].name)  ·  \(presets[i].w)×\(presets[i].h)").tag(i)
-                            }
-                        }.pickerStyle(.segmented)
-                    }
-                    labeled("Frames") {
-                        HStack(spacing: 12) {
-                            Stepper("First: \(first)", value: $first, in: 1...max(engine.playback.frameCount, 1))
-                            Stepper("Last: \(last)", value: $last, in: 1...max(engine.playback.frameCount, 1))
-                        }.font(.system(size: 13))
-                    }
-                    Toggle(isOn: $rayMode) {
-                        Label("Ray-traced frames (slow)", systemImage: "sparkles")
-                    }.tint(TimelineTheme.accent)
-                    if rayMode {
-                        Text("Ray-tracing every frame is much slower — use a short range first.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-
-                    if exporter.isExporting {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView(value: exporter.progress)
-                                .tint(TimelineTheme.accent)
-                            Text("Rendering frame \(Int(exporter.progress * Double(max(last - first + 1, 1))))/\(max(last - first + 1, 1))…")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let err = exporter.errorText {
-                        Text(err).font(.caption).foregroundStyle(.red)
-                    }
-                }.padding(16)
+                }.pickerStyle(.segmented)
+            }
+            labeled("Frames") {
+                HStack(spacing: 12) {
+                    Stepper("First: \(first)", value: $first, in: 1...max(engine.playback.frameCount, 1))
+                    Stepper("Last: \(last)", value: $last, in: 1...max(engine.playback.frameCount, 1))
+                }.font(.system(size: 13))
+            }
+            Toggle(isOn: $rayMode) {
+                Label("Ray-traced frames (slow)", systemImage: "sparkles")
+            }.tint(TimelineTheme.accent)
+            if rayMode {
+                Text("Ray-tracing every frame is much slower — use a short range first.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if engine.playback.frameCount <= 1 {
+                Text("Nothing to export yet — author an animation above (a camera roll works from a single structure).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            HStack {
-                Spacer()
-                Button(action: runExport) {
-                    Label(exporter.isExporting ? "Rendering…" : "Render & Export",
-                          systemImage: "film")
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 18).padding(.vertical, 8)
+            if exporter.isExporting {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: exporter.progress)
+                        .tint(TimelineTheme.accent)
+                    Text("Rendering frame \(Int(exporter.progress * Double(max(last - first + 1, 1))))/\(max(last - first + 1, 1))…")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(TimelineTheme.accent)
-                .disabled(exporter.isExporting || engine.playback.frameCount <= 1)
-            }.padding(16)
+            }
+            if let err = exporter.errorText {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+
+            Button(action: runExport) {
+                Label(exporter.isExporting ? "Rendering…" : "Render & Export",
+                      systemImage: "film")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(TimelineTheme.accent)
+            .disabled(exporter.isExporting || engine.playback.frameCount <= 1)
         }
         .onAppear { last = max(engine.playback.frameCount, 1); first = 1 }
+        .onChange(of: engine.playback.frameCount) { n in
+            // Keep the range valid as the timeline appears/changes (e.g. after a
+            // camera roll is built from the Animate section just above).
+            last = max(n, 1); first = min(first, last)
+        }
         .onChange(of: exporter.finishedURL) { url in
             if let url = url { deliver(url) }
         }
-        #if os(iOS)
-        .presentationDetents([.medium, .large])
-        #else
-        .frame(width: 420, height: 480)
-        #endif
     }
 
     private func runExport() {
@@ -394,5 +388,68 @@ struct MovieExportSheet: View {
             Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+// MARK: - Sheet wrapper
+
+struct MovieExportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Export Movie").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+            }.padding(16)
+
+            ScrollView {
+                MovieExportControls().padding(16)
+            }
+        }
+        #if os(iOS)
+        .presentationDetents([.medium, .large])
+        #else
+        .frame(width: 420, height: 480)
+        #endif
+    }
+}
+
+// MARK: - Movie content tab
+
+// The unified Movie flow as an in-panel content tab (iPhone bottom tab bar):
+// "1 · Animate" (author a camera/state/scene movie) flows straight into
+// "2 · Export" (render the resulting timeline to MP4/GIF) — no modal, matching
+// the other content tabs. The transport bar handles playback of what's built.
+struct MoviePane: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                stepHeader("1 · Animate", "what moves")
+                MovieBuilderControls()
+
+                Divider().padding(.vertical, 14)
+
+                stepHeader("2 · Export", "save the file")
+                MovieExportControls()
+            }
+            .padding(16)
+            // Clear the floating tab-bar pill so the Export button stays reachable.
+            .padding(.bottom, 56)
+        }
+    }
+
+    @ViewBuilder
+    private func stepHeader(_ title: String, _ subtitle: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(TimelineTheme.accent)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
     }
 }

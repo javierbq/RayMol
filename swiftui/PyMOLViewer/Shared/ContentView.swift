@@ -1078,6 +1078,8 @@ struct ContentView: View {
                 .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
             ObjectPanel()
                 .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
+            MoviePane()
+                .tabItem { Label("Movie", systemImage: "film") }.tag(2)
             settingsPane
                 .tabItem { Label("Settings", systemImage: "gearshape") }.tag(4)
         }

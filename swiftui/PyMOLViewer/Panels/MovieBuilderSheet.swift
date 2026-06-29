@@ -1,15 +1,22 @@
 // MovieBuilderSheet.swift — author camera / state / scene-loop movies (the
 // desktop "Movie ▸ Program" builders), native and neutral-labeled. Writes
 // mset/mview via appkit_movie.make_movie and plays the result on the TransportBar.
+//
+// The controls live in the reusable MovieBuilderControls view so they can be
+// embedded both in this sheet (transport overflow · SceneCard "Scene loop →")
+// and inline in the Movie content tab (MoviePane).
 
 import SwiftUI
 
-struct MovieBuilderSheet: View {
+// MARK: - Reusable controls
+
+struct MovieBuilderControls: View {
     @EnvironmentObject var engine: PyMOLEngine
-    @Environment(\.dismiss) private var dismiss
 
     /// Which tab to open on (SceneCard "Scene loop →" opens .scenes).
     var initialTab: Tab = .camera
+    /// Called after a successful Build (the sheet dismisses; the pane no-ops).
+    var onBuilt: (() -> Void)? = nil
 
     enum Tab: String, CaseIterable, Identifiable {
         case camera = "Camera", states = "States", scenes = "Scenes"
@@ -45,60 +52,31 @@ struct MovieBuilderSheet: View {
     @State private var sceneLoop = true
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        VStack(alignment: .leading, spacing: 16) {
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 16).padding(.bottom, 8)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    switch tab {
-                    case .camera: cameraTab
-                    case .states: statesTab
-                    case .scenes: scenesTab
-                    }
-                    Divider()
-                    commonActions
-                }
-                .padding(16)
+            switch tab {
+            case .camera: cameraTab
+            case .states: statesTab
+            case .scenes: scenesTab
             }
 
-            buildBar
-        }
-        .onAppear { tab = initialTab }
-        #if os(iOS)
-        .presentationDetents([.medium, .large])
-        #else
-        .frame(width: 420, height: 520)
-        #endif
-    }
+            Divider()
+            commonActions
 
-    // MARK: Header / footer
-
-    private var header: some View {
-        HStack {
-            Text("Make Movie").font(.headline)
-            Spacer()
-            Button("Done") { dismiss() }
-        }
-        .padding(16)
-    }
-
-    private var buildBar: some View {
-        HStack {
-            Spacer()
             Button(action: build) {
                 Label("Build & Play", systemImage: "play.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .padding(.horizontal, 18).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
             }
             .buttonStyle(.borderedProminent)
             .tint(TimelineTheme.accent)
         }
-        .padding(16)
+        .onAppear { tab = initialTab }
     }
 
     // MARK: Tabs
@@ -209,7 +187,7 @@ struct MovieBuilderSheet: View {
         }
         // Let the build settle, then start playback on the transport bar.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { engine.play() }
-        dismiss()
+        onBuilt?()
     }
 
     // MARK: Helpers
@@ -227,6 +205,36 @@ struct MovieBuilderSheet: View {
             ForEach(opts, id: \.1) { Text($0.0).tag($0.1) }
         }
         .pickerStyle(.segmented)
+    }
+}
+
+// MARK: - Sheet wrapper
+
+struct MovieBuilderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// Which tab to open on (SceneCard "Scene loop →" opens .scenes).
+    var initialTab: MovieBuilderControls.Tab = .camera
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Make Movie").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+            .padding(16)
+
+            ScrollView {
+                MovieBuilderControls(initialTab: initialTab, onBuilt: { dismiss() })
+                    .padding(16)
+            }
+        }
+        #if os(iOS)
+        .presentationDetents([.medium, .large])
+        #else
+        .frame(width: 420, height: 520)
+        #endif
     }
 }
 
