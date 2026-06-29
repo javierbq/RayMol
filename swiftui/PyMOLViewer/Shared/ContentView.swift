@@ -417,6 +417,8 @@ struct ContentView: View {
     @State private var selectedTab = 1
     @State private var showFetch = false
     @State private var fetchID = ""
+    // Confirmation for the destructive "Clear session" reset action.
+    @State private var showClearSessionConfirm = false
     // iPhone: the transport floats as a 1-line peek over the viewport and
     // expands in place to the full multi-row control. (Ignored on regular-width
     // iPad, where the bar is always full.)
@@ -559,7 +561,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosThemeToolbar; iosPanelToggle; iosPadPanelMenu; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosThemeToolbar; iosResetMenu; iosPanelToggle; iosPadPanelMenu; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -572,6 +574,12 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Download a structure from the RCSB PDB.")
+            }
+            .alert("Clear session?", isPresented: $showClearSessionConfirm) {
+                Button("Clear", role: .destructive) { engine.clearSessionAndAutosave() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes all loaded structures and resets the view, effects, and settings to defaults. This can’t be undone.")
             }
             .sheet(isPresented: $showGestureLegend) {
                 VStack(spacing: 16) {
@@ -1161,6 +1169,30 @@ struct ContentView: View {
                 Image(systemName: "circle.lefthalf.filled")
             }
             .accessibilityLabel("Theme studio")
+        }
+    }
+
+    // Graduated reset menu (iOS has no File menu, so this is the only escape
+    // hatch from a messed-up scene or a persisted bad state). Ordered by blast
+    // radius: recenter the camera, reset the post-processing effects, or wipe
+    // the whole session. Only the last is destructive → confirmation alert.
+    private var iosResetMenu: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                Button { engine.runCommand("reset") } label: {
+                    Label("Reset view", systemImage: "arrow.counterclockwise")
+                }
+                Button { engine.resetEffects() } label: {
+                    Label("Reset effects", systemImage: "circle.lefthalf.filled")
+                }
+                Divider()
+                Button(role: .destructive) { showClearSessionConfirm = true } label: {
+                    Label("Clear session…", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "arrow.counterclockwise.circle")
+            }
+            .accessibilityLabel("Reset")
         }
     }
 

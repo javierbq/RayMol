@@ -1923,19 +1923,10 @@ private struct SceneCard: View {
         .buttonStyle(.plain)
     }
 
-    // Effects-group defaults, from layer1/SettingInfo.h. The ~500ms scene-state
-    // poll re-syncs the toggles/sliders to these values after the sets land.
-    private func resetEffects() {
-        let defaults: [(String, String)] = [
-            ("metal_outline", "0"),
-            ("metal_outline_width", "1.4"),
-            ("metal_outline_color", "0x000000"),
-            ("metal_tonemap", "0"),
-            ("metal_exposure", "1.0"),
-            ("depth_cue", "1"),
-        ]
-        for (k, v) in defaults { engine.runCommand("set \(k), \(v)") }
-    }
+    // Defaults live on the engine (engine.resetEffects) so the iOS toolbar reset
+    // menu and this Inspector button share one source of truth. The ~500ms
+    // scene-state poll re-syncs the toggles/sliders after the sets land.
+    private func resetEffects() { engine.resetEffects() }
 
     // Dependent rows (dependsOn set) are hidden while their parent toggle is off.
     private func visible(_ p: SceneParam) -> Bool {

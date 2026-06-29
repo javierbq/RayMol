@@ -215,7 +215,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v33  (Movie export renders off the main thread — no UI freeze)")
+            self?.feedbackLog.append(" [build] v34  (iOS reset menu: Reset view / effects / Clear session)")
         }
 
         // `fetch` downloads into fetch_path. Use the temp directory: it's always
@@ -500,6 +500,18 @@ final class PyMOLEngine: ObservableObject {
         if let url = autosaveURL { try? FileManager.default.removeItem(at: url) }
         if let img = autosaveImageURL { try? FileManager.default.removeItem(at: img) }
         UserDefaults.standard.set(false, forKey: Self.autosaveDefaultsKey)
+    }
+
+    /// Full reset for the iOS "Clear session" action. clearSession() wipes the
+    /// scene + selections + camera and resets every setting to defaults (then
+    /// re-applies the theme); we ALSO delete the autosave here so a force-quit
+    /// immediately after the reset can't restore the cleared (or bad) state on
+    /// the next launch — the autosave otherwise only clears on a later
+    /// background-with-empty-scene cycle. This is the iOS escape hatch from a
+    /// persisted bad state (e.g. a stuck filmic tone-map).
+    func clearSessionAndAutosave() {
+        clearSession()
+        clearAutosave()
     }
 
     /// Snapshot the full session to the autosave .pse. Called when the app is
@@ -913,6 +925,21 @@ final class PyMOLEngine: ObservableObject {
         // access), then re-apply the RayMol theme.
         runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(NSTemporaryDirectory())')")
         applyTheme(ThemeManager.shared.active)
+    }
+
+    /// Reset the Effects-group post-processing/stylization settings to their
+    /// SettingInfo.h defaults. Shared by the Inspector's "Reset effects" button
+    /// and the iOS toolbar reset menu. Non-destructive — keeps loaded structures.
+    func resetEffects() {
+        let defaults: [(String, String)] = [
+            ("metal_outline", "0"),
+            ("metal_outline_width", "1.4"),
+            ("metal_outline_color", "0x000000"),
+            ("metal_tonemap", "0"),
+            ("metal_exposure", "1.0"),
+            ("depth_cue", "1"),
+        ]
+        for (k, v) in defaults { runCommand("set \(k), \(v)") }
     }
 
     // MARK: - Theme studio live preview
