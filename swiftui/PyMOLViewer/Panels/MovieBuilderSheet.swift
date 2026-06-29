@@ -92,9 +92,9 @@ struct MovieBuilderControls: View {
             HStack(alignment: .top, spacing: 12) {
                 menuPicker("Motion", $motion, CameraMotion.allCases.map { ($0.rawValue, $0) })
                 menuPicker("Duration", $duration, [("4 s", 4), ("8 s", 8), ("16 s", 16), ("32 s", 32)])
-                if motion.needsAngle {
-                    menuPicker("Angle", $angle, [("30°", 30), ("60°", 60), ("90°", 90), ("120°", 120)])
-                }
+                // Always shown (rock/nutate use it; roll ignores it) so the row
+                // is consistent across motions.
+                menuPicker("Angle", $angle, [("30°", 30), ("60°", 60), ("90°", 90), ("120°", 120)])
             }
             Toggle("Seamless loop", isOn: $cameraLoop).tint(TimelineTheme.accent)
             Text("A 360° camera \(motion.rawValue.lowercased()) authored as interpolated keyframes.")
@@ -106,7 +106,7 @@ struct MovieBuilderControls: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 menuPicker("Mode", $stateMode, StateMode.allCases.map { ($0.rawValue, $0) })
-                menuPicker("Speed", $speedFactor, [("1×", 1), ("½×", 2), ("¼×", 4), ("⅛×", 8)])
+                menuPicker("Speed", $speedFactor, [("1×", 1), ("½×", 2), ("⅓×", 3), ("¼×", 4), ("⅛×", 8), ("1⁄16×", 16)])
                 menuPicker("Pause", $statePause, [("0 s", 0), ("1 s", 1), ("2 s", 2), ("4 s", 4)])
             }
             Toggle("Seamless loop", isOn: $stateLoop).tint(TimelineTheme.accent)
@@ -135,13 +135,13 @@ struct MovieBuilderControls: View {
     }
 
     private var commonActions: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 16) {
             Button {
                 engine.captureKeyframe()
             } label: {
-                Label("Capture camera keyframe @ frame \(engine.playback.currentFrame)",
-                      systemImage: "camera.viewfinder")
+                Label("Capture keyframe", systemImage: "camera.viewfinder")
             }
+            Spacer(minLength: 0)
             Button(role: .destructive) {
                 engine.clearMovie()
             } label: {

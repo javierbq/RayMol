@@ -413,8 +413,6 @@ struct MoviePane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 MovieBuilderControls(initialTab: Self.initialTabFromEnv)
-                Text("Build & Play to preview on the transport. To save a file, use the Export menu (top-right) → Export Movie.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding(16)
             // Clear the floating tab-bar pill so the controls stay reachable.

@@ -466,8 +466,8 @@ struct ContentView: View {
     // keeps the compact bottom-panel layout; everything else (iPad both
     // orientations, iPhone landscape) uses the mac-style layout.
     @Environment(\.verticalSizeClass) private var vSize
-    @State private var panelFrac: CGFloat = 0.28
-    @State private var committedFrac: CGFloat = 0.28
+    @State private var panelFrac: CGFloat = 0.53
+    @State private var committedFrac: CGFloat = 0.53
     @State private var panelCollapsed = false
     // iPhone: full-screen viewport mode (hides the bottom panel + sequence strip).
     // Replaces the old drag-to-collapse; driven by iosPanelToggle.
@@ -483,7 +483,7 @@ struct ContentView: View {
     // Panel share to return to when no detail view is open. While a detail view
     // (SCENE or an object card) is expanded the panel auto-grows to its max so
     // the options are visible; collapsing restores this remembered size.
-    @State private var collapsedFrac: CGFloat = 0.28
+    @State private var collapsedFrac: CGFloat = 0.53
     @State private var didConfigForCompact = false
     @AppStorage("ipadGestureCoachSeen") private var gestureCoachSeen = false
     @State private var showGestureLegend = false
