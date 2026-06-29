@@ -21,9 +21,15 @@ import AppKit
 
 // MARK: - Exporter
 
-@MainActor
+// NOT @MainActor: the per-frame core render (renderHiResPNG) + AV/GIF encode run
+// on `renderQueue` so they don't block the UI (#58 L-59). @Published mutations
+// are explicitly hopped back to the main thread; loop control (idx/isExporting)
+// is only touched on the main thread (in renderNext / start / finish).
 final class MovieExporter: ObservableObject {
     enum Format: String, CaseIterable, Identifiable { case mp4 = "MP4", gif = "GIF"; var id: String { rawValue } }
+
+    // Serial: frames render + encode one at a time, off the main thread.
+    private let renderQueue = DispatchQueue(label: "io.raymol.movieexport", qos: .userInitiated)
 
     @Published var isExporting = false
     @Published var progress: Double = 0
@@ -74,6 +80,9 @@ final class MovieExporter: ObservableObject {
         }
 
         engine.pause()           // stop core-driven advance during capture
+        // Claim the core for the exporter: the live draw loop + feedback poll now
+        // skip (they gate on this), so renderHiResPNG can run off-main exclusively.
+        engine.exportRenderActive = true
         isExporting = true
         renderNext()
     }
@@ -112,34 +121,55 @@ final class MovieExporter: ObservableObject {
         }
     }
 
+    // Drives one frame per cycle. Loop control (idx/isExporting/progress) is only
+    // touched here on the MAIN thread; the heavy per-frame work — set frame +
+    // renderHiResPNG (a blocking GPU render that reshapes the core) + encode —
+    // runs on renderQueue OFF the main thread, so the UI stays responsive even
+    // for slow ray-traced frames. The live draw loop + feedback poll are gated
+    // by engine.exportRenderActive, so the exporter is the sole core user. (#58 L-59)
     private func renderNext() {
         guard isExporting, let engine = engine, let frameDir = frameDir else { return }
         if idx > last { finish(); return }
-        // Set the frame (synchronous), then capture on the next runloop tick so
-        // any deferred rep rebuild for the new state has flushed.
-        engine.runPython("from pymol import cmd as _c\n_c.frame(\(idx))")
-        let captureIdx = idx
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-            guard let self = self, self.isExporting else { return }
-            let png = frameDir.appendingPathComponent("f\(captureIdx).png")
-            engine.renderHiResPNG(png.path, width: self.width, height: self.height,
-                                  rayTraced: self.rayTraced)
-            if let cg = self.loadCGImage(png) { self.appendFrame(cg) }
+        let captureIdx = idx, w = width, h = height, rt = rayTraced
+        let png = frameDir.appendingPathComponent("f\(captureIdx).png")
+        // cmd.frame is a Python call — it MUST run on the main thread. The
+        // embedded interpreter uses PyMOL's PAutoBlock (a single shared thread
+        // state), NOT PyGILState_Ensure, so driving it from another queue
+        // corrupts the Python heap (verified: SIGSEGV in _PyObject_Malloc).
+        // Only the heavy, Python-FREE C++ render + encode go off-main. The frame
+        // is fully set here before the render is dispatched, so there's no overlap
+        // (and the next frame is only set after this one's render completes).
+        engine.runPython("from pymol import cmd as _c\n_c.frame(\(captureIdx))")
+        renderQueue.async { [weak self, weak engine] in
+            guard let self = self, let engine = engine else { return }
+            // Off main, exclusive core access (live draw loop + feedback poll are
+            // gated by exportRenderActive). renderOneOffscreen is pure C++/Metal —
+            // it runs SceneUpdate to rebuild the just-set frame's reps, blocks on
+            // the GPU, and writes the PNG — no Python, so it's safe off the main
+            // thread and the UI stays responsive during the slow (RT) render.
+            engine.renderHiResPNG(png.path, width: w, height: h, rayTraced: rt)
+            if let cg = self.loadCGImage(png) { self.appendFrame(cg, frameIndex: captureIdx) }   // encode off-main
             try? FileManager.default.removeItem(at: png)
-            self.progress = Double(captureIdx - self.first + 1) / Double(self.total)
-            self.idx += 1
-            self.renderNext()
+            DispatchQueue.main.async {
+                guard self.isExporting else { return }
+                self.progress = Double(captureIdx - self.first + 1) / Double(self.total)
+                self.idx += 1
+                self.renderNext()
+            }
         }
     }
 
-    private func appendFrame(_ cg: CGImage) {
+    // Runs on renderQueue (off main). `frameIndex` is passed in rather than read
+    // from `self.idx` (which the main thread mutates) so there's no cross-thread
+    // read of the loop counter.
+    private func appendFrame(_ cg: CGImage, frameIndex: Int) {
         switch format {
         case .mp4:
             guard let input = videoInput, let adaptor = adaptor else { return }
             var tries = 0
             while !input.isReadyForMoreMediaData && tries < 200 { usleep(2000); tries += 1 }
             if let pb = pixelBuffer(from: cg) {
-                let t = CMTime(value: Int64(idx - first), timescale: Int32(fps))
+                let t = CMTime(value: Int64(frameIndex - first), timescale: Int32(fps))
                 adaptor.append(pb, withPresentationTime: t)
             }
         case .gif:
@@ -187,14 +217,21 @@ final class MovieExporter: ObservableObject {
         finishedURL = url
         isExporting = false
         progress = 1
+        engine?.exportRenderActive = false   // hand the core back to the live loop
         if let d = frameDir { try? FileManager.default.removeItem(at: d) }
     }
 
     private func cleanup() {
         isExporting = false
+        engine?.exportRenderActive = false   // hand the core back to the live loop
         if let d = frameDir { try? FileManager.default.removeItem(at: d) }
         writer = nil; videoInput = nil; adaptor = nil; gifDest = nil
     }
+
+    // Safety net: if the sheet is dismissed mid-export and the exporter is
+    // released, never leave the core flag stuck true (that would freeze the live
+    // viewport). The in-flight renderQueue frame finishes harmlessly.
+    deinit { engine?.exportRenderActive = false }
 
     // MARK: helpers
 
