@@ -110,7 +110,13 @@ def find_all_macho(app_path):
 
 def detect_python_version(binary_path):
     """Detect Python version from the binary's linked Python.framework."""
-    out = subprocess.check_output(["otool", "-L", str(binary_path)], text=True)
+    try:
+        out = subprocess.check_output(["otool", "-L", str(binary_path)], text=True)
+    except (subprocess.CalledProcessError, OSError) as e:
+        # Match the rest of the script's otool error handling: return None so the
+        # caller can sys.exit(1) cleanly instead of dying with a raw traceback.
+        print("WARNING: otool -L failed on %s: %s" % (binary_path, e))
+        return None
     for line in out.splitlines():
         if "Python.framework" in line:
             parts = line.strip().split("/")
@@ -142,11 +148,17 @@ def run_install_name_tool(args):
         # Might fail due to code signature; strip and retry
         target = args[-1]
         strip_signature(target)
-        subprocess.run(
+        result = subprocess.run(
             ["install_name_tool"] + args,
             capture_output=True,
             text=True,
         )
+        # Mirror bundle_macos_dylibs.py: a failed retry must abort, not silently
+        # leave stale baked-in paths (-id/-add_rpath) that phase_g never checks.
+        if result.returncode != 0:
+            raise RuntimeError(
+                "install_name_tool failed for %s: %s"
+                % (target, result.stderr.strip()))
 
 
 def copytree_filtered(src, dst, exclude_dirs=None, exclude_patterns=None):
@@ -297,16 +309,32 @@ def phase_d_copy_dylibs(app_path, dylibs):
     fw_dir.mkdir(parents=True, exist_ok=True)
 
     copied = {}
-    for dylib_path in sorted(dylibs):
-        basename = os.path.basename(dylib_path)
+    # basename -> source realpath that claimed it. We bundle (and later rewrite
+    # load commands) by basename, so two DISTINCT libraries sharing a filename
+    # would silently ship only the first and crash the other consumer at runtime.
+    # collect_all_dylibs dedupes by realpath, so a repeated basename here is a
+    # genuine collision — fail loudly rather than ship a broken bundle.
+    seen = {}
+
+    def _place(src, label=""):
+        basename = os.path.basename(src)
+        real = os.path.realpath(src)
+        prev = seen.get(basename)
+        if prev is not None and prev != real:
+            raise RuntimeError(
+                "dylib basename collision for '%s':\n  %s\n  %s\n"
+                "Two distinct libraries share a filename; bundling by basename "
+                "would ship only one and break the other." % (basename, prev, src))
+        seen[basename] = real
         dst = fw_dir / basename
-        if dst.exists():
-            # Already there (maybe from a previous run)
-            pass
-        else:
-            shutil.copy2(dylib_path, str(dst))
-        copied[dylib_path] = str(dst)
-        print(f"  {basename}")
+        if not dst.exists():
+            shutil.copy2(src, str(dst))
+        copied[src] = str(dst)
+        print(f"  {label}{basename}")
+        return dst
+
+    for dylib_path in sorted(dylibs):
+        _place(dylib_path)
 
     # Now scan .so files in the bundle for additional transitive deps
     print("  Scanning bundle .so files for additional deps...")
@@ -314,13 +342,11 @@ def phase_d_copy_dylibs(app_path, dylibs):
     extra_dylibs = collect_all_dylibs(so_files)
     new_count = 0
     for dylib_path in sorted(extra_dylibs):
-        basename = os.path.basename(dylib_path)
-        dst = fw_dir / basename
-        if not dst.exists():
-            shutil.copy2(dylib_path, str(dst))
-            copied[dylib_path] = str(dst)
-            print(f"  (transitive) {basename}")
+        if dylib_path in copied:
+            continue
+        if not (fw_dir / os.path.basename(dylib_path)).exists():
             new_count += 1
+        _place(dylib_path, label="(transitive) ")
     if new_count:
         print(f"  Found {new_count} additional transitive dylibs")
 
@@ -420,6 +446,16 @@ def _add_rpath(path, rpath):
     run_install_name_tool(["-add_rpath", rpath, str(path)])
 
 
+def _codesign(path):
+    """Ad-hoc sign `path`, aborting on failure. A silently-failed signature
+    produces a bundle that Gatekeeper/dyld reject at launch on a clean machine."""
+    r = subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(path)],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("codesign failed for %s: %s" % (path, r.stderr.strip()))
+
+
 def phase_f_codesign(app_path):
     """Phase F: Ad-hoc code sign everything."""
     print("\n=== Phase F: Ad-hoc code signing ===")
@@ -428,43 +464,38 @@ def phase_f_codesign(app_path):
     # Sign dylibs
     for f in sorted(fw_dir.rglob("*.dylib")):
         if f.is_file() and not f.is_symlink():
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", str(f)],
-                capture_output=True,
-            )
+            _codesign(f)
 
     # Sign .so files
     so_count = 0
     for so in sorted(app_path.rglob("*.so")):
         if so.is_file() and not so.is_symlink():
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", str(so)],
-                capture_output=True,
-            )
+            _codesign(so)
             so_count += 1
 
     # Sign Python framework
     python_fw = fw_dir / "Python.framework"
     if python_fw.exists():
-        subprocess.run(
-            ["codesign", "--force", "--sign", "-", str(python_fw)],
-            capture_output=True,
-        )
+        _codesign(python_fw)
 
     # Sign main binary
     binary = app_path / "Contents/MacOS/PyMOL"
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(binary)],
-        capture_output=True,
-    )
+    _codesign(binary)
 
     # Sign the whole app
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(app_path)],
-        capture_output=True,
-    )
+    _codesign(app_path)
 
-    print(f"  Signed dylibs, {so_count} .so files, Python.framework, binary, and app")
+    # Verify the seal is structurally valid before we trust the bundle (catches a
+    # sign step that "succeeded" but left an inconsistent signature). phase_g only
+    # checks dependency paths, not signature validity.
+    verify = subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", str(app_path)],
+        capture_output=True, text=True)
+    if verify.returncode != 0:
+        raise RuntimeError(
+            "codesign --verify failed for %s: %s" % (app_path, verify.stderr.strip()))
+
+    print(f"  Signed dylibs, {so_count} .so files, Python.framework, binary, and app (verified)")
 
 
 def phase_g_verify(app_path):

@@ -95,7 +95,9 @@ EOF
   find "$OUT/$NAME/numpy" -name "_rational_tests*.so" -delete
   find "$OUT/$NAME/numpy" -name "_struct_ufunc_tests*.so" -delete
   # Rename host (-darwin) suffix to the iOS EXT_SUFFIX so import finds them.
-  for so in $(find "$OUT/$NAME/numpy" -name "*.cpython-313-darwin.so"); do
+  # -print0 | read -d '' so paths containing spaces/newlines don't word-split
+  # (an unquoted $(find ...) would split and the mv would silently miss files).
+  find "$OUT/$NAME/numpy" -name "*.cpython-313-darwin.so" -print0 | while IFS= read -r -d '' so; do
     mv "$so" "${so/.cpython-313-darwin.so/$EXT}"
   done
   echo ">> [$NAME] staged $(find "$OUT/$NAME/numpy" -name '*.so' | wc -l | tr -d ' ') extension modules"
