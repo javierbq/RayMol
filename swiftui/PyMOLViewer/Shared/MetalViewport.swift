@@ -311,6 +311,11 @@ extension MetalViewport {
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
+            // A movie export renders frames off the main thread and owns the core
+            // exclusively (it reshapes global state per frame). Skip the live
+            // render meanwhile so we never race it; the exporter restores the
+            // scene + clears this flag when done, and the next tick redraws. (#58 L-59)
+            if engine.exportRenderActive { return }
             // Panel-resize drag: while suppressed, freeze the drawable size so the
             // renderer doesn't reallocate offscreen targets on every frame (choppy
             // + OOM). On resume, snap the drawable to the current bounds ONCE,

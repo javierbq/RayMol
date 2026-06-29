@@ -75,6 +75,15 @@ final class PyMOLEngine: ObservableObject {
     // frame (choppy + OOM). Cleared on release → one reshape at the final size.
     var suppressDrawableResize = false
 
+    // While a movie export is rendering, it owns the core off the main thread
+    // (renderHiResPNG temporarily reshapes global core state + blocks on the
+    // GPU). The live draw loop and the feedback poll — the other main-thread
+    // core accessors — gate on this flag and skip, so the exporter is the sole
+    // core user and the per-frame render no longer beachballs the UI. Set/cleared
+    // on the main thread by MovieExporter; the export sheet is modal so no
+    // interleaved commands run meanwhile. (#58 L-59)
+    var exportRenderActive = false
+
     // Representation inspector state.
     // Per-object active representations + their current setting values + color
     // override, populated by pollDetails()/parseObjectDetailFeedback().
@@ -206,7 +215,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v31  (Reset-effects button + always-visible exposure; sim MetalFX guard)")
+            self?.feedbackLog.append(" [build] v32  (Movie export renders off the main thread — no UI freeze)")
         }
 
         // `fetch` downloads into fetch_path. Use the temp directory: it's always
@@ -1300,6 +1309,11 @@ final class PyMOLEngine: ObservableObject {
 
     private func pollFeedback() {
         guard let inst = instance else { return }
+        // While a movie export owns the core off the main thread, skip polling —
+        // reading feedback here is a core access that would race the exclusive
+        // exporter (which reshapes global state). The exporter drives its own
+        // progress, so nothing is lost. (#58 L-59)
+        if exportRenderActive { return }
         guard let cStr = PyMOLBridge_GetFeedback(inst) else { return }
         let text = String(cString: cStr)
         PyMOLBridge_FreeFeedback(cStr)
