@@ -1153,10 +1153,8 @@ private struct ColorMenuButton: View {
         .popover(isPresented: $showCustom, arrowEdge: .bottom) {
             VStack(spacing: 8) {
                 Text("Custom color").font(.system(size: 11, weight: .semibold))
-                ColorPicker("", selection: Binding(
-                    get: { customColor },
-                    set: { customColor = $0; applyCustomColor($0) }))
-                    .labelsHidden()
+                DebouncedColorPicker(get: { customColor },
+                                     apply: { customColor = $0; applyCustomColor($0) })
             }
             .padding(12)
         }
@@ -1192,6 +1190,31 @@ private func colorFromHex(_ hex: String) -> Color? {
                  red: Double((v >> 16) & 0xff) / 255.0,
                  green: Double((v >> 8) & 0xff) / 255.0,
                  blue: Double(v & 0xff) / 255.0)
+}
+
+/// A ColorPicker whose apply action is debounced. SwiftUI fires the binding's
+/// `set:` on every tick of the color-wheel drag, which otherwise floods the
+/// core with set_color + recolor each tick (review L-58 — a recolor is far
+/// heavier than a `set`). We show the dragged color live but coalesce the
+/// actual apply to ~150 ms after the last change, mirroring LabeledSlider.
+struct DebouncedColorPicker: View {
+    let get: () -> Color
+    let apply: (Color) -> Void
+    @State private var pending: Color? = nil
+    @State private var work: DispatchWorkItem? = nil
+
+    var body: some View {
+        ColorPicker("", selection: Binding(
+            get: { pending ?? get() },
+            set: { c in
+                pending = c                 // live: track the dragged color
+                work?.cancel()
+                let w = DispatchWorkItem { apply(c) }   // debounced: hit the core
+                work = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+            }))
+            .labelsHidden()
+    }
 }
 
 /// SwiftUI Color → PyMOL set_color list "[r,g,b]" in 0…1.
@@ -1368,10 +1391,8 @@ private struct RepColorControl: View {
             .menuStyle(.borderlessButton)
             .controlSize(.small)
             .frame(maxWidth: 70)
-            ColorPicker("", selection: Binding(
-                get: { colorFromHex(colorState) ?? .white },
-                set: { applyCustom($0) }))
-                .labelsHidden()
+            DebouncedColorPicker(get: { colorFromHex(colorState) ?? .white },
+                                 apply: { applyCustom($0) })
                 .frame(width: 28)
         }
     }
@@ -1436,8 +1457,7 @@ private struct ObjectColorRow: View {
             .menuStyle(.borderlessButton)
             .controlSize(.small)
             .frame(maxWidth: 60)
-            ColorPicker("", selection: Binding(get: { .white }, set: { applyCustom($0) }))
-                .labelsHidden()
+            DebouncedColorPicker(get: { .white }, apply: { applyCustom($0) })
                 .frame(width: 28)
         }
         .padding(.vertical, 2)
@@ -1937,16 +1957,16 @@ private struct SceneCard: View {
     @ViewBuilder
     private func sceneControl(_ p: SceneParam) -> some View {
         if p.isColor {
-            ColorPicker("", selection: Binding(
+            DebouncedColorPicker(
                 get: {
                     let c = (p.setting == "bg_rgb") ? engine.sceneState.bg : engine.sceneState.outlineColor
                     return Color(.sRGB, red: c.count > 0 ? c[0] : 0,
                                  green: c.count > 1 ? c[1] : 0, blue: c.count > 2 ? c[2] : 0)
                 },
-                set: { c in
+                apply: { c in
                     if p.setting == "bg_rgb" { setBackground(c) } else { setOutlineColor(c) }
-                }))
-                .labelsHidden().frame(width: 28)
+                })
+                .frame(width: 28)
         } else {
             let v = engine.sceneState.values[p.setting] ?? 0
             switch p.kind {
