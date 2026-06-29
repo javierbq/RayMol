@@ -215,7 +215,7 @@ final class PyMOLEngine: ObservableObject {
         // cached/stale install) when verifying gesture-direction fixes. Bump the
         // tag whenever gesture behavior changes; it shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v32  (Movie export renders off the main thread — no UI freeze)")
+            self?.feedbackLog.append(" [build] v33  (Movie export renders off the main thread — no UI freeze)")
         }
 
         // `fetch` downloads into fetch_path. Use the temp directory: it's always

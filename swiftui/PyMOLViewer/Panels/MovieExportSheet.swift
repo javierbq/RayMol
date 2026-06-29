@@ -132,12 +132,21 @@ final class MovieExporter: ObservableObject {
         if idx > last { finish(); return }
         let captureIdx = idx, w = width, h = height, rt = rayTraced
         let png = frameDir.appendingPathComponent("f\(captureIdx).png")
+        // cmd.frame is a Python call — it MUST run on the main thread. The
+        // embedded interpreter uses PyMOL's PAutoBlock (a single shared thread
+        // state), NOT PyGILState_Ensure, so driving it from another queue
+        // corrupts the Python heap (verified: SIGSEGV in _PyObject_Malloc).
+        // Only the heavy, Python-FREE C++ render + encode go off-main. The frame
+        // is fully set here before the render is dispatched, so there's no overlap
+        // (and the next frame is only set after this one's render completes).
+        engine.runPython("from pymol import cmd as _c\n_c.frame(\(captureIdx))")
         renderQueue.async { [weak self, weak engine] in
             guard let self = self, let engine = engine else { return }
-            // Off main, exclusive core access. renderHiResPNG runs SceneUpdate
-            // (rebuilds dirty reps for the new frame) before compositing, so the
-            // capture reflects the just-set frame without the old runloop delay.
-            engine.runPython("from pymol import cmd as _c\n_c.frame(\(captureIdx))")
+            // Off main, exclusive core access (live draw loop + feedback poll are
+            // gated by exportRenderActive). renderOneOffscreen is pure C++/Metal —
+            // it runs SceneUpdate to rebuild the just-set frame's reps, blocks on
+            // the GPU, and writes the PNG — no Python, so it's safe off the main
+            // thread and the UI stays responsive during the slow (RT) render.
             engine.renderHiResPNG(png.path, width: w, height: h, rayTraced: rt)
             if let cg = self.loadCGImage(png) { self.appendFrame(cg, frameIndex: captureIdx) }   // encode off-main
             try? FileManager.default.removeItem(at: png)
