@@ -523,6 +523,10 @@ struct ContentView: View {
                 Group {
                     if phonePortrait {
                         iPhoneLayout(geo: geo)
+                    } else if isPhoneLandscape {
+                        // iPhone landscape mirrors the portrait UX with the same
+                        // 5-tab control panel, docked on the RIGHT instead of bottom.
+                        iPhoneLandscapeLayout(geo: geo)
                     } else {
                         iPadMacStyleLayout(geo: geo)
                     }
@@ -775,6 +779,40 @@ struct ContentView: View {
         }
     }
 
+    // MARK: iPhone landscape — portrait UX, panel docked on the RIGHT
+
+    // Same components as portrait (sequence strip + viewport + the 5-tab control
+    // panel), but laid out horizontally: viewport on the left, the panel on the
+    // right edge. Full-screen hides the panel; the divider resizes it.
+    @ViewBuilder
+    private func iPhoneLandscapeLayout(geo: GeometryProxy) -> some View {
+        let total = geo.size.width
+        // Reuse panelFrac (shared with portrait) as a width share, clamped so the
+        // panel never eats more than ~45% of the landscape width.
+        let panelW = min(max(total * panelFrac, 300), total * 0.45)
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                if engine.sequenceVisible {
+                    SequencePanel().frame(height: ipadSequenceHeight)
+                    Divider()
+                }
+                viewportView
+            }
+            if iosFullScreen {
+                EmptyView()
+            } else if showThemeStudio {
+                resizeDivider(landscape: true, total: total)
+                ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
+                    .environmentObject(engine)
+                    .environmentObject(themeManager)
+                    .frame(width: panelW)
+            } else {
+                resizeDivider(landscape: true, total: total)
+                panelContent.frame(width: panelW)
+            }
+        }
+    }
+
     // MARK: iPad (regular size class) layout — mac-style stack
 
     // Mirrors the desktop macOSLayout: a left column with the terminal
@@ -933,9 +971,9 @@ struct ContentView: View {
         // iPhone (compact) only: collapse/expand the single bottom control panel.
         // The iPad mac-style layout uses iosPadPanelMenu (per-pane toggles) instead.
         ToolbarItem(placement: .primaryAction) {
-            // iPhone PORTRAIT only (the compact bottom-panel layout). iPhone
-            // landscape + iPad use the mac-style layout with iosPadPanelMenu.
-            if hSize == .compact && vSize == .regular {
+            // iPhone (both orientations) — the tab-panel layout uses a full-screen
+            // toggle. iPad uses the mac-style layout with iosPadPanelMenu.
+            if hSize == .compact {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { iosFullScreen.toggle() }
                 } label: {
@@ -955,10 +993,9 @@ struct ContentView: View {
     // and show/hide the Objects + Raymond right column — the desktop arrangement.
     private var iosPadPanelMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            // Shown whenever the mac-style layout is active: iPad (both orientations)
-            // and iPhone LANDSCAPE. Hidden only in iPhone portrait (which uses the
-            // compact bottom-panel layout + iosPanelToggle).
-            if !(hSize == .compact && vSize == .regular) {
+            // iPad only (mac-style layout). iPhone — both orientations — uses the
+            // 5-tab control panel + the full-screen toggle (iosPanelToggle).
+            if hSize == .regular {
                 Button {
                     showPanePopover.toggle()
                 } label: {
