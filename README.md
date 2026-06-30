@@ -2,6 +2,8 @@
 
 # RayMol
 
+[![Join Slack](https://img.shields.io/badge/Slack-Join_Community-4A154B?logo=slack&logoColor=white)](https://raymol-slack-invite-production.up.railway.app)
+
 **RayMol** is a native **macOS · iPad · iPhone** reimagining of the
 [PyMOL](https://pymol.org) molecular visualization system — a SwiftUI front end
 driving the real PyMOL engine through **Metal**, with an embedded CPython
