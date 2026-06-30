@@ -524,10 +524,10 @@ struct ContentView: View {
     // safeAreaInsetsDidChange — reliable across a landscapeLeft<->Right flip,
     // unlike geo.safeAreaInsets (which reports the island inset regardless of side).
     @State private var windowTrailingInset: CGFloat = 0
-    @State private var windowLeadingInset: CGFloat = 0   // debug
     // In landscape the window reports the island inset SYMMETRICALLY on both sides,
     // so the insets can't tell us which side the island is physically on — the
-    // interface orientation does. landscapeLeft => island on the RIGHT.
+    // interface orientation does. Verified on-device (iPhone 15 Pro): when the
+    // island sits on the RIGHT the interface orientation is .landscapeRight.
     @State private var islandOnRight = false
 
     private func refreshIslandSide() {
@@ -535,7 +535,7 @@ struct ContentView: View {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
         if let io = scene?.interfaceOrientation {
-            islandOnRight = (io == .landscapeLeft)
+            islandOnRight = (io == .landscapeRight)
         }
         #endif
     }
@@ -593,7 +593,6 @@ struct ContentView: View {
             .background {
                 SafeAreaReader { insets in
                     if windowTrailingInset != insets.right { windowTrailingInset = insets.right }
-                    if windowLeadingInset != insets.left { windowLeadingInset = insets.left }
                 }
             }
             #endif
@@ -875,15 +874,6 @@ struct ContentView: View {
                 }
                 .padding(.top, 8)
                 .padding(.horizontal, 8)
-            }
-            // TEMP diagnostic — exact inset values so we can see why the panel insets.
-            .overlay(alignment: .bottomLeading) {
-                Text(verbatim: "islandR \(islandOnRight ? 1 : 0)  applied \(Int(islandOnRight ? windowTrailingInset : 0))  winL \(Int(windowLeadingInset))  winR \(Int(windowTrailingInset))")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .padding(6)
-                    .background(.black.opacity(0.7))
-                    .foregroundStyle(.green)
-                    .padding(10)
             }
 
             if !iosFullScreen {
