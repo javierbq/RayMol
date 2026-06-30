@@ -173,25 +173,39 @@ struct MovieBuilderControls: View {
 
     // MARK: Helpers
 
-    // Compact labelled dropdown — several sit side-by-side in a row to save
-    // vertical space (vs full-width segmented controls stacked one per row).
+    // Compact labelled dropdown — several sit side-by-side in a row. Built from a
+    // Menu with a custom label (NOT Picker(.menu)) so the value is forced to a
+    // single line that shrinks-to-fit rather than wrapping ("R / oll") when the
+    // column is narrow (e.g. when the Dynamic Island insets the landscape panel).
     @ViewBuilder
     private func menuPicker<T: Hashable>(_ title: String, _ value: Binding<T>,
                                          _ opts: [(String, T)]) -> some View {
+        let current = opts.first(where: { $0.1 == value.wrappedValue })?.0 ?? ""
         VStack(alignment: .leading, spacing: 3) {
             Text(title.uppercased())
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Picker(title, selection: value) {
-                ForEach(opts, id: \.1) { Text($0.0).tag($0.1) }
+                .lineLimit(1)
+            Menu {
+                ForEach(opts, id: \.1) { opt in
+                    Button(opt.0) { value.wrappedValue = opt.1 }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(current)
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundStyle(TimelineTheme.accent)
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.13)))
+                .contentShape(Rectangle())
             }
-            .pickerStyle(.menu)
-            .font(.system(size: 13, weight: .medium))   // compact so 4 fit one row
-            .tint(TimelineTheme.accent)
-            .lineLimit(1)
-            .padding(.horizontal, 7).padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.13)))
         }
         .frame(maxWidth: .infinity)
     }
