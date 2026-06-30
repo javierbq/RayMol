@@ -73,6 +73,72 @@ private struct SafeAreaReader: UIViewRepresentable {
 }
 #endif
 
+// MARK: - iPhone-landscape custom panel bar
+//
+// In iPhone landscape we render the control panel WITHOUT a TabView, because a TabView is
+// the only thing that spawns the iOS-26 floating capsule tab bar, and that capsule anchors
+// to the WINDOW safe area — it cannot be inset by any SwiftUI frame/padding/safeAreaPadding
+// (verified on-device). A plain HStack of buttons is ordinary content: it obeys its parent
+// column's frame, so when the column is narrowed by the notch every tab (incl. Settings)
+// stays LEFT of the black notch-stripe. Portrait / iPad keep the real TabView (panelTabs).
+
+/// The 5 control tabs in display order, matching `panelTabs` EXACTLY (same tags / icons /
+/// labels). Tag 3 is intentionally absent (the "poison" tag handled by the panel-grow onChange).
+private struct PanelTabSpec: Identifiable {
+    let tag: Int
+    let title: String
+    let systemImage: String
+    var id: Int { tag }
+}
+
+private let landscapePanelTabSpecs: [PanelTabSpec] = [
+    .init(tag: 0, title: "Console",  systemImage: "terminal"),
+    .init(tag: 1, title: "Objects",  systemImage: "cube"),
+    .init(tag: 5, title: "Scenes",   systemImage: "rectangle.on.rectangle"),
+    .init(tag: 2, title: "Movie",    systemImage: "film"),
+    .init(tag: 4, title: "Settings", systemImage: "gearshape"),
+]
+
+/// Custom bottom tab bar for iPhone landscape. Writes the same `$selectedTab` the TabView
+/// would, so the tag-3 poison-grow onChange and every deep-link keep working; it never
+/// emits tag 3.
+private struct LandscapeTabBar: View {
+    @Binding var selection: Int
+    let tint: Color
+    let chrome: Color
+    let inactive: Color
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(landscapePanelTabSpecs) { spec in
+                let isSel = selection == spec.tag
+                Button {
+                    selection = spec.tag
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: spec.systemImage)
+                            .font(.system(size: 17, weight: isSel ? .semibold : .regular))
+                        Text(spec.title)
+                            .font(.system(size: 10, weight: isSel ? .semibold : .regular))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(isSel ? tint : inactive.opacity(0.55))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(spec.title)
+                .accessibilityAddTraits(isSel ? [.isSelected, .isButton] : [.isButton])
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+        .background(chrome.overlay(alignment: .top) { Divider().opacity(0.6) })
+    }
+}
+
 private extension View {
     /// Tighten inter-section spacing on grouped lists (iOS 17+); no-op elsewhere.
     @ViewBuilder func compactListSections() -> some View {
@@ -886,31 +952,27 @@ struct ContentView: View {
 
             if !iosFullScreen {
                 Divider()
+                // The panel column is narrowed by the notch on the island-on-RIGHT side so
+                // it ends at the black stripe's left edge; flush to the true window edge when
+                // the island is on the left. .clipped() guarantees nothing paints past it.
                 if showThemeStudio {
                     ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                         .environmentObject(engine)
                         .environmentObject(themeManager)
-                        .frame(width: panelW)
-                } else {
-                    // The panel sits flush against whatever its right neighbour is:
-                    // the true screen edge when the island is on the LEFT, or the
-                    // black notch-stripe when the island is on the RIGHT. No inset —
-                    // the stripe (below) is what keeps the island off the panel.
-                    //
-                    // Only .top is ignored (the nav bar is hidden in landscape). We do
-                    // NOT ignore .horizontal: that let the TabView's bottom tab bar
-                    // bleed rightward into the trailing safe area, pushing the last tab
-                    // (Settings) under the black notch-stripe. The .background already
-                    // fills the frame to the screen edge, so the bleed bought nothing.
-                    panelTabs
-                        .ignoresSafeArea(.container, edges: .top)
-                        .frame(width: panelW, alignment: .leading)
+                        .frame(width: panelW - (islandOnRight ? notch : 0), alignment: .leading)
                         .background(themeChromeBg)
+                        .clipped()
+                } else {
+                    // Custom pane + custom bottom bar — NO TabView, so the iOS-26 floating
+                    // capsule cannot exist; plain content obeys the narrowed column frame.
+                    landscapePanelBody
+                        .frame(width: panelW - (islandOnRight ? notch : 0), alignment: .leading)
+                        .background(themeChromeBg)
+                        .clipped()
                 }
 
-                // Island on the RIGHT: letterbox it away with a solid black stripe at
-                // the far-right edge so the cutout never overlaps the panel. The panel
-                // butts flush against this stripe; the viewer fills everything left.
+                // Island on the RIGHT: solid black letterbox over the cutout, filling the
+                // reserved notch width to the window edge (full height via ignoresSafeArea).
                 if islandOnRight && notch > 0 {
                     Color.black
                         .frame(width: notch)
@@ -1345,6 +1407,34 @@ struct ContentView: View {
     // Portrait / opaque docked panel.
     private var panelContent: some View {
         panelTabs.background(themeChromeBg)
+    }
+
+    // iPhone-landscape ONLY panel body: the selected pane rendered WITHOUT a TabView (so the
+    // iOS-26 floating capsule can't exist), plus the custom LandscapeTabBar. Mirrors
+    // panelTabs' tag→view mapping 1:1. Being plain content, it obeys the narrowed column
+    // frame, keeping every tab — including Settings — left of the notch-stripe.
+    @ViewBuilder
+    private var landscapePanelBody: some View {
+        VStack(spacing: 0) {
+            Group {
+                switch selectedTab {
+                case 1:  ObjectPanel()
+                case 5:  ScenesPane(showViewportButtons: $showSceneButtons,
+                                    onOpenMovie: { selectedTab = 2 })
+                case 2:  MoviePane()
+                case 4:  settingsPane
+                default: CommandPanel(showInput: !RayMolBuild.iosRestricted)   // tag 0 (and any stray)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            LandscapeTabBar(
+                selection: $selectedTab,
+                tint: themeManager.active.tabTint.color,
+                chrome: themeManager.active.panelBackground.color,
+                inactive: themeManager.active.panelText.color
+            )
+        }
     }
 
     // Settings content tab (iPhone). Relocates the former top-bar Theme + Reset
