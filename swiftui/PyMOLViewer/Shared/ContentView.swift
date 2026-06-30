@@ -50,6 +50,29 @@ extension Notification.Name {
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
 }
 
+#if os(iOS)
+// Reports the key window's safe-area insets via UIKit's safeAreaInsetsDidChange,
+// which fires at the correct time on rotation (including a landscapeLeft<->Right
+// flip, where the size doesn't change but the Dynamic Island moves sides).
+private struct SafeAreaReader: UIViewRepresentable {
+    var onChange: (UIEdgeInsets) -> Void
+    func makeUIView(context: Context) -> Reader { Reader(onChange) }
+    func updateUIView(_ uiView: Reader, context: Context) { uiView.onChange = onChange; uiView.report() }
+    final class Reader: UIView {
+        var onChange: (UIEdgeInsets) -> Void
+        init(_ onChange: @escaping (UIEdgeInsets) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); report() }
+        override func didMoveToWindow() { super.didMoveToWindow(); report() }
+        func report() { onChange(window?.safeAreaInsets ?? .zero) }
+    }
+}
+#endif
+
 private extension View {
     /// Tighten inter-section spacing on grouped lists (iOS 17+); no-op elsewhere.
     @ViewBuilder func compactListSections() -> some View {
@@ -496,6 +519,11 @@ struct ContentView: View {
     // rotations (so a pane the user turned on stays on). iPad keeps the show* bools.
     @State private var landConsole = false
     @State private var landObjects = false
+    // The actual right-edge window safe-area inset (the Dynamic Island only when
+    // it's on the trailing side). Fed by SafeAreaReader via UIKit's
+    // safeAreaInsetsDidChange — reliable across a landscapeLeft<->Right flip,
+    // unlike geo.safeAreaInsets (which reports the island inset regardless of side).
+    @State private var windowTrailingInset: CGFloat = 0
 
     // iPhone landscape == compact width + compact height (iPad is regular height in
     // both orientations; iPhone portrait is compact width + regular height).
@@ -544,6 +572,15 @@ struct ContentView: View {
             // — NOT the keyboard — so keyboard avoidance still pushes the console +
             // command field up above the on-screen keyboard.
             .ignoresSafeArea(.container, edges: (hSize == .regular && vSize == .regular) ? [] : .all)
+            #if os(iOS)
+            // Track the real per-side window safe-area inset (correct across a
+            // landscapeLeft<->Right flip) for the landscape panel's trailing inset.
+            .background {
+                SafeAreaReader { insets in
+                    if windowTrailingInset != insets.right { windowTrailingInset = insets.right }
+                }
+            }
+            #endif
             // Measurement bar docks in the top safe area (below the status bar /
             // Dynamic Island / nav bar) and insets the viewport while active —
             // NOT a full-bleed overlay, which would slide under the notch.
@@ -830,7 +867,7 @@ struct ContentView: View {
                     // (trailing ≈ 0) → flush; on the RIGHT → clears the island.
                     panelTabs
                         .ignoresSafeArea(.container, edges: [.top, .horizontal])
-                        .padding(.trailing, geo.safeAreaInsets.trailing)
+                        .padding(.trailing, windowTrailingInset)
                         .frame(width: panelW, alignment: .leading)
                         .background(themeChromeBg)
                 }
