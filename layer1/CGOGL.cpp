@@ -56,6 +56,30 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
   return 1;
 }
 
+// Per-representation clipping: program the renderer's per-rep clip planes for
+// the lit VBO draw that follows. In this increment only the surface rep carries
+// an offset (surface_clip_front/back); every other lit draw (cartoon/lines)
+// must reset to "disabled" so a surface clip doesn't leak onto it (the renderer
+// member persists across draws).
+static void metalApplyRepClip(CCGORenderer* I)
+{
+  auto* G = I->G;
+  if (!G->Renderer) return;
+  if (I->metalIsSurfaceShader) {
+    CSetting* s1 = (I->rep && I->rep->cs) ? I->rep->cs->Setting.get() : nullptr;
+    CSetting* s2 = (I->rep && I->rep->obj) ? I->rep->obj->Setting.get() : nullptr;
+    float fOff = SettingGet_f(G, s1, s2, cSetting_surface_clip_front);
+    float bOff = SettingGet_f(G, s1, s2, cSetting_surface_clip_back);
+    if (fOff != 0.0f || bOff != 0.0f) {
+      float front = SceneGetCurrentFrontSafe(G) + fOff;
+      float back = SceneGetCurrentBackSafe(G) - bOff;
+      G->Renderer->setRepClip(front, back);
+      return;
+    }
+  }
+  G->Renderer->setRepClip(-1.0f, 1e6f); // disabled: global slab only
+}
+
 static bool drawVBOViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     pymol::PrimitiveType mode, int vertexCount)
 {
@@ -80,6 +104,7 @@ static bool drawVBOViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     }
   }
 
+  metalApplyRepClip(I);
   renderer->drawVBO(mode, vertexCount,
       vbo->cpuData(), vbo->cpuDataSize(), stride,
       posOffset, normalOffset, colorOffset, colorType,
@@ -113,6 +138,7 @@ static bool drawVBOIndexedViaMetal(CCGORenderer* I,
     }
   }
 
+  metalApplyRepClip(I);
   renderer->drawVBOIndexed(mode, indexCount,
       vbo->cpuData(), vbo->cpuDataSize(), stride,
       posOffset, normalOffset, colorOffset, colorType,

@@ -198,6 +198,12 @@ public:
   // darkened for spheres/sticks, gray for surface). Default: no-op.
   virtual void setInteriorCapColor(float r, float g, float b, bool overrideColor) {}
 
+  // Per-representation clip planes (eye-space distances from camera) for the
+  // NEXT lit-VBO draw (cartoon/surface). Lets one rep clip tighter than the
+  // global slab. front<0 disables per-rep clip (use the global slab only). The
+  // member persists, so callers must set it before every draw. Default: no-op.
+  virtual void setRepClip(float front, float back) {}
+
   // RGB of the 3D selection indicator squares (SceneRenderMetalSelections).
   // Driven by the active RayMol theme's selection color; defaults to pink.
   float selColor[3] = {1.0f, 0.2f, 0.6f};

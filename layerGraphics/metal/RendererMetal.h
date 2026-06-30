@@ -143,6 +143,7 @@ public:
       int posOffset, int normalOffset, int colorOffset, int colorType,
       const void* indexData, size_t indexDataSize, int interiorCap = 0) override;
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
+  void setRepClip(float front, float back) override;
   void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
@@ -401,6 +402,10 @@ private:
   // else per-primitive default (atom color darkened / surface gray).
   float _capColor[3] = {0.32f, 0.32f, 0.36f};
   bool _capColorOverride = false;
+  // Per-rep clip planes (eye-space distances) for the next lit-VBO draw.
+  // _repClipFront < 0 => disabled (use the global slab). Set via setRepClip.
+  float _repClipFront = -1.0f;
+  float _repClipBack = 1e6f;
   id<MTLFunction> _capMarkVtxFunc = nil, _capMarkFragFunc = nil;
   id<MTLFunction> _capFillVtxFunc = nil, _capFillFragFunc = nil;
   id<MTLRenderPipelineState> _vboShadowPipelineUByte = nil; // stride 28

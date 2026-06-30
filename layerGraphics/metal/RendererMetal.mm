@@ -564,6 +564,12 @@ void RendererMetal::setInteriorCapColor(float r, float g, float b, bool override
   _capColorOverride = overrideColor;
 }
 
+void RendererMetal::setRepClip(float front, float back)
+{
+  _repClipFront = front;       // < 0 disables per-rep clip in the lit fragment
+  _repClipBack = back;
+}
+
 // ---------------------------------------------------------------------------
 #pragma mark - Frame lifecycle
 // ---------------------------------------------------------------------------
@@ -3267,7 +3273,17 @@ struct VBOVertexOut {
   float4 position [[position]];
   float4 color;
   float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
+  float  eyeDist;     // distance from camera (-eyeZ), for per-rep clipping
 };
+
+// Per-representation clip planes (eye-space distances from the camera). Lets one
+// rep (e.g. the surface) clip tighter than the global slab so the user can peek
+// inside while cartoon/sticks stay whole. enabled<0.5 => no per-rep clip.
+struct ClipU { float front; float back; float enabled; float _pad; };
+static void apply_rep_clip(ClipU clip, float eyeDist) {
+  if (clip.enabled > 0.5 && (eyeDist < clip.front || eyeDist > clip.back))
+    discard_fragment();
+}
 
 // PyMOL two-light model. The ambient/direct/reflect/specular/shininess come
 // from the live PyMOL settings (Scene lighting sliders) via LightU, instead of
@@ -3334,12 +3350,17 @@ vertex VBOVertexOut vbo_vertex(
   // (visible triangle banding); per-pixel shading is smooth.
   out.normalEye = (uniforms.modelview * float4(in.normal, 0.0)).xyz;
   out.color = in.color;
+  // Eye-space distance from the camera (eyePos.z is negative in front), used by
+  // the fragment stage to discard fragments outside this rep's clip planes.
+  out.eyeDist = -eyePos.z;
   return out;
 }
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
-    constant LightU& lt [[buffer(0)]])
+    constant LightU& lt [[buffer(0)]],
+    constant ClipU& clip [[buffer(1)]])
 {
+  apply_rep_clip(clip, in.eyeDist);
   return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
 }
 
@@ -3428,8 +3449,10 @@ static float oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
-    constant LightU& lt [[buffer(0)]])
+    constant LightU& lt [[buffer(0)]],
+    constant ClipU& clip [[buffer(1)]])
 {
+  apply_rep_clip(clip, in.eyeDist);
   float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
@@ -4153,6 +4176,11 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
+  // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
+  { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
+      _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+    [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -4363,6 +4391,11 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
+  // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
+  { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
+      _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+    [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
