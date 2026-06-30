@@ -896,8 +896,14 @@ struct ContentView: View {
                     // the true screen edge when the island is on the LEFT, or the
                     // black notch-stripe when the island is on the RIGHT. No inset —
                     // the stripe (below) is what keeps the island off the panel.
+                    //
+                    // Only .top is ignored (the nav bar is hidden in landscape). We do
+                    // NOT ignore .horizontal: that let the TabView's bottom tab bar
+                    // bleed rightward into the trailing safe area, pushing the last tab
+                    // (Settings) under the black notch-stripe. The .background already
+                    // fills the frame to the screen edge, so the bleed bought nothing.
                     panelTabs
-                        .ignoresSafeArea(.container, edges: [.top, .horizontal])
+                        .ignoresSafeArea(.container, edges: .top)
                         .frame(width: panelW, alignment: .leading)
                         .background(themeChromeBg)
                 }
