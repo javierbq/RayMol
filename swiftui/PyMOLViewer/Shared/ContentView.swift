@@ -565,6 +565,10 @@ struct ContentView: View {
             .navigationTitle(hSize == .compact ? "" : "RayMol")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
+            // iPhone landscape hides the nav bar entirely (its toolbar items are
+            // re-floated over the viewer) so the right panel content starts at the
+            // very top with no nav-bar gap.
+            .toolbar(isPhoneLandscape ? .hidden : .visible, for: .navigationBar)
             // Auto-grow the panel when a detail view opens so its options are
             // visible (the panel's ScrollView covers any remaining overflow);
             // restore the user's size when everything collapses.
@@ -786,12 +790,14 @@ struct ContentView: View {
     // right edge. Full-screen hides the panel; the divider resizes it.
     @ViewBuilder
     private func iPhoneLandscapeLayout(geo: GeometryProxy) -> some View {
-        // Viewer takes the left 2/3; the control panel is a solid column on the
-        // right 1/3 (full-screen hides it and the viewer takes the whole width).
-        let panelW = iosFullScreen ? 0 : geo.size.width / 3
+        // Viewer takes the left ~62%; the control panel is a solid column on the
+        // right (full-screen hides it and the viewer takes the whole width). The
+        // nav bar is hidden in landscape (see body), so all the chrome floats over
+        // the viewer and the panel content starts at the very top — no gap.
+        let panelW = iosFullScreen ? 0 : geo.size.width * 0.38
         HStack(spacing: 0) {
-            // Left 2/3: the molecular viewer (+ optional sequence strip). The
-            // expand/share buttons float in ITS top-right corner.
+            // Left: the molecular viewer (+ optional sequence strip), with the
+            // toolbar buttons floating over its top edge.
             VStack(spacing: 0) {
                 if engine.sequenceVisible {
                     SequencePanel().frame(height: ipadSequenceHeight)
@@ -799,10 +805,14 @@ struct ContentView: View {
                 }
                 viewportView
             }
-            .overlay(alignment: .topTrailing) {
-                landscapeViewerControls
-                    .padding(.top, 6)
-                    .padding(.trailing, 8)
+            .overlay(alignment: .top) {
+                HStack(alignment: .top, spacing: 0) {
+                    landscapeViewerControls(leading: true)   // Open · Measure
+                    Spacer(minLength: 0)
+                    landscapeViewerControls(leading: false)  // Full-screen · Export
+                }
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
             }
 
             if !iosFullScreen {
@@ -821,23 +831,39 @@ struct ContentView: View {
         }
     }
 
-    // Expand (full-screen) + Export, floated in the viewer's top-right corner in
-    // landscape (so they sit over the viewer, not the right panel).
-    private var landscapeViewerControls: some View {
+    // Floating toolbar pills over the viewer in landscape (the nav bar is hidden
+    // there). leading = Open · Measure (top-left); trailing = Full-screen · Export
+    // (top-right, at the viewer/panel boundary).
+    @ViewBuilder
+    private func landscapeViewerControls(leading: Bool) -> some View {
         HStack(spacing: 2) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { iosFullScreen.toggle() }
-            } label: {
-                Image(systemName: iosFullScreen
-                      ? "arrow.down.right.and.arrow.up.left"
-                      : "arrow.up.left.and.arrow.down.right")
-                    .frame(width: 42, height: 34)
+            if leading {
+                Button { showFileImporter = true } label: {
+                    Image(systemName: "folder").frame(width: 42, height: 34)
+                }
+                .accessibilityLabel("Open")
+                Button {
+                    engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
+                } label: {
+                    Image(systemName: engine.measureMode == nil ? "ruler" : "ruler.fill")
+                        .frame(width: 42, height: 34)
+                }
+                .accessibilityLabel("Measure")
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { iosFullScreen.toggle() }
+                } label: {
+                    Image(systemName: iosFullScreen
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .frame(width: 42, height: 34)
+                }
+                .accessibilityLabel(iosFullScreen ? "Exit full screen" : "Full-screen viewport")
+                Menu { exportMenuContent } label: {
+                    Image(systemName: "square.and.arrow.up").frame(width: 42, height: 34)
+                }
+                .accessibilityLabel("Export")
             }
-            .accessibilityLabel(iosFullScreen ? "Exit full screen" : "Full-screen viewport")
-            Menu { exportMenuContent } label: {
-                Image(systemName: "square.and.arrow.up").frame(width: 42, height: 34)
-            }
-            .accessibilityLabel("Export")
         }
         .tint(TimelineTheme.accent)
         .padding(.horizontal, 4)
