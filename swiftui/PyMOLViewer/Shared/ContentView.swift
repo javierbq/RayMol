@@ -786,12 +786,17 @@ struct ContentView: View {
     // right edge. Full-screen hides the panel; the divider resizes it.
     @ViewBuilder
     private func iPhoneLandscapeLayout(geo: GeometryProxy) -> some View {
-        let total = geo.size.width
-        let panelW = min(max(total * 0.40, 320), 430)
+        let panelW = min(max(geo.size.width * 0.38, 300), 420)
+        let topInset: CGFloat = 46                                  // clear the toolbar pills
+        let botInset: CGFloat = engine.hasTimeline ? 64 : 8         // clear the transport
+        // Explicit height (TabView won't reliably fill a maxHeight frame), so the
+        // panel spans full height between the insets and the tab bar sits at the
+        // bottom — not stranded mid-screen.
+        let panelH = max(geo.size.height - topInset - botInset, 120)
         ZStack(alignment: .topTrailing) {
             // Full-bleed viewport (+ optional sequence strip): the 3D view spans
-            // the WHOLE width; the control panel floats over its right edge for
-            // better space utilization (full-screen hides it entirely).
+            // the WHOLE width; the control panel is a frosted-glass overlay on the
+            // right so the structure shows through behind it.
             VStack(spacing: 0) {
                 if engine.sequenceVisible {
                     SequencePanel().frame(height: ipadSequenceHeight)
@@ -807,17 +812,17 @@ struct ContentView: View {
                             .environmentObject(engine)
                             .environmentObject(themeManager)
                     } else {
-                        panelContent
+                        panelTabs
                     }
                 }
-                .frame(width: panelW)
-                .frame(maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.primary.opacity(0.08)))
-                .shadow(color: .black.opacity(0.22), radius: 14, x: -3, y: 3)
-                .padding(.top, 54)        // clear the floating toolbar pills
-                .padding(.trailing, 8)
-                .padding(.bottom, engine.hasTimeline ? 72 : 10)  // clear the transport
+                .frame(width: panelW, height: panelH, alignment: .top)
+                .background(.ultraThinMaterial)                     // frosted glass
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18))
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 0.5)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 12, x: -2, y: 1)
+                .padding(.top, topInset)        // flush to the right edge (no trailing pad)
             }
         }
     }
@@ -1186,7 +1191,8 @@ struct ContentView: View {
 
     // Shared control content: Console / Objects / Sequence as exclusive tabs
     // (Sequence is its own tab now — not a strip and not a toolbar/Export item).
-    private var panelContent: some View {
+    // The 5-tab control panel (no background — callers pick the chrome).
+    private var panelTabs: some View {
         TabView(selection: $selectedTab) {
             CommandPanel(showInput: !RayMolBuild.iosRestricted)
                 .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
@@ -1200,7 +1206,11 @@ struct ContentView: View {
             settingsPane
                 .tabItem { Label("Settings", systemImage: "gearshape") }.tag(4)
         }
-        .background(themeChromeBg)
+    }
+
+    // Portrait / opaque docked panel.
+    private var panelContent: some View {
+        panelTabs.background(themeChromeBg)
     }
 
     // Settings content tab (iPhone). Relocates the former top-bar Theme + Reset
