@@ -787,10 +787,11 @@ struct ContentView: View {
     @ViewBuilder
     private func iPhoneLandscapeLayout(geo: GeometryProxy) -> some View {
         let total = geo.size.width
-        // Reuse panelFrac (shared with portrait) as a width share, clamped so the
-        // panel never eats more than ~45% of the landscape width.
-        let panelW = min(max(total * panelFrac, 300), total * 0.45)
-        HStack(spacing: 0) {
+        let panelW = min(max(total * 0.40, 320), 430)
+        ZStack(alignment: .topTrailing) {
+            // Full-bleed viewport (+ optional sequence strip): the 3D view spans
+            // the WHOLE width; the control panel floats over its right edge for
+            // better space utilization (full-screen hides it entirely).
             VStack(spacing: 0) {
                 if engine.sequenceVisible {
                     SequencePanel().frame(height: ipadSequenceHeight)
@@ -798,17 +799,25 @@ struct ContentView: View {
                 }
                 viewportView
             }
-            if iosFullScreen {
-                EmptyView()
-            } else if showThemeStudio {
-                resizeDivider(landscape: true, total: total)
-                ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
-                    .environmentObject(engine)
-                    .environmentObject(themeManager)
-                    .frame(width: panelW)
-            } else {
-                resizeDivider(landscape: true, total: total)
-                panelContent.frame(width: panelW)
+
+            if !iosFullScreen {
+                Group {
+                    if showThemeStudio {
+                        ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
+                            .environmentObject(engine)
+                            .environmentObject(themeManager)
+                    } else {
+                        panelContent
+                    }
+                }
+                .frame(width: panelW)
+                .frame(maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.primary.opacity(0.08)))
+                .shadow(color: .black.opacity(0.22), radius: 14, x: -3, y: 3)
+                .padding(.top, 54)        // clear the floating toolbar pills
+                .padding(.trailing, 8)
+                .padding(.bottom, engine.hasTimeline ? 72 : 10)  // clear the transport
             }
         }
     }
