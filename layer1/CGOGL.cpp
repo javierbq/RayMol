@@ -20,6 +20,10 @@
 
 #include "VertexFormat.h"
 
+#include <algorithm>
+#include <cmath>
+#include <glm/glm.hpp>
+
 #define VAR_FOR_NORMAL pl
 #define VERTEX_NORMAL_SIZE 3
 #define VAR_FOR_NORMAL_CNT_PLUS
@@ -57,27 +61,56 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
 }
 
 // Per-representation clipping: program the renderer's per-rep clip planes for
-// the lit VBO draw that follows. In this increment only the surface rep carries
-// an offset (surface_clip_front/back); every other lit draw (cartoon/lines)
-// must reset to "disabled" so a surface clip doesn't leak onto it (the renderer
-// member persists across draws).
+// the lit VBO draw that follows. Only the surface rep carries clip fractions
+// (surface_clip_front/back); every other lit draw (cartoon/lines) must reset to
+// "disabled" so a surface clip can't leak onto it (the renderer member persists).
+//
+// Reference is the surface object's center of mass (bounding-sphere center) and
+// radius, NOT the camera slab: each fraction is normalized 0..1 across the
+// molecule's depth, where 0 = no clip and 1 = clip that side all the way to the
+// COM. Equal front/back give a slab symmetric about the COM, and the feel is the
+// same on any structure (no camera-slab dead-zone). The COM depth is projected
+// through the live modelview, so the slab stays centered as the camera moves.
 static void metalApplyRepClip(CCGORenderer* I)
 {
   auto* G = I->G;
   if (!G->Renderer) return;
-  // Gate on the ACTUAL rep type, not the metalIsSurfaceShader flag. That flag was
-  // (historically) set on GL_SURFACE_SHADER enable but not reset on its disable,
-  // so it could stay sticky and leak the surface clip onto a rep drawn afterward
-  // (e.g. cartoon). Rep::type() is unambiguous and render-order independent. (The
-  // disable handler now also resets the flag; this gate is the robust guarantee.)
-  if (I->rep && I->rep->type() == cRepSurface) {
-    CSetting* s1 = I->rep->cs ? I->rep->cs->Setting.get() : nullptr;
-    CSetting* s2 = I->rep->obj ? I->rep->obj->Setting.get() : nullptr;
-    float fOff = SettingGet_f(G, s1, s2, cSetting_surface_clip_front);
-    float bOff = SettingGet_f(G, s1, s2, cSetting_surface_clip_back);
-    if (fOff != 0.0f || bOff != 0.0f) {
-      float front = SceneGetCurrentFrontSafe(G) + fOff;
-      float back = SceneGetCurrentBackSafe(G) - bOff;
+  // Gate on the ACTUAL rep type, not the metalIsSurfaceShader flag (that flag is
+  // set on GL_SURFACE_SHADER enable; it must not leak the clip onto a later rep).
+  pymol::CObject* obj = I->rep ? I->rep->obj : nullptr;
+  CoordSet* cs = I->rep ? I->rep->cs : nullptr;
+  if (I->rep && I->rep->type() == cRepSurface && obj && cs &&
+      cs->getNIndex() > 0) {
+    CSetting* s1 = cs->Setting.get();
+    CSetting* s2 = obj->Setting.get();
+    float fFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_front);
+    float bFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_back);
+    if (fFrac != 0.0f || bFrac != 0.0f) {
+      // Project every atom to eye-space DEPTH and take the actual [min,max] range.
+      // Using the true depth range (not a bounding-box estimate) matters because
+      // `orient` puts the molecule's shortest axis toward the camera, and a box
+      // projection over-estimates that depth — making the 0..1 fraction clip far
+      // too little until near 1. The modelview here is the same matrix the shader
+      // uses, so the planes line up with the rasterized eyeDist (verified).
+      const glm::mat4& mv = SceneGetModelViewMatrix(G);
+      int n = cs->getNIndex();
+      float dMin = 1e30f, dMax = -1e30f;
+      for (int i = 0; i < n; i++) {
+        const float* c = cs->coordPtr(i);
+        // eye.z = mv * c (column-major); depth from camera = -eye.z (positive).
+        float depth = -(mv[0][2] * c[0] + mv[1][2] * c[1] + mv[2][2] * c[2] + mv[3][2]);
+        dMin = std::min(dMin, depth);
+        dMax = std::max(dMax, depth);
+      }
+      // Pad so the surface shell beyond the atoms stays enclosed (fraction 0 = no
+      // clip on that side). Center is the COM along the view axis.
+      float pad = SettingGet_f(G, s1, s2, cSetting_solvent_radius) + 1.0f;
+      float center = 0.5f * (dMin + dMax);
+      float halfD = 0.5f * (dMax - dMin) + pad;
+      float ff = fFrac < 0.0f ? 0.0f : (fFrac > 1.0f ? 1.0f : fFrac);
+      float bb = bFrac < 0.0f ? 0.0f : (bFrac > 1.0f ? 1.0f : bFrac);
+      float front = center - halfD * (1.0f - ff); // ff=0 -> near face (no clip)
+      float back = center + halfD * (1.0f - bb);   // bb=0 -> far face (no clip)
       G->Renderer->setRepClip(front, back);
       return;
     }
