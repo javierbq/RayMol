@@ -697,19 +697,9 @@ struct ContentView: View {
             // Dynamic Island / nav bar) and insets the viewport while active —
             // NOT a full-bleed overlay, which would slide under the notch.
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    if engine.measureMode != nil { measureOverlay }
-                    // Sequence viewer as a strip below the toolbar / above the
-                    // viewport (desktop-style), toggled from Settings → "Show
-                    // sequence". iPhone portrait only; iPad stacks it in-column.
-                    if hSize == .compact && vSize == .regular
-                        && engine.sequenceVisible && !iosFullScreen {
-                        SequencePanel()
-                            .frame(height: ipadSequenceHeight)
-                            .background(themeChromeBg)
-                        Divider()
-                    }
-                }
+                // Measurement bar docks in the top safe area while active. (The
+                // sequence strip moved BELOW the viewport — see iPhoneLayout.)
+                if engine.measureMode != nil { measureOverlay }
             }
             .navigationTitle(hSize == .compact ? "" : "RayMol")
             .navigationBarTitleDisplayMode(.inline)
@@ -949,10 +939,16 @@ struct ContentView: View {
         let total = geo.size.height
         let panelSize = portraitPanelHeight(total: total)
         VStack(spacing: 0) {
-            // The sequence strip (when enabled) docks in the top safe area via
-            // .safeAreaInset(edge: .top) at the layout root — NOT here — so it sits
-            // below the status bar / nav bar instead of bleeding under the notch.
             viewportView
+            // Sequence strip: docked BELOW the viewport and ABOVE the bottom panel
+            // (desktop-style), toggled from Settings → "Show sequence". (The
+            // measurement bar still docks in the top safe area.)
+            if engine.sequenceVisible && !iosFullScreen {
+                Divider()
+                SequencePanel()
+                    .frame(height: ipadSequenceHeight)
+                    .background(themeChromeBg)
+            }
             if iosFullScreen {
                 // Full-screen viewport: bottom panel + sequence hidden, 3D fills.
                 EmptyView()
