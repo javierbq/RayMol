@@ -1089,7 +1089,8 @@ struct ContentView: View {
                 if showSceneButtons && !engine.sceneNames.isEmpty {
                     sceneButtonsOverlay
                         .padding(.leading, 12)
-                        .padding(.bottom, engine.hasTimeline ? 56 : 12)
+                        // Sit clear ABOVE the transport bar (don't overlap it).
+                        .padding(.bottom, engine.hasTimeline ? 96 : 12)
                 }
             }
             .overlay(alignment: .bottomTrailing) {

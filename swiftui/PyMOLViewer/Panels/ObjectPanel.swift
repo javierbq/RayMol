@@ -2011,6 +2011,11 @@ struct ScenesPane: View {
 
     private let danger = Color(red: 0.75, green: 0.29, blue: 0.23)
 
+    // Local order mirror so chips can be reordered by hold+drag; persisted to
+    // PyMOL via `scene_order`. Synced from engine.sceneNames on add/remove.
+    @State private var sceneOrder: [String] = []
+    @State private var draggingScene: String?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -2018,10 +2023,27 @@ struct ScenesPane: View {
                 // view as a new scene (in line with the existing scenes).
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(engine.sceneNames, id: \.self) { name in sceneChip(name) }
+                        ForEach(sceneOrder, id: \.self) { name in
+                            sceneChip(name)
+                                .opacity(draggingScene == name ? 0.35 : 1)
+                                .onDrag {
+                                    draggingScene = name
+                                    return NSItemProvider(object: name as NSString)
+                                }
+                                .onDrop(of: ["public.text"],
+                                        delegate: SceneDropDelegate(item: name, order: $sceneOrder,
+                                                                    dragging: $draggingScene,
+                                                                    onReorder: applySceneOrder))
+                        }
                         addChip
                     }
                     .padding(.vertical, 4)
+                }
+                .onAppear { sceneOrder = engine.sceneNames }
+                .onChange(of: engine.sceneNames) { newNames in
+                    // Resync only when the SET changes (scene added/removed); a
+                    // pure reorder (same set) keeps the user's dragged order.
+                    if Set(newNames) != Set(sceneOrder) { sceneOrder = newNames }
                 }
 
                 if engine.sceneNames.isEmpty {
@@ -2091,6 +2113,12 @@ struct ScenesPane: View {
         .accessibilityLabel("New scene from current view")
     }
 
+    // Persist the dragged chip order to PyMOL.
+    private func applySceneOrder() {
+        guard !sceneOrder.isEmpty else { return }
+        engine.runCommand("scene_order " + sceneOrder.joined(separator: " "))
+    }
+
     // Compact icon+label button; several sit on one row (Update/Prev/Next/Delete).
     private func sceneActionButton(_ title: String, _ icon: String,
                                    danger: Bool = false, _ action: @escaping () -> Void) -> some View {
@@ -2122,6 +2150,30 @@ struct ScenesPane: View {
         }
         .buttonStyle(.plain)
         .overlay(alignment: .top) { Divider() }
+    }
+}
+
+// Reorders scene chips live as one is dragged over another (hold + move).
+private struct SceneDropDelegate: DropDelegate {
+    let item: String
+    @Binding var order: [String]
+    @Binding var dragging: String?
+    let onReorder: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging = dragging, dragging != item,
+              let from = order.firstIndex(of: dragging),
+              let to = order.firstIndex(of: item) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            order.move(fromOffsets: IndexSet(integer: from),
+                       toOffset: to > from ? to + 1 : to)
+        }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        onReorder()
+        return true
     }
 }
 
