@@ -87,7 +87,15 @@ struct MetalViewport: NSViewRepresentable {
 class PyMOLMTKView: MTKView {
     weak var coordinator: MetalViewport.Coordinator?
 
-    override var acceptsFirstResponder: Bool { true }
+    // Decline keyboard first-responder so a click in the viewport does NOT steal
+    // focus from the command-line input (issue #73): the command line stays "hot"
+    // for typing while the user rotates/picks, matching desktop PyMOL. Mouse events
+    // are still delivered to this view via the mouse overrides below + acceptsFirstMouse
+    // (they don't require first-responder status). Trade-off: single-key PyMOL
+    // shortcuts routed through keyDown -> handleKeyDown no longer fire while the
+    // command line holds focus; RayMol is command-line/UI-driven, so keeping the
+    // prompt focused is the intended behavior.
+    override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {

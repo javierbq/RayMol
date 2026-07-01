@@ -1574,7 +1574,14 @@ static void CGO_gl_special(CCGORenderer* I, CGO_op_data pc)
   }
   switch (mode) {
   case LINEWIDTH_DYNAMIC_WITH_SCALE_RIBBON: {
-    float line_width = SettingGet_f(I->G, nullptr, nullptr, cSetting_ribbon_width);
+    // Per-rep ribbon_width (was global) + feed the raw width to the Metal
+    // renderer (issue #71; see LINEWIDTH_FOR_LINES).
+    float raw_width =
+        SettingGet_f(I->G, csSetting, objSetting, cSetting_ribbon_width);
+    if (I->G->Renderer) {
+      I->G->Renderer->lineWidth(raw_width);
+    }
+    float line_width = raw_width;
     if (!openVR)
       line_width = SceneGetDynamicLineWidth(I->info, line_width);
     if (I->info && I->info->width_scale_flag) {
@@ -1614,6 +1621,11 @@ static void CGO_gl_special(CCGORenderer* I, CGO_op_data pc)
           I->rep->obj->Setting.get(), cSetting_mesh_width);
     } else {
       line_width = SettingGet_f(I->G, nullptr, nullptr, cSetting_mesh_width);
+    }
+    // Feed the raw width to the Metal renderer (issue #71; glLineWidth is a
+    // no-op stub under Metal). Pre-dynamic-scale value matches _lineWidth units.
+    if (I->G->Renderer) {
+      I->G->Renderer->lineWidth(line_width);
     }
     if (!openVR)
       line_width = SceneGetDynamicLineWidth(I->info, line_width);
@@ -1843,8 +1855,18 @@ static void CGO_gl_special(CCGORenderer* I, CGO_op_data pc)
     glLineWidthAndUniform(lineradius * 2.f / vScale, shaderPrg);
   } break;
   case LINEWIDTH_FOR_LINES: {
-    float line_width = SceneGetDynamicLineWidth(
-        I->info, SettingGet_f(I->G, nullptr, nullptr, cSetting_line_width));
+    // Per-rep/object width. Previously read the GLOBAL setting (nullptr,nullptr),
+    // so the per-object line_width slider (issue #71) had no visible effect.
+    // Resolve from the rep/object settings, and feed the RAW width to the active
+    // renderer: glLineWidth() is a no-op stub under Metal, and drawLinesAA reads
+    // _lineWidth in these raw units (matching the global set in SceneRender).
+    // Harmless for GL (glLineWidth below still applies the DPI-scaled width).
+    float raw_width =
+        SettingGet_f(I->G, csSetting, objSetting, cSetting_line_width);
+    if (I->G->Renderer) {
+      I->G->Renderer->lineWidth(raw_width);
+    }
+    float line_width = SceneGetDynamicLineWidth(I->info, raw_width);
     if (I->info && I->info->width_scale_flag) {
       line_width *= I->info->width_scale;
     }

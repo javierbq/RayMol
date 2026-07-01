@@ -161,7 +161,11 @@ struct CommandTextField: NSViewRepresentable {
     var onComplete: (String) -> String?
 
     func makeNSView(context: Context) -> NSTextField {
-        let field = CommandNSTextField()
+        // Arrow-key history is handled in the delegate's doCommandBy (moveUp:/
+        // moveDown:), not via an NSTextField.keyDown override — a focused field's
+        // key events are swallowed by the window's field editor, so keyDown never
+        // sees the arrows. A plain NSTextField is therefore sufficient.
+        let field = NSTextField()
         field.delegate = context.coordinator
         field.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         field.textColor = NSColor(textColor)
@@ -170,8 +174,6 @@ struct CommandTextField: NSViewRepresentable {
         field.focusRingType = .none
         field.placeholderString = "Enter command..."
         field.cell?.sendsActionOnEndEditing = false
-        field.onUpArrow = onUpArrow
-        field.onDownArrow = onDownArrow
         return field
     }
 
@@ -187,10 +189,6 @@ struct CommandTextField: NSViewRepresentable {
         context.coordinator.onUpArrow = onUpArrow
         context.coordinator.onDownArrow = onDownArrow
         context.coordinator.parent = self
-        if let cmdField = nsView as? CommandNSTextField {
-            cmdField.onUpArrow = onUpArrow
-            cmdField.onDownArrow = onDownArrow
-        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -234,32 +232,30 @@ struct CommandTextField: NSViewRepresentable {
                 }
                 return true
             }
+            // Up/Down arrows → command history. While the field is focused its key
+            // events go to the window's shared field editor (an NSTextView), so a
+            // focused NSTextField never sees keyDown for the arrows — they arrive
+            // here as moveUp:/moveDown: instead (the same delegate path that makes
+            // Return and Tab work). Recall via the history closures, then push the
+            // recalled text straight into the field editor (setting the field's
+            // stringValue while it is being edited is unreliable — mirror the Tab
+            // handling above) and put the caret at the end.
+            if selector == #selector(NSResponder.moveUp(_:)) {
+                onUpArrow()
+                let s = parent.text
+                textView.string = s
+                textView.setSelectedRange(NSRange(location: (s as NSString).length, length: 0))
+                return true
+            }
+            if selector == #selector(NSResponder.moveDown(_:)) {
+                onDownArrow()
+                let s = parent.text
+                textView.string = s
+                textView.setSelectedRange(NSRange(location: (s as NSString).length, length: 0))
+                return true
+            }
             return false
         }
-    }
-}
-
-/// NSTextField subclass that intercepts up/down arrow key events.
-private class CommandNSTextField: NSTextField {
-    var onUpArrow: (() -> Void)?
-    var onDownArrow: (() -> Void)?
-
-    override func keyUp(with event: NSEvent) {
-        super.keyUp(with: event)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 126: // Up arrow
-            onUpArrow?()
-            return
-        case 125: // Down arrow
-            onDownArrow?()
-            return
-        default:
-            break
-        }
-        super.keyDown(with: event)
     }
 }
 

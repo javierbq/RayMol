@@ -2062,13 +2062,24 @@ void SceneRenderMetal(PyMOLGlobals* G)
         outlineWidth, dofEnabled, dofFocus, dofRange, temporalAO,
         upscaleEnabled, dofAperture);
     // Lighting model — the Metal lit shaders read these instead of hard-coded
-    // constants, so the Scene-panel lighting sliders take effect.
+    // constants, so the Scene-panel lighting sliders take effect. Specular and
+    // shininess must go through PyMOL's light-count adjustment (the same path
+    // GL uses in CShaderPrg::Set_Specular_Values), NOT the raw settings: the
+    // default specular=1.0 is meant to resolve to specular_intensity (0.5), and
+    // spec_reflect/spec_count/light_count further scale it. Feeding the raw 1.0
+    // made the reflect highlight ~2x too strong, so flat cartoon β-sheets read
+    // as rounded/lumpy (issue #72). The Metal lit shader applies specular only
+    // from the reflect light (direct spec is 0, matching GL's default), so we
+    // pass the adjusted reflect specular/shininess into the spec/shininess slots.
+    float specReflect, specPower, specDirect, specDirectPower;
+    SceneGetAdjustedLightValues(
+        G, &specReflect, &specPower, &specDirect, &specDirectPower);
     G->Renderer->setLightingParams(
         SettingGetGlobal_f(G, cSetting_ambient),
         SettingGetGlobal_f(G, cSetting_direct),
         SettingGetGlobal_f(G, cSetting_reflect),
-        SettingGetGlobal_f(G, cSetting_specular),
-        SettingGetGlobal_f(G, cSetting_shininess),
+        specReflect,
+        specPower,
         SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next setDrawable (no encoder open),
