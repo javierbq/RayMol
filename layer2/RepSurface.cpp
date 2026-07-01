@@ -1858,6 +1858,16 @@ Rep* RepSurface::recolor()
   auto const I = this;
   assert(cs == this->cs);
 
+  // Reset the transparency flag before recomputing per-vertex alpha below. A
+  // `transparency` setting change invalidates at cRepInvColor, which re-runs
+  // recolor() in place on this same Rep (see Rep::update); the per-vertex loop
+  // only ever calls setHasTransparency() (=true) when at_transp > 0 and never
+  // clears it. Without this reset the flag stays stuck true after transparency
+  // returns to 0, so the now-opaque surface keeps being routed into the
+  // transparent pass and renders semi-transparent. Mirrors RepCartoon, which
+  // passes the computed boolean to setHasTransparency().
+  I->setHasTransparency(false);
+
   MapType *map = nullptr, *ambient_occlusion_map = nullptr;
   int a, i0, i, j, c1;
   float *v0, *vc, *va;
