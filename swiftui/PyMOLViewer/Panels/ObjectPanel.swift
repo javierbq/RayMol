@@ -95,6 +95,7 @@ enum RepCatalog {
                 RepProperty(setting: "cartoon_loop_radius",   label: "Loop radius",  kind: .slider),
                 RepProperty(setting: "cartoon_tube_radius",   label: "Tube radius",  kind: .slider),
                 RepProperty(setting: "cartoon_fancy_helices", label: "Fancy helices", kind: .toggle),
+                RepProperty(setting: "cartoon_flat_sheets",   label: "Flat sheets",   kind: .toggle),
             ]),
         "surface": RepSpec(rep: "surface", display: "Surface",
             colorSetting: "surface_color", defaultColor: -1, properties: [
