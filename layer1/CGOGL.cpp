@@ -79,6 +79,17 @@ static void metalApplyRepClip(CCGORenderer* I)
   // set on GL_SURFACE_SHADER enable; it must not leak the clip onto a later rep).
   pymol::CObject* obj = I->rep ? I->rep->obj : nullptr;
   CoordSet* cs = I->rep ? I->rep->cs : nullptr;
+  // Per-rep screen-space SSAO exemption (#79): cartoon/ribbon are excluded from
+  // the SSAO crease/contour darkening (which paints spurious lines on their
+  // silhouettes/self-folds) unless metal_ssao_cartoon opts them back in. Cast
+  // shadows are NOT exempted (cartoons keep directional shadows). Armed on every
+  // path (before the surface early-returns) so a prior draw can't leak in.
+  {
+    int repType = I->rep ? I->rep->type() : -1;
+    bool aoExempt = (repType == cRepCartoon || repType == cRepRibbon) &&
+                    !SettingGetGlobal_b(G, cSetting_metal_ssao_cartoon);
+    G->Renderer->setRepScreenAO(aoExempt);
+  }
   if (I->rep && I->rep->type() == cRepSurface && obj && cs &&
       cs->getNIndex() > 0) {
     CSetting* s1 = cs->Setting.get();

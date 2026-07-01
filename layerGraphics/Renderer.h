@@ -210,6 +210,14 @@ public:
   // on-screen thickness. enabled=false disarms (for non-surface reps). Default no-op.
   virtual void setRepContour(bool enabled, const float* rgba, float widthPx) {}
 
+  // Arm per-rep exemption from the screen-space SSAO (crease) pass for the NEXT
+  // lit-VBO draw. exempt=true stashes that draw's geometry so its (front-most)
+  // pixels are masked out of the SSAO crease/contour darkening that otherwise
+  // paints lines on cartoon/ribbon silhouettes and self-folds (#79). Cast shadows
+  // are unaffected. The member persists, so callers set it before every draw.
+  // Default: no-op.
+  virtual void setRepScreenAO(bool exempt) {}
+
   // RGB of the 3D selection indicator squares (SceneRenderMetalSelections).
   // Driven by the active RayMol theme's selection color; defaults to pink.
   float selColor[3] = {1.0f, 0.2f, 0.6f};

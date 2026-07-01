@@ -929,6 +929,7 @@ enum {
   REC_f( 819, surface_contour_width                   , object    , 2.0F ),  /* Metal: surface outer-contour line thickness in pixels (constant on-screen). */
   REC_c( 820, surface_contour_color                   , object    , "-1" ),  /* Metal: surface outer-contour color; -1 = inherit the surface/object color, else a named/hex color. */
   REC_b( 821, surface_contour_opaque                  , object    , true ),  /* Metal: surface outer-contour is fully opaque (crisp); off = the line picks up the surface transparency. */
+  REC_b( 822, metal_ssao_cartoon                      , global    , false ), /* Metal: include cartoon/ribbon in the screen-space SSAO (crease/contour) pass. Default off => cartoons are excluded from SSAO darkening (avoids spurious contour lines on ribbon silhouettes/self-folds, #79); they still receive directional shadows, and surface pockets keep their AO. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION
