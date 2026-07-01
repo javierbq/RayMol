@@ -377,6 +377,19 @@ struct ContentView: View {
                         // right column is collapsed (where MousePanel used to live).
                         // Minimizable to a small mouse button to free up the view.
                         .overlay(alignment: .bottomTrailing) { mouseLegendCard }
+                        // Opt-in glanceable scene buttons (Scenes inspector →
+                        // "Show scene buttons in viewport"). The iOS path wires
+                        // this in viewportView; macOS needs it here too. Flat 12pt
+                        // bottom padding: the TransportBar docks BELOW the viewport
+                        // frame (sibling in the VStack), so no transport clearance
+                        // is needed as on iOS.
+                        .overlay(alignment: .bottomLeading) {
+                            if showSceneButtons && !engine.sceneNames.isEmpty {
+                                sceneButtonsOverlay
+                                    .padding(.leading, 12)
+                                    .padding(.bottom, 12)
+                            }
+                        }
                     if engine.hasTimeline {
                         Divider()
                         TransportBar()
@@ -554,6 +567,34 @@ struct ContentView: View {
     // Scenes tab: opt-in glanceable scene buttons overlaid on the viewport.
     // Also outside #if os(iOS) since inspectorSwitcher (shared) binds to it.
     @State private var showSceneButtons = false
+
+    // Floating scene chips over the viewport (teal/global), shown only when the
+    // Scenes tab's "Show scene buttons in viewport" toggle is on. Tap = recall.
+    // Declared outside #if os(iOS) so BOTH the iOS viewportView overlay and the
+    // macOS macOSLayout viewport overlay can consume it (single source of truth).
+    private var sceneButtonsOverlay: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(engine.sceneNames, id: \.self) { name in
+                    let sel = name == engine.currentScene
+                    Button {
+                        engine.runCommand("scene \(name), recall, animate=1")
+                    } label: {
+                        Text(name)
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 9).frame(height: 28)
+                            .background(sel ? TimelineTheme.accent : Color.white.opacity(0.92))
+                            .foregroundColor(sel ? .white : TimelineTheme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+        }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .frame(maxWidth: 230)
+    }
 
     #if os(iOS)
     // Default to the Objects tab: a touch user tunes representations far more
@@ -1347,31 +1388,7 @@ struct ContentView: View {
         #endif
     }
 
-    // Floating scene chips over the viewport (teal/global), shown only when the
-    // Scenes tab's "Show scene buttons in viewport" toggle is on. Tap = recall.
-    private var sceneButtonsOverlay: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(engine.sceneNames, id: \.self) { name in
-                    let sel = name == engine.currentScene
-                    Button {
-                        engine.runCommand("scene \(name), recall, animate=1")
-                    } label: {
-                        Text(name)
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .padding(.horizontal, 9).frame(height: 28)
-                            .background(sel ? TimelineTheme.accent : Color.white.opacity(0.92))
-                            .foregroundColor(sel ? .white : TimelineTheme.accent)
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(6)
-        }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
-        .frame(maxWidth: 230)
-    }
+    // (sceneButtonsOverlay moved above, outside #if os(iOS), so macOS can use it.)
 
     private var viewportView: some View {
         MetalViewport()

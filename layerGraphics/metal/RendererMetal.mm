@@ -2387,8 +2387,16 @@ void RendererMetal::runPostChain()
       std::memcpy(cu.projection, cd.projection, 64);
       cu.pointSize = 1.0f; cu.pad[0] = cu.pad[1] = cu.pad[2] = 0.0f;
       [ce setVertexBytes:&cu length:sizeof(cu) atIndex:1];
-      { struct { float front, back, enabled, pad; } _cl = { cd.clipFront, cd.clipBack,
-          cd.clipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+      // Coverage mask is intentionally CLIP-AGNOSTIC for the per-rep clip: the
+      // outer contour must trace the surface's true outer silhouette, not the
+      // per-rep "peek inside" clip cross-section. Feeding cd.clipFront/Back here
+      // discards the clipped fragments, so the clip cut edge would enter the
+      // mask boundary and get outlined (the reported bug). Bind a disabled clip
+      // (enabled=0) so the mask is the full surface footprint. The GLOBAL slab
+      // still applies (it rides in cd.projection, shared with the live draw), and
+      // the visible clipped surface + its interior cap are drawn by separate
+      // passes that keep the per-rep clip — only the contour changes.
+      { struct { float front, back, enabled, pad; } _cl = { -1.0f, 1e6f, 0.0f, 0.0f };
         [ce setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
       if (cd.ibo) {
         [ce drawIndexedPrimitives:MTLPrimitiveTypeTriangle
