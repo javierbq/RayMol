@@ -91,6 +91,22 @@ private struct PanelTabSpec: Identifiable {
     var id: Int { tag }
 }
 
+/// Segments of the iPad/macOS right-inspector switcher (mirrors the iPhone tabs:
+/// Console = left terminal; Settings = the Display render card).
+private enum InspectorTab: String, CaseIterable, Identifiable {
+    case objects = "Objects", scenes = "Scenes", movie = "Movie", display = "Display"
+    var id: String { rawValue }
+    /// Matches the iPhone tab-bar symbols (Settings → Display uses the slider icon).
+    var systemImage: String {
+        switch self {
+        case .objects: return "cube"
+        case .scenes:  return "rectangle.on.rectangle"
+        case .movie:   return "film"
+        case .display: return "slider.horizontal.3"
+        }
+    }
+}
+
 private let landscapePanelTabSpecs: [PanelTabSpec] = [
     .init(tag: 0, title: "Console",  systemImage: "terminal"),
     .init(tag: 1, title: "Objects",  systemImage: "cube"),
@@ -395,13 +411,8 @@ struct ContentView: View {
                     .environmentObject(themeManager)
                     .frame(width: 340)
             } else if showObjectPanel {
-                VStack(spacing: 0) {
-                    if showObjectPanel {
-                        ObjectPanel()
-                            .frame(minHeight: 150)
-                    }
-                }
-                .frame(width: 300)
+                inspectorSwitcher
+                    .frame(width: 360)
             }
         }
         } // end VStack
@@ -414,11 +425,13 @@ struct ContentView: View {
             Text("Download a structure from the RCSB PDB.")
         }
         .toolbar {
+            // Leading — tools (mirrors the iOS top-left): Open · Measure.
             macOpenToolbar
-            macThemeToolbar
-            exportMenu
             macMeasureToolbar
+            // Trailing — view toggles, then actions, then status. (Theme moved into
+            // the Display segment, mirroring iOS Settings → Themes.)
             panelToggles
+            exportMenu
             #if !RAYMOL_MAS_RESTRICTED
             ToolbarItem(placement: .automatic) {
                 MCPStatusView()
@@ -535,6 +548,13 @@ struct ContentView: View {
 
     // MARK: - iPadOS: TabView with panels
 
+    // iPad/macOS right-inspector active segment (Objects/Scenes/Movie/Display).
+    // Declared outside #if os(iOS) so macOSLayout can also reference inspectorSwitcher.
+    @State private var inspectorTab: InspectorTab = .objects
+    // Scenes tab: opt-in glanceable scene buttons overlaid on the viewport.
+    // Also outside #if os(iOS) since inspectorSwitcher (shared) binds to it.
+    @State private var showSceneButtons = false
+
     #if os(iOS)
     // Default to the Objects tab: a touch user tunes representations far more
     // than they type commands, and it avoids greeting them with console log text.
@@ -586,8 +606,6 @@ struct ContentView: View {
     @State private var iosFullScreen = false
     // Settings tab: in-panel drill into the display-settings card.
     @State private var settingsSceneOpen = false
-    // Scenes tab: opt-in glanceable scene buttons overlaid on the viewport.
-    @State private var showSceneButtons = false
     // Panel fraction to restore after the Theme Studio closes (it temporarily
     // opens to ~60% of the screen so the viewport/studio split matches the spec).
     @State private var fracBeforeThemeStudio: CGFloat? = nil
@@ -1095,7 +1113,7 @@ struct ContentView: View {
     @ViewBuilder
     private func iPadMacStyleLayout(geo: GeometryProxy) -> some View {
         let landscape = geo.size.width > geo.size.height
-        let rightW: CGFloat = 340                          // landscape side column
+        let rightW: CGFloat = 360                          // landscape side column
         let maxTerm = max(140, geo.size.height * 0.33)
         let clampedTermH = min(max(termH, 60), maxTerm)
         // Effective pane visibility: iPhone landscape uses its minimal-default
@@ -1140,14 +1158,12 @@ struct ContentView: View {
                         .background(themeChromeBg)
                 } else if showRight {
                     Divider()
-                    VStack(spacing: 0) {
-                        if cObj { ObjectPanel().frame(maxHeight: .infinity) }
-                    }
                     // Reserve top space so the floating toolbar doesn't hide the
-                    // Objects panel header / first object on iPhone (full-bleed).
-                    .padding(.top, panelTopInset)
-                    .frame(width: rightW)
-                    .background(themeChromeBg)
+                    // inspector header / first row on iPhone (full-bleed).
+                    inspectorSwitcher
+                        .padding(.top, panelTopInset)
+                        .frame(width: rightW)
+                        .background(themeChromeBg)
                 }
             }
         } else {
@@ -1173,11 +1189,9 @@ struct ContentView: View {
                         .background(themeChromeBg)
                 } else if showRight {
                     resizeDivider(landscape: false, total: geo.size.height)
-                    HStack(spacing: 0) {
-                        if cObj { ObjectPanel().frame(maxWidth: .infinity) }
-                    }
-                    .frame(height: bottomH)
-                    .background(themeChromeBg)
+                    inspectorSwitcher
+                        .frame(height: bottomH)
+                        .background(themeChromeBg)
                 }
             }
         }
@@ -1967,6 +1981,58 @@ struct ContentView: View {
     }
     #endif
 
+    // MARK: Regular-layout inspector switcher (iPad + macOS)
+    //
+    // The desktop/iPad right inspector mirrors the iPhone bottom tabs as a
+    // segmented switcher: Objects · Scenes · Movie · Display. (Console is the
+    // left terminal; Settings → the Display render card.) Each segment swaps in
+    // an existing shared view — nothing is rebuilt. Works by touch (iPad) and
+    // pointer (macOS); macOS menubar items are additive accelerators.
+    @ViewBuilder
+    private var inspectorSwitcher: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $inspectorTab) {
+                ForEach(InspectorTab.allCases) { tab in
+                    Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 7)
+            Divider()
+            switch inspectorTab {
+            case .objects:
+                ObjectPanel()
+            case .scenes:
+                ScenesPane(showViewportButtons: $showSceneButtons,
+                           onOpenMovie: { inspectorTab = .movie })
+            case .movie:
+                MoviePane()
+            case .display:
+                // The SCENE render card (bg/lighting/effects/ray); its
+                // "All settings…" opens the shared searchable SettingsSheet. Theme
+                // Studio lives here too (moved off the toolbar → matches iOS, where
+                // Themes is under Settings).
+                ScrollView {
+                    VStack(spacing: 14) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = true }
+                        } label: {
+                            Label("Theme Studio…", systemImage: "paintpalette")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        SceneCard()
+                    }
+                    .padding(12)
+                }
+            }
+        }
+    }
+
     // MARK: - Toolbar
 
     // Always-available Open/Fetch (the empty-state CTA disappears once a
@@ -2004,7 +2070,8 @@ struct ContentView: View {
     }
 
     private var macMeasureToolbar: some ToolbarContent {
-        ToolbarItem {
+        // Leading, beside Open — mirrors the iOS top-left pair (Open · Measure).
+        ToolbarItem(placement: .navigation) {
             Button {
                 engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
             } label: {
@@ -2014,16 +2081,19 @@ struct ContentView: View {
         }
     }
 
+    // The three desktop panes as one consistent toggle group. NOTE the right panel
+    // toggle is "Inspector" (sidebar icon), NOT "Objects" — Objects is now a SEGMENT
+    // inside the inspector switcher, so the toolbar must not duplicate it.
     private var panelToggles: some ToolbarContent {
         ToolbarItemGroup {
+            Toggle(isOn: $showCommandPanel) {
+                Label("Console", systemImage: "terminal")
+            }
             Toggle(isOn: $engine.sequenceVisible) {
                 Label("Sequence", systemImage: "textformat.abc")
             }
             Toggle(isOn: $showObjectPanel) {
-                Label("Objects", systemImage: "cube")
-            }
-            Toggle(isOn: $showCommandPanel) {
-                Label("Console", systemImage: "terminal")
+                Label("Inspector", systemImage: "sidebar.right")
             }
         }
     }

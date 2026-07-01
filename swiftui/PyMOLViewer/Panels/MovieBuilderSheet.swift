@@ -206,6 +206,11 @@ struct MovieBuilderControls: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.13)))
                 .contentShape(Rectangle())
             }
+            // macOS adds its own disclosure chevron to a Menu, which squished the
+            // custom label down to "…". Hide it so the value text + custom chevron
+            // get the full width. (No-op on iOS, where there's no default indicator.)
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity)
     }

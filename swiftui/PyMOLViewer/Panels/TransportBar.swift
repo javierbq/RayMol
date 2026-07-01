@@ -14,9 +14,12 @@
 import SwiftUI
 
 enum TimelineTheme {
-    // Distinct accent for transport controls (emerald-teal) — keeps the app
-    // visually "plainly distinguished" while reading as a media transport.
-    static let accent = Color(.sRGB, red: 0.20, green: 0.80, blue: 0.66, opacity: 1)
+    // Accent for transport / movie / scene controls — follows the ACTIVE THEME's
+    // accent (so Build & Play, scene icons, chips, etc. match the rest of the app)
+    // rather than a fixed teal. Mirrors SequencePanel's `ThemeManager.shared.active`
+    // read. Views that should recolor live on a theme switch already observe
+    // ThemeManager; others pick it up on their next render.
+    static var accent: Color { ThemeManager.shared.active.accent.color }
     static let bar = Color(.sRGB, red: 0.10, green: 0.11, blue: 0.12, opacity: 0.96)
     static let text = Color(white: 0.88)
     static let dim = Color(white: 0.55)
