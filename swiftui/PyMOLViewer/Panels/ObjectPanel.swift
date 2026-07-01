@@ -36,6 +36,7 @@ struct RepState: Equatable {
     var visible: Bool
     var values: [String: Double]    // setting name → current value
     var color: String               // "inherit" or "#rrggbb"
+    var settingColors: [String: String] = [:]  // extra color settings → "inherit"/"#rrggbb"
 }
 
 /// Global "Scene" parameters.
@@ -53,7 +54,7 @@ struct ObjStateMeta: Equatable {
 
 // MARK: - Representation inspector: control metadata
 
-enum RepControlKind { case slider, segmented, toggle }
+enum RepControlKind { case slider, segmented, toggle, color }
 
 /// One controllable property row (label + control bound to a PyMOL setting).
 struct RepProperty: Identifiable {
@@ -101,7 +102,13 @@ enum RepCatalog {
                 RepProperty(setting: "surface_quality", label: "Quality", kind: .segmented,
                             options: [("0", 0), ("1", 1), ("2", 2)]),
                 RepProperty(setting: "solvent_radius", label: "Solvent radius", kind: .slider, min: 0.5, max: 3, step: 0.1, decimals: 1, commitOnly: true),
+                RepProperty(setting: "surface_clip_front", label: "Clip front", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2),
+                RepProperty(setting: "surface_clip_back", label: "Clip back", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2),
                 RepProperty(setting: "metal_interior_cap", label: "Solid interior", kind: .toggle),
+                RepProperty(setting: "surface_contour", label: "Contour", kind: .toggle),
+                RepProperty(setting: "surface_contour_width", label: "Contour width", kind: .slider, min: 0.5, max: 6, step: 0.5, decimals: 1),
+                RepProperty(setting: "surface_contour_color", label: "Contour color", kind: .color),
+                RepProperty(setting: "surface_contour_opaque", label: "Contour opaque", kind: .toggle),
             ]),
         "sticks": RepSpec(rep: "sticks", display: "Sticks",
             colorSetting: "stick_color", defaultColor: -1, properties: [
@@ -1426,6 +1433,62 @@ private struct RepColorControl: View {
     }
 }
 
+/// Color control bound to an arbitrary per-rep color setting (e.g.
+/// surface_contour_color). "Inherit" sets -1 (here the surface color); named
+/// colors / the custom picker set an explicit color. Mirrors RepColorControl but
+/// without the atom-coloring schemes (which don't apply to a contour line).
+private struct SettingColorControl: View {
+    let objName: String
+    let rep: String
+    let setting: String
+    let colorState: String        // "inherit" or "#rrggbb"
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            swatch
+            Menu {
+                Button("Inherit") { setColor("-1") }
+                Divider()
+                ForEach(Array(inspectorNamedColors.enumerated()), id: \.offset) { _, c in
+                    Button(action: { setColor(c.name) }) {
+                        Label(c.name, systemImage: "circle.fill")
+                    }
+                }
+            } label: {
+                Text(colorState == "inherit" ? "Inherit" : "Custom")
+                    .font(.system(size: 10))
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .frame(maxWidth: 70)
+            DebouncedColorPicker(get: { colorFromHex(colorState) ?? .white },
+                                 apply: { applyCustom($0) })
+                .frame(width: 28)
+        }
+    }
+
+    @ViewBuilder private var swatch: some View {
+        if colorState == "inherit" {
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(PanelTheme.disabledColor, lineWidth: 1)
+                .frame(width: 14, height: 14)
+        } else {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(colorFromHex(colorState) ?? .gray)
+                .frame(width: 14, height: 14)
+        }
+    }
+
+    private func setColor(_ c: String) {
+        engine.runCommand("set \(setting), \(c), \(objName)")
+    }
+    private func applyCustom(_ color: Color) {
+        let nm = "tmp_\(sanitizeName(objName))_\(rep)_ctr"
+        engine.runCommand("set_color \(nm), \(rgb01List(color))\nset \(setting), \(nm), \(objName)")
+    }
+}
+
 /// Object-level (Layer-1) color: presets + named + custom; affects all reps on "Inherit".
 private struct ObjectColorRow: View {
     let objName: String
@@ -1788,6 +1851,11 @@ private struct RepPropertyGrid: View {
             SegmentedSetting(prop: p, value: v) { set(p.setting, $0) }
         case .toggle:
             ToggleSetting(value: v) { set(p.setting, $0 ? 1 : 0) }
+        case .color:
+            // A standalone color control bound to an arbitrary color setting
+            // (e.g. surface_contour_color). -1 = inherit (here: the surface color).
+            SettingColorControl(objName: objName, rep: spec.rep, setting: p.setting,
+                                colorState: state.settingColors[p.setting] ?? "inherit")
         }
     }
 
@@ -1969,6 +2037,8 @@ struct SceneCard: View {
                               value: v,
                               onLive: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") },
                               onCommit: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") })
+            case .color:
+                EmptyView()  // scene colors use p.isColor above, not the .color kind
             }
         }
     }

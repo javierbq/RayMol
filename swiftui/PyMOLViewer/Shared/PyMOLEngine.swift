@@ -1538,11 +1538,16 @@ final class PyMOLEngine: ObservableObject {
                     if let vals = r["vals"] as? [String: Any] {
                         for (k, v) in vals { values[k] = (v as? NSNumber)?.doubleValue ?? 0 }
                     }
+                    var settingColors: [String: String] = [:]
+                    if let cols = r["colors"] as? [String: Any] {
+                        for (k, v) in cols { settingColors[k] = v as? String ?? "inherit" }
+                    }
                     return RepState(
                         rep: r["rep"] as? String ?? "",
                         visible: ((r["vis"] as? NSNumber)?.intValue ?? 1) != 0,
                         values: values,
-                        color: r["color"] as? String ?? "inherit")
+                        color: r["color"] as? String ?? "inherit",
+                        settingColors: settingColors)
                 }
             }
         }

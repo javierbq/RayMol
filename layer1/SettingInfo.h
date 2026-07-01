@@ -923,6 +923,12 @@ enum {
   REC_b( 813, metal_temporal_ao                       , global    , false ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
   REC_b( 814, metal_upscale                           , global    , false ), /* Metal: render the scene at reduced resolution and upscale to native (mobile perf; bilinear, MetalFX follow-up) */
   REC_f( 815, metal_dof_aperture                      , global    , 14.0F ), /* Metal DOF aperture: max out-of-focus blur radius in px (bokeh strength); larger = wider aperture / stronger blur */
+  REC_f( 816, surface_clip_front                      , object    , 0.0F ),  /* Per-rep surface clip, referenced to the surface's center of mass: fraction 0..1 of the molecule depth to shave off the NEAR (front) side. 0 = no clip, 1 = clip to the COM. Lets the surface clip while cartoon/sticks stay whole so you can peek inside. */
+  REC_f( 817, surface_clip_back                       , object    , 0.0F ),  /* Per-rep surface clip referenced to the COM: fraction 0..1 of the molecule depth to shave off the FAR (back) side. 0 = no clip, 1 = clip to the COM. Equal front/back give a slab symmetric about the COM. */
+  REC_b( 818, surface_contour                         , object    , false ), /* Metal: draw a crisp line around the surface's OUTER silhouette (coverage boundary), visible even when the surface is transparent/clipped, so the shape stays defined. */
+  REC_f( 819, surface_contour_width                   , object    , 2.0F ),  /* Metal: surface outer-contour line thickness in pixels (constant on-screen). */
+  REC_c( 820, surface_contour_color                   , object    , "-1" ),  /* Metal: surface outer-contour color; -1 = inherit the surface/object color, else a named/hex color. */
+  REC_b( 821, surface_contour_opaque                  , object    , true ),  /* Metal: surface outer-contour is fully opaque (crisp); off = the line picks up the surface transparency. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

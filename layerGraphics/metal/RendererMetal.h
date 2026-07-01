@@ -143,6 +143,8 @@ public:
       int posOffset, int normalOffset, int colorOffset, int colorType,
       const void* indexData, size_t indexDataSize, int interiorCap = 0) override;
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
+  void setRepClip(float front, float back) override;
+  void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
@@ -401,6 +403,35 @@ private:
   // else per-primitive default (atom color darkened / surface gray).
   float _capColor[3] = {0.32f, 0.32f, 0.36f};
   bool _capColorOverride = false;
+  // Per-rep clip planes (eye-space distances) for the next lit-VBO draw.
+  // _repClipFront < 0 => disabled (use the global slab). Set via setRepClip.
+  float _repClipFront = -1.0f;
+  float _repClipBack = 1e6f;
+  // Surface outer-contour outline (per-surface, coverage-boundary). When armed
+  // (setRepContour), the next surface draw is stashed; after the scene the
+  // stashed geometry is rendered to a coverage mask and a post pass outlines the
+  // mask boundary. Works on transparent/clipped surfaces. See drawVBO / runPostChain.
+  bool _repContourEnabled = false;       // arm capture for the current draw
+  float _contourColor[4] = {0, 0, 0, 1}; // line RGBA (frame param, last writer)
+  float _contourWidth = 2.0f;            // px (constant on-screen)
+  bool _contourActive = false;           // any contour draw stashed this frame
+  id<MTLTexture> _surfaceCoverageTex = nil;
+  id<MTLRenderPipelineState> _coveragePipeline = nil; // stride-keyed
+  size_t _coverageStride = 0;
+  id<MTLRenderPipelineState> _surfaceContourPipeline = nil;
+  id<MTLFunction> _coverageVtxFunc = nil, _coverageFragFunc = nil;
+  struct CoverageDraw {
+    id<MTLBuffer> vbo;
+    id<MTLBuffer> ibo; // nil => non-indexed
+    int count;         // index count (indexed) or vertex count (non-indexed)
+    size_t stride;
+    int posOffset;
+    float modelview[16];
+    float projection[16];
+    float clipFront;
+    float clipBack;
+  };
+  std::vector<CoverageDraw> _coverageDraws;
   id<MTLFunction> _capMarkVtxFunc = nil, _capMarkFragFunc = nil;
   id<MTLFunction> _capFillVtxFunc = nil, _capFillFragFunc = nil;
   id<MTLRenderPipelineState> _vboShadowPipelineUByte = nil; // stride 28

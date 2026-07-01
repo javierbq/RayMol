@@ -20,7 +20,10 @@ REPS = ['lines', 'sticks', 'ribbon', 'cartoon', 'dots', 'spheres',
 REP_SETTINGS = {
     'cartoon':    ['cartoon_transparency', 'cartoon_loop_radius',
                    'cartoon_tube_radius', 'cartoon_fancy_helices'],
-    'surface':    ['transparency', 'surface_quality', 'solvent_radius', 'metal_interior_cap'],
+    'surface':    ['transparency', 'surface_quality', 'solvent_radius',
+                   'surface_clip_front', 'surface_clip_back', 'metal_interior_cap',
+                   'surface_contour', 'surface_contour_width',
+                   'surface_contour_opaque'],
     'sticks':     ['stick_transparency', 'stick_radius', 'stick_h_scale', 'metal_interior_cap'],
     'spheres':    ['sphere_transparency', 'sphere_scale', 'metal_interior_cap'],
     'nb_spheres': ['nb_spheres_size'],
@@ -38,6 +41,12 @@ REP_COLOR = {
     'sticks': 'stick_color', 'spheres': 'sphere_color',
     'ribbon': 'ribbon_color', 'mesh': 'mesh_color',
     'dots': 'dot_color', 'lines': 'line_color', 'labels': 'label_color',
+}
+
+# Extra per-rep color settings (besides the main rep color), resolved to
+# '#rrggbb'/'inherit' and sent in the rep's 'colors' dict for color-kind controls.
+REP_EXTRA_COLORS = {
+    'surface': ['surface_contour_color'],
 }
 
 SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_ssao',
@@ -146,7 +155,9 @@ def _build(objs):
                 continue
             vals = {s: _num(s, o) for s in REP_SETTINGS.get(r, [])}
             col = _rep_color(o, REP_COLOR[r]) if r in REP_COLOR else 'inherit'
-            reps.append({'rep': r, 'vis': 1, 'vals': vals, 'color': col})
+            cols = {s: _rep_color(o, s) for s in REP_EXTRA_COLORS.get(r, [])}
+            reps.append({'rep': r, 'vis': 1, 'vals': vals, 'color': col,
+                         'colors': cols})
         detail[o] = reps
     scene = {s: _num(s, '') for s in SCENE_SETTINGS}
     scene['bg'] = _bg_rgb()

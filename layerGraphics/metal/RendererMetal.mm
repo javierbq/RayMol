@@ -377,6 +377,8 @@ RendererMetal::~RendererMetal()
   [_sphereShadowPipeline release];    [_cylinderShadowPipeline release];
   [_shadowDebugPipeline release];
   [_capMarkPipeline release];         [_capFillPipeline release];
+  [_coveragePipeline release];        [_surfaceContourPipeline release];
+  [_surfaceCoverageTex release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -564,6 +566,22 @@ void RendererMetal::setInteriorCapColor(float r, float g, float b, bool override
   _capColorOverride = overrideColor;
 }
 
+void RendererMetal::setRepClip(float front, float back)
+{
+  _repClipFront = front;       // < 0 disables per-rep clip in the lit fragment
+  _repClipBack = back;
+}
+
+void RendererMetal::setRepContour(bool enabled, const float* rgba, float widthPx)
+{
+  _repContourEnabled = enabled; // armed => the next surface draw is stashed
+  if (enabled) {
+    _contourColor[0] = rgba[0]; _contourColor[1] = rgba[1];
+    _contourColor[2] = rgba[2]; _contourColor[3] = rgba[3];
+    _contourWidth = widthPx;
+  }
+}
+
 // ---------------------------------------------------------------------------
 #pragma mark - Frame lifecycle
 // ---------------------------------------------------------------------------
@@ -583,6 +601,8 @@ void RendererMetal::beginFrame()
   _encoder = nil;
   _oitActive = false;
   _oitHasContent = false;
+  _coverageDraws.clear();  // surface outer-contour: re-stashed during this frame
+  _contourActive = false;
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -969,6 +989,39 @@ fragment float4 post_outline(PostVOut in [[stage_in]],
   return float4(color, 1.0);
 }
 
+// Surface OUTER contour: outline the boundary of the surface coverage mask
+// (covTex.r = 1 where the surface covers the screen, 0 elsewhere). A pixel is on
+// the contour where coverage differs from a neighbor within the line width, so
+// the line traces the outer silhouette (and any interior holes) of the surface —
+// independent of the surface's transparency or the depth buffer. Composited over
+// the scene color.
+struct ContourU {
+  float invW, invH;             // 1/resolution
+  float thickness;              // ring radius in pixels (~half the line width)
+  float colR, colG, colB, colA; // line color; colA folds in opaque/transparency
+};
+fragment float4 post_surface_contour(PostVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    texture2d<float> covTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    constant ContourU& u [[buffer(0)]]) {
+  float3 color = colorTex.sample(s, in.uv).rgb;
+  float c = covTex.sample(s, in.uv).r;
+  float2 px = float2(u.invW, u.invH) * max(u.thickness, 1.0);
+  float e = 0.0;
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2( px.x, 0)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2(-px.x, 0)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2(0,  px.y)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2(0, -px.y)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2( px.x,  px.y)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2(-px.x,  px.y)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2( px.x, -px.y)).r));
+  e = max(e, abs(c - covTex.sample(s, in.uv + float2(-px.x, -px.y)).r));
+  float a = clamp(e, 0.0, 1.0) * u.colA;
+  color = mix(color, float3(u.colR, u.colG, u.colB), a);
+  return float4(color, 1.0);
+}
+
 // Stage-1 debug: show the raw light-POV shadow depth map as grayscale (near
 // dark, far/background white). Env-gated (PYMOL_SHADOW_DEBUG). Removed in S2.
 fragment float4 post_shadow_debug(PostVOut in [[stage_in]],
@@ -1061,9 +1114,11 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_oitAccum release];      [_oitReveal release];
   [_rtAO release];
   [_rtAOHistory release];   [_rtAOAccum release];
+  [_surfaceCoverageTex release];
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = nil;
+  _surfaceCoverageTex = nil;
   _rtAO = nil;
   _rtAOHistory = _rtAOAccum = nil;
   _rtAOHistoryValid = false;  // resized AO targets: history is stale, hard-reset
@@ -1075,6 +1130,16 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   cd.storageMode = MTLStorageModePrivate;
   _sceneColor = [_device newTextureWithDescriptor:cd];
   _postColor = [_device newTextureWithDescriptor:cd];
+
+  // Surface outer-contour coverage mask (single-sample R8): the surface footprint
+  // is rendered here after the scene, then post_surface_contour outlines its
+  // boundary. Single-sample so the post pass reads it directly (no MSAA resolve).
+  MTLTextureDescriptor* covd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                   width:w height:h mipmapped:NO];
+  covd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  covd.storageMode = MTLStorageModePrivate;
+  _surfaceCoverageTex = [_device newTextureWithDescriptor:covd];
 
   // Raw RT terms: ambient occlusion in .r, traced light-visibility (hard
   // shadow) in .g. Kept in its own float texture so the composite pass can
@@ -1254,6 +1319,7 @@ void RendererMetal::buildPostPipelines()
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
   _oitResolvePipeline = mkpipe(@"oit_resolve");
   _outlinePipeline = mkpipe(@"post_outline");
+  _surfaceContourPipeline = mkpipe(@"post_surface_contour");
   _dofPipeline = mkpipe(@"post_dof");
   _shadowDebugPipeline = mkpipe(@"post_shadow_debug");
   // Temporal-AO accumulate pipeline writes the RG16Float accumulation target, so
@@ -2094,6 +2160,93 @@ void RendererMetal::runPostChain()
     [e3 setFragmentBytes:&u length:sizeof(u) atIndex:0];
     [e3 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e3 endEncoding];
+    sceneSrc = dst;
+  }
+
+  // Pass 3.4: surface OUTER contour. Render the stashed surface footprint into a
+  // coverage mask, then outline the mask boundary over the scene color. Works on
+  // transparent/clipped surfaces (coverage is independent of depth/OIT).
+  if (_contourActive && !_coverageDraws.empty() && _surfaceContourPipeline &&
+      _surfaceCoverageTex && _coverageVtxFunc && _coverageFragFunc) {
+    // (a) Coverage mask: rasterize the stashed surface draws (position-only,
+    // per-rep clip applied) into the R8 mask, cleared to 0.
+    MTLRenderPassDescriptor* cpd = [MTLRenderPassDescriptor renderPassDescriptor];
+    cpd.colorAttachments[0].texture = _surfaceCoverageTex;
+    cpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+    cpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    cpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> ce =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:cpd];
+    for (const auto& cd : _coverageDraws) {
+      if (!_coveragePipeline || _coverageStride != cd.stride) {
+        MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+        vd.attributes[0].format = MTLVertexFormatFloat3;
+        vd.attributes[0].offset = (NSUInteger)(cd.posOffset < 0 ? 0 : cd.posOffset);
+        vd.attributes[0].bufferIndex = 0;
+        vd.layouts[0].stride = (NSUInteger)cd.stride;
+        vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+        MTLRenderPipelineDescriptor* pd2 = [[MTLRenderPipelineDescriptor alloc] init];
+        pd2.vertexFunction = _coverageVtxFunc;
+        pd2.fragmentFunction = _coverageFragFunc;
+        pd2.vertexDescriptor = vd;
+        pd2.colorAttachments[0].pixelFormat = MTLPixelFormatR8Unorm;
+        pd2.rasterSampleCount = 1;
+        NSError* pe = nil;
+        [_coveragePipeline release];  // MRC: release the previous-stride pipeline
+        _coveragePipeline = [_device newRenderPipelineStateWithDescriptor:pd2 error:&pe];
+        _coverageStride = cd.stride;
+        if (!_coveragePipeline)
+          NSLog(@"RendererMetal: coverage pipeline failed: %@", pe);
+        [vd release]; [pd2 release];  // MRC: consumed by pipeline creation
+      }
+      if (!_coveragePipeline) continue;
+      [ce setRenderPipelineState:_coveragePipeline];
+      [ce setCullMode:MTLCullModeNone];
+      [ce setVertexBuffer:cd.vbo offset:0 atIndex:0];
+      struct { float modelview[16]; float projection[16]; float pointSize; float pad[3]; } cu;
+      std::memcpy(cu.modelview, cd.modelview, 64);
+      std::memcpy(cu.projection, cd.projection, 64);
+      cu.pointSize = 1.0f; cu.pad[0] = cu.pad[1] = cu.pad[2] = 0.0f;
+      [ce setVertexBytes:&cu length:sizeof(cu) atIndex:1];
+      { struct { float front, back, enabled, pad; } _cl = { cd.clipFront, cd.clipBack,
+          cd.clipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+        [ce setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+      if (cd.ibo) {
+        [ce drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                       indexCount:(NSUInteger)cd.count
+                        indexType:MTLIndexTypeUInt32
+                      indexBuffer:cd.ibo
+                indexBufferOffset:0];
+      } else {
+        [ce drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+                vertexCount:(NSUInteger)cd.count];
+      }
+    }
+    [ce endEncoding];
+
+    // (b) Outline the coverage boundary over the scene color.
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    struct { float invW, invH, thickness, colR, colG, colB, colA, _pad; } u;
+    u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
+    u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
+    float halfW = _contourWidth * 0.5f;
+    u.thickness = (halfW < 0.5f ? 0.5f : halfW) * pixelRadiusScale();
+    u.colR = _contourColor[0]; u.colG = _contourColor[1];
+    u.colB = _contourColor[2]; u.colA = _contourColor[3];
+    u._pad = 0.0f;
+    MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> ec =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [ec setRenderPipelineState:_surfaceContourPipeline];
+    [ec setFragmentTexture:sceneSrc atIndex:0];
+    [ec setFragmentTexture:_surfaceCoverageTex atIndex:1];
+    [ec setFragmentSamplerState:_postSampler atIndex:0];
+    [ec setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    [ec drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [ec endEncoding];
     sceneSrc = dst;
   }
 
@@ -3267,7 +3420,17 @@ struct VBOVertexOut {
   float4 position [[position]];
   float4 color;
   float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
+  float  eyeDist;     // distance from camera (-eyeZ), for per-rep clipping
 };
+
+// Per-representation clip planes (eye-space distances from the camera). Lets one
+// rep (e.g. the surface) clip tighter than the global slab so the user can peek
+// inside while cartoon/sticks stay whole. enabled<0.5 => no per-rep clip.
+struct ClipU { float front; float back; float enabled; float _pad; };
+static void apply_rep_clip(ClipU clip, float eyeDist) {
+  if (clip.enabled > 0.5 && (eyeDist < clip.front || eyeDist > clip.back))
+    discard_fragment();
+}
 
 // PyMOL two-light model. The ambient/direct/reflect/specular/shininess come
 // from the live PyMOL settings (Scene lighting sliders) via LightU, instead of
@@ -3334,12 +3497,17 @@ vertex VBOVertexOut vbo_vertex(
   // (visible triangle banding); per-pixel shading is smooth.
   out.normalEye = (uniforms.modelview * float4(in.normal, 0.0)).xyz;
   out.color = in.color;
+  // Eye-space distance from the camera (eyePos.z is negative in front), used by
+  // the fragment stage to discard fragments outside this rep's clip planes.
+  out.eyeDist = -eyePos.z;
   return out;
 }
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
-    constant LightU& lt [[buffer(0)]])
+    constant LightU& lt [[buffer(0)]],
+    constant ClipU& clip [[buffer(1)]])
 {
+  apply_rep_clip(clip, in.eyeDist);
   return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
 }
 
@@ -3391,21 +3559,36 @@ vertex VBOVertexOutUnlit vbo_vertex_unlit_flat(
 // color/depth write, stencil = INVERT). Each face toggles stencil bit 0, so odd
 // parity == the near (slab) plane is inside the solid the surface encloses.
 struct CapMarkIn { float3 position [[attribute(0)]]; };
-vertex float4 cap_mark_vertex(CapMarkIn in [[stage_in]],
+struct CapMarkOut { float4 position [[position]]; float eyeDist; };
+vertex CapMarkOut cap_mark_vertex(CapMarkIn in [[stage_in]],
     constant VBOUniforms& u [[buffer(1)]]) {
-  float4 p = u.projection * (u.modelview * float4(in.position, 1.0));
+  CapMarkOut o;
+  float4 eye = u.modelview * float4(in.position, 1.0);
+  float4 p = u.projection * eye;
   p.z = 0.5 * (p.z + p.w);   // GL [-1,1] -> Metal [0,1] (match the VBO)
-  return p;
+  o.position = p;
+  o.eyeDist = -eye.z;        // per-rep clip parity (matches vbo_vertex)
+  return o;
 }
-fragment float4 cap_mark_fragment() { return float4(0.0); }  // color discarded
-// FILL: a full-screen triangle at the near-plane sentinel depth; a stencil EQUAL
-// test keeps only the interior pixels, filled with a flat interior color (and the
-// pass clears the stencil bit so multiple capped surfaces don't interfere).
+// Discard the per-rep-clipped-away faces so the stencil parity marks the cut at
+// the per-rep FRONT plane (not just the global near plane). The bound ClipU has
+// back left open so only the viewer-facing cut is capped; when per-rep clip is
+// off (enabled=0) this is a no-op and the global-slab/impostor cap is unchanged.
+fragment float4 cap_mark_fragment(CapMarkOut in [[stage_in]],
+    constant ClipU& clip [[buffer(1)]]) {
+  apply_rep_clip(clip, in.eyeDist);
+  return float4(0.0);  // color masked off (writeMask none)
+}
+// FILL: a full-screen triangle at the cut-plane depth (capDepth; the global near
+// sentinel 1e-5 when per-rep clip is off); a stencil EQUAL test keeps only the
+// interior pixels, filled with a flat interior color (and the pass clears the
+// stencil bit so multiple capped surfaces don't interfere).
 struct CapFillOut { float4 position [[position]]; };
-vertex CapFillOut cap_fill_vertex(uint vid [[vertex_id]]) {
+vertex CapFillOut cap_fill_vertex(uint vid [[vertex_id]],
+    constant float& capDepth [[buffer(0)]]) {
   float2 p = float2(float((vid << 1) & 2), float(vid & 2));   // (0,0)(2,0)(0,2)
   CapFillOut o;
-  o.position = float4(p * 2.0 - 1.0, 1e-5, 1.0);  // cover screen at sentinel depth
+  o.position = float4(p * 2.0 - 1.0, capDepth, 1.0);  // cover screen at cut depth
   return o;
 }
 fragment float4 cap_fill_fragment(constant float4& interiorColor [[buffer(0)]]) {
@@ -3414,6 +3597,26 @@ fragment float4 cap_fill_fragment(constant float4& interiorColor [[buffer(0)]]) 
   // {0,0,1}). Caps use the default lighting (a minor flat fill).
   LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0, 0.0};
   return float4(vbo_shade(interiorColor.rgb, float3(0.0, 0.0, 1.0), lt), interiorColor.a);
+}
+
+// --- Surface coverage (for the outer-contour outline) ---
+// Rendered AFTER the scene into an R8 mask: position-only, applies the per-rep
+// clip (so coverage matches the displayed/clipped surface), writes 1 for every
+// surviving fragment. post_surface_contour then outlines the mask boundary.
+struct CovOut { float4 position [[position]]; float eyeDist; };
+vertex CovOut coverage_vertex(CapMarkIn in [[stage_in]],
+    constant VBOUniforms& u [[buffer(1)]]) {
+  CovOut o;
+  float4 eye = u.modelview * float4(in.position, 1.0);
+  o.position = u.projection * eye;
+  o.position.z = 0.5 * (o.position.z + o.position.w);
+  o.eyeDist = -eye.z;
+  return o;
+}
+fragment float4 coverage_fragment(CovOut in [[stage_in]],
+    constant ClipU& clip [[buffer(1)]]) {
+  apply_rep_clip(clip, in.eyeDist);
+  return float4(1.0, 0.0, 0.0, 1.0); // R8 mask = 1 where the surface covers
 }
 
 // Weighted-blended OIT output (McGuire/Bavoil). Transparent geometry writes
@@ -3428,8 +3631,10 @@ static float oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
-    constant LightU& lt [[buffer(0)]])
+    constant LightU& lt [[buffer(0)]],
+    constant ClipU& clip [[buffer(1)]])
 {
+  apply_rep_clip(clip, in.eyeDist);
   float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
@@ -3497,6 +3702,8 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   _capMarkFragFunc = [lib newFunctionWithName:@"cap_mark_fragment"];
   _capFillVtxFunc = [lib newFunctionWithName:@"cap_fill_vertex"];
   _capFillFragFunc = [lib newFunctionWithName:@"cap_fill_fragment"];
+  _coverageVtxFunc = [lib newFunctionWithName:@"coverage_vertex"];
+  _coverageFragFunc = [lib newFunctionWithName:@"coverage_fragment"];
   _lineAAVtxFunc = [lib newFunctionWithName:@"line_aa_vertex"];
   _lineAAFragFunc = [lib newFunctionWithName:@"line_aa_fragment"];
   if (!_vboVertexFunc || !_vboFragmentFunc) {
@@ -3986,6 +4193,24 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
 #pragma mark - VBO Drawing
 // ---------------------------------------------------------------------------
 
+// Window-space depth ([0,1], matching the VBO's 0.5*(z+w) convention) of the
+// per-rep front cut plane, for placing the interior cap-fill at the cut instead
+// of the global near plane. Returns the near sentinel (1e-5) when per-rep clip
+// is off (repClipFront < 0), preserving the original global-slab/impostor cap.
+// P is the column-major projection matrix; clip.z/clip.w of eye point (0,0,ez)
+// use P[10],P[14] and P[11],P[15].
+static float repCapDepth(const float* P, float repClipFront)
+{
+  if (repClipFront < 0.0f)
+    return 1e-5f;
+  float ez = -repClipFront; // eye-space z of the front cut plane (negative)
+  float cz = P[10] * ez + P[14];
+  float cw = P[11] * ez + P[15];
+  if (std::fabs(cw) < 1e-6f)
+    return 1e-5f;
+  return 0.5f * (cz / cw + 1.0f); // GL NDC [-1,1] -> window [0,1]
+}
+
 void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     const void* data, size_t dataSize, size_t stride,
     int posOffset, int normalOffset, int colorOffset, int colorType,
@@ -4153,6 +4378,11 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
+  // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
+  { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
+      _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+    [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -4211,11 +4441,18 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+      // MARK pass: per-rep clip (front-only) so stencil parity marks the cut at
+      // the per-rep front plane; no-op (enabled=0) when per-rep clip is off.
+      { struct { float front, back, enabled, pad; } _capcl = { _repClipFront, 1e6f,
+          _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+        [_encoder setFragmentBytes:&_capcl length:sizeof(_capcl) atIndex:1]; }
       [_encoder drawPrimitives:toMTL(mode)
                    vertexStart:0
                    vertexCount:static_cast<NSUInteger>(vertexCount)];
       [_encoder setRenderPipelineState:_capFillPipeline];
       [_encoder setDepthStencilState:_capFillDSS];
+      { float capDepth = repCapDepth(_projectionMatrix.data(), _repClipFront);
+        [_encoder setVertexBytes:&capDepth length:sizeof(capDepth) atIndex:0]; }
       const float interior[4] = {
           _capColorOverride ? _capColor[0] : 0.32f,
           _capColorOverride ? _capColor[1] : 0.32f,
@@ -4226,6 +4463,19 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
       applyDepthStencilState();
       if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
     }
+  }
+
+  // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
+  // into the coverage mask after the scene (see runPostChain).
+  if (_repContourEnabled && !_shadowMode) {
+    CoverageDraw cd;
+    cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
+    cd.stride = stride; cd.posOffset = posOffset;
+    std::memcpy(cd.modelview, _modelviewMatrix.data(), 64);
+    std::memcpy(cd.projection, _projectionMatrix.data(), 64);
+    cd.clipFront = _repClipFront; cd.clipBack = _repClipBack;
+    _coverageDraws.push_back(cd);
+    _contourActive = true;
   }
 }
 
@@ -4363,6 +4613,11 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
+  // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
+  { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
+      _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+    [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
@@ -4415,6 +4670,11 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
       [_encoder setCullMode:MTLCullModeNone];
       [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
       [_encoder setVertexBytes:&matrices length:sizeof(matrices) atIndex:1];
+      // MARK pass: per-rep clip (front-only) so stencil parity marks the cut at
+      // the per-rep front plane; no-op (enabled=0) when per-rep clip is off.
+      { struct { float front, back, enabled, pad; } _capcl = { _repClipFront, 1e6f,
+          _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+        [_encoder setFragmentBytes:&_capcl length:sizeof(_capcl) atIndex:1]; }
       [_encoder drawIndexedPrimitives:toMTL(mode)
                            indexCount:static_cast<NSUInteger>(indexCount)
                             indexType:MTLIndexTypeUInt32
@@ -4422,6 +4682,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
                     indexBufferOffset:0];
       [_encoder setRenderPipelineState:_capFillPipeline];
       [_encoder setDepthStencilState:_capFillDSS];
+      { float capDepth = repCapDepth(_projectionMatrix.data(), _repClipFront);
+        [_encoder setVertexBytes:&capDepth length:sizeof(capDepth) atIndex:0]; }
       const float interior[4] = {
           _capColorOverride ? _capColor[0] : 0.32f,
           _capColorOverride ? _capColor[1] : 0.32f,
@@ -4433,6 +4695,19 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
       applyDepthStencilState();
       if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
     }
+  }
+
+  // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
+  // into the coverage mask after the scene (see runPostChain).
+  if (_repContourEnabled && !_shadowMode) {
+    CoverageDraw cd;
+    cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
+    cd.stride = stride; cd.posOffset = posOffset;
+    std::memcpy(cd.modelview, _modelviewMatrix.data(), 64);
+    std::memcpy(cd.projection, _projectionMatrix.data(), 64);
+    cd.clipFront = _repClipFront; cd.clipBack = _repClipBack;
+    _coverageDraws.push_back(cd);
+    _contourActive = true;
   }
 }
 

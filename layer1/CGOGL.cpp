@@ -20,6 +20,10 @@
 
 #include "VertexFormat.h"
 
+#include <algorithm>
+#include <cmath>
+#include <glm/glm.hpp>
+
 #define VAR_FOR_NORMAL pl
 #define VERTEX_NORMAL_SIZE 3
 #define VAR_FOR_NORMAL_CNT_PLUS
@@ -56,6 +60,86 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
   return 1;
 }
 
+// Per-representation clipping: program the renderer's per-rep clip planes for
+// the lit VBO draw that follows. Only the surface rep carries clip fractions
+// (surface_clip_front/back); every other lit draw (cartoon/lines) must reset to
+// "disabled" so a surface clip can't leak onto it (the renderer member persists).
+//
+// Reference is the surface object's center of mass (bounding-sphere center) and
+// radius, NOT the camera slab: each fraction is normalized 0..1 across the
+// molecule's depth, where 0 = no clip and 1 = clip that side all the way to the
+// COM. Equal front/back give a slab symmetric about the COM, and the feel is the
+// same on any structure (no camera-slab dead-zone). The COM depth is projected
+// through the live modelview, so the slab stays centered as the camera moves.
+static void metalApplyRepClip(CCGORenderer* I)
+{
+  auto* G = I->G;
+  if (!G->Renderer) return;
+  // Gate on the ACTUAL rep type, not the metalIsSurfaceShader flag (that flag is
+  // set on GL_SURFACE_SHADER enable; it must not leak the clip onto a later rep).
+  pymol::CObject* obj = I->rep ? I->rep->obj : nullptr;
+  CoordSet* cs = I->rep ? I->rep->cs : nullptr;
+  if (I->rep && I->rep->type() == cRepSurface && obj && cs &&
+      cs->getNIndex() > 0) {
+    CSetting* s1 = cs->Setting.get();
+    CSetting* s2 = obj->Setting.get();
+    // Outer-contour outline: arm capture for this surface draw when enabled.
+    if (SettingGet_b(G, s1, s2, cSetting_surface_contour)) {
+      float width = SettingGet_f(G, s1, s2, cSetting_surface_contour_width);
+      int ci = SettingGet_color(G, s1, s2, cSetting_surface_contour_color);
+      if (ci < 0) ci = SettingGet_color(G, s1, s2, cSetting_surface_color);
+      float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // default black, opaque
+      if (ci >= 0) {
+        const float* c = ColorGet(G, ci);
+        rgba[0] = c[0]; rgba[1] = c[1]; rgba[2] = c[2];
+      }
+      if (!SettingGet_b(G, s1, s2, cSetting_surface_contour_opaque)) {
+        float tr = SettingGet_f(G, s1, s2, cSetting_transparency);
+        rgba[3] = 1.0f - (tr < 0.0f ? 0.0f : (tr > 1.0f ? 1.0f : tr));
+      }
+      G->Renderer->setRepContour(true, rgba, width);
+    } else {
+      G->Renderer->setRepContour(false, nullptr, 0.0f);
+    }
+    float fFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_front);
+    float bFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_back);
+    if (fFrac != 0.0f || bFrac != 0.0f) {
+      // Project every atom to eye-space DEPTH and take the actual [min,max] range.
+      // Using the true depth range (not a bounding-box estimate) matters because
+      // `orient` puts the molecule's shortest axis toward the camera, and a box
+      // projection over-estimates that depth — making the 0..1 fraction clip far
+      // too little until near 1. The modelview here is the same matrix the shader
+      // uses, so the planes line up with the rasterized eyeDist (verified).
+      const glm::mat4& mv = SceneGetModelViewMatrix(G);
+      int n = cs->getNIndex();
+      float dMin = 1e30f, dMax = -1e30f;
+      for (int i = 0; i < n; i++) {
+        const float* c = cs->coordPtr(i);
+        // eye.z = mv * c (column-major); depth from camera = -eye.z (positive).
+        float depth = -(mv[0][2] * c[0] + mv[1][2] * c[1] + mv[2][2] * c[2] + mv[3][2]);
+        dMin = std::min(dMin, depth);
+        dMax = std::max(dMax, depth);
+      }
+      // Pad so the surface shell beyond the atoms stays enclosed (fraction 0 = no
+      // clip on that side). Center is the COM along the view axis.
+      float pad = SettingGet_f(G, s1, s2, cSetting_solvent_radius) + 1.0f;
+      float center = 0.5f * (dMin + dMax);
+      float halfD = 0.5f * (dMax - dMin) + pad;
+      float ff = fFrac < 0.0f ? 0.0f : (fFrac > 1.0f ? 1.0f : fFrac);
+      float bb = bFrac < 0.0f ? 0.0f : (bFrac > 1.0f ? 1.0f : bFrac);
+      float front = center - halfD * (1.0f - ff); // ff=0 -> near face (no clip)
+      float back = center + halfD * (1.0f - bb);   // bb=0 -> far face (no clip)
+      G->Renderer->setRepClip(front, back);
+      return;
+    }
+    // Surface, no per-rep clip: keep the contour state set above, slab disabled.
+    G->Renderer->setRepClip(-1.0f, 1e6f);
+    return;
+  }
+  G->Renderer->setRepContour(false, nullptr, 0.0f); // non-surface: no contour
+  G->Renderer->setRepClip(-1.0f, 1e6f);             // disabled: global slab only
+}
+
 static bool drawVBOViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     pymol::PrimitiveType mode, int vertexCount)
 {
@@ -80,6 +164,7 @@ static bool drawVBOViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     }
   }
 
+  metalApplyRepClip(I);
   renderer->drawVBO(mode, vertexCount,
       vbo->cpuData(), vbo->cpuDataSize(), stride,
       posOffset, normalOffset, colorOffset, colorType,
@@ -113,6 +198,7 @@ static bool drawVBOIndexedViaMetal(CCGORenderer* I,
     }
   }
 
+  metalApplyRepClip(I);
   renderer->drawVBOIndexed(mode, indexCount,
       vbo->cpuData(), vbo->cpuDataSize(), stride,
       posOffset, normalOffset, colorOffset, colorType,
@@ -2061,6 +2147,11 @@ static void CGO_gl_disable(CCGORenderer* I, CGO_op_data pc)
     case GL_TRILINES_SHADER:
     case GL_OIT_COPY_SHADER:
     case GL_LINE_SHADER:
+      // Reset the Metal surface-shader flag on disable so it can't stay sticky
+      // and leak surface-only behavior (per-rep clip, metal_interior_cap) onto a
+      // rep drawn later in the frame. The enable handler sets it for SURFACE.
+      if (mode == GL_SURFACE_SHADER && I->G->Renderer)
+        I->metalIsSurfaceShader = false;
       I->G->ShaderMgr->Disable_Current_Shader();
       break;
     case GL_LABEL_FLOAT_TEXT: {
