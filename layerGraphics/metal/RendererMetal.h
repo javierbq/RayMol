@@ -145,6 +145,7 @@ public:
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
   void setRepClip(float front, float back) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
+  void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
@@ -432,6 +433,19 @@ private:
     float clipBack;
   };
   std::vector<CoverageDraw> _coverageDraws;
+  // Per-rep screen-space SSAO exemption (#79). Cartoon/ribbon lit-VBO draws are
+  // stashed (when _repAOExempt is armed) and rasterized DEPTH-TESTED against
+  // _sceneDepth into _aoExemptMaskTex (R8), so only the front-most cartoon pixels
+  // are marked. post_ssao_fog reads that mask and skips the SSAO crease/contour
+  // term there (cartoons still receive directional shadows), leaving surface
+  // pockets untouched.
+  bool _repAOExempt = false;                        // armed for the current draw
+  std::vector<CoverageDraw> _aoExemptDraws;         // cartoon/ribbon draws this frame
+  id<MTLTexture> _aoExemptMaskTex = nil;            // R8 front-most cartoon mask
+  id<MTLRenderPipelineState> _aoMaskPipeline = nil; // stride-keyed (coverage fns)
+  size_t _aoMaskStride = 0;
+  id<MTLDepthStencilState> _aoMaskDepthState = nil; // LessEqual, no depth write
+  bool renderAOExemptMask();                        // fills _aoExemptMaskTex; see .mm
   id<MTLFunction> _capMarkVtxFunc = nil, _capMarkFragFunc = nil;
   id<MTLFunction> _capFillVtxFunc = nil, _capFillFragFunc = nil;
   id<MTLRenderPipelineState> _vboShadowPipelineUByte = nil; // stride 28

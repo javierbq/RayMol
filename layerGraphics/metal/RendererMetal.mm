@@ -379,6 +379,8 @@ RendererMetal::~RendererMetal()
   [_capMarkPipeline release];         [_capFillPipeline release];
   [_coveragePipeline release];        [_surfaceContourPipeline release];
   [_surfaceCoverageTex release];
+  [_aoExemptMaskTex release];         [_aoMaskPipeline release];
+  [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -582,6 +584,108 @@ void RendererMetal::setRepContour(bool enabled, const float* rgba, float widthPx
   }
 }
 
+void RendererMetal::setRepScreenAO(bool exempt)
+{
+  _repAOExempt = exempt; // armed => the next lit-VBO draw is stashed for the mask
+}
+
+// Rasterize the stashed cartoon/ribbon draws into _aoExemptMaskTex (R8), DEPTH-
+// TESTED (LessEqual, no write) against the resolved _sceneDepth so only the
+// front-most cartoon pixels are marked (a cartoon pixel hidden behind a stick or
+// surface fails the test, so those foreground pixels keep their AO). Reuses the
+// coverage vertex/fragment (position-only, writes 1.0). Returns false (mask not
+// bound; caller sets aoExemptEnabled=0) when there is nothing to exempt.
+// See post_ssao_fog for how the mask gates the SSAO term (shadows are kept).
+bool RendererMetal::renderAOExemptMask()
+{
+  if (_aoExemptDraws.empty() || !_aoExemptMaskTex || !_coverageVtxFunc ||
+      !_coverageFragFunc || !_sceneDepth || !_cmdBuffer)
+    return false;
+
+  // Depth-compare state: test vs stored scene depth, never write it back.
+  if (!_aoMaskDepthState) {
+    MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+    dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
+    dsd.depthWriteEnabled = NO;
+    _aoMaskDepthState = [_device newDepthStencilStateWithDescriptor:dsd];
+    [dsd release];
+  }
+
+  MTLRenderPassDescriptor* mpd = [MTLRenderPassDescriptor renderPassDescriptor];
+  mpd.colorAttachments[0].texture = _aoExemptMaskTex;
+  mpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+  mpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+  mpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+  // Load the existing scene depth to test against; STORE it unchanged (no depth
+  // write happens) so the following SSAO pass still reads valid _sceneDepth.
+  mpd.depthAttachment.texture = _sceneDepth;
+  mpd.depthAttachment.loadAction = MTLLoadActionLoad;
+  mpd.depthAttachment.storeAction = MTLStoreActionStore;
+  mpd.stencilAttachment.texture = _sceneDepth;
+  mpd.stencilAttachment.loadAction = MTLLoadActionLoad;
+  mpd.stencilAttachment.storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> me =
+      [_cmdBuffer renderCommandEncoderWithDescriptor:mpd];
+  if (_aoMaskDepthState) [me setDepthStencilState:_aoMaskDepthState];
+  // Slope-scaled negative depth bias: pull the mask fragments slightly toward the
+  // camera so grazing cartoon triangles at folds (whose single-sample re-raster
+  // depth can exceed the MSAA-resolved scene depth by a sub-texel amount) still
+  // pass the LessEqual test and get masked — otherwise an AO contour line leaks
+  // through right at the fold. Slope-scaled so nearly-flat faces get almost no
+  // bias (can't sneak a cartoon that's genuinely behind a stick into the mask).
+  [me setDepthBias:0.0f slopeScale:-3.0f clamp:0.0f];
+  [me setCullMode:MTLCullModeNone];
+  for (const auto& cd : _aoExemptDraws) {
+    if (!_aoMaskPipeline || _aoMaskStride != cd.stride) {
+      MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+      vd.attributes[0].format = MTLVertexFormatFloat3;
+      vd.attributes[0].offset = (NSUInteger)(cd.posOffset < 0 ? 0 : cd.posOffset);
+      vd.attributes[0].bufferIndex = 0;
+      vd.layouts[0].stride = (NSUInteger)cd.stride;
+      vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+      MTLRenderPipelineDescriptor* pd2 = [[MTLRenderPipelineDescriptor alloc] init];
+      pd2.vertexFunction = _coverageVtxFunc;
+      pd2.fragmentFunction = _coverageFragFunc;
+      pd2.vertexDescriptor = vd;
+      pd2.colorAttachments[0].pixelFormat = MTLPixelFormatR8Unorm;
+      // Depth-tested against _sceneDepth (Depth32Float_Stencil8).
+      pd2.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+      pd2.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+      pd2.rasterSampleCount = 1;
+      NSError* pe = nil;
+      [_aoMaskPipeline release];  // MRC: release the previous-stride pipeline
+      _aoMaskPipeline = [_device newRenderPipelineStateWithDescriptor:pd2 error:&pe];
+      _aoMaskStride = cd.stride;
+      if (!_aoMaskPipeline)
+        NSLog(@"RendererMetal: AO-exempt mask pipeline failed: %@", pe);
+      [vd release]; [pd2 release];  // MRC: consumed by pipeline creation
+    }
+    if (!_aoMaskPipeline) continue;
+    [me setRenderPipelineState:_aoMaskPipeline];
+    [me setVertexBuffer:cd.vbo offset:0 atIndex:0];
+    struct { float modelview[16]; float projection[16]; float pointSize; float pad[3]; } cu;
+    std::memcpy(cu.modelview, cd.modelview, 64);
+    std::memcpy(cu.projection, cd.projection, 64);
+    cu.pointSize = 1.0f; cu.pad[0] = cu.pad[1] = cu.pad[2] = 0.0f;
+    [me setVertexBytes:&cu length:sizeof(cu) atIndex:1];
+    { struct { float front, back, enabled, pad; } _cl = { cd.clipFront, cd.clipBack,
+        cd.clipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
+      [me setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+    if (cd.ibo) {
+      [me drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                     indexCount:(NSUInteger)cd.count
+                      indexType:MTLIndexTypeUInt32
+                    indexBuffer:cd.ibo
+              indexBufferOffset:0];
+    } else {
+      [me drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+              vertexCount:(NSUInteger)cd.count];
+    }
+  }
+  [me endEncoding];
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 #pragma mark - Frame lifecycle
 // ---------------------------------------------------------------------------
@@ -603,6 +707,7 @@ void RendererMetal::beginFrame()
   _oitHasContent = false;
   _coverageDraws.clear();  // surface outer-contour: re-stashed during this frame
   _contourActive = false;
+  _aoExemptDraws.clear();  // cartoon/ribbon AO-exempt mask: re-stashed this frame
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -837,7 +942,7 @@ struct PostU {
   float projY;       // projection[5]
   float shadowEnabled;
   float shadowIntensity;
-  float _pad;
+  float aoExemptEnabled; // >0.5: aoMaskTex marks pixels that skip the SSAO term (#79)
   float4x4 lightViewProj; // eye-space light view*proj for shadow-map sampling
 };
 
@@ -852,6 +957,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
     depth2d<float> shadowTex [[texture(2)]],
+    texture2d<float> aoMaskTex [[texture(3)]],
     sampler s [[sampler(0)]],
     sampler shadowSamp [[sampler(1)]],
     constant PostU& u [[buffer(0)]]) {
@@ -864,8 +970,26 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
   // clean instead of being shaded by the screen-space post passes.
   bool flatCap = (d <= 0.0015);
 
+  // Per-rep AO exemption (#79): aoMaskTex.r == 1 on front-most cartoon/ribbon
+  // pixels. The depth-step SSAO term paints dark contour lines on their
+  // silhouettes/self-folds/coil-crossings, so it is SKIPPED there (surface
+  // pockets keep their AO). Cast SHADOWS are NOT skipped — cartoons still receive
+  // directional shadows for depth (its self-shadow gates suppress the ribbon
+  // darkening itself). Dilate the mask by two texels so grazing cartoon triangles
+  // at folds (whose single-sample re-raster depth can just miss the MSAA-resolved
+  // scene depth) are still covered and no AO line leaks through at the fold.
+  bool aoExempt = false;
+  if (u.aoExemptEnabled > 0.5) {
+    float2 iv = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
+    float m = 0.0;
+    for (int dy = -2; dy <= 2; dy++)
+      for (int dx = -2; dx <= 2; dx++)
+        m = max(m, aoMaskTex.sample(s, in.uv + float2(float(dx), float(dy)) * iv).r);
+    aoExempt = (m > 0.5);
+  }
+
   float ao = 1.0;
-  if (u.aoEnabled > 0.5 && d < 0.99999 && !flatCap) {
+  if (u.aoEnabled > 0.5 && d < 0.99999 && !flatCap && !aoExempt) {
     float zc = post_linear_depth(d, u.projA, u.projB);
     float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
     const int N = 12;
@@ -1115,10 +1239,12 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_rtAO release];
   [_rtAOHistory release];   [_rtAOAccum release];
   [_surfaceCoverageTex release];
+  [_aoExemptMaskTex release];
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = nil;
   _surfaceCoverageTex = nil;
+  _aoExemptMaskTex = nil;
   _rtAO = nil;
   _rtAOHistory = _rtAOAccum = nil;
   _rtAOHistoryValid = false;  // resized AO targets: history is stale, hard-reset
@@ -1140,6 +1266,9 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   covd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   covd.storageMode = MTLStorageModePrivate;
   _surfaceCoverageTex = [_device newTextureWithDescriptor:covd];
+  // Per-rep AO-exempt mask (#79): same single-sample R8, rasterized depth-tested
+  // against _sceneDepth so only front-most cartoon/ribbon pixels are marked.
+  _aoExemptMaskTex = [_device newTextureWithDescriptor:covd];
 
   // Raw RT terms: ambient occlusion in .r, traced light-visibility (hard
   // shadow) in .g. Kept in its own float texture so the composite pass can
@@ -2040,11 +2169,17 @@ void RendererMetal::runPostChain()
 
   // Pass 1: SSAO + screen-space shadows + depth-cue/fog (color+depth -> post).
   else if ((doAO || doFog || doShadow) && _postColor) {
+    // Per-rep AO/shadow exemption (#79): rasterize the stashed cartoon/ribbon
+    // draws (depth-tested vs the scene) into _aoExemptMaskTex BEFORE the SSAO
+    // pass, so post_ssao_fog can skip the contour terms on those pixels. Only
+    // meaningful when AO or shadow is actually running.
+    bool aoMaskReady = (doAO || doShadow) ? renderAOExemptMask() : false;
+
     struct {
       float projA, projB, fogStart, fogEnd;
       float bgR, bgG, bgB, fogEnabled;
       float aoEnabled, aoIntensity, aoRadiusPx, projX;
-      float projY, shadowEnabled, shadowIntensity, _pad;
+      float projY, shadowEnabled, shadowIntensity, aoExemptEnabled;
       float lightViewProj[16]; // eye-space light VP (matches MSL PostU)
     } u;
     u.projA = _projA; u.projB = _projB;
@@ -2057,7 +2192,7 @@ void RendererMetal::runPostChain()
     u.projX = _projX; u.projY = _projY;
     u.shadowEnabled = doShadow ? 1.0f : 0.0f;
     u.shadowIntensity = 0.45f;
-    u._pad = 0.0f;
+    u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
 
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -2070,6 +2205,9 @@ void RendererMetal::runPostChain()
     [e1 setFragmentTexture:_sceneColor atIndex:0];
     [e1 setFragmentTexture:_sceneDepth atIndex:1];
     [e1 setFragmentTexture:_shadowDepth atIndex:2];
+    // texture(3) = AO-exempt mask; bind a valid 2D texture even when unused
+    // (aoExemptEnabled gates the sample), since the shader declares it.
+    [e1 setFragmentTexture:(aoMaskReady ? _aoExemptMaskTex : _sceneColor) atIndex:3];
     [e1 setFragmentSamplerState:_postSampler atIndex:0];
     [e1 setFragmentSamplerState:_shadowSampler atIndex:1];
     [e1 setFragmentBytes:&u length:sizeof(u) atIndex:0];
@@ -3461,7 +3599,16 @@ static float3 vbo_shade(float3 baseColor, float3 nEye, LightU lt) {
   intensity += reflect * wrap_diffuse(n1, lt.wrap);
   if (n1 > 0.0) {
     float3 H1 = normalize(L1 + float3(0.0, 0.0, 1.0));
-    specular += spec_value * pow(max(dot(normal, H1), 0.0), shininess);
+    // Soften specular on the lit-VBO path (cartoon + molecular surface). The
+    // fixed view half-vector makes a flat ribbon/sheet face light up uniformly
+    // bright, which reads as harsh triangular facets once screen-space AO is
+    // removed from cartoons (#79) — the geometry normals are smooth, but the
+    // strong highlight on each flat facet exaggerates the low-poly faces. Scale
+    // the specular toward the softer ray-tracer/desktop look. Sphere/cylinder
+    // impostors have their own shaders and keep full specular (sticks/spheres
+    // stay glossy).
+    const float kLitVBOSpecScale = 0.4;
+    specular += kLitVBOSpecScale * spec_value * pow(max(dot(normal, H1), 0.0), shininess);
   }
   return baseColor * min(intensity, 1.0) + specular;
 }
@@ -4477,6 +4624,18 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     _coverageDraws.push_back(cd);
     _contourActive = true;
   }
+
+  // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
+  // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
+  if (_repAOExempt && !_shadowMode) {
+    CoverageDraw cd;
+    cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
+    cd.stride = stride; cd.posOffset = posOffset;
+    std::memcpy(cd.modelview, _modelviewMatrix.data(), 64);
+    std::memcpy(cd.projection, _projectionMatrix.data(), 64);
+    cd.clipFront = _repClipFront; cd.clipBack = _repClipBack;
+    _aoExemptDraws.push_back(cd);
+  }
 }
 
 void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
@@ -4708,6 +4867,18 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     cd.clipFront = _repClipFront; cd.clipBack = _repClipBack;
     _coverageDraws.push_back(cd);
     _contourActive = true;
+  }
+
+  // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
+  // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
+  if (_repAOExempt && !_shadowMode) {
+    CoverageDraw cd;
+    cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
+    cd.stride = stride; cd.posOffset = posOffset;
+    std::memcpy(cd.modelview, _modelviewMatrix.data(), 64);
+    std::memcpy(cd.projection, _projectionMatrix.data(), 64);
+    cd.clipFront = _repClipFront; cd.clipBack = _repClipBack;
+    _aoExemptDraws.push_back(cd);
   }
 }
 
