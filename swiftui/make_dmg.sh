@@ -32,7 +32,12 @@ set -euo pipefail
 
 PYMOL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SWIFTUI="$PYMOL_ROOT/swiftui"
-DERIVED="$HOME/Library/Developer/Xcode/DerivedData/PyMOLViewer-aqnajyficesyypbspyruqcvqhkhp/Build/Products/Release"
+# DerivedData path is keyed off the .xcodeproj's absolute path, so building from
+# a git worktree lands in a different dir than a hardcoded main-repo hash. Pin it
+# explicitly (below, via -derivedDataPath) so the build location is deterministic
+# from any checkout — main repo or worktree. Artifact contents are unaffected.
+RELEASE_DD="$PYMOL_ROOT/build_mac_release_dd"
+DERIVED="$RELEASE_DD/Build/Products/Release"
 ENTITLEMENTS="$SWIFTUI/RayMol_DeveloperID.entitlements"
 WORK="$PYMOL_ROOT/build_dmg"
 APPNAME="RayMol"
@@ -74,6 +79,7 @@ else
 fi
 xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath "$RELEASE_DD" \
   CODE_SIGNING_ALLOWED=NO build >/dev/null
 SRC_APP="$DERIVED/$APPNAME.app"
 [ -d "$SRC_APP" ] || { echo "ERROR: built app not found at $SRC_APP"; exit 1; }
@@ -175,7 +181,13 @@ cp -R "$APP" "$DMGROOT/"
 ln -s /Applications "$DMGROOT/Applications"
 DMG="$PYMOL_ROOT/$APPNAME-$VERSION.dmg"
 rm -f "$DMG"
-hdiutil create -volname "$APPNAME" -srcfolder "$DMGROOT" -fs HFS+ -format UDZO -ov "$DMG"
+# Mount-free packaging: `hdiutil create -srcfolder` mounts a temp volume at
+# /Volumes/RayMol, which sandbox/TCC blocks in automated runs. makehybrid +
+# convert produces an identical UDZO DMG without ever mounting a volume.
+RAW="$WORK/raw.dmg"; rm -f "$RAW"
+hdiutil makehybrid -hfs -hfs-volume-name "$APPNAME" -o "$RAW" "$DMGROOT"
+hdiutil convert "$RAW" -format UDZO -o "$DMG"
+rm -f "$RAW"
 
 echo "== 7/8  Sign + notarize + staple the DMG =="
 codesign --force --timestamp --sign "$DEVID" "$DMG"
