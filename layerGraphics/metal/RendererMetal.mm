@@ -1090,6 +1090,22 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
         float2 dd = float2(dfdx(fragDepth), dfdy(fragDepth));
         float sep = 0.022 + 2.5 * (abs(dd.x) + abs(dd.y));
         sep = min(sep, 0.05);
+        // Cartoon/ribbon receivers (aoExempt, the #79 mask) self-shadow on their
+        // OWN coarse triangle mesh: the shadow map is rasterized from the same
+        // low-poly cartoon tube, so the receiver's light-space depth crosses the
+        // stored (faceted) caster depth per-triangle and the small default `sep`
+        // lets that leak through as blocky, per-triangle self-shadow acne — the
+        // "triangles under shadows". Cartoon self-shadow is unwanted anyway (see
+        // the self-shadow suppression note in this pass), so on cartoon pixels
+        // raise the separation to a fixed fraction of the (scale-invariant)
+        // light-space depth range. This suppresses self + adjacent occlusion so
+        // the ribbon is cleanly lit, while genuinely separated casters (gap >
+        // kCartoonSelfShadowSep) still shadow it. Surface pixels are NOT masked,
+        // so surface pockets keep the fine default sep and their AO/shadow detail.
+        if (aoExempt) {
+          const float kCartoonSelfShadowSep = 0.12;
+          sep = max(sep, kCartoonSelfShadowSep);
+        }
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         // 4x4 taps of hardware-bilinear depth comparison (sample_compare with a
