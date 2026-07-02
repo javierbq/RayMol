@@ -2489,6 +2489,11 @@ struct ContentView: View {
     }
 
     private func maybePresentFirstBootTheme() {
+        // Dev/testing: suppress the first-boot theme picker so automated launches
+        // land straight in the app (e.g. to screenshot a mode). Doesn't persist
+        // the first-boot flag, so a normal launch still shows it once.
+        // PYMOL_SKIP_FIRSTBOOT_THEME=1.
+        if ProcessInfo.processInfo.environment["PYMOL_SKIP_FIRSTBOOT_THEME"] != nil { return }
         guard themeManager.firstBoot else { return }
         themeManager.markFirstBootDone()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
