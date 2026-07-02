@@ -168,6 +168,26 @@ final class PyMOLEngine: ObservableObject {
     // bar. Flips only when a multi-state object appears/disappears, so it does
     // NOT cause per-frame re-renders of views that observe `engine`.
     @Published var hasTimeline: Bool = false
+    // Timeline authoring ("movie studio") mode. UI-level state, mirroring the
+    // pattern of sequenceVisible/measureMode: entering it docks the multi-track
+    // TimelinePanel + always-visible transport so a movie can be authored from a
+    // cold start (before any frames exist). Toggled from the toolbar / menu.
+    @Published var timelineMode: Bool = false
+    // Camera keyframe frames the user has captured this session (1-based, sorted),
+    // used to draw the Timeline's camera track. Manual keyframing only — template
+    // builders (buildMovie) author their own mview keyframes and clear this list.
+    // Session-scoped: not reconstructed from a reloaded .pse (a Phase-2 concern).
+    @Published var cameraKeyframes: [Int] = []
+    // Scenes placed AS time-positioned markers on the timeline (drag-and-drop),
+    // as opposed to the recall palette. Each is an mview keyframe tagged with a
+    // scene (camera flies between scenes, reps cut). One keyframe per frame, so
+    // sceneMarkers frames are disjoint from cameraKeyframes. Session-scoped too.
+    struct SceneMarker: Identifiable, Equatable {
+        let frame: Int
+        let name: String
+        var id: Int { frame }   // one keyframe per frame → frame is a stable id
+    }
+    @Published var sceneMarkers: [SceneMarker] = []
     // While the user drags the scrubber, the poll must NOT overwrite
     // currentFrame (classic two-way-binding fight). Set on drag start, cleared
     // shortly after release so the next poll can re-sync.
@@ -270,6 +290,26 @@ final class PyMOLEngine: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 self?.sequenceVisible = true
                 self?.fetchSequences()
+            }
+        }
+
+        // Test affordance: enter Timeline mode at launch so the docked movie-studio
+        // layout can be screenshotted (the mode toggle is otherwise UI-only).
+        // PYMOL_AUTOTIMELINE=1.
+        if ProcessInfo.processInfo.environment["PYMOL_AUTOTIMELINE"] != nil {
+            DispatchQueue.main.async { [weak self] in self?.timelineMode = true }
+        }
+
+        // Test affordance: append one or more templates at launch (through the real
+        // appendTemplate path) so the decompose-onto-tracks can be screenshotted.
+        // PYMOL_AUTOAPPEND=roll  or  roll,scenes  (waits for AUTOCMD scenes to load).
+        if let seq = ProcessInfo.processInfo.environment["PYMOL_AUTOAPPEND"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self = self else { return }
+                self.timelineMode = true
+                for kind in seq.split(separator: ",") {
+                    self.appendTemplate(kind: String(kind).trimmingCharacters(in: .whitespaces))
+                }
             }
         }
 
@@ -936,6 +976,11 @@ final class PyMOLEngine: ObservableObject {
         guard isReady else { return }
         // No document is open after a clear — the next ⌘S becomes a Save As.
         currentSessionURL = nil
+        // reinitialize wipes the core movie (mset/mview); drop the camera track's
+        // keyframes so the Timeline doesn't show diamonds for frames that no
+        // longer exist.
+        cameraKeyframes.removeAll()
+        sceneMarkers.removeAll()
         runCommand("reinitialize")
         // reinitialize also resets engine settings to defaults — restore the
         // fetch_path that initialize() set (the writable temp dir) so a post-clear
@@ -1085,6 +1130,24 @@ final class PyMOLEngine: ObservableObject {
     // Reset the whole movie timeline (clear mset/mview) and rewind.
     func clearMovie() {
         runPython("from pymol import appkit_movie as _am\n_am.reset_movie()")
+        cameraKeyframes.removeAll()
+        sceneMarkers.removeAll()
+    }
+
+    // Create a blank movie canvas of `seconds` (at the current fps) so camera
+    // keyframes have a timeline to sit on. mset defines the frame count; every
+    // frame shows state 1 (a camera-only movie). Rewinds and clears any manual
+    // keyframes from a previous composition.
+    func newTimeline(seconds: Double) {
+        let frames = max(2, Int((seconds * max(playback.movieFPS, 1)).rounded()))
+        runPython("from pymol import appkit_movie as _am\n_am.new_timeline(\(frames))")
+        cameraKeyframes.removeAll()
+        sceneMarkers.removeAll()
+        // Reflect the new canvas immediately — the ~10/s playback poll would
+        // otherwise lag a beat, leaving the ruler/scrubber (and a following
+        // captureKeyframe, which reads currentFrame) on the old length.
+        playback.frameCount = frames
+        playback.currentFrame = 1
     }
 
     // Author a movie via the high-level builders (appkit_movie.make_movie).
@@ -1100,11 +1163,183 @@ final class PyMOLEngine: ObservableObject {
             args += ", scenes=[\(list)]"
         }
         runPython("from pymol import appkit_movie as _am\n_am.make_movie(\(args))")
+        // The template owns the whole timeline (its own mview keyframes); drop any
+        // manual camera keyframes / scene markers so the tracks don't show stale ones.
+        cameraKeyframes.removeAll()
+        sceneMarkers.removeAll()
+    }
+
+    // Append a template to the END of the timeline (compose by stacking). Mirrors
+    // appkit_movie.append_template's DETERMINISTIC frame placement so the tracks
+    // reflect the appended camera keyframes / scene markers immediately — keep the
+    // two frame formulas in sync. kind: roll | rock | scenes | state_loop | state_sweep.
+    func appendTemplate(kind: String, duration: Double = 8, axis: String = "y",
+                        angle: Double = 30, secondsPerScene: Double = 4,
+                        scenes: [String]? = nil, factor: Int = 1) {
+        let fps = max(playback.movieFPS, 1)
+        let start = playback.frameCount <= 1 ? 0 : playback.frameCount
+        let names = scenes ?? sceneNames
+        var args = "kind='\(kind)', duration=\(duration), axis='\(axis)', angle=\(angle), "
+            + "seconds_per_scene=\(secondsPerScene), factor=\(factor)"
+        if kind == "scenes" {
+            let list = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }
+                .joined(separator: ", ")
+            args += ", scenes=[\(list)]"
+        }
+        runPython("from pymol import appkit_movie as _am\n_am.append_template(\(args))")
+
+        switch kind {
+        case "roll", "rock":
+            let n = max(2, Int((duration * fps).rounded()))
+            let fr = kind == "roll"
+                ? [start + 1, start + 1 + n / 3, start + 1 + 2 * n / 3, start + n]
+                : [start + 1, start + 1 + n / 4, start + 1 + 3 * n / 4, start + n]
+            for f in fr where !cameraKeyframes.contains(f) { cameraKeyframes.append(f) }
+            cameraKeyframes.sort()
+            playback.frameCount = start + n
+        case "scenes":
+            let per = max(2, Int((secondsPerScene * fps).rounded()))
+            for (i, nm) in names.enumerated() {
+                let f = start + 1 + i * per
+                sceneMarkers.removeAll { $0.frame == f }
+                sceneMarkers.append(SceneMarker(frame: f, name: nm))
+            }
+            sceneMarkers.sort { $0.frame < $1.frame }
+            playback.frameCount = start + per * max(names.count, 1)
+        default:
+            break   // state_loop / state_sweep: no markers; the poll syncs frameCount
+        }
+        playback.currentFrame = 1
     }
 
     // Store a camera keyframe at the current frame + interpolate (mview).
-    func captureKeyframe() {
-        runPython("from pymol import appkit_movie as _am\n_am.capture_keyframe()")
+    // `linear` picks linear interpolation between keyframes instead of the default
+    // eased (smooth) motion. Tracks the frame in cameraKeyframes for the timeline.
+    func captureKeyframe(linear: Bool = false) {
+        runPython("from pymol import appkit_movie as _am\n_am.capture_keyframe(linear=\(linear ? 1 : 0))")
+        let f = playback.currentFrame
+        if !cameraKeyframes.contains(f) {
+            cameraKeyframes.append(f)
+            cameraKeyframes.sort()
+        }
+    }
+
+    // Remove the camera keyframe stored at `frame` and re-interpolate the rest.
+    func deleteKeyframe(at frame: Int, linear: Bool = false) {
+        runPython("from pymol import appkit_movie as _am\n"
+            + "_am.clear_keyframe(\(frame), linear=\(linear ? 1 : 0))")
+        cameraKeyframes.removeAll { $0 == frame }
+    }
+
+    // Recall a saved scene (camera + reps + visibility). Injection-safe (base64).
+    func recallScene(_ name: String) {
+        guard !name.isEmpty else { return }
+        let b64 = Data(name.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
+            + "_c.scene(_b64.b64decode('\(b64)').decode('utf-8'), 'recall')")
+    }
+
+    // Per-scene management for the scene chips' long-press menu. Injection-safe.
+    // updateScene overwrites the named scene with the CURRENT view/reps.
+    func updateScene(_ name: String) { sceneAction(name, "update") }
+    func deleteScene(_ name: String) { sceneAction(name, "delete") }
+
+    private func sceneAction(_ name: String, _ action: String) {
+        guard !name.isEmpty else { return }
+        let b64 = Data(name.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
+            + "_c.scene(_b64.b64decode('\(b64)').decode('utf-8'), '\(action)')")
+    }
+
+    func renameScene(_ name: String, to newName: String) {
+        let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !n.isEmpty, n != name else { return }
+        let b = Data(name.utf8).base64EncodedString()
+        let nb = Data(n.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
+            + "_c.scene(_b64.b64decode('\(b)').decode('utf-8'), 'rename', "
+            + "new_key=_b64.b64decode('\(nb)').decode('utf-8'))")
+    }
+
+    // Move the playhead to `frame` and commit (for tapping a keyframe/ruler in
+    // the timeline). Wraps the scrub + release pair used by the transport.
+    func seek(to frame: Int) {
+        scrub(to: frame)
+        endScrub()
+    }
+
+    // Re-ease the stored camera keyframes when the timeline's Smooth/Linear
+    // control changes. Uses 'reinterpolate' (redoes every segment) — plain
+    // 'interpolate' only fills un-interpolated gaps, so it wouldn't change the
+    // easing of keyframes already interpolated. power/linear = 1.0 gives
+    // constant-speed straight motion; 0.0 gives eased, curved motion.
+    func setInterpolation(linear: Bool) {
+        let v = linear ? "1.0" : "0.0"
+        movieCmd("mview('reinterpolate', power=\(v), linear=\(v))")
+    }
+
+    // MARK: - Timeline drag-and-drop (re-time keyframes, place/move scenes)
+
+    // Nearest frame to `target` (clamped to the movie) not already holding a
+    // keyframe — enforces one keyframe per frame across BOTH tracks. `excluding`
+    // is the frame being moved, so a marker doesn't collide with itself.
+    private func freeFrame(near target: Int, excluding: Int? = nil) -> Int {
+        let count = max(playback.frameCount, 1)
+        let clamped = min(max(target, 1), count)
+        var occupied = Set(cameraKeyframes)
+        occupied.formUnion(sceneMarkers.map { $0.frame })
+        if let e = excluding { occupied.remove(e) }
+        if !occupied.contains(clamped) { return clamped }
+        var lo = clamped - 1, hi = clamped + 1      // search outward for a gap
+        while lo >= 1 || hi <= count {
+            if hi <= count && !occupied.contains(hi) { return hi }
+            if lo >= 1 && !occupied.contains(lo) { return lo }
+            lo -= 1; hi += 1
+        }
+        return clamped                               // movie full — give up
+    }
+
+    // Place a saved scene as a time-positioned marker at `frame` (drag from the
+    // palette / tap-to-drop). The marker doubles as a camera keyframe, so the
+    // view flies between scenes while reps cut. Injection-safe (base64 name).
+    func placeScene(_ name: String, at frame: Int, linear: Bool = false) {
+        guard !name.isEmpty, playback.frameCount > 1 else { return }
+        let f = freeFrame(near: frame)
+        let b64 = Data(name.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import appkit_movie as _am\n"
+            + "_am.place_scene(\(f), _b64.b64decode('\(b64)').decode('utf-8'), linear=\(linear ? 1 : 0))")
+        sceneMarkers.removeAll { $0.frame == f }
+        sceneMarkers.append(SceneMarker(frame: f, name: name))
+        sceneMarkers.sort { $0.frame < $1.frame }
+    }
+
+    // Re-time a plain camera keyframe (drag a diamond) from `old` to `new`.
+    func moveKeyframe(from old: Int, to new: Int, linear: Bool = false) {
+        let n = freeFrame(near: new, excluding: old)
+        guard n != old else { return }
+        runPython("from pymol import appkit_movie as _am\n_am.move_keyframe(\(old), \(n), linear=\(linear ? 1 : 0))")
+        cameraKeyframes.removeAll { $0 == old }
+        if !cameraKeyframes.contains(n) { cameraKeyframes.append(n) }
+        cameraKeyframes.sort()
+    }
+
+    // Re-time a scene marker (drag a scene chip along the lane) from `old` to `new`.
+    func moveSceneMarker(_ name: String, from old: Int, to new: Int, linear: Bool = false) {
+        let n = freeFrame(near: new, excluding: old)
+        guard n != old else { return }
+        let b64 = Data(name.utf8).base64EncodedString()
+        runPython("import base64 as _b64\nfrom pymol import appkit_movie as _am\n"
+            + "_am.move_scene_marker(\(old), _b64.b64decode('\(b64)').decode('utf-8'), \(n), linear=\(linear ? 1 : 0))")
+        sceneMarkers.removeAll { $0.frame == old || $0.frame == n }
+        sceneMarkers.append(SceneMarker(frame: n, name: name))
+        sceneMarkers.sort { $0.frame < $1.frame }
+    }
+
+    // Delete a scene marker (long-press). Clears its mview keyframe.
+    func deleteSceneMarker(at frame: Int, linear: Bool = false) {
+        runPython("from pymol import appkit_movie as _am\n"
+            + "_am.clear_keyframe(\(frame), linear=\(linear ? 1 : 0))")
+        sceneMarkers.removeAll { $0.frame == frame }
     }
 
     // MARK: - Selection builder support

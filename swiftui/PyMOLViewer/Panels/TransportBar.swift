@@ -67,7 +67,8 @@ struct TransportBar: View {
     private var regularRow: some View {
         HStack(spacing: 10) {
             transportCluster
-            scrubber
+            // Timeline mode: the ruler scrubs, so the slider is redundant here.
+            if !engine.timelineMode { scrubber }
             counter
             loopButton
             overflowMenu
@@ -76,30 +77,35 @@ struct TransportBar: View {
         .frame(height: 40)
     }
 
-    // iPhone expanded: three compact rows so 44pt targets all fit.
+    // iPhone expanded: compact rows so 44pt targets all fit. In Timeline mode the
+    // ruler is the scrub strip and the panel header owns Templates/Produce, so the
+    // scrubber row and Make/Export are dropped here (they'd be redundant) — leaving
+    // a tight cluster+counter row and a loop/fps row.
     private var compactFull: some View {
         VStack(spacing: 6) {
             HStack {
                 transportCluster
                 Spacer(minLength: 0)
+                counter
                 if let toggle = onToggleExpand {
                     iconButton("chevron.down", size: 16, action: toggle)
                         .accessibilityLabel("Collapse transport")
                 }
             }
-            HStack(spacing: 10) {
+            if !engine.timelineMode {
                 scrubber
-                counter
             }
             HStack(spacing: 16) {
                 loopButton
                 fpsMenu
                 Spacer(minLength: 0)
-                Button { showBuilder = true } label: {
-                    Label("Make", systemImage: "wand.and.stars").font(.system(size: 12))
-                }
-                Button { showExport = true } label: {
-                    Label("Export", systemImage: "square.and.arrow.up").font(.system(size: 12))
+                if !engine.timelineMode {
+                    Button { showBuilder = true } label: {
+                        Label("Make", systemImage: "wand.and.stars").font(.system(size: 12))
+                    }
+                    Button { showExport = true } label: {
+                        Label("Export", systemImage: "square.and.arrow.up").font(.system(size: 12))
+                    }
                 }
             }
             .tint(TimelineTheme.accent)
@@ -220,6 +226,14 @@ struct TransportBar: View {
             }
             Button { showExport = true } label: {
                 Label("Export Movie…", systemImage: "square.and.arrow.up")
+            }
+            // Accelerator into the full timeline editor (proposal B). Hidden while
+            // already in timeline mode (this bar is embedded there).
+            if !engine.timelineMode {
+                Divider()
+                Button { withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = true } } label: {
+                    Label("Edit in Timeline", systemImage: "clapperboard")
+                }
             }
         } label: {
             Image(systemName: "ellipsis.circle")

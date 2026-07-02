@@ -161,6 +161,13 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolClearSession, object: nil)
                 }
             }
+            // Movie: enter/exit the Timeline (movie studio) mode. Carries the
+            // keyboard shortcut; the toolbar clapperboard is the primary control.
+            CommandMenu("Movie") {
+                Button(engine.timelineMode ? "Exit Timeline" : "Edit Timeline") {
+                    NotificationCenter.default.post(name: .raymolToggleTimeline, object: nil)
+                }.keyboardShortcut("m", modifiers: [.command, .option])
+            }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             CommandMenu("Connect") {
                 Toggle("Enable AI control", isOn: Binding(

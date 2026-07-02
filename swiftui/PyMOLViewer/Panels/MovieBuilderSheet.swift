@@ -139,6 +139,17 @@ struct MovieBuilderControls: View {
             } label: {
                 Label("Capture keyframe", systemImage: "camera.viewfinder")
             }
+            // Bridge into the full timeline editor: the preset you build becomes
+            // the starting tracks. Hidden if already in Timeline mode.
+            if !engine.timelineMode {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = true }
+                    onBuilt?()
+                } label: {
+                    Label("Edit in Timeline", systemImage: "clapperboard")
+                }
+                .foregroundColor(TimelineTheme.accent)
+            }
             Spacer(minLength: 0)
             Button(role: .destructive) {
                 engine.clearMovie()

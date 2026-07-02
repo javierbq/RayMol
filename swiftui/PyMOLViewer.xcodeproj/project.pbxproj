@@ -47,6 +47,8 @@
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
+		FEEDFACE0000000000000102 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0000000000000101 /* TimelinePanel.swift */; };
+		FEEDFACE0000000000000103 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0000000000000101 /* TimelinePanel.swift */; };
 		B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
@@ -80,6 +82,7 @@
 /* Begin PBXFileReference section */
 		05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
+		FEEDFACE0000000000000101 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
@@ -141,6 +144,7 @@
 				A73267D4D7B506E647B7A995 /* ObjectPanel.swift */,
 				474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */,
 				85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */,
+				FEEDFACE0000000000000101 /* TimelinePanel.swift */,
 				C562306A5AD1EEDDBA931B98 /* TransportBar.swift */,
 			);
 			path = Panels;
@@ -806,6 +810,7 @@
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
+				FEEDFACE0000000000000102 /* TimelinePanel.swift in Sources */,
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
 				4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */,
 				F6C4DEEFED66EB440E6359AF /* PyMOLApp.swift in Sources */,
@@ -836,6 +841,7 @@
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
+				FEEDFACE0000000000000103 /* TimelinePanel.swift in Sources */,
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,
 				5992346BC7D06026A673BA71 /* ObjectPanel.swift in Sources */,
 				5C923361D76329D2A466FFA9 /* PyMOLApp.swift in Sources */,

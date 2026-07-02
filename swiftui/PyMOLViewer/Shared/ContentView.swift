@@ -47,6 +47,7 @@ extension Notification.Name {
     static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
     static let raymolSaveSessionAs = Notification.Name("raymol.menu.saveSessionAs")
     static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
+    static let raymolToggleTimeline = Notification.Name("raymol.menu.toggleTimeline")
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
 }
 
@@ -390,7 +391,10 @@ struct ContentView: View {
                                     .padding(.bottom, 12)
                             }
                         }
-                    if engine.hasTimeline {
+                    if engine.timelineMode {
+                        Divider()
+                        TimelinePanel()
+                    } else if engine.hasTimeline {
                         Divider()
                         TransportBar()
                     }
@@ -440,6 +444,7 @@ struct ContentView: View {
         .toolbar {
             // Leading — tools (mirrors the iOS top-left): Open · Measure.
             macOpenToolbar
+            macMovieToolbar
             macMeasureToolbar
             // Trailing — view toggles, then actions, then status. (Theme moved into
             // the Display segment, mirroring iOS Settings → Themes.)
@@ -458,6 +463,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSessionAs)) { _ in saveSessionAs() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolToggleTimeline)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode.toggle() }
+        }
         #if !RAYMOL_MAS_RESTRICTED
         .onReceive(NotificationCenter.default.publisher(for: .mcpOpenConnectSheet)) { _ in
             showConnectSheet = true
@@ -492,6 +500,11 @@ struct ContentView: View {
             autoSelectThemeFromEnv()
             if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+            }
+            // Test affordance: show the in-viewport scene buttons at launch so the
+            // overlay can be screenshotted. PYMOL_AUTOSCENEBUTTONS=1.
+            if ProcessInfo.processInfo.environment["PYMOL_AUTOSCENEBUTTONS"] != nil {
+                showSceneButtons = true
             }
         }
     }
@@ -567,33 +580,84 @@ struct ContentView: View {
     // Scenes tab: opt-in glanceable scene buttons overlaid on the viewport.
     // Also outside #if os(iOS) since inspectorSwitcher (shared) binds to it.
     @State private var showSceneButtons = false
+    // Scene-chip long-press "Rename…" flow (nil = alert hidden).
+    @State private var sceneRenameTarget: String? = nil
+    @State private var sceneRenameText: String = ""
 
     // Floating scene chips over the viewport (teal/global), shown only when the
     // Scenes tab's "Show scene buttons in viewport" toggle is on. Tap = recall.
     // Declared outside #if os(iOS) so BOTH the iOS viewportView overlay and the
     // macOS macOSLayout viewport overlay can consume it (single source of truth).
     private var sceneButtonsOverlay: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(engine.sceneNames, id: \.self) { name in
-                    let sel = name == engine.currentScene
-                    Button {
-                        engine.runCommand("scene \(name), recall, animate=1")
-                    } label: {
-                        Text(name)
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .padding(.horizontal, 9).frame(height: 28)
-                            .background(sel ? TimelineTheme.accent : Color.white.opacity(0.92))
-                            .foregroundColor(sel ? .white : TimelineTheme.accent)
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
+        // Hug the chips: use the plain row when it fits (background wraps it
+        // tightly); fall back to a scrolling row capped at 230 when there are
+        // too many scenes. (The old fixed maxWidth:230 left dead space.)
+        ViewThatFits(in: .horizontal) {
+            // Preferred: the plain row, which the background then hugs tightly (no
+            // dead space). Falls back to a 230-wide scroller only when the chips
+            // genuinely don't fit. (The old outer maxWidth:230 padded the narrow
+            // row out to 230 → the dead space.)
+            sceneOverlayRow
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) { sceneOverlayRow }
+                    .frame(width: 230)
+                    .onAppear { proxy.scrollTo(engine.currentScene, anchor: .center) }
+                    .onChange(of: engine.currentScene) { s in
+                        withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(s, anchor: .center) }
                     }
-                    .buttonStyle(.plain)
-                }
             }
-            .padding(6)
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
-        .frame(maxWidth: 230)
+        .alert("Rename scene", isPresented: Binding(
+            get: { sceneRenameTarget != nil },
+            set: { if !$0 { sceneRenameTarget = nil } })) {
+            TextField("Scene name", text: $sceneRenameText)
+            Button("Rename") {
+                if let t = sceneRenameTarget { engine.renameScene(t, to: sceneRenameText) }
+                sceneRenameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { sceneRenameTarget = nil }
+        }
+    }
+
+    private var sceneOverlayRow: some View {
+        HStack(spacing: 6) {
+            ForEach(engine.sceneNames, id: \.self) { name in
+                let sel = name == engine.currentScene
+                Button {
+                    engine.runCommand("scene \(name), recall, animate=1")
+                } label: {
+                    Text(shortSceneName(name))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .lineLimit(1)
+                        .padding(.horizontal, 9).frame(height: 28)
+                        .background(sel ? TimelineTheme.accent : Color.white.opacity(0.92))
+                        .foregroundColor(sel ? .white : TimelineTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .id(name)
+                .contextMenu { sceneChipMenu(name) }
+            }
+        }
+        .padding(6)
+    }
+
+    // Shared long-press menu for a scene chip: reset (update to the current
+    // view) / rename / delete. (Tapping the chip already recalls, so no Recall.)
+    @ViewBuilder
+    private func sceneChipMenu(_ name: String) -> some View {
+        Text(name)
+        Button { engine.updateScene(name) } label: { Label("Reset to current view", systemImage: "arrow.clockwise") }
+        Button { sceneRenameText = name; sceneRenameTarget = name } label: { Label("Rename…", systemImage: "pencil") }
+        Button(role: .destructive) { engine.deleteScene(name) } label: { Label("Delete", systemImage: "trash") }
+    }
+
+    // Overlay chips stay glanceable: cap the displayed name (full name lives in
+    // the Scenes tab + the long-press menu) so one long rename can't blow out
+    // the row / clip the selected chip.
+    private func shortSceneName(_ n: String) -> String {
+        n.count > 8 ? String(n.prefix(7)) + "…" : n
     }
 
     #if os(iOS)
@@ -719,8 +783,17 @@ struct ContentView: View {
                 // else (iPad both orientations + iPhone LANDSCAPE) uses the mac-style
                 // layout (terminal+sequence above the viewport, Objects+Raymond panel).
                 let phonePortrait = hSize == .compact && vSize == .regular
+                // The Movie tab (tag 2) IS the timeline on iPhone: enter it directly
+                // from the tab selection (not just after onChange sets timelineMode),
+                // so there's no 1-frame flash of the old builder pane.
+                let movieTabActive = (phonePortrait || isPhoneLandscape) && selectedTab == 2
                 Group {
-                    if phonePortrait {
+                    if engine.timelineMode || movieTabActive {
+                        // Timeline mode takes over the bottom panel (and hides the
+                        // tab bar) while keeping the viewer on screen — see
+                        // iosTimelineLayout. One layout for all idioms/orientations.
+                        iosTimelineLayout(geo: geo)
+                    } else if phonePortrait {
                         iPhoneLayout(geo: geo)
                     } else if isPhoneLandscape {
                         // iPhone landscape mirrors the portrait UX with the same
@@ -803,7 +876,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosPanelToggle; iosPadPanelMenu; iosExportToolbar }
+            .toolbar { iosOpenToolbar; iosMeasureToolbar; iosTimelineToolbar; iosPanelToggle; iosPadPanelMenu; iosExportToolbar }
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -949,6 +1022,12 @@ struct ContentView: View {
                 }
             }
         }
+        // The Movie tab IS the timeline: selecting it enters the immersive
+        // timeline (iosTimelineLayout, tab bar hidden). Leaving is via the
+        // panel's Done, which resets selectedTab (see iosTimelineLayout's onExit).
+        .onChange(of: selectedTab) { tab in
+            if tab == 2 { withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = true } }
+        }
         .onChange(of: exportTester.finishedURL) { url in
             guard let url = url else { return }
             let dst = URL(fileURLWithPath: "/tmp/pymol_export_test.\(url.pathExtension)")
@@ -990,6 +1069,55 @@ struct ContentView: View {
         case 2:  return hug(2, cap: total * 0.5)                 // Movie
         case 4:  return total * 0.42                             // Settings root — compact
         default: return total * 0.45
+        }
+    }
+
+    // MARK: iOS Timeline mode — docked movie studio replaces the bottom panel
+    //
+    // The TimelinePanel takes over the bottom control-panel region (so the tab
+    // bar is hidden) while the 3D viewer stays on screen. Portrait docks it at
+    // the bottom; landscape docks it on the RIGHT (a column the width of the
+    // short edge) so the wide ruler still lays out like portrait and the viewer
+    // keeps the majority of the screen. Exit via the panel's Done button (or the
+    // top-bar clapperboard). The viewer keeps its floating help/controls; the
+    // transport lives INSIDE the TimelinePanel, so no separate transportOverlay.
+    @ViewBuilder
+    private func iosTimelineLayout(geo: GeometryProxy) -> some View {
+        let landscape = geo.size.width > geo.size.height
+        if landscape {
+            HStack(spacing: 0) {
+                viewportView
+                Divider()
+                // fixedSize → the panel hugs its content instead of stretching to
+                // fill the column (which would scatter empty gaps); top-aligned.
+                TimelinePanel(onExit: exitTimeline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: min(geo.size.height, geo.size.width * 0.5))
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .background(themeChromeBg)
+            }
+        } else {
+            VStack(spacing: 0) {
+                viewportView
+                Divider()
+                // fixedSize → the panel is exactly as tall as its content (viewer
+                // takes the rest); without it the panel stretched and spread the
+                // slack as empty bands between the header/ruler/palette.
+                TimelinePanel(onExit: exitTimeline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(themeChromeBg)
+                    // Clear the home indicator (the body ignores the safe area).
+                    .padding(.bottom, geo.safeAreaInsets.bottom > 0 ? geo.safeAreaInsets.bottom : (hSize == .compact ? 12 : 0))
+            }
+        }
+    }
+
+    // Leave Timeline mode (the panel's Done) — and step off the Movie tab so the
+    // tab bar returns to a normal pane instead of immediately re-entering it.
+    private func exitTimeline() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            engine.timelineMode = false
+            if selectedTab == 2 { selectedTab = 1 }
         }
     }
 
@@ -1351,6 +1479,7 @@ struct ContentView: View {
             paneRow("Console",  "terminal",                       consoleBinding)
             paneRow("Sequence", "textformat.abc",                 $engine.sequenceVisible)
             paneRow("Objects",  "cube",                           objectsBinding)
+            paneRow("Timeline", "clapperboard",                   $engine.timelineMode)
         }
         .padding(6)
         .frame(minWidth: 240)
@@ -1419,7 +1548,12 @@ struct ContentView: View {
             // there's more than one frame. A collapsing peek on iPhone; a pinned
             // full-width bar on iPad.
             .overlay(alignment: .bottom) {
-                if engine.hasTimeline { transportOverlay }
+                // Timeline MODE docks the panel as a sibling (see iosTimelineLayout);
+                // here we only float the compact transport when a movie exists and
+                // we're NOT in timeline mode.
+                if engine.hasTimeline && !engine.timelineMode {
+                    transportOverlay
+                }
             }
             // Opt-in glanceable scene buttons (Scenes tab → "Show scene buttons
             // in viewport"). Sits above the transport when a timeline is present.
@@ -1427,8 +1561,9 @@ struct ContentView: View {
                 if showSceneButtons && !engine.sceneNames.isEmpty {
                     sceneButtonsOverlay
                         .padding(.leading, 12)
-                        // Sit clear ABOVE the transport bar (don't overlap it).
-                        .padding(.bottom, engine.hasTimeline ? 96 : 12)
+                        // Sit clear ABOVE the floating transport (only present when a
+                        // movie exists and we're NOT in timeline mode).
+                        .padding(.bottom, (engine.hasTimeline && !engine.timelineMode) ? 96 : 12)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -1439,8 +1574,9 @@ struct ContentView: View {
                         .padding(12)
                 }
                 .accessibilityLabel("Gesture help")
-                // Keep the help button clear of the transport bar.
-                .padding(.bottom, engine.hasTimeline ? 56 : 0)
+                // Keep the help button clear of the floating transport (timeline mode
+                // docks the panel elsewhere, so the viewport is clear then).
+                .padding(.bottom, (engine.hasTimeline && !engine.timelineMode) ? 56 : 0)
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible
@@ -1841,6 +1977,20 @@ struct ContentView: View {
     // iPadOSLayout has its own NavigationStack toolbar). Renders the Metal frame
     // to a temp PNG/PSE via the shared engine, then copies to the pasteboard or
     // hands off to the system share sheet (Save to Files / Mail / AirDrop / …).
+    // Primary entry into Timeline (movie studio) mode on iOS/iPadOS. Persistent
+    // top-bar toggle, tinted when active; works before any movie exists.
+    private var iosTimelineToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode.toggle() }
+            } label: {
+                Image(systemName: engine.timelineMode ? "clapperboard.fill" : "clapperboard")
+            }
+            .accessibilityLabel("Movie timeline")
+            .tint(engine.timelineMode ? TimelineTheme.accent : nil)
+        }
+    }
+
     private var iosExportToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             // iPhone landscape shows Export in the viewer's top-right overlay
@@ -2095,6 +2245,20 @@ struct ContentView: View {
                 Label("Measure", systemImage: engine.measureMode == nil ? "ruler" : "ruler.fill")
             }
             .help("Measure distance / angle / dihedral by tapping atoms")
+        }
+    }
+
+    // Primary entry into Timeline (movie studio) mode — a persistent toggle that
+    // works from a cold start (no movie yet), unlike the transport, which is
+    // gated behind hasTimeline. The ⌥⌘M shortcut lives on the Movie menu command.
+    private var macMovieToolbar: some ToolbarContent {
+        ToolbarItem {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode.toggle() }
+            } label: {
+                Label("Timeline", systemImage: engine.timelineMode ? "clapperboard.fill" : "clapperboard")
+            }
+            .help("Movie timeline (⌥⌘M)")
         }
     }
 
@@ -2406,6 +2570,11 @@ struct ContentView: View {
     }
 
     private func maybePresentFirstBootTheme() {
+        // Dev/testing: suppress the first-boot theme picker so automated launches
+        // land straight in the app (e.g. to screenshot a mode). Doesn't persist
+        // the first-boot flag, so a normal launch still shows it once.
+        // PYMOL_SKIP_FIRSTBOOT_THEME=1.
+        if ProcessInfo.processInfo.environment["PYMOL_SKIP_FIRSTBOOT_THEME"] != nil { return }
         guard themeManager.firstBoot else { return }
         themeManager.markFirstBootDone()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

@@ -2090,6 +2090,9 @@ struct ScenesPane: View {
     // PyMOL via `scene_order`. Synced from engine.sceneNames on add/remove.
     @State private var sceneOrder: [String] = []
     @State private var draggingScene: String?
+    // Scene-chip long-press "Rename…" flow (nil = alert hidden).
+    @State private var sceneRenameTarget: String? = nil
+    @State private var sceneRenameText: String = ""
 
     var body: some View {
         ScrollView {
@@ -2151,6 +2154,16 @@ struct ScenesPane: View {
             .reportPaneHeight(5)    // natural height (before tab-bar clearance)
             .padding(.bottom, 56)   // clear the floating tab-bar pill
         }
+        .alert("Rename scene", isPresented: Binding(
+            get: { sceneRenameTarget != nil },
+            set: { if !$0 { sceneRenameTarget = nil } })) {
+            TextField("Scene name", text: $sceneRenameText)
+            Button("Rename") {
+                if let t = sceneRenameTarget { engine.renameScene(t, to: sceneRenameText) }
+                sceneRenameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { sceneRenameTarget = nil }
+        }
     }
 
     private func sceneChip(_ name: String) -> some View {
@@ -2170,6 +2183,12 @@ struct ScenesPane: View {
                 )
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Text(name)
+            Button { engine.updateScene(name) } label: { Label("Reset to current view", systemImage: "arrow.clockwise") }
+            Button { sceneRenameText = name; sceneRenameTarget = name } label: { Label("Rename…", systemImage: "pencil") }
+            Button(role: .destructive) { engine.deleteScene(name) } label: { Label("Delete", systemImage: "trash") }
+        }
     }
 
     // Trailing "+" chip in the scene row — stores the current view as a new scene.
