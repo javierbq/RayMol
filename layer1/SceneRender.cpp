@@ -2135,6 +2135,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
     const float* mvp = SceneGetModelViewMatrixPtr(G);
     G->Renderer->setLightViewProjEye(glm::value_ptr(lightVP_eye));
     G->Renderer->setShadowFrustum(shadowRadius);
+    G->Renderer->setShadowBias(SettingGetGlobal_f(G, cSetting_metal_shadow_bias));
     G->Renderer->matrixMode(0x1701); // PROJECTION = light VP (eye space)
     G->Renderer->loadMatrixf(glm::value_ptr(lightVP_eye));
     G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview

@@ -930,6 +930,7 @@ enum {
   REC_c( 820, surface_contour_color                   , object    , "-1" ),  /* Metal: surface outer-contour color; -1 = inherit the surface/object color, else a named/hex color. */
   REC_b( 821, surface_contour_opaque                  , object    , true ),  /* Metal: surface outer-contour is fully opaque (crisp); off = the line picks up the surface transparency. */
   REC_b( 822, metal_ssao_cartoon                      , global    , false ), /* Metal: include cartoon/ribbon in the screen-space SSAO (crease/contour) pass. Default off => cartoons are excluded from SSAO darkening (avoids spurious contour lines on ribbon silhouettes/self-folds, #79); they still receive directional shadows, and surface pockets keep their AO. */
+  REC_f( 823, metal_shadow_bias                       , global    , 1.0F ),  /* Metal: multiplier on the self-shadow depth bias. 1.0 = default. Raise (e.g. 2-4) if flat cartoon strands still show striped self-shadow "triangle" acne at steep/grazing angles; lower toward 0 for tighter contact shadows. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

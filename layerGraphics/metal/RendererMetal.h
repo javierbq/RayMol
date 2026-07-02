@@ -202,6 +202,7 @@ public:
   void endShadowPass() override;
   void setLightViewProjEye(const float* m) override;
   void setShadowFrustum(float radius) override;
+  void setShadowBias(float bias) override;
 
 private:
   void buildImpostorPipelines();
@@ -459,6 +460,8 @@ private:
   float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box
                                   // (from SceneBuildLightViewProjEye); lets the
                                   // receiver bias be expressed in Angstroms.
+  float _shadowBias = 1.0f;       // metal_shadow_bias: user multiplier on the
+                                  // self-shadow depth bias.
   void buildShadowPipelines();
   // Depth-only shadow pipeline for an arbitrary lit vertex layout (e.g. the
   // surface's stride-44), mirroring oitPipelineForVD.

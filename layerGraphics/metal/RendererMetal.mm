@@ -945,6 +945,7 @@ struct PostU {
   float aoExemptEnabled; // >0.5: aoMaskTex marks pixels that skip the SSAO term (#79)
   float4x4 lightViewProj; // eye-space light view*proj for shadow-map sampling
   float shadowRadius;    // world half-extent of the shadow ortho box (Angstroms)
+  float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
 };
 
 // Linear eye distance (positive, toward the scene) from window depth [0,1].
@@ -1131,7 +1132,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
         // real inter-element gaps (~2A+) still cast; the slope term covers steep
         // facets where the normal-offset alone leaves residual self-crossing.
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
-        float sepA = clamp(0.35 + 1.2 * slopeTan, 0.35, 6.0);
+        float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
         float sep = sepA / S + 1.0 / 4096.0;
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
@@ -1636,6 +1637,7 @@ struct RTU {
   float shadowIntensity, nSamples, frame, rtShadow; // rtShadow>0.5: trace shadows
   float4x4 lightViewProj;  // eye-space light view*proj for shadow-map sampling
   float shadowRadius;      // world half-extent of the shadow ortho box (Angstroms)
+  float shadowBias;        // metal_shadow_bias: user multiplier on the self-shadow bias
 };
 
 static float rt_hash(float2 p) {
@@ -1809,7 +1811,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 &&
           fragDepth > 0.0 && fragDepth < 1.0) {
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
-        float sepA = clamp(0.35 + 1.2 * slopeTan, 0.35, 6.0);
+        float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
         float sep = sepA / S + 1.0 / 4096.0;
         float2 stex = 1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         float lit = 0.0;
@@ -2150,6 +2152,7 @@ void RendererMetal::runPostChain()
       float shadowIntensity, nSamples, frame, rtShadow;
       float lightViewProj[16];   // eye-space light VP for shadow-map sampling
       float shadowRadius;        // matches MSL RTU: shadow ortho half-extent
+      float shadowBias;          // matches MSL RTU: metal_shadow_bias multiplier
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2181,6 +2184,7 @@ void RendererMetal::runPostChain()
     u.rtShadow = _rtShadowEnabled ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
+    u.shadowBias = _shadowBias;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2277,6 +2281,7 @@ void RendererMetal::runPostChain()
       float projY, shadowEnabled, shadowIntensity, aoExemptEnabled;
       float lightViewProj[16]; // eye-space light VP (matches MSL PostU)
       float shadowRadius;      // matches MSL PostU: shadow ortho half-extent
+      float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
     } u;
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -2291,6 +2296,7 @@ void RendererMetal::runPostChain()
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
+    u.shadowBias = _shadowBias;
 
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = _postColor;
@@ -2717,6 +2723,11 @@ void RendererMetal::setLightViewProjEye(const float* m)
 void RendererMetal::setShadowFrustum(float radius)
 {
   _shadowRadius = (radius > 1.0f) ? radius : 1.0f;
+}
+
+void RendererMetal::setShadowBias(float bias)
+{
+  _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
 void RendererMetal::beginShadowPass()
