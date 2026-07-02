@@ -27,7 +27,10 @@ xcuserdata
 /*.cif
 /*.pdb
 /context*.txt
-.claude/
+# Ignore local .claude session data (worktrees, local settings) but track
+# shared, checked-in skills under .claude/skills/.
+.claude/*
+!.claude/skills/
 .superpowers/
 *-this-session-is-being-continued-*.txt
 build_ios_dd/
