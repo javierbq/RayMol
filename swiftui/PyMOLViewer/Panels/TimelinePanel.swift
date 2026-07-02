@@ -184,11 +184,17 @@ struct TimelinePanel: View {
 
     private var doneButton: some View {
         Button { (onExit ?? { withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = false } })() } label: {
-            Text("Done")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(TimelineTheme.accent)
+            HStack(spacing: 4) {
+                Image(systemName: "xmark.circle.fill")
+                Text("Done")
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(TimelineTheme.accent))
         }
         .buttonStyle(.plain)
+        .help("Exit Timeline mode")
         .accessibilityLabel("Close timeline")
     }
 

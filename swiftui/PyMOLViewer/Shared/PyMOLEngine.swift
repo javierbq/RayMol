@@ -293,6 +293,13 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Test affordance: enter Timeline mode at launch so the docked movie-studio
+        // layout can be screenshotted (the mode toggle is otherwise UI-only).
+        // PYMOL_AUTOTIMELINE=1.
+        if ProcessInfo.processInfo.environment["PYMOL_AUTOTIMELINE"] != nil {
+            DispatchQueue.main.async { [weak self] in self?.timelineMode = true }
+        }
+
         // Test affordance: after the app is idle/rendering (3s), simulate a long
         // heavy op so the "Calculating…" overlay can be screenshotted in a
         // real-usage-like state (init-time AUTOCMD can't — its asyncAfter hop

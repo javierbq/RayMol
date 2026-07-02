@@ -728,7 +728,12 @@ struct ContentView: View {
                 // layout (terminal+sequence above the viewport, Objects+Raymond panel).
                 let phonePortrait = hSize == .compact && vSize == .regular
                 Group {
-                    if phonePortrait {
+                    if engine.timelineMode {
+                        // Timeline mode takes over the bottom panel (and hides the
+                        // tab bar) while keeping the viewer on screen — see
+                        // iosTimelineLayout. One layout for all idioms/orientations.
+                        iosTimelineLayout(geo: geo)
+                    } else if phonePortrait {
                         iPhoneLayout(geo: geo)
                     } else if isPhoneLandscape {
                         // iPhone landscape mirrors the portrait UX with the same
@@ -957,13 +962,8 @@ struct ContentView: View {
                 }
             }
         }
-        // Entering Timeline mode on iPhone (compact): collapse the bottom control
-        // panel so the docked timeline has room over the viewport.
-        .onChange(of: engine.timelineMode) { on in
-            if on && hSize == .compact {
-                withAnimation(.easeInOut(duration: 0.2)) { panelCollapsed = true }
-            }
-        }
+        // (Timeline mode now uses its own layout — iosTimelineLayout — which
+        // replaces the bottom panel outright, so there's no panel to collapse.)
         .onChange(of: exportTester.finishedURL) { url in
             guard let url = url else { return }
             let dst = URL(fileURLWithPath: "/tmp/pymol_export_test.\(url.pathExtension)")
@@ -1005,6 +1005,38 @@ struct ContentView: View {
         case 2:  return hug(2, cap: total * 0.5)                 // Movie
         case 4:  return total * 0.42                             // Settings root — compact
         default: return total * 0.45
+        }
+    }
+
+    // MARK: iOS Timeline mode — docked movie studio replaces the bottom panel
+    //
+    // The TimelinePanel takes over the bottom control-panel region (so the tab
+    // bar is hidden) while the 3D viewer stays on screen. Portrait docks it at
+    // the bottom; landscape docks it on the RIGHT (a column the width of the
+    // short edge) so the wide ruler still lays out like portrait and the viewer
+    // keeps the majority of the screen. Exit via the panel's Done button (or the
+    // top-bar clapperboard). The viewer keeps its floating help/controls; the
+    // transport lives INSIDE the TimelinePanel, so no separate transportOverlay.
+    @ViewBuilder
+    private func iosTimelineLayout(geo: GeometryProxy) -> some View {
+        let landscape = geo.size.width > geo.size.height
+        if landscape {
+            HStack(spacing: 0) {
+                viewportView
+                Divider()
+                TimelinePanel()
+                    .frame(width: min(geo.size.height, geo.size.width * 0.5))
+                    .background(themeChromeBg)
+            }
+        } else {
+            VStack(spacing: 0) {
+                viewportView
+                Divider()
+                TimelinePanel()
+                    .background(themeChromeBg)
+                    // Clear the home indicator (the body ignores the safe area).
+                    .padding(.bottom, geo.safeAreaInsets.bottom > 0 ? geo.safeAreaInsets.bottom : (hSize == .compact ? 12 : 0))
+            }
         }
     }
 
@@ -1435,10 +1467,10 @@ struct ContentView: View {
             // there's more than one frame. A collapsing peek on iPhone; a pinned
             // full-width bar on iPad.
             .overlay(alignment: .bottom) {
-                if engine.timelineMode {
-                    TimelinePanel()
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if engine.hasTimeline {
+                // Timeline MODE docks the panel as a sibling (see iosTimelineLayout);
+                // here we only float the compact transport when a movie exists and
+                // we're NOT in timeline mode.
+                if engine.hasTimeline && !engine.timelineMode {
                     transportOverlay
                 }
             }
@@ -1448,8 +1480,9 @@ struct ContentView: View {
                 if showSceneButtons && !engine.sceneNames.isEmpty {
                     sceneButtonsOverlay
                         .padding(.leading, 12)
-                        // Sit clear ABOVE the transport bar (don't overlap it).
-                        .padding(.bottom, engine.hasTimeline ? 96 : 12)
+                        // Sit clear ABOVE the floating transport (only present when a
+                        // movie exists and we're NOT in timeline mode).
+                        .padding(.bottom, (engine.hasTimeline && !engine.timelineMode) ? 96 : 12)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -1460,8 +1493,9 @@ struct ContentView: View {
                         .padding(12)
                 }
                 .accessibilityLabel("Gesture help")
-                // Keep the help button clear of the transport bar / timeline dock.
-                .padding(.bottom, engine.timelineMode ? 220 : (engine.hasTimeline ? 56 : 0))
+                // Keep the help button clear of the floating transport (timeline mode
+                // docks the panel elsewhere, so the viewport is clear then).
+                .padding(.bottom, (engine.hasTimeline && !engine.timelineMode) ? 56 : 0)
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible
