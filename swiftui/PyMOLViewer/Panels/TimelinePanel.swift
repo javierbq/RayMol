@@ -37,6 +37,10 @@ struct TimelinePanel: View {
     @State private var dragItem: DragItem? = nil
     @State private var dragToFrame: Int = 1
 
+    // Long-press scene management (rename needs a text-entry alert).
+    @State private var sceneRenameTarget: String? = nil
+    @State private var sceneRenameText: String = ""
+
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
     private var isCompact: Bool { hSize == .compact }
@@ -61,6 +65,16 @@ struct TimelinePanel: View {
         .background(TimelineTheme.bar)
         .sheet(isPresented: $showBuilder) { MovieBuilderSheet() }
         .sheet(isPresented: $showExport) { MovieExportSheet() }
+        .alert("Rename scene", isPresented: Binding(
+            get: { sceneRenameTarget != nil },
+            set: { if !$0 { sceneRenameTarget = nil } })) {
+            TextField("Scene name", text: $sceneRenameText)
+            Button("Rename") {
+                if let t = sceneRenameTarget { engine.renameScene(t, to: sceneRenameText) }
+                sceneRenameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { sceneRenameTarget = nil }
+        }
     }
 
     // MARK: - Header
@@ -467,8 +481,13 @@ struct TimelinePanel: View {
             .contentShape(Capsule())
             .onTapGesture { dropSceneAtPlayhead(name) }
             .contextMenu {
+                Text(name)
                 Button { engine.recallScene(name) } label: { Label("Recall (preview)", systemImage: "eye") }
                 Button { dropSceneAtPlayhead(name) } label: { Label("Add at playhead", systemImage: "plus") }
+                Divider()
+                Button { engine.updateScene(name) } label: { Label("Reset to current view", systemImage: "arrow.clockwise") }
+                Button { sceneRenameText = name; sceneRenameTarget = name } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { engine.deleteScene(name) } label: { Label("Delete", systemImage: "trash") }
             }
         #if os(macOS)
         return chip.draggable(name)

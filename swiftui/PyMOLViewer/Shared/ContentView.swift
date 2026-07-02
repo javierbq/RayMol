@@ -593,16 +593,20 @@ struct ContentView: View {
         // tightly); fall back to a scrolling row capped at 230 when there are
         // too many scenes. (The old fixed maxWidth:230 left dead space.)
         ViewThatFits(in: .horizontal) {
+            // Preferred: the plain row, which the background then hugs tightly (no
+            // dead space). Falls back to a 230-wide scroller only when the chips
+            // genuinely don't fit. (The old outer maxWidth:230 padded the narrow
+            // row out to 230 → the dead space.)
             sceneOverlayRow
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) { sceneOverlayRow }
+                    .frame(width: 230)
                     .onAppear { proxy.scrollTo(engine.currentScene, anchor: .center) }
                     .onChange(of: engine.currentScene) { s in
                         withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(s, anchor: .center) }
                     }
             }
         }
-        .frame(maxWidth: 230, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11))
         .alert("Rename scene", isPresented: Binding(
             get: { sceneRenameTarget != nil },
