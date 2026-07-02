@@ -46,6 +46,11 @@ Key test utilities: `@testing.requires()`, `@testing.foreach()`, `assertImageEqu
 
 C++ uses `.clang-format` (Linux brace style, 2-space indent, 80-column limit). No Python formatter is configured.
 
+## Development Workflow
+
+- **Git flow:** Do not commit or push directly to `master`. Create a feature branch, push it, and open a pull request into `master` for review before merging.
+- **macOS app testing:** When functionally testing the native macOS SwiftUI/Metal app, use the `mac-vm-test` skill whenever it is available. It builds on the host and drives the app inside an isolated, disposable macOS VM (leased from the `javierbq/mac-vm-pool` golden image) rather than touching the host's own UI.
+
 ## Architecture
 
 ### C++ Layer System
