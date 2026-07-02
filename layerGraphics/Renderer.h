@@ -356,6 +356,9 @@ public:
   // self-shadow bias in Angstroms (scale-invariant) rather than a frustum
   // fraction. Default: no-op (GL unaffected).
   virtual void setShadowFrustum(float radius) {}
+  // User multiplier on the self-shadow depth bias (metal_shadow_bias). Default
+  // no-op (GL unaffected).
+  virtual void setShadowBias(float bias) {}
 
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each
