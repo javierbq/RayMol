@@ -352,6 +352,10 @@ public:
   virtual void beginShadowPass() {}
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}
+  // World half-extent of the shadow ortho box, so the receiver can express its
+  // self-shadow bias in Angstroms (scale-invariant) rather than a frustum
+  // fraction. Default: no-op (GL unaffected).
+  virtual void setShadowFrustum(float radius) {}
 
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each

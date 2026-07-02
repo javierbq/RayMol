@@ -1844,7 +1844,7 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
 // scene radius. Loaded as the renderer's PROJECTION while MODELVIEW stays the
 // camera modelview, so vbo_vertex's projection*(modelview*model) yields light
 // clip for model-space vertices.
-static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G)
+static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = nullptr)
 {
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
@@ -1872,6 +1872,9 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G)
   glm::mat4 lightView = glm::lookAt(lightPos, centerEye, up);
   glm::mat4 lightProj =
       glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
+  if (outRadius)
+    *outRadius = radius; // world half-extent of the ortho box; the renderer
+                         // turns this into a scale-aware shadow bias (Angstroms)
   return lightProj * lightView;
 }
 
@@ -2127,9 +2130,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // (an object visible only in cell B darkening an object in cell A). Grid mode
   // therefore renders unshadowed (geometry-only parity for now).
   if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
-    glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G);
+    float shadowRadius = 1.0f;
+    glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
     const float* mvp = SceneGetModelViewMatrixPtr(G);
     G->Renderer->setLightViewProjEye(glm::value_ptr(lightVP_eye));
+    G->Renderer->setShadowFrustum(shadowRadius);
     G->Renderer->matrixMode(0x1701); // PROJECTION = light VP (eye space)
     G->Renderer->loadMatrixf(glm::value_ptr(lightVP_eye));
     G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview

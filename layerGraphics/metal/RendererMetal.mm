@@ -944,6 +944,7 @@ struct PostU {
   float shadowIntensity;
   float aoExemptEnabled; // >0.5: aoMaskTex marks pixels that skip the SSAO term (#79)
   float4x4 lightViewProj; // eye-space light view*proj for shadow-map sampling
+  float shadowRadius;    // world half-extent of the shadow ortho box (Angstroms)
 };
 
 // Linear eye distance (positive, toward the scene) from window depth [0,1].
@@ -990,6 +991,35 @@ static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
   float3 n = normalize(cross(gx, gy));
   if (n.z < 0.0) n = -n; // face toward camera
   return n;
+}
+
+// Bilaterally-smoothed eye-space normal. A plain depth reconstruction of the
+// coarse cartoon mesh gives a FACETED (flat per-triangle) normal, which made
+// both the light-facing faceGate and the shadow-map self-comparison vary per
+// triangle — the "triangles under shadows". Averaging post_eye_normal over a
+// small neighbourhood, weighted by eye-Z similarity, smooths across the facets
+// (a near-continuous surface normal) but rejects samples across a real
+// silhouette (large depth jump -> ~0 weight), so the #83 edge behaviour is kept.
+static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 uv,
+                                     float2 invres, float cd, float3 cp, float projA,
+                                     float projB, float projX, float projY) {
+  float3 nSum = post_eye_normal(depthTex, s, uv, invres, cd, cp,
+                                projA, projB, projX, projY);
+  float wSum = 1.0;
+  float ztol = max(0.02 * abs(cp.z), 0.05);
+  for (int j = -1; j <= 1; j++)
+    for (int i = -1; i <= 1; i++) {
+      if (i == 0 && j == 0) continue;
+      float2 o = float2(float(i), float(j)) * 2.0 * invres;
+      float dn = depthTex.sample(s, uv + o);
+      if (dn >= 0.99999) continue;
+      float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY);
+      float w = exp(-abs(pn.z - cp.z) / ztol);
+      nSum += post_eye_normal(depthTex, s, uv + o, invres, dn, pn,
+                              projA, projB, projX, projY) * w;
+      wSum += w;
+    }
+  return normalize(nSum);
 }
 
 fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
@@ -1067,45 +1097,42 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
   //       light than the receiver (a real gap), not the same/adjacent surface.
   if (u.shadowEnabled > 0.5 && d < 0.99999 && !flatCap) {
     float3 p = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY);
-    // Eye-space surface normal, reconstructed robustly from the depth buffer so the
-    // stencil never crosses a silhouette (see post_eye_normal). The old
-    // cross(dfdx(p),dfdy(p)) produced garbage normals in a 1-2px band at every
-    // silhouette, giving a noisy faceGate that read as a serrated lighter border.
     float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
-    float3 nrm = post_eye_normal(depthTex, s, in.uv, invres, d, p,
-                                 u.projA, u.projB, u.projX, u.projY);
+    // SMOOTH eye-space normal (see post_eye_normal_smooth). The coarse cartoon
+    // mesh yields a faceted per-triangle normal from a plain reconstruction,
+    // which made faceGate + the self-shadow compare step per triangle -> the
+    // "triangles under shadows". The bilateral average removes that.
+    float3 nrm = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, p,
+                                        u.projA, u.projB, u.projX, u.projY);
     float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
     float faceGate = smoothstep(0.0, 0.35, dot(nrm, Ldir));
-    float4 lc = u.lightViewProj * float4(p, 1.0);        // eye -> light clip
+    // Scale-aware, in ANGSTROMS: the light ortho box spans (radius*4 - 0.05) in
+    // world Z, so an Angstrom bias maps to light-space fragDepth as sepA/S. This
+    // is structure-size-invariant (fixes "shadows on some structures, not
+    // others"); the removed sep=0.12 was a frustum FRACTION (~19A dead-zone at
+    // radius 40) that erased genuine inter-element cast shadows.
+    float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
+    float worldTexel = 2.0 * u.shadowRadius / 4096.0;    // one shadow-map texel
+    float c = clamp(dot(nrm, Ldir), 0.0, 1.0);
+    // Normal-offset shadow mapping: push the receiver OUT along its smooth normal
+    // (more at grazing angles) so the light-space compare leaves the receiver's
+    // OWN stored facet -> self-shadow acne is pushed under map precision, while a
+    // genuinely separated occluder (orders of magnitude farther) still casts.
+    float3 pOff = p + nrm * (1.5 * worldTexel / max(c, 0.25));
+    float4 lc = u.lightViewProj * float4(pOff, 1.0);     // eye -> light clip
     if (faceGate > 0.0 && lc.w > 0.0) {
       float3 ndc = lc.xyz / lc.w;                        // light NDC, GL [-1,1]
       float2 suv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
       float fragDepth = 0.5 + 0.5 * ndc.z;               // same 0.5+0.5 remap
       if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 &&
           fragDepth > 0.0 && fragDepth < 1.0) {
-        // Separation threshold (light-space depth). Large enough that a thin
-        // cartoon slab or an adjacent coil does NOT cast onto itself, small
-        // enough that a distinctly-separated caster and deep surface pockets
-        // still do. Slope term adds margin on faces grazing to the light.
-        float2 dd = float2(dfdx(fragDepth), dfdy(fragDepth));
-        float sep = 0.022 + 2.5 * (abs(dd.x) + abs(dd.y));
-        sep = min(sep, 0.05);
-        // Cartoon/ribbon receivers (aoExempt, the #79 mask) self-shadow on their
-        // OWN coarse triangle mesh: the shadow map is rasterized from the same
-        // low-poly cartoon tube, so the receiver's light-space depth crosses the
-        // stored (faceted) caster depth per-triangle and the small default `sep`
-        // lets that leak through as blocky, per-triangle self-shadow acne — the
-        // "triangles under shadows". Cartoon self-shadow is unwanted anyway (see
-        // the self-shadow suppression note in this pass), so on cartoon pixels
-        // raise the separation to a fixed fraction of the (scale-invariant)
-        // light-space depth range. This suppresses self + adjacent occlusion so
-        // the ribbon is cleanly lit, while genuinely separated casters (gap >
-        // kCartoonSelfShadowSep) still shadow it. Surface pixels are NOT masked,
-        // so surface pockets keep the fine default sep and their AO/shadow detail.
-        if (aoExempt) {
-          const float kCartoonSelfShadowSep = 0.12;
-          sep = max(sep, kCartoonSelfShadowSep);
-        }
+        // Slope-scaled bias in ANGSTROMS -> fragDepth (sepA/S), plus a one-texel
+        // floor for depth quantisation on large assemblies. Small enough that
+        // real inter-element gaps (~2A+) still cast; the slope term covers steep
+        // facets where the normal-offset alone leaves residual self-crossing.
+        float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
+        float sepA = clamp(0.35 + 1.2 * slopeTan, 0.35, 6.0);
+        float sep = sepA / S + 1.0 / 4096.0;
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         // 4x4 taps of hardware-bilinear depth comparison (sample_compare with a
@@ -1608,6 +1635,7 @@ struct RTU {
   float fogStart, fogEnd, aoRadius, aoIntensity;
   float shadowIntensity, nSamples, frame, rtShadow; // rtShadow>0.5: trace shadows
   float4x4 lightViewProj;  // eye-space light view*proj for shadow-map sampling
+  float shadowRadius;      // world half-extent of the shadow ortho box (Angstroms)
 };
 
 static float rt_hash(float2 p) {
@@ -1722,13 +1750,13 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   if (d >= 0.99999) return float4(col, 1.0);  // background: leave as-is
   if (d <= 0.0015) return float4(col, 1.0);   // interior-cap cross-section: flat
 
-  // Eye-space position + robust normal (matches post_ssao_fog reconstruction).
-  // post_eye_normal avoids the cross-silhouette derivative blow-up that plain
-  // cross(dfdx,dfdy) produces (serrated lighter shadow border on edges).
+  // Eye-space position + SMOOTH normal (matches post_ssao_fog). The bilateral
+  // smoothing removes the coarse-mesh facet normal that made faceGate + the
+  // shadow-map self-compare step per triangle.
   float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY);
   float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
-  float3 nEye = post_eye_normal(depthTex, s, in.uv, invres, d, pEye,
-                                u.projA, u.projB, u.projX, u.projY);
+  float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
+                                       u.projA, u.projB, u.projX, u.projY);
 
   // Depth-aware 5x5 blur of the AO term: weight neighbours by eye-space depth
   // closeness so AO doesn't bleed across object silhouettes.
@@ -1764,17 +1792,25 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     float shadow = (1.0 - vis) * faceGate;
     col *= (1.0 - shadow * u.shadowIntensity);
   } else if (u.shadowIntensity > 0.0) {
+    // Default RT path shadow-map fallback: same scale-aware, normal-offset,
+    // Angstrom-bias treatment as post_ssao_fog, so cartoons get proper
+    // inter-element shadows without per-triangle self-shadow acne here too.
     float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
-    float4 lc = u.lightViewProj * float4(pEye, 1.0);     // eye -> light clip
+    float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
+    float worldTexel = 2.0 * u.shadowRadius / 4096.0;
+    float c = clamp(dot(nEye, Ldir), 0.0, 1.0);
+    float3 pOff = pEye + nEye * (1.5 * worldTexel / max(c, 0.25));
+    float4 lc = u.lightViewProj * float4(pOff, 1.0);     // eye -> light clip
     if (faceGate > 0.0 && lc.w > 0.0) {
       float3 ndc = lc.xyz / lc.w;
       float2 suv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
       float fragDepth = 0.5 + 0.5 * ndc.z;
       if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 &&
           fragDepth > 0.0 && fragDepth < 1.0) {
-        float2 dd = float2(dfdx(fragDepth), dfdy(fragDepth));
-        float sep = min(0.022 + 2.5 * (abs(dd.x) + abs(dd.y)), 0.05);
+        float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
+        float sepA = clamp(0.35 + 1.2 * slopeTan, 0.35, 6.0);
+        float sep = sepA / S + 1.0 / 4096.0;
         float2 stex = 1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         float lit = 0.0;
         for (int j = -2; j <= 1; j++)
@@ -2113,6 +2149,7 @@ void RendererMetal::runPostChain()
       float fogStart, fogEnd, aoRadius, aoIntensity;
       float shadowIntensity, nSamples, frame, rtShadow;
       float lightViewProj[16];   // eye-space light VP for shadow-map sampling
+      float shadowRadius;        // matches MSL RTU: shadow ortho half-extent
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2143,6 +2180,7 @@ void RendererMetal::runPostChain()
     // composite still gates on shadowIntensity). Default off -> shadow-map path.
     u.rtShadow = _rtShadowEnabled ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
+    u.shadowRadius = _shadowRadius;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2238,6 +2276,7 @@ void RendererMetal::runPostChain()
       float aoEnabled, aoIntensity, aoRadiusPx, projX;
       float projY, shadowEnabled, shadowIntensity, aoExemptEnabled;
       float lightViewProj[16]; // eye-space light VP (matches MSL PostU)
+      float shadowRadius;      // matches MSL PostU: shadow ortho half-extent
     } u;
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -2251,6 +2290,7 @@ void RendererMetal::runPostChain()
     u.shadowIntensity = 0.45f;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
+    u.shadowRadius = _shadowRadius;
 
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = _postColor;
@@ -2672,6 +2712,11 @@ void RendererMetal::endTransparentOIT()
 void RendererMetal::setLightViewProjEye(const float* m)
 {
   if (m) std::memcpy(_lightViewProjEye, m, 16 * sizeof(float));
+}
+
+void RendererMetal::setShadowFrustum(float radius)
+{
+  _shadowRadius = (radius > 1.0f) ? radius : 1.0f;
 }
 
 void RendererMetal::beginShadowPass()

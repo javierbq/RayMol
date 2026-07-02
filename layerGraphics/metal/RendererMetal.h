@@ -201,6 +201,7 @@ public:
   void beginShadowPass() override;
   void endShadowPass() override;
   void setLightViewProjEye(const float* m) override;
+  void setShadowFrustum(float radius) override;
 
 private:
   void buildImpostorPipelines();
@@ -455,6 +456,9 @@ private:
   NSUInteger _cylinderShadowStride = 0;
   bool _shadowMode = false;       // true between begin/endShadowPass
   float _lightViewProjEye[16];    // eye-space light VP, column-major (PostU)
+  float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box
+                                  // (from SceneBuildLightViewProjEye); lets the
+                                  // receiver bias be expressed in Angstroms.
   void buildShadowPipelines();
   // Depth-only shadow pipeline for an arbitrary lit vertex layout (e.g. the
   // surface's stride-44), mirroring oitPipelineForVD.
