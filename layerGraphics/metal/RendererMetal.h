@@ -146,7 +146,7 @@ public:
   void setRepClip(float front, float back) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepScreenAO(bool exempt) override;
-  void invalidateVBOCache(const void* key) override;
+  void invalidateVBOCache(uint64_t key) override;
   void drawLabels(const LabelDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
   void drawCylinderImpostors(const CylinderImpostorDrawCall& call) override;
@@ -203,12 +203,6 @@ public:
   void setLightViewProjEye(const float* m) override;
   void setShadowFrustum(float radius) override;
   void setShadowBias(float bias) override;
-  void setDisplayIsRetina(bool retina) override;
-  bool displayIsRetina() const override { return _displayIsRetina; }
-  // Perf HUD metrics (metal_perf_hud).
-  uint64_t frameTriangleCount() const override { return _frameTriangles; }
-  float renderScale() const override { return _renderScale; }
-  uint64_t gpuAllocatedBytes() const override;   // [_device currentAllocatedSize]
 
 private:
   void buildImpostorPipelines();
@@ -468,8 +462,6 @@ private:
                                   // receiver bias be expressed in Angstroms.
   float _shadowBias = 1.0f;       // metal_shadow_bias: user multiplier on the
                                   // self-shadow depth bias.
-  bool _displayIsRetina = true;   // window's current display backingScale>=2;
-                                  // set from Swift, gates metal_upscale=auto.
   void buildShadowPipelines();
   // Depth-only shadow pipeline for an arbitrary lit vertex layout (e.g. the
   // surface's stride-44), mirroring oitPipelineForVD.
@@ -525,8 +517,6 @@ private:
   // byte-identical. Forced to 1 for offscreen export.
   int _upscaleEnabled = 0;
   float _renderScale = 1.0f;
-  uint64_t _frameTriangles = 0;   // scene-mesh triangles submitted this frame
-                                  // (main pass only); reset in beginFrame().
   // MetalFX spatial scaler (typed id<MTLFXSpatialScaler>; untyped here to keep
   // MetalFX out of the header). Recreated when in/out sizes change. When nil/
   // unsupported the present path falls back to the bilinear blit.

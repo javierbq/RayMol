@@ -156,12 +156,6 @@ public:
   virtual ~GPUBuffer() {};
   virtual size_t get_hash_id() { return _hashid; }
   virtual void bind() const = 0;
-  // Pointer to this buffer's interleaved CPU-side data, if any. The Metal
-  // renderer's _vboCache is keyed by exactly this pointer, so returning it lets
-  // CShaderMgr::freeAllGPUBuffers evict (and release) the cached MTLBuffer when
-  // this buffer is freed — otherwise a rebuilt buffer's old MTLBuffer is
-  // orphaned forever (an unbounded leak). nullptr = not CPU-backed / not cached.
-  virtual const void* cpuDataPointer() const { return nullptr; }
 protected:
   virtual void set_hash_id(size_t id) { _hashid = id; }
 private:

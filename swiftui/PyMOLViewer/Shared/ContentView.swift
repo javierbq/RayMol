@@ -369,14 +369,6 @@ struct ContentView: View {
                         .overlay(alignment: .top) {
                             if engine.measureMode != nil { measureOverlay }
                         }
-                        // Perf HUD (metal_perf_hud): live LOD/triangles/memory/FPS.
-                        // Centered in the viewport, clear of the top toolbar and
-                        // the bottom transport bar.
-                        .overlay(alignment: .center) {
-                            if engine.perf.visible {
-                                PerfHUDView(perf: engine.perf).padding(8).allowsHitTesting(false)
-                            }
-                        }
                         // Pick-debug crosshair: marks exactly where the last click
                         // landed, so a screenshot shows click-vs-selection offset.
                         .overlay { debugClickMarker }
@@ -1401,14 +1393,6 @@ struct ContentView: View {
     private var viewportView: some View {
         MetalViewport()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Perf HUD (metal_perf_hud): live LOD/triangles/memory/FPS.
-            // Centered in the viewport, clear of the top toolbar and the bottom
-            // transport bar.
-            .overlay(alignment: .center) {
-                if engine.perf.visible {
-                    PerfHUDView(perf: engine.perf).padding(8).allowsHitTesting(false)
-                }
-            }
             // Attached here (not the giant body chain) to keep that expression
             // under the Swift type-checker's complexity limit.
             .alert("No movie to export", isPresented: $showNoMovieAlert) {
@@ -2460,26 +2444,6 @@ struct CalculatingOverlay: View {
             .padding(28)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
-    }
-}
-
-/// Live performance HUD overlay (metal_perf_hud). Monospaced metrics block,
-/// top-left, non-interactive. Values published by PyMOLEngine.perf.
-struct PerfHUDView: View {
-    @ObservedObject var perf: PerfHUD
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("FPS \(PerfFormat.fps(perf.fps))   scene tris \(perf.triangles)")
-            Text("LOD samp \(perf.sampling)  max \(perf.bucketMax)  Å/px \(String(format: "%.3f", perf.angPerPx))  dyn \(perf.dynamicOn ? "on" : "off")")
-            Text("mem  cpu \(PerfFormat.bytes(perf.cpuBytes))  gpu \(PerfFormat.bytes(perf.gpuBytes))")
-            Text("upscale \(perf.upscale) rs \(String(format: "%.2f", perf.renderScale))  msaa \(perf.msaa ? "1" : "0")  sh \(perf.shadows ? "1" : "0")  rt \(perf.raytrace ? "1" : "0")")
-            Text("draw \(perf.drawableW)×\(perf.drawableH)  retina \(perf.retina ? "1" : "0")")
-        }
-        .font(.system(size: 10, design: .monospaced))
-        .foregroundColor(.green)
-        .padding(6)
-        .background(Color.black.opacity(0.55))
-        .cornerRadius(6)
     }
 }
 

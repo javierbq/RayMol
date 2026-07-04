@@ -225,11 +225,9 @@ public:
     selColor[0] = r; selColor[1] = g; selColor[2] = b;
   }
 
-  // Evict the cached GPU vertex/index buffer keyed by `key` (the buffer's
-  // CPU-data pointer, GPUBuffer::cpuDataPointer()). Called when the owning
-  // buffer is freed so its cached device buffer is released rather than
-  // orphaned. No-op unless a renderer maintains such a cache (Metal does).
-  virtual void invalidateVBOCache(const void* key) {}
+  // VBO buffer cache — returns a cached buffer ID for the given key,
+  // creating it from data if not already cached.
+  virtual void invalidateVBOCache(uint64_t key) {}
 
   // Screen-aligned textured text quads (labels + measurement text). The
   // interleaved vertex data carries the attributes the GL label shader uses;
@@ -361,16 +359,6 @@ public:
   // User multiplier on the self-shadow depth bias (metal_shadow_bias). Default
   // no-op (GL unaffected).
   virtual void setShadowBias(float bias) {}
-  // Whether the window's current display is Retina (backingScale>=2). Set from
-  // the Swift layer; gates metal_upscale=auto. Defaults true (GL unaffected).
-  virtual void setDisplayIsRetina(bool retina) {}
-  virtual bool displayIsRetina() const { return true; }
-
-  // Live render metrics for the perf HUD (metal_perf_hud). Default 0/1 (base
-  // and GL unaffected).
-  virtual uint64_t frameTriangleCount() const { return 0; }
-  virtual uint64_t gpuAllocatedBytes() const { return 0; }
-  virtual float renderScale() const { return 1.0f; }
 
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each

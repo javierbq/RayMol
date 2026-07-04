@@ -700,7 +700,6 @@ void RendererMetal::beginFrame()
   if (_rtEnabled) ensureRayTracingAS();
   _rtSpheres.clear();  // re-accumulated during this frame's opaque pass
   _rtTris.clear();
-  _frameTriangles = 0; // perf HUD: reset the per-frame scene-triangle counter
 
   _cmdBuffer = [_queue commandBuffer];
   _encoder = nil;
@@ -2731,16 +2730,6 @@ void RendererMetal::setShadowBias(float bias)
   _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
-void RendererMetal::setDisplayIsRetina(bool retina)
-{
-  _displayIsRetina = retina;
-}
-
-uint64_t RendererMetal::gpuAllocatedBytes() const
-{
-  return _device ? (uint64_t)[_device currentAllocatedSize] : 0;
-}
-
 void RendererMetal::beginShadowPass()
 {
   if (!_cmdBuffer || !_shadowPassDesc || !_vboShadowPipelineUByte) return;
@@ -4499,12 +4488,6 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Perf HUD: count scene-mesh triangles in the main pass (not the shadow
-  // re-draw). Non-indexed triangle-list/strip.
-  if (!_shadowMode && (mode == PrimitiveType::Triangles ||
-                       mode == PrimitiveType::TriangleStrip))
-    _frameTriangles += (uint64_t)(vertexCount / 3);
-
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
   if (_rtEnabled && !_shadowMode && !_oitActive)
     rtAppendVBOTris(_rtTris, mode, vertexCount, data, stride, posOffset, nullptr);
@@ -4786,12 +4769,6 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Perf HUD: count scene-mesh triangles in the main pass (not the shadow
-  // re-draw). Indexed triangle-list/strip.
-  if (!_shadowMode && (mode == PrimitiveType::Triangles ||
-                       mode == PrimitiveType::TriangleStrip))
-    _frameTriangles += (uint64_t)(indexCount / 3);
-
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
   if (_rtEnabled && !_shadowMode && !_oitActive)
     rtAppendVBOTris(_rtTris, mode, indexCount, vertexData, stride, posOffset, indexData);
@@ -5026,22 +5003,15 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   }
 }
 
-void RendererMetal::invalidateVBOCache(const void* key)
+void RendererMetal::invalidateVBOCache(uint64_t key)
 {
-  // Evict the single cached MTLBuffer for this CPU-data pointer. Called from
-  // CShaderMgr::freeAllGPUBuffers when the owning VertexBufferGL/IndexBufferGL is
-  // freed, so orphaned buffers from rebuilt geometry (e.g. the zoom-driven
-  // cartoon LOD rebuilds) are released instead of accumulating — this map had no
-  // per-entry eviction, an unbounded leak that OOM-jettisoned the app on iOS.
-  // MRC: the map holds +1 MTLBuffers (newBufferWithBytes); drop our ownership.
-  // Any buffer still referenced by an in-flight command buffer is kept alive by
-  // Metal's own retain until that command buffer completes.
-  if (!key) return;
-  auto it = _vboCache.find(key);
-  if (it != _vboCache.end()) {
-    [it->second release];
-    _vboCache.erase(it);
-  }
+  // Clear entire cache — key type changed to pointer-based.
+  // MRC: the map holds +1 MTLBuffers (newBufferWithBytes); STL clear() does not
+  // release them, so drop each ownership first. Any buffer still referenced by an
+  // in-flight command buffer is kept alive by Metal's own retain until that
+  // command buffer completes (same reasoning as ensurePostTargets).
+  for (auto& kv : _vboCache) [kv.second release];
+  _vboCache.clear();
 }
 
 // ---------------------------------------------------------------------------

@@ -921,7 +921,7 @@ enum {
   REC_f( 811, metal_dof_focus                         , global    , 0.0F ),  /* Metal DOF focus distance in eye-space units; 0 = auto (center of interest) */
   REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum */
   REC_b( 813, metal_temporal_ao                       , global    , false ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
-  REC_i( 814, metal_upscale                           , global    , 2, 0, 2 ), /* Metal: reduced-res render + upscale (MetalFX). 0=off, 1=on, 2=auto (on only on Retina displays, where the 0.667x upscale blur is hidden). */
+  REC_b( 814, metal_upscale                           , global    , false ), /* Metal: render the scene at reduced resolution and upscale to native (mobile perf; bilinear, MetalFX follow-up) */
   REC_f( 815, metal_dof_aperture                      , global    , 14.0F ), /* Metal DOF aperture: max out-of-focus blur radius in px (bokeh strength); larger = wider aperture / stronger blur */
   REC_f( 816, surface_clip_front                      , object    , 0.0F ),  /* Per-rep surface clip, referenced to the surface's center of mass: fraction 0..1 of the molecule depth to shave off the NEAR (front) side. 0 = no clip, 1 = clip to the COM. Lets the surface clip while cartoon/sticks stay whole so you can peek inside. */
   REC_f( 817, surface_clip_back                       , object    , 0.0F ),  /* Per-rep surface clip referenced to the COM: fraction 0..1 of the molecule depth to shave off the FAR (back) side. 0 = no clip, 1 = clip to the COM. Equal front/back give a slab symmetric about the COM. */
@@ -931,9 +931,6 @@ enum {
   REC_b( 821, surface_contour_opaque                  , object    , true ),  /* Metal: surface outer-contour is fully opaque (crisp); off = the line picks up the surface transparency. */
   REC_b( 822, metal_ssao_cartoon                      , global    , false ), /* Metal: include cartoon/ribbon in the screen-space SSAO (crease/contour) pass. Default off => cartoons are excluded from SSAO darkening (avoids spurious contour lines on ribbon silhouettes/self-folds, #79); they still receive directional shadows, and surface pockets keep their AO. */
   REC_f( 823, metal_shadow_bias                       , global    , 1.0F ),  /* Metal: multiplier on the self-shadow depth bias. 1.0 = default. Raise (e.g. 2-4) if flat cartoon strands still show striped self-shadow "triangle" acne at steep/grazing angles; lower toward 0 for tighter contact shadows. */
-  REC_b( 824, cartoon_sampling_dynamic                , global    , true ),  /* Adaptively raise/lower cartoon_sampling with zoom (debounced whole-object rebuild): crisp when zoomed in, cheap when zoomed out. Off = static cartoon_sampling. */
-  REC_i( 825, cartoon_sampling_max                    , global    , -1 ),    /* Detail ceiling used by cartoon_sampling_dynamic when zoomed in. -1 = auto (scaled down by atom count so large structures stay bounded). */
-  REC_b( 826, metal_perf_hud                          , global    , false ), /* Metal: show a live performance HUD overlay (LOD, triangle count, CPU/GPU memory, FPS, render state). set metal_perf_hud, 1 */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

@@ -98,13 +98,6 @@ class PyMOLMTKView: MTKView {
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    // Fires when the backing scale changes (window moved to a display of a
-    // different DPI) → re-evaluate metal_upscale=auto immediately.
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        coordinator?.pushDisplayRetina(self)
-    }
-
     override func mouseDown(with event: NSEvent) {
         coordinator?.handleMouseDown(event, in: self)
     }
@@ -221,83 +214,6 @@ extension MetalViewport {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
         private var viewportSize: CGSize = .zero
-        // Debounce for zoom-adaptive cartoon LOD (cartoon_sampling_dynamic): a
-        // rebuild fires only ~200ms AFTER the zoom settles, never mid-gesture.
-        private var lodWork: DispatchWorkItem?
-
-        /// Schedule a debounced adaptive-cartoon-sampling update. Call from any
-        /// zoom handler; the debounce coalesces bursts and the engine no-ops when
-        /// the LOD bucket is unchanged or the setting is off.
-        func scheduleLODUpdate() {
-            lodWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self, let v = self.mtkView else { return }
-                let h = Float(v.drawableSize.height)
-                self.engine?.applyDynamicCartoonSampling(viewportHeightPx: h)
-            }
-            lodWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20, execute: work)
-        }
-
-        // Cached so we only push the retina flag to the core on an actual change.
-        private var lastRetina: Bool?
-
-        /// Push whether the window's current display is Retina (backingScale>=2)
-        /// to the renderer, gating metal_upscale=auto. Change-gated; cheap to call
-        /// from draw() and from viewDidChangeBackingProperties.
-        func pushDisplayRetina(_ view: MTKView) {
-            #if os(macOS)
-            let scale = view.window?.screen?.backingScaleFactor ?? 2.0
-            #else
-            let scale = view.window?.screen.scale ?? view.contentScaleFactor
-            #endif
-            let retina = CartoonLOD.autoUpscale(backingScale: scale)
-            if let e = engine, e.perf.retina != retina { DispatchQueue.main.async { e.perf.retina = retina } }
-            guard retina != lastRetina else { return }
-            lastRetina = retina
-            engine?.setDisplayIsRetina(retina)
-        }
-
-        // Perf HUD (metal_perf_hud): FPS is an EMA of rendered-frame intervals;
-        // the rest (renderer stats + settings) is published ~3x/s. Called from
-        // draw(in:) only on frames that actually rendered.
-        private var lastFrameTime: CFTimeInterval = 0
-        private var fpsEMA: Double = 0
-        private var lastHUDPublish: CFTimeInterval = 0
-        func updatePerfHUD(_ view: MTKView) {
-            let now = CACurrentMediaTime()
-            if lastFrameTime > 0 {
-                let dt = now - lastFrameTime
-                if dt > 0 { fpsEMA = fpsEMA == 0 ? 1.0/dt : (0.9*fpsEMA + 0.1*(1.0/dt)) }
-            }
-            lastFrameTime = now
-            // Throttle EVERYTHING below (incl. the metal_perf_hud gate read) to
-            // ~3x/s so a frame costs nothing extra when the HUD is off — FPS EMA
-            // above is pure Swift and stays per-frame.
-            guard now - lastHUDPublish > 0.33 else { return }
-            lastHUDPublish = now
-            guard let engine = engine else { return }
-            let hudOn = (engine.evalInt("int(cmd.get_setting_int('metal_perf_hud'))") ?? 0) == 1
-            if engine.perf.visible != hudOn { DispatchQueue.main.async { engine.perf.visible = hudOn } }
-            guard hudOn else { return }
-            var tris: UInt64 = 0, gpu: UInt64 = 0; var rs: Float = 1
-            PyMOLBridge_GetRenderStats(&tris, &gpu, &rs)
-            let cpu = engine.cpuFootprintBytes()
-            let samp = engine.evalInt("int(cmd.get_setting_int('cartoon_sampling'))") ?? 0
-            let up = engine.evalInt("int(cmd.get_setting_int('metal_upscale'))") ?? 0
-            let msaa = (engine.evalInt("int(cmd.get_setting_int('metal_msaa'))") ?? 0) == 1
-            let sh = (engine.evalInt("int(cmd.get_setting_int('metal_shadows'))") ?? 0) == 1
-            let rt = (engine.evalInt("int(cmd.get_setting_int('metal_raytrace'))") ?? 0) == 1
-            let dw = Int(view.drawableSize.width), dh = Int(view.drawableSize.height)
-            let fps = fpsEMA
-            DispatchQueue.main.async {
-                let p = engine.perf
-                p.fps = fps; p.triangles = tris; p.gpuBytes = gpu; p.cpuBytes = cpu
-                p.sampling = samp; p.upscale = up; p.renderScale = rs
-                p.msaa = msaa; p.shadows = sh; p.raytrace = rt
-                p.drawableW = dw; p.drawableH = dh
-            }
-        }
         // Set when the app/display wakes (unlock, system wake, re-activate). The
         // next draw(in:) then renders unconditionally, bypassing the on-demand
         // gate, to repaint a drawable whose contents were discarded during sleep.
@@ -460,19 +376,6 @@ extension MetalViewport {
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
             engine.heavyRenderTick()
-            // Zoom-adaptive cartoon LOD: reset the debounce each frame that
-            // actually rendered (i.e. the scene/camera changed — this is AFTER
-            // the on-demand gate, so a static scene never resets it). The timer
-            // fires ~200ms after the LAST such frame, i.e. once the camera has
-            // settled, and re-tessellates only if the LOD bucket changed. Covers
-            // gestures AND programmatic zoom/orient/animation uniformly.
-            scheduleLODUpdate()
-            // Push the display's Retina flag (change-gated) so metal_upscale=auto
-            // resolves against the CURRENT screen — covers launch + window moved
-            // between displays even if no backing-property change fired.
-            pushDisplayRetina(view)
-            // Perf HUD: FPS + metrics (throttled internally; gated on metal_perf_hud).
-            updatePerfHUD(view)
         }
 
         // MARK: - Coordinate conversion

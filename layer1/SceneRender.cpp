@@ -2056,14 +2056,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
     }
     float dofRange = SettingGetGlobal_f(G, cSetting_metal_dof_range);
     int temporalAO = SettingGetGlobal_b(G, cSetting_metal_temporal_ao) ? 1 : 0;
-    // metal_upscale: 0=off, 1=on, 2=auto. Auto enables the reduced-res upscale
-    // only on Retina displays (the renderer holds the display's retina flag,
-    // pushed from Swift); the 0.667x blur is hidden there but objectionable on
-    // low-DPI externals. (Task 4 sets displayIsRetina from NSScreen; it defaults
-    // true, so auto == on until refined.)
-    int mu = SettingGetGlobal_i(G, cSetting_metal_upscale);
-    int upscaleEnabled =
-        (mu == 1 || (mu == 2 && G->Renderer->displayIsRetina())) ? 1 : 0;
+    int upscaleEnabled = SettingGetGlobal_b(G, cSetting_metal_upscale) ? 1 : 0;
     float dofAperture = SettingGetGlobal_f(G, cSetting_metal_dof_aperture);
     G->Renderer->setPostParams(fogEnabled, fogStart, fogEnd, bg[0], bg[1],
         bg[2], aoEnabled, shadowEnabled, aaEnabled, outlineEnabled, proj[10],

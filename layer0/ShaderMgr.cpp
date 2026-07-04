@@ -25,7 +25,6 @@ Z* -------------------------------------------------------------------
 #include "MemoryDebug.h"
 #include "Setting.h"
 #include "Scene.h"
-#include "Renderer.h"  // G->Renderer->invalidateVBOCache (frees cached MTLBuffers)
 #include "Color.h"
 #include "Vector.h"
 #include "Util.h"
@@ -1663,17 +1662,8 @@ void CShaderMgr::freeAllGPUBuffers() {
   for (auto hashid : _gpu_objects_to_free_vector) {
     auto search = _gpu_object_map.find(hashid);
     if (search != _gpu_object_map.end()) {
-      if (search->second) {
-        // Evict this buffer's entry from the Metal renderer's _vboCache (keyed by
-        // its CPU-data pointer) BEFORE deleting, so the cached device buffer is
-        // released with the buffer rather than orphaned. Without this, rebuilt
-        // geometry (e.g. zoom-driven cartoon LOD rebuilds) accumulated a fresh
-        // MTLBuffer per rebuild — an unbounded leak that OOM-crashed iOS. No-op on
-        // GL (base is a no-op) and for buffers with no CPU-side data.
-        if (G && G->Renderer)
-          G->Renderer->invalidateVBOCache(search->second->cpuDataPointer());
+      if (search->second)
         delete search->second;
-      }
       _gpu_object_map.erase(search);
     }
   }

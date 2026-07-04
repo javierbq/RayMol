@@ -8,7 +8,6 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
-#include <stdint.h>
 
 // Opaque PyMOL instance handle (CPyMOL* in the implementation)
 typedef void* PyMOLHandle;
@@ -32,12 +31,6 @@ void PyMOLBridge_Drag(PyMOLHandle instance, int x, int y, int modifiers);
 void PyMOLBridge_SetLetterboxAspect(PyMOLHandle instance, float aspect);
 // RGB (0..1) of the 3D selection indicator squares — set from the active theme.
 void PyMOLBridge_SetSelectionColor(PyMOLHandle instance, float r, float g, float b);
-// Tell the renderer whether the window's current display is Retina (gates
-// metal_upscale=auto). retina: 1 = Retina (backingScale>=2), 0 = not.
-void PyMOLBridge_SetDisplayIsRetina(PyMOLHandle instance, int retina);
-
-// Perf HUD (metal_perf_hud): fill live render metrics. Any out-ptr may be NULL.
-void PyMOLBridge_GetRenderStats(uint64_t* outTriangles, uint64_t* outGpuBytes, float* outRenderScale);
 void PyMOLBridge_CapturePNG(PyMOLHandle instance, const char* path);
 // Hi-res offscreen render → PNG: reshape PyMOL to width×height, render the full
 // Metal pipeline (all reps + hardware-RT AO/shadows) into offscreen targets at
@@ -68,12 +61,6 @@ void PyMOLBridge_RunCommand(const char *command);
 char *PyMOLBridge_Complete(const char *text);
 char *PyMOLBridge_GetFeedback(PyMOLHandle instance);
 void PyMOLBridge_FreeFeedback(char *str);
-
-// Evaluate a Python expression (in __main__, with `cmd` imported) and return
-// str(result) as a UTF-8 C string, or NULL on error/None. Lets Swift read core
-// values (get_view, settings, count_atoms). Caller frees with
-// PyMOLBridge_FreeFeedback. Main-thread / in-process.
-char *PyMOLBridge_EvalString(const char *expr);
 
 // --- Metal rendering ---
 void PyMOLBridge_RenderMetal(PyMOLHandle instance);
