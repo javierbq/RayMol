@@ -110,9 +110,53 @@ even compile (invisibly papered over on Homebrew machines that happened to
 have those headers installed already). They're not build-time dependencies
 of this app.
 
-## iOS
+## Building for iOS
 
-Blocked on `deps_ios/` (a BeeWare-built `Python.xcframework` plus
-cross-compiled freetype/libpng for device and simulator) — there's currently
-no script or documented process to populate it. See issue #123 for status
-before attempting an iOS build.
+The iOS app needs a gitignored `deps_ios/` populated with an embedded Python,
+cross-compiled freetype/libpng, and numpy — the iOS analogue of `deps_macos/`.
+Two scripts fetch/build the heavy pieces; the two after them layer Python
+packages on top. Run them **in order** (each depends on the previous):
+
+1. **Fetch the embedded Python.** One-time; re-run to refresh.
+   ```bash
+   scripts/fetch_ios_python.sh
+   ```
+   Downloads a [BeeWare Python-Apple-support](https://github.com/beeware/Python-Apple-support)
+   CPython 3.13 `Python.xcframework` (device + simulator slices) into
+   `deps_ios/Python.xcframework`. The BeeWare release is **pinned** (`3.13-b12`)
+   because b13+ moved the embedded stdlib to a `lib-<arch>/` layout the rest of
+   the build doesn't expect — the script's layout guard rejects an incompatible
+   release; see the header comment before overriding `PY_APPLE_SUPPORT_TAG`.
+
+2. **Cross-compile freetype + libpng.**
+   ```bash
+   scripts/build_ios_deps.sh
+   ```
+   Builds libpng 1.6.44 + freetype 2.13.3 for arm64 into `deps_ios/install`
+   (simulator SDK) and `deps_ios/install_device` (device SDK) — the
+   `PYMOL_IOS_DEPS{,_DEVICE}` paths in `PyMOLBridge.xcconfig`. zlib comes from
+   the iOS SDK. Needs Xcode + `cmake`.
+
+3. **Cross-compile numpy.**
+   ```bash
+   scripts/build_numpy_ios.sh
+   ```
+   Stages numpy into `deps_ios/numpy-ios/{simulator,device}` (numpy ships no iOS
+   wheels). Requires a host CPython 3.13 with `meson ninja cython` installed.
+
+4. **Bundle Biopython** (optional; shared with the macOS app).
+   ```bash
+   scripts/bundle_biopython.sh
+   ```
+   Adds the pure-Python `Bio` subset into the xcframework's site-packages.
+
+5. **Build the C++ core**, then the app:
+   ```bash
+   cd swiftui && ./build_ios.sh            # simulator (arm64)
+   cd swiftui && ./build_ios.sh device     # device
+   xcodebuild -project PyMOLViewer.xcodeproj -scheme PyMOLViewer_iOS \
+       -configuration Debug -sdk iphonesimulator build
+   ```
+
+Everything under `deps_ios/` is gitignored and reproducible from steps 1–4;
+delete the directory and re-run to rebuild from scratch.
