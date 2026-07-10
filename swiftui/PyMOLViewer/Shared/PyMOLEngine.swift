@@ -1107,7 +1107,9 @@ final class PyMOLEngine: ObservableObject {
         py += "    from pymol import cmd as _c\n"
         py += "    _c.bg_color('\(bgHex)')\n"
         if applyRenderToggles {
-            py += "    _c.set('metal_outline', \(theme.outline ? 1 : 0))\n"
+            // Outline is off in every theme (RayMol 1.6.1) — force off regardless
+            // of theme.outline, matching raymol_theme.set_palette.
+            py += "    _c.set('metal_outline', 0)\n"
             py += "    _c.set('metal_raytrace', \(theme.rayTrace ? 1 : 0)); _c.set('metal_shadows', \(theme.shadows ? 1 : 0))\n"
         }
         runPython(py)
