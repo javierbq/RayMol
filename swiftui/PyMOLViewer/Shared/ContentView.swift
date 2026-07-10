@@ -2849,6 +2849,13 @@ struct ContentView: View {
     private func applyPersistedTheme() {
         themeManager.apply(engine: engine,
                            applyRenderToggles: !engine.suppressLaunchThemeRenderToggles)
+        // Outline is off by default in RayMol 1.6.1 and no theme enables it.
+        // Force it off unconditionally on launch — independent of the theme's
+        // render-toggle suppression AND of the (historically flaky) compiled core
+        // default — so a stale core / cached theme can never surface an outline
+        // the user didn't ask for. Users can still enable it live (Display ▸
+        // Effects); this only governs the default at launch.
+        engine.runCommand("set metal_outline, 0")
     }
 }
 
