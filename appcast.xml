@@ -6,73 +6,46 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.6.0</title>
+      <title>RayMol 1.6.1</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.6.0
+## RayMol 1.6.1
 
-A big feature release: a Photos-style camera dock with real depth-of-field, a
-docked Timeline movie studio, multi-state (NMR/MD) support in movies, and a
-batch of inspector and rendering improvements.
+Selection and interaction polish: live hover highlighting, quicker object
+toggling, and a batch of selection, menu, and toolbar fixes.
 
-### Camera & lens
-- **New camera control dock.** A Photos-style strip docked at the bottom of the
-  viewport for framing and lens controls — collapses to icons, expands for the
-  sliders.
-- **Lens (focal length).** Dial the camera from wide-angle to telephoto (down to
-  12 mm) with a true dolly-zoom — it swaps perspective without re-zooming the
-  subject. Ortho is now a toggle right in the Lens row.
-- **Zoom (magnification) slider.** Absolute on-screen magnification, independent
-  of the lens.
+### Selecting
+- **Hover pre-selection preview.** Move the cursor over the structure and the
+  atom, residue, or chain a click *would* select is highlighted live in a
+  distinct cyan tint, matching the current selection mode — nothing is committed
+  until you click. Toggle it with **Hover** in the mouse (Selecting) controls.
+- **Esc clears the selection.** Press Esc to clear the current selection from
+  anywhere — it works even while the command line has focus, and still dismisses
+  an open dialog first.
+- **One-click clear.** The selection chip's ⊗ now deletes the selection outright
+  — removing both the markers and the lingering `(sele)` entry — with a tooltip
+  to match.
 
-### Depth of field
-- **Autofocus.** Lock the focal plane to a selection and it tracks through zoom.
-- **DOF quality slider (1–4)**, defaulting to best, replacing the old on/off
-  toggle.
-- **Scatter-based bokeh** that spreads highlights past object edges for a
-  natural out-of-focus falloff. Transparent image export keeps DOF with a
-  halo-aware matte.
+### Objects
+- **Toggle a structure from anywhere on its row.** Click anywhere in an object's
+  row — not just the checkbox — to show or hide it, and the checkbox now flips
+  instantly with no lag.
 
-### Movies & Timeline
-- **Timeline movie studio.** A docked multi-track editor for building movies —
-  drag-and-drop camera keyframes and scenes onto the timeline, with configurable
-  transitions. Lives in the right inspector with an expandable bottom dock.
-- **Multi-state (NMR / MD) objects.** Play through the models of an ensemble
-  with a "Play models" clip and per-object model playback, decoupled from the
-  movie transport. State-aware rebuilds are non-destructive.
-
-### Inspector
-- **Per-atom transparency.** The inspector now surfaces per-atom transparency
-  baked into a session and lets you clear it back to opaque.
-- **Representation controls populate reliably** when you expand a structure,
-  across every layout.
-- **Half-screen expand** for the object list, a dynamic state slider, and a
-  shared selection-mode menu.
-- **Clear-selection button** sits next to the Residues toggle to wipe the
-  active selection in one tap.
-
-### Rendering
-- **Real-time ray tracing restored,** with quality controls — hardware-accelerated
-  ambient occlusion and shadows update live as you orbit.
-
-### macOS app
-- **Native right-click context menu** on the viewport.
-- **Help ▸ Contact Support…** opens a message to support@raymol.io.
-- **What's New splash** on update, and a narrower, tidier right inspector.
+### Camera
+- **Auto-lock focus from the right-click menu.** Right-click (or long-press) a
+  residue and choose **Auto-lock focus** to lock depth-of-field onto it.
 
 ### Fixes
-- **Scenes now capture and restore render settings** (DOF, lighting, Metal
-  toggles) per scene, and no longer throw a spurious thumbnail-save error.
-- **Restoring a saved session no longer clobbers its render toggles** when the
-  launch theme re-applies.
-- **The viewport stays in sync** while you drag the movie playhead.
+- **Fixed: ⌘C copies the rendered image** to the clipboard again — it's a proper
+  menu command now (*File ▸ Copy Image to Clipboard*).
+- **Fixed: removed a stray empty button** from the top toolbar.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Wed, 08 Jul 2026 20:54:45 +0000</pubDate>
-      <sparkle:version>17</sparkle:version>
-      <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+      <pubDate>Fri, 10 Jul 2026 21:43:11 +0000</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.6.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.6.0/RayMol-1.6.0.dmg" type="application/octet-stream" sparkle:edSignature="5lCb6XFygRWjaIOeOjz42fjIgNzUQH8OJRgVK3CI6TrYPftia+Eb2aUOpg2nMFhRGnDGaKyuhqTVZOXj8v5xAg==" length="57628349" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.6.1/RayMol-1.6.1.dmg" type="application/octet-stream" sparkle:edSignature="Fe40/mb87xyVPWY/e7zbv4dW630EOLTw9LcZU/fCLLGAevVA3M+FegmWDCBIXKN4LZb+QFQoWRg1VUB+BevHBA==" length="57677989" />
     </item>
   </channel>
 </rss>
