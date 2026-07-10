@@ -40,11 +40,23 @@ RELEASE_DD="$PYMOL_ROOT/build_mac_release_dd"
 DERIVED="$RELEASE_DD/Build/Products/Release"
 ENTITLEMENTS="$SWIFTUI/RayMol_DeveloperID.entitlements"
 WORK="$PYMOL_ROOT/build_dmg"
+CORE_BUILD="$PYMOL_ROOT/build_macos_swiftui"   # libpymol_core.a the Xcode build links
+LOGDIR="$PYMOL_ROOT/build_dmg_logs"            # build logs (kept out of $WORK, which we wipe)
 APPNAME="RayMol"
-VERSION="${VERSION:-1.0.0}"
+# Track whether the caller pinned a version. If they did, we assert it matches the
+# packaged app's Info.plist below (a mismatch = a wrong/stale package); if they
+# didn't, we adopt the app's own CFBundleShortVersionString so the DMG name +
+# appcast can't silently disagree with what's inside the bundle.
+if [ -n "${VERSION:-}" ]; then VERSION_EXPLICIT=1; else VERSION_EXPLICIT=0; fi
+VERSION="${VERSION:-}"
+# SKIP_CORE_BUILD=1 skips the clean core rebuild below — use ONLY when you just
+# built the core clean yourself; the app still links whatever is in $CORE_BUILD.
+SKIP_CORE_BUILD="${SKIP_CORE_BUILD:-0}"
 
 : "${DEVID:?Set DEVID to your 'Developer ID Application: NAME (TEAMID)' identity}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-RayMol-notary}"
+
+mkdir -p "$LOGDIR"
 
 # --- Preflight (hardening after the 1.2.1 build got tripped up) ---------------
 # Keep the Mac awake for the whole run. This script has two multi-minute Apple
@@ -66,6 +78,27 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
 fi
 # ------------------------------------------------------------------------------
 
+echo "== 0/8  Build a clean C++ core (libpymol_core.a) =="
+# The Xcode build only LINKS $CORE_BUILD/libpymol_core.a; it never rebuilds it.
+# An incremental core can ship a stale setting default with a fresh mtime and no
+# error (this shipped metal_outline=true in 1.6.1). Build it CLEAN here so the
+# packaged app can't link a stale core. Override with SKIP_CORE_BUILD=1 only when
+# you just built it clean yourself.
+CORELOG="$LOGDIR/build_macos_core.log"
+case "$SKIP_CORE_BUILD" in
+  1|true|yes|on)
+    echo "  SKIP_CORE_BUILD set — using existing $CORE_BUILD/libpymol_core.a"
+    [ -f "$CORE_BUILD/libpymol_core.a" ] || { echo "ERROR: no libpymol_core.a at $CORE_BUILD (unset SKIP_CORE_BUILD)"; exit 1; }
+    ;;
+  *)
+    echo "  (full core build log → $CORELOG)"
+    if ! CLEAN=1 bash "$SWIFTUI/build_macos.sh" >"$CORELOG" 2>&1; then
+      echo "ERROR: clean core build failed. Last 40 lines of $CORELOG:"; tail -40 "$CORELOG"; exit 1
+    fi
+    [ -f "$CORE_BUILD/libpymol_core.a" ] || { echo "ERROR: core build produced no libpymol_core.a at $CORE_BUILD (see $CORELOG)"; exit 1; }
+    ;;
+esac
+
 echo "== 1/8  Build Release app (unsigned; we Developer-ID-sign below) =="
 # Regenerate the Xcode project from project.yml first: this script builds the
 # .xcodeproj directly (unlike build.sh, it does not run xcodegen), so without
@@ -77,12 +110,24 @@ if command -v xcodegen >/dev/null 2>&1; then
 else
   echo "  WARNING: xcodegen not found — building the existing .xcodeproj as-is."
 fi
-xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
+# Clean before building. Reused DerivedData does NOT reliably recompile changed
+# Swift or re-run the resource-copy phases (basedOnDependencyAnalysis:false), so
+# an incremental Release shipped stale Swift + a stale bundled raymol_theme.py in
+# 1.6.1. `rm -rf Build/` drops the old built product (keeping SourcePackages so
+# SPM/Sparkle isn't re-fetched) and `clean build` resets xcodebuild's own graph;
+# the 1c sanity step below proves the fresh copy actually happened. Full output
+# goes to a log (never /dev/null) so a build failure or stale-skip is visible.
+rm -rf "$RELEASE_DD/Build"
+XCLOG="$LOGDIR/xcodebuild-release.log"
+echo "  (full xcodebuild output → $XCLOG)"
+if ! xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$RELEASE_DD" \
-  CODE_SIGNING_ALLOWED=NO build >/dev/null
+  CODE_SIGNING_ALLOWED=NO clean build >"$XCLOG" 2>&1; then
+  echo "ERROR: Release build failed. Last 60 lines of $XCLOG:"; tail -60 "$XCLOG"; exit 1
+fi
 SRC_APP="$DERIVED/$APPNAME.app"
-[ -d "$SRC_APP" ] || { echo "ERROR: built app not found at $SRC_APP"; exit 1; }
+[ -d "$SRC_APP" ] || { echo "ERROR: built app not found at $SRC_APP (see $XCLOG)"; exit 1; }
 
 rm -rf "$WORK"; mkdir -p "$WORK"
 cp -R "$SRC_APP" "$WORK/$APPNAME.app"
@@ -112,6 +157,36 @@ ED_PUB="$("$GEN_KEYS" -p 2>/dev/null)"
 GOT="$(/usr/bin/plutil -extract SUPublicEDKey raw "$PLIST" 2>/dev/null)"
 [ "$GOT" = "$ED_PUB" ] || { echo "ERROR: SUPublicEDKey injection/verification failed."; exit 1; }
 echo "  SUPublicEDKey=$ED_PUB injected + verified in $PLIST"
+
+echo "== 1c/8  Sanity: verify the packaged app is NOT stale =="
+# Runs BEFORE signing/notarization so a stale package fails fast instead of
+# burning ~40 min of Apple notarization on a bad build.
+# (1) Bundled Python must byte-match source. The macOS resource phase copies
+#     modules/ with `ditto` in a basedOnDependencyAnalysis:false phase that a
+#     reused build can skip — that shipped a stale raymol_theme.py in 1.6.1.
+#     After a clean build the copy must be identical; assert it.
+BUNDLED_MODULES="$APP/Contents/Resources/modules"
+[ -d "$BUNDLED_MODULES" ] || { echo "ERROR: no bundled modules at $BUNDLED_MODULES"; exit 1; }
+MODDIFF="$LOGDIR/modules-diff.log"
+if ! diff -rq -x '__pycache__' -x '*.pyc' -x '.DS_Store' \
+     "$PYMOL_ROOT/modules" "$BUNDLED_MODULES" >"$MODDIFF" 2>&1; then
+  echo "ERROR: bundled Python (Contents/Resources/modules) does NOT match source"
+  echo "       modules/ — the package is STALE. Differences (also in $MODDIFF):"
+  cat "$MODDIFF"
+  exit 1
+fi
+echo "  bundled modules/ byte-match source (fresh)"
+# (2) The packaged app's version must agree with the version we name the DMG /
+#     appcast after. Caller pinned it → a mismatch is fatal; otherwise adopt the
+#     app's own version so the two can't silently diverge.
+APP_VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$PLIST" 2>/dev/null || true)"
+[ -n "$APP_VER" ] || { echo "ERROR: could not read CFBundleShortVersionString from $PLIST"; exit 1; }
+if [ "$VERSION_EXPLICIT" = 1 ]; then
+  [ "$VERSION" = "$APP_VER" ] || { echo "ERROR: packaging VERSION=$VERSION but app Info.plist is $APP_VER"; exit 1; }
+else
+  VERSION="$APP_VER"
+fi
+echo "  packaging version = $VERSION (matches app CFBundleShortVersionString)"
 
 echo "== 2/8  Sign every embedded Mach-O, deepest path first =="
 # Enumerate ALL real files, keep the Mach-O ones (incl. extensionless

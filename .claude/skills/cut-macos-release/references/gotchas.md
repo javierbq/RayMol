@@ -3,11 +3,15 @@
 Hard-won lessons from cutting v1.3–v1.5.x. Read the relevant entry when a step misbehaves.
 
 ## Stale `libpymol_core.a` — ships a binary missing C++ changes, no error
-`xcodebuild` and `make_dmg.sh` only **link** the prebuilt `build_macos_swiftui/libpymol_core.a`; they never rebuild it. If any C++/Metal file (`layer*`, `layerGraphics/`) changed since the last core build, the change is silently absent at runtime even though the build reports SUCCESS. This shipped a broken v1.3.0 (a merged fix was in the source but not the `.a`) → had to hotfix v1.3.1.
-**Cure:** run `swiftui/build_macos.sh` from the final release checkout before `make_dmg.sh`. Verify `stat -f '%Sm' build_macos_swiftui/libpymol_core.a` is newer than your last C++ edit / the release commit.
+Historically `xcodebuild`/`make_dmg.sh` only **linked** the prebuilt `build_macos_swiftui/libpymol_core.a` and never rebuilt it, so a changed C++/Metal file (`layer*`, `layerGraphics/`) was silently absent at runtime even though the build reported SUCCESS (shipped a broken v1.3.0 → hotfix v1.3.1). Worse, an *incremental* core can be **mtime-fresh but content-stale**: the generated settings table isn't reliably recompiled, so a changed default in `layer1/SettingInfo.h` ships wrong (`metal_outline` compiled `true` while source said `false` in 1.6.1) — an mtime check does NOT catch this.
+**Status:** `make_dmg.sh` step 0 now rebuilds the core **clean** (`CLEAN=1 build_macos.sh`) by default, which cures both the missing-change and the stale-default cases for the shipped DMG. Pass `SKIP_CORE_BUILD=1` to opt out (only if you just built it clean yourself). The **Step-2 RC** still uses a plain Debug `xcodebuild` that only links, so build the core yourself first — with `CLEAN=1` when a setting default changed.
+
+## Stale bundled Python — ships old `.py` under `Resources/modules`, no error
+The macOS resource phase copies `modules/` into the app with `ditto` in a `basedOnDependencyAnalysis:false` phase. Reusing `build_mac_release_dd` incrementally can skip it, so a changed bundled module ships stale while the build reports SUCCESS (1.6.1 shipped an old `raymol_theme.py` even though the source and a Debug build were fresh).
+**Status:** `make_dmg.sh` now clears `build_mac_release_dd/Build` and does a `clean build` (fresh compile + guaranteed re-copy), and step 1c asserts `Contents/Resources/modules` byte-matches source `modules/` (excluding `__pycache__`/`.pyc`/`.DS_Store`) **before** notarizing — a stale copy fails fast. Full build output goes to `build_dmg_logs/` (no longer `/dev/null`), so a failure or stale-skip is visible.
 
 ## Wrong checkout — built the wrong branch's code + version
-`make_dmg.sh`/`build_macos.sh`/`publish_release.sh` compute `PYMOL_ROOT` from the **script's own location**. On v1.4.1, running the release from the main repo (`cd /Users/jcastellanos/repos/RayMol`) while it was on a different branch built that branch's app at the old version — notarized fine, wrong bits. 
+`make_dmg.sh`/`build_macos.sh`/`publish_release.sh` compute `PYMOL_ROOT` from the **script's own location**. On v1.4.1, running the release from the main clone (`cd <main-repo-root>`) while it was on a different branch built that branch's app at the old version — notarized fine, wrong bits. 
 **Cure:** run the scripts by absolute path *inside the release worktree*, and always verify `build_dmg/RayMol.app/Contents/Info.plist` shows the intended version BEFORE publishing.
 
 ## Direct push to master is BLOCKED

@@ -13,7 +13,7 @@ The default rhythm is **prep → test → publish**: stage everything and build 
 
 1. **Never `git push` directly to `master`.** The repo convention (CLAUDE.md) forbids it and the harness is expected to block it. The bump, release notes, and appcast commit ALL go through a PR (`gh pr create` → `gh pr merge --merge`). **Tag** pushes (`git push origin vX.Y.Z`) are fine — only default-**branch** pushes are gated. "Release" from the user does NOT authorize a direct push.
 2. **Build from the exact tagged commit.** The scripts resolve their root from the script's own location, so building from the wrong directory or an un-synced worktree silently ships the wrong bits. After the PR merges, re-sync the worktree to `origin/master` and assert its `HEAD` equals the release tag's commit before building (Step 5).
-3. **Rebuild the C++ core, then the app (two stages).** `xcodebuild`/`make_dmg.sh` only *link* a prebuilt `libpymol_core.a`; they never rebuild it. If any C++/Metal file changed since the last core build, run `swiftui/build_macos.sh` first — and verify the `.a` is actually fresh — or you ship a binary missing those changes with no error (this shipped a broken v1.3.0).
+3. **The C++ core is a separate build from the app.** `make_dmg.sh` now rebuilds it **clean** automatically (step 0: `CLEAN=1 build_macos.sh`) and asserts the packaged bundle isn't stale, so the shipped DMG is self-protecting — pass `SKIP_CORE_BUILD=1` only if you just built it clean yourself. The catch is the **Step-2 RC**: that's a plain Debug `xcodebuild` which only *links* a prebuilt `libpymol_core.a`, so you must run `swiftui/build_macos.sh` yourself before it (add `CLEAN=1` if a setting *default* changed in `SettingInfo.h`) — skip that and the RC tests stale bits (a stale core shipped a broken v1.3.0; an incremental core also once compiled `metal_outline` defaulting `true` while source said `false`).
 4. **The build number must strictly increase past the last PUBLISHED build.** Sparkle compares updates on `CURRENT_PROJECT_VERSION`. Don't trust a hand-typed number: read it from the built app and compare against the live appcast's last `sparkle:version` (Step 6). A non-increasing build publishes cleanly but is silently never offered.
 5. **Verify before you publish, verify the live feed after.** Confirm the app inside the DMG is the intended version, notarized, stapled, and carries the Sparkle key — then, post-publish, confirm `/latest/download/appcast.xml` serves the new version.
 
@@ -23,7 +23,7 @@ See `references/gotchas.md` for the full failure-mode catalog and recovery recip
 
 - **Version:** `swiftui/project.yml` — `MARKETING_VERSION` (e.g. `1.5.1`) and `CURRENT_PROJECT_VERSION` (integer build). This is the xcodegen source of truth; `project.pbxproj` is regenerated from it and carries the same version strings across its build configs.
 - **Release notes:** `docs/release-notes/vX.Y.Z.md` — Markdown, spliced into the appcast and used as the GitHub release body. See `references/release-notes-style.md`.
-- **Scripts** (`swiftui/`): `build_macos.sh` (rebuild core `.a`, no env vars), `make_dmg.sh` (Release build → Developer-ID sign → notarize → DMG), `publish_release.sh` (EdDSA-sign → write `appcast.xml` → GitHub release).
+- **Scripts** (`swiftui/`): `build_macos.sh` (rebuild core `.a`; `CLEAN=1` wipes the build dir first — required when a setting default changed), `make_dmg.sh` (clean core → clean Release build → Developer-ID sign → notarize → DMG; auto-rebuilds the core clean + runs a stale-bundle sanity check, honors `SKIP_CORE_BUILD=1`, logs to `build_dmg_logs/`), `publish_release.sh` (EdDSA-sign → write `appcast.xml` → GitHub release).
 - **Live auto-update feed:** the release **asset** at `https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml` (NOT the tracked repo copy — that's optional bookkeeping that drifts).
 
 Version numbers below (`X.Y.Z`, build `N`) are placeholders — always read the live values, never assume the examples are current.
@@ -65,9 +65,10 @@ git worktree add -b release/X.Y.Z ../raymol-release-X.Y.Z origin/master
 cd ../raymol-release-X.Y.Z
 WT=$(pwd)                                  # reused in later steps
 ```
-A worktree doesn't get git-ignored deps/build dirs, so wire them up (target the real main-repo path on this machine):
+A worktree doesn't get git-ignored deps/build dirs, so wire them up. Resolve the main clone from git rather than hardcoding a path — this works on any machine/checkout:
 ```bash
-[ -e deps_macos ] || ln -s /Users/jcastellanos/repos/RayMol/deps_macos deps_macos
+MAIN_REPO=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)   # the main clone that owns the git-ignored deps
+[ -e deps_macos ] || ln -s "$MAIN_REPO/deps_macos" deps_macos
 test -e deps_macos/python-standalone/python/include/python3.13/Python.h && echo "deps OK"
 ```
 
@@ -81,7 +82,7 @@ Bump the version and write notes:
 
 Build the RC and open it (two-stage — non-negotiable #3). Prefer delegating to the `multiplatform-build-deployer` agent, instructing it to build **from `$WT`, not the main repo**:
 ```bash
-bash swiftui/build_macos.sh                             # rebuild core from THIS checkout
+bash swiftui/build_macos.sh                             # rebuild core from THIS checkout (CLEAN=1 if a setting default changed)
 ( cd swiftui && xcodegen generate )                     # regenerate pbxproj with the new version
 xcodebuild -project swiftui/PyMOLViewer.xcodeproj -scheme PyMOLViewer_macOS \
   -configuration Debug -derivedDataPath swiftui/build_mac_dd CODE_SIGNING_ALLOWED=NO build
@@ -113,7 +114,7 @@ git tag -a vX.Y.Z -m "release: RayMol X.Y.Z (build N) — <one-line>" origin/mas
 git push origin vX.Y.Z          # tag pushes are allowed
 ```
 
-## Step 5 — Re-sync, rebuild core, build the notarized DMG
+## Step 5 — Re-sync and build the notarized DMG
 
 Build **from the exact tagged commit** (non-negotiable #2). Re-sync the worktree and assert identity first:
 ```bash
@@ -124,17 +125,12 @@ git -C "$WT" reset --hard origin/master
 ```
 (The reset drops the local bump commit in favor of the merged version — same content — and re-drops the deps symlink only if it was tracked; it isn't, so it survives.)
 
-Rebuild the core from the final checkout and **verify the `.a` is fresh** (non-negotiable #3):
-```bash
-bash "$WT/swiftui/build_macos.sh"
-stat -f '%Sm' "$WT/build_macos_swiftui/libpymol_core.a"   # must be from THIS run, newer than the release commit
-```
-Then build the DMG (20–40 min — run in the background; absolute path so it can't build the wrong checkout):
+Build the DMG (20–40 min — run in the background; absolute path so it can't build the wrong checkout). `make_dmg.sh` now rebuilds the core **clean** itself (step 0), so no separate `build_macos.sh` run is needed — the shipped DMG can't link a stale core:
 ```bash
 DEVID="Developer ID Application: Javier Castellanos (VT99UQUQ89)" \
   VERSION=X.Y.Z NOTARY_PROFILE=RayMol-notary bash "$WT/swiftui/make_dmg.sh"
 ```
-`make_dmg.sh` on master builds from any checkout (pinned `-derivedDataPath`) and packages mount-free (`hdiutil makehybrid`). Output: `$WT/RayMol-X.Y.Z.dmg`. It locates Sparkle's `generate_keys` inside resolved SPM DerivedData; if it errors "not found", the RC build in Step 2 should have resolved it — otherwise run `xcodebuild -resolvePackageDependencies`.
+`make_dmg.sh` clean-builds `libpymol_core.a`, does a clean Release build, and — **before** the long notarization — asserts the bundled `Contents/Resources/modules` byte-match source `modules/` and the app's version equals `VERSION`, so a stale or mislabeled package fails fast instead of burning ~40 min. It builds from any checkout (pinned `-derivedDataPath`), packages mount-free (`hdiutil makehybrid`), and captures build output to `build_dmg_logs/` (not `/dev/null`). Output: `$WT/RayMol-X.Y.Z.dmg`. It locates Sparkle's `generate_keys` inside resolved SPM DerivedData; if it errors "not found", run `xcodebuild -resolvePackageDependencies`. (If you *just* built the core clean yourself, pass `SKIP_CORE_BUILD=1` to skip the rebuild.)
 
 ## Step 6 — Verify the DMG BEFORE publishing
 
