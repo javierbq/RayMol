@@ -2013,11 +2013,15 @@ final class PyMOLEngine: ObservableObject {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
         if (root["active"] as? Bool) == true, let g = GizmoGeometry(json: root) {
-            gizmo = g
-            activeMoveObject = g.obj
+            // Only republish when the projected geometry actually changed. This is
+            // called on every hover step (to keep the hit-test current against any
+            // view change), so a static view must not fire objectWillChange each
+            // move — that would churn every view observing the engine.
+            if gizmo != g { gizmo = g }
+            if activeMoveObject != g.obj { activeMoveObject = g.obj }
         } else {
-            gizmo = nil
-            activeMoveObject = nil
+            if gizmo != nil { gizmo = nil }
+            if activeMoveObject != nil { activeMoveObject = nil }
         }
     }
 

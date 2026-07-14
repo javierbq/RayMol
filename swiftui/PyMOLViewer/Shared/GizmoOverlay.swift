@@ -27,7 +27,7 @@ enum GizmoHandle: String, Equatable {
 }
 
 /// Projected gizmo geometry for one frame (all points in NDC).
-struct GizmoGeometry {
+struct GizmoGeometry: Equatable {
     var obj: String
     var center: CGPoint
     var axes: [String: CGPoint]      // "x"/"y"/"z" -> arrow tip
@@ -65,46 +65,114 @@ struct GizmoGeometry {
         return hypot(pp.x - (aa.x + t * dx), pp.y - (aa.y + t * dy))
     }
 
+    /// Height-normalized area of a projected ring polyline (shoelace, NDC x
+    /// compressed by aspect). A face-on ring has large area; an edge-on ring
+    /// collapses to a line (area ≈ 0). Used to break ring-crossing ties toward
+    /// the ring the user actually sees.
+    private func ringArea(_ poly: [CGPoint], _ aspect: CGFloat) -> CGFloat {
+        guard poly.count > 2 else { return 0 }
+        var s: CGFloat = 0
+        for i in 0..<(poly.count - 1) {
+            s += (poly[i].x * aspect) * poly[i + 1].y - (poly[i + 1].x * aspect) * poly[i].y
+        }
+        return abs(s) * 0.5
+    }
+
     /// Closest handle to an NDC point within hit thresholds, or nil. Arrows,
-    /// rings and the center are all live at once (nearest wins).
+    /// rings and the center all compete at once (nearest wins) — the center is a
+    /// normal candidate, NOT an absolute-priority disc.
     func hitTest(ndc p: CGPoint, aspect: CGFloat) -> GizmoHandle? {
         let knobR: CGFloat = 0.07      // arrow tip grab radius (height frac)
         let lineR: CGFloat = 0.03      // along-axis line grab distance
-        let centerR: CGFloat = 0.045   // free center handle
+        let centerR: CGFloat = 0.04    // free center handle
         let ringR: CGFloat = 0.04      // ring polyline grab distance
 
-        // The white center ball OWNS its core disc: any click/hover within centerR
-        // of the center is a free screen-plane drag, with ABSOLUTE priority. This
-        // is essential because all three axis lines pass THROUGH the center, so
-        // their distToSegment ≈ 0 for any off-by-a-pixel near-center click and
-        // would otherwise steal the grab — the reason the ball was unclickable
-        // except dead-center (a real click is never pixel-perfect). Axes/rings
-        // stay grabbable everywhere outside this disc, out to their tips.
-        if screenDist(p, center, aspect) <= centerR {
-            return .free
-        }
+        let cD = screenDist(p, center, aspect)
 
         var best: (GizmoHandle, CGFloat)?
         func consider(_ h: GizmoHandle, _ d: CGFloat, _ limit: CGFloat) {
             if d <= limit, best == nil || d < best!.1 { best = (h, d) }
         }
 
+        // Center free handle competes on distance instead of owning an absolute
+        // disc. Considered FIRST (with strict `<` below), so it still wins ties at
+        // dead-center, but a ring or arrow that is genuinely CLOSER under the
+        // cursor now wins — which is why the old absolute disc made handles
+        // unhittable: a near-camera axis arrow (foreshortened toward the center)
+        // and the near-center arc of an edge-on ring both projected inside the
+        // disc and were stolen as `.free`, so the element you hovered never
+        // highlighted or grabbed.
+        consider(.free, cD, centerR)
+
+        // Axis tips (always compete) + along-axis lines. The three lines all
+        // converge on the center, so their distToSegment ≈ 0 for any near-center
+        // point; only count a line hit OUTSIDE the center disc, else the
+        // overlapping lines would steal the free grab (the reason the ball was
+        // unclickable except dead-center).
         let axisMap: [String: GizmoHandle] = ["x": .x, "y": .y, "z": .z]
         for (k, h) in axisMap {
             guard let tip = axes[k] else { continue }
             consider(h, screenDist(p, tip, aspect), knobR)
-            consider(h, distToSegment(p, center, tip, aspect), lineR)
+            if cD > centerR {
+                consider(h, distToSegment(p, center, tip, aspect), lineR)
+            }
         }
-        let ringMap: [String: GizmoHandle] = ["x": .rx, "y": .ry, "z": .rz]
+
+        // Rotation rings. The three great circles cross at 6 screen points where
+        // their nearest segments tie; picking by iteration order made the grabbed
+        // rotation axis feel random. Break near-ties toward the more FACE-ON ring
+        // (larger projected area) — the prominent circle the user is aiming at,
+        // not whichever edge-on ring's tip happens to cross there.
+        let ringMap: [(String, GizmoHandle)] = [("x", .rx), ("y", .ry), ("z", .rz)]
+        var bestRing: (GizmoHandle, CGFloat, CGFloat)?   // handle, dist, area
         for (k, h) in ringMap {
             guard let poly = rings[k], poly.count > 1 else { continue }
             var dmin = CGFloat.greatestFiniteMagnitude
             for i in 0..<(poly.count - 1) {
                 dmin = min(dmin, distToSegment(p, poly[i], poly[i + 1], aspect))
             }
-            consider(h, dmin, ringR)
+            let area = ringArea(poly, aspect)
+            if bestRing == nil || dmin < bestRing!.1 - 0.01 ||
+               (abs(dmin - bestRing!.1) <= 0.01 && area > bestRing!.2) {
+                bestRing = (h, dmin, area)
+            }
         }
+        if let r = bestRing { consider(r.0, r.1, ringR) }
+
         return best?.0
+    }
+
+    /// Diagnostic variant of hitTest: returns the same result PLUS a
+    /// human-readable breakdown of the cursor NDC, every handle's cached NDC
+    /// position, its height-normalized distance and threshold, and the winner.
+    /// Used only under PYMOL_GIZMODEBUG to root-cause element-selection issues
+    /// (e.g. a cursor/geometry aspect mismatch that makes the ring un-hoverable).
+    func hitTestDebug(ndc p: CGPoint, aspect: CGFloat) -> (GizmoHandle?, String) {
+        let knobR: CGFloat = 0.07, lineR: CGFloat = 0.03, centerR: CGFloat = 0.04, ringR: CGFloat = 0.04
+        var L: [String] = []
+        L.append(String(format: "cursor=(% .4f,% .4f) aspect=%.4f obj=%@", p.x, p.y, aspect, obj))
+        L.append(String(format: "center=(% .4f,% .4f) dist=%.4f thr=%.3f%@",
+                        center.x, center.y, screenDist(p, center, aspect), centerR,
+                        screenDist(p, center, aspect) <= centerR ? " <=HIT" : ""))
+        for k in ["x", "y", "z"] {
+            if let tip = axes[k] {
+                let td = screenDist(p, tip, aspect), ld = distToSegment(p, center, tip, aspect)
+                L.append(String(format: "axis %@ tip=(% .4f,% .4f) tipD=%.4f(thr%.2f) lineD=%.4f(thr%.2f)%@",
+                                k, tip.x, tip.y, td, knobR, ld, lineR,
+                                (td <= knobR || ld <= lineR) ? " <=HIT" : ""))
+            } else { L.append("axis \(k) MISSING") }
+        }
+        for k in ["x", "y", "z"] {
+            if let poly = rings[k], poly.count > 1 {
+                var dmin = CGFloat.greatestFiniteMagnitude
+                for i in 0..<(poly.count - 1) { dmin = min(dmin, distToSegment(p, poly[i], poly[i + 1], aspect)) }
+                L.append(String(format: "ring r%@ segs=%d minD=%.4f thr=%.3f%@",
+                                k, poly.count, dmin, ringR, dmin <= ringR ? " <=HIT" : ""))
+            } else { L.append("ring r\(k) MISSING/empty") }
+        }
+        let hit = hitTest(ndc: p, aspect: aspect)
+        L.append("WINNER=\(hit?.rawValue ?? "nil")")
+        return (hit, L.joined(separator: "\n    "))
     }
 }
 
