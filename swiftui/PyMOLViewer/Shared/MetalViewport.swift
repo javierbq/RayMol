@@ -909,6 +909,13 @@ extension MetalViewport {
             panActive = false
             engine?.button(gestureButton, state: PYMOL_BUTTON_UP,
                            x: panCursorX, y: panCursorY, modifiers: gestureMods)
+            // A two-finger pan is a scene translation, so the 3D gizmo CGO moved on
+            // screen while its cached 2D hit-test geometry (engine.gizmo) did not.
+            // Re-emit it so a hover/grab after panning maps to the handle the user
+            // now sees. Matches the refresh already done on orbit mouseUp and
+            // pinch-end; no-op outside Move mode. (Clip drags don't move the gizmo,
+            // but the refresh is harmless and this is the shared settle point.)
+            engine?.refreshGizmo()
         }
 
         @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
@@ -947,6 +954,9 @@ extension MetalViewport {
                 engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
             case .ended, .cancelled:
                 lastRoll = 0
+                // The Z-roll rotated the view, so the gizmo moved on screen; resync
+                // its cached hit-test geometry (no-op outside Move mode).
+                engine?.refreshGizmo()
             default:
                 break
             }
