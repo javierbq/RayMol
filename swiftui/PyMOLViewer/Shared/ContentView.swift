@@ -110,15 +110,6 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
         case .display: return "slider.horizontal.3"
         }
     }
-    /// One-line description shown under the segmented tab picker.
-    var blurb: String {
-        switch self {
-        case .objects: return "Structures, representations & model playback"
-        case .scenes:  return "Store & recall saved views"
-        case .movie:   return "Camera keyframes, scenes & model clips"
-        case .display: return "Background, lighting & effects"
-        }
-    }
 }
 
 private let landscapePanelTabSpecs: [PanelTabSpec] = [
@@ -1346,7 +1337,7 @@ struct ContentView: View {
     // fill a sensible fraction rather than collapsing to nothing).
     private func inspectorPortraitHeight(total: CGFloat) -> CGFloat {
         let floor: CGFloat = 150
-        // Segmented picker + blurb row + divider sit above the tab content.
+        // Segmented picker + clear/selection row + divider sit above the tab content.
         let chrome: CGFloat = 96
         func hug(_ tag: Int, cap: CGFloat) -> CGFloat {
             let content = paneHeights[tag].map { $0 + chrome }
@@ -2475,11 +2466,7 @@ struct ContentView: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
             HStack(spacing: 8) {
-                Text(inspectorTab.blurb)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
                 // Clear selection + selection mode — here (shared chrome) so both
                 // are reachable from every tab.
                 ClearSelectionButton()
