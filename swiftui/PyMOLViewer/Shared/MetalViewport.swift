@@ -54,6 +54,13 @@ struct MetalViewport: NSViewRepresentable {
         let magnify = NSMagnificationGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleMagnification(_:)))
+        // Without a delegate AppKit treats magnify and rotate as mutually
+        // exclusive, so it arbitrates an ambiguous two-finger twist (which always
+        // carries an incidental pinch) to the first-added recognizer (magnify) and
+        // the twist never reaches handleRotationGesture — issue #192. The delegate
+        // below (shouldRecognizeSimultaneouslyWith) lets the pinch and twist
+        // components run together, mirroring the shipped iOS composition.
+        magnify.delegate = context.coordinator
         view.addGestureRecognizer(magnify)
 
         // Trackpad two-finger twist → Z-axis roll. Only acts while the engine's
@@ -63,6 +70,7 @@ struct MetalViewport: NSViewRepresentable {
         let rotate = NSRotationGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleRotationGesture(_:)))
+        rotate.delegate = context.coordinator
         view.addGestureRecognizer(rotate)
 
         // Click-debug harness (PYMOL_AUTOCLICK="ndcx,ndcy[;ndcx,ndcy...]"): after
@@ -239,6 +247,15 @@ struct MetalViewport: UIViewRepresentable {
         twoPan.delegate = context.coordinator
         pinch.delegate = context.coordinator
         rotation.delegate = context.coordinator
+        // #193: a two-finger drag whose fingers land slightly staggered was being
+        // grabbed by the one-finger `pan` (rotate) first, which cancelled `twoPan`
+        // so no translation ever occurred. Make the one-finger rotate defer until
+        // the multi-finger pans fail, so a 2-finger translate / 3-finger clip wins
+        // when a second/third finger is present. (twoPan likewise defers to clipPan
+        // at the 2→3 finger boundary so a clip isn't briefly seen as a pan.)
+        pan.require(toFail: twoPan)
+        pan.require(toFail: clipPan)
+        twoPan.require(toFail: clipPan)
 
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(pan)
@@ -1201,6 +1218,25 @@ extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
             if gr is UIPinchGestureRecognizer || gr is UIRotationGestureRecognizer { return true }
             if let p = gr as? UIPanGestureRecognizer { return p.maximumNumberOfTouches == 2 }
             return false
+        }
+        return isTwoFinger(g) && isTwoFinger(other)
+    }
+}
+#endif
+
+#if os(macOS)
+// Mirror the iOS composition on macOS: without a delegate, AppKit treats the
+// magnify (pinch→zoom) and rotate (two-finger twist→Z-roll) recognizers as
+// mutually exclusive, so a real two-finger twist (which always carries an
+// incidental pinch) is arbitrated to the first-added recognizer (magnify) and
+// the twist never reaches handleRotationGesture — issue #192. Letting the
+// two-finger pair recognize simultaneously routes the twist's rotation
+// component to the Z-roll while any pinch component still zooms.
+extension MetalViewport.Coordinator: NSGestureRecognizerDelegate {
+    func gestureRecognizer(_ g: NSGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: NSGestureRecognizer) -> Bool {
+        func isTwoFinger(_ gr: NSGestureRecognizer) -> Bool {
+            gr is NSMagnificationGestureRecognizer || gr is NSRotationGestureRecognizer
         }
         return isTwoFinger(g) && isTwoFinger(other)
     }
