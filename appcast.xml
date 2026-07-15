@@ -6,46 +6,47 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.6.1</title>
+      <title>RayMol 1.7.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.6.1
+## RayMol 1.7.0
 
-Selection and interaction polish: live hover highlighting, quicker object
-toggling, and a batch of selection, menu, and toolbar fixes.
+A feature release: a new Move mode for repositioning objects with an on-screen
+gizmo, one-line install and updates via Homebrew, and a batch of selection and
+picking correctness fixes.
+
+### Move mode
+- **Reposition an object with an on-screen gizmo.** *Mouse ▸ Move Objects* (⌃M)
+  enters Move mode: drag the 3D gizmo to translate or rotate a single object
+  rigidly, without disturbing the rest of the scene. The gizmo is sized to the
+  object, and the handle you hover or grab grows so it's clear what you've got.
+  It's non-destructive — leaving the mode returns you to normal camera control.
+- **Adjustable gizmo frame.** Set a custom origin and inclination for the gizmo
+  when you need to rotate about something other than the object's center.
 
 ### Selecting
-- **Hover pre-selection preview.** Move the cursor over the structure and the
-  atom, residue, or chain a click *would* select is highlighted live in a
-  distinct cyan tint, matching the current selection mode — nothing is committed
-  until you click. Toggle it with **Hover** in the mouse (Selecting) controls.
-- **Esc clears the selection.** Press Esc to clear the current selection from
-  anywhere — it works even while the command line has focus, and still dismisses
-  an open dialog first.
-- **One-click clear.** The selection chip's ⊗ now deletes the selection outright
-  — removing both the markers and the lingering `(sele)` entry — with a tooltip
-  to match.
+- **Fixed: the hover preview no longer disappears** once a selection is active —
+  live hover highlighting keeps working after you've selected something.
+- **Fixed: selection markers stay visible through the clip slab.** What *is*
+  selected is always shown, even when clipped away, while only what's actually
+  in view remains clickable.
+- **Fixed: the right residue is picked on multi-state (NMR/MD) objects** when
+  you're viewing a state other than the first — hover and click now match the
+  model on screen.
 
-### Objects
-- **Toggle a structure from anywhere on its row.** Click anywhere in an object's
-  row — not just the checkbox — to show or hide it, and the checkbox now flips
-  instantly with no lag.
+### Installing
+- **Install and update via Homebrew:** `brew install --cask javierbq/raymol/raymol`.
 
-### Camera
-- **Auto-lock focus from the right-click menu.** Right-click (or long-press) a
-  residue and choose **Auto-lock focus** to lock depth-of-field onto it.
-
-### Fixes
-- **Fixed: ⌘C copies the rendered image** to the clipboard again — it's a proper
-  menu command now (*File ▸ Copy Image to Clipboard*).
-- **Fixed: removed a stray empty button** from the top toolbar.
+### macOS app
+- **Smaller download.** The legacy Tk/Qt Python GUIs are no longer bundled in
+  the app.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Fri, 10 Jul 2026 21:43:11 +0000</pubDate>
-      <sparkle:version>18</sparkle:version>
-      <sparkle:shortVersionString>1.6.1</sparkle:shortVersionString>
+      <pubDate>Wed, 15 Jul 2026 18:36:49 +0000</pubDate>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.6.1/RayMol-1.6.1.dmg" type="application/octet-stream" sparkle:edSignature="Fe40/mb87xyVPWY/e7zbv4dW630EOLTw9LcZU/fCLLGAevVA3M+FegmWDCBIXKN4LZb+QFQoWRg1VUB+BevHBA==" length="57677989" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.7.0/RayMol-1.7.0.dmg" type="application/octet-stream" sparkle:edSignature="as1YaarjFYGTQ+WlHurDrMgu0xT1EeYHwb9NkxLuB4CyKGERibZhCzrTV8L5U1TPhfD+DbwBv59tKkIKTCgBCQ==" length="57951983" />
     </item>
   </channel>
 </rss>
