@@ -1068,7 +1068,12 @@ struct ContentView: View {
                 // Measurement bar docks in the top safe area while active. (The
                 // sequence strip moved BELOW the viewport — see iPhoneLayout.)
                 if engine.measureMode != nil { measureOverlay }
-                else if engine.interactionMode == .move { moveOverlay }
+                // iPhone (compact width — both portrait and landscape) keeps the
+                // Move-mode bar docked in the top safe area; the iPad mac-style
+                // layout (regular width) instead floats it over the viewport TOP
+                // (below terminal + sequence), mirroring macOS — see
+                // iPadMacStyleLayout's viewportView overlay.
+                else if engine.interactionMode == .move && hSize == .compact { moveOverlay }
             }
             .navigationTitle(hSize == .compact ? "" : "RayMol")
             .navigationBarTitleDisplayMode(.inline)
@@ -1567,6 +1572,11 @@ struct ContentView: View {
                     // viewport's top edge (always present) — mirrors the bottom tongue.
                     topPaneRail()
                     viewportView
+                        // Move-mode gizmo controls float over the viewport top
+                        // (below terminal + sequence), mirroring macOS.
+                        .overlay(alignment: .top) {
+                            if engine.interactionMode == .move { moveOverlay }
+                        }
                     // Expanded timeline docks full-width under the viewport (the
                     // Movie tab's Expand button toggles engine.timelineMode). Its own
                     // ✕ Close collapses it; independent of the inspector tab.
@@ -1616,6 +1626,11 @@ struct ContentView: View {
                 topPaneRail()
                 viewportView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Move-mode gizmo controls float over the viewport top
+                    // (below terminal + sequence), mirroring macOS.
+                    .overlay(alignment: .top) {
+                        if engine.interactionMode == .move { moveOverlay }
+                    }
                 // NOTE: the expanded timeline dock is LANDSCAPE-only. In portrait the
                 // timeline is reached via the inspector's Movie tab (below); the
                 // Expand button + nav-bar toggle are disabled here (isPadPortrait) and
