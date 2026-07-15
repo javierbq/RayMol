@@ -6,9 +6,9 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.7.0</title>
+      <title>RayMol 1.7.1</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.7.0
+## RayMol 1.7.1
 
 A feature release: a new Move mode for repositioning objects with an on-screen
 gizmo, one-line install and updates via Homebrew, and a batch of selection and
@@ -42,11 +42,11 @@ picking correctness fixes.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Wed, 15 Jul 2026 18:36:49 +0000</pubDate>
-      <sparkle:version>19</sparkle:version>
-      <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
+      <pubDate>Wed, 15 Jul 2026 19:59:05 +0000</pubDate>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>1.7.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.7.0/RayMol-1.7.0.dmg" type="application/octet-stream" sparkle:edSignature="as1YaarjFYGTQ+WlHurDrMgu0xT1EeYHwb9NkxLuB4CyKGERibZhCzrTV8L5U1TPhfD+DbwBv59tKkIKTCgBCQ==" length="57951983" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.7.1/RayMol-1.7.1.dmg" type="application/octet-stream" sparkle:edSignature="Ei6LoEAvqkGtuUiO4T4ZDA47ABAI4QSv2m6giICZwN09kn95+026/q+yB9kEGbF2TrtXFb8bHOuZ9ZEJ5Pa6Dw==" length="57952380" />
     </item>
   </channel>
 </rss>
