@@ -272,6 +272,9 @@ targets:
           case "$PLATFORM_NAME" in iphone*) ;; *) exit 0 ;; esac
           set -e
           ditto "$SRCROOT/../modules" "$CODESIGNING_FOLDER_PATH/modules"
+          # pmg_tk/pmg_qt are the classic Tk/Qt desktop GUIs — dead weight here,
+          # the native Metal/SwiftUI app never imports either.
+          rm -rf "$CODESIGNING_FOLDER_PATH/modules/pmg_tk" "$CODESIGNING_FOLDER_PATH/modules/pmg_qt"
           ditto "$SRCROOT/../data" "$CODESIGNING_FOLDER_PATH/data"
       # macOS runtime packaging: payload under Contents/Resources (so the shared
       # bridge's config.home=<resourcePath>/python resolves to it). Guarded to
@@ -300,6 +303,9 @@ targets:
           #  scheme — strip the token (no functional effect on URL parsing we do).
           /usr/bin/sed -i '' "s/, 'itms-services'//g" "$PYLIB"/python*/urllib/parse.py
           ditto "$SRCROOT/../modules" "$RES/modules"
+          # pmg_tk/pmg_qt are the classic Tk/Qt desktop GUIs — dead weight here,
+          # the native Metal/SwiftUI app never imports either.
+          rm -rf "$RES/modules/pmg_tk" "$RES/modules/pmg_qt"
           # Mac App Store build: drop the MCP server package (compiled out of the app).
           case "${SWIFT_ACTIVE_COMPILATION_CONDITIONS:-}" in *RAYMOL_MAS_RESTRICTED*) rm -rf "$RES/modules/raymol_mcp" ;; esac
           ditto "$SRCROOT/../data" "$RES/data"

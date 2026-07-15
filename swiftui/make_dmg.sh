@@ -168,7 +168,10 @@ echo "== 1c/8  Sanity: verify the packaged app is NOT stale =="
 BUNDLED_MODULES="$APP/Contents/Resources/modules"
 [ -d "$BUNDLED_MODULES" ] || { echo "ERROR: no bundled modules at $BUNDLED_MODULES"; exit 1; }
 MODDIFF="$LOGDIR/modules-diff.log"
-if ! diff -rq -x '__pycache__' -x '*.pyc' -x '.DS_Store' \
+# pmg_tk/pmg_qt are intentionally pruned from the bundle (project.yml's resource
+# phase) but stay in source — exclude them here too, or every release fails this
+# check on that deliberate divergence.
+if ! diff -rq -x '__pycache__' -x '*.pyc' -x '.DS_Store' -x pmg_tk -x pmg_qt \
      "$PYMOL_ROOT/modules" "$BUNDLED_MODULES" >"$MODDIFF" 2>&1; then
   echo "ERROR: bundled Python (Contents/Resources/modules) does NOT match source"
   echo "       modules/ — the package is STALE. Differences (also in $MODDIFF):"
