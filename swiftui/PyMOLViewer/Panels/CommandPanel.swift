@@ -124,6 +124,9 @@ private struct LogView: View {
                 .padding(4)
             }
             .background(bgColor)
+            // Swipe the log down to dismiss the keyboard (and peek at output
+            // while typing) — complements the command field's Done button.
+            .scrollDismissesKeyboard(.interactively)
             // Initial content (the startup banner) is present before this view
             // appears, so no count change fires for it — scroll on appear too.
             .onAppear { scrollToBottom(proxy, animated: false) }
@@ -293,6 +296,16 @@ struct CommandTextField: View {
                 }
                 .font(.system(size: fontSize, design: .monospaced))
                 .foregroundColor(textColor)
+                // Software keyboards have no dismiss key, and .onSubmit re-arms
+                // focus for the next command, so without this there was no way to
+                // close the keyboard. A "Done" accessory bar (pinned above the
+                // keyboard) resigns focus and drops it.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { focused = false }
+                    }
+                }
 
             Button {
                 if let c = onComplete(text), c != text { text = c }
