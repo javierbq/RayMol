@@ -423,18 +423,31 @@ _IDENTITY_TTT = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
 
 
 def _sync_gizmo_ttt():
-    """Match the gizmo's TTT to the active object's so it moves/tumbles with it.
+    """Match the gizmo CGO's transform to the active object's so it moves/tumbles
+    with it AND stays aligned with the 2D hit-test geometry.
 
-    ALWAYS set the gizmo TTT explicitly — identity when the target has none.
-    We must NOT fall back to matrix_reset here: matrix_reset(mode=1) does not
-    clear a CGO object's TTT (verified on this build), so when you switched the
-    target to an UN-moved object the gizmo kept the PREVIOUS (moved) target's
-    TTT and rendered off in empty space, detached from every molecule."""
+    Use get_object_MATRIX, not get_object_ttt. In this embedded core the two
+    DIVERGE after a gizmo rotation about an off-center origin (cmd.rotate
+    object=, origin=com): they keep the same rotation but accumulate different
+    translations. get_object_matrix is the transform the molecule actually
+    RENDERS at (get_model bakes it; metal_pick projects it and picks correctly),
+    and _emit/_displayed_frame projects the hit geometry through it too — so
+    riding get_object_ttt here made the rendered gizmo drift off the molecule
+    (and off its own hit-targets) once you dragged it, which read as "the gizmo
+    ring/element hover is broken" (you hovered the visible gizmo but the
+    hit-geometry was elsewhere). Matching get_object_matrix keeps the CGO, the
+    molecule, and the hit-test all co-located. Verified live via MCP: matrix
+    projection == get_model COM projection == emit center.
+
+    ALWAYS set it explicitly — identity when the target has none — never fall
+    back to matrix_reset: matrix_reset(mode=1) does not clear a CGO object's
+    transform (verified on this build), so a stale (moved) transform would
+    otherwise linger when switching to an un-moved target."""
     if not _object_exists(_GIZMO_OBJ) or not _object_exists(_active):
         return
     try:
-        ttt = cmd.get_object_ttt(_active)
-        cmd.set_object_ttt(_GIZMO_OBJ, list(ttt) if ttt else list(_IDENTITY_TTT))
+        m = cmd.get_object_matrix(_active)
+        cmd.set_object_ttt(_GIZMO_OBJ, list(m) if m else list(_IDENTITY_TTT))
     except Exception as e:
         print('METALMOVE_ERR:' + str(e))
 

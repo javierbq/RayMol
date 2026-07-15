@@ -152,9 +152,20 @@ final class PyMOLEngine: ObservableObject {
         didSet {
             guard interactionMode == .move, oldValue != hoveredHandle else { return }
             runPython("from pymol import metal_move as _mm\n_mm.set_hover('\(hoveredHandle?.pyName ?? "")')")
+            // set_hover rebuilt the gizmo CGO with the new handle emphasized, but a
+            // static scene's on-demand draw gate can consume the redisplay flag
+            // before the next tick and leave the highlight unshown (the "hover does
+            // nothing" symptom). Force one repaint so the emphasis actually appears.
+            requestViewportRedraw()
         }
     }
     @Published var gizmo: GizmoGeometry? = nil
+    // Debug bullseye (PYMOL_BULLSEYE=1): the live cursor position in gizmo NDC,
+    // published on each move-mode hover so the on-screen overlay can draw a target
+    // at the cursor next to the hit-test's handle markers — the visual twin of the
+    // PYMOL_GIZMODEBUG log, for spotting cursor↔target mismatches.
+    @Published var bullseyeCursorNDC: CGPoint? = nil
+    static let bullseyeEnabled = ProcessInfo.processInfo.environment["PYMOL_BULLSEYE"] != nil
     // Hover pre-selection preview (issue #165, macOS): when true, moving the
     // pointer over the viewport highlights what a click WOULD select (in a
     // distinct light-cyan) without committing to 'sele'. User-toggleable in the
@@ -371,6 +382,18 @@ final class PyMOLEngine: ObservableObject {
         if let c = ProcessInfo.processInfo.environment["PYMOL_AUTOCMD"] {
             for one in c.split(separator: ";") {
                 runCommand(one.trimmingCharacters(in: .whitespaces))
+            }
+        }
+
+        // Blank-on-launch guard: the on-demand draw gate can leave the very first
+        // frame — where deferred rep geometry (cartoon/surface) is still being
+        // built — unshown, so the scene stays blank until the user interacts
+        // (loading a second object or orbiting "fixed" it). One forced frame builds
+        // the geometry; the follow-up forced frames actually paint it. Cheap
+        // (a handful of extra frames at startup) and harmless once rendered.
+        for delay in [0.15, 0.35, 0.6, 1.0, 1.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.requestViewportRedraw()
             }
         }
 

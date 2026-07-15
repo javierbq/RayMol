@@ -397,6 +397,7 @@ extension MetalViewport {
 
         private var wasSuppressed = false
         private var hasRenderedOnce = false
+        private var moveSyncCounter = 0
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
@@ -405,6 +406,26 @@ extension MetalViewport {
             // render meanwhile so we never race it; the exporter restores the
             // scene + clears this flag when done, and the next tick redraws. (#58 L-59)
             if engine.exportRenderActive { return }
+            // Keep the Move gizmo's 2D hit-geometry (+ debug bullseye overlay)
+            // continuously in sync with the camera — not just on mouse-move — so a
+            // cursor parked after an orbit/zoom still sees current targets and the
+            // next grab maps to the visible gizmo. Throttled to ~15 Hz; readGizmo
+            // republishes only when the projection actually moved (no churn on a
+            // static view). Skipped WHILE dragging a handle: metal_move omits the
+            // per-tick emit there and the CGO already tracks via its synced TTT.
+            if engine.interactionMode == .move {
+                #if os(macOS)
+                let draggingGizmo = moveHandle != nil
+                #else
+                let draggingGizmo = panMoveHandle != nil
+                #endif
+                if !draggingGizmo {
+                    moveSyncCounter += 1
+                    if moveSyncCounter >= 8 { moveSyncCounter = 0; engine.refreshGizmo() }
+                } else {
+                    moveSyncCounter = 0
+                }
+            }
             // Panel-resize drag: while suppressed, freeze the drawable size so the
             // renderer doesn't reallocate offscreen targets on every frame (choppy
             // + OOM). On resume, snap the drawable to the current bounds ONCE,
@@ -567,8 +588,11 @@ extension MetalViewport {
                 // projection actually moved — makes hover + the subsequent grab
                 // always map to the handle the user sees. Uses the hover's own aspect
                 // so the emitted geometry and the cursor share one aspect.
-                if let (_, _, a) = gizmoNDC(in: view, at: loc) {
+                if let (nx, ny, a) = gizmoNDC(in: view, at: loc) {
                     engine?.refreshGizmo(aspect: a)
+                    if PyMOLEngine.bullseyeEnabled {
+                        engine?.bullseyeCursorNDC = CGPoint(x: CGFloat(nx), y: CGFloat(ny))
+                    }
                 }
                 let hit = gizmoHit(in: view, at: loc)
                 if engine?.hoveredHandle != hit { engine?.hoveredHandle = hit }

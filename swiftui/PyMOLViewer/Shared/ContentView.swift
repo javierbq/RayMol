@@ -619,6 +619,15 @@ struct ContentView: View {
             // Pick-debug crosshair: marks exactly where the last click landed,
             // so a screenshot shows click-vs-selection offset.
             .overlay { debugClickMarker }
+            // Debug bullseye (PYMOL_BULLSEYE=1): draws the gizmo hit-test targets +
+            // a cursor bullseye so gizmo hover/click↔handle mismatches are visible.
+            .overlay {
+                if PyMOLEngine.bullseyeEnabled && engine.interactionMode == .move {
+                    GizmoBullseyeOverlay(gizmo: engine.gizmo,
+                                         cursorNDC: engine.bullseyeCursorNDC,
+                                         hovered: engine.hoveredHandle)
+                }
+            }
             // Mouse-mode legend as a compact floating card at the bottom-trailing
             // corner, so it's reachable even when the right column is collapsed
             // (where MousePanel used to live). Minimizable to free up the view.
@@ -1830,6 +1839,15 @@ struct ContentView: View {
                 Text("There’s no animation yet. Open the Movie tab, pick a motion (e.g. Camera → Roll) and tap Build & Play — then Export Movie will render it.")
             }
             .overlay { if engine.objects.isEmpty && !showThemeStudio && !hasRestoreSnapshot { emptyStateView } }
+            // Debug bullseye (PYMOL_BULLSEYE=1): draws the gizmo hit-test targets +
+            // a cursor bullseye so click↔selection mismatches are visible on screen.
+            .overlay {
+                if PyMOLEngine.bullseyeEnabled && engine.interactionMode == .move {
+                    GizmoBullseyeOverlay(gizmo: engine.gizmo,
+                                         cursorNDC: engine.bullseyeCursorNDC,
+                                         hovered: engine.hoveredHandle)
+                }
+            }
             // Cold-launch restore: cover the viewport with the last-scene snapshot
             // until the reloaded session has rendered (see restoreAutosaveIfAvailable).
             .overlay {

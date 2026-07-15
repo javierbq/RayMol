@@ -11,6 +11,7 @@
 
 import Foundation
 import CoreGraphics
+import SwiftUI
 
 enum InteractionMode {
     case viewing
@@ -82,10 +83,23 @@ struct GizmoGeometry: Equatable {
     /// rings and the center all compete at once (nearest wins) — the center is a
     /// normal candidate, NOT an absolute-priority disc.
     func hitTest(ndc p: CGPoint, aspect: CGFloat) -> GizmoHandle? {
-        let knobR: CGFloat = 0.07      // arrow tip grab radius (height frac)
-        let lineR: CGFloat = 0.03      // along-axis line grab distance
-        let centerR: CGFloat = 0.04    // free center handle
-        let ringR: CGFloat = 0.04      // ring polyline grab distance
+        // Grab bands scale with the gizmo's on-screen size. A fixed NDC band is too
+        // tight when zoomed in — there the rendered ring/arrow TUBES are visibly
+        // thick (their width grows with the projected radius), so a hover that
+        // clearly lands on the tube can still sit outside a small fixed band and
+        // read as a miss (the "hover does nothing" symptom). Sizing the bands off
+        // the projected gizmo radius keeps grabbing forgiving at every zoom, while
+        // the floors keep it usable when the gizmo is small/far.
+        var scale: CGFloat = 0
+        for (_, poly) in rings { for p in poly { scale = max(scale, screenDist(p, center, aspect)) } }
+        if scale <= 1e-6 {
+            for (_, tip) in axes { scale = max(scale, screenDist(tip, center, aspect)) }
+        }
+        if scale <= 1e-6 { scale = 0.4 }
+        let knobR: CGFloat = max(0.10, 0.20 * scale)   // arrow tip grab radius
+        let lineR: CGFloat = max(0.05, 0.09 * scale)   // along-axis line grab distance
+        let centerR: CGFloat = max(0.04, 0.07 * scale) // free center handle
+        let ringR: CGFloat = max(0.06, 0.16 * scale)   // ring polyline grab distance
 
         let cD = screenDist(p, center, aspect)
 
@@ -173,6 +187,78 @@ struct GizmoGeometry: Equatable {
         let hit = hitTest(ndc: p, aspect: aspect)
         L.append("WINNER=\(hit?.rawValue ?? "nil")")
         return (hit, L.joined(separator: "\n    "))
+    }
+}
+
+// MARK: - Debug bullseye overlay (PYMOL_BULLSEYE=1)
+
+/// Draws the gizmo's HIT-TEST targets (the projected geometry the hit-test
+/// actually uses) plus a bullseye at the live cursor, over the viewport. It's the
+/// visual twin of the PYMOL_GIZMODEBUG log: if the cursor bullseye sits on a
+/// rendered ring/arrow but the nearest target markers are elsewhere — or the
+/// "hover → …" label reads none while you're on an element — the mismatch is
+/// visible immediately. Purely diagnostic, no hit-testing, never intercepts input.
+struct GizmoBullseyeOverlay: View {
+    let gizmo: GizmoGeometry?
+    let cursorNDC: CGPoint?
+    let hovered: GizmoHandle?
+
+    // NDC (bottom-left origin, +y up) -> overlay points (top-left origin, +y down).
+    private func toPx(_ n: CGPoint, _ s: CGSize) -> CGPoint {
+        CGPoint(x: (n.x + 1) / 2 * s.width, y: (1 - n.y) / 2 * s.height)
+    }
+    private func color(_ h: GizmoHandle) -> Color {
+        switch h {
+        case .x, .rx: return .red
+        case .y, .ry: return .green
+        case .z, .rz: return .blue
+        case .free:   return .white
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let s = geo.size
+            Canvas { ctx, _ in
+                if let g = gizmo {
+                    let ringMap: [(String, GizmoHandle)] = [("x", .rx), ("y", .ry), ("z", .rz)]
+                    for (k, h) in ringMap {
+                        guard let poly = g.rings[k] else { continue }
+                        let c = color(h); let on = hovered == h
+                        for (i, p) in poly.enumerated() where i % 2 == 0 {
+                            let q = toPx(p, s); let r: CGFloat = on ? 3 : 1.5
+                            ctx.fill(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: 2 * r, height: 2 * r)),
+                                     with: .color(c.opacity(on ? 1 : 0.85)))
+                        }
+                    }
+                    let axisMap: [(String, GizmoHandle)] = [("x", .x), ("y", .y), ("z", .z)]
+                    for (k, h) in axisMap {
+                        guard let tip = g.axes[k] else { continue }
+                        let q = toPx(tip, s); let r: CGFloat = hovered == h ? 7 : 4.5
+                        ctx.stroke(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: 2 * r, height: 2 * r)),
+                                   with: .color(color(h)), lineWidth: 2)
+                    }
+                    let cc = toPx(g.center, s); let cr: CGFloat = hovered == .free ? 8 : 5
+                    ctx.stroke(Path(ellipseIn: CGRect(x: cc.x - cr, y: cc.y - cr, width: 2 * cr, height: 2 * cr)),
+                               with: .color(.white), lineWidth: 2)
+                }
+                if let n = cursorNDC {
+                    let p = toPx(n, s)
+                    for rr in [4.0, 9.0, 14.0] as [CGFloat] {
+                        ctx.stroke(Path(ellipseIn: CGRect(x: p.x - rr, y: p.y - rr, width: 2 * rr, height: 2 * rr)),
+                                   with: .color(.yellow), lineWidth: 1)
+                    }
+                    var cross = Path()
+                    cross.move(to: CGPoint(x: p.x - 20, y: p.y)); cross.addLine(to: CGPoint(x: p.x + 20, y: p.y))
+                    cross.move(to: CGPoint(x: p.x, y: p.y - 20)); cross.addLine(to: CGPoint(x: p.x, y: p.y + 20))
+                    ctx.stroke(cross, with: .color(.yellow), lineWidth: 1)
+                    ctx.draw(Text("hover → \(hovered?.rawValue ?? "none")")
+                                .font(.system(size: 11, weight: .bold)).foregroundColor(.yellow),
+                             at: CGPoint(x: p.x + 30, y: p.y - 14), anchor: .leading)
+                }
+            }
+            .allowsHitTesting(false)
+        }
     }
 }
 
