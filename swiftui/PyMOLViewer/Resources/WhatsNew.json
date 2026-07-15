@@ -1,5 +1,20 @@
 [
   {
+    "version": "1.7.0",
+    "pages": [
+      {
+        "title": "Move mode",
+        "body": "Reposition a single object without disturbing the rest of the scene. Turn it on from Mouse ▸ Move Objects (⌃M), then drag the on-screen gizmo — spin a ring to rotate, grab the center to slide it. Rigid-body and fully non-destructive.",
+        "imageName": "whatsnew-170-move"
+      },
+      {
+        "title": "Install with Homebrew",
+        "body": "RayMol is now a Homebrew cask — install it and keep it up to date with one command: brew install --cask javierbq/raymol/raymol.",
+        "imageName": "whatsnew-170-homebrew"
+      }
+    ]
+  },
+  {
     "version": "1.6.1",
     "pages": [
       {
