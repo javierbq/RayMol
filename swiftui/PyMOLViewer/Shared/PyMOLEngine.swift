@@ -1025,6 +1025,16 @@ final class PyMOLEngine: ObservableObject {
                 + "        _sc.set_view(_R + list(_v[16:19]) + list(_v[19:22]) + list(_v[22:24]) + [_v[24]])\n"
                 + "except Exception:\n"
                 + "    pass")
+            // A .pse saved while in Move mode bakes in the transient move gizmo
+            // (the "_move_gizmo" CGO). interactionMode is NOT persisted, so on
+            // cold-launch restore / manual open we'd otherwise show a stray gizmo
+            // with no active mode (and its "_"-prefixed name hides it from the
+            // object panel, so it can't be removed). Strip it unless we're
+            // currently in Move mode — the guard avoids deleting a live gizmo
+            // when a file is opened mid-move. cleanup() is idempotent.
+            if interactionMode != .move {
+                runPython("from pymol import metal_move as _mm\n_mm.cleanup()")
+            }
         } else if lower.hasPrefix("load ") || lower.hasPrefix("fetch ")
                     || lower.hasPrefix("reinitialize") {
             setLetterboxAspect(0)   // new non-session content → fill the window
