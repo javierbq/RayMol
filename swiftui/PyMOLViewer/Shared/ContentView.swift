@@ -1487,7 +1487,7 @@ struct ContentView: View {
     }
 
     // Floating toolbar pills over the viewer in landscape (the nav bar is hidden
-    // there). leading = Open · Measure (top-left); trailing = Full-screen · Export
+    // there). leading = Open · Measure · Move (top-left); trailing = Full-screen · Export
     // (top-right, at the viewer/panel boundary).
     @ViewBuilder
     private func landscapeViewerControls(leading: Bool) -> some View {
@@ -1504,6 +1504,16 @@ struct ContentView: View {
                         .frame(width: 42, height: 34)
                 }
                 .accessibilityLabel("Measure")
+                // Move-mode toggle — mirrors the portrait nav-bar iosMoveToolbar
+                // (was missing from the landscape floating pill).
+                Button {
+                    engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
+                } label: {
+                    Image(systemName: "move.3d")
+                        .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
+                        .frame(width: 42, height: 34)
+                }
+                .accessibilityLabel("Move objects")
             } else {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { iosFullScreen.toggle() }
