@@ -437,6 +437,26 @@ extension PyMOLEngine {
                     red: rgb.count > 0 ? rgb[0] : 0.8,
                     green: rgb.count > 1 ? rgb[1] : 0.8,
                     blue: rgb.count > 2 ? rgb[2] : 0.8)
+                // HETATM groups (ligands, ions, waters) are tagged 'het' by
+                // appkit_sequence. They have no 1-letter code, so spread the
+                // 3-letter resn (SY7, EDO, HOH…) across adjacent columns like
+                // PyMOL — every cell shares one selKey (obj/chain/resi), so a
+                // click on any character selects the whole group (issue #201).
+                if t.count >= 5 && t[4] == "het" {
+                    let letters = resn.isEmpty ? ["?"] : resn.map { String($0) }
+                    for (j, ch) in letters.enumerated() {
+                        residues.append(SequenceResidue(
+                            id: "\(o.name)/\(chain)/\(resi)/\(i)/\(j)",
+                            objectName: o.name,
+                            chain: chain,
+                            oneLetter: ch,
+                            resi: resi,
+                            resn: resn,
+                            color: color
+                        ))
+                    }
+                    continue
+                }
                 residues.append(SequenceResidue(
                     id: "\(o.name)/\(chain)/\(resi)/\(i)",
                     objectName: o.name,
