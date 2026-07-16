@@ -572,14 +572,16 @@ private let baseActionMenuItems: [ActionMenuItem] = [
 private func actionMenuItems(isSelection: Bool) -> [ActionMenuItem] {
     guard isSelection else { return baseActionMenuItems }
     var items = baseActionMenuItems
-    // Insert just above the trailing "Delete" so the two destructive actions sit
-    // together (PyMOL orders them "remove atoms" then "delete selection").
+    // Place "Remove Atoms" in the cleanup section right after "Remove Waters" —
+    // both strip atoms out of the parent object, so they belong together next to
+    // Hydrogens. This is distinct from the trailing "Delete", which only drops
+    // the selection marker and leaves every atom in place.
     let removeAtoms = ActionMenuItem.action(label: "Remove Atoms", key: "remove_atoms")
-    if let deleteIdx = items.firstIndex(where: {
-        if case .action(_, "delete") = $0 { return true }
+    if let watersIdx = items.firstIndex(where: {
+        if case .action(_, "remove_waters") = $0 { return true }
         return false
     }) {
-        items.insert(removeAtoms, at: deleteIdx)
+        items.insert(removeAtoms, at: watersIdx + 1)
     } else {
         items.append(removeAtoms)
     }
