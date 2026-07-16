@@ -1712,11 +1712,13 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isShown ? "Hide panel" : "Show panel")
-        // Center the little tab within a thin full-width / full-height strip.
+        // Center the little tab within a thin full-width / full-height strip. Fill
+        // the strip with the panel chrome (not raw black) so the seam beside/under
+        // the viewport reads as docked-panel chrome, not a black border.
         if axis == .horizontal {
-            tab.frame(maxWidth: .infinity).padding(.vertical, 1)
+            tab.frame(maxWidth: .infinity).padding(.vertical, 1).background(themeChromeBg)
         } else {
-            tab.frame(maxHeight: .infinity).padding(.horizontal, 1)
+            tab.frame(maxHeight: .infinity).padding(.horizontal, 1).background(themeChromeBg)
         }
     }
 
@@ -1732,12 +1734,17 @@ struct ContentView: View {
             Spacer(minLength: 0)
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
             railTongue(icon: "textformat.abc", label: "Seq", shown: $engine.sequenceVisible)
+            railToggle(icon: "move.3d", label: "Move",
+                       isOn: engine.interactionMode == .move,
+                       action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 18)
-        // No full-width bar fill — just the two floating pills, so the top stays slim
-        // (matches the bottom tongue, which is likewise a small tab on transparent).
+        // Fill the seam rail with the panel chrome so it reads as a continuation of
+        // the docked console/sequence panels rather than exposing the black system
+        // background (which looked like a black border cutting across the molecule).
+        .background(themeChromeBg)
     }
 
     private func railTongue(icon: String, label: String, shown: Binding<Bool>) -> some View {
@@ -1763,6 +1770,28 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(label) pane, \(on ? "shown" : "hidden")")
+    }
+
+    // Same capsule as railTongue but chevron-less, driven by a Bool + action (for
+    // mode toggles like Move) rather than a pane show/hide Binding. iPad rail only.
+    private func railToggle(icon: String, label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+                Text(label).font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(isOn ? .white : dividerPillColor)
+            .padding(.horizontal, 9)
+            .frame(height: 16)
+            .background(
+                Capsule()
+                    .fill(isOn ? TimelineTheme.accent : Color.clear)
+                    .overlay(Capsule().strokeBorder(isOn ? Color.clear : dividerPillColor.opacity(0.6), lineWidth: 1))
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Move mode, \(isOn ? "on" : "off")")
     }
 
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
@@ -1804,13 +1833,17 @@ struct ContentView: View {
     // Move-mode toggle (iOS). Mirrors the measure ruler toggle.
     private var iosMoveToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
-            Button {
-                engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
-            } label: {
-                Image(systemName: "move.3d")
-                    .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
+            // iPhone (compact) only — iPad has the Move pill in the top rail
+            // (topPaneRail); iPhone landscape floats its own Move control.
+            if hSize == .compact {
+                Button {
+                    engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
+                } label: {
+                    Image(systemName: "move.3d")
+                        .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
+                }
+                .accessibilityLabel("Move objects")
             }
-            .accessibilityLabel("Move objects")
         }
     }
 
