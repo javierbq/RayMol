@@ -446,7 +446,7 @@ private indirect enum ActionMenuItem {
     case alignToSelection(label: String)
 }
 
-private let actionMenuItems: [ActionMenuItem] = [
+private let baseActionMenuItems: [ActionMenuItem] = [
     .action(label: "Zoom",               key: "zoom"),
     .action(label: "Orient",             key: "orient"),
     .action(label: "Center",             key: "center"),
@@ -560,6 +560,32 @@ private let actionMenuItems: [ActionMenuItem] = [
     .action(label: "Delete",     key: "delete"),
 ]
 
+/// The object/selection action menu, tailored to the row it's shown on.
+///
+/// Selections additionally get **Remove Atoms** — PyMOL's selection-menu
+/// `remove atoms` (`cmd.remove(sele); cmd.delete(sele)`): it strips the matched
+/// atoms *out of their parent object* and then drops the now-empty selection.
+/// This is the quick-cleanup path from issue #202 (strip waters, delete an
+/// unwanted chain, trim to a binding site) — distinct from "Delete", which only
+/// removes the selection marker and leaves every atom in place. Objects don't
+/// get it (they keep Delete + Remove Waters), matching desktop PyMOL.
+private func actionMenuItems(isSelection: Bool) -> [ActionMenuItem] {
+    guard isSelection else { return baseActionMenuItems }
+    var items = baseActionMenuItems
+    // Insert just above the trailing "Delete" so the two destructive actions sit
+    // together (PyMOL orders them "remove atoms" then "delete selection").
+    let removeAtoms = ActionMenuItem.action(label: "Remove Atoms", key: "remove_atoms")
+    if let deleteIdx = items.firstIndex(where: {
+        if case .action(_, "delete") = $0 { return true }
+        return false
+    }) {
+        items.insert(removeAtoms, at: deleteIdx)
+    } else {
+        items.append(removeAtoms)
+    }
+    return items
+}
+
 // MARK: - Command Dispatch
 
 /// Translates action keys into PyMOL commands and runs them
@@ -650,6 +676,10 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
         return
     case "copy":               cmd = "copy \(n)_copy, \(n)"
     case "delete":             cmd = "delete \(n)"
+    // Strip the selection's atoms out of their parent object(s), then drop the
+    // now-empty selection (PyMOL's selection-menu "remove atoms"). Shown only on
+    // selection rows — see actionMenuItems(isSelection:).
+    case "remove_atoms":       cmd = "remove (\(n)); delete \(n)"
     // Global ("all" row) actions
     case "deselect":           cmd = "deselect"
     case "hide_everything":    cmd = "hide everything, \(n)"
@@ -1010,7 +1040,7 @@ private struct ObjectRowView: View {
             Spacer(minLength: 4)
 
             // Action buttons: A S H L C
-            ActionMenuButton(name: entry.name)
+            ActionMenuButton(name: entry.name, isSelection: entry.isSelection)
             ShowButton(name: entry.name)
             HideButton(name: entry.name)
             LabelMenuButton(name: entry.name)
@@ -1026,7 +1056,7 @@ private struct ObjectRowView: View {
         .contentShape(Rectangle())
         .onTapGesture { toggleEnabled() }
         // Long-press (iOS) / right-click (macOS) opens the action menu.
-        .contextMenu { actionMenuContent(actionMenuItems, name: entry.name, engine: engine) }
+        .contextMenu { actionMenuContent(actionMenuItems(isSelection: entry.isSelection), name: entry.name, engine: engine) }
     }
 
     private func toggleEnabled() {
@@ -1191,11 +1221,12 @@ private func runAlignCommand(mobile: String, target: String, engine: PyMOLEngine
 
 private struct ActionMenuButton: View {
     let name: String
+    var isSelection: Bool = false
     @EnvironmentObject var engine: PyMOLEngine
 
     var body: some View {
         Menu {
-            actionMenuContent(actionMenuItems, name: name, engine: engine)
+            actionMenuContent(actionMenuItems(isSelection: isSelection), name: name, engine: engine)
         } label: {
             Text("A")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -1805,7 +1836,7 @@ private struct ObjectRowContent: View {
 
         Spacer(minLength: 4)
 
-        ActionMenuButton(name: entry.name)
+        ActionMenuButton(name: entry.name, isSelection: entry.isSelection)
         ShowButton(name: entry.name)
         HideButton(name: entry.name)
         LabelMenuButton(name: entry.name)
@@ -1867,7 +1898,7 @@ private struct ObjectCard: View {
             .contentShape(Rectangle())
             .onTapGesture { engine.setObjectEnabled(entry.name, !entry.isEnabled) }
             // Long-press (iOS) / right-click (macOS) opens the action menu.
-            .contextMenu { actionMenuContent(actionMenuItems, name: entry.name, engine: engine) }
+            .contextMenu { actionMenuContent(actionMenuItems(isSelection: entry.isSelection), name: entry.name, engine: engine) }
 
             if expanded {
                 VStack(spacing: 3) {
