@@ -1578,14 +1578,16 @@ struct ContentView: View {
                     if engine.sequenceVisible {
                         SequencePanel().frame(height: ipadSequenceHeight)
                     }
-                    // Twin-tongue seam rail: Console/Sequence show-hide, welded to the
-                    // viewport's top edge (always present) — mirrors the bottom tongue.
-                    topPaneRail()
                     viewportView
-                        // Move-mode gizmo controls float over the viewport top
-                        // (below terminal + sequence), mirroring macOS.
+                        // Floating top control stack over the viewport: the Move bar
+                        // stretches full-width (mac-style) on top; the Console/Seq/Move
+                        // pills float transparently just below it and shift down as the
+                        // move bar / panels open.
                         .overlay(alignment: .top) {
-                            if engine.interactionMode == .move { moveOverlay }
+                            VStack(spacing: 4) {
+                                if engine.interactionMode == .move { moveOverlay }
+                                topPaneRail()
+                            }
                         }
                     // Expanded timeline docks full-width under the viewport (the
                     // Movie tab's Expand button toggles engine.timelineMode). Its own
@@ -1600,6 +1602,15 @@ struct ContentView: View {
                 // shown; a bare viewport stays full-bleed/immersive.
                 .padding(.top, (cTerm || engine.sequenceVisible) ? panelTopInset : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The vertical inspector tongue floats OVER the viewport's trailing
+                // edge (transparent) so the VIEWER fills that space instead of a
+                // reserved column — matching the portrait bottom tongue. Hidden while
+                // Theme Studio is open (it docks directly with its own divider).
+                .overlay(alignment: .trailing) {
+                    if !showThemeStudio {
+                        panelTongue(shown: objectsBinding, axis: .vertical)
+                    }
+                }
                 if showThemeStudio {
                     Divider()
                     ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
@@ -1607,17 +1618,14 @@ struct ContentView: View {
                         .environmentObject(themeManager)
                         .frame(width: rightW)
                         .background(themeChromeBg)
-                } else {
-                    // Tiny vertical "tongue" handle to show/hide the side inspector.
-                    panelTongue(shown: objectsBinding, axis: .vertical)
-                    if showRight {
-                        // Reserve top space so the floating toolbar doesn't hide the
-                        // inspector header / first row on iPhone (full-bleed).
-                        inspectorSwitcher()
-                            .padding(.top, panelTopInset)
-                            .frame(width: rightW)
-                            .background(themeChromeBg)
-                    }
+                } else if showRight {
+                    // Reserve top space so the floating toolbar doesn't hide the
+                    // inspector header / first row on iPhone (full-bleed). The tongue
+                    // is now a viewport-trailing overlay (above), not a sibling here.
+                    inspectorSwitcher()
+                        .padding(.top, panelTopInset)
+                        .frame(width: rightW)
+                        .background(themeChromeBg)
                 }
             }
         } else {
@@ -1631,15 +1639,26 @@ struct ContentView: View {
                 if engine.sequenceVisible {
                     SequencePanel().frame(height: ipadSequenceHeight)
                 }
-                // Twin-tongue seam rail: Console/Sequence show-hide, welded to the
-                // viewport's top edge (always present) — mirrors the bottom tongue.
-                topPaneRail()
                 viewportView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // Move-mode gizmo controls float over the viewport top
-                    // (below terminal + sequence), mirroring macOS.
+                    // Floating top control stack over the viewport: Move bar full-width
+                    // (mac-style) on top; Console/Seq/Move pills float transparently
+                    // just below it, shifting down as the move bar / panels open.
                     .overlay(alignment: .top) {
-                        if engine.interactionMode == .move { moveOverlay }
+                        VStack(spacing: 4) {
+                            if engine.interactionMode == .move { moveOverlay }
+                            topPaneRail()
+                        }
+                    }
+                    // The bottom inspector tongue floats OVER the viewport's bottom
+                    // edge (transparent) so the VIEWER fills that space rather than a
+                    // reserved black strip. Hidden while Theme Studio uses its own drag
+                    // divider below. The empty parts of the strip pass touches through
+                    // to the viewport (only the chevron pill is hit-testable).
+                    .overlay(alignment: .bottom) {
+                        if !showThemeStudio {
+                            panelTongue(shown: objectsBinding, axis: .horizontal)
+                        }
                     }
                 // NOTE: the expanded timeline dock is LANDSCAPE-only. In portrait the
                 // timeline is reached via the inspector's Movie tab (below); the
@@ -1652,19 +1671,16 @@ struct ContentView: View {
                         .environmentObject(themeManager)
                         .frame(height: bottomH)
                         .background(themeChromeBg)
-                } else {
-                    // Tiny "tongue" handle to show/hide the bottom inspector.
-                    panelTongue(shown: objectsBinding, axis: .horizontal)
-                    if showRight {
-                        // iPhone-style spacing: hug the active tab's content (no drag
-                        // divider). The Movie tab reports its natural height;
-                        // scroll-based tabs use fixed caps (see inspectorPortraitHeight).
-                        inspectorSwitcher(hugContent: true)
-                            .frame(height: inspectorPortraitHeight(total: geo.size.height))
-                            .background(themeChromeBg)
-                            .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
-                            .animation(.easeInOut(duration: 0.25), value: inspectorTab)
-                    }
+                } else if showRight {
+                    // iPhone-style spacing: hug the active tab's content (no drag
+                    // divider). The Movie tab reports its natural height; scroll-based
+                    // tabs use fixed caps (see inspectorPortraitHeight). The tongue is
+                    // now a viewport-bottom overlay (above), not a sibling here.
+                    inspectorSwitcher(hugContent: true)
+                        .frame(height: inspectorPortraitHeight(total: geo.size.height))
+                        .background(themeChromeBg)
+                        .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
+                        .animation(.easeInOut(duration: 0.25), value: inspectorTab)
                 }
             }
         }
@@ -1712,15 +1728,14 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isShown ? "Hide panel" : "Show panel")
-        // Center the little tab within a thin full-width / full-height strip.
-        // Vertical (landscape, right of the viewport): fill with panel chrome so it
-        // isn't a black column beside the molecule. Horizontal (bottom, above the
-        // docked inspector): keep the strip TRANSPARENT so the chevron floats on the
-        // viewport's dark bottom edge rather than sitting on a gray bar.
+        // Center the little tab within a thin full-width / full-height strip. Both
+        // tongues are TRANSPARENT overlays on the viewport edge (bottom in portrait,
+        // trailing in landscape) so the VIEWER fills the space and the chevron floats
+        // over it — only the chevron pill is hit-testable, the rest passes through.
         if axis == .horizontal {
             tab.frame(maxWidth: .infinity).padding(.vertical, 1)
         } else {
-            tab.frame(maxHeight: .infinity).padding(.horizontal, 1).background(themeChromeBg)
+            tab.frame(maxHeight: .infinity).padding(.horizontal, 1)
         }
     }
 
@@ -1742,14 +1757,10 @@ struct ContentView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        // A little breathing room above the pills so they aren't jammed against the
-        // sequence panel / nav bar.
-        .padding(.top, 8)
-        .padding(.bottom, 3)
-        // Fill the seam rail with the panel chrome so it reads as a continuation of
-        // the docked console/sequence panels rather than exposing the black system
-        // background (which looked like a black border cutting across the molecule).
-        .background(themeChromeBg)
+        // The pills float in TRANSPARENT space over the viewport (no chrome bar);
+        // each pill carries its own capsule fill/outline so it reads over the
+        // molecule. A little vertical breathing room around the row.
+        .padding(.vertical, 6)
     }
 
     private func railTongue(icon: String, label: String, shown: Binding<Bool>) -> some View {
@@ -1763,13 +1774,16 @@ struct ContentView: View {
                 Image(systemName: on ? "chevron.up" : "chevron.down")
                     .font(.system(size: 8, weight: .bold))
             }
-            .foregroundColor(on ? .white : dividerPillColor)
+            .foregroundColor(on ? .white : themeManager.active.panelText.color.opacity(0.82))
             .padding(.horizontal, 9)
             .frame(height: 16)
             .background(
                 Capsule()
-                    .fill(on ? TimelineTheme.accent : Color.clear)
-                    .overlay(Capsule().strokeBorder(on ? Color.clear : dividerPillColor.opacity(0.6), lineWidth: 1))
+                    // OFF = a subtle filled capsule + clear outline so the hidden-pane
+                    // pills read against the dark rail (were near-invisible at 0.4 text
+                    // on transparent). ON = solid accent fill.
+                    .fill(on ? TimelineTheme.accent : themeManager.active.panelText.color.opacity(0.14))
+                    .overlay(Capsule().strokeBorder(on ? Color.clear : themeManager.active.panelText.color.opacity(0.5), lineWidth: 1))
             )
             .contentShape(Capsule())
         }
@@ -1785,13 +1799,13 @@ struct ContentView: View {
                 Image(systemName: icon).font(.system(size: 10, weight: .semibold))
                 Text(label).font(.system(size: 11, weight: .medium))
             }
-            .foregroundColor(isOn ? .white : dividerPillColor)
+            .foregroundColor(isOn ? .white : themeManager.active.panelText.color.opacity(0.82))
             .padding(.horizontal, 9)
             .frame(height: 16)
             .background(
                 Capsule()
-                    .fill(isOn ? TimelineTheme.accent : Color.clear)
-                    .overlay(Capsule().strokeBorder(isOn ? Color.clear : dividerPillColor.opacity(0.6), lineWidth: 1))
+                    .fill(isOn ? TimelineTheme.accent : themeManager.active.panelText.color.opacity(0.14))
+                    .overlay(Capsule().strokeBorder(isOn ? Color.clear : themeManager.active.panelText.color.opacity(0.5), lineWidth: 1))
             )
             .contentShape(Capsule())
         }
