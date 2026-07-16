@@ -1712,11 +1712,13 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isShown ? "Hide panel" : "Show panel")
-        // Center the little tab within a thin full-width / full-height strip. Fill
-        // the strip with the panel chrome (not raw black) so the seam beside/under
-        // the viewport reads as docked-panel chrome, not a black border.
+        // Center the little tab within a thin full-width / full-height strip.
+        // Vertical (landscape, right of the viewport): fill with panel chrome so it
+        // isn't a black column beside the molecule. Horizontal (bottom, above the
+        // docked inspector): keep the strip TRANSPARENT so the chevron floats on the
+        // viewport's dark bottom edge rather than sitting on a gray bar.
         if axis == .horizontal {
-            tab.frame(maxWidth: .infinity).padding(.vertical, 1).background(themeChromeBg)
+            tab.frame(maxWidth: .infinity).padding(.vertical, 1)
         } else {
             tab.frame(maxHeight: .infinity).padding(.horizontal, 1).background(themeChromeBg)
         }
@@ -1740,7 +1742,10 @@ struct ContentView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 18)
+        // A little breathing room above the pills so they aren't jammed against the
+        // sequence panel / nav bar.
+        .padding(.top, 8)
+        .padding(.bottom, 3)
         // Fill the seam rail with the panel chrome so it reads as a continuation of
         // the docked console/sequence panels rather than exposing the black system
         // background (which looked like a black border cutting across the molecule).
