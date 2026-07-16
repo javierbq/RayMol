@@ -1719,12 +1719,17 @@ struct ContentView: View {
         } label: {
             Image(systemName: chevron)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(dividerPillColor)
+                // Match the toggle pills' style: capsule shape, subtle fill + outline,
+                // same chevron color — so the tongue reads as a sibling of the pills.
+                .foregroundColor(themeManager.active.panelText.color.opacity(0.82))
                 .frame(width: axis == .horizontal ? 52 : 16,
                        height: axis == .horizontal ? 16 : 52)
-                .background(dividerBarColor,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(Rectangle())
+                .background(
+                    Capsule()
+                        .fill(themeManager.active.panelText.color.opacity(0.14))
+                        .overlay(Capsule().strokeBorder(themeManager.active.panelText.color.opacity(0.5), lineWidth: 1))
+                )
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isShown ? "Hide panel" : "Show panel")
