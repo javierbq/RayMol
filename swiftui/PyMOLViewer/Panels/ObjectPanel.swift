@@ -64,6 +64,16 @@ struct SceneState: Equatable {
 struct ObjStateMeta: Equatable {
     var state: Int = 1        // effective current state (resolves the frame)
     var overlayAll: Bool = false   // all_states overlay for this object
+    // Per-state titles (e.g. compound names from a multi-record SDF). Empty
+    // unless at least one state carries a title. Indexed by state-1 (issue #203).
+    var titles: [String] = []
+
+    /// Title for a 1-based state, or nil when none/blank.
+    func title(forState state: Int) -> String? {
+        guard state >= 1, state <= titles.count else { return nil }
+        let t = titles[state - 1]
+        return t.isEmpty ? nil : t
+    }
 }
 
 // MARK: - Representation inspector: control metadata
@@ -1955,6 +1965,23 @@ private struct ObjectCard: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(PanelTheme.textColor)
                     .frame(width: 42, alignment: .trailing)
+            }
+            // Compound name for this state, when present (e.g. a multi-record
+            // SDF's per-record title), so docking-pose / library sets can be
+            // navigated by name while scrubbing states (issue #203).
+            if let name = meta?.title(forState: cur) {
+                HStack(spacing: 6) {
+                    Text("Name")
+                        .font(.system(size: 10)).foregroundColor(PanelTheme.textColor)
+                        .frame(width: 78, alignment: .leading)
+                    Text(name)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(TimelineTheme.accent)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(name)
+                    Spacer(minLength: 0)
+                }
             }
             // Play/pause + per-object fps — animates THIS object's models (via a
             // Swift timer + `set state`), independent of the movie and other objects.

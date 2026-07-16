@@ -51,6 +51,25 @@ def _object_rows(names):
                         space={'r': r})
         except Exception:
             pass
+        # HETATM groups (co-crystal ligands, ions, waters) have no guide atom,
+        # so the query above skips them entirely. Append one entry per
+        # non-polymer residue (deduped, in atom order) tagged 'het' so they show
+        # and are selectable in the sequence viewer like PyMOL — the Swift panel
+        # spreads a het entry's 3-letter resn across columns (issue #201).
+        try:
+            het = []
+            cmd.iterate('(%s) and not polymer and not hydro' % o,
+                        'het.append([chain, resi, resn, str(color)])',
+                        space={'het': het})
+            seen = set()
+            for e in het:
+                key = (e[0], e[1], e[2])
+                if key in seen:
+                    continue
+                seen.add(key)
+                r.append([e[0], e[1], e[2], e[3], 'het'])
+        except Exception:
+            pass
         if not r:
             continue
         name = 'example' if o == '__theme_preview' else o

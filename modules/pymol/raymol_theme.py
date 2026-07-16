@@ -99,6 +99,19 @@ def cnc(selection="(all)"):
                   "(%s) and elem %s" % (selection, elem))
 
 
+def _show_het(obj):
+    """Reveal non-polymer HETATM groups that a cartoon-only view would leave
+    invisible: co-crystal ligands, ions, and waters. Cartoon only draws the
+    polymer, so without this a loaded ligand (e.g. SY7 in 5HBH) is present but
+    unseen. Mirrors PyMOL's default presentation — ligands as sticks, ions as
+    (small) spheres, waters as nonbonded crosses (issue #201)."""
+    cmd.show("sticks", "(%s) and organic" % obj)
+    cmd.show("nonbonded", "(%s) and solvent" % obj)
+    ions = "(%s) and inorganic" % obj
+    cmd.show("spheres", ions)
+    cmd.set("sphere_scale", 0.3, ions)
+
+
 def apply_default_style(obj):
     """Apply the active default representation + cartoon settings to `obj`."""
     style = _default_style
@@ -106,6 +119,7 @@ def apply_default_style(obj):
     cmd.set("cartoon_fancy_helices", 1 if _fancy_helices else 0, obj)
     if style == "cartoon":
         cmd.hide("everything", obj); cmd.show("cartoon", obj)
+        _show_het(obj)
     elif style == "sticks":
         cmd.hide("everything", obj); cmd.show("sticks", obj)
     elif style == "spheres":
@@ -117,6 +131,7 @@ def apply_default_style(obj):
         cmd.show("surface", obj)
     elif style == "pretty":
         cmd.hide("everything", obj); cmd.show("cartoon", obj)
+        _show_het(obj)
 
 
 def apply_to(obj):
