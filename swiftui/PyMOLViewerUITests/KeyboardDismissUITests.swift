@@ -36,9 +36,17 @@ final class KeyboardDismissUITests: XCTestCase {
         XCTAssertTrue(dismiss.waitForExistence(timeout: 5),
                       "The 'Dismiss keyboard' button did not appear when the command field was focused")
 
-        dismiss.tap()  // clears focus
+        dismiss.tap()  // resigns first responder
         XCTAssertTrue(waitForDisappearance(dismiss, timeout: 5),
                       "The 'Dismiss keyboard' button should disappear after dismissing the keyboard")
+
+        // Regression guard for the "keyboard pops right back up" bug: after a
+        // settle delay the field must STILL be unfocused (the button must not
+        // reappear). Clearing @FocusState alone bounced; resignFirstResponder
+        // must keep it down.
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(dismiss.exists,
+                       "Keyboard bounced back up: the dismiss button reappeared after dismissing")
     }
 
     private func waitForDisappearance(_ el: XCUIElement, timeout: TimeInterval) -> Bool {

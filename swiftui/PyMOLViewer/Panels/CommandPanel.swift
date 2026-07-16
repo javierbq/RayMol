@@ -315,10 +315,20 @@ struct CommandTextField: View {
             // for the next command, so there was otherwise no way to close the
             // keyboard. A keyboard-accessory .toolbar(placement:.keyboard) does
             // NOT render for a field nested in a TabView (the console is a
-            // panelTabs tab), so use an inline button on the command row — it
-            // rides above the keyboard with the field via keyboard-avoidance.
+            // panelTabs tab), so use an inline button on the command row.
+            // Dismiss via the UIKit responder chain (resignFirstResponder) — the
+            // SAME mechanism the log's interactive scroll-dismiss uses. Clearing
+            // @FocusState alone made the keyboard bounce straight back up (SwiftUI
+            // re-asserts the field's focus inside the TabView); resigning the
+            // first responder sticks. SwiftUI then observes the resign and flips
+            // `focused` false, which hides this button.
             if focused {
-                Button { focused = false } label: {
+                Button {
+                    #if canImport(UIKit)
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    #endif
+                } label: {
                     Image(systemName: "keyboard.chevron.compact.down").font(.system(size: 15))
                 }.buttonStyle(.plain).foregroundColor(.gray).accessibilityLabel("Dismiss keyboard")
             }
