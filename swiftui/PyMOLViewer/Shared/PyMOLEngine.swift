@@ -2391,7 +2391,8 @@ final class PyMOLEngine: ObservableObject {
                 guard let m = mAny as? [String: Any] else { continue }
                 meta[obj] = ObjStateMeta(
                     state: (m["state"] as? NSNumber)?.intValue ?? 1,
-                    overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0)
+                    overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0,
+                    titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [])
             }
         }
 

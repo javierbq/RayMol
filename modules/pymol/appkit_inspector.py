@@ -262,8 +262,20 @@ def _build(objs):
     # frame's state when not pinned) and whether all states are overlaid.
     objmeta = {}
     for o in objs:
-        objmeta[o] = {'state': int(round(_num('state', o))),
-                      'all': int(round(_num('all_states', o)))}
+        entry = {'state': int(round(_num('state', o))),
+                 'all': int(round(_num('all_states', o)))}
+        # Per-state titles (e.g. compound names from a multi-record SDF, which
+        # PyMOL stores as each state's title). Included only when at least one
+        # state carries a non-empty title, so ordinary single structures add
+        # nothing to the payload (issue #203).
+        try:
+            _ns = cmd.count_states(o)
+            _titles = [cmd.get_title(o, _s) or '' for _s in range(1, _ns + 1)]
+            if any(_titles):
+                entry['titles'] = _titles
+        except Exception:
+            pass
+        objmeta[o] = entry
     # Saved scenes (ordered) + the current one, for the Scenes strip.
     try:
         scenes = list(cmd.get_scene_list() or [])
