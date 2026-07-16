@@ -191,11 +191,23 @@ struct MousePanel: View {
     private let modifierColor = Color(red: 1.0, green: 0.3, blue: 0.3)
     private var labelColor: Color { ThemeManager.shared.active.panelText.color.opacity(0.6) }
 
-    // The keys shown in the mode picker. macOS appends the synthetic "Trackpad"
-    // entry; iOS shows the real PyMOL modes only.
+    // The keys shown in the mode picker.
+    //
+    // macOS offers only the two modes that are fully, cleanly implemented in the
+    // Metal viewport: 3-Button Viewing (rotate/zoom/clip via drags) and the
+    // synthetic Trackpad gesture mode. Every other classic mode is hidden here —
+    // on this backend a mode only reprograms the drag rows (clicks are hardcoded),
+    // and their distinguishing behavior is either unreachable (the middle-button
+    // column — no middle button on most Macs) or lacks its visual. Notably
+    // Maestro's signature bare-left box-select DOES select atoms but draws no
+    // rubber-band marquee: the Metal path (SceneRenderMetal) forces
+    // internal_gui/feedback off and never renders the Ortho overlay CGO that
+    // OrthoDrawLoop emits, so the drag has no on-screen feedback. Offering those
+    // modes would imply behavior the app doesn't visibly deliver. iOS still shows
+    // the full set — it has its own gesture handling and wasn't audited the same way.
     private var displayRing: [String] {
         #if os(macOS)
-        return modeRing + [kTrackpadKey]
+        return ["three_button_viewing", kTrackpadKey]
         #else
         return modeRing
         #endif
@@ -373,11 +385,16 @@ struct MousePanel: View {
 
             // Click rows
             #if os(macOS)
-            gridRow(modifier: "Sngl", modColor: labelColor,
-                    l: codeFor(mode[19]), m: codeFor(mode[20]), r: codeFor(mode[21]),
-                    cellColor: actionColor, font: gridFont)
-            gridRow(modifier: "Dbl ", modColor: labelColor,
-                    l: codeFor(mode[16]), m: codeFor(mode[17]), r: codeFor(mode[18]),
+            // macOS clicks BYPASS the per-mode button matrix: the Metal viewport
+            // intercepts bare left/right clicks itself (handleMouseUp /
+            // handleRightMouseUp in MetalViewport) and never routes them through
+            // `mouse <mode>`. A left-click always toggles the pick into 'sele'
+            // (honoring the Selecting row below); a right-click always opens the
+            // viewport context menu. Double-clicks aren't handled at all. So the
+            // per-mode Sngl/Dbl values are fiction here — collapse to one fixed,
+            // accurate Click row. (Middle is `--`: no middle button on most Macs.)
+            gridRow(modifier: "Clik", modColor: labelColor,
+                    l: "Sele", m: " -- ", r: "Menu",
                     cellColor: actionColor, font: gridFont)
             #else
             // iPadOS: show touch equivalents
