@@ -78,24 +78,6 @@ private struct SafeAreaReader: UIViewRepresentable {
 }
 #endif
 
-// MARK: - iPhone-landscape custom panel bar
-//
-// In iPhone landscape we render the control panel WITHOUT a TabView, because a TabView is
-// the only thing that spawns the iOS-26 floating capsule tab bar, and that capsule anchors
-// to the WINDOW safe area — it cannot be inset by any SwiftUI frame/padding/safeAreaPadding
-// (verified on-device). A plain HStack of buttons is ordinary content: it obeys its parent
-// column's frame, so when the column is narrowed by the notch every tab (incl. Settings)
-// stays LEFT of the black notch-stripe. Portrait / iPad keep the real TabView (panelTabs).
-
-/// The 5 control tabs in display order, matching `panelTabs` EXACTLY (same tags / icons /
-/// labels). Tag 3 is intentionally absent (the "poison" tag handled by the panel-grow onChange).
-private struct PanelTabSpec: Identifiable {
-    let tag: Int
-    let title: String
-    let systemImage: String
-    var id: Int { tag }
-}
-
 /// Segments of the iPad/macOS right-inspector switcher (mirrors the iPhone tabs:
 /// Console = left terminal; Settings = the Display render card).
 private enum InspectorTab: String, CaseIterable, Identifiable {
@@ -118,54 +100,6 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
         case .movie:   return "Camera keyframes, scenes & model clips"
         case .display: return "Background, lighting & effects"
         }
-    }
-}
-
-private let landscapePanelTabSpecs: [PanelTabSpec] = [
-    .init(tag: 0, title: "Console",  systemImage: "terminal"),
-    .init(tag: 1, title: "Objects",  systemImage: "cube"),
-    .init(tag: 5, title: "Scenes",   systemImage: "rectangle.on.rectangle"),
-    .init(tag: 2, title: "Movie",    systemImage: "film"),
-    .init(tag: 4, title: "Settings", systemImage: "gearshape"),
-]
-
-/// Custom bottom tab bar for iPhone landscape. Writes the same `$selectedTab` the TabView
-/// would, so the tag-3 poison-grow onChange and every deep-link keep working; it never
-/// emits tag 3.
-private struct LandscapeTabBar: View {
-    @Binding var selection: Int
-    let tint: Color
-    let chrome: Color
-    let inactive: Color
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(landscapePanelTabSpecs) { spec in
-                let isSel = selection == spec.tag
-                Button {
-                    selection = spec.tag
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: spec.systemImage)
-                            .font(.system(size: 17, weight: isSel ? .semibold : .regular))
-                        Text(spec.title)
-                            .font(.system(size: 10, weight: isSel ? .semibold : .regular))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(isSel ? tint : inactive.opacity(0.55))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(spec.title)
-                .accessibilityAddTraits(isSel ? [.isSelected, .isButton] : [.isButton])
-            }
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 4)
-        .background(chrome.overlay(alignment: .top) { Divider().opacity(0.6) })
     }
 }
 
@@ -926,7 +860,8 @@ struct ContentView: View {
     @State private var committedFrac: CGFloat = 0.53
     @State private var panelCollapsed = false
     // iPhone: full-screen viewport mode (hides the bottom panel + sequence strip).
-    // Replaces the old drag-to-collapse; driven by iosPanelToggle.
+    // Currently always off — the explicit toggle was removed; collapse the rail +
+    // inspector instead for an immersive view.
     @State private var iosFullScreen = false
     // Settings tab: in-panel drill into the display-settings card.
     @State private var settingsSceneOpen = false
@@ -1122,11 +1057,9 @@ struct ContentView: View {
             // movie mode unexpectedly, so it was removed (movie/timeline stays on
             // the Movie tab / ⌥⌘M). iPad per-pane toggles now live in master's
             // reworked inspector (iosPadPanelMenu retired).
-            // Measure + Move moved to the top pill rail (topPaneRail); Open/Save/
-            // Export are grouped at the trailing edge; the nav title is gone (RayMol
-            // now heads the inspector panel). The full-screen toggle was removed —
-            // collapsing the rail pills + inspector already yields a full-bleed view.
-            .toolbar { iosOpenToolbar; iosSaveToolbar; iosExportToolbar }
+            // Nav bar is hidden on all iOS devices; Open/Save/Export + the title are
+            // floated in-content (top row / top band / inspector header) via
+            // iosToolPills(), so there's no nav-bar toolbar content here.
             .fileImporter(isPresented: $showFileImporter,
                           allowedContentTypes: iosImportTypes,
                           allowsMultipleSelection: false) { result in
@@ -1983,31 +1916,6 @@ struct ContentView: View {
         }
     }
 
-    private var iosPanelToggle: some ToolbarContent {
-        // iPhone (compact) only: collapse/expand the single bottom control panel.
-        // The iPad mac-style layout uses iosPadPanelMenu (per-pane toggles) instead.
-        ToolbarItem(placement: .primaryAction) {
-            // iPhone PORTRAIT uses the nav-bar full-screen toggle. iPhone landscape
-            // shows it (with Export) in the viewer's top-right overlay; iPad uses
-            // iosPadPanelMenu.
-            if hSize == .compact && vSize == .regular {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { iosFullScreen.toggle() }
-                } label: {
-                    Image(systemName: iosFullScreen
-                          ? "arrow.down.right.and.arrow.up.left"
-                          : "arrow.up.left.and.arrow.down.right")
-                }
-                .tint(TimelineTheme.accent)
-                .accessibilityLabel(iosFullScreen ? "Exit full screen" : "Full-screen viewport")
-            }
-        }
-    }
-
-    // NOTE: the iPad Console/Sequence visibility toggles moved OUT of the top-right
-    // toolbar onto the twin-tongue topPaneRail() at the viewport's top seam, so the
-    // top-right is now just Export. (Objects are shown/hidden via the panel tongue.)
-
     // The 3D viewport — primary in every orientation. Carries the empty-state CTA
     // and a persistent "?" gesture-legend button.
     // True while a cold-launch session restore is showing its last-scene
@@ -2131,162 +2039,6 @@ struct ContentView: View {
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
-    // Shared control content: Console / Objects / Sequence as exclusive tabs
-    // (Sequence is its own tab now — not a strip and not a toolbar/Export item).
-    // The 5-tab control panel (no background — callers pick the chrome).
-    private var panelTabs: some View {
-        TabView(selection: $selectedTab) {
-            CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                .tabItem { Label("Console", systemImage: "terminal") }.tag(0)
-            ObjectPanel()
-                .tabItem { Label("Objects", systemImage: "cube") }.tag(1)
-            ScenesPane(showViewportButtons: $showSceneButtons,
-                       onOpenMovie: { selectedTab = 2 })
-                .tabItem { Label("Scenes", systemImage: "rectangle.on.rectangle") }.tag(5)
-            // fixedSize → the panel hugs its intrinsic height instead of being
-            // stretched by the TabView (which would make reportPaneHeight measure
-            // the filled height and grow the pane on every layout pass).
-            TimelinePanel(showsDone: false)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .reportPaneHeight(2)
-                .tabItem { Label("Movie", systemImage: "film") }.tag(2)
-            settingsPane
-                .tabItem { Label("Settings", systemImage: "gearshape") }.tag(4)
-        }
-    }
-
-    // Portrait / opaque docked panel.
-    private var panelContent: some View {
-        panelTabs.background(themeChromeBg)
-    }
-
-    // iPhone-landscape ONLY panel body: the selected pane rendered WITHOUT a TabView (so the
-    // iOS-26 floating capsule can't exist), plus the custom LandscapeTabBar. Mirrors
-    // panelTabs' tag→view mapping 1:1. Being plain content, it obeys the narrowed column
-    // frame, keeping every tab — including Settings — left of the notch-stripe.
-    @ViewBuilder
-    private var landscapePanelBody: some View {
-        VStack(spacing: 0) {
-            Group {
-                switch selectedTab {
-                case 1:  ObjectPanel()
-                case 5:  ScenesPane(showViewportButtons: $showSceneButtons,
-                                    onOpenMovie: { selectedTab = 2 })
-                case 2:  TimelinePanel(showsDone: false)
-                case 4:  settingsPane
-                default: CommandPanel(showInput: !RayMolBuild.iosRestricted)   // tag 0 (and any stray)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            LandscapeTabBar(
-                selection: $selectedTab,
-                tint: themeManager.active.tabTint.color,
-                chrome: themeManager.active.panelBackground.color,
-                inactive: themeManager.active.panelText.color
-            )
-        }
-    }
-
-    // Settings content tab (iPhone). Relocates the former top-bar Theme + Reset
-    // controls here, adds the Show-sequence toggle (drives the strip above the
-    // viewport), and links to scene/render settings — all in-panel, consistent
-    // with the other tabs (no top-level modal).
-    @ViewBuilder
-    private var settingsPane: some View {
-        if settingsSceneOpen {
-            // In-panel drill into the SCENE card (moved here fully from the
-            // Inspector). A back row returns to the Settings root — no modal.
-            VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { settingsSceneOpen = false }
-                    } label: {
-                        Label("Settings", systemImage: "chevron.left")
-                            .font(.system(size: 15, weight: .medium))
-                    }
-                    Spacer()
-                    Text("Display settings").font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                Divider()
-                ScrollView {
-                    SceneCard().padding(.bottom, 56)
-                }
-            }
-        } else {
-            List {
-                // Single ungrouped section — no per-item headers for one-row items.
-                Section {
-                    Toggle(isOn: $engine.sequenceVisible) {
-                        Label("Show sequence", systemImage: "textformat.abc")
-                    }
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { settingsSceneOpen = true }
-                    } label: {
-                        settingsRow("Display settings", "slider.horizontal.3")
-                    }
-                    Button {
-                        if !showThemeStudio { panelCollapsed = false }
-                        withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = true }
-                    } label: {
-                        settingsRow("Themes", "paintpalette")
-                    }
-                }
-                // Reset actions — all on one row.
-                Section {
-                    HStack(spacing: 8) {
-                        settingsResetButton("Reset view", "arrow.counterclockwise") {
-                            engine.runCommand("reset")
-                        }
-                        settingsResetButton("Effects", "circle.lefthalf.filled") {
-                            engine.resetEffects()
-                        }
-                        settingsResetButton("Clear", "trash", danger: true) {
-                            showClearSessionConfirm = true
-                        }
-                    }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                }
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .compactListSections()
-            .environment(\.defaultMinListRowHeight, 38)
-            // Clear the floating tab-bar pill so the Reset row stays reachable.
-            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 56) }
-        }
-    }
-
-    @ViewBuilder
-    private func settingsRow(_ title: String, _ icon: String) -> some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    // Compact icon+label button; three sit on one row in the Reset section.
-    private func settingsResetButton(_ title: String, _ icon: String,
-                                     danger: Bool = false, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 15))
-                Text(title).font(.system(size: 11)).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .foregroundStyle(danger ? Color.red : TimelineTheme.accent)
-            .background(RoundedRectangle(cornerRadius: 9).fill(Color.gray.opacity(0.13)))
-        }
-        .buttonStyle(.plain)
-    }
-
     // Draggable splitter between viewport and panel. Drag toward the viewport
     // (up in portrait / left in landscape) grows the panel; committed on release.
     @ViewBuilder
@@ -2405,70 +2157,6 @@ struct ContentView: View {
         return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
     }
 
-    private var iosOpenToolbar: some ToolbarContent {
-        // Grouped at the trailing edge with Save + Export (leading is now empty).
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                showFileImporter = true
-            } label: {
-                Label("Open", systemImage: "folder")
-            }
-            .tint(TimelineTheme.accent)   // global controls read teal
-        }
-    }
-
-    // Save the current session (.pse) to Files — a real save (system document
-    // picker, export a copy), distinct from Share (activity sheet) in the Export
-    // menu. Grouped with Open + Export at the trailing edge.
-    private var iosSaveToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                iosSaveSession()
-            } label: {
-                Label("Save", systemImage: "arrow.down.doc")
-            }
-            .tint(TimelineTheme.accent)
-        }
-    }
-
-    private var iosThemeToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    if !showThemeStudio { panelCollapsed = false }  // ensure bottom region shows
-                    showThemeStudio.toggle()
-                }
-            } label: {
-                Image(systemName: "circle.lefthalf.filled")
-            }
-            .accessibilityLabel("Theme studio")
-        }
-    }
-
-    // Graduated reset menu (iOS has no File menu, so this is the only escape
-    // hatch from a messed-up scene or a persisted bad state). Ordered by blast
-    // radius: recenter the camera, reset the post-processing effects, or wipe
-    // the whole session. Only the last is destructive → confirmation alert.
-    private var iosResetMenu: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button { engine.runCommand("reset") } label: {
-                    Label("Reset view", systemImage: "arrow.counterclockwise")
-                }
-                Button { engine.resetEffects() } label: {
-                    Label("Reset effects", systemImage: "circle.lefthalf.filled")
-                }
-                Divider()
-                Button(role: .destructive) { showClearSessionConfirm = true } label: {
-                    Label("Clear session…", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "arrow.counterclockwise.circle")
-            }
-            .accessibilityLabel("Reset")
-        }
-    }
-
     private func iosHandleImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -2515,21 +2203,7 @@ struct ContentView: View {
         }
     }
 
-    private var iosExportToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            // iPhone landscape shows Export in the viewer's top-right overlay
-            // (landscapeViewerControls) instead of the nav bar.
-            if !isPhoneLandscape {
-                Menu { exportMenuContent } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                .tint(TimelineTheme.accent)
-            }
-        }
-    }
-
-    // The Export menu's items — reused by the nav-bar toolbar (portrait / iPad)
-    // and the iPhone-landscape viewer overlay.
+    // The Export menu's items — surfaced by iosToolPills() (Export button).
     @ViewBuilder private var exportMenuContent: some View {
         Menu {
             Button("Current View Size") { iosShareImage(scale: 1) }
@@ -2802,6 +2476,29 @@ struct ContentView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+                        #if os(iOS)
+                        // Reset / escape-hatch actions, re-homed here from the old
+                        // iPhone Settings tab (recenter, reset effects, clear session).
+                        // iOS-only: macOS reaches these from its menu bar, and
+                        // showClearSessionConfirm is an iOS-only @State.
+                        Menu {
+                            Button { engine.runCommand("reset") } label: {
+                                Label("Reset view", systemImage: "arrow.counterclockwise")
+                            }
+                            Button { engine.resetEffects() } label: {
+                                Label("Reset effects", systemImage: "circle.lefthalf.filled")
+                            }
+                            Divider()
+                            Button(role: .destructive) { showClearSessionConfirm = true } label: {
+                                Label("Clear session…", systemImage: "trash")
+                            }
+                        } label: {
+                            Label("Reset…", systemImage: "arrow.counterclockwise.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        #endif
                         SceneCard()
                     }
                     .padding(12)
@@ -2828,7 +2525,7 @@ struct ContentView: View {
     // Always-available Open/Fetch (the empty-state CTA disappears once a
     // structure is loaded, so this keeps file-open reachable at all times).
     // macOS-only: references the NSOpenPanel/fetch-alert helpers, which don't
-    // exist on iOS (iOS uses iosOpenToolbar + .fileImporter).
+    // exist on iOS (iOS uses iosToolPills() + .fileImporter).
     #if os(macOS)
     private var macOpenToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
