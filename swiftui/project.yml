@@ -81,7 +81,9 @@ targets:
         # molecular viewer flipped 180° is disorienting and serves no purpose).
         # Applied to iPhone and iPad; ignored on the macOS slice of this target.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # iPad must declare ALL FOUR orientations (incl. PortraitUpsideDown) or
+        # App Store upload rejects it for iPad multitasking (error 90474).
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
       configs:
         Debug:
           SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -180,6 +182,10 @@ targets:
             {"UTTypeIdentifier":"org.pymol.small-molecule","UTTypeDescription":"Small Molecule","UTTypeConformsTo":["public.data","public.text"],"UTTypeTagSpecification":{"public.filename-extension":["sdf","mol","mol2","xyz","mae"]}},
             {"UTTypeIdentifier":"org.pymol.map","UTTypeDescription":"Electron Density / Map","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["ccp4","mtz","dx","xplor","map","mrc"]}}
           ]' "$PLIST"
+          # A document-based app declaring CFBundleDocumentTypes must also state
+          # whether it opens files in place (App Store warning 90737). RayMol opens
+          # documents in place (Files / drag-drop), so declare it.
+          /usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES "$PLIST"
           echo "CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST"
       - name: "iOS: Embed Python.framework"
         basedOnDependencyAnalysis: false

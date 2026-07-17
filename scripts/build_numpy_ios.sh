@@ -94,6 +94,9 @@ EOF
   find "$OUT/$NAME/numpy" -name "_operand_flag_tests*.so" -delete
   find "$OUT/$NAME/numpy" -name "_rational_tests*.so" -delete
   find "$OUT/$NAME/numpy" -name "_struct_ufunc_tests*.so" -delete
+  # Static build-time libs (libnpymath.a, libnpyrandom.a) aren't needed at runtime;
+  # the App Store rejects standalone .a archives (error 90171). Drop them.
+  find "$OUT/$NAME/numpy" -name "*.a" -delete
   # Rename host (-darwin) suffix to the iOS EXT_SUFFIX so import finds them.
   # -print0 | read -d '' so paths containing spaces/newlines don't word-split
   # (an unquoted $(find ...) would split and the mv would silently miss files).
