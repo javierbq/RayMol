@@ -13,6 +13,7 @@
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
+		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
@@ -72,6 +73,7 @@
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
+		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
 		CE45D81735E70E8FFFD49875 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
 		D35B766612AA47956AB18A75 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
@@ -147,6 +149,7 @@
 		BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = RayMol.icon; sourceTree = "<group>"; };
 		C562306A5AD1EEDDBA931B98 /* TransportBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBar.swift; sourceTree = "<group>"; };
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = "openssl-PrivacyInfo.xcprivacy"; sourceTree = "<group>"; };
 		CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConnectSheet.swift; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
@@ -155,7 +158,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_FEFAB3C4-2421-4B9A-AD54-539BE6BA11B2" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -195,6 +198,7 @@
 				1A55383922D69D691CA1BAB1 /* 1ubq.cif */,
 				589928DEEE69075B965DB9F2 /* Assets.xcassets */,
 				57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */,
+				CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */,
 				BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */,
 				F16058D96E2773BE9A24C323 /* RayMol.svg */,
 				29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */,
@@ -282,10 +286,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_38210B5D-DA09-4B67-B4C0-C27B90FAA487" /* swiftui */ = {
+		"TEMP_3A674C65-1DF1-4B79-B0E6-1F03D6DF9C57" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_FEFAB3C4-2421-4B9A-AD54-539BE6BA11B2" /* PyMOLBridge.xcconfig */,
+				"TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -419,6 +423,7 @@
 				4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */,
 				8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */,
 				E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */,
+				13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -438,6 +443,7 @@
 				8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */,
 				42F2467DC338FA8435632918 /* WhatsNew.json in Resources */,
 				5A20A6D21AA3CFAE2394BAB4 /* dylib-Info-template.plist in Resources */,
+				C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -466,7 +472,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n    # \"commonly used third-party SDK\" list requires to carry a privacy\n    # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n    # signed with the framework in the codesign pass below.\n    case \"$FULL_MODULE_NAME\" in\n      _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n    esac\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
 		20F6E2447B7743E74607108B /* Brand: register molecular document types */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -486,7 +492,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
+			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
 		2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -603,7 +609,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
+			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
 		888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -641,7 +647,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\")\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n    # \"commonly used third-party SDK\" list requires to carry a privacy\n    # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n    # signed with the framework in the codesign pass below.\n    case \"$FULL_MODULE_NAME\" in\n      _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n    esac\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
 		9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -936,7 +942,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 23;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -945,12 +951,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.8.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -966,7 +972,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 23;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -975,12 +981,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.8.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -997,7 +1003,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1008,12 +1014,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.8.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1050,7 +1056,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1061,12 +1067,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.8.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1078,7 +1084,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_FEFAB3C4-2421-4B9A-AD54-539BE6BA11B2" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1163,7 +1169,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_FEFAB3C4-2421-4B9A-AD54-539BE6BA11B2" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

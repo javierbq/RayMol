@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Privacy manifest for the OpenSSL/BoringSSL code statically linked into
+     CPython's _ssl and _hashlib extension modules. Apple flags OpenSSL as a
+     "commonly used third-party SDK" (ITMS-91061) that must ship a manifest.
+     OpenSSL performs cryptography only: it does no tracking, collects no user
+     data, and uses none of the required-reason APIs. -->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+</dict>
+</plist>
