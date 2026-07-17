@@ -904,6 +904,11 @@ struct ContentView: View {
     // safeAreaInsetsDidChange — reliable across a landscapeLeft<->Right flip,
     // unlike geo.safeAreaInsets (which reports the island inset regardless of side).
     @State private var windowTrailingInset: CGFloat = 0
+    // The window's BOTTOM safe-area inset (the home indicator). iPhone portrait runs
+    // the viewport full-bleed under the safe area, so the collapsed inspector tongue
+    // (a .bottom overlay on the viewport) would otherwise land on the system gesture
+    // bar. We lift the tongue by this inset. Fed by SafeAreaReader.
+    @State private var windowBottomInset: CGFloat = 0
     // In landscape the window reports the island inset SYMMETRICALLY on both sides,
     // so the insets can't tell us which side the island is physically on — the
     // interface orientation does. Verified on-device (iPhone 15 Pro): when the
@@ -996,6 +1001,7 @@ struct ContentView: View {
             .background {
                 SafeAreaReader { insets in
                     if windowTrailingInset != insets.right { windowTrailingInset = insets.right }
+                    if windowBottomInset != insets.bottom { windowBottomInset = insets.bottom }
                 }
             }
             #endif
@@ -1374,7 +1380,11 @@ struct ContentView: View {
                 // below (which paints on top of both viewport and panel).
                 .overlay(alignment: .bottom) {
                     if !showThemeStudio && !iosFullScreen && !showObjectPanel {
+                        // Lift the tongue above the home indicator — the viewport is
+                        // full-bleed under the bottom safe area, so without this the
+                        // tappable pill sits on the system gesture bar.
                         panelTongue(shown: objectsBinding, axis: .horizontal)
+                            .padding(.bottom, windowBottomInset)
                     }
                 }
             if !iosFullScreen {
