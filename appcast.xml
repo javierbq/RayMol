@@ -6,47 +6,30 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.7.1</title>
+      <title>RayMol 1.8.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.7.1
+## RayMol 1.8.0
 
-A feature release: a new Move mode for repositioning objects with an on-screen
-gizmo, one-line install and updates via Homebrew, and a batch of selection and
-picking correctness fixes.
+A maintenance release: Move-gizmo and rendering fixes, plus stability
+refinements. (The iPhone and iPad apps also get a redesigned control-rail
+interface in this version.)
 
-### Move mode
-- **Reposition an object with an on-screen gizmo.** *Mouse ▸ Move Objects* (⌃M)
-  enters Move mode: drag the 3D gizmo to translate or rotate a single object
-  rigidly, without disturbing the rest of the scene. The gizmo is sized to the
-  object, and the handle you hover or grab grows so it's clear what you've got.
-  It's non-destructive — leaving the mode returns you to normal camera control.
-- **Adjustable gizmo frame.** Set a custom origin and inclination for the gizmo
-  when you need to rotate about something other than the object's center.
-
-### Selecting
-- **Fixed: the hover preview no longer disappears** once a selection is active —
-  live hover highlighting keeps working after you've selected something.
-- **Fixed: selection markers stay visible through the clip slab.** What *is*
-  selected is always shown, even when clipped away, while only what's actually
-  in view remains clickable.
-- **Fixed: the right residue is picked on multi-state (NMR/MD) objects** when
-  you're viewing a state other than the first — hover and click now match the
-  model on screen.
-
-### Installing
-- **Install and update via Homebrew:** `brew install --cask javierbq/raymol/raymol`.
-
-### macOS app
-- **Smaller download.** The legacy Tk/Qt Python GUIs are no longer bundled in
-  the app.
+### Fixes
+- **Move gizmo.** Ring and axis selection and rigid-body motion are smoother and
+  more reliable — the handle you grab responds the way you expect.
+- **Move and Measure are now mutually exclusive.** Entering one leaves the other,
+  so the two interaction modes no longer overlap.
+- **No more blank-on-launch.** The viewport reliably paints its first frame on
+  startup instead of occasionally staying empty until you interact with it.
+- Rendering and stability refinements throughout.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Wed, 15 Jul 2026 19:59:05 +0000</pubDate>
-      <sparkle:version>20</sparkle:version>
-      <sparkle:shortVersionString>1.7.1</sparkle:shortVersionString>
+      <pubDate>Fri, 17 Jul 2026 19:26:01 +0000</pubDate>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.7.1/RayMol-1.7.1.dmg" type="application/octet-stream" sparkle:edSignature="Ei6LoEAvqkGtuUiO4T4ZDA47ABAI4QSv2m6giICZwN09kn95+026/q+yB9kEGbF2TrtXFb8bHOuZ9ZEJ5Pa6Dw==" length="57952380" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.8.0/RayMol-1.8.0.dmg" type="application/octet-stream" sparkle:edSignature="Nc/JQWAfSu+F+Eqnd75QXhYHIUCi++Y4dYDeVagR9hGae0QX5iHdpvf/6zuvonyItf8ThlPdScVgW3DuhTjoAg==" length="57936809" />
     </item>
   </channel>
 </rss>
