@@ -224,7 +224,12 @@ targets:
             RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}
             PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}
             FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d "." -f 1 | tr "/" ".")
-            FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr "_" "-")
+            # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then
+            # strips any leading dashes a segment picked up (e.g. Python C-ext
+            # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which
+            # Apple rejects as invalid bundle identifiers. Folder/executable names
+            # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.
+            FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr "_" "-" | sed -E 's/\.-+/./g')
             FRAMEWORK_FOLDER="Frameworks/$FULL_MODULE_NAME.framework"
             if [ ! -d "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER" ]; then
               mkdir -p "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER"
