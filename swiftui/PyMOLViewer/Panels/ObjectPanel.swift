@@ -822,20 +822,10 @@ struct ObjectPanel: View {
             // so it lives here rather than in any one section header. (The former
             // "Inspector" label was dropped — the bottom tab already names the pane;
             // SCENE moved fully into the Settings tab.)
-            // Selection mode: on macOS/iPad it lives in the shared inspector chrome
-            // (right of the tab description); on iPhone it stays here in the panel.
-            #if os(iOS)
-            if hSizeClass == .compact {
-                HStack(spacing: 8) {
-                    Spacer()
-                    ClearSelectionButton()
-                    SelectionModeMenu()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                Divider()
-            }
-            #endif
+            // Selection mode + Clear live in the shared inspector chrome
+            // (inspectorSwitcher's tab-description row) on EVERY size class now —
+            // iPhone included, since it adopted that chrome — so there's no
+            // per-panel header here (it used to duplicate on compact width).
 
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {

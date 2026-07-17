@@ -397,6 +397,7 @@ extension MetalViewport {
 
         private var wasSuppressed = false
         private var hasRenderedOnce = false
+        private var moveSyncCounter = 0
 
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
@@ -405,6 +406,26 @@ extension MetalViewport {
             // render meanwhile so we never race it; the exporter restores the
             // scene + clears this flag when done, and the next tick redraws. (#58 L-59)
             if engine.exportRenderActive { return }
+            // Keep the Move gizmo's 2D hit-geometry (+ debug bullseye overlay)
+            // continuously in sync with the camera — not just on mouse-move — so a
+            // cursor parked after an orbit/zoom still sees current targets and the
+            // next grab maps to the visible gizmo. Throttled to ~15 Hz; readGizmo
+            // republishes only when the projection actually moved (no churn on a
+            // static view). Skipped WHILE dragging a handle: metal_move omits the
+            // per-tick emit there and the CGO already tracks via its synced TTT.
+            if engine.interactionMode == .move {
+                #if os(macOS)
+                let draggingGizmo = moveHandle != nil
+                #else
+                let draggingGizmo = panMoveHandle != nil
+                #endif
+                if !draggingGizmo {
+                    moveSyncCounter += 1
+                    if moveSyncCounter >= 8 { moveSyncCounter = 0; engine.refreshGizmo() }
+                } else {
+                    moveSyncCounter = 0
+                }
+            }
             // Panel-resize drag: while suppressed, freeze the drawable size so the
             // renderer doesn't reallocate offscreen targets on every frame (choppy
             // + OOM). On resume, snap the drawable to the current bounds ONCE,
@@ -526,6 +547,12 @@ extension MetalViewport {
             if engine?.interactionMode == .move {
                 // Shift → adjust-frame mode for this drag (re-anchor the gizmo).
                 engine?.moveShiftHeld = event.modifierFlags.contains(.shift)
+                // Refresh the hit geometry in case the click arrived with no prior
+                // hover move (e.g. right after an external view change), so the grab
+                // maps to the currently-visible handle. No-op cost if already fresh.
+                if let (_, _, a) = gizmoNDC(in: view, at: mouseDownLoc) {
+                    engine?.refreshGizmo(aspect: a)
+                }
                 moveHandle = gizmoHit(in: view, at: mouseDownLoc)
             }
         }
@@ -550,6 +577,23 @@ extension MetalViewport {
             // so the gizmo greys out (adjust-frame mode) as you hover with it held.
             if engine?.interactionMode == .move {
                 engine?.moveShiftHeld = event.modifierFlags.contains(.shift)
+                // Re-emit the hit-test geometry for the CURRENT view before testing.
+                // The cached 2D projection goes stale on ANY view change — not just
+                // the four gesture-end sites that call refreshGizmo, but also the
+                // camera dock / Lens, Scene orient·reset·center, MCP/AI commands,
+                // movie playback and window resizes. Hovering the visible ring then
+                // hit the OLD cached ring (→ no highlight, wrong grab). Refreshing
+                // here — gated by the 2px hover step, cheaper than the per-hover atom
+                // pick already run in viewing mode, and republished only when the
+                // projection actually moved — makes hover + the subsequent grab
+                // always map to the handle the user sees. Uses the hover's own aspect
+                // so the emitted geometry and the cursor share one aspect.
+                if let (nx, ny, a) = gizmoNDC(in: view, at: loc) {
+                    engine?.refreshGizmo(aspect: a)
+                    if PyMOLEngine.bullseyeEnabled {
+                        engine?.bullseyeCursorNDC = CGPoint(x: CGFloat(nx), y: CGFloat(ny))
+                    }
+                }
                 let hit = gizmoHit(in: view, at: loc)
                 if engine?.hoveredHandle != hit { engine?.hoveredHandle = hit }
                 return
@@ -1021,6 +1065,13 @@ extension MetalViewport {
             guard let engine = engine, let (nx, ny, aspect) = gizmoNDC(in: view, at: location) else { return }
             switch gesture.state {
             case .began:
+                // Re-emit the hit-test geometry for the CURRENT view before the
+                // grab. iOS has no hover to keep the cache fresh, so a view change
+                // since the last gesture-end (pinch/orbit, or an external change:
+                // camera dock, Scene ops, movie playback) would otherwise leave the
+                // cached projection stale and grab the wrong handle. Cheap: once per
+                // gesture, republished only if the projection actually moved.
+                engine.refreshGizmo(aspect: aspect)
                 var handle = engine.gizmo?.hitTest(ndc: CGPoint(x: CGFloat(nx), y: CGFloat(ny)),
                                                    aspect: CGFloat(aspect))
                 if handle == nil { handle = engine.armedAxis }  // armed-axis drag

@@ -152,9 +152,20 @@ final class PyMOLEngine: ObservableObject {
         didSet {
             guard interactionMode == .move, oldValue != hoveredHandle else { return }
             runPython("from pymol import metal_move as _mm\n_mm.set_hover('\(hoveredHandle?.pyName ?? "")')")
+            // set_hover rebuilt the gizmo CGO with the new handle emphasized, but a
+            // static scene's on-demand draw gate can consume the redisplay flag
+            // before the next tick and leave the highlight unshown (the "hover does
+            // nothing" symptom). Force one repaint so the emphasis actually appears.
+            requestViewportRedraw()
         }
     }
     @Published var gizmo: GizmoGeometry? = nil
+    // Debug bullseye (PYMOL_BULLSEYE=1): the live cursor position in gizmo NDC,
+    // published on each move-mode hover so the on-screen overlay can draw a target
+    // at the cursor next to the hit-test's handle markers — the visual twin of the
+    // PYMOL_GIZMODEBUG log, for spotting cursor↔target mismatches.
+    @Published var bullseyeCursorNDC: CGPoint? = nil
+    static let bullseyeEnabled = ProcessInfo.processInfo.environment["PYMOL_BULLSEYE"] != nil
     // Hover pre-selection preview (issue #165, macOS): when true, moving the
     // pointer over the viewport highlights what a click WOULD select (in a
     // distinct light-cyan) without committing to 'sele'. User-toggleable in the
@@ -371,6 +382,18 @@ final class PyMOLEngine: ObservableObject {
         if let c = ProcessInfo.processInfo.environment["PYMOL_AUTOCMD"] {
             for one in c.split(separator: ";") {
                 runCommand(one.trimmingCharacters(in: .whitespaces))
+            }
+        }
+
+        // Blank-on-launch guard: the on-demand draw gate can leave the very first
+        // frame — where deferred rep geometry (cartoon/surface) is still being
+        // built — unshown, so the scene stays blank until the user interacts
+        // (loading a second object or orbiting "fixed" it). One forced frame builds
+        // the geometry; the follow-up forced frames actually paint it. Cheap
+        // (a handful of extra frames at startup) and harmless once rendered.
+        for delay in [0.15, 0.35, 0.6, 1.0, 1.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.requestViewportRedraw()
             }
         }
 
@@ -1002,6 +1025,16 @@ final class PyMOLEngine: ObservableObject {
                 + "        _sc.set_view(_R + list(_v[16:19]) + list(_v[19:22]) + list(_v[22:24]) + [_v[24]])\n"
                 + "except Exception:\n"
                 + "    pass")
+            // A .pse saved while in Move mode bakes in the transient move gizmo
+            // (the "_move_gizmo" CGO). interactionMode is NOT persisted, so on
+            // cold-launch restore / manual open we'd otherwise show a stray gizmo
+            // with no active mode (and its "_"-prefixed name hides it from the
+            // object panel, so it can't be removed). Strip it unless we're
+            // currently in Move mode — the guard avoids deleting a live gizmo
+            // when a file is opened mid-move. cleanup() is idempotent.
+            if interactionMode != .move {
+                runPython("from pymol import metal_move as _mm\n_mm.cleanup()")
+            }
         } else if lower.hasPrefix("load ") || lower.hasPrefix("fetch ")
                     || lower.hasPrefix("reinitialize") {
             setLetterboxAspect(0)   // new non-session content → fill the window
@@ -1896,6 +1929,7 @@ final class PyMOLEngine: ObservableObject {
     func setMeasureMode(_ k: MeasureKind?) {
         measureMode = k
         if let k = k {
+            if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -2013,11 +2047,15 @@ final class PyMOLEngine: ObservableObject {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
         if (root["active"] as? Bool) == true, let g = GizmoGeometry(json: root) {
-            gizmo = g
-            activeMoveObject = g.obj
+            // Only republish when the projected geometry actually changed. This is
+            // called on every hover step (to keep the hit-test current against any
+            // view change), so a static view must not fire objectWillChange each
+            // move — that would churn every view observing the engine.
+            if gizmo != g { gizmo = g }
+            if activeMoveObject != g.obj { activeMoveObject = g.obj }
         } else {
-            gizmo = nil
-            activeMoveObject = nil
+            if gizmo != nil { gizmo = nil }
+            if activeMoveObject != nil { activeMoveObject = nil }
         }
     }
 

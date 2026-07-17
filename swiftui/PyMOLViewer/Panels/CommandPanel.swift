@@ -124,6 +124,9 @@ private struct LogView: View {
                 .padding(4)
             }
             .background(bgColor)
+            // Swipe the log down to dismiss the keyboard (and peek at output
+            // while typing) — complements the command field's Done button.
+            .scrollDismissesKeyboard(.interactively)
             // Initial content (the startup banner) is present before this view
             // appears, so no count change fires for it — scroll on appear too.
             .onAppear { scrollToBottom(proxy, animated: false) }
@@ -307,6 +310,28 @@ struct CommandTextField: View {
             Button { onDownArrow() } label: {
                 Image(systemName: "chevron.down").font(.system(size: 13))
             }.buttonStyle(.plain).foregroundColor(.gray).accessibilityLabel("Next command")
+
+            // Software keyboards have no dismiss key, and .onSubmit re-arms focus
+            // for the next command, so there was otherwise no way to close the
+            // keyboard. A keyboard-accessory .toolbar(placement:.keyboard) does
+            // NOT render for a field nested in a TabView (the console is a
+            // panelTabs tab), so use an inline button on the command row.
+            // Dismiss via the UIKit responder chain (resignFirstResponder) — the
+            // SAME mechanism the log's interactive scroll-dismiss uses. Clearing
+            // @FocusState alone made the keyboard bounce straight back up (SwiftUI
+            // re-asserts the field's focus inside the TabView); resigning the
+            // first responder sticks. SwiftUI then observes the resign and flips
+            // `focused` false, which hides this button.
+            if focused {
+                Button {
+                    #if canImport(UIKit)
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    #endif
+                } label: {
+                    Image(systemName: "keyboard.chevron.compact.down").font(.system(size: 15))
+                }.buttonStyle(.plain).foregroundColor(.gray).accessibilityLabel("Dismiss keyboard")
+            }
         }
     }
 }
