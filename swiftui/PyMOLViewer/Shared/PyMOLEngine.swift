@@ -1929,6 +1929,7 @@ final class PyMOLEngine: ObservableObject {
     func setMeasureMode(_ k: MeasureKind?) {
         measureMode = k
         if let k = k {
+            if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
