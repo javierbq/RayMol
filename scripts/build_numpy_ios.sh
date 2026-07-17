@@ -33,8 +33,8 @@ PY_SIM_HDR="$ROOT/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.
 PY_DEV_HDR="$ROOT/deps_ios/Python.xcframework/ios-arm64/Python.framework/Headers"
 
 echo ">> host python: $PYHOST"; "$PYHOST" --version
-"$PYHOST" -c "import mesonbuild, ninja" 2>/dev/null || {
-  echo "ERROR: install build tools first:  $PYHOST -m pip install meson ninja cython build"; exit 1; }
+"$PYHOST" -c "import mesonbuild, ninja, lief" 2>/dev/null || {
+  echo "ERROR: install build tools first:  $PYHOST -m pip install meson ninja cython build lief"; exit 1; }
 
 echo ">> downloading numpy $NUMPY_VERSION sdist"
 "$PYHOST" -m pip download --no-deps --no-binary=:all: "numpy==$NUMPY_VERSION" --dest "$WORK"
@@ -94,13 +94,38 @@ EOF
   find "$OUT/$NAME/numpy" -name "_operand_flag_tests*.so" -delete
   find "$OUT/$NAME/numpy" -name "_rational_tests*.so" -delete
   find "$OUT/$NAME/numpy" -name "_struct_ufunc_tests*.so" -delete
+  # Static build-time libs (libnpymath.a, libnpyrandom.a) aren't needed at runtime;
+  # the App Store rejects standalone .a archives (error 90171). Drop them.
+  find "$OUT/$NAME/numpy" -name "*.a" -delete
   # Rename host (-darwin) suffix to the iOS EXT_SUFFIX so import finds them.
   # -print0 | read -d '' so paths containing spaces/newlines don't word-split
   # (an unquoted $(find ...) would split and the mv would silently miss files).
   find "$OUT/$NAME/numpy" -name "*.cpython-313-darwin.so" -print0 | while IFS= read -r -d '' so; do
     mv "$so" "${so/.cpython-313-darwin.so/$EXT}"
   done
-  echo ">> [$NAME] staged $(find "$OUT/$NAME/numpy" -name '*.so' | wc -l | tr -d ' ') extension modules"
+  # App Store rejects framework executables of Mach-O type MH_BUNDLE (errors
+  # 90124 / 90171): meson links Python extensions with -bundle, but iOS embeds
+  # each .so as a framework whose executable must be a DYLIB. Rewrite each to
+  # MH_DYLIB (+ an LC_ID_DYLIB) — dlopen loads them identically, and the Xcode
+  # archive re-signs the frameworks afterward. Requires `lief` (pip install lief).
+  "$PYHOST" - "$OUT/$NAME/numpy" <<'PYEOF'
+import lief, os, sys
+for dp, _, fs in os.walk(sys.argv[1]):
+    for f in fs:
+        if not f.endswith(".so"):
+            continue
+        p = os.path.join(dp, f)
+        fat = lief.MachO.parse(p)
+        if fat is None:
+            continue
+        b = fat.at(0)
+        if b.header.file_type == lief.MachO.Header.FILE_TYPE.DYLIB:
+            continue
+        b.header.file_type = lief.MachO.Header.FILE_TYPE.DYLIB
+        b.add(lief.MachO.DylibCommand.id_dylib("@rpath/" + f))
+        b.write(p)
+PYEOF
+  echo ">> [$NAME] staged $(find "$OUT/$NAME/numpy" -name '*.so' | wc -l | tr -d ' ') extension modules (converted to dylibs)"
 }
 
 build_slice iphonesimulator "arm64-apple-ios${DEPLOY}-simulator" "$PY_SIM_HDR" ".cpython-313-iphonesimulator.so" simulator
