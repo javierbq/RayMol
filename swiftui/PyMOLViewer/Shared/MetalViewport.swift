@@ -1042,24 +1042,41 @@ extension MetalViewport {
             }
         }
 
-        // Trackpad / mouse / Apple-Pencil hover (issue #165) → hover pre-selection
-        // preview, the iPad twin of macOS handleMouseMoved. Fires only for an
-        // indirect-pointer hover with nothing held. Computes NDC EXACTLY like
-        // handleTap (top-left origin, Y flipped) so the preview aligns with what a
-        // tap would select. A sub-pixel move gate skips the re-pick when the
-        // pointer barely moved; the engine additionally debounces the Python pick.
-        // .ended/.cancelled (pointer lifted / left the view) clears the preview.
+        // Trackpad / mouse / Apple-Pencil hover (issue #165) → the iPad twin of
+        // macOS handleMouseMoved. Fires only for an indirect-pointer hover with
+        // nothing held. A sub-pixel move gate skips the re-pick when the pointer
+        // barely moved; the engine additionally debounces the Python pick.
+        //   • Move mode: highlight the gizmo handle under the pointer (what a drag
+        //     would grab) instead of pre-selecting an atom, and reflect Shift
+        //     (Magic Keyboard) as adjust-frame mode — mirroring macOS. The gizmo's
+        //     cached 2D projection goes stale on any view change since the last
+        //     gesture-end, so refresh the hit-test geometry for the CURRENT view
+        //     before testing (same as handleMovePan).
+        //   • Viewing mode: pre-select the atom under the pointer, computing NDC
+        //     EXACTLY like handleTap (top-left origin, Y flipped) so it aligns with
+        //     what a tap would select. Suppressed while measuring.
+        // .ended/.cancelled (pointer lifted / left the view) clears whatever the
+        // hover left behind — atom preview, hovered handle, and Shift-adjust.
         @objc func handleHover(_ gesture: UIHoverGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
             switch gesture.state {
             case .began, .changed:
-                guard engine.measureMode == nil else { return }
                 let p = gesture.location(in: view)
                 if lastHoverLoc != .zero,
                    hypot(p.x - lastHoverLoc.x, p.y - lastHoverLoc.y) < 2 {
                     return
                 }
                 lastHoverLoc = p
+                if engine.interactionMode == .move {
+                    engine.moveShiftHeld = gesture.modifierFlags.contains(.shift)
+                    guard let (nx, ny, aspect) = gizmoNDC(in: view, at: p) else { return }
+                    engine.refreshGizmo(aspect: aspect)
+                    let hit = engine.gizmo?.hitTest(ndc: CGPoint(x: CGFloat(nx), y: CGFloat(ny)),
+                                                    aspect: CGFloat(aspect))
+                    if engine.hoveredHandle != hit { engine.hoveredHandle = hit }
+                    return
+                }
+                guard engine.measureMode == nil else { return }
                 let w = view.bounds.width, h = view.bounds.height
                 guard w > 0, h > 0 else { return }
                 let ndcX = Float(p.x / w) * 2 - 1
@@ -1068,6 +1085,8 @@ extension MetalViewport {
             case .ended, .cancelled:
                 lastHoverLoc = .zero
                 engine.clearHoverPreview()
+                if engine.hoveredHandle != nil { engine.hoveredHandle = nil }
+                if engine.moveShiftHeld { engine.moveShiftHeld = false }
             default:
                 break
             }
