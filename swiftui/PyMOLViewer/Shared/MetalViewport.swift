@@ -248,13 +248,15 @@ struct MetalViewport: UIViewRepresentable {
         view.addGestureRecognizer(rotation)
         view.addGestureRecognizer(longPress)
 
-        // TODO(#165, iPad hover follow-up): add a UIHoverGestureRecognizer here
-        // (target: coordinator) so a trackpad/Apple-Pencil-hover on iPadOS drives
-        // the same hover pre-selection preview as macOS mouseMoved. Its .changed
-        // handler would compute NDC exactly like handleTap and call
-        // engine.hoverPreview(...); .ended would call engine.clearHoverPreview().
-        // Deferred: touch has no persistent cursor, so this only helps the
-        // pointer/pencil-hover case and needs its own gate against tap/drag.
+        // iPad hover pre-selection preview (issue #165): a UIHoverGestureRecognizer
+        // fires ONLY for an indirect pointer hover — trackpad (Magic Keyboard),
+        // mouse, or Apple Pencil hover — with no button/touch held, mirroring the
+        // macOS NSTrackingArea/mouseMoved path. It drives the same
+        // engine.hoverPreview(...) → hover_preview_at → `_preselect` machinery.
+        // Touch input never triggers it (no persistent cursor), so it needs no
+        // gate against tap/drag.
+        let hover = UIHoverGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleHover(_:)))
+        view.addGestureRecognizer(hover)
 
         return view
     }
@@ -385,6 +387,10 @@ extension MetalViewport {
         // Move mode: the gizmo handle a one-finger pan is manipulating (nil =
         // none → the pan orbits the camera).
         private var panMoveHandle: GizmoHandle?
+        // Hover pre-selection preview (issue #165): last hover location fed to a
+        // preview, used to skip re-picking when the pointer barely moved. .zero
+        // is treated as "no prior move" (any first move re-picks).
+        private var lastHoverLoc: CGPoint = .zero
         #endif
 
         // MARK: - MTKViewDelegate
@@ -1033,6 +1039,37 @@ extension MetalViewport {
                 engine.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
             } else {
                 engine.pick(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
+            }
+        }
+
+        // Trackpad / mouse / Apple-Pencil hover (issue #165) → hover pre-selection
+        // preview, the iPad twin of macOS handleMouseMoved. Fires only for an
+        // indirect-pointer hover with nothing held. Computes NDC EXACTLY like
+        // handleTap (top-left origin, Y flipped) so the preview aligns with what a
+        // tap would select. A sub-pixel move gate skips the re-pick when the
+        // pointer barely moved; the engine additionally debounces the Python pick.
+        // .ended/.cancelled (pointer lifted / left the view) clears the preview.
+        @objc func handleHover(_ gesture: UIHoverGestureRecognizer) {
+            guard let engine = engine, let view = mtkView else { return }
+            switch gesture.state {
+            case .began, .changed:
+                guard engine.measureMode == nil else { return }
+                let p = gesture.location(in: view)
+                if lastHoverLoc != .zero,
+                   hypot(p.x - lastHoverLoc.x, p.y - lastHoverLoc.y) < 2 {
+                    return
+                }
+                lastHoverLoc = p
+                let w = view.bounds.width, h = view.bounds.height
+                guard w > 0, h > 0 else { return }
+                let ndcX = Float(p.x / w) * 2 - 1
+                let ndcY = 1 - Float(p.y / h) * 2
+                engine.hoverPreview(ndcX, ndcY, Float(w / h))
+            case .ended, .cancelled:
+                lastHoverLoc = .zero
+                engine.clearHoverPreview()
+            default:
+                break
             }
         }
 
