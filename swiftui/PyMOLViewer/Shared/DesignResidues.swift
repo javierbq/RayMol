@@ -24,7 +24,10 @@ struct DesignResidueSet {
         let raw = try JSONDecoder().decode(Raw.self, from: Data(contentsOf: url))
         var chainMap: [String: Int] = [:]; var next = 0
         func chainInt(_ s: String) -> Int { if let i = chainMap[s] { return i }; chainMap[s] = next; next += 1; return next - 1 }
-        func vec(_ a: [Float]?) -> SIMD3<Float>? { a.map { SIMD3<Float>($0[0], $0[1], $0[2]) } }
+        func vec(_ a: [Float]?) -> SIMD3<Float>? {
+            guard let a, a.count >= 3 else { return nil }
+            return SIMD3<Float>(a[0], a[1], a[2])
+        }
         let residues: [DesignResidue] = raw.residues.map { rr in
             var bb: MPNNModel.Residue? = nil
             if rr.valid, let n = vec(rr.n), let ca = vec(rr.ca), let c = vec(rr.c), let o = vec(rr.o) {
