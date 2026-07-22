@@ -49,3 +49,47 @@ def enumerate_design_residues(obj, state):
     with open(_tmp('raymol_design_residues.json'), 'w') as f:
         json.dump({'object': obj, 'state': state, 'residues': residues}, f)
     return 'DESIGN_RESIDUES:ready'
+
+
+def apply_design_coloring(obj, values_json_path, palette, lo, hi):
+    """Write per-residue scalar and apply spectrum coloring.
+
+    values_json_path: path to JSON list of {'chain', 'resi', 'value'} dicts.
+    palette: PyMOL palette name (e.g. 'blue_white_red').
+    lo, hi: domain min/max used by the Swift legend; passed to spectrum when
+            minimum/maximum kwargs are supported, otherwise auto-scaling is used.
+    Returns 'DESIGN_COLOR:ok'.
+
+    Storage: Incentive PyMOL stores values in the custom atom property
+    p.mpnn_conf; Open-Source PyMOL falls back to the B-factor column (b).
+    Spectrum is run over whichever was set.
+    """
+    rows = json.load(open(values_json_path))
+    vmap = {(r['chain'], r['resi']): float(r['value'])
+            for r in rows if r.get('value') is not None}
+
+    def _lookup(chain, resi):
+        v = vmap.get((chain, resi))
+        return v if v is not None else -9999.0
+
+    # Attempt incentive-only per-atom property first; fall back to B-factor.
+    prop_field = 'p.mpnn_conf'
+    try:
+        cmd.alter(obj, 'p.mpnn_conf = _lookup(chain, resi)',
+                  space={'_lookup': _lookup})
+    except Exception:
+        # Open-Source PyMOL: store in b (B-factor) instead.
+        prop_field = 'b'
+        cmd.alter(obj, 'b = _lookup(chain, resi)',
+                  space={'_lookup': _lookup})
+
+    try:
+        cmd.spectrum(prop_field, palette, obj,
+                     minimum=float(lo), maximum=float(hi))
+    except TypeError:
+        # This PyMOL build does not support minimum/maximum kwargs;
+        # spectrum auto-scales over the values present. The Swift legend
+        # still uses the lo/hi domain it passed.
+        cmd.spectrum(prop_field, palette, obj)
+
+    return 'DESIGN_COLOR:ok'
