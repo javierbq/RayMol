@@ -79,7 +79,7 @@ private let rulerSpacing = 10  // draw a residue number every N residues
 /// Collects each residue cell's frame (in the "seq" coordinate space) so a
 /// drag can map a point back to a residue.
 private struct SeqResidueFrames: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: [String: CGRect] = [:]
+    static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue()) { _, new in new }
     }

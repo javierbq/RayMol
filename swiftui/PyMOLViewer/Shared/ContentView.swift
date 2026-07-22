@@ -322,7 +322,11 @@ struct ContentView: View {
         }
     }
 
-    private var macOSLayoutContent: some View {
+    // macOS layout body + notification handlers + sheets. Extracted from
+    // macOSLayout so the type-checker can resolve each part in isolation
+    // (the full inline modifier chain tripped the "unable to type-check in
+    // reasonable time" limit — same pattern as macViewport above).
+    private var macOSLayoutBase: some View {
         // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
         // strip can't grow into the viewport. minHeight is set a few pt below the
         // cap so the VSplitView still hands the user a draggable splitter (a strict
@@ -431,12 +435,6 @@ struct ContentView: View {
             }
             #endif
         }
-    }
-
-    // Event modifiers split from macOSLayoutContent to reduce the size of the
-    // type-checked expression (Swift 6 type-checker budget).
-    private var macOSLayout: some View {
-        macOSLayoutContent
         // Native File-menu commands → reuse the same actions as the toolbar.
         .onReceive(NotificationCenter.default.publisher(for: .raymolOpenFile)) { _ in macOpenFile() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
@@ -460,7 +458,7 @@ struct ContentView: View {
         .sheet(isPresented: $showConnectSheet) {
             MCPConnectSheet().environmentObject(mcpManager)
         }
-        .alert("Allow Claude to control RayMol?", isPresented: Binding<Bool>(
+        .alert("Allow Claude to control RayMol?", isPresented: Binding(
             get: { mcpManager.pendingApproval },
             set: { if !$0 { mcpManager.pendingApproval = false } })) {
             Button("Stop server", role: .destructive) { mcpManager.denyAndStop() }
@@ -470,40 +468,44 @@ struct ContentView: View {
                 + "run Python, and load structures until you stop it.")
         }
         #endif
-        .preferredColorScheme(themeManager.active.resolvedColorScheme)
-        .tint(themeManager.active.tabTint.color)
-        .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
-        .onChange(of: showThemeStudio) { open in
-            if open { engine.beginThemePreview() } else { engine.endThemePreview() }
-        }
-        .onAppear {
-            initializeEngine()
-            maybePresentFirstBootTheme()
-            autoSelectThemeFromEnv()
-            if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+    }
+
+    private var macOSLayout: some View {
+        macOSLayoutBase
+            .preferredColorScheme(themeManager.active.resolvedColorScheme)
+            .tint(themeManager.active.tabTint.color)
+            .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
+            .onChange(of: showThemeStudio) { open in
+                if open { engine.beginThemePreview() } else { engine.endThemePreview() }
             }
-            // Test affordance: show the in-viewport scene buttons at launch so the
-            // overlay can be screenshotted. PYMOL_AUTOSCENEBUTTONS=1.
-            if ProcessInfo.processInfo.environment["PYMOL_AUTOSCENEBUTTONS"] != nil {
-                showSceneButtons = true
+            .onAppear {
+                initializeEngine()
+                maybePresentFirstBootTheme()
+                autoSelectThemeFromEnv()
+                if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+                }
+                // Test affordance: show the in-viewport scene buttons at launch so the
+                // overlay can be screenshotted. PYMOL_AUTOSCENEBUTTONS=1.
+                if ProcessInfo.processInfo.environment["PYMOL_AUTOSCENEBUTTONS"] != nil {
+                    showSceneButtons = true
+                }
+                // Test affordance: enter Move mode and make PYMOL_AUTOMOVE=<object>
+                // the active object so the gizmo can be screenshotted without a tap.
+                if let mv = ProcessInfo.processInfo.environment["PYMOL_AUTOMOVE"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
+                        engine.setInteractionMode(.move)
+                        if !mv.isEmpty { engine.setActiveMoveObject(mv) }
+                    }
+                }
+                installEscKeyMonitor()
             }
-            // Test affordance: enter Move mode and make PYMOL_AUTOMOVE=<object>
-            // the active object so the gizmo can be screenshotted without a tap.
-            if let mv = ProcessInfo.processInfo.environment["PYMOL_AUTOMOVE"] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
-                    engine.setInteractionMode(.move)
-                    if !mv.isEmpty { engine.setActiveMoveObject(mv) }
+            .onDisappear {
+                if let token = escKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    escKeyMonitor = nil
                 }
             }
-            installEscKeyMonitor()
-        }
-        .onDisappear {
-            if let token = escKeyMonitor {
-                NSEvent.removeMonitor(token)
-                escKeyMonitor = nil
-            }
-        }
     }
 
     // Esc → two-stage clear selection (issues #163 + #166). A local key-down

@@ -5,7 +5,7 @@
 import SwiftUI
 
 final class ThemeManager: ObservableObject {
-    nonisolated(unsafe) static let shared = ThemeManager()
+    static let shared = ThemeManager()
 
     @Published private(set) var active: Theme
     @Published private(set) var custom: [Theme]

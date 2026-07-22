@@ -1038,11 +1038,11 @@ struct TimelinePanel: View {
 // Scenes-palette width measurement for the horizontal-scroll edge fade (#131):
 // content width vs. viewport width decide whether the trailing fade shows.
 private struct PaletteContentWKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+    static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 private struct PaletteViewportWKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+    static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 

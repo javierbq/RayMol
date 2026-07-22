@@ -268,7 +268,7 @@ struct MetalViewport: UIViewRepresentable {
 // MARK: - Shared Coordinator (MTKViewDelegate + input handling)
 
 extension MetalViewport {
-    class Coordinator: NSObject, MTKViewDelegate, @unchecked Sendable {
+    class Coordinator: NSObject, MTKViewDelegate {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
         private var viewportSize: CGSize = .zero

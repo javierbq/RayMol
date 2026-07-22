@@ -46,8 +46,8 @@ struct LongPressHit: Equatable, Identifiable {
     }
 }
 
-final class PyMOLEngine: ObservableObject, @unchecked Sendable {
-    nonisolated(unsafe) static let shared = PyMOLEngine()
+final class PyMOLEngine: ObservableObject {
+    static let shared = PyMOLEngine()
 
     // Published state for UI binding
     @Published var feedbackLog: [String] = []
@@ -858,7 +858,7 @@ final class PyMOLEngine: ObservableObject, @unchecked Sendable {
     // op stays on the main thread. We paint the overlay first (set isBusy, then
     // defer the op one runloop hop so SwiftUI commits the overlay before the
     // op blocks), so the card is visible for the duration of the operation.
-    func runHeavy(_ label: String, _ work: @escaping @Sendable () -> Void) {
+    func runHeavy(_ label: String, _ work: @escaping () -> Void) {
         busyLabel = label
         busyDepth += 1
         isBusy = true

@@ -29,7 +29,7 @@ packages:
 
 settings:
   base:
-    SWIFT_VERSION: "6.0"
+    SWIFT_VERSION: "5.9"
     CLANG_CXX_LANGUAGE_STANDARD: c++17
     CLANG_ENABLE_MODULES: YES
     SWIFT_OBJC_BRIDGING_HEADER: PyMOLViewer/Bridge/PyMOLBridge.h
