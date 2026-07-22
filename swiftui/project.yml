@@ -456,6 +456,14 @@ targets:
     dependencies:
       - target: PyMOLViewer_macOS
         link: false
+      # MPNNKit: required so DesignResiduesTests (which does `import MPNNKit` inside
+      # #if RAYMOL_MPNN) and DesignResidues.swift both compile. macOS-only, matching
+      # the app target's platformFilter. The test bundle runs in-process inside
+      # RayMol.app (BUNDLE_LOADER), which already links MPNNKit; this dep adds the
+      # Swift module to the test target's compile search path.
+      - package: proteinmpnn-mlx
+        product: MPNNKit
+        platforms: [macOS]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests
@@ -468,6 +476,11 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: ""
         OTHER_LDFLAGS: ""
         OTHER_CPLUSPLUSFLAGS: ""
+        # Enable the RAYMOL_MPNN compilation condition so DesignResidues.swift and
+        # DesignResiduesTests.swift compile their #if RAYMOL_MPNN blocks. Mirrors the
+        # app target's [sdk=macosx*] setting; the test target is macOS-only so no
+        # conditional key is needed.
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "$(inherited) RAYMOL_MPNN"
 
   # iOS UI-test target: real-touch gesture coverage (rotate/zoom/Z-roll/tap)
   # through the genuine UIKit recognizer path, verified by pixel-diffing the
