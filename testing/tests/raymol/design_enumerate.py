@@ -18,8 +18,10 @@ class TestDesignEnumerate(testing.PyMOLTestCase):
         marker = raymol_design.enumerate_design_residues('m1', 1)
         self.assertEqual(marker, 'DESIGN_RESIDUES:ready')
         path = os.path.join(tempfile.gettempdir(), 'raymol_design_residues.json')
-        data = json.load(open(path))
+        with open(path) as f:
+            data = json.load(f)
         self.assertEqual(data['object'], 'm1')
+        self.assertEqual(data['state'], 1)
         r0 = data['residues'][0]
         self.assertEqual(r0['resn'], 'ALA')
         self.assertEqual(r0['aa'], 0)                 # 'A' -> index 0
@@ -33,6 +35,36 @@ class TestDesignEnumerate(testing.PyMOLTestCase):
         cmd.remove('m1 and name O')       # drop an O
         from pymol import raymol_design
         raymol_design.enumerate_design_residues('m1', 1)
-        data = json.load(open(os.path.join(tempfile.gettempdir(), 'raymol_design_residues.json')))
-        self.assertFalse(data['residues'][0]['valid'])
-        self.assertIsNone(data['residues'][0]['o'])
+        path = os.path.join(tempfile.gettempdir(), 'raymol_design_residues.json')
+        with open(path) as f:
+            data = json.load(f)
+        r0 = data['residues'][0]
+        self.assertFalse(r0['valid'])
+        self.assertIsNone(r0['o'])
+        # The three remaining backbone atoms must still be present
+        for k in ('n', 'ca', 'c'):
+            self.assertIsNotNone(r0[k])
+            self.assertEqual(len(r0[k]), 3)
+
+    def testCoordsComeFromPassedState(self):
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.create('multi', 'm1', 1, 1)          # state 1
+        cmd.create('multi', 'm1', 1, 2)          # state 2 (copy of state 1)
+        cmd.translate([10, 0, 0], 'multi', state=2)   # shift state 2 so coords differ
+        from pymol import raymol_design
+        path = os.path.join(tempfile.gettempdir(), 'raymol_design_residues.json')
+        raymol_design.enumerate_design_residues('multi', 1)
+        with open(path) as f:
+            s1 = json.load(f)
+        raymol_design.enumerate_design_residues('multi', 2)
+        with open(path) as f:
+            s2 = json.load(f)
+        self.assertEqual(s1['state'], 1)
+        self.assertEqual(s2['state'], 2)
+        # CA coords must differ between states
+        self.assertNotEqual(s1['residues'][0]['ca'], s2['residues'][0]['ca'])
+        # The translation was exactly 10 Å along X
+        self.assertAlmostEqual(
+            s2['residues'][0]['ca'][0] - s1['residues'][0]['ca'][0], 10.0, places=3
+        )
