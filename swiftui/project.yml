@@ -115,13 +115,6 @@ targets:
           # OUT of the macOS build (sandbox + 2.5.2). No effect on iOS — gated to
           # os(macOS) in RayMolBuild.mcpEnabled. Then archive for the MAS.
           # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) RAYMOL_MAS_RESTRICTED
-    resources:
-      # MPNN weight pack (24 MB folder reference): macOS only. Bundled as a
-      # folder reference so Bundle.main.url(forResource:withExtension:) resolves
-      # the whole directory as a single URL. Not included in the iOS slice.
-      - path: PyMOLViewer/Resources/MPNN.mpnnpack
-        type: folder
-        platforms: [macOS]
     # iOS runtime packaging (BeeWare CPython 3.13). Guarded to iOS via
     # PLATFORM_NAME so the macOS target is unaffected. The xcframework has no
     # macOS slice, so a native embed dependency can't be used on a shared target.
@@ -405,6 +398,21 @@ targets:
             /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
               "$CODESIGNING_FOLDER_PATH"
           fi
+      # macOS-only: copy the MPNN weight pack into the built app as a real
+      # directory (folder reference) so Bundle.main.url(forResource:withExtension:)
+      # resolves the whole directory as a single URL (MPNNGate.packURL /
+      # canLoadModel()). Lives in swiftui/resources_macos/ (outside the
+      # auto-scanned PyMOLViewer/ tree) so xcodegen never adds it to either
+      # target's Copy Bundle Resources phase — the iOS build remains 24 MB lighter.
+      - name: "macOS: Bundle MPNN.mpnnpack"
+        basedOnDependencyAnalysis: false
+        script: |
+          case "$PLATFORM_NAME" in macosx*) ;; *) exit 0 ;; esac
+          set -e
+          DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+          mkdir -p "$DEST"
+          rm -rf "$DEST/MPNN.mpnnpack"
+          cp -R "${SRCROOT}/resources_macos/MPNN.mpnnpack" "$DEST/MPNN.mpnnpack"
     dependencies:
       # macOS-only: MPNNKit (mlx-swift) has no iOS slice; platformFilter keeps it
       # out of the iOS build. All usage is also guarded by #if RAYMOL_MPNN.
