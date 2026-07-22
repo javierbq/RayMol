@@ -44,6 +44,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "BFFDF4CBA2B92A93CDBB24E7"
+               BuildableName = "PyMOLViewerTests.xctest"
+               BlueprintName = "PyMOLViewerTests"
+               ReferencedContainer = "container:PyMOLViewer.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "A8AA9F6242B9A29B6AAA26F7"
                BuildableName = "PyMOLViewerUITests.xctest"
                BlueprintName = "PyMOLViewerUITests"

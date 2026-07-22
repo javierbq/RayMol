@@ -41,6 +41,19 @@ settings:
     # LIBRARY_SEARCH_PATHS here — a target-level value would override the
     # xcconfig's per-SDK paths.
 
+schemes:
+  # Standalone macOS unit-test scheme so `xcodebuild test -scheme UnitTests_macOS`
+  # only builds + runs PyMOLViewerTests (macOS) and never touches the iOS targets.
+  UnitTests_macOS:
+    build:
+      targets:
+        PyMOLViewer_macOS: [test, build]
+        PyMOLViewerTests: [test, build]
+    test:
+      targets:
+        - PyMOLViewerTests
+      gatherCoverageData: false
+
 targets:
   PyMOLViewer:
     type: application
@@ -428,8 +441,33 @@ targets:
 # RAYMOL_SPARKLE_END
     scheme:
       testTargets:
+        - PyMOLViewerTests
         - PyMOLViewerUITests
       gatherCoverageData: false
+
+  # macOS unit-test target: hosts Design-mode Swift logic tests with @testable import.
+  # Runs in-process inside the macOS app (TEST_HOST + BUNDLE_LOADER) so the full
+  # RayMol Swift module is visible to @testable import without linking pymol_core again.
+  PyMOLViewerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - PyMOLViewerTests
+    dependencies:
+      - target: PyMOLViewer_macOS
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RayMol.app/Contents/MacOS/RayMol"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        # Blank out the app-level C++ bridge — the test bundle is pure Swift and
+        # must not inherit the bridging header or linker flags that pull in pymol_core.
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS: ""
+        OTHER_CPLUSPLUSFLAGS: ""
 
   # iOS UI-test target: real-touch gesture coverage (rotate/zoom/Z-roll/tap)
   # through the genuine UIKit recognizer path, verified by pixel-diffing the

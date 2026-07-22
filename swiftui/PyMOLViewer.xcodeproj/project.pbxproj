@@ -42,6 +42,7 @@
 		5992346BC7D06026A673BA71 /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
 		5A20A6D21AA3CFAE2394BAB4 /* dylib-Info-template.plist in Resources */ = {isa = PBXBuildFile; fileRef = 57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */; };
 		5C923361D76329D2A466FFA9 /* PyMOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D965CB609C447033E5DB0046 /* PyMOLApp.swift */; };
+		5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F4F52D951CF1F96606F41C /* SmokeTests.swift */; };
 		5CEF96397383F4A7F731F9A0 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
 		5D4BC69196C1256F5164E56A /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		5E0DDAA214299444AB084E74 /* KeyboardDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */; };
@@ -107,6 +108,13 @@
 			remoteGlobalIDString = 5C02477A5F60954358D0D615;
 			remoteInfo = PyMOLViewer_iOS;
 		};
+		EF2FFC7949375CF24130EFBC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6ED6C52F0EEB9A594A439620 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 403C29EE7864FF79CFA77A80;
+			remoteInfo = PyMOLViewer_macOS;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -127,6 +135,7 @@
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		4C570F9CAC877E201F237016 /* whatsnew-170-move.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-move.png"; sourceTree = "<group>"; };
 		55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-152-timeline.png"; sourceTree = "<group>"; };
+		55F4F52D951CF1F96606F41C /* SmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
 		56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNGate.swift; sourceTree = "<group>"; };
 		57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "dylib-Info-template.plist"; sourceTree = "<group>"; };
 		589928DEEE69075B965DB9F2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -157,12 +166,13 @@
 		CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConnectSheet.swift; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
+		E9D0FEF5D42BDC6E514B7BB9 /* PyMOLViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PyMOLViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
 		F16058D96E2773BE9A24C323 /* RayMol.svg */ = {isa = PBXFileReference; path = RayMol.svg; sourceTree = "<group>"; };
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_076222AA-BFA8-4C17-A100-6F718F11BD31" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_78429BA8-4E07-41AF-8F9D-0FA9E92B31D2" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -231,6 +241,7 @@
 			isa = PBXGroup;
 			children = (
 				52FC8256B867D42D45933E18 /* PyMOLViewer */,
+				7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */,
 				22F2EFCF4CDD52CF747B834A /* PyMOLViewerUITests */,
 				9CB24941D41B87B6FB69845B /* Products */,
 			);
@@ -273,11 +284,20 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */ = {
+			isa = PBXGroup;
+			children = (
+				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
+			);
+			path = PyMOLViewerTests;
+			sourceTree = "<group>";
+		};
 		9CB24941D41B87B6FB69845B /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */,
 				05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */,
+				E9D0FEF5D42BDC6E514B7BB9 /* PyMOLViewerTests.xctest */,
 				99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */,
 			);
 			name = Products;
@@ -292,10 +312,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_281DF95E-C8C5-4781-A1A7-800F977F7621" /* swiftui */ = {
+		"TEMP_B59772EC-A975-4D67-87DB-83C3FDF614E6" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_076222AA-BFA8-4C17-A100-6F718F11BD31" /* PyMOLBridge.xcconfig */,
+				"TEMP_78429BA8-4E07-41AF-8F9D-0FA9E92B31D2" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -382,6 +402,24 @@
 			productReference = 99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 95FE4D1F4DCECB474AA7197C /* Build configuration list for PBXNativeTarget "PyMOLViewerTests" */;
+			buildPhases = (
+				5C6654AD103A5EE30DBFC24B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F0769C7CE014829CC22EB673 /* PBXTargetDependency */,
+			);
+			name = PyMOLViewerTests;
+			packageProductDependencies = (
+			);
+			productName = PyMOLViewerTests;
+			productReference = E9D0FEF5D42BDC6E514B7BB9 /* PyMOLViewerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -414,6 +452,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
 				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
 				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
@@ -903,6 +942,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5C6654AD103A5EE30DBFC24B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CA0704A170D844CE72B9AB3E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -982,6 +1029,11 @@
 			isa = PBXTargetDependency;
 			target = 5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */;
 			targetProxy = 2FB6BDD8222A031796D2044E /* PBXContainerItemProxy */;
+		};
+		F0769C7CE014829CC22EB673 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */;
+			targetProxy = EF2FFC7949375CF24130EFBC /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1138,7 +1190,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_076222AA-BFA8-4C17-A100-6F718F11BD31" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_78429BA8-4E07-41AF-8F9D-0FA9E92B31D2" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1201,6 +1253,27 @@
 			};
 			name = Debug;
 		};
+		BDC1BAEF2093D412E334BA06 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				OTHER_CPLUSPLUSFLAGS = "";
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol.tests;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RayMol.app/Contents/MacOS/RayMol";
+			};
+			name = Debug;
+		};
 		D48693167E0AC681A76ABB54 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1223,7 +1296,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_076222AA-BFA8-4C17-A100-6F718F11BD31" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_78429BA8-4E07-41AF-8F9D-0FA9E92B31D2" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1279,6 +1352,27 @@
 			};
 			name = Release;
 		};
+		DE017CD8595EA8701E7312A5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				OTHER_CPLUSPLUSFLAGS = "";
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol.tests;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RayMol.app/Contents/MacOS/RayMol";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1305,6 +1399,15 @@
 			buildConfigurations = (
 				4D9ACD9B455938F3397B8DB7 /* Debug */,
 				5DC18310572E12E35999B821 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		95FE4D1F4DCECB474AA7197C /* Build configuration list for PBXNativeTarget "PyMOLViewerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BDC1BAEF2093D412E334BA06 /* Debug */,
+				DE017CD8595EA8701E7312A5 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
