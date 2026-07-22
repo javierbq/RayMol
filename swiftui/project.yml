@@ -2,21 +2,26 @@ name: PyMOLViewer
 options:
   bundleIdPrefix: io.raymol
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
     iOS: "16.0"
-  xcodeVersion: "15.0"
+  xcodeVersion: "16.0"
   createIntermediateGroups: true
 
 configFiles:
   Debug: PyMOLBridge.xcconfig
   Release: PyMOLBridge.xcconfig
 
+packages:
+  # MPNNKit: on-device ProteinMPNN inference (macOS only; iOS excluded via
+  # platformFilter in the dependency + RAYMOL_MPNN compile-condition guard).
+  proteinmpnn-mlx:
+    url: https://github.com/javierbq/proteinmpnn-mlx.git
+    from: 0.1.0
 # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
 # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
 # (MAS forbids self-update + Sparkle's helpers fail sandbox validation, error 90296).
 # The Developer-ID/DMG build keeps Sparkle for auto-update.
-packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.6.0
@@ -24,7 +29,7 @@ packages:
 
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "6.0"
     CLANG_CXX_LANGUAGE_STANDARD: c++17
     CLANG_ENABLE_MODULES: YES
     SWIFT_OBJC_BRIDGING_HEADER: PyMOLViewer/Bridge/PyMOLBridge.h
@@ -46,6 +51,10 @@ targets:
           - "**/*.md"
     settings:
       base:
+        # Design mode: RAYMOL_MPNN enables MPNNKit (ProteinMPNN inference) on macOS.
+        # The [sdk=macosx*] conditional ensures this flag is never set for the iOS
+        # slice of this shared target, keeping mlx-swift and MPNNKit out of iOS.
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]": "$(inherited) RAYMOL_MPNN"
         # Apple-silicon only: the embedded standalone Python 3.13, libpymol_core.a,
         # and Homebrew deps are all arm64-only, so Release/Archive (which would
         # otherwise build "Any Mac" incl. x86_64) must be pinned to arm64 or the
@@ -106,6 +115,13 @@ targets:
           # OUT of the macOS build (sandbox + 2.5.2). No effect on iOS — gated to
           # os(macOS) in RayMolBuild.mcpEnabled. Then archive for the MAS.
           # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) RAYMOL_MAS_RESTRICTED
+    resources:
+      # MPNN weight pack (24 MB folder reference): macOS only. Bundled as a
+      # folder reference so Bundle.main.url(forResource:withExtension:) resolves
+      # the whole directory as a single URL. Not included in the iOS slice.
+      - path: PyMOLViewer/Resources/MPNN.mpnnpack
+        type: folder
+        platforms: [macOS]
     # iOS runtime packaging (BeeWare CPython 3.13). Guarded to iOS via
     # PLATFORM_NAME so the macOS target is unaffected. The xcframework has no
     # macOS slice, so a native embed dependency can't be used on a shared target.
@@ -389,8 +405,13 @@ targets:
             /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
               "$CODESIGNING_FOLDER_PATH"
           fi
-# RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
     dependencies:
+      # macOS-only: MPNNKit (mlx-swift) has no iOS slice; platformFilter keeps it
+      # out of the iOS build. All usage is also guarded by #if RAYMOL_MPNN.
+      - package: proteinmpnn-mlx
+        product: MPNNKit
+        platforms: [macOS]
+# RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
       # #if os(macOS) && !RAYMOL_MAS_RESTRICTED.

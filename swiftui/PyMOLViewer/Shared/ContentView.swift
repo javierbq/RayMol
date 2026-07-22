@@ -322,7 +322,7 @@ struct ContentView: View {
         }
     }
 
-    private var macOSLayout: some View {
+    private var macOSLayoutContent: some View {
         // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
         // strip can't grow into the viewport. minHeight is set a few pt below the
         // cap so the VSplitView still hands the user a draggable splitter (a strict
@@ -431,6 +431,12 @@ struct ContentView: View {
             }
             #endif
         }
+    }
+
+    // Event modifiers split from macOSLayoutContent to reduce the size of the
+    // type-checked expression (Swift 6 type-checker budget).
+    private var macOSLayout: some View {
+        macOSLayoutContent
         // Native File-menu commands → reuse the same actions as the toolbar.
         .onReceive(NotificationCenter.default.publisher(for: .raymolOpenFile)) { _ in macOpenFile() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
@@ -454,7 +460,7 @@ struct ContentView: View {
         .sheet(isPresented: $showConnectSheet) {
             MCPConnectSheet().environmentObject(mcpManager)
         }
-        .alert("Allow Claude to control RayMol?", isPresented: Binding(
+        .alert("Allow Claude to control RayMol?", isPresented: Binding<Bool>(
             get: { mcpManager.pendingApproval },
             set: { if !$0 { mcpManager.pendingApproval = false } })) {
             Button("Stop server", role: .destructive) { mcpManager.denyAndStop() }

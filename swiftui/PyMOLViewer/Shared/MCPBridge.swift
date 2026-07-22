@@ -10,7 +10,7 @@ enum MCPBridge {
     private static let protocolVersion = "2025-06-18"
     // sessionId is written from the URLSession completion queue and read on the
     // run() loop thread, so guard it with a lock for safe cross-thread visibility.
-    private static var sessionId: String? = nil
+    private nonisolated(unsafe) static var sessionId: String? = nil
     private static let sessionIdLock = NSLock()
     private static func getSessionId() -> String? {
         sessionIdLock.lock(); defer { sessionIdLock.unlock() }; return sessionId

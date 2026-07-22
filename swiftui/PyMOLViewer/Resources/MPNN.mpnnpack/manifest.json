@@ -1,0 +1,50 @@
+{
+  "format": "mpnnpack",
+  "version": 1,
+  "min_loader_version": 1,
+  "description": "LigandMPNN protein-only sequence design + side-chain repack (MLX).",
+  "runtime": {
+    "framework": "mlx-swift",
+    "featurization_dtype": "float32",
+    "top_k": 32
+  },
+  "models": {
+    "design": {
+      "file": "weights/design.safetensors",
+      "source_checkpoint": "ligandmpnn_v_32_010_25.pt",
+      "k_neighbors": 32,
+      "atom_context_num": 25,
+      "protein_only": true
+    },
+    "packer": {
+      "file": "weights/packer.safetensors",
+      "source_checkpoint": "ligandmpnn_sc_v_32_002_16.pt",
+      "k_neighbors": 32,
+      "atom_context_num": 16,
+      "num_denoising_steps": 3
+    }
+  },
+  "geometry": "geometry.safetensors",
+  "atom_names": "atom14_names.json",
+  "files": {
+    "weights/design.safetensors": {
+      "bytes": 10493805,
+      "sha256": "52c4567ae6a8094bdfe8dce7bb0b0929231898a753283b53300099e5276da6f7",
+      "params": 2618693
+    },
+    "weights/packer.safetensors": {
+      "bytes": 14307043,
+      "sha256": "0a6ba46415a589de2efe1de5b58ce963ed8b6cc561480cd0decf21918cd4ba19",
+      "params": 3571556
+    },
+    "geometry.safetensors": {
+      "bytes": 16946,
+      "sha256": "9f74cf9fc97ef9bb3f6b70a1a7351417a21e443b1ec605e496c17059ec60b2d6",
+      "params": 4158
+    },
+    "atom14_names.json": {
+      "bytes": 1737,
+      "sha256": "d2337e74aef5e427fb676b913b8d3c9845fe976e41ab5a80ed9e612ca5a4be1f"
+    }
+  }
+}

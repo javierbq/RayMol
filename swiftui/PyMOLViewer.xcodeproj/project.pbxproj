@@ -14,9 +14,12 @@
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
+		23FEFD82478798C876BFD4A4 /* geometry.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 289181FA9EFCBD72291B723F /* geometry.safetensors */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
+		252652CFC36CBD0A4DF1DE51 /* atom14_names.json in Resources */ = {isa = PBXBuildFile; fileRef = 25D2909F982E5C193EFB039F /* atom14_names.json */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		33C46A7EB6127A6A99D7048D /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
 		36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
@@ -30,8 +33,9 @@
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
 		4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
-		48E340346AD8FF81AF09F501 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
+		48E340346AD8FF81AF09F501 /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7A0C20547CE6C050BA30EDA0 /* MPNNKit */; };
 		4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
+		4C494B44762DC5277B74F198 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 5A931D4D0EAF290439861DA0 /* manifest.json */; };
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
 		54F313461574BD8EEE414E3E /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
@@ -48,6 +52,8 @@
 		667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6E6BAB43588CEBE88230F5C5 /* WhatsNewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */; };
+		6E945630A8B9A6195B98A958 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
+		704E897A6228EBEE22A224B3 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 5A931D4D0EAF290439861DA0 /* manifest.json */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
@@ -65,16 +71,20 @@
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
+		9D67F347CD11C984F0F0D7D3 /* atom14_names.json in Resources */ = {isa = PBXBuildFile; fileRef = 25D2909F982E5C193EFB039F /* atom14_names.json */; };
 		9FE703EF6FD7C97884C299DF /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
+		AD50334383B672C524BB908A /* design.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 7CEA54BEE99AFF761D57D17C /* design.safetensors */; };
 		B2697EF48D85EF14D4A19163 /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
 		B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		C7F6AF766708A35F7B49D536 /* packer.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 200EA119A6205DF0F8B1136A /* packer.safetensors */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
+		CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		CE45D81735E70E8FFFD49875 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
 		D35B766612AA47956AB18A75 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
 		D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
@@ -85,7 +95,10 @@
 		E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
 		EC4EF850FC58B240AD02346F /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
+		ED5D89C65193560664655C7A /* design.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 7CEA54BEE99AFF761D57D17C /* design.safetensors */; };
 		EE156FFB12BEFB4FC132D610 /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
+		F01745383C59DE91FE24AB22 /* geometry.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 289181FA9EFCBD72291B723F /* geometry.safetensors */; };
+		F19C245FB21794F43C4329F5 /* packer.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = 200EA119A6205DF0F8B1136A /* packer.safetensors */; };
 		F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
@@ -115,7 +128,10 @@
 		14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
+		200EA119A6205DF0F8B1136A /* packer.safetensors */ = {isa = PBXFileReference; path = packer.safetensors; sourceTree = "<group>"; };
 		221117550FAD97CF81924E05 /* MousePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MousePanel.swift; sourceTree = "<group>"; };
+		25D2909F982E5C193EFB039F /* atom14_names.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = atom14_names.json; sourceTree = "<group>"; };
+		289181FA9EFCBD72291B723F /* geometry.safetensors */ = {isa = PBXFileReference; path = geometry.safetensors; sourceTree = "<group>"; };
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -124,14 +140,17 @@
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		4C570F9CAC877E201F237016 /* whatsnew-170-move.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-move.png"; sourceTree = "<group>"; };
 		55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-152-timeline.png"; sourceTree = "<group>"; };
+		56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNGate.swift; sourceTree = "<group>"; };
 		57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "dylib-Info-template.plist"; sourceTree = "<group>"; };
 		589928DEEE69075B965DB9F2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewUITests.swift; sourceTree = "<group>"; };
+		5A931D4D0EAF290439861DA0 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = manifest.json; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
+		7CEA54BEE99AFF761D57D17C /* design.safetensors */ = {isa = PBXFileReference; path = design.safetensors; sourceTree = "<group>"; };
 		7D3E805AC2D63B01AB7EE29C /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
@@ -158,7 +177,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_CA967868-6942-488C-9016-0B4917194BA3" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,13 +185,25 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				48E340346AD8FF81AF09F501 /* Sparkle in Frameworks */,
+				48E340346AD8FF81AF09F501 /* MPNNKit in Frameworks */,
+				6E945630A8B9A6195B98A958 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		000AED098AB1D46C5FB7CB17 /* MPNN.mpnnpack */ = {
+			isa = PBXGroup;
+			children = (
+				25D2909F982E5C193EFB039F /* atom14_names.json */,
+				289181FA9EFCBD72291B723F /* geometry.safetensors */,
+				5A931D4D0EAF290439861DA0 /* manifest.json */,
+				43A752516BF765876F492AF6 /* weights */,
+			);
+			path = MPNN.mpnnpack;
+			sourceTree = "<group>";
+		};
 		1A65998EE1F4B509B9B62F00 /* Panels */ = {
 			isa = PBXGroup;
 			children = (
@@ -207,6 +238,7 @@
 				0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */,
 				4C570F9CAC877E201F237016 /* whatsnew-170-move.png */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
+				000AED098AB1D46C5FB7CB17 /* MPNN.mpnnpack */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -229,6 +261,15 @@
 				22F2EFCF4CDD52CF747B834A /* PyMOLViewerUITests */,
 				9CB24941D41B87B6FB69845B /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		43A752516BF765876F492AF6 /* weights */ = {
+			isa = PBXGroup;
+			children = (
+				7CEA54BEE99AFF761D57D17C /* design.safetensors */,
+				200EA119A6205DF0F8B1136A /* packer.safetensors */,
+			);
+			path = weights;
 			sourceTree = "<group>";
 		};
 		52FC8256B867D42D45933E18 /* PyMOLViewer */ = {
@@ -254,6 +295,7 @@
 				786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */,
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
+				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
 				D965CB609C447033E5DB0046 /* PyMOLApp.swift */,
 				33D6A753E4525628B96C259C /* PyMOLEngine.swift */,
 				9371B6FFB30D6166234C678B /* RayMolMain.swift */,
@@ -286,10 +328,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_3A674C65-1DF1-4B79-B0E6-1F03D6DF9C57" /* swiftui */ = {
+		"TEMP_9D700307-D481-4682-8F1C-18B2DA02D4EE" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */,
+				"TEMP_CA967868-6942-488C-9016-0B4917194BA3" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -321,6 +363,7 @@
 			);
 			name = PyMOLViewer_macOS;
 			packageProductDependencies = (
+				7A0C20547CE6C050BA30EDA0 /* MPNNKit */,
 				98AC6A7391B7E7A564A30A61 /* Sparkle */,
 			);
 			productName = PyMOLViewer_macOS;
@@ -380,7 +423,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					A8AA9F6242B9A29B6AAA26F7 = {
 						TestTargetID = 5C02477A5F60954358D0D615;
@@ -398,6 +441,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9CB24941D41B87B6FB69845B /* Products */;
@@ -422,8 +466,13 @@
 				B2697EF48D85EF14D4A19163 /* RayMol.icon in Resources */,
 				4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */,
 				8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */,
+				252652CFC36CBD0A4DF1DE51 /* atom14_names.json in Resources */,
+				ED5D89C65193560664655C7A /* design.safetensors in Resources */,
 				E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */,
+				23FEFD82478798C876BFD4A4 /* geometry.safetensors in Resources */,
+				704E897A6228EBEE22A224B3 /* manifest.json in Resources */,
 				13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */,
+				F19C245FB21794F43C4329F5 /* packer.safetensors in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -442,8 +491,13 @@
 				9FE703EF6FD7C97884C299DF /* RayMol.icon in Resources */,
 				8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */,
 				42F2467DC338FA8435632918 /* WhatsNew.json in Resources */,
+				9D67F347CD11C984F0F0D7D3 /* atom14_names.json in Resources */,
+				AD50334383B672C524BB908A /* design.safetensors in Resources */,
 				5A20A6D21AA3CFAE2394BAB4 /* dylib-Info-template.plist in Resources */,
+				F01745383C59DE91FE24AB22 /* geometry.safetensors in Resources */,
+				4C494B44762DC5277B74F198 /* manifest.json in Resources */,
 				C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */,
+				C7F6AF766708A35F7B49D536 /* packer.safetensors in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -868,6 +922,7 @@
 				77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */,
 				64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */,
 				90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */,
+				CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
@@ -903,6 +958,7 @@
 				F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */,
 				3ECB633FC33E73F4767D3AF5 /* MCPServerManager.swift in Sources */,
 				DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */,
+				1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
@@ -961,6 +1017,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -991,6 +1048,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -1024,6 +1082,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
 			name = Release;
@@ -1077,6 +1136,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1084,7 +1144,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_CA967868-6942-488C-9016-0B4917194BA3" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1135,7 +1195,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1143,7 +1203,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OBJC_BRIDGING_HEADER = PyMOLViewer/Bridge/PyMOLBridge.h;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.9;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -1169,7 +1229,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_72FFA813-24C3-4EB3-9E83-E57E025FCDD4" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_CA967868-6942-488C-9016-0B4917194BA3" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1214,14 +1274,14 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OBJC_BRIDGING_HEADER = PyMOLViewer/Bridge/PyMOLBridge.h;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.9;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -1275,9 +1335,22 @@
 				minimumVersion = 2.6.0;
 			};
 		};
+		B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/javierbq/proteinmpnn-mlx.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		7A0C20547CE6C050BA30EDA0 /* MPNNKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
+			productName = MPNNKit;
+		};
 		98AC6A7391B7E7A564A30A61 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */;

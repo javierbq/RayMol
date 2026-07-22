@@ -25,7 +25,7 @@ import AppKit
 // on `renderQueue` so they don't block the UI (#58 L-59). @Published mutations
 // are explicitly hopped back to the main thread; loop control (idx/isExporting)
 // is only touched on the main thread (in renderNext / start / finish).
-final class MovieExporter: ObservableObject {
+final class MovieExporter: ObservableObject, @unchecked Sendable {
     enum Format: String, CaseIterable, Identifiable { case mp4 = "MP4", gif = "GIF"; var id: String { rawValue } }
 
     // Serial: frames render + encode one at a time, off the main thread.

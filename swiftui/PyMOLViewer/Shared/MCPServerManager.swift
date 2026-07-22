@@ -3,8 +3,8 @@
 import Foundation
 import Combine
 
-final class MCPServerManager: ObservableObject {
-    static let shared = MCPServerManager()
+final class MCPServerManager: ObservableObject, @unchecked Sendable {
+    nonisolated(unsafe) static let shared = MCPServerManager()
 
     @Published private(set) var isRunning = false
     @Published private(set) var port: Int? = nil
@@ -174,7 +174,7 @@ final class MCPServerManager: ObservableObject {
 
     var claudeCLIPath: String? { Self.findClaude() }
 
-    func connectClaudeCode(completion: @escaping (String) -> Void) {
+    func connectClaudeCode(completion: @escaping @Sendable (String) -> Void) {
         guard isRunning, let port = port else {
             completion("Turn on the MCP server first.")
             return
