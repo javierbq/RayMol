@@ -13,6 +13,10 @@ _ONE = {'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLN': 'Q', 
         'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'}
 _ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
 _AA_INDEX = {c: i for i, c in enumerate(_ALPHABET)}
+# MPNN alphabet index -> 3-letter resname (index 20 / 'X' -> 'UNK').
+_ONE_LETTER_TO_THREE = {v: k for k, v in _ONE.items()}
+_ONE_LETTER_TO_THREE['X'] = 'UNK'
+_INDEX_TO_THREE = {i: _ONE_LETTER_TO_THREE.get(c, 'UNK') for i, c in enumerate(_ALPHABET)}
 
 
 def _tmp(name):
@@ -369,6 +373,34 @@ def set_residue_backbone_only(obj, chain, resi, on):
         for rep in ('sticks', 'lines', 'spheres', 'nb_spheres'):
             cmd.hide(rep, side)
     return 'DESIGN_BBONLY:ok'
+
+
+def mutate_residue_display(obj, chain, resi, aa_index):
+    """Visually apply a pending single-residue mutation to the working copy.
+
+    1. Updates the residue name (resn) via cmd.alter so labels reflect the new
+       amino-acid identity.
+    2. Hides stale sidechain representations via set_residue_backbone_only so
+       pre-repack side-chain coordinates are not shown to the user.
+
+    aa_index: MPNN alphabet index (0-20); index 20 ('X'/masked) is a no-op.
+    Returns 'DESIGN_MUTDISP:ok' or 'DESIGN_MUTDISP:noop'.
+    """
+    try:
+        idx = int(aa_index)
+    except (ValueError, TypeError):
+        return 'DESIGN_MUTDISP:noop'
+    if idx >= 20:
+        # Masked/unknown residue — leave untouched.
+        return 'DESIGN_MUTDISP:noop'
+    three = _INDEX_TO_THREE.get(idx, 'UNK')
+    res_sel = _residue_sel(obj, chain, resi)
+    try:
+        cmd.alter(res_sel, "resn='%s'" % three)
+    except Exception:
+        pass
+    set_residue_backbone_only(obj, chain, resi, True)
+    return 'DESIGN_MUTDISP:ok'
 
 
 def load_repacked(obj, pdb_str):

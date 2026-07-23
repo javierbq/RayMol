@@ -26,7 +26,7 @@ final class DesignEditingTests: XCTestCase {
         let c = makeController()
         c.injectEdit(
             makeWorkingCopy: { src in created.append(src); return src + "_design" },
-            mutateDisplay: { _, _, _ in },
+            mutateDisplay: { _, _, _, _ in },
             discard: { _ in },
             compare: { _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])   // GLY, GLY, GLY
@@ -46,7 +46,7 @@ final class DesignEditingTests: XCTestCase {
         let c = makeController()
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
-            mutateDisplay: { _, _, _ in },
+            mutateDisplay: { _, _, _, _ in },
             discard: { discarded.append($0) },
             compare: { _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
@@ -62,7 +62,7 @@ final class DesignEditingTests: XCTestCase {
         let c = makeController()
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
-            mutateDisplay: { _, _, _ in },
+            mutateDisplay: { _, _, _, _ in },
             discard: { discardCalls.append($0) },
             compare: { _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
@@ -78,7 +78,7 @@ final class DesignEditingTests: XCTestCase {
         let c = makeController()
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
-            mutateDisplay: { _, _, _ in },
+            mutateDisplay: { _, _, _, _ in },
             discard: { _ in },
             compare: { _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
@@ -100,7 +100,7 @@ final class DesignEditingTests: XCTestCase {
     func testMutationRescoresWithEditedSequence() async {
         var scoredSeqs: [[Int]] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
         c.injectScore { _, seq in
             scoredSeqs.append(seq)
             return MPNNModel.ScoreResult(
@@ -117,14 +117,14 @@ final class DesignEditingTests: XCTestCase {
     func testRepackClearsDirtyAndLoadsCoords() async {
         var repackedSeqs: [[Int]] = []; var loaded: [(String, String)] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         c.injectRepack(
-            repack: { seq in repackedSeqs.append(seq); return "PDBDATA" },
+            repack: { _, seq in repackedSeqs.append(seq); return "PDBDATA" },
             loadRepacked: { obj, pdb in loaded.append((obj, pdb)) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
         await c.applyMutationAwait(residueIndex: 0, aa: 1)  // autoRepack=false → stays dirty
@@ -139,13 +139,13 @@ final class DesignEditingTests: XCTestCase {
     func testAutoRepackRepacksOnEachEdit() async {
         var repacks = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
-        c.injectRepack(repack: { _ in repacks += 1; return "P" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in repacks += 1; return "P" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5]); c.autoRepack = true
         await c.applyMutationAwait(residueIndex: 0, aa: 1)
         XCTAssertEqual(repacks, 1)      // repack ran exactly once
@@ -156,13 +156,13 @@ final class DesignEditingTests: XCTestCase {
     func testKeepAwaitRepacksIfDirty() async {
         var repackCalls = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
-        c.injectRepack(repack: { _ in repackCalls += 1; return "PDBDATA" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in repackCalls += 1; return "PDBDATA" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
         c.applyMutation(residueIndex: 0, aa: 1)     // begins session, marks dirty
         XCTAssertTrue(c.repackDirty)
@@ -211,8 +211,8 @@ final class DesignEditingTests: XCTestCase {
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
-        c.injectRepack(repack: { _ in "PDBDATA" }, loadRepacked: { _, _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectRepack(repack: { _, _ in "PDBDATA" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
 
         // Sync mutation → detached Task starts rescoreWorkingObject → dispatches to inferenceQueue → blocks

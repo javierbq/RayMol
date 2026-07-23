@@ -31,8 +31,8 @@ final class DesignController: ObservableObject {
 
     /// Create a working-copy object from `srcObject`; returns the new object name.
     typealias MakeWorkingCopyFn = (String) -> String
-    /// Apply a backbone-only display mutation to `obj` at `residueIndex` for amino-acid `aa`.
-    typealias MutateDisplayFn = (String, Int, Int) -> Void
+    /// Apply a backbone-only display mutation to `obj` at `chain`/`resi` for amino-acid `aa`.
+    typealias MutateDisplayFn = (String, String, String, Int) -> Void
     /// Discard the working-copy object named by the argument.
     typealias DiscardFn = (String) -> Void
     /// Report whether the edit session improved the design (wired in Task 3+).
@@ -41,8 +41,8 @@ final class DesignController: ObservableObject {
     /// Run MPNN scoring off-main; called on the inference serial queue.
     typealias ScoreFn = ([MPNNModel.Residue], [Int]) throws -> MPNNModel.ScoreResult
 
-    /// Run MPNN sidechain repack off-main for the given edited sequence; returns an all-atom PDB string.
-    typealias RepackFn = ([Int]) throws -> String
+    /// Run MPNN sidechain repack off-main for the given residues + sequence; returns an all-atom PDB string.
+    typealias RepackFn = ([MPNNModel.Residue], [Int]) throws -> String
     /// Load a repacked PDB string into the named working-copy object.
     typealias LoadRepackedFn = (String, String) -> Void
 
@@ -72,10 +72,10 @@ final class DesignController: ObservableObject {
     // MARK: – Edit-session injected closures (default no-ops; Task 10 replaces; #if DEBUG hooks inject in tests)
 
     private var makeWorkingCopy: MakeWorkingCopyFn = { $0 + "_design" }
-    private var mutateDisplay: MutateDisplayFn = { _, _, _ in }
+    private var mutateDisplay: MutateDisplayFn = { _, _, _, _ in }
     private var discard: DiscardFn = { _ in }
     private var compare: CompareFn = { _ in }
-    private var repack: RepackFn = { _ in "" }
+    private var repack: RepackFn = { _, _ in "" }
     private var loadRepacked: LoadRepackedFn = { _, _ in }
 
     // MARK: – Edit-session published state (Task 2)
@@ -116,7 +116,13 @@ final class DesignController: ObservableObject {
                      snapshot: @escaping ([String]) -> Void,
                      restore: @escaping () -> Void,
                      setSticks: @escaping SticksFn = { _, _, _, _ in false },
-                     currentState: @escaping (String) -> Int = { _ in 1 }) {
+                     currentState: @escaping (String) -> Int = { _ in 1 },
+                     makeWorkingCopy: @escaping MakeWorkingCopyFn = { $0 + "_design" },
+                     mutateDisplay: @escaping MutateDisplayFn = { _, _, _, _ in },
+                     discard: @escaping DiscardFn = { _ in },
+                     compare: @escaping CompareFn = { _ in },
+                     repack: @escaping RepackFn = { _, _ in "" },
+                     loadRepacked: @escaping LoadRepackedFn = { _, _ in }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -125,6 +131,12 @@ final class DesignController: ObservableObject {
         self.restore = restore
         self.setSticksFn = setSticks
         self.currentStateFn = currentState
+        self.makeWorkingCopy = makeWorkingCopy
+        self.mutateDisplay = mutateDisplay
+        self.discard = discard
+        self.compare = compare
+        self.repack = repack
+        self.loadRepacked = loadRepacked
     }
 
     // MARK: – Public interface
@@ -376,7 +388,18 @@ final class DesignController: ObservableObject {
         editedSequence[i] = aa
         editCount += 1
         repackDirty = true
-        if let w = workingObject { mutateDisplay(w, i, aa) }
+        if let w = workingObject {
+            // Resolve chain + resi from the focus object's residue set (same ordering as editedSequence).
+            let chain: String
+            let resi: String
+            if let focus = focusObject, let set = lastSet[focus], i >= 0, i < set.residues.count {
+                chain = set.residues[i].chain
+                resi  = set.residues[i].resi
+            } else {
+                chain = ""; resi = "\(i + 1)"
+            }
+            mutateDisplay(w, chain, resi, aa)
+        }
         return true
     }
 
@@ -406,10 +429,12 @@ final class DesignController: ObservableObject {
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
         let seq = editedSequence
+        // Capture backbone residues on the main actor before leaving — repackFn runs off-main.
+        let residues = focusObject.flatMap { lastSet[$0]?.validResidues } ?? []
         let repackFn = repack     // capture @MainActor-isolated property before leaving
         let pdb: String? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
-                do { cont.resume(returning: try repackFn(seq)) }
+                do { cont.resume(returning: try repackFn(residues, seq)) }
                 catch { cont.resume(throwing: error) }
             }
         }

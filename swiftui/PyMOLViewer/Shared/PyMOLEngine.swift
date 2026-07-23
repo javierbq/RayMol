@@ -2051,6 +2051,60 @@ final class PyMOLEngine: ObservableObject {
         },
         currentState: { [weak self] object in
             self?.objectMeta[object]?.state ?? 1
+        },
+        makeWorkingCopy: { [weak self] src in
+            let dst = src + "_design"
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.make_working_copy('\(src)', '\(dst)')
+                """)
+            return dst
+        },
+        mutateDisplay: { [weak self] obj, chain, resi, aa in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.mutate_residue_display('\(obj)', '\(chain)', '\(resi)', \(aa))
+                """)
+        },
+        discard: { [weak self] dst in
+            // Derive original src: the working copy is always named <src>_design.
+            let src = dst.hasSuffix("_design") ? String(dst.dropLast("_design".count)) : dst
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.discard_working_copy('\(src)', '\(dst)')
+                """)
+        },
+        compare: { [weak self] on in
+            guard let self else { return }
+            // focusObject holds the original (src); working copy is src + "_design".
+            // compare is always invoked on the @MainActor (from the @MainActor controller),
+            // so MainActor.assumeIsolated is safe here.
+            let src = MainActor.assumeIsolated { self.designController.focusObject } ?? ""
+            guard !src.isEmpty else { return }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_compare('\(src)', \(on ? 1 : 0))
+                """)
+        },
+        repack: { [weak self] residues, seq in
+            guard let self else {
+                throw NSError(domain: "raymol.design", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"])
+            }
+            let model = try self.loadedMPNNModel()
+            return try model.repack(residues, sequence: seq).pdb
+        },
+        loadRepacked: { [weak self] obj, pdb in
+            // Write PDB to a temp file; Python reads it back to avoid multi-line
+            // escaping in the runPython string (same marshalling as applyColoring).
+            let path = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("raymol_repack.pdb")
+            try? pdb.write(toFile: path, atomically: true, encoding: .utf8)
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                with open('\(path)') as _f:
+                    _rd.load_repacked('\(obj)', _f.read())
+                """)
         }
     )
 #endif
