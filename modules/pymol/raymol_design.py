@@ -311,3 +311,83 @@ def set_residue_sticks(obj, chain, resi, on):
     except Exception:
         pass
     return 'DESIGN_STICKS:%s' % ('added' if added else 'noop')
+
+
+# ---- Phase 2b: point-mutation editing helpers (additive) ----
+
+def make_working_copy(src, dst):
+    """Create a non-destructive working copy of src named dst, disable src.
+
+    If dst already exists it is deleted first.  The copy inherits source
+    transformation matrices so the two objects are superposed.
+    Returns 'DESIGN_WORK:<dst>'.
+    """
+    if dst in cmd.get_object_list():
+        cmd.delete(dst)
+    cmd.create(dst, src)          # inherits source matrices → superposed
+    cmd.disable(src)
+    return 'DESIGN_WORK:%s' % dst
+
+
+def set_compare(src, on):
+    """Enable or disable the original src object for a side-by-side compare view.
+
+    on: truthy → enable; falsy → disable.
+    Returns 'DESIGN_CMP:ok'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    (cmd.enable if _on else cmd.disable)(src)
+    return 'DESIGN_CMP:ok'
+
+
+def discard_working_copy(src, dst):
+    """Delete the working copy dst and re-enable the original src.
+
+    Safe to call even if dst no longer exists.
+    Returns 'DESIGN_DISCARD:ok'.
+    """
+    if dst in cmd.get_object_list():
+        cmd.delete(dst)
+    cmd.enable(src)
+    return 'DESIGN_DISCARD:ok'
+
+
+def set_residue_backbone_only(obj, chain, resi, on):
+    """Hide sidechain representations for a single residue while a mutation is pending.
+
+    on truthy: hide sticks/lines/spheres/nb_spheres on the sidechain atoms
+      (everything except backbone N, CA, C, O) so stale pre-mutation coordinates
+      are not shown.  Repack + rep-refresh restores them, so the off branch is a
+      deliberate no-op.
+    on falsy: no-op (caller reloads coords via load_repacked, which triggers a
+      full representation refresh).
+    Returns 'DESIGN_BBONLY:ok'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    side = '(%s) and (not name N+CA+C+O)' % _residue_sel(obj, chain, resi)
+    if _on:
+        for rep in ('sticks', 'lines', 'spheres', 'nb_spheres'):
+            cmd.hide(rep, side)
+    return 'DESIGN_BBONLY:ok'
+
+
+def load_repacked(obj, pdb_str):
+    """Replace obj's coordinates from an all-atom PDB string (repack output).
+
+    Uses a temp object and cmd.update to copy coordinates by matching atoms,
+    preserving the object name and current per-atom coloring.  Falls back to
+    replacing the object outright if the topology changed (update returned an
+    error or atom count differs).
+    Returns 'DESIGN_REPACKED:ok'.
+    """
+    tmp = cmd.get_unused_name('_rp')
+    cmd.read_pdbstr(pdb_str, tmp)
+    try:
+        try:
+            cmd.update(obj, tmp, matchmaker=1)   # copy coords onto matching atoms
+        except TypeError:
+            # Older builds may not accept matchmaker kwarg; retry without it.
+            cmd.update(obj, tmp)
+    finally:
+        cmd.delete(tmp)
+    return 'DESIGN_REPACKED:ok'
