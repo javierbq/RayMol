@@ -96,5 +96,20 @@ final class DesignEditingTests: XCTestCase {
         c.applyMutation(residueIndex: 100, aa: 3)
         XCTAssertEqual(c.editCount, 1)
     }
+
+    func testMutationRescoresWithEditedSequence() async {
+        var scoredSeqs: [[Int]] = []
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectScore { _, seq in
+            scoredSeqs.append(seq)
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
+                currentAALogProb: Array(repeating: -3.0, count: seq.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        await c.applyMutationAwait(residueIndex: 1, aa: 9)   // await the rescore
+        XCTAssertEqual(scoredSeqs.last, [5, 9, 5])            // rescored with the EDITED sequence
+    }
 }
 #endif

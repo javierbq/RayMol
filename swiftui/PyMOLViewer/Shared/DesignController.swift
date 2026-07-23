@@ -55,7 +55,7 @@ final class DesignController: ObservableObject {
     // MARK: – Injected dependencies
 
     private let enumerate: EnumerateFn
-    private let score: ScoreFn
+    private var score: ScoreFn
     private let applyColoring: ColorFn
     private let dim: (String) -> Void
     private let snapshot: ([String]) -> Void
@@ -345,7 +345,7 @@ final class DesignController: ObservableObject {
         managedSticks.removeAll()
     }
 
-    // MARK: – Edit session (Task 2)
+    // MARK: – Edit session (Task 2 + 3)
 
     /// Starts an edit session for the focused object if one is not already active.
     /// Idempotent — safe to call multiple times; only the first call creates the working copy.
@@ -358,7 +358,7 @@ final class DesignController: ObservableObject {
     }
 
     /// Apply a single-residue amino-acid mutation to the current edit session.
-    /// Begins the edit session on the first call. Tasks 3–4 add rescore / repack.
+    /// Begins the edit session on the first call. Kicks an off-main rescore (Task 3).
     func applyMutation(residueIndex i: Int, aa: Int) {
         beginEditIfNeeded()
         guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return }
@@ -366,6 +366,54 @@ final class DesignController: ObservableObject {
         editCount += 1
         repackDirty = true
         if let w = workingObject { mutateDisplay(w, i, aa) }
+        Task { await rescoreWorkingObject() }
+    }
+
+    /// Awaitable mutation + rescore — used by unit tests so the full async lifecycle
+    /// completes before asserting. The sync `applyMutation` uses the same state-update
+    /// path then fires `rescoreWorkingObject` in a background Task.
+    func applyMutationAwait(residueIndex i: Int, aa: Int) async {
+        beginEditIfNeeded()
+        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return }
+        editedSequence[i] = aa
+        editCount += 1
+        repackDirty = true
+        if let w = workingObject { mutateDisplay(w, i, aa) }
+        await rescoreWorkingObject()
+    }
+
+    /// Score the working object off-main using the current `editedSequence`, then
+    /// recolor it. Reuses the Phase-2a scoring block shape (serial queue +
+    /// withCheckedThrowingContinuation + job-token guard). Task 4 adds repack.
+    private func rescoreWorkingObject() async {
+        guard let w = workingObject,
+              let focus = focusObject,
+              let set = lastSet[focus] else { return }
+        jobToken += 1
+        let token = jobToken
+        let residues = set.validResidues
+        let seq = editedSequence          // value copy — safe to capture off-main
+        let validMask = set.residues.map { $0.valid }
+        let scoreFn = score               // capture @MainActor-isolated property before leaving
+
+        let result: MPNNModel.ScoreResult? = try? await withCheckedThrowingContinuation { cont in
+            queue.async {
+                do { cont.resume(returning: try scoreFn(residues, seq)) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+
+        // Back on MainActor. Discard if a newer mutation superseded this one.
+        guard token == jobToken, let r = result else { return }
+
+        let scores = DesignColor.scores(from: r, validMask: validMask)
+        cache.set(DesignCacheKey(object: w, state: set.state, sequenceHash: seq.hashValue), scores)
+
+        let scalar = DesignColor.scalar(scores, colorMeaning)
+        let values: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
+        let dom = DesignColor.domain(colorMeaning)
+        legendDomain = dom
+        applyColoring(w, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
     }
 
     /// Discard the working copy and reset all edit-session state.
@@ -395,6 +443,12 @@ final class DesignController: ObservableObject {
         self.mutateDisplay = mutateDisplay
         self.discard = discard
         self.compare = compare
+    }
+
+    /// Override the score closure for testing. Replaces the constructor-injected stub
+    /// so that mutation rescores use the supplied function instead.
+    func injectScore(_ fn: @escaping ScoreFn) {
+        score = fn
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async
