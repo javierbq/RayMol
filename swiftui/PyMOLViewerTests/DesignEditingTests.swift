@@ -331,6 +331,75 @@ final class DesignEditingTests: XCTestCase {
                        "score received wrong sequence; expected [9 (mutated), 3 (res2)]")
     }
 
+    // MARK: – Change 8: reconcileSticks is a no-op when showSidechains is on
+
+    /// With showSidechains == true, changing the pinned residue must NOT issue any
+    /// hide call to setSticksFn (i.e. reconcileSticks must return early).
+    func testReconcileSticksIsNoOpWhenShowSidechainsOn() {
+        var hideCalls = 0
+        let emptySet = DesignResidueSet(object: "stub", state: 1, residues: [])
+        let c = DesignController(
+            enumerate: { _, _ in emptySet },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _ in },
+            dim: { _ in },
+            snapshot: { _ in },
+            restore: { },
+            setSticks: { _, _, _, on in
+                // Count hide calls (on == false).
+                if !on { hideCalls += 1 }
+                return on   // pretend we added sticks when on=true
+            })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectShowAllSidechains { _, _ in }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        // Turn show-all on (setShowSidechains does NOT call reconcileSticks when turning on).
+        c.setShowSidechains(true)
+        XCTAssertTrue(c.showSidechains)
+
+        // Pin A/2 — triggers reconcileSticks(); with fix: no-op, no hide calls.
+        c.setPinned(chain: "A", resi: "2")
+        XCTAssertEqual(hideCalls, 0,
+                       "reconcileSticks issued a hide call while showSidechains is on (first pin)")
+
+        // Change pin to A/3 — without fix, A/2 would be removed (hideCalls += 1).
+        c.setPinned(chain: "A", resi: "3")
+        XCTAssertEqual(hideCalls, 0,
+                       "reconcileSticks issued a hide call on pin change while showSidechains is on")
+
+        // Turning show-all OFF then calling reconcileSticks should work normally again.
+        c.setShowSidechains(false)  // calls reconcileSticks() internally after toggling off
+        XCTAssertFalse(c.showSidechains)
+        // After show-all off, the normal reconcile path runs (no assert on hideCalls here
+        // — managedSticks was empty so no hides should happen, but we don't require it).
+    }
+
+    // MARK: – Change 9: sequenceScore is set from the score result
+
+    /// After a mutation + rescore, sequenceScore must equal the mean of the non-nil
+    /// nativeFit values (i.e. the valid-residue log-probs from the score result).
+    func testSequenceScoreIsSetFromRescore() async {
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        // Score stub: 2 valid residues receive log-probs -2.0 and -4.0.
+        c.injectScore { _, seq in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
+                currentAALogProb: [-2.0, -4.0])
+        }
+        // 3 residues; middle one invalid → validMask = [true, false, true].
+        // After DesignColor.scores: nativeFit = [-2.0, nil, -4.0].
+        c.setFocusForTest("m1", nativeSequence: [5, 7, 3], validFlags: [true, false, true])
+        await c.applyMutationAwait(residueIndex: 0, aa: 9)
+        // Expected: mean([-2.0, -4.0]) = -3.0
+        XCTAssertNotNil(c.sequenceScore, "sequenceScore must not be nil after rescore")
+        XCTAssertEqual(c.sequenceScore ?? 0, -3.0, accuracy: 0.001,
+                       "sequenceScore should be the mean of valid nativeFit values")
+    }
+
     /// C1/C2: after discardEdits() the original object is re-enabled (not left hidden).
     ///
     /// Uses recording stubs to capture enable/disable calls. The discard closure

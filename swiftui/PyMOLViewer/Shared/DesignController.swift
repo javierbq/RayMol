@@ -75,7 +75,7 @@ final class DesignController: ObservableObject {
     private let dim: (String) -> Void
     private let snapshot: ([String]) -> Void
     private let restore: () -> Void
-    private let setSticksFn: SticksFn
+    private var setSticksFn: SticksFn
     /// Returns the currently-displayed state (1-based) for `object`. Wired to the engine in Task 10.
     private let currentStateFn: (String) -> Int
 
@@ -105,6 +105,10 @@ final class DesignController: ObservableObject {
     @Published private(set) var sideBySide = false
     /// True while all sidechain sticks are shown on the design (and parent when compare is on).
     @Published private(set) var showSidechains = false
+    /// Mean per-residue native-fit log-probability over the valid residues of the focus object.
+    /// nil until the first score result arrives. Updated after every rescore (including edits).
+    /// Higher (closer to 0) = better sequence–structure fit.
+    @Published var sequenceScore: Float?
     private(set) var workingObject: String?
     private(set) var editedSequence: [Int] = []
     /// The source object that the current edit session is based on.
@@ -289,8 +293,9 @@ final class DesignController: ObservableObject {
             lastSet[object] = set
 
             let key = DesignCacheKey(object: object, state: set.state, sequenceHash: set.sequenceHash)
-            if cache.get(key) != nil {
+            if let scores = cache.get(key) {
                 // Cache hit: recolor without re-scoring.
+                updateSequenceScore(from: scores)
                 recolor(object)
                 return
             }
@@ -322,6 +327,7 @@ final class DesignController: ObservableObject {
             errorText = nil
             cache.set(key, scores)
             isScoring = false
+            updateSequenceScore(from: scores)
             recolor(object)
 
         } catch {
@@ -368,7 +374,12 @@ final class DesignController: ObservableObject {
     /// longer want are hidden + their color restored (only if WE added them);
     /// newly-wanted residues get sticks shown (recording whether we added them).
     /// A residue that is both pinned and hovered appears once and never flickers.
+    ///
+    /// When `showSidechains` is on, every sidechain is already visible via the
+    /// global show-all pass; hiding the non-pinned/non-hovered subset would undo
+    /// that display. Return early so the broad show is untouched by hover/pin changes.
     private func reconcileSticks() {
+        guard !showSidechains else { return }
         guard let obj = focusObject, let set = lastSet[obj] else { return }
         var desired = Set<String>()
         func want(_ idx: Int?) {
@@ -404,6 +415,13 @@ final class DesignController: ObservableObject {
             _ = setSticksFn(obj, c, r, false)
         }
         managedSticks.removeAll()
+    }
+
+    /// Compute and publish `sequenceScore` as the mean of the non-nil `nativeFit`
+    /// values in `scores`. nil if there are no valid residues.
+    private func updateSequenceScore(from scores: DesignScores) {
+        let valids = scores.nativeFit.compactMap { $0 }
+        sequenceScore = valids.isEmpty ? nil : valids.reduce(0, +) / Float(valids.count)
     }
 
     // MARK: – Edit session teardown (C1/C2)
@@ -641,6 +659,7 @@ final class DesignController: ObservableObject {
 
         let scores = DesignColor.scores(from: r, validMask: validMask)
         cache.set(DesignCacheKey(object: w, state: set.state, sequenceHash: seq.hashValue), scores)
+        updateSequenceScore(from: scores)
 
         let scalar = DesignColor.scalar(scores, colorMeaning)
         let values: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
@@ -701,6 +720,11 @@ final class DesignController: ObservableObject {
     /// Override the showAllSidechains closure for testing (Change 7).
     func injectShowAllSidechains(_ fn: @escaping ShowAllSidechainsFn) {
         self.showAllSidechainsFn = fn
+    }
+
+    /// Override the setSticks closure for testing (Change 8).
+    func injectSetSticks(_ fn: @escaping SticksFn) {
+        self.setSticksFn = fn
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async

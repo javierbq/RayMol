@@ -3308,6 +3308,12 @@ private struct DesignOverlayView: View {
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
                 focusLabel
+                if let s = controller.sequenceScore {
+                    Text(String(format: "score %.2f", s))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.55))
+                        .help("Mean per-residue native-fit log-probability (higher = better fit)")
+                }
                 residueIndicator
                 if controller.isScoring {
                     ProgressView().scaleEffect(0.7)
