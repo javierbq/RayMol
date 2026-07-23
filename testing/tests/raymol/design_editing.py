@@ -39,3 +39,17 @@ class TestDesignEditing(testing.PyMOLTestCase):
         actual_resi = resis[0]
         rd.set_residue_backbone_only('m', '', actual_resi, True)
         self.assertEqual(cmd.count_atoms('m and rep sticks and sidechain'), 0)
+
+    def testLoadRepacked(self):
+        from pymol import raymol_design as rd
+        cmd.reinitialize(); cmd.fragment('ala', 'obj')
+        pdb = cmd.get_pdbstr('obj')
+        self.assertEqual(rd.load_repacked('obj', pdb), 'DESIGN_REPACKED:ok')
+        self.assertIn('obj', cmd.get_object_list())
+        # a malformed PDB must not leak a temp object or raise into the caller
+        before = set(cmd.get_object_list())
+        try:
+            rd.load_repacked('obj', 'not a pdb')
+        except Exception:
+            pass
+        self.assertEqual(set(cmd.get_object_list()) - before, set(), "temp object leaked")

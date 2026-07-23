@@ -381,8 +381,8 @@ def load_repacked(obj, pdb_str):
     Returns 'DESIGN_REPACKED:ok'.
     """
     tmp = cmd.get_unused_name('_rp')
-    cmd.read_pdbstr(pdb_str, tmp)
     try:
+        cmd.read_pdbstr(pdb_str, tmp)
         try:
             cmd.update(obj, tmp, matchmaker=1)   # copy coords onto matching atoms
         except TypeError:
