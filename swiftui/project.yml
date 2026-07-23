@@ -44,6 +44,7 @@ settings:
 schemes:
   # Standalone macOS unit-test scheme so `xcodebuild test -scheme UnitTests_macOS`
   # only builds + runs PyMOLViewerTests (macOS) and never touches the iOS targets.
+  # DesignInferenceSmokeTests skips automatically here (no MPNN_INFERENCE env var).
   UnitTests_macOS:
     build:
       targets:
@@ -53,6 +54,23 @@ schemes:
       targets:
         - PyMOLViewerTests
       gatherCoverageData: false
+
+  # Inference-enabled variant: sets MPNN_INFERENCE=1 so DesignInferenceSmokeTests
+  # runs the real on-host MLX inference path instead of skipping. Used for
+  # MUST-HAVE 1 verification (loads 24 MB weights; expected runtime ~30–120 s).
+  UnitTests_macOS_Inference:
+    build:
+      targets:
+        PyMOLViewer_macOS: [test, build]
+        PyMOLViewerTests: [test, build]
+    test:
+      targets:
+        - PyMOLViewerTests
+      gatherCoverageData: false
+      environmentVariables:
+        - variable: MPNN_INFERENCE
+          value: "1"
+          isEnabled: true
 
 targets:
   PyMOLViewer:
