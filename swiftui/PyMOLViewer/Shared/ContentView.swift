@@ -3046,14 +3046,40 @@ struct ContentView: View {
         }
     }
 
+    // Two-button toggle visually equivalent to a segmented control but with per-mode
+    // .help() tooltips — Picker(.segmented) doesn't reliably surface per-segment
+    // tooltips on macOS since the control draws its own chrome.
     private var designMeaningPicker: some View {
-        Picker("", selection: Binding(
-            get: { engine.designController.colorMeaning },
-            set: { engine.designController.setMeaning($0) })) {
-            Text("Native fit").tag(DesignColorMeaning.nativeFit)
-            Text("Certainty").tag(DesignColorMeaning.certainty)
+        HStack(spacing: 1) {
+            Button { engine.designController.setMeaning(.nativeFit) } label: {
+                Text("Native fit")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(engine.designController.colorMeaning == .nativeFit
+                        ? themeManager.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+            }
+            .buttonStyle(.plain)
+            .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
+
+            Button { engine.designController.setMeaning(.certainty) } label: {
+                Text("Certainty")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(engine.designController.colorMeaning == .certainty
+                        ? themeManager.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+            }
+            .buttonStyle(.plain)
+            .help("Certainty: how strongly the model prefers a single amino acid at each position (1 − normalized entropy of its prediction). High = structurally constrained; low = many residues plausible.")
         }
-        .pickerStyle(.segmented)
+        .background(themeManager.active.panelBackground.color.opacity(0.6))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(themeManager.active.panelText.color.opacity(0.2), lineWidth: 0.5))
+        .cornerRadius(7)
         .frame(maxWidth: 180)
     }
 
@@ -3086,6 +3112,7 @@ struct ContentView: View {
             Spacer(minLength: 0)
             designMeaningPicker
             designLegendBar
+                .help("Per-residue confidence; domain shown at the ends")
             Button {
                 engine.setDesignMode(false)
             } label: {
