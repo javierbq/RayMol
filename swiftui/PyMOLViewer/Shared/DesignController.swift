@@ -56,6 +56,11 @@ final class DesignController: ObservableObject {
     /// Show or hide all sidechain sticks on `obj` (with cnc element coloring on show).
     typealias ShowAllSidechainsFn = (String, Bool) -> Void
 
+    /// Set or clear the persistent committed 'sele' marker for the pinned residue in the
+    /// 3D viewer.  Called with (obj, chain, resi) to commit the pink indicator, or
+    /// ("", "", "") to clear it on unpin / focus-change / teardown / exit.
+    typealias PinnedIndicatorFn = (_ obj: String, _ chain: String, _ resi: String) -> Void
+
     /// Apply per-residue coloring to `objectName`.
     /// `values`: (chain, resi, scalar?) for every residue in the set order.
     typealias ColorFn = (_ obj: String, _ values: [(String, String, Float?)],
@@ -90,6 +95,7 @@ final class DesignController: ObservableObject {
     private var repack: RepackFn = { _, _ in "" }
     private var loadRepacked: LoadRepackedFn = { _, _ in }
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
+    private var pinnedIndicatorFn: PinnedIndicatorFn = { _, _, _ in }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -156,7 +162,8 @@ final class DesignController: ObservableObject {
                      resetCompare: @escaping ResetCompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
                      loadRepacked: @escaping LoadRepackedFn = { _, _ in },
-                     showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in }) {
+                     showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in },
+                     pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -174,6 +181,7 @@ final class DesignController: ObservableObject {
         self.repack = repack
         self.loadRepacked = loadRepacked
         self.showAllSidechainsFn = showAllSidechains
+        self.pinnedIndicatorFn = pinnedIndicator
     }
 
     // MARK: – Public interface
@@ -203,6 +211,7 @@ final class DesignController: ObservableObject {
         errorText = nil
         hoveredResidueIndex = nil
         pinnedResidueIndex = nil
+        pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
     }
 
@@ -255,9 +264,22 @@ final class DesignController: ObservableObject {
     /// off. Pinned sticks are persistent; unpinning removes them (unless the
     /// residue is also currently hovered, in which case reconcile keeps them
     /// as transient hover sticks).
+    /// Also sets / clears the persistent pink 'sele' committed-selection marker in
+    /// the 3D viewer so the pinned residue is always visually highlighted.
     func setPinned(chain: String, resi: String) {
         let idx = residueIndex(chain: chain, resi: resi)
         pinnedResidueIndex = (idx == pinnedResidueIndex) ? nil : idx
+        // Apply or clear the persistent committed 'sele' marker in the viewer.
+        let obj = focusObject ?? ""
+        if let i = pinnedResidueIndex,
+           let focus = focusObject,
+           let set = lastSet[focus],
+           i >= 0, i < set.residues.count {
+            let r = set.residues[i]
+            pinnedIndicatorFn(obj, r.chain, r.resi)
+        } else {
+            pinnedIndicatorFn(obj, "", "")
+        }
         reconcileSticks()
     }
 
@@ -287,6 +309,7 @@ final class DesignController: ObservableObject {
             teardownSticks(on: previous)
             hoveredResidueIndex = nil
             pinnedResidueIndex = nil
+            pinnedIndicatorFn("", "", "")  // clear stale 'sele' marker for the previous focus
         }
         focusObject = object
         for o in allObjects where o != object { dim(o) }
@@ -452,6 +475,9 @@ final class DesignController: ObservableObject {
     private func teardownEditSession(discardCopy: Bool) {
         let src = editSourceObject
         let w = workingObject
+        // Clear the persistent 'sele' indicator — the focus object is changing (working
+        // copy → source or Design mode is ending) so any stale marker must be removed.
+        pinnedIndicatorFn("", "", "")
         // Clear grid_mode and un-grey the parent BEFORE the discard/enable block so
         // grid mode never outlasts a session and the parent's confidence colors are
         // restored regardless of how the session ends (discard or keep).

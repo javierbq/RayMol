@@ -556,6 +556,24 @@ def load_repacked(obj, pdb_str):
     return 'DESIGN_REPACKED:ok'
 
 
+def set_pinned_indicator(obj, chain, resi):
+    """Set or clear the persistent committed 'sele' marker for the pinned residue.
+
+    If chain and resi are non-empty, commits the residue's atoms to the PyMOL
+    'sele' selection with enable=1 so the renderer draws the pink committed-
+    selection pass persistently (the same indicator family as a normal click, but
+    driven by the Design-mode pin rather than a user tap).  If either is empty,
+    clears 'sele' to 'none' with enable=0 so no stale marker persists after
+    unpinning, focus-change, teardown, or exit from Design mode.
+    Returns 'DESIGN_PIN:ok'.
+    """
+    if resi:  # resi non-empty → set indicator (chain may legitimately be empty)
+        cmd.select('sele', _residue_sel(obj, chain, resi), enable=1)
+    else:      # resi empty → clear (controller sends ("", "", "") on unpin/teardown)
+        cmd.select('sele', 'none', enable=0)
+    return 'DESIGN_PIN:ok'
+
+
 def show_all_sidechains(obj, on):
     """Show or hide all sidechain sticks on obj.
 

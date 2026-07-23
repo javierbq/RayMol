@@ -191,6 +191,30 @@ class TestDesignEditing(testing.PyMOLTestCase):
             pass
         self.assertEqual(set(cmd.get_object_list()) - before, set(), "temp object leaked")
 
+    def testSetPinnedIndicator(self):
+        """set_pinned_indicator: set → 'sele' contains the residue's atoms; clear → 'sele' empty."""
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        cmd.fragment('arg', 'obj')   # ARG: long sidechain, clear signal
+        # Discover actual chain and resi assigned by cmd.fragment (build-dependent).
+        gi = []
+        cmd.iterate('obj and guide', 'gi.append((chain, resi))', space={'gi': gi})
+        chain, resi = gi[0]
+
+        # Set pin → 'sele' must contain atoms from the pinned residue.
+        result = rd.set_pinned_indicator('obj', chain, resi)
+        self.assertEqual(result, 'DESIGN_PIN:ok')
+        n = cmd.count_atoms('(sele) and obj and resi %s' % resi)
+        self.assertGreater(n, 0,
+                           "sele should contain the pinned residue's atoms after set_pinned_indicator")
+
+        # Clear pin → 'sele' must be empty.
+        result_clear = rd.set_pinned_indicator('obj', '', '')
+        self.assertEqual(result_clear, 'DESIGN_PIN:ok')
+        n_clear = cmd.count_atoms('(?sele) and obj')
+        self.assertEqual(n_clear, 0,
+                         "sele should be empty after clearing the pinned indicator")
+
     def testLoadRepackedChangesTopology(self):
         """Full topology replace: loading a TRP PDB into an ALA object must adopt the
         TRP atom set (incl. NE1 which is absent in ALA) and preserve the object name.
