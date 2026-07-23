@@ -91,10 +91,15 @@ final class DesignController: ObservableObject {
     // MARK: – Private state
 
     private let cache = DesignScoreCache()
-    /// Serial queue for off-main inference; continuations resume back on MainActor.
-    private let queue = DispatchQueue(label: "io.raymol.design.inference", qos: .userInitiated)
-    /// Incremented on each focus; a superseded focus checks its captured token against this.
-    private var jobToken = 0
+    /// Serial queue for off-main MPNN scoring; continuations resume back on MainActor.
+    private let scoreQueue = DispatchQueue(label: "io.raymol.design.score", qos: .userInitiated)
+    /// Serial queue for off-main sidechain repack; kept separate from scoreQueue so a repack
+    /// dispatched while a score is in-flight does not deadlock.
+    private let repackQueue = DispatchQueue(label: "io.raymol.design.repack", qos: .userInitiated)
+    /// Incremented on each focus/rescore; a superseded score checks its captured token against this.
+    private var rescoreToken: Int = 0
+    /// Incremented on each repack; superseded repacks are discarded without touching rescoreToken.
+    private var repackToken: Int = 0
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
     /// Residues on the focus object for which WE currently show sidechain
@@ -143,7 +148,7 @@ final class DesignController: ObservableObject {
         errorText = nil
         hoveredResidueIndex = nil
         pinnedResidueIndex = nil
-        jobToken += 1   // cancel any in-flight scoring
+        rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
     }
 
     // MARK: – Propensity hover/pin
@@ -228,8 +233,8 @@ final class DesignController: ObservableObject {
         focusObject = object
         for o in allObjects where o != object { dim(o) }
         // Hoist token capture so both the success continuation and the catch can guard against it.
-        jobToken += 1
-        let token = jobToken
+        rescoreToken += 1
+        let token = rescoreToken
         do {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
@@ -252,7 +257,7 @@ final class DesignController: ObservableObject {
             let scoreFn = score     // capture @MainActor-isolated property on main, then hand off
 
             let scores: DesignScores = try await withCheckedThrowingContinuation { cont in
-                queue.async {
+                scoreQueue.async {
                     do {
                         let result = try scoreFn(residues, native)
                         cont.resume(returning: DesignColor.scores(from: result, validMask: validMask))
@@ -263,7 +268,7 @@ final class DesignController: ObservableObject {
             }
 
             // Back on MainActor. Discard the result if a newer focus superseded this one.
-            guard token == jobToken else { return }
+            guard token == rescoreToken else { return }
 
             errorText = nil
             cache.set(key, scores)
@@ -272,7 +277,7 @@ final class DesignController: ObservableObject {
 
         } catch {
             // A superseded or post-exit() throw must not clobber state owned by the current job.
-            guard token == jobToken else { return }
+            guard token == rescoreToken else { return }
             isScoring = false
             errorText = "\(error)"
         }
@@ -399,19 +404,24 @@ final class DesignController: ObservableObject {
     func repackNowAwait() async {
         guard editing, let w = workingObject, repackDirty else { return }
         isRepacking = true
-        jobToken += 1; let token = jobToken
+        // Use a separate repackToken so repacks supersede each other but do NOT
+        // cancel a concurrent in-flight rescore (which uses rescoreToken).
+        repackToken += 1; let token = repackToken
         let seq = editedSequence
         let repackFn = repack     // capture @MainActor-isolated property before leaving
         let pdb: String? = try? await withCheckedThrowingContinuation { cont in
-            queue.async {
+            repackQueue.async {
                 do { cont.resume(returning: try repackFn(seq)) }
                 catch { cont.resume(throwing: error) }
             }
         }
-        guard token == jobToken else { isRepacking = false; return }
-        if let pdb { loadRepacked(w, pdb); repackDirty = false }
+        guard token == repackToken else { isRepacking = false; return }
+        if let pdb, !pdb.isEmpty { loadRepacked(w, pdb); repackDirty = false }
         isRepacking = false
     }
+
+    /// Sync fire-and-forget repack; called by UI buttons (Task 6). Wraps `repackNowAwait` in a Task.
+    func repackNow() { Task { await repackNowAwait() } }
 
     /// Score the working object off-main using the current `editedSequence`, then
     /// recolor it. Reuses the Phase-2a scoring block shape (serial queue +
@@ -420,22 +430,22 @@ final class DesignController: ObservableObject {
         guard let w = workingObject,
               let focus = focusObject,
               let set = lastSet[focus] else { return }
-        jobToken += 1
-        let token = jobToken
+        rescoreToken += 1
+        let token = rescoreToken
         let residues = set.validResidues
         let seq = editedSequence          // value copy — safe to capture off-main
         let validMask = set.residues.map { $0.valid }
         let scoreFn = score               // capture @MainActor-isolated property before leaving
 
         let result: MPNNModel.ScoreResult? = try? await withCheckedThrowingContinuation { cont in
-            queue.async {
+            scoreQueue.async {
                 do { cont.resume(returning: try scoreFn(residues, seq)) }
                 catch { cont.resume(throwing: error) }
             }
         }
 
         // Back on MainActor. Discard if a newer mutation superseded this one.
-        guard token == jobToken, let r = result else { return }
+        guard token == rescoreToken, let r = result else { return }
 
         let scores = DesignColor.scores(from: r, validMask: validMask)
         cache.set(DesignCacheKey(object: w, state: set.state, sequenceHash: seq.hashValue), scores)
@@ -450,6 +460,8 @@ final class DesignController: ObservableObject {
     /// Discard the working copy and reset all edit-session state.
     func discardEdits() {
         if let w = workingObject { discard(w) }
+        // Cancel any in-flight rescore or repack that returns after teardown.
+        rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
     }
@@ -457,6 +469,8 @@ final class DesignController: ObservableObject {
     /// End the edit session and keep the working-copy object (sync, no repack).
     /// Use `keepEditsAwait()` from async contexts to repack-if-dirty before closing.
     func keepEdits() {
+        // Cancel any in-flight rescore or repack that returns after teardown.
+        rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
     }
@@ -464,6 +478,8 @@ final class DesignController: ObservableObject {
     /// Async variant of `keepEdits`: repacks first if `repackDirty`, then closes the session.
     func keepEditsAwait() async {
         if repackDirty { await repackNowAwait() }
+        // Cancel any remaining in-flight rescore or repack that returns after teardown.
+        rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
     }
