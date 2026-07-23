@@ -173,11 +173,21 @@ final class DesignEditingTests: XCTestCase {
         XCTAssertEqual(c.editCount, 0)   // count reset
     }
 
-    // Fix 3: a repack must NOT cancel a concurrent in-flight rescore.
-    // Determinism: the score stub blocks on a DispatchSemaphore; we await
-    // repackNowAwait() while the rescore is blocked, then release the gate.
-    // Without Fix 1, repackNowAwait bumps the shared token → the rescore guard
-    // fails → applyColoring never fires → the "rescoreDone" expectation times out.
+    // Fix 3: a repack must NOT cancel an in-flight rescore.
+    // Property under test: token independence — repackToken and rescoreToken are separate,
+    // so calling repackNow() while a score is blocked does NOT discard the score result.
+    //
+    // Shape (single serial inferenceQueue — no concurrency required):
+    //   1. applyMutation fires a detached Task → rescoreWorkingObject dispatches to inferenceQueue → blocks on semaphore.
+    //   2. Wait for scoreStarted so the score is definitely executing.
+    //   3. repackNow() (fire-and-forget) — queues the repack closure BEHIND the blocked score on the
+    //      single queue; returns immediately with no deadlock because we do NOT await it here.
+    //   4. Signal the semaphore → score finishes, guard (token == rescoreToken) passes because
+    //      repackNow() only bumped repackToken → applyColoring fires → rescoreDone fulfilled.
+    //   5. Assert applyColoring ran for "m1_design".
+    //
+    // Sanity-check: if the tokens were merged into one, repackNow() would bump it → the score's
+    // guard would fail → applyColoring would never fire → rescoreDone would time out → test FAILs.
     func testRepackDoesNotCancelRescore() async throws {
         var recoloredObjs: [String] = []
         let scoreStarted = XCTestExpectation(description: "score started")
@@ -189,7 +199,7 @@ final class DesignEditingTests: XCTestCase {
             enumerate: { _, _ in emptySet },
             score: { _, seq in
                 scoreStarted.fulfill()
-                scoreSemaphore.wait()    // block until released after repack completes
+                scoreSemaphore.wait()    // block until released; repack queues behind this on the single serial queue
                 return MPNNModel.ScoreResult(
                     logProbs: Array(repeating: Array(repeating: -3, count: 21), count: seq.count),
                     currentAALogProb: Array(repeating: -3, count: seq.count))
@@ -205,16 +215,17 @@ final class DesignEditingTests: XCTestCase {
         c.injectRepack(repack: { _ in "PDBDATA" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
 
-        // Sync mutation → detached Task starts rescoreWorkingObject → dispatches to queue → blocks
+        // Sync mutation → detached Task starts rescoreWorkingObject → dispatches to inferenceQueue → blocks
         c.applyMutation(residueIndex: 0, aa: 1)
 
         // Wait until the score stub is actually executing (blocking on semaphore)
         await fulfillment(of: [scoreStarted], timeout: 2)
 
-        // Repack while rescore is in-flight — must NOT bump rescoreToken
-        await c.repackNowAwait()
+        // Fire-and-forget repack — queues behind the blocked score; must NOT bump rescoreToken.
+        // Do NOT await repackNowAwait() here: that would deadlock on the single serial queue.
+        c.repackNow()
 
-        // Release the rescore; it should now complete and apply coloring
+        // Release the score; it should complete and apply coloring (rescoreToken unchanged)
         scoreSemaphore.signal()
         await fulfillment(of: [rescoreDone], timeout: 2)
 

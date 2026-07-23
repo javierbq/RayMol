@@ -91,11 +91,9 @@ final class DesignController: ObservableObject {
     // MARK: – Private state
 
     private let cache = DesignScoreCache()
-    /// Serial queue for off-main MPNN scoring; continuations resume back on MainActor.
-    private let scoreQueue = DispatchQueue(label: "io.raymol.design.score", qos: .userInitiated)
-    /// Serial queue for off-main sidechain repack; kept separate from scoreQueue so a repack
-    /// dispatched while a score is in-flight does not deadlock.
-    private let repackQueue = DispatchQueue(label: "io.raymol.design.repack", qos: .userInitiated)
+    /// Single serial queue for all off-main MPNN inference (scoring and repack).
+    /// Serial guarantees MLX model calls never overlap; continuations resume back on MainActor.
+    private let inferenceQueue = DispatchQueue(label: "io.raymol.design.inference", qos: .userInitiated)
     /// Incremented on each focus/rescore; a superseded score checks its captured token against this.
     private var rescoreToken: Int = 0
     /// Incremented on each repack; superseded repacks are discarded without touching rescoreToken.
@@ -257,7 +255,7 @@ final class DesignController: ObservableObject {
             let scoreFn = score     // capture @MainActor-isolated property on main, then hand off
 
             let scores: DesignScores = try await withCheckedThrowingContinuation { cont in
-                scoreQueue.async {
+                inferenceQueue.async {
                     do {
                         let result = try scoreFn(residues, native)
                         cont.resume(returning: DesignColor.scores(from: result, validMask: validMask))
@@ -410,7 +408,7 @@ final class DesignController: ObservableObject {
         let seq = editedSequence
         let repackFn = repack     // capture @MainActor-isolated property before leaving
         let pdb: String? = try? await withCheckedThrowingContinuation { cont in
-            repackQueue.async {
+            inferenceQueue.async {
                 do { cont.resume(returning: try repackFn(seq)) }
                 catch { cont.resume(throwing: error) }
             }
@@ -438,7 +436,7 @@ final class DesignController: ObservableObject {
         let scoreFn = score               // capture @MainActor-isolated property before leaving
 
         let result: MPNNModel.ScoreResult? = try? await withCheckedThrowingContinuation { cont in
-            scoreQueue.async {
+            inferenceQueue.async {
                 do { cont.resume(returning: try scoreFn(residues, seq)) }
                 catch { cont.resume(throwing: error) }
             }
