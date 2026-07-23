@@ -111,5 +111,45 @@ final class DesignEditingTests: XCTestCase {
         await c.applyMutationAwait(residueIndex: 1, aa: 9)   // await the rescore
         XCTAssertEqual(scoredSeqs.last, [5, 9, 5])            // rescored with the EDITED sequence
     }
+
+    // MARK: – Task 4: repack action + auto-repack toggle + dirty flag
+
+    func testRepackClearsDirtyAndLoadsCoords() async {
+        var repackedSeqs: [[Int]] = []; var loaded: [(String, String)] = []
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.injectRepack(
+            repack: { seq in repackedSeqs.append(seq); return "PDBDATA" },
+            loadRepacked: { obj, pdb in loaded.append((obj, pdb)) })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)  // autoRepack=false → stays dirty
+        XCTAssertTrue(c.repackDirty)
+        await c.repackNowAwait()
+        XCTAssertEqual(repackedSeqs.last, [1, 5, 5])        // repack called with edited sequence
+        XCTAssertEqual(loaded.last?.0, "m1_design")         // loadRepacked called with working object
+        XCTAssertFalse(c.repackDirty)                       // dirty cleared
+        XCTAssertFalse(c.isRepacking)                       // flag cleared
+    }
+
+    func testAutoRepackRepacksOnEachEdit() async {
+        var repacks = 0
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.injectRepack(repack: { _ in repacks += 1; return "P" }, loadRepacked: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5]); c.autoRepack = true
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
+        XCTAssertEqual(repacks, 1)      // repack ran exactly once
+        XCTAssertFalse(c.repackDirty)  // dirty cleared by auto-repack
+    }
 }
 #endif

@@ -41,6 +41,11 @@ final class DesignController: ObservableObject {
     /// Run MPNN scoring off-main; called on the inference serial queue.
     typealias ScoreFn = ([MPNNModel.Residue], [Int]) throws -> MPNNModel.ScoreResult
 
+    /// Run MPNN sidechain repack off-main for the given edited sequence; returns an all-atom PDB string.
+    typealias RepackFn = ([Int]) throws -> String
+    /// Load a repacked PDB string into the named working-copy object.
+    typealias LoadRepackedFn = (String, String) -> Void
+
     /// Apply per-residue coloring to `objectName`.
     /// `values`: (chain, resi, scalar?) for every residue in the set order.
     typealias ColorFn = (_ obj: String, _ values: [(String, String, Float?)],
@@ -70,6 +75,8 @@ final class DesignController: ObservableObject {
     private var mutateDisplay: MutateDisplayFn = { _, _, _ in }
     private var discard: DiscardFn = { _ in }
     private var compare: CompareFn = { _ in }
+    private var repack: RepackFn = { _ in "" }
+    private var loadRepacked: LoadRepackedFn = { _, _ in }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -345,7 +352,7 @@ final class DesignController: ObservableObject {
         managedSticks.removeAll()
     }
 
-    // MARK: – Edit session (Task 2 + 3)
+    // MARK: – Edit session (Task 2 + 3 + 4)
 
     /// Starts an edit session for the focused object if one is not already active.
     /// Idempotent — safe to call multiple times; only the first call creates the working copy.
@@ -357,15 +364,23 @@ final class DesignController: ObservableObject {
         editing = true; editCount = 0; repackDirty = false
     }
 
-    /// Apply a single-residue amino-acid mutation to the current edit session.
-    /// Begins the edit session on the first call. Kicks an off-main rescore (Task 3).
-    func applyMutation(residueIndex i: Int, aa: Int) {
+    /// Shared state-update kernel for `applyMutation` and `applyMutationAwait`.
+    /// Returns `true` if the mutation was applied; `false` for no-ops (same aa or out-of-range).
+    @discardableResult
+    private func applyMutationState(residueIndex i: Int, aa: Int) -> Bool {
         beginEditIfNeeded()
-        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return }
+        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return false }
         editedSequence[i] = aa
         editCount += 1
         repackDirty = true
         if let w = workingObject { mutateDisplay(w, i, aa) }
+        return true
+    }
+
+    /// Apply a single-residue amino-acid mutation to the current edit session.
+    /// Begins the edit session on the first call. Kicks an off-main rescore (Task 3).
+    func applyMutation(residueIndex i: Int, aa: Int) {
+        guard applyMutationState(residueIndex: i, aa: aa) else { return }
         Task { await rescoreWorkingObject() }
     }
 
@@ -373,13 +388,29 @@ final class DesignController: ObservableObject {
     /// completes before asserting. The sync `applyMutation` uses the same state-update
     /// path then fires `rescoreWorkingObject` in a background Task.
     func applyMutationAwait(residueIndex i: Int, aa: Int) async {
-        beginEditIfNeeded()
-        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return }
-        editedSequence[i] = aa
-        editCount += 1
-        repackDirty = true
-        if let w = workingObject { mutateDisplay(w, i, aa) }
+        guard applyMutationState(residueIndex: i, aa: aa) else { return }
         await rescoreWorkingObject()
+        if autoRepack { await repackNowAwait() }
+    }
+
+    /// Place all sidechains for the current edited sequence off-main, then load the
+    /// resulting all-atom PDB into the working object and clear `repackDirty`.
+    /// Job-token guarded (superseded by a subsequent mutation or focus change).
+    func repackNowAwait() async {
+        guard editing, let w = workingObject, repackDirty else { return }
+        isRepacking = true
+        jobToken += 1; let token = jobToken
+        let seq = editedSequence
+        let repackFn = repack     // capture @MainActor-isolated property before leaving
+        let pdb: String? = try? await withCheckedThrowingContinuation { cont in
+            queue.async {
+                do { cont.resume(returning: try repackFn(seq)) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+        guard token == jobToken else { isRepacking = false; return }
+        if let pdb { loadRepacked(w, pdb); repackDirty = false }
+        isRepacking = false
     }
 
     /// Score the working object off-main using the current `editedSequence`, then
@@ -423,9 +454,16 @@ final class DesignController: ObservableObject {
         workingObject = nil; editedSequence = []
     }
 
-    /// End the edit session and keep the working-copy object.
-    /// Repack-if-dirty is wired in Task 4; here we simply close out the session state.
+    /// End the edit session and keep the working-copy object (sync, no repack).
+    /// Use `keepEditsAwait()` from async contexts to repack-if-dirty before closing.
     func keepEdits() {
+        editing = false; editCount = 0; repackDirty = false; isRepacking = false
+        workingObject = nil; editedSequence = []
+    }
+
+    /// Async variant of `keepEdits`: repacks first if `repackDirty`, then closes the session.
+    func keepEditsAwait() async {
+        if repackDirty { await repackNowAwait() }
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
     }
@@ -449,6 +487,12 @@ final class DesignController: ObservableObject {
     /// so that mutation rescores use the supplied function instead.
     func injectScore(_ fn: @escaping ScoreFn) {
         score = fn
+    }
+
+    /// Override the repack + loadRepacked closures for testing (Task 4).
+    func injectRepack(repack: @escaping RepackFn, loadRepacked: @escaping LoadRepackedFn) {
+        self.repack = repack
+        self.loadRepacked = loadRepacked
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async
