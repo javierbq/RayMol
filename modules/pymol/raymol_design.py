@@ -97,3 +97,96 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
         cmd.spectrum(prop_field, palette, obj)
 
     return 'DESIGN_COLOR:ok'
+
+
+# ---------------------------------------------------------------------------
+# Visual-state save / dim / restore  (Task 7)
+# ---------------------------------------------------------------------------
+# Transparency setting names that are saved and restored per-object.
+_TRANSP = [
+    'cartoon_transparency',
+    'transparency',
+    'stick_transparency',
+    'sphere_transparency',
+    'ribbon_transparency',
+    'surface_transparency',
+]
+
+
+def _get_transp_settings(obj):
+    """Return a dict of {setting_name: float} for all known transparency settings.
+
+    Silently skips any setting name unknown to this PyMOL build (e.g.
+    'surface_transparency' is absent in some open-source builds).
+    """
+    result = {}
+    for s in _TRANSP:
+        try:
+            result[s] = cmd.get_setting_float(s, obj)
+        except Exception:
+            pass
+    return result
+
+
+def snapshot_visual_state(objects_csv):
+    """Snapshot per-atom colors and transparency settings for a set of objects.
+
+    objects_csv: comma-separated PyMOL object names.
+
+    Saves:
+      - per-atom color (integer color index) keyed by atom *index* (str in JSON)
+      - each transparency setting from _TRANSP per object (unknown settings skipped)
+
+    Writes to $TMPDIR/raymol_design_snapshot.json.
+    Returns 'DESIGN_SNAP:ok'.
+    """
+    objs = [o.strip() for o in objects_csv.split(',') if o.strip()]
+    colors = {}
+    settings = {}
+    for o in objs:
+        d = {}
+        cmd.iterate(o, 'd[index] = color', space={'d': d})
+        # JSON keys must be strings; int color values are fine.
+        colors[o] = {str(k): v for k, v in d.items()}
+        settings[o] = _get_transp_settings(o)
+    snap = {'objects': objs, 'colors': colors, 'settings': settings}
+    with open(_tmp('raymol_design_snapshot.json'), 'w') as f:
+        json.dump(snap, f)
+    return 'DESIGN_SNAP:ok'
+
+
+def dim_object(obj, gray_color, transparency):
+    """Color obj with gray_color and set all transparency settings to transparency.
+
+    Unknown settings (absent in some PyMOL builds) are silently skipped.
+    Returns 'DESIGN_DIM:ok'.
+    """
+    cmd.color(gray_color, obj)
+    for s in _TRANSP:
+        try:
+            cmd.set(s, float(transparency), obj)
+        except Exception:
+            pass
+    return 'DESIGN_DIM:ok'
+
+
+def restore_visual_state():
+    """Restore exact per-atom colors and transparency settings from snapshot.
+
+    Loads $TMPDIR/raymol_design_snapshot.json written by snapshot_visual_state.
+    For each object: restores transparency settings, then restores per-atom
+    colors via alter (JSON string keys are converted back to int for matching),
+    then calls recolor() to flush the display.
+    Returns 'DESIGN_RESTORE:ok'.
+    """
+    with open(_tmp('raymol_design_snapshot.json')) as f:
+        snap = json.load(f)
+    for o in snap['objects']:
+        # Restore transparency settings first.
+        for s, v in snap['settings'][o].items():
+            cmd.set(s, float(v), o)
+        # JSON keys are strings; convert back to int to match `index` (int) in alter.
+        int_colors = {int(k): v for k, v in snap['colors'][o].items()}
+        cmd.alter(o, 'color = _d.get(index, color)', space={'_d': int_colors})
+    cmd.recolor()
+    return 'DESIGN_RESTORE:ok'
