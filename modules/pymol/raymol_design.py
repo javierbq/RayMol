@@ -397,6 +397,7 @@ def mutate_residue_display(obj, chain, resi, aa_index):
     res_sel = _residue_sel(obj, chain, resi)
     try:
         cmd.alter(res_sel, "resn='%s'" % three)
+        cmd.rebuild(res_sel)  # flush label/rep state that depends on resn immediately
     except Exception:
         pass
     set_residue_backbone_only(obj, chain, resi, True)

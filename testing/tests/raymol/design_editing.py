@@ -40,6 +40,24 @@ class TestDesignEditing(testing.PyMOLTestCase):
         rd.set_residue_backbone_only('m', '', actual_resi, True)
         self.assertEqual(cmd.count_atoms('m and rep sticks and sidechain'), 0)
 
+    def testMutateResidueDisplay(self):
+        from pymol import raymol_design as rd
+        cmd.reinitialize(); cmd.fragment('arg', 'm')   # ARG, long sidechain
+        cmd.show('sticks', 'm')
+        gi = []; cmd.iterate('m and guide', 'gi.append((chain, resi))', space={'gi': gi})
+        chain, resi = gi[0]
+        # mutate to LEU (MPNN index 9)
+        result = rd.mutate_residue_display('m', chain, resi, 9)
+        self.assertEqual(result, 'DESIGN_MUTDISP:ok')
+        # verify resn changed to LEU via get_model (avoids iterate name-shadowing)
+        m = cmd.get_model('m and guide')
+        self.assertEqual(m.atom[0].resn, 'LEU')
+        # stale sidechain hidden (backbone only: N, CA, C, O kept)
+        self.assertEqual(cmd.count_atoms('m and rep sticks and not name N+CA+C+O'), 0)
+        # idx >= 20 is a no-op
+        noop = rd.mutate_residue_display('m', chain, resi, 20)
+        self.assertIn('noop', noop)
+
     def testLoadRepacked(self):
         from pymol import raymol_design as rd
         cmd.reinitialize(); cmd.fragment('ala', 'obj')

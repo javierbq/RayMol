@@ -2068,6 +2068,7 @@ final class PyMOLEngine: ObservableObject {
         },
         discard: { [weak self] dst in
             // Derive original src: the working copy is always named <src>_design.
+            // dst is always src + "_design" (from makeWorkingCopy); the else-branch is unreachable in the normal path.
             let src = dst.hasSuffix("_design") ? String(dst.dropLast("_design".count)) : dst
             self?.runPython("""
                 from pymol import raymol_design as _rd
