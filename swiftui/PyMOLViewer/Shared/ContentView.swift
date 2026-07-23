@@ -322,7 +322,11 @@ struct ContentView: View {
         }
     }
 
-    private var macOSLayout: some View {
+    // macOS layout body + notification handlers + sheets. Extracted from
+    // macOSLayout so the type-checker can resolve each part in isolation
+    // (the full inline modifier chain tripped the "unable to type-check in
+    // reasonable time" limit — same pattern as macViewport above).
+    private var macOSLayoutBase: some View {
         // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
         // strip can't grow into the viewport. minHeight is set a few pt below the
         // cap so the VSplitView still hands the user a draggable splitter (a strict
@@ -423,6 +427,9 @@ struct ContentView: View {
             // Theme moved into the Display segment, mirroring iOS Settings → Themes.)
             macMoveToolbar
             macMeasureToolbar
+            #if RAYMOL_MPNN
+            macDesignToolbar
+            #endif
             panelToggles
             exportMenu
             #if !RAYMOL_MAS_RESTRICTED
@@ -464,40 +471,58 @@ struct ContentView: View {
                 + "run Python, and load structures until you stop it.")
         }
         #endif
-        .preferredColorScheme(themeManager.active.resolvedColorScheme)
-        .tint(themeManager.active.tabTint.color)
-        .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
-        .onChange(of: showThemeStudio) { open in
-            if open { engine.beginThemePreview() } else { engine.endThemePreview() }
-        }
-        .onAppear {
-            initializeEngine()
-            maybePresentFirstBootTheme()
-            autoSelectThemeFromEnv()
-            if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+    }
+
+    private var macOSLayout: some View {
+        macOSLayoutBase
+            .preferredColorScheme(themeManager.active.resolvedColorScheme)
+            .tint(themeManager.active.tabTint.color)
+            .onChange(of: engine.isReady) { ready in if ready { applyPersistedTheme() } }
+            .onChange(of: showThemeStudio) { open in
+                if open { engine.beginThemePreview() } else { engine.endThemePreview() }
             }
-            // Test affordance: show the in-viewport scene buttons at launch so the
-            // overlay can be screenshotted. PYMOL_AUTOSCENEBUTTONS=1.
-            if ProcessInfo.processInfo.environment["PYMOL_AUTOSCENEBUTTONS"] != nil {
-                showSceneButtons = true
-            }
-            // Test affordance: enter Move mode and make PYMOL_AUTOMOVE=<object>
-            // the active object so the gizmo can be screenshotted without a tap.
-            if let mv = ProcessInfo.processInfo.environment["PYMOL_AUTOMOVE"] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
-                    engine.setInteractionMode(.move)
-                    if !mv.isEmpty { engine.setActiveMoveObject(mv) }
+            #if RAYMOL_MPNN
+            // Single lifecycle observer for Design mode: fires on EVERY designMode
+            // transition (toolbar button, menu, Move/Measure exclusion) so the scene
+            // is always restored on exit regardless of which path caused the change.
+            .onChange(of: engine.designMode) { on in
+                if on {
+                    engine.designController.allObjects = engine.objects
+                        .filter { !$0.isSelection }.map { $0.name }
+                    engine.designController.enter()
+                } else {
+                    engine.designController.exit()
                 }
             }
-            installEscKeyMonitor()
-        }
-        .onDisappear {
-            if let token = escKeyMonitor {
-                NSEvent.removeMonitor(token)
-                escKeyMonitor = nil
+            #endif
+            .onAppear {
+                initializeEngine()
+                maybePresentFirstBootTheme()
+                autoSelectThemeFromEnv()
+                if ProcessInfo.processInfo.environment["PYMOL_AUTOSHEET"] == "theme" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { showThemeStudio = true }
+                }
+                // Test affordance: show the in-viewport scene buttons at launch so the
+                // overlay can be screenshotted. PYMOL_AUTOSCENEBUTTONS=1.
+                if ProcessInfo.processInfo.environment["PYMOL_AUTOSCENEBUTTONS"] != nil {
+                    showSceneButtons = true
+                }
+                // Test affordance: enter Move mode and make PYMOL_AUTOMOVE=<object>
+                // the active object so the gizmo can be screenshotted without a tap.
+                if let mv = ProcessInfo.processInfo.environment["PYMOL_AUTOMOVE"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
+                        engine.setInteractionMode(.move)
+                        if !mv.isEmpty { engine.setActiveMoveObject(mv) }
+                    }
+                }
+                installEscKeyMonitor()
             }
-        }
+            .onDisappear {
+                if let token = escKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    escKeyMonitor = nil
+                }
+            }
     }
 
     // Esc → two-stage clear selection (issues #163 + #166). A local key-down
@@ -547,6 +572,23 @@ struct ContentView: View {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
             }
+            #if RAYMOL_MPNN
+            // Design mode overlay: a separate overlay so the #if guard does not
+            // break the if-else chain above. Mutually exclusive with move/measure,
+            // so only one overlay is ever shown at a time.
+            // DesignOverlayView holds @ObservedObject controller: DesignController so
+            // colorMeaning / isScoring / focusObject / legendDomain changes re-render
+            // the toggle highlight immediately (ContentView doesn't observe the nested OO).
+            .overlay(alignment: .top) {
+                if engine.designMode {
+                    DesignOverlayView(
+                        controller: engine.designController,
+                        engine: engine,
+                        theme: themeManager
+                    )
+                }
+            }
+            #endif
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
             // scene by metal_move.py; no SwiftUI overlay is needed. Input is
             // hit-tested against the projected geometry in MetalViewport.)
@@ -596,16 +638,39 @@ struct ContentView: View {
             // atom/residue under the cursor (or empty space) and sets
             // engine.longPressHit; present the same native menu the iOS
             // long-press uses. PyMOL's own pop-up menu is never drawn under this
-            // Metal backend (internal_gui=0).
+            // Metal backend (internal_gui=0). In Design mode, clicks route to
+            // focus instead (see the #if RAYMOL_MPNN onChange below).
             .confirmationDialog(
                 engine.longPressHit?.title ?? "",
-                isPresented: Binding(get: { engine.longPressHit != nil },
-                                     set: { if !$0 { engine.longPressHit = nil } }),
+                isPresented: Binding(
+                    get: { engine.longPressHit != nil && !engine.designMode },
+                    set: { if !$0 { engine.longPressHit = nil } }),
                 titleVisibility: .visible,
                 presenting: engine.longPressHit
             ) { hit in
                 longPressActions(hit)
             }
+            #if RAYMOL_MPNN
+            // Design mode click routing: a click (left or right) sets longPressHit.
+            // — Click on the FOCUS object's residue → pin/unpin the propensity pill
+            //   row for that residue (keeps current focus, does NOT refocus).
+            // — Click on a DIFFERENT object → refocus to that object (existing behavior).
+            // — Click on empty space (hit.isEmpty) → no-op (no focus change, no pin).
+            // Clears longPressHit so the context-menu dialog never fires in design mode.
+            .onChange(of: engine.longPressHit) { hit in
+                guard engine.designMode, let hit = hit else { return }
+                if !hit.obj.isEmpty {
+                    if hit.obj == engine.designController.focusObject && !hit.isEmpty {
+                        // Same object: pin/unpin the clicked residue in the pill row.
+                        engine.designController.setPinned(chain: hit.chain, resi: hit.resi)
+                    } else if hit.obj != engine.designController.focusObject {
+                        // Different object: refocus (existing behavior).
+                        engine.designController.focus(hit.obj)
+                    }
+                }
+                engine.longPressHit = nil
+            }
+            #endif
             .confirmationDialog("Color residue", isPresented: $showLongPressColor,
                                 titleVisibility: .visible) {
                 longPressColorActions()
@@ -2588,6 +2653,22 @@ struct ContentView: View {
     // menu / ⌥⌘M. The toolbar button rendered as an unlabeled circle and toggled
     // movie mode unexpectedly, so it was removed.)
 
+    #if RAYMOL_MPNN
+    // Design-mode toggle (macOS). ⌃D also toggles it (see PyMOLApp commands).
+    // .primaryAction (trailing) — grouped with Move/Measure as the interaction tools.
+    private var macDesignToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                engine.setDesignMode(!engine.designMode)
+            } label: {
+                Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
+                    .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
+            }
+            .help("Design mode: score/color protein residues with MPNN")
+        }
+    }
+    #endif
+
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
     // docked transport — there is no toolbar button for it (removed: its icon read
     // as an empty slot in the trailing cluster).
@@ -3057,6 +3138,265 @@ struct ContentView: View {
         engine.runCommand("set metal_outline, 0")
     }
 }
+
+#if RAYMOL_MPNN
+// Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
+// coloring meaning segmented control, legend gradient, scoring progress, ? help.
+// Extracted into a dedicated View struct so @ObservedObject controller: DesignController
+// causes re-renders on every @Published change (colorMeaning, isScoring, focusObject,
+// legendDomain) — ContentView itself never re-renders for nested-OO changes.
+private struct DesignOverlayView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var engine: PyMOLEngine
+    @ObservedObject var theme: ThemeManager
+    @State private var showModeHelp = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // ── Main control strip ──────────────────────────────────────
+            HStack(spacing: 10) {
+                focusLabel
+                residueIndicator
+                if controller.isScoring {
+                    ProgressView().scaleEffect(0.7)
+                }
+                Spacer(minLength: 0)
+                meaningPicker
+                legendBar
+                    .help("Per-residue confidence; domain shown at the ends")
+                helpButton
+                Button {
+                    engine.setDesignMode(false)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            // ── Propensity pill row (always present; greyed when no residue
+            //    is hovered/pinned so it no longer flickers in and out) ─────
+            Divider().opacity(0.3)
+            propensityRow(controller.activePropensity)
+        }
+        .background(theme.active.panelBackground.color)
+        .tint(theme.active.accent.color)
+    }
+
+    // Active-residue indicator, shown just to the right of the object name:
+    // the residue label (e.g. "A/96 PHE") plus a pin glyph when the residue is
+    // pinned. Empty when nothing is hovered or pinned (no layout jump — the
+    // strip's other controls are pinned to the trailing edge by the Spacer).
+    private var residueIndicator: some View {
+        Group {
+            if let ap = controller.activePropensity {
+                HStack(spacing: 4) {
+                    if controller.pinnedResidueIndex != nil {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(theme.active.accent.color)
+                    }
+                    Text(ap.label)
+                        .lineLimit(1)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.85))
+                }
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(theme.active.panelText.color.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    private var focusLabel: some View {
+        Group {
+            if let obj = controller.focusObject {
+                HStack(spacing: 4) {
+                    Image(systemName: "atom")
+                        .foregroundColor(theme.active.accent.color)
+                    Text(obj)
+                        .lineLimit(1)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(theme.active.panelText.color)
+                }
+            } else {
+                Text("Click an object to design")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }
+        }
+    }
+
+    // Two-button toggle visually equivalent to a segmented control but with per-mode
+    // .help() tooltips — Picker(.segmented) doesn't reliably surface per-segment
+    // tooltips on macOS since the control draws its own chrome.
+    private var meaningPicker: some View {
+        HStack(spacing: 1) {
+            Button { controller.setMeaning(.nativeFit) } label: {
+                Text("Native fit")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(controller.colorMeaning == .nativeFit
+                        ? theme.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
+
+            Button { controller.setMeaning(.certainty) } label: {
+                Text("Certainty")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(controller.colorMeaning == .certainty
+                        ? theme.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Certainty: how strongly the model prefers a single amino acid at each position (1 − normalized entropy of its prediction). High = structurally constrained; low = many residues plausible.")
+        }
+        .background(theme.active.panelBackground.color.opacity(0.6))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.active.panelText.color.opacity(0.2), lineWidth: 0.5))
+        .cornerRadius(7)
+        .frame(maxWidth: 180)
+    }
+
+    private var legendBar: some View {
+        Group {
+            if let dom = controller.legendDomain {
+                HStack(spacing: 4) {
+                    Text(String(format: "%.1f", dom.lowerBound))
+                        .font(.system(size: 10)).foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    LinearGradient(
+                        colors: controller.colorMeaning == .nativeFit
+                            ? [.red, .white, .blue]
+                            : [.blue, .white, .red],
+                        startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 60, height: 10)
+                    .cornerRadius(3)
+                    Text(String(format: "%.1f", dom.upperBound))
+                        .font(.system(size: 10)).foregroundColor(theme.active.panelText.color.opacity(0.7))
+                }
+            }
+        }
+    }
+
+    // "?" button that pops a brief description of both coloring modes — click-triggered,
+    // reliable on macOS (hover .help() is inconsistent across system versions).
+    private var helpButton: some View {
+        Button { showModeHelp.toggle() } label: {
+            Image(systemName: "questionmark.circle")
+                .foregroundColor(theme.active.panelText.color.opacity(0.6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Design mode help")
+        .popover(isPresented: $showModeHelp) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Native fit")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Log-probability of each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model would rather mutate it.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Certainty")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("How strongly the model prefers a single amino acid at that position (1 − normalized entropy). High = structurally constrained; low = many plausible.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(14)
+            .frame(width: 260)
+        }
+    }
+
+    // MARK: – Propensity pill row
+
+    /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
+    /// residue hovered or pinned) every pill renders greyed/disabled with a
+    /// neutral ".0" value and no native highlight, so the row no longer appears
+    /// and disappears — only its contents change. When `ap` is present the
+    /// pills show real 2-decimal propensities, colored by relative frequency,
+    /// with the native AA pill highlighted.
+    private func propensityRow(
+        _ ap: (propensities: [Float], nativeAA: Int, label: String)?
+    ) -> some View {
+        let rowMax = ap?.propensities.max() ?? 1.0
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
+                    aaPill(index: i,
+                           propensity: hasVal ? ap!.propensities[i] : 0,
+                           isNative: ap != nil && i == ap!.nativeAA,
+                           rowMax: rowMax,
+                           enabled: ap != nil)
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    /// Single amino-acid pill: letter + 2-decimal propensity, colored by
+    /// relative frequency (faint → warm), highlighted if native AA. When
+    /// `enabled` is false (idle / no active residue) it renders flat grey with
+    /// a ".0" placeholder and no native highlight.
+    private func aaPill(index: Int,
+                         propensity: Float,
+                         isNative: Bool,
+                         rowMax: Float,
+                         enabled: Bool) -> some View {
+        let letter = index < DesignColor.mpnnAlphabet.count
+            ? DesignColor.mpnnAlphabet[index] : "?"
+        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
+        let showNative = enabled && isNative
+        // Disabled (idle): flat faint grey, muted text.
+        // Native pill: solid accent background + white text.
+        // Others: faint→warm orange tint, scaled to intensity within the row.
+        let pillBG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.04)
+            : (showNative
+                ? theme.active.accent.color
+                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
+        let pillFG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.28)
+            : (showNative
+                ? .white
+                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
+        let valueText: String = {
+            if !enabled { return ".0" }
+            let s = String(format: "%.2f", propensity)
+            return s.hasPrefix("0") ? String(s.dropFirst()) : s
+        }()
+        return VStack(spacing: 1) {
+            Text(letter)
+                .font(.system(size: 11,
+                              weight: showNative ? .bold : .regular,
+                              design: .monospaced))
+            Text(valueText)
+                .font(.system(size: 9, design: .monospaced))
+        }
+        .foregroundColor(pillFG)
+        .frame(width: 30, height: 36)
+        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            showNative
+                ? RoundedRectangle(cornerRadius: 5)
+                    .stroke(theme.active.accent.color, lineWidth: 1.5)
+                : nil
+        )
+    }
+}
+#endif
 
 // Dimmed scrim + centered card shown while a long PyMOL op runs. The scrim
 // captures hits so no conflicting command can be issued mid-operation (which

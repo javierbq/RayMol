@@ -603,3 +603,36 @@ def hover_preview_at(ndc_x, ndc_y, aspect):
         cmd.select(_PRESELECT, _mode_expr(best, mode), enable=0)
     except Exception as e:
         print('metal_pick hover error: %s' % e)
+
+
+def hover_design_at(ndc_x, ndc_y, aspect):
+    """Design-mode hover: like hover_preview_at, but also writes the residue
+    identity (obj / chain / resi / resn) to
+    <tmpdir>/pymol_hover_design.json so the Swift design controller can
+    identify the residue under the cursor for the propensity pill row.
+    Writes {"hit": false} when the pointer is over empty space.
+    Also updates _preselect for the cyan hover-glow visual feedback."""
+    import json, os, tempfile
+    from pymol import cmd
+    out = {"hit": False}
+    try:
+        best = _pick_atom(ndc_x, ndc_y, aspect)
+        if best is None:
+            cmd.select(_PRESELECT, 'none', enable=0)
+        else:
+            _, obj, chain, resi, resn, segi, name, _sx, _sy = best
+            out = {"hit": True, "obj": obj, "chain": chain,
+                   "resi": resi, "resn": resn}
+            try:
+                mode = int(cmd.get_setting_int('mouse_selection_mode'))
+            except Exception:
+                mode = 1
+            cmd.select(_PRESELECT, _mode_expr(best, mode), enable=0)
+    except Exception as e:
+        print('metal_pick hover_design error: %s' % e)
+    try:
+        path = os.path.join(tempfile.gettempdir(), 'pymol_hover_design.json')
+        with open(path, 'w') as f:
+            json.dump(out, f)
+    except Exception:
+        pass

@@ -7,6 +7,9 @@ import MetalKit
 #if os(iOS)
 import UIKit
 #endif
+#if RAYMOL_MPNN
+import MPNNKit
+#endif
 
 /// Frequently-changing movie/timeline playback state, kept in its OWN
 /// ObservableObject so the ≈10/s frame ticks during playback re-render only the
@@ -134,6 +137,9 @@ final class PyMOLEngine: ObservableObject {
     // MetalViewport; gizmo holds the projected handle geometry the overlay draws
     // and the handlers hit-test; armedAxis is the iOS tap-to-arm state.
     @Published var interactionMode: InteractionMode = .viewing
+    // Design mode: protein-design overlay (MPNN score/design). Mutually exclusive
+    // with Move and Measure modes — entering any one clears the others.
+    @Published var designMode: Bool = false
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
@@ -1930,6 +1936,7 @@ final class PyMOLEngine: ObservableObject {
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
+            designMode = false                                              // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -1945,6 +1952,109 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_measure as _am\n_am.clear_all()")
     }
 
+    // MARK: - Design mode (protein-design overlay)
+
+    /// Enter or exit Design mode. Entering clears Move and Measure (mutually
+    /// exclusive). The actual MPNN controller startup/teardown is handled by
+    /// the UI layer that observes this flag; this setter is deliberately
+    /// Python-free so it is safe to call from unit tests and in any state.
+    func setDesignMode(_ on: Bool) {
+        if on {
+            if interactionMode == .move { interactionMode = .viewing }
+            if measureMode != nil { measureMode = nil }
+        }
+        designMode = on
+    }
+
+#if RAYMOL_MPNN
+    // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
+    private var _mpnnModel: MPNNModel?
+    private func loadedMPNNModel() throws -> MPNNModel {
+        if let m = _mpnnModel { return m }
+        guard let url = MPNNGate.packURL else {
+            throw NSError(domain: "raymol.design", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "MPNN model pack not found in bundle."])
+        }
+        let m = try MPNNModel(packDirectory: url)
+        _mpnnModel = m
+        return m
+    }
+
+    /// Real DesignController wired to this engine's Python helpers.
+    lazy var designController: DesignController = DesignController(
+        enumerate: { [weak self] obj, state in
+            guard let self else { throw NSError(domain: "raymol.design", code: 2,
+                                                userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.enumerate_design_residues('\(obj)', \(state))
+                """)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_residues.json")
+            return try DesignResidueSet.parse(jsonAt: url)
+        },
+        score: { [weak self] residues, native in
+            guard let self else { throw NSError(domain: "raymol.design", code: 2,
+                                                userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
+            let model = try self.loadedMPNNModel()
+            return try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+        },
+        applyColoring: { [weak self] obj, values, palette, lo, hi in
+            guard let self else { return }
+            let rows = values.map { ["chain": $0.0, "resi": $0.1, "value": $0.2 as Any] }
+            if let data = try? JSONSerialization.data(withJSONObject: rows) {
+                let p = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("raymol_design_vals.json")
+                try? data.write(to: p)
+                self.runPython("""
+                    from pymol import raymol_design as _rd
+                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi))
+                    """)
+            }
+        },
+        dim: { [weak self] obj in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.dim_object('\(obj)', 'gray70', 0.7)
+                """)
+        },
+        snapshot: { [weak self] objs in
+            let joined = objs.joined(separator: ",")
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.snapshot_visual_state('\(joined)')
+                """)
+        },
+        restore: { [weak self] in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.restore_visual_state()
+                """)
+        },
+        setSticks: { [weak self] obj, chain, resi, on in
+            guard let self else { return false }
+            // Residue viz touches the core → must run on the main thread; the
+            // controller already invokes this on the @MainActor.
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_residue_sticks('\(obj)', '\(chain)', '\(resi)', \(on ? 1 : 0))
+                """)
+            // On a show, read back whether WE added the sticks (residue had
+            // none) so the controller only removes/restores ones we introduced.
+            guard on else { return false }
+            let path = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("raymol_design_sticks.json")
+            guard let data = FileManager.default.contents(atPath: path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return false }
+            return (root["added"] as? Bool) ?? false
+        },
+        currentState: { [weak self] object in
+            self?.objectMeta[object]?.state ?? 1
+        }
+    )
+#endif
+
     // MARK: - Move mode (rigid-body object gizmo)
 
     /// Viewport aspect (width / height) for the gizmo projection. Falls back to
@@ -1958,6 +2068,7 @@ final class PyMOLEngine: ObservableObject {
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
+            designMode = false                               // mutually exclusive
             refreshGizmo()
         } else {
             armedAxis = nil
@@ -2178,6 +2289,13 @@ final class PyMOLEngine: ObservableObject {
     private var lastHoverFire = Date.distantPast
     private let kHoverInterval = 0.045        // leading-edge throttle: ≤~22 picks/s
     private let kHoverMinNDC: Float = 0.004   // sub-pixel move gate (NDC²-ish)
+    // Separate throttle state for the design-mode hover path so it doesn't
+    // interfere with the viewing-mode hover path's NDC gate / work item.
+    #if RAYMOL_MPNN
+    private var designHoverWork: DispatchWorkItem?
+    private var lastDesignHoverNDC: (Float, Float)? = nil
+    private var lastDesignHoverFire = Date.distantPast
+    #endif
 
     /// Update the hover pre-selection preview to what a click at (ndcX,ndcY)
     /// would select, without committing to 'sele'. No-op while the feature is
@@ -2217,12 +2335,82 @@ final class PyMOLEngine: ObservableObject {
         hoverWork?.cancel()
         hoverWork = nil
         lastHoverNDC = nil
+        #if RAYMOL_MPNN
+        designHoverWork?.cancel()
+        designHoverWork = nil
+        lastDesignHoverNDC = nil
+        if designMode { MainActor.assumeIsolated { designController.clearHover() } }
+        #endif
         guard isReady else { return }
         // enable=0: never enable '_preselect' — enabling a selection is exclusive
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
         runPython("from pymol import cmd as _c; _c.select('_preselect', 'none', enable=0)")
     }
+
+    #if RAYMOL_MPNN
+    /// Design-mode hover: identify the residue under the cursor, update
+    /// _preselect for the cyan glow, and update the design controller's
+    /// hoveredResidueIndex so the propensity pill row re-renders.
+    /// Uses an independent leading-edge throttle (same rate as hoverPreview).
+    func hoverDesignPreview(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
+        guard isReady else { return }
+        if let last = lastDesignHoverNDC {
+            let dx = ndcX - last.0, dy = ndcY - last.1
+            if abs(dx) < kHoverMinNDC && abs(dy) < kHoverMinNDC { return }
+        }
+        lastDesignHoverNDC = (ndcX, ndcY)
+        designHoverWork?.cancel()
+        let fire: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.lastDesignHoverFire = Date()
+            self.runPython(
+                "from pymol import metal_pick as _mp; "
+                + "_mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+            self.readDesignHoverHit()
+        }
+        let elapsed = Date().timeIntervalSince(lastDesignHoverFire)
+        if elapsed >= kHoverInterval {
+            fire()
+        } else {
+            let work = DispatchWorkItem(block: fire)
+            designHoverWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (kHoverInterval - elapsed), execute: work)
+        }
+    }
+
+    /// Read back pymol_hover_design.json (written synchronously by hover_design_at)
+    /// and update the design controller's hover state.
+    /// Called from the fire closure which already runs on the main queue
+    /// (DispatchQueue.main / @MainActor); uses MainActor.assumeIsolated to
+    /// satisfy the Swift Concurrency actor-isolation check (macOS 14+).
+    private func readDesignHoverHit() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_design.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            MainActor.assumeIsolated { designController.clearHover() }
+            return
+        }
+        let hit = (root["hit"] as? Bool) ?? false
+        if hit {
+            let obj   = root["obj"]   as? String ?? ""
+            let chain = root["chain"] as? String ?? ""
+            let resi  = root["resi"]  as? String ?? ""
+            MainActor.assumeIsolated {
+                if obj == designController.focusObject {
+                    designController.setHovered(chain: chain, resi: resi)
+                } else {
+                    designController.clearHover()
+                }
+            }
+        } else {
+            MainActor.assumeIsolated { designController.clearHover() }
+        }
+    }
+    #endif
 
     /// iOS long-press: identify the atom/residue under the press (read-only —
     /// does NOT change the selection) and publish it so ContentView can show the

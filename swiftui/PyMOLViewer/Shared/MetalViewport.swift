@@ -609,7 +609,15 @@ extension MetalViewport {
             guard w > 0, h > 0 else { return }
             let ndcX = Float(loc.x / w) * 2 - 1
             let ndcY = Float(loc.y / h) * 2 - 1
+            #if RAYMOL_MPNN
+            if engine?.designMode == true {
+                engine?.hoverDesignPreview(ndcX, ndcY, Float(w / h))
+            } else {
+                engine?.hoverPreview(ndcX, ndcY, Float(w / h))
+            }
+            #else
             engine?.hoverPreview(ndcX, ndcY, Float(w / h))
+            #endif
         }
 
         // Pointer left the viewport → clear the preview so it doesn't linger.
@@ -688,6 +696,10 @@ extension MetalViewport {
                         ndcX, ndcY, Float(w / h)))
                     if engine?.measureMode != nil {
                         engine?.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                    } else if engine?.designMode == true {
+                        // Design mode: identify the object under the click so
+                        // ContentView can route it to DesignController.focus.
+                        engine?.longPressPick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
                     } else {
                         engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
                     }

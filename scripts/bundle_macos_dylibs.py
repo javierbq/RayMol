@@ -73,7 +73,11 @@ COPYABLE_PREFIXES = ("/opt/homebrew/", "/usr/local/", "/opt/local/")
 
 # Absolute prefixes that exist on every Mac and are therefore portable. Anything
 # else absolute is a non-portable dependency that would crash on a clean machine.
-SYSTEM_PREFIXES = ("/usr/lib/", "/System/")
+# /Library/Developer/ covers Xcode-injected test-support frameworks
+# (libXCTestSwiftSupport.dylib, XCUIAutomation.framework → CoreDevice.framework)
+# that appear in Contents/Frameworks during unit-test builds. These are
+# Apple-installed developer tools, not user library paths, so they are safe.
+SYSTEM_PREFIXES = ("/usr/lib/", "/System/", "/Library/Developer/")
 
 
 def is_macho(path):

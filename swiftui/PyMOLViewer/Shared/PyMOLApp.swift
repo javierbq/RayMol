@@ -187,6 +187,14 @@ struct PyMOLApp: App {
                     engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
                 }.keyboardShortcut("m", modifiers: .control)
             }
+            #if RAYMOL_MPNN
+            // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
+            CommandMenu("Design") {
+                Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
+                    engine.setDesignMode(!engine.designMode)
+                }.keyboardShortcut("d", modifiers: .control)
+            }
+            #endif
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
             CommandMenu("Movie") {

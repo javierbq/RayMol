@@ -9,15 +9,29 @@
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5C02477A5F60954358D0D615"
+               BlueprintIdentifier = "BFFDF4CBA2B92A93CDBB24E7"
+               BuildableName = "PyMOLViewerTests.xctest"
+               BlueprintName = "PyMOLViewerTests"
+               ReferencedContainer = "container:PyMOLViewer.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "403C29EE7864FF79CFA77A80"
                BuildableName = "PyMOLViewer.app"
-               BlueprintName = "PyMOLViewer_iOS"
+               BlueprintName = "PyMOLViewer_macOS"
                ReferencedContainer = "container:PyMOLViewer.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -27,14 +41,14 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldUseLaunchSchemeArgsEnv = "NO"
       onlyGenerateCoverageForSpecifiedTargets = "NO">
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "PyMOLViewer.app"
-            BlueprintName = "PyMOLViewer_iOS"
+            BlueprintIdentifier = "BFFDF4CBA2B92A93CDBB24E7"
+            BuildableName = "PyMOLViewerTests.xctest"
+            BlueprintName = "PyMOLViewerTests"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -50,20 +64,16 @@
                ReferencedContainer = "container:PyMOLViewer.xcodeproj">
             </BuildableReference>
          </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A8AA9F6242B9A29B6AAA26F7"
-               BuildableName = "PyMOLViewerUITests.xctest"
-               BlueprintName = "PyMOLViewerUITests"
-               ReferencedContainer = "container:PyMOLViewer.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "MPNN_INFERENCE"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -75,18 +85,15 @@
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES">
-      <BuildableProductRunnable
-         runnableDebuggingMode = "0">
+      <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "PyMOLViewer.app"
-            BlueprintName = "PyMOLViewer_iOS"
+            BlueprintIdentifier = "BFFDF4CBA2B92A93CDBB24E7"
+            BuildableName = "PyMOLViewerTests.xctest"
+            BlueprintName = "PyMOLViewerTests"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
-      </BuildableProductRunnable>
-      <CommandLineArguments>
-      </CommandLineArguments>
+      </MacroExpansion>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -94,18 +101,15 @@
       savedToolIdentifier = ""
       useCustomWorkingDirectory = "NO"
       debugDocumentVersioning = "YES">
-      <BuildableProductRunnable
-         runnableDebuggingMode = "0">
+      <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "5C02477A5F60954358D0D615"
-            BuildableName = "PyMOLViewer.app"
-            BlueprintName = "PyMOLViewer_iOS"
+            BlueprintIdentifier = "BFFDF4CBA2B92A93CDBB24E7"
+            BuildableName = "PyMOLViewerTests.xctest"
+            BlueprintName = "PyMOLViewerTests"
             ReferencedContainer = "container:PyMOLViewer.xcodeproj">
          </BuildableReference>
-      </BuildableProductRunnable>
-      <CommandLineArguments>
-      </CommandLineArguments>
+      </MacroExpansion>
    </ProfileAction>
    <AnalyzeAction
       buildConfiguration = "Debug">
