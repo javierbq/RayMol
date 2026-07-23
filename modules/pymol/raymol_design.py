@@ -62,21 +62,64 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
 
     Storage: Incentive PyMOL stores values in the custom atom property
     p.mpnn_conf; Open-Source PyMOL falls back to the B-factor column (b).
-    Spectrum is run over whichever was set.
+    Spectrum is run only over scored polymer residues — masked residues and
+    non-polymer atoms (ligands, ions, waters) keep their baseline color.
     """
+    # -- Fix 1: Un-dim -- reset this object's transparency settings back to the
+    # snapshot baseline so a previously-dimmed object is fully visible when it
+    # becomes the focus.  If the snapshot is absent (e.g. loaded mid-mode) or
+    # the object is not recorded in it, skip gracefully.
+    snap_path = _tmp('raymol_design_snapshot.json')
+    if os.path.exists(snap_path):
+        try:
+            with open(snap_path) as _snap_f:
+                snap = json.load(_snap_f)
+            baseline = snap.get('settings', {}).get(obj)
+            if baseline:
+                for s, v in baseline.items():
+                    try:
+                        cmd.set(s, float(v), obj)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     with open(values_json_path) as f:
         rows = json.load(f)
+    # Build vmap only for rows that carry an actual score value.  Rows with
+    # value=null represent masked (missing-backbone) residues and are excluded.
     vmap = {(r['chain'], r['resi']): float(r['value'])
             for r in rows if r.get('value') is not None}
 
+    if not vmap:
+        # No scored residues; nothing to alter or spectrum.
+        return 'DESIGN_COLOR:ok'
+
+    # -- Fix 2: Build a selection of exactly the scored polymer residues so
+    # that masked residues and all non-polymer atoms keep their baseline color
+    # instead of being clamped to the first palette color (the -9999 sentinel).
+    from collections import defaultdict
+    chain_resis = defaultdict(list)
+    for (chain, resi) in vmap:
+        chain_resis[chain].append(resi)
+
+    chain_parts = []
+    for ch, resis in chain_resis.items():
+        resi_str = '+'.join(str(r) for r in resis)
+        if ch:
+            chain_parts.append('(chain %s and resi %s)' % (ch, resi_str))
+        else:
+            # Empty chain: select by resi only.
+            chain_parts.append('(resi %s)' % resi_str)
+    scored_sel = '(%s) and polymer and (%s)' % (obj, ' or '.join(chain_parts))
+
     def _lookup(chain, resi):
-        v = vmap.get((chain, resi))
-        return v if v is not None else -9999.0
+        return vmap.get((chain, resi), -9999.0)
 
     # Attempt incentive-only per-atom property first; fall back to B-factor.
     prop_field = 'p.mpnn_conf'
     try:
-        cmd.alter(obj, 'p.mpnn_conf = _lookup(chain, resi)',
+        cmd.alter(scored_sel, 'p.mpnn_conf = _lookup(chain, resi)',
                   space={'_lookup': _lookup})
     except Exception as e:
         if 'IncentiveOnly' not in type(e).__name__:
@@ -84,17 +127,17 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
         # Open-Source PyMOL raises IncentiveOnlyException for p.* properties;
         # fall back to storing values in the B-factor column instead.
         prop_field = 'b'
-        cmd.alter(obj, 'b = _lookup(chain, resi)',
+        cmd.alter(scored_sel, 'b = _lookup(chain, resi)',
                   space={'_lookup': _lookup})
 
     try:
-        cmd.spectrum(prop_field, palette, obj,
+        cmd.spectrum(prop_field, palette, scored_sel,
                      minimum=float(lo), maximum=float(hi))
     except TypeError:
         # This PyMOL build does not support minimum/maximum kwargs;
         # spectrum auto-scales over the values present. The Swift legend
         # still uses the lo/hi domain it passed.
-        cmd.spectrum(prop_field, palette, obj)
+        cmd.spectrum(prop_field, palette, scored_sel)
 
     return 'DESIGN_COLOR:ok'
 

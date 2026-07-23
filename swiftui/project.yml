@@ -17,11 +17,11 @@ packages:
   proteinmpnn-mlx:
     url: https://github.com/javierbq/proteinmpnn-mlx.git
     from: 0.1.1
-# Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
-# shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
-# RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
-# (MAS forbids self-update + Sparkle's helpers fail sandbox validation, error 90296).
-# The Developer-ID/DMG build keeps Sparkle for auto-update.
+  # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
+  # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
+  # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
+  # (MAS forbids self-update + Sparkle's helpers fail sandbox validation, error 90296).
+  # The Developer-ID/DMG build keeps Sparkle for auto-update.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.6.0
