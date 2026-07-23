@@ -3,9 +3,10 @@ import Foundation
 import MPNNKit
 import Combine
 
-/// Orchestrates the Design mode lifecycle: loads the MPNN model once, scores off the main thread on
-/// a serial queue with a job token (superseded focuses are discarded), caches results, and applies
-/// per-residue coloring. All published state and public methods are @MainActor.
+/// Orchestrates the Design mode lifecycle: scores residues off the main thread on a serial queue
+/// with a job token (superseded focuses are discarded), caches results, and applies per-residue
+/// coloring. Model lifecycle is managed by the injected `score` closure (wired in Task 10).
+/// All published state and public methods are @MainActor.
 @MainActor
 final class DesignController: ObservableObject {
     @Published var focusObject: String?
@@ -75,6 +76,8 @@ final class DesignController: ObservableObject {
     func exit() {
         restore()
         focusObject = nil
+        isScoring = false
+        errorText = nil
         jobToken += 1   // cancel any in-flight scoring
     }
 
@@ -96,6 +99,9 @@ final class DesignController: ObservableObject {
     func focusAwait(_ object: String) async {
         focusObject = object
         for o in allObjects where o != object { dim(o) }
+        // Hoist token capture so both the success continuation and the catch can guard against it.
+        jobToken += 1
+        let token = jobToken
         do {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
@@ -110,8 +116,6 @@ final class DesignController: ObservableObject {
             // Cache miss: score off main.
             isScoring = true
             errorText = nil
-            jobToken += 1
-            let token = jobToken
 
             // Capture what we need before leaving the main actor.
             let residues = set.validResidues
@@ -133,11 +137,14 @@ final class DesignController: ObservableObject {
             // Back on MainActor. Discard the result if a newer focus superseded this one.
             guard token == jobToken else { return }
 
+            errorText = nil
             cache.set(key, scores)
             isScoring = false
             recolor(object)
 
         } catch {
+            // A superseded or post-exit() throw must not clobber state owned by the current job.
+            guard token == jobToken else { return }
             isScoring = false
             errorText = "\(error)"
         }
