@@ -3060,6 +3060,7 @@ struct ContentView: View {
                         ? themeManager.active.accent.color.opacity(0.25)
                         : Color.clear)
                     .cornerRadius(5)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
@@ -3073,6 +3074,7 @@ struct ContentView: View {
                         ? themeManager.active.accent.color.opacity(0.25)
                         : Color.clear)
                     .cornerRadius(5)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Certainty: how strongly the model prefers a single amino acid at each position (1 − normalized entropy of its prediction). High = structurally constrained; low = many residues plausible.")
