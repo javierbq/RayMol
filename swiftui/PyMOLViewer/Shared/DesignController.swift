@@ -155,7 +155,7 @@ final class DesignController: ObservableObject {
         // transparency, not representation visibility, so it won't undo shown sticks.
         teardownSticks(on: focusObject)
         restore()
-        compareEnabled = false
+        setCompare(false)
         focusObject = nil
         isScoring = false
         errorText = nil

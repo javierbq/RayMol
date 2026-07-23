@@ -3182,6 +3182,7 @@ private struct DesignEditStripView: View {
             // ── Needs-repack indicator + button ─────────────────────────────
             Button { controller.repackNow() } label: { repackBadge }
                 .buttonStyle(.plain)
+                .disabled(!controller.repackDirty || controller.isRepacking)
                 .help("Repack sidechains to optimize the current sequence")
 
             stripDivider
@@ -3472,7 +3473,7 @@ private struct DesignOverlayView: View {
                     let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
                     Button {
                         if let idx = activeIndex {
-                            controller.applyMutation(residueIndex: idx, aa: i)
+                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
                         }
                     } label: {
                         aaPill(index: i,
