@@ -3141,55 +3141,26 @@ private struct DesignOverlayView: View {
     @State private var showModeHelp = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                focusLabel
-                if controller.isScoring {
-                    ProgressView().scaleEffect(0.7)
-                }
-                Spacer(minLength: 0)
-                meaningPicker
-                legendBar
-                    .help("Per-residue confidence; domain shown at the ends")
-                helpButton
-                Button {
-                    engine.setDesignMode(false)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(theme.active.panelText.color.opacity(0.6))
-                }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
+        HStack(spacing: 10) {
+            focusLabel
+            if controller.isScoring {
+                ProgressView().scaleEffect(0.7)
             }
-            if showModeHelp {
-                modeHelpCard
-            }
+            Spacer(minLength: 0)
+            meaningPicker
+            legendBar
+                .help("Per-residue confidence; domain shown at the ends")
+            helpButton
+            Button {
+                engine.setDesignMode(false)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
-    }
-
-    private var modeHelpCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 4) {
-                Text("Native fit").bold()
-                Text("—")
-                Text("Log-probability of each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model would rather mutate it.")
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(alignment: .top, spacing: 4) {
-                Text("Certainty").bold()
-                Text("—")
-                Text("How strongly the model prefers a single amino acid at that position (1 − normalized entropy). High = structurally constrained; low = many plausible.")
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .font(.system(size: 11))
-        .foregroundColor(theme.active.panelText.color)
-        .padding(10)
-        .frame(maxWidth: 300, alignment: .leading)
-        .background(theme.active.panelBackground.color)
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.active.panelText.color.opacity(0.25), lineWidth: 0.5))
-        .cornerRadius(7)
     }
 
     private var focusLabel: some View {
@@ -3270,15 +3241,37 @@ private struct DesignOverlayView: View {
         }
     }
 
-    // "?" button toggles the inline modeHelpCard — an inline card in the SwiftUI
-    // hierarchy is bulletproof on macOS (avoids .popover unreliability over NSViewRepresentable).
+    // "?" button that pops a brief description of both coloring modes — click-triggered,
+    // reliable on macOS (hover .help() is inconsistent across system versions).
     private var helpButton: some View {
         Button { showModeHelp.toggle() } label: {
-            Image(systemName: showModeHelp ? "questionmark.circle.fill" : "questionmark.circle")
-                .foregroundColor(theme.active.panelText.color.opacity(showModeHelp ? 0.9 : 0.6))
+            Image(systemName: "questionmark.circle")
+                .foregroundColor(theme.active.panelText.color.opacity(0.6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Design mode help")
+        .popover(isPresented: $showModeHelp) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Native fit")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Log-probability of each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model would rather mutate it.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Certainty")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("How strongly the model prefers a single amino acid at that position (1 − normalized entropy). High = structurally constrained; low = many plausible.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(14)
+            .frame(width: 260)
+        }
     }
 }
 #endif
