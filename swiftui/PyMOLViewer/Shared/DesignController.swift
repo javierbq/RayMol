@@ -33,8 +33,10 @@ final class DesignController: ObservableObject {
     typealias MakeWorkingCopyFn = (String) -> String
     /// Apply a backbone-only display mutation to `obj` at `chain`/`resi` for amino-acid `aa`.
     typealias MutateDisplayFn = (String, String, String, Int) -> Void
-    /// Discard the working-copy object named by the argument.
-    typealias DiscardFn = (String) -> Void
+    /// Discard the working-copy object: deletes `dst` and re-enables `src`.
+    typealias DiscardFn = (String, String) -> Void
+    /// Re-enable the original source object on the Keep path (working copy is preserved).
+    typealias EnableOriginalFn = (String) -> Void
     /// Report whether the edit session improved the design (wired in Task 3+).
     typealias CompareFn = (Bool) -> Void
 
@@ -73,7 +75,8 @@ final class DesignController: ObservableObject {
 
     private var makeWorkingCopy: MakeWorkingCopyFn = { $0 + "_design" }
     private var mutateDisplay: MutateDisplayFn = { _, _, _, _ in }
-    private var discard: DiscardFn = { _ in }
+    private var discard: DiscardFn = { _, _ in }
+    private var enableOriginalFn: EnableOriginalFn = { _ in }
     private var compare: CompareFn = { _ in }
     private var repack: RepackFn = { _, _ in "" }
     private var loadRepacked: LoadRepackedFn = { _, _ in }
@@ -89,6 +92,9 @@ final class DesignController: ObservableObject {
     @Published private(set) var compareEnabled = false
     private(set) var workingObject: String?
     private(set) var editedSequence: [Int] = []
+    /// The source object that the current edit session is based on.
+    /// Set when the session begins; cleared in teardownEditSession.
+    private(set) var editSourceObject: String?
 
     // MARK: – Private state
 
@@ -121,7 +127,8 @@ final class DesignController: ObservableObject {
                      currentState: @escaping (String) -> Int = { _ in 1 },
                      makeWorkingCopy: @escaping MakeWorkingCopyFn = { $0 + "_design" },
                      mutateDisplay: @escaping MutateDisplayFn = { _, _, _, _ in },
-                     discard: @escaping DiscardFn = { _ in },
+                     discard: @escaping DiscardFn = { _, _ in },
+                     enableOriginal: @escaping EnableOriginalFn = { _ in },
                      compare: @escaping CompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
                      loadRepacked: @escaping LoadRepackedFn = { _, _ in }) {
@@ -136,6 +143,7 @@ final class DesignController: ObservableObject {
         self.makeWorkingCopy = makeWorkingCopy
         self.mutateDisplay = mutateDisplay
         self.discard = discard
+        self.enableOriginalFn = enableOriginal
         self.compare = compare
         self.repack = repack
         self.loadRepacked = loadRepacked
@@ -154,8 +162,14 @@ final class DesignController: ObservableObject {
         // Hide any sticks WE added first — restore() only re-applies colors and
         // transparency, not representation visibility, so it won't undo shown sticks.
         teardownSticks(on: focusObject)
+        // C1/C2: If an edit session is active, discard the working copy and re-enable
+        // the original BEFORE restoring colors/transparency. This ensures the original
+        // is visible after exit. For read-only (Phase-2a) sessions with no active edit,
+        // do NOT touch object enable state — just restore colors/transparency below.
+        if editing {
+            teardownEditSession(discardCopy: true)
+        }
         restore()
-        setCompare(false)
         focusObject = nil
         isScoring = false
         errorText = nil
@@ -239,6 +253,9 @@ final class DesignController: ObservableObject {
         // sticks are tied to its residue set, so tear them down cleanly.
         let previous = focusObject
         if previous != object {
+            // C1/C2: If an edit session is active when focus changes, discard it
+            // (delete working copy, re-enable source) before switching focus.
+            if editing { teardownEditSession(discardCopy: true) }
             teardownSticks(on: previous)
             hoveredResidueIndex = nil
             pinnedResidueIndex = nil
@@ -370,6 +387,39 @@ final class DesignController: ObservableObject {
         managedSticks.removeAll()
     }
 
+    // MARK: – Edit session teardown (C1/C2)
+
+    /// Unified edit-session teardown. Cancels in-flight work, resets all mutable
+    /// edit state, and ensures the ORIGINAL object ends up enabled/visible.
+    ///
+    /// - discardCopy: `true` → delete the working copy and re-enable the original
+    ///   (via the `discard` closure). `false` (Keep path) → preserve the working
+    ///   copy, but still re-enable the original (via `enableOriginalFn`).
+    ///
+    /// IMPORTANT: `compareEnabled` is reset via direct assignment — do NOT call
+    /// `setCompare(false)` from here, as that would trigger the compare closure
+    /// which calls `cmd.disable(src)` and leave the original hidden.
+    private func teardownEditSession(discardCopy: Bool) {
+        let src = editSourceObject
+        let w = workingObject
+        if discardCopy {
+            // discard(src, dst) deletes the working copy AND re-enables src.
+            if let src, let w { discard(src, w) }
+        } else {
+            // Keep path: working copy stays; re-enable the original so both are visible.
+            if let src { enableOriginalFn(src) }
+        }
+        rescoreToken += 1; repackToken += 1
+        editing = false
+        editCount = 0
+        repackDirty = false
+        isRepacking = false
+        workingObject = nil
+        editedSequence = []
+        editSourceObject = nil
+        compareEnabled = false   // bare assignment — do NOT call setCompare(false)
+    }
+
     // MARK: – Edit session (Task 2 + 3 + 4)
 
     /// Starts an edit session for the focused object if one is not already active.
@@ -378,7 +428,8 @@ final class DesignController: ObservableObject {
         guard !editing, let focus = focusObject else { return }
         let native = lastSet[focus]?.residues.map { $0.aa } ?? []
         editedSequence = native
-        workingObject = makeWorkingCopy(focus)
+        editSourceObject = focus                // I2: store source before creating working copy
+        workingObject = makeWorkingCopy(focus)  // I2: actual name returned by Python
         editing = true; editCount = 0; repackDirty = false
     }
 
@@ -388,6 +439,10 @@ final class DesignController: ObservableObject {
     private func applyMutationState(residueIndex i: Int, aa: Int) -> Bool {
         beginEditIfNeeded()
         guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return false }
+        // M2: invalid (missing-backbone) residues are not mutable.
+        if let focus = focusObject, let set = lastSet[focus] {
+            guard i < set.residues.count, set.residues[i].valid else { return false }
+        }
         editedSequence[i] = aa
         editCount += 1
         repackDirty = true
@@ -427,13 +482,17 @@ final class DesignController: ObservableObject {
     /// Job-token guarded (superseded by a subsequent mutation or focus change).
     func repackNowAwait() async {
         guard editing, let w = workingObject, repackDirty else { return }
+        // C3: we need the residue set to project the sequence; bail if unavailable.
+        guard let focus = focusObject, let set = lastSet[focus] else { return }
         isRepacking = true
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
-        let seq = editedSequence
-        // Capture backbone residues on the main actor before leaving — repackFn runs off-main.
-        let residues = focusObject.flatMap { lastSet[$0]?.validResidues } ?? []
+        // I1: capture the FULL sequence before dispatch so we can detect a mid-repack mutation.
+        let capturedFullSeq = editedSequence
+        // C3: project through the valid-residue mask to align with validResidues.
+        let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+        let residues = set.validResidues
         let repackFn = repack     // capture @MainActor-isolated property before leaving
         let pdb: String? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
@@ -442,7 +501,15 @@ final class DesignController: ObservableObject {
             }
         }
         guard token == repackToken else { isRepacking = false; return }
-        if let pdb, !pdb.isEmpty { loadRepacked(w, pdb); repackDirty = false }
+        if let pdb, !pdb.isEmpty {
+            // I1: only load if the sequence has not changed since dispatch.
+            if capturedFullSeq == editedSequence {
+                loadRepacked(w, pdb)
+                repackDirty = false
+            }
+            // else: mutation happened mid-repack; leave repackDirty = true so the
+            // next repack (triggered by the new mutation) loads the current coords.
+        }
         isRepacking = false
     }
 
@@ -467,7 +534,8 @@ final class DesignController: ObservableObject {
         rescoreToken += 1
         let token = rescoreToken
         let residues = set.validResidues
-        let seq = editedSequence          // value copy — safe to capture off-main
+        // C3: project editedSequence through the valid mask to align with validResidues.
+        let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
         let validMask = set.residues.map { $0.valid }
         let scoreFn = score               // capture @MainActor-isolated property before leaving
 
@@ -493,32 +561,20 @@ final class DesignController: ObservableObject {
 
     /// Discard the working copy and reset all edit-session state.
     func discardEdits() {
-        if let w = workingObject { discard(w) }
-        // Cancel any in-flight rescore or repack that returns after teardown.
-        rescoreToken += 1; repackToken += 1
-        editing = false; editCount = 0; repackDirty = false; isRepacking = false
-        workingObject = nil; editedSequence = []
-        setCompare(false)
+        teardownEditSession(discardCopy: true)
     }
 
     /// End the edit session and keep the working-copy object (sync, no repack).
     /// Use `keepEditsAwait()` from async contexts to repack-if-dirty before closing.
     func keepEdits() {
-        // Cancel any in-flight rescore or repack that returns after teardown.
-        rescoreToken += 1; repackToken += 1
-        editing = false; editCount = 0; repackDirty = false; isRepacking = false
-        workingObject = nil; editedSequence = []
-        setCompare(false)
+        teardownEditSession(discardCopy: false)
     }
 
     /// Async variant of `keepEdits`: repacks first if `repackDirty`, then closes the session.
+    /// Original object ends enabled (visible); working copy is preserved.
     func keepEditsAwait() async {
         if repackDirty { await repackNowAwait() }
-        // Cancel any remaining in-flight rescore or repack that returns after teardown.
-        rescoreToken += 1; repackToken += 1
-        editing = false; editCount = 0; repackDirty = false; isRepacking = false
-        workingObject = nil; editedSequence = []
-        setCompare(false)
+        teardownEditSession(discardCopy: false)
     }
 
     // MARK: – Test hooks
@@ -529,11 +585,13 @@ final class DesignController: ObservableObject {
     func injectEdit(makeWorkingCopy: @escaping MakeWorkingCopyFn,
                     mutateDisplay: @escaping MutateDisplayFn,
                     discard: @escaping DiscardFn,
-                    compare: @escaping CompareFn) {
+                    compare: @escaping CompareFn,
+                    enableOriginal: @escaping EnableOriginalFn = { _ in }) {
         self.makeWorkingCopy = makeWorkingCopy
         self.mutateDisplay = mutateDisplay
         self.discard = discard
         self.compare = compare
+        self.enableOriginalFn = enableOriginal
     }
 
     /// Override the score closure for testing. Replaces the constructor-injected stub
@@ -550,11 +608,19 @@ final class DesignController: ObservableObject {
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async
     /// score lifecycle. Mirrors the direct-stub construction in DesignControllerTests.
-    func setFocusForTest(_ object: String, nativeSequence: [Int]) {
+    /// `validFlags`: optional per-residue validity array; nil → all invalid (backbone: nil).
+    /// Pass `[true, true, ...]` to make residues mutable (needed for M2 guard).
+    func setFocusForTest(_ object: String, nativeSequence: [Int], validFlags: [Bool]? = nil) {
         focusObject = object
-        let residues = nativeSequence.enumerated().map { i, aa in
-            DesignResidue(chain: "A", resi: "\(i + 1)", resn: "UNK", aa: aa,
-                          backbone: nil, valid: false)
+        let residues = nativeSequence.enumerated().map { i, aa -> DesignResidue in
+            let isValid = validFlags.map { i < $0.count ? $0[i] : false } ?? false
+            var bb: MPNNModel.Residue? = nil
+            if isValid {
+                bb = MPNNModel.Residue(n: .zero, ca: .zero, c: .zero, o: .zero,
+                                       chain: 0, resSeq: i + 1)
+            }
+            return DesignResidue(chain: "A", resi: "\(i + 1)", resn: "UNK", aa: aa,
+                                 backbone: bb, valid: isValid)
         }
         lastSet[object] = DesignResidueSet(object: object, state: 1, residues: residues)
     }

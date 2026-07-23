@@ -8,22 +8,43 @@ from pymol import cmd, testing
 # Additionally, cmd.fragment() assigns resi='2' (not '1') in this build, so
 # the backbone-only test discovers the actual resi at runtime.
 
+def _make(src):
+    """Call make_working_copy and return the chosen dst name."""
+    from pymol import raymol_design as rd
+    result = rd.make_working_copy(src)
+    assert result.startswith('DESIGN_WORK:'), result
+    return result[len('DESIGN_WORK:'):]
+
 class TestDesignEditing(testing.PyMOLTestCase):
     def testMakeAndDiscardWorkingCopy(self):
         from pymol import raymol_design as rd
         cmd.reinitialize(); cmd.fragment('ala', 'src')
-        self.assertEqual(rd.make_working_copy('src', 'src_design'), 'DESIGN_WORK:src_design')
-        self.assertIn('src_design', cmd.get_object_list())
-        self.assertEqual(cmd.count_atoms('src'), cmd.count_atoms('src_design'))
+        dst = _make('src')
+        # I2: returned name is used (defaults to src_design when no collision)
+        self.assertIn(dst, cmd.get_object_list())
+        self.assertEqual(cmd.count_atoms('src'), cmd.count_atoms(dst))
         # original disabled, copy enabled
         self.assertNotIn('src', cmd.get_object_list('enabled'))
-        rd.discard_working_copy('src', 'src_design')
-        self.assertNotIn('src_design', cmd.get_object_list())
+        rd.discard_working_copy('src', dst)
+        self.assertNotIn(dst, cmd.get_object_list())
         self.assertIn('src', cmd.get_object_list('enabled'))
+
+    def testMakeWorkingCopyUniqueName(self):
+        """I2: re-editing after a Keep must not clobber the previously-kept copy."""
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        cmd.fragment('ala', 'src')
+        # Simulate a "Keep" — the first working copy stays in the scene.
+        dst1 = _make('src'); cmd.enable('src')   # re-enable src as Keep would
+        # Start a second edit session; must choose a DIFFERENT name.
+        dst2 = _make('src')
+        self.assertNotEqual(dst1, dst2)
+        self.assertIn(dst1, cmd.get_object_list())  # first copy untouched
+        self.assertIn(dst2, cmd.get_object_list())  # second copy also present
 
     def testCompareToggle(self):
         from pymol import raymol_design as rd
-        cmd.reinitialize(); cmd.fragment('ala', 'src'); rd.make_working_copy('src', 'src_design')
+        cmd.reinitialize(); cmd.fragment('ala', 'src'); dst = _make('src')
         rd.set_compare('src', True);  self.assertIn('src', cmd.get_object_list('enabled'))
         rd.set_compare('src', False); self.assertNotIn('src', cmd.get_object_list('enabled'))
 

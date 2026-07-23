@@ -2053,12 +2053,21 @@ final class PyMOLEngine: ObservableObject {
             self?.objectMeta[object]?.state ?? 1
         },
         makeWorkingCopy: { [weak self] src in
-            let dst = src + "_design"
-            self?.runPython("""
+            // I2: Python chooses the unique dst name via cmd.get_unused_name and writes
+            // it to a temp JSON file; we read it back so we track the actual name.
+            guard let self else { return src + "_design" }
+            self.runPython("""
                 from pymol import raymol_design as _rd
-                _rd.make_working_copy('\(src)', '\(dst)')
+                _rd.make_working_copy('\(src)')
                 """)
-            return dst
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_working.json")
+            if let data = FileManager.default.contents(atPath: path.path),
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let dst = root["dst"] as? String, !dst.isEmpty {
+                return dst
+            }
+            return src + "_design"   // safe fallback
         },
         mutateDisplay: { [weak self] obj, chain, resi, aa in
             self?.runPython("""
@@ -2066,14 +2075,17 @@ final class PyMOLEngine: ObservableObject {
                 _rd.mutate_residue_display('\(obj)', '\(chain)', '\(resi)', \(aa))
                 """)
         },
-        discard: { [weak self] dst in
-            // Derive original src: the working copy is always named <src>_design.
-            // dst is always src + "_design" (from makeWorkingCopy); the else-branch is unreachable in the normal path.
-            let src = dst.hasSuffix("_design") ? String(dst.dropLast("_design".count)) : dst
+        discard: { [weak self] src, dst in
+            // I2: src is now passed explicitly (stored as editSourceObject) instead of
+            // being derived by stripping "_design", which breaks for uniquely-named copies.
             self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.discard_working_copy('\(src)', '\(dst)')
                 """)
+        },
+        enableOriginal: { [weak self] src in
+            // Keep path: working copy is preserved; re-enable the original so it is visible.
+            self?.runPython("from pymol import cmd as _c; _c.enable('\(src)')")
         },
         compare: { [weak self] on in
             guard let self else { return }

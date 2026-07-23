@@ -21,15 +21,18 @@ final class DesignEditingTests: XCTestCase {
             restore: { })
     }
 
+    // Convenience: all-valid residue flags for a given count.
+    private func allValid(_ count: Int) -> [Bool] { Array(repeating: true, count: count) }
+
     func testFirstMutationBeginsEditAndMarksDirty() {
         var created: [String] = []
         let c = makeController()
         c.injectEdit(
             makeWorkingCopy: { src in created.append(src); return src + "_design" },
             mutateDisplay: { _, _, _, _ in },
-            discard: { _ in },
+            discard: { _, _ in },
             compare: { _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])   // GLY, GLY, GLY
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 1, aa: 9)               // -> LEU
         XCTAssertTrue(c.editing)
         XCTAssertEqual(created, ["m1"])                       // working copy made exactly once
@@ -47,9 +50,9 @@ final class DesignEditingTests: XCTestCase {
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
-            discard: { discarded.append($0) },
+            discard: { _, dst in discarded.append(dst) },
             compare: { _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 1)
         c.discardEdits()
         XCTAssertFalse(c.editing)
@@ -63,9 +66,9 @@ final class DesignEditingTests: XCTestCase {
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
-            discard: { discardCalls.append($0) },
+            discard: { _, dst in discardCalls.append(dst) },
             compare: { _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 9)    // begins session
         XCTAssertTrue(c.editing)
         c.keepEdits()
@@ -79,9 +82,9 @@ final class DesignEditingTests: XCTestCase {
         c.injectEdit(
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
-            discard: { _ in },
+            discard: { _, _ in },
             compare: { _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 1, aa: 9)    // real mutation — editCount == 1
         XCTAssertEqual(c.editCount, 1)
         let dirty = c.repackDirty
@@ -100,14 +103,15 @@ final class DesignEditingTests: XCTestCase {
     func testMutationRescoresWithEditedSequence() async {
         var scoredSeqs: [[Int]] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
         c.injectScore { _, seq in
             scoredSeqs.append(seq)
             return MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
                 currentAALogProb: Array(repeating: -3.0, count: seq.count))
         }
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        // All-valid so C3 projection passes through all residues.
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         await c.applyMutationAwait(residueIndex: 1, aa: 9)   // await the rescore
         XCTAssertEqual(scoredSeqs.last, [5, 9, 5])            // rescored with the EDITED sequence
     }
@@ -117,7 +121,7 @@ final class DesignEditingTests: XCTestCase {
     func testRepackClearsDirtyAndLoadsCoords() async {
         var repackedSeqs: [[Int]] = []; var loaded: [(String, String)] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
@@ -126,7 +130,7 @@ final class DesignEditingTests: XCTestCase {
         c.injectRepack(
             repack: { _, seq in repackedSeqs.append(seq); return "PDBDATA" },
             loadRepacked: { obj, pdb in loaded.append((obj, pdb)) })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         await c.applyMutationAwait(residueIndex: 0, aa: 1)  // autoRepack=false → stays dirty
         XCTAssertTrue(c.repackDirty)
         await c.repackNowAwait()
@@ -139,14 +143,14 @@ final class DesignEditingTests: XCTestCase {
     func testAutoRepackRepacksOnEachEdit() async {
         var repacks = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         c.injectRepack(repack: { _, _ in repacks += 1; return "P" }, loadRepacked: { _, _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5]); c.autoRepack = true
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3)); c.autoRepack = true
         await c.applyMutationAwait(residueIndex: 0, aa: 1)
         XCTAssertEqual(repacks, 1)      // repack ran exactly once
         XCTAssertFalse(c.repackDirty)  // dirty cleared by auto-repack
@@ -156,14 +160,14 @@ final class DesignEditingTests: XCTestCase {
     func testKeepAwaitRepacksIfDirty() async {
         var repackCalls = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         c.injectRepack(repack: { _, _ in repackCalls += 1; return "PDBDATA" }, loadRepacked: { _, _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 1)     // begins session, marks dirty
         XCTAssertTrue(c.repackDirty)
         await c.keepEditsAwait()
@@ -211,9 +215,9 @@ final class DesignEditingTests: XCTestCase {
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
         c.injectRepack(repack: { _, _ in "PDBDATA" }, loadRepacked: { _, _ in })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, true, true])
 
         // Sync mutation → detached Task starts rescoreWorkingObject → dispatches to inferenceQueue → blocks
         c.applyMutation(residueIndex: 0, aa: 1)
@@ -232,6 +236,78 @@ final class DesignEditingTests: XCTestCase {
         // The rescore's applyColoring must have fired for the working object
         XCTAssertTrue(recoloredObjs.contains("m1_design"),
                       "rescore coloring was discarded — repack incorrectly cancelled it")
+    }
+
+    // MARK: – M3: lock the C1/C2/C3 bug-fixes
+
+    /// C3: score must receive a sequence aligned to validResidues only.
+    ///
+    /// Setup: 3 residues, residue 1 (middle) is invalid (no backbone).
+    /// After mutating residue 0 (valid), the score stub must receive a
+    /// length-2 sequence (the two valid residues only), not length-3.
+    /// This test FAILS against pre-fix code that passes the full editedSequence.
+    func testRescoreAlignsSequenceToValidResidues() async {
+        var scoredSeqs: [[Int]] = []
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectScore { _, seq in
+            scoredSeqs.append(seq)
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
+                currentAALogProb: Array(repeating: -3.0, count: seq.count))
+        }
+        // Residues 0 and 2 are valid; residue 1 is invalid (missing backbone).
+        c.setFocusForTest("m1", nativeSequence: [5, 7, 3], validFlags: [true, false, true])
+        // Mutate residue 0 (valid): aa 5 → 9
+        await c.applyMutationAwait(residueIndex: 0, aa: 9)
+        // C3 fix: score receives only the valid residues projected through the mask.
+        // validResidues = [res0, res2]; projected seq = [9, 3].
+        XCTAssertEqual(scoredSeqs.last?.count, 2,
+                       "score received \(scoredSeqs.last?.count ?? -1) residues; expected 2 (valid-only)")
+        XCTAssertEqual(scoredSeqs.last, [9, 3],
+                       "score received wrong sequence; expected [9 (mutated), 3 (res2)]")
+    }
+
+    /// C1/C2: after discardEdits() the original object is re-enabled (not left hidden).
+    ///
+    /// Uses recording stubs to capture enable/disable calls. The discard closure
+    /// re-enables src (as discard_working_copy does), and teardownEditSession must
+    /// NOT call setCompare(false) (which would re-disable it) after discard.
+    func testDiscardReenablesOriginal() {
+        var enabledObjs: [String] = []
+        var disabledObjs: [String] = []
+
+        let c = makeController()
+        c.injectEdit(
+            makeWorkingCopy: { src in
+                // Simulate make_working_copy disabling the original.
+                disabledObjs.append(src)
+                return src + "_design"
+            },
+            mutateDisplay: { _, _, _, _ in },
+            discard: { src, _ in
+                // Simulate discard_working_copy: re-enable original.
+                enabledObjs.append(src)
+            },
+            compare: { _ in
+                // compare(false) would call cmd.disable(src) — record it as disabled
+                // so we can detect if teardown incorrectly fires it.
+                if !enabledObjs.isEmpty {
+                    disabledObjs.append("compare_false_fired")
+                }
+            })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.applyMutation(residueIndex: 0, aa: 9)    // triggers beginEditIfNeeded → disables src
+        XCTAssertTrue(c.editing)
+
+        c.discardEdits()
+        XCTAssertFalse(c.editing)
+        // The discard closure must have been called — original re-enabled.
+        XCTAssertTrue(enabledObjs.contains("m1"),
+                      "discard closure did not re-enable the original object")
+        // compare(false) must NOT have been called after discard (that would disable the original).
+        XCTAssertFalse(disabledObjs.contains("compare_false_fired"),
+                       "setCompare(false) was called after discard — original may have been re-disabled")
     }
 }
 #endif

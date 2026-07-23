@@ -319,17 +319,26 @@ def set_residue_sticks(obj, chain, resi, on):
 
 # ---- Phase 2b: point-mutation editing helpers (additive) ----
 
-def make_working_copy(src, dst):
-    """Create a non-destructive working copy of src named dst, disable src.
+def make_working_copy(src):
+    """Create a non-destructive working copy of src, choosing a unique name.
 
-    If dst already exists it is deleted first.  The copy inherits source
-    transformation matrices so the two objects are superposed.
-    Returns 'DESIGN_WORK:<dst>'.
+    Uses cmd.get_unused_name so a previously-kept working copy (e.g. src_design)
+    is not overwritten — the new session gets src_design01 etc.  The chosen
+    name is written to $TMPDIR/raymol_design_working.json for the Swift caller
+    to read back (runPython is fire-and-forget; no return channel).
+    The copy inherits source transformation matrices so the two objects are
+    superposed.  Returns 'DESIGN_WORK:<dst>'.
     """
+    dst = cmd.get_unused_name(src + '_design')
     if dst in cmd.get_object_list():
         cmd.delete(dst)
     cmd.create(dst, src)          # inherits source matrices → superposed
     cmd.disable(src)
+    try:
+        with open(_tmp('raymol_design_working.json'), 'w') as f:
+            json.dump({'src': src, 'dst': dst}, f)
+    except Exception:
+        pass
     return 'DESIGN_WORK:%s' % dst
 
 
