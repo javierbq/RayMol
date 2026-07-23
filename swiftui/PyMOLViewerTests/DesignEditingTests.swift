@@ -1,0 +1,60 @@
+#if RAYMOL_MPNN
+import XCTest
+import MPNNKit
+@testable import RayMol
+
+@MainActor
+final class DesignEditingTests: XCTestCase {
+
+    // Build a controller with stub closures for the Phase-2a path (score/applyColoring/etc).
+    // Edit-specific closures are injected via injectEdit(...) in each test.
+    func makeController() -> DesignController {
+        let emptySet = DesignResidueSet(object: "stub", state: 1, residues: [])
+        return DesignController(
+            enumerate: { _, _ in emptySet },
+            score: { _, _ in
+                MPNNModel.ScoreResult(logProbs: [], currentAALogProb: [])
+            },
+            applyColoring: { _, _, _, _, _ in },
+            dim: { _ in },
+            snapshot: { _ in },
+            restore: { })
+    }
+
+    func testFirstMutationBeginsEditAndMarksDirty() {
+        var created: [String] = []
+        let c = makeController()
+        c.injectEdit(
+            makeWorkingCopy: { src in created.append(src); return src + "_design" },
+            mutateDisplay: { _, _, _ in },
+            discard: { _ in },
+            compare: { _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])   // GLY, GLY, GLY
+        c.applyMutation(residueIndex: 1, aa: 9)               // -> LEU
+        XCTAssertTrue(c.editing)
+        XCTAssertEqual(created, ["m1"])                       // working copy made exactly once
+        XCTAssertEqual(c.editedSequence[1], 9)
+        XCTAssertEqual(c.editCount, 1)
+        XCTAssertTrue(c.repackDirty)
+        c.applyMutation(residueIndex: 2, aa: 9)               // second edit: no new copy
+        XCTAssertEqual(created, ["m1"])
+        XCTAssertEqual(c.editCount, 2)
+    }
+
+    func testDiscardResetsState() {
+        var discarded: [String] = []
+        let c = makeController()
+        c.injectEdit(
+            makeWorkingCopy: { $0 + "_design" },
+            mutateDisplay: { _, _, _ in },
+            discard: { discarded.append($0) },
+            compare: { _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.applyMutation(residueIndex: 0, aa: 1)
+        c.discardEdits()
+        XCTAssertFalse(c.editing)
+        XCTAssertEqual(c.editCount, 0)
+        XCTAssertEqual(discarded, ["m1_design"])
+    }
+}
+#endif

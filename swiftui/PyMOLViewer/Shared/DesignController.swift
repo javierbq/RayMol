@@ -27,6 +27,17 @@ final class DesignController: ObservableObject {
     /// Enumerate residues for `(objectName, state)`.
     typealias EnumerateFn = (String, Int) throws -> DesignResidueSet
 
+    // MARK: – Edit-session closure type aliases (Task 2; Task 10 wires real implementations)
+
+    /// Create a working-copy object from `srcObject`; returns the new object name.
+    typealias MakeWorkingCopyFn = (String) -> String
+    /// Apply a backbone-only display mutation to `obj` at `residueIndex` for amino-acid `aa`.
+    typealias MutateDisplayFn = (String, Int, Int) -> Void
+    /// Discard the working-copy object named by the argument.
+    typealias DiscardFn = (String) -> Void
+    /// Report whether the edit session improved the design (wired in Task 3+).
+    typealias CompareFn = (Bool) -> Void
+
     /// Run MPNN scoring off-main; called on the inference serial queue.
     typealias ScoreFn = ([MPNNModel.Residue], [Int]) throws -> MPNNModel.ScoreResult
 
@@ -52,6 +63,23 @@ final class DesignController: ObservableObject {
     private let setSticksFn: SticksFn
     /// Returns the currently-displayed state (1-based) for `object`. Wired to the engine in Task 10.
     private let currentStateFn: (String) -> Int
+
+    // MARK: – Edit-session injected closures (default no-ops; Task 10 replaces; #if DEBUG hooks inject in tests)
+
+    private var makeWorkingCopy: MakeWorkingCopyFn = { $0 + "_design" }
+    private var mutateDisplay: MutateDisplayFn = { _, _, _ in }
+    private var discard: DiscardFn = { _ in }
+    private var compare: CompareFn = { _ in }
+
+    // MARK: – Edit-session published state (Task 2)
+
+    @Published private(set) var editing = false
+    @Published private(set) var editCount = 0
+    @Published private(set) var repackDirty = false
+    @Published var autoRepack = false
+    @Published private(set) var isRepacking = false
+    private(set) var workingObject: String?
+    private(set) var editedSequence: [Int] = []
 
     // MARK: – Private state
 
@@ -316,5 +344,69 @@ final class DesignController: ObservableObject {
         }
         managedSticks.removeAll()
     }
+
+    // MARK: – Edit session (Task 2)
+
+    /// Starts an edit session for the focused object if one is not already active.
+    /// Idempotent — safe to call multiple times; only the first call creates the working copy.
+    func beginEditIfNeeded() {
+        guard !editing, let focus = focusObject else { return }
+        let native = lastSet[focus]?.residues.map { $0.aa } ?? []
+        editedSequence = native
+        workingObject = makeWorkingCopy(focus)
+        editing = true; editCount = 0; repackDirty = false
+    }
+
+    /// Apply a single-residue amino-acid mutation to the current edit session.
+    /// Begins the edit session on the first call. Tasks 3–4 add rescore / repack.
+    func applyMutation(residueIndex i: Int, aa: Int) {
+        beginEditIfNeeded()
+        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return }
+        editedSequence[i] = aa
+        editCount += 1
+        repackDirty = true
+        if let w = workingObject { mutateDisplay(w, i, aa) }
+    }
+
+    /// Discard the working copy and reset all edit-session state.
+    func discardEdits() {
+        if let w = workingObject { discard(w) }
+        editing = false; editCount = 0; repackDirty = false; isRepacking = false
+        workingObject = nil; editedSequence = []
+    }
+
+    /// End the edit session and keep the working-copy object.
+    /// Repack-if-dirty is wired in Task 4; here we simply close out the session state.
+    func keepEdits() {
+        editing = false; editCount = 0; repackDirty = false
+        workingObject = nil; editedSequence = []
+    }
+
+    // MARK: – Test hooks
+
+#if DEBUG
+    /// Inject edit-session closures after initialization. Used by unit tests only;
+    /// matches the Phase-2a pattern of injecting stubs that bypass PyMOL / MLX.
+    func injectEdit(makeWorkingCopy: @escaping MakeWorkingCopyFn,
+                    mutateDisplay: @escaping MutateDisplayFn,
+                    discard: @escaping DiscardFn,
+                    compare: @escaping CompareFn) {
+        self.makeWorkingCopy = makeWorkingCopy
+        self.mutateDisplay = mutateDisplay
+        self.discard = discard
+        self.compare = compare
+    }
+
+    /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async
+    /// score lifecycle. Mirrors the direct-stub construction in DesignControllerTests.
+    func setFocusForTest(_ object: String, nativeSequence: [Int]) {
+        focusObject = object
+        let residues = nativeSequence.enumerated().map { i, aa in
+            DesignResidue(chain: "A", resi: "\(i + 1)", resn: "UNK", aa: aa,
+                          backbone: nil, valid: false)
+        }
+        lastSet[object] = DesignResidueSet(object: object, state: 1, residues: residues)
+    }
+#endif
 }
 #endif
