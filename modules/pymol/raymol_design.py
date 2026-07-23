@@ -332,7 +332,7 @@ def make_working_copy(src):
     dst = cmd.get_unused_name(src + '_design')
     if dst in cmd.get_object_list():
         cmd.delete(dst)
-    cmd.create(dst, src)          # inherits source matrices → superposed
+    cmd.create(dst, src, zoom=0)  # zoom=0: no camera reset; inherits source matrices → superposed
     cmd.disable(src)
     try:
         with open(_tmp('raymol_design_working.json'), 'w') as f:

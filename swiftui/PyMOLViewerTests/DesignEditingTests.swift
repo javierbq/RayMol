@@ -238,6 +238,64 @@ final class DesignEditingTests: XCTestCase {
                       "rescore coloring was discarded — repack incorrectly cancelled it")
     }
 
+    // MARK: – Fix 2: focus follows working copy, pin preserved
+
+    /// After the first mutation, focusObject must switch to the working copy, the
+    /// pinned residue index must be preserved, the residue set must be carried (so
+    /// residueIndex resolves), and the score cache must have an entry for the working
+    /// object's native-sequence key (so activePropensity returns non-nil).
+    func testBeginEditSwitchesFocusToWorkingCopyPreservingPin() async {
+        let nativeSeq = [5, 5, 5]
+        let residues = nativeSeq.enumerated().map { i, aa -> DesignResidue in
+            DesignResidue(chain: "A", resi: "\(i + 1)", resn: "ALA", aa: aa,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero, o: .zero,
+                                                      chain: 0, resSeq: i + 1),
+                          valid: true)
+        }
+        let residueSet = DesignResidueSet(object: "m1", state: 1, residues: residues)
+
+        let c = DesignController(
+            enumerate: { _, _ in residueSet },
+            score: { _, seq in
+                MPNNModel.ScoreResult(
+                    logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
+                    currentAALogProb: Array(repeating: -3.0, count: seq.count))
+            },
+            applyColoring: { _, _, _, _, _ in },
+            dim: { _ in },
+            snapshot: { _ in },
+            restore: { })
+        c.injectEdit(
+            makeWorkingCopy: { _ in "m1_design" },
+            mutateDisplay: { _, _, _, _ in },
+            discard: { _, _ in },
+            compare: { _ in })
+
+        // Focus + score the original so the native-sequence cache entry exists for "m1".
+        await c.focusAwait("m1")
+        XCTAssertEqual(c.focusObject, "m1")
+
+        // Pin residue at index 1 (chain "A", resi "2").
+        c.setPinned(chain: "A", resi: "2")
+        XCTAssertEqual(c.pinnedResidueIndex, 1, "pre-condition: pin must be set before mutation")
+
+        // First mutation triggers beginEditIfNeeded + async rescore.
+        await c.applyMutationAwait(residueIndex: 0, aa: 9)
+
+        // Focus must have moved to the working copy.
+        XCTAssertEqual(c.focusObject, "m1_design",
+                       "focusObject did not switch to working copy after beginEditIfNeeded")
+        // Pin must survive the focus switch (same residue ordering as the original).
+        XCTAssertEqual(c.pinnedResidueIndex, 1,
+                       "pinnedResidueIndex was cleared on edit-begin")
+        // The residue set was carried: residueIndex must resolve for "m1_design".
+        XCTAssertNotNil(c.residueIndex(chain: "A", resi: "2"),
+                        "lastSet not carried to working copy — residueIndex returned nil")
+        // activePropensity must be non-nil: cache has entry under working object's native key.
+        XCTAssertNotNil(c.activePropensity,
+                        "propensity row absent — score cache not carried / not populated for working copy")
+    }
+
     // MARK: – M3: lock the C1/C2/C3 bug-fixes
 
     /// C3: score must receive a sequence aligned to validResidues only.

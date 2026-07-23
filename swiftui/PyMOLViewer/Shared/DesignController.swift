@@ -402,6 +402,11 @@ final class DesignController: ObservableObject {
     private func teardownEditSession(discardCopy: Bool) {
         let src = editSourceObject
         let w = workingObject
+        // Restore focus to the source object (re-enabled below) before clearing state.
+        if let src { focusObject = src }
+        // Remove the working copy's residue-set entry and clear sticks tracking.
+        if let w { lastSet[w] = nil }
+        managedSticks.removeAll()
         if discardCopy {
             // discard(src, dst) deletes the working copy AND re-enables src.
             if let src, let w { discard(src, w) }
@@ -429,8 +434,29 @@ final class DesignController: ObservableObject {
         let native = lastSet[focus]?.residues.map { $0.aa } ?? []
         editedSequence = native
         editSourceObject = focus                // I2: store source before creating working copy
-        workingObject = makeWorkingCopy(focus)  // I2: actual name returned by Python
+        let w = makeWorkingCopy(focus)          // I2: actual name returned by Python
+        workingObject = w
         editing = true; editCount = 0; repackDirty = false
+
+        // Carry the residue set from the original to the working copy so all residue-keyed
+        // paths (activePropensity, reconcileSticks, applyMutationState chain/resi lookup)
+        // target the SHOWN object without re-enumeration.
+        if let set = lastSet[focus] {
+            lastSet[w] = set
+            // Carry the native-sequence score so the propensity row + coloring appear
+            // immediately instead of waiting for the async rescore.
+            let nativeKey = DesignCacheKey(object: focus, state: set.state, sequenceHash: set.sequenceHash)
+            if let scores = cache.get(nativeKey) {
+                cache.set(DesignCacheKey(object: w, state: set.state, sequenceHash: set.sequenceHash), scores)
+            }
+        }
+        // Move sticks from the hidden original to the shown working copy.
+        teardownSticks(on: focus)
+        // Switch focus WITHOUT clearing the pin: direct assignment avoids setFocused/focus()
+        // which would clear pinnedResidueIndex and hoveredResidueIndex.
+        focusObject = w
+        // Reconcile so the pinned/hovered residue's sticks appear on the working copy.
+        reconcileSticks()
     }
 
     /// Shared state-update kernel for `applyMutation` and `applyMutationAwait`.
