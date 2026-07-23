@@ -3140,6 +3140,117 @@ struct ContentView: View {
 }
 
 #if RAYMOL_MPNN
+// MARK: – Design feature constants
+
+/// Pinned-residue accent color: warm gold/orange, visually distinct from the
+/// hover (subtle neutral grey) and the standard accent. Used in the 2-row
+/// sequence strip column (Feature 11) and the residue badge chip.
+private let designPinnedColor = Color(red: 0.98, green: 0.60, blue: 0.10)
+
+// MARK: – 2-row Design Sequence Strip (Features 10 + 11)
+
+/// Compact horizontally-scrollable strip, one column per residue of the focus
+/// object's residue list.
+///   Top row:    parent (native) 1-letter code in MPNN alphabet order.
+///   Bottom row: edited 1-letter code in the accent color when the residue has
+///               been mutated (differs from the native aa), blank otherwise.
+///
+/// Hover on a column calls the controller's shared setHovered(chain:resi:) /
+/// clearHover() path — the same setters the 3D viewport hover uses — so the
+/// propensity pills, the residue badge, and the hover sidechain sticks all
+/// react identically to hovering here vs. mousing over the structure.
+///
+/// Tapping a column calls setPinned(chain:resi:), the same path as a viewport
+/// click-to-pin, so clicking here pins the same way as clicking in the scene.
+///
+/// Feature 11: the PINNED column gets a persistent gold/orange border + fill;
+/// the HOVERED column gets a transient subtle-grey fill.
+private struct DesignSequenceStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                seqCols
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // Extracted @ViewBuilder so the ForEach body is not nested inside the
+    // ScrollView closure — avoids the Swift type-checker "reasonable time" limit.
+    @ViewBuilder
+    private var seqCols: some View {
+        ForEach(Array(controller.focusResidues.enumerated()), id: \.offset) { i, res in
+            seqColumn(index: i, residue: res)
+        }
+    }
+
+    @ViewBuilder
+    private func seqColumn(index i: Int, residue: DesignResidue) -> some View {
+        let alpha     = DesignColor.mpnnAlphabet
+        let editedAA  = i < controller.editedSequence.count
+                            ? controller.editedSequence[i] : residue.aa
+        let isPinned  = controller.pinnedResidueIndex == i
+        let isHovered = controller.hoveredResidueIndex == i
+        let parent    = residue.aa >= 0 && residue.aa < alpha.count
+                            ? alpha[residue.aa] : "?"
+        let isEdit    = editedAA != residue.aa
+        let edited    = (isEdit && editedAA >= 0 && editedAA < alpha.count)
+                            ? alpha[editedAA] : ""
+
+        VStack(spacing: 0) {
+            // Top row: parent (native) AA
+            Text(parent)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(isPinned
+                    ? designPinnedColor
+                    : theme.active.panelText.color.opacity(0.80))
+                .frame(width: 14, height: 14, alignment: .center)
+            // Bottom row: edited AA in accent color, or blank when unmutated
+            Text(isEdit ? edited : "")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(theme.active.accent.color)
+                .frame(width: 14, height: 14, alignment: .center)
+        }
+        .frame(width: 14)
+        .padding(.vertical, 1)
+        .background(
+            isPinned  ? designPinnedColor.opacity(0.18)
+          : isHovered ? theme.active.panelText.color.opacity(0.10)
+          : Color.clear,
+            in: RoundedRectangle(cornerRadius: 2)
+        )
+        .overlay(
+            isPinned
+                ? RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(designPinnedColor, lineWidth: 1.0)
+                : nil
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                controller.setHovered(chain: residue.chain, resi: residue.resi)
+            } else {
+                controller.clearHover()
+            }
+        }
+        .onTapGesture {
+            controller.setPinned(chain: residue.chain, resi: residue.resi)
+        }
+        .help({
+            var tip = residue.chain.isEmpty ? residue.resi : "\(residue.chain)/\(residue.resi)"
+            if !residue.resn.isEmpty { tip += " \(residue.resn)" }
+            if isEdit { tip += " → \(edited)" }
+            return tip
+        }())
+    }
+}
+
+// MARK: – Edit-session strip
+
 // Edit-session strip: Auto-repack toggle, needs-repack indicator, compare toggle,
 // Keep/Discard, and a readout. Extracted into a dedicated View struct so
 // @ObservedObject controller re-renders on every @Published change from the
@@ -3331,6 +3442,12 @@ private struct DesignOverlayView: View {
                 }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            // ── 2-row sequence strip (Feature 10) ────────────────────────────
+            // Shown once residues are available; hidden until first focus completes.
+            if !controller.focusResidues.isEmpty {
+                Divider().opacity(0.3)
+                DesignSequenceStripView(controller: controller, theme: theme)
+            }
             // ── Propensity pill row (always present; greyed when no residue
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
@@ -3347,24 +3464,29 @@ private struct DesignOverlayView: View {
 
     // Active-residue indicator, shown just to the right of the object name:
     // the residue label (e.g. "A/96 PHE") plus a pin glyph when the residue is
-    // pinned. Empty when nothing is hovered or pinned (no layout jump — the
-    // strip's other controls are pinned to the trailing edge by the Spacer).
+    // pinned. Pinned = gold/orange special color (Feature 11); hover-only = neutral.
+    // Empty when nothing is hovered or pinned (no layout jump).
     private var residueIndicator: some View {
         Group {
             if let ap = controller.activePropensity {
+                let pinned = controller.pinnedResidueIndex != nil
                 HStack(spacing: 4) {
-                    if controller.pinnedResidueIndex != nil {
+                    if pinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 9))
-                            .foregroundColor(theme.active.accent.color)
+                            .foregroundColor(designPinnedColor)
                     }
                     Text(ap.label)
                         .lineLimit(1)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(theme.active.panelText.color.opacity(0.85))
+                        .foregroundColor(pinned
+                            ? designPinnedColor
+                            : theme.active.panelText.color.opacity(0.85))
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(theme.active.panelText.color.opacity(0.06),
+                .background(pinned
+                    ? designPinnedColor.opacity(0.12)
+                    : theme.active.panelText.color.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 6))
             }
         }

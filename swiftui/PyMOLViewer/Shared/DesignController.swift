@@ -127,6 +127,10 @@ final class DesignController: ObservableObject {
     private var repackToken: Int = 0
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
+    /// Published residue list for the focus object. Updated whenever `focusObject` or
+    /// the cached residue set for it changes; drives the 2-row sequence strip in the
+    /// design overlay without exposing the private `lastSet` dict.
+    @Published private(set) var focusResidues: [DesignResidue] = []
     /// Residues on the focus object for which WE currently show sidechain
     /// sticks, mapped to whether WE added them (true) vs the user already had
     /// them (false → never hide/restore). Keyed by `stickKey(chain, resi)`.
@@ -194,6 +198,7 @@ final class DesignController: ObservableObject {
         }
         restore()
         focusObject = nil
+        syncFocusResidues()   // clear the sequence strip
         isScoring = false
         errorText = nil
         hoveredResidueIndex = nil
@@ -291,6 +296,7 @@ final class DesignController: ObservableObject {
         do {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
+            syncFocusResidues()   // populate sequence strip as soon as residues are known
 
             let key = DesignCacheKey(object: object, state: set.state, sequenceHash: set.sequenceHash)
             if let scores = cache.get(key) {
@@ -356,6 +362,13 @@ final class DesignController: ObservableObject {
 
     /// Current displayed state for `object`. Delegates to the injected closure.
     private func currentState(_ object: String) -> Int { currentStateFn(object) }
+
+    /// Sync `focusResidues` from `lastSet[focusObject]`. Call whenever either
+    /// `focusObject` or `lastSet[focusObject]` changes so the published property
+    /// stays current and the sequence-strip view re-renders correctly.
+    private func syncFocusResidues() {
+        focusResidues = focusObject.flatMap { lastSet[$0] }?.residues ?? []
+    }
 
     // MARK: – Sidechain-stick reconciliation
 
@@ -447,6 +460,7 @@ final class DesignController: ObservableObject {
         if let src { focusObject = src }
         // Remove the working copy's residue-set entry and clear sticks tracking.
         if let w { lastSet[w] = nil }
+        syncFocusResidues()   // re-point sequence strip at the source object's residues
         managedSticks.removeAll()
         if discardCopy {
             // discard(src, dst) deletes the working copy AND re-enables src.
@@ -496,6 +510,7 @@ final class DesignController: ObservableObject {
         // Switch focus WITHOUT clearing the pin: direct assignment avoids setFocused/focus()
         // which would clear pinnedResidueIndex and hoveredResidueIndex.
         focusObject = w
+        syncFocusResidues()   // re-point sequence strip at the working copy's residues
         // Reconcile so the pinned/hovered residue's sticks appear on the working copy.
         reconcileSticks()
     }
