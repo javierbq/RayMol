@@ -427,6 +427,9 @@ struct ContentView: View {
             // Theme moved into the Display segment, mirroring iOS Settings → Themes.)
             macMoveToolbar
             macMeasureToolbar
+            #if RAYMOL_MPNN
+            macDesignToolbar
+            #endif
             panelToggles
             exportMenu
             #if !RAYMOL_MAS_RESTRICTED
@@ -555,6 +558,14 @@ struct ContentView: View {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
             }
+            #if RAYMOL_MPNN
+            // Design mode overlay: a separate overlay so the #if guard does not
+            // break the if-else chain above. Mutually exclusive with move/measure,
+            // so only one overlay is ever shown at a time.
+            .overlay(alignment: .top) {
+                if engine.designMode { designOverlay }
+            }
+            #endif
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
             // scene by metal_move.py; no SwiftUI overlay is needed. Input is
             // hit-tested against the projected geometry in MetalViewport.)
@@ -604,16 +615,28 @@ struct ContentView: View {
             // atom/residue under the cursor (or empty space) and sets
             // engine.longPressHit; present the same native menu the iOS
             // long-press uses. PyMOL's own pop-up menu is never drawn under this
-            // Metal backend (internal_gui=0).
+            // Metal backend (internal_gui=0). In Design mode, clicks route to
+            // focus instead (see the #if RAYMOL_MPNN onChange below).
             .confirmationDialog(
                 engine.longPressHit?.title ?? "",
-                isPresented: Binding(get: { engine.longPressHit != nil },
-                                     set: { if !$0 { engine.longPressHit = nil } }),
+                isPresented: Binding(
+                    get: { engine.longPressHit != nil && !engine.designMode },
+                    set: { if !$0 { engine.longPressHit = nil } }),
                 titleVisibility: .visible,
                 presenting: engine.longPressHit
             ) { hit in
                 longPressActions(hit)
             }
+            #if RAYMOL_MPNN
+            // Design mode click-to-focus: a click (left or right) sets longPressHit;
+            // intercept it here and route to DesignController.focus instead of the
+            // context menu. Clears longPressHit so the dialog never fires.
+            .onChange(of: engine.longPressHit) { hit in
+                guard engine.designMode, let hit = hit, !hit.obj.isEmpty else { return }
+                engine.designController.focus(hit.obj)
+                engine.longPressHit = nil
+            }
+            #endif
             .confirmationDialog("Color residue", isPresented: $showLongPressColor,
                                 titleVisibility: .visible) {
                 longPressColorActions()
@@ -2596,6 +2619,30 @@ struct ContentView: View {
     // menu / ⌥⌘M. The toolbar button rendered as an unlabeled circle and toggled
     // movie mode unexpectedly, so it was removed.)
 
+    #if RAYMOL_MPNN
+    // Design-mode toggle (macOS). ⌃D also toggles it (see PyMOLApp commands).
+    // .primaryAction (trailing) — grouped with Move/Measure as the interaction tools.
+    private var macDesignToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                let entering = !engine.designMode
+                engine.setDesignMode(entering)
+                if entering {
+                    engine.designController.allObjects = engine.objects
+                        .filter { !$0.isSelection }.map { $0.name }
+                    engine.designController.enter()
+                } else {
+                    engine.designController.exit()
+                }
+            } label: {
+                Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
+                    .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
+            }
+            .help("Design mode: score/color protein residues with MPNN")
+        }
+    }
+    #endif
+
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
     // docked transport — there is no toolbar button for it (removed: its icon read
     // as an empty slot in the trailing cluster).
@@ -2968,6 +3015,84 @@ struct ContentView: View {
         .background(themeManager.active.panelBackground.color)
         .tint(themeManager.active.accent.color)
     }
+
+#if RAYMOL_MPNN
+    // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
+    // coloring meaning segmented control, legend gradient, scoring progress.
+    // Split into small subviews to stay within the Swift type-checker complexity limit.
+
+    private var designFocusLabel: some View {
+        Group {
+            if let obj = engine.designController.focusObject {
+                HStack(spacing: 4) {
+                    Image(systemName: "atom")
+                        .foregroundColor(themeManager.active.accent.color)
+                    Text(obj)
+                        .lineLimit(1)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(themeManager.active.panelText.color)
+                }
+            } else {
+                Text("Click an object to design")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
+            }
+        }
+    }
+
+    private var designMeaningPicker: some View {
+        Picker("", selection: Binding(
+            get: { engine.designController.colorMeaning },
+            set: { engine.designController.setMeaning($0) })) {
+            Text("Native fit").tag(DesignColorMeaning.nativeFit)
+            Text("Certainty").tag(DesignColorMeaning.certainty)
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 180)
+    }
+
+    private var designLegendBar: some View {
+        Group {
+            if let dom = engine.designController.legendDomain {
+                HStack(spacing: 4) {
+                    Text(String(format: "%.1f", dom.lowerBound))
+                        .font(.system(size: 10)).foregroundColor(themeManager.active.panelText.color.opacity(0.7))
+                    LinearGradient(
+                        colors: engine.designController.colorMeaning == .nativeFit
+                            ? [.red, .white, .blue]
+                            : [.blue, .white, .red],
+                        startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 60, height: 10)
+                    .cornerRadius(3)
+                    Text(String(format: "%.1f", dom.upperBound))
+                        .font(.system(size: 10)).foregroundColor(themeManager.active.panelText.color.opacity(0.7))
+                }
+            }
+        }
+    }
+
+    private var designOverlay: some View {
+        HStack(spacing: 10) {
+            designFocusLabel
+            if engine.designController.isScoring {
+                ProgressView().scaleEffect(0.7)
+            }
+            Spacer(minLength: 0)
+            designMeaningPicker
+            designLegendBar
+            Button {
+                engine.setDesignMode(false)
+                engine.designController.exit()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
+            }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(themeManager.active.panelBackground.color)
+        .tint(themeManager.active.accent.color)
+    }
+#endif
 
     // MARK: - Initialization
 

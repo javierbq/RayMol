@@ -682,6 +682,10 @@ extension MetalViewport {
                         ndcX, ndcY, Float(w / h)))
                     if engine?.measureMode != nil {
                         engine?.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                    } else if engine?.designMode == true {
+                        // Design mode: identify the object under the click so
+                        // ContentView can route it to DesignController.focus.
+                        engine?.longPressPick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
                     } else {
                         engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
                     }

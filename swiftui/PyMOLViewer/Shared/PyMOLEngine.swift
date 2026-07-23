@@ -7,6 +7,9 @@ import MetalKit
 #if os(iOS)
 import UIKit
 #endif
+#if RAYMOL_MPNN
+import MPNNKit
+#endif
 
 /// Frequently-changing movie/timeline playback state, kept in its OWN
 /// ObservableObject so the ≈10/s frame ticks during playback re-render only the
@@ -1962,6 +1965,77 @@ final class PyMOLEngine: ObservableObject {
         }
         designMode = on
     }
+
+#if RAYMOL_MPNN
+    // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
+    private var _mpnnModel: MPNNModel?
+    private func loadedMPNNModel() throws -> MPNNModel {
+        if let m = _mpnnModel { return m }
+        guard let url = MPNNGate.packURL else {
+            throw NSError(domain: "raymol.design", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "MPNN model pack not found in bundle."])
+        }
+        let m = try MPNNModel(packDirectory: url)
+        _mpnnModel = m
+        return m
+    }
+
+    /// Real DesignController wired to this engine's Python helpers.
+    lazy var designController: DesignController = DesignController(
+        enumerate: { [weak self] obj, state in
+            guard let self else { throw NSError(domain: "raymol.design", code: 2,
+                                                userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
+            self.runCommand("""
+                from pymol import raymol_design as _rd
+                _rd.enumerate_design_residues('\(obj)', \(state))
+                """)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_residues.json")
+            return try DesignResidueSet.parse(jsonAt: url)
+        },
+        score: { [weak self] residues, native in
+            guard let self else { throw NSError(domain: "raymol.design", code: 2,
+                                                userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
+            let model = try self.loadedMPNNModel()
+            return try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+        },
+        applyColoring: { [weak self] obj, values, palette, lo, hi in
+            guard let self else { return }
+            let rows = values.map { ["chain": $0.0, "resi": $0.1, "value": $0.2 as Any] }
+            if let data = try? JSONSerialization.data(withJSONObject: rows) {
+                let p = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("raymol_design_vals.json")
+                try? data.write(to: p)
+                self.runCommand("""
+                    from pymol import raymol_design as _rd
+                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi))
+                    """)
+            }
+        },
+        dim: { [weak self] obj in
+            self?.runCommand("""
+                from pymol import raymol_design as _rd
+                _rd.dim_object('\(obj)', 'gray70', 0.7)
+                """)
+        },
+        snapshot: { [weak self] objs in
+            let joined = objs.joined(separator: ",")
+            self?.runCommand("""
+                from pymol import raymol_design as _rd
+                _rd.snapshot_visual_state('\(joined)')
+                """)
+        },
+        restore: { [weak self] in
+            self?.runCommand("""
+                from pymol import raymol_design as _rd
+                _rd.restore_visual_state()
+                """)
+        },
+        currentState: { [weak self] object in
+            self?.objectMeta[object]?.state ?? 1
+        }
+    )
+#endif
 
     // MARK: - Move mode (rigid-body object gizmo)
 

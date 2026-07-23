@@ -14,7 +14,7 @@ final class DesignController: ObservableObject {
     @Published var isScoring = false
     @Published var legendDomain: ClosedRange<Float>?
     @Published var errorText: String?
-    @Published private(set) var allObjects: [String] = []
+    @Published var allObjects: [String] = []
 
     // MARK: – Closure type aliases (Task 10 wires in real implementations)
 
@@ -37,6 +37,8 @@ final class DesignController: ObservableObject {
     private let dim: (String) -> Void
     private let snapshot: ([String]) -> Void
     private let restore: () -> Void
+    /// Returns the currently-displayed state (1-based) for `object`. Wired to the engine in Task 10.
+    private let currentStateFn: (String) -> Int
 
     // MARK: – Private state
 
@@ -50,18 +52,20 @@ final class DesignController: ObservableObject {
 
     // MARK: – Init
 
-    init(enumerate: @escaping EnumerateFn,
-         score: @escaping ScoreFn,
-         applyColoring: @escaping ColorFn,
-         dim: @escaping (String) -> Void,
-         snapshot: @escaping ([String]) -> Void,
-         restore: @escaping () -> Void) {
+    nonisolated init(enumerate: @escaping EnumerateFn,
+                     score: @escaping ScoreFn,
+                     applyColoring: @escaping ColorFn,
+                     dim: @escaping (String) -> Void,
+                     snapshot: @escaping ([String]) -> Void,
+                     restore: @escaping () -> Void,
+                     currentState: @escaping (String) -> Int = { _ in 1 }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
         self.dim = dim
         self.snapshot = snapshot
         self.restore = restore
+        self.currentStateFn = currentState
     }
 
     // MARK: – Public interface
@@ -166,7 +170,7 @@ final class DesignController: ObservableObject {
         applyColoring(object, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
     }
 
-    /// Current displayed state for `object`. Wired to the engine in Task 10.
-    private func currentState(_ object: String) -> Int { 1 }
+    /// Current displayed state for `object`. Delegates to the injected closure.
+    private func currentState(_ object: String) -> Int { currentStateFn(object) }
 }
 #endif
