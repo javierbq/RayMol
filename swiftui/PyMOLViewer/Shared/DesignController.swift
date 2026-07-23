@@ -542,6 +542,22 @@ final class DesignController: ObservableObject {
             if capturedFullSeq == editedSequence {
                 loadRepacked(w, pdb)
                 repackDirty = false
+                // Full topology replace (load_repacked deletes+renames the object) clears
+                // PyMOL's per-atom colors and representations.  Re-apply confidence
+                // coloring from the cache — the sequence didn't change so no new score
+                // is needed; the last rescoreWorkingObject() result is still valid.
+                let colorSeq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+                let colorKey = DesignCacheKey(object: w, state: set.state, sequenceHash: colorSeq.hashValue)
+                if let scores = cache.get(colorKey) {
+                    let scalar = DesignColor.scalar(scores, colorMeaning)
+                    let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
+                    let dom = DesignColor.domain(colorMeaning)
+                    applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+                }
+                // Stale sidechain sticks are gone (object was replaced); clear tracking
+                // and re-add for the pinned/hovered residue on the fresh atoms.
+                teardownSticks(on: w)
+                reconcileSticks()
             }
             // else: mutation happened mid-repack; leave repackDirty = true so the
             // next repack (triggered by the new mutation) loads the current coords.

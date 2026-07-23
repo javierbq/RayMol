@@ -141,3 +141,28 @@ class TestDesignEditing(testing.PyMOLTestCase):
         except Exception:
             pass
         self.assertEqual(set(cmd.get_object_list()) - before, set(), "temp object leaked")
+
+    def testLoadRepackedChangesTopology(self):
+        """Full topology replace: loading a TRP PDB into an ALA object must adopt the
+        TRP atom set (incl. NE1 which is absent in ALA) and preserve the object name.
+        This fails against the old cmd.update(matchmaker=1) path that only copies
+        coordinates onto atoms that already exist by name — new atoms are ignored.
+        """
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        cmd.fragment('ala', 'obj')   # ALA: 5 heavy atoms (N CA C O CB), no NE1
+        cmd.fragment('trp', 't')     # TRP: 14 heavy atoms (incl. NE1 unique to TRP)
+        pdb = cmd.get_pdbstr('t')
+        result = rd.load_repacked('obj', pdb)
+        self.assertEqual(result, 'DESIGN_REPACKED:ok')
+        # Object name must be preserved.
+        self.assertIn('obj', cmd.get_object_list())
+        # Topology adopted: NE1 is present only in TRP, never in ALA.
+        self.assertEqual(cmd.count_atoms('obj and name NE1'), 1,
+                         "NE1 not found after topology replace — old ALA atom set retained")
+        # Atom count must match the TRP source (both from same fragment, same build).
+        trp_count = cmd.count_atoms('t')
+        obj_count = cmd.count_atoms('obj')
+        self.assertEqual(obj_count, trp_count,
+                         "atom count after replace (%d) != TRP source (%d)" %
+                         (obj_count, trp_count))

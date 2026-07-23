@@ -196,7 +196,11 @@ final class DesignEditingTests: XCTestCase {
         var recoloredObjs: [String] = []
         let scoreStarted = XCTestExpectation(description: "score started")
         let scoreSemaphore = DispatchSemaphore(value: 0)
+        // applyColoring fires twice: once from the rescore (the original assertion),
+        // and once from the repack's re-color pass (new: full topology replace resets
+        // PyMOL atom colors so repackNowAwait re-applies from cache after loadRepacked).
         let rescoreDone = XCTestExpectation(description: "rescore done")
+        rescoreDone.expectedFulfillmentCount = 2
 
         let emptySet = DesignResidueSet(object: "stub", state: 1, residues: [])
         let c = DesignController(

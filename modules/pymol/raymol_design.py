@@ -452,22 +452,39 @@ def mutate_residue_display(obj, chain, resi, aa_index):
 
 
 def load_repacked(obj, pdb_str):
-    """Replace obj's coordinates from an all-atom PDB string (repack output).
+    """Replace obj's structure from an all-atom PDB string (repack output).
 
-    Uses a temp object and cmd.update to copy coordinates by matching atoms,
-    preserving the object name and current per-atom coloring.  Falls back to
-    replacing the object outright if the topology changed (update returned an
-    error or atom count differs).
+    Full topology replace: reads pdb_str into a temp object, copies the
+    current transform matrix from obj onto the temp (preserving superposition
+    with the parent), then deletes obj and renames temp → obj.  This correctly
+    adopts point mutations where the residue's atom set changed (e.g. ALA→TRP):
+    cmd.update(matchmaker=1) can only copy coordinates onto atoms that already
+    match by name, so it silently leaves the old sidechain intact when the atom
+    set differs.  Replacing the entire object always adopts the new topology.
+
+    After renaming, cartoon rep is enabled so the replaced object is visible.
+    On any failure after read but before rename, the temp object is cleaned up.
     Returns 'DESIGN_REPACKED:ok'.
     """
     tmp = cmd.get_unused_name('_rp')
+    renamed = False
     try:
         cmd.read_pdbstr(pdb_str, tmp)
+        # Copy the source object's transformation matrix to tmp BEFORE deleting
+        # the source, so the replaced object stays in the same frame (superposed
+        # on the original parent).  Silently skip if not supported or if obj is gone.
         try:
-            cmd.update(obj, tmp, matchmaker=1)   # copy coords onto matching atoms
-        except TypeError:
-            # Older builds may not accept matchmaker kwarg; retry without it.
-            cmd.update(obj, tmp)
+            cmd.matrix_copy(obj, tmp)
+        except Exception:
+            pass
+        cmd.delete(obj)
+        cmd.set_name(tmp, obj)
+        renamed = True
+        # Replacing the object resets representations; restore cartoon so the
+        # working copy is visible immediately (conf coloring is re-applied by
+        # the Swift caller after this returns).
+        cmd.show_as('cartoon', obj)
     finally:
-        cmd.delete(tmp)
+        if not renamed and tmp in cmd.get_object_list():
+            cmd.delete(tmp)
     return 'DESIGN_REPACKED:ok'
