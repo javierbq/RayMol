@@ -46,5 +46,40 @@ final class DesignColorTests: XCTestCase {
         if let c0 = scores.certainty[0] { XCTAssertTrue(c0 >= 0 && c0 <= 1, "certainty[0] out of range: \(c0)") }
         if let c2 = scores.certainty[2] { XCTAssertTrue(c2 >= 0 && c2 <= 1, "certainty[2] out of range: \(c2)") }
     }
+
+    /// Propensity row: 20 entries, sums to ~1.0, argmax matches the highest logit.
+    func testPropensitySoftmax() throws {
+        let n = 21
+        // Place a high logit at index 2 (D in MPNN alphabet); all others low.
+        var logits = [Float](repeating: -5.0, count: n)
+        logits[2] = 0.0
+        let result = MPNNModel.ScoreResult(logProbs: [logits], currentAALogProb: [-1.0])
+        let scores = DesignColor.scores(from: result, validMask: [true])
+        guard let props = scores.propensities[0] else {
+            XCTFail("propensities[0] should not be nil for a valid residue"); return
+        }
+        XCTAssertEqual(props.count, 20, "propensity row must have exactly 20 entries")
+        let sum = props.reduce(0, +)
+        XCTAssertEqual(sum, 1.0, accuracy: 1e-4, "propensities must sum to 1.0")
+        let argmax = props.indices.max(by: { props[$0] < props[$1] }) ?? -1
+        XCTAssertEqual(argmax, 2, "argmax should match the highest-logit AA index (D=2 in MPNN alphabet)")
+    }
+
+    /// propensityRow: masked positions remain nil; valid positions produce 20-entry arrays.
+    func testPropensitiesNilAtMaskedPositions() {
+        let mask: [Bool] = [true, false, true]
+        let n = 21
+        let logProbs: [[Float]] = [
+            [Float](repeating: -5.0, count: n),
+            [Float](repeating: -5.0, count: n)
+        ]
+        let result = MPNNModel.ScoreResult(logProbs: logProbs, currentAALogProb: nil)
+        let scores = DesignColor.scores(from: result, validMask: mask)
+        XCTAssertNotNil(scores.propensities[0], "valid position must have propensities")
+        XCTAssertNil(scores.propensities[1],    "masked position must be nil")
+        XCTAssertNotNil(scores.propensities[2], "valid position must have propensities")
+        XCTAssertEqual(scores.propensities[0]?.count, 20)
+        XCTAssertEqual(scores.propensities[2]?.count, 20)
+    }
 }
 #endif

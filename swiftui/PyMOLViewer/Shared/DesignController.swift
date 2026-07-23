@@ -15,6 +15,12 @@ final class DesignController: ObservableObject {
     @Published var legendDomain: ClosedRange<Float>?
     @Published var errorText: String?
     @Published var allObjects: [String] = []
+    /// Residue index (into `lastSet[focusObject]?.residues`) currently under the
+    /// pointer. nil = no hover / pointer not over a residue on the focus object.
+    @Published var hoveredResidueIndex: Int?
+    /// Residue index that has been pinned by a click. Persists until the user
+    /// clicks the same residue again (toggle) or another residue is pinned.
+    @Published var pinnedResidueIndex: Int?
 
     // MARK: – Closure type aliases (Task 10 wires in real implementations)
 
@@ -82,7 +88,56 @@ final class DesignController: ObservableObject {
         focusObject = nil
         isScoring = false
         errorText = nil
+        hoveredResidueIndex = nil
+        pinnedResidueIndex = nil
         jobToken += 1   // cancel any in-flight scoring
+    }
+
+    // MARK: – Propensity hover/pin
+
+    /// The "active" index for the propensity pill row: pinned takes precedence
+    /// over hovered so the row stays up after a click.
+    var activeResidueIndex: Int? { pinnedResidueIndex ?? hoveredResidueIndex }
+
+    /// Find the index of a residue by chain+resi within the currently-focused
+    /// object's residue list. Returns nil if there is no focus object, no
+    /// cached set, or the residue isn't found.
+    func residueIndex(chain: String, resi: String) -> Int? {
+        guard let obj = focusObject, let set = lastSet[obj] else { return nil }
+        return set.residues.firstIndex { $0.chain == chain && $0.resi == resi }
+    }
+
+    /// Propensity data for the active residue (hovered or pinned), or nil if
+    /// none is active or the cache entry is missing/lacks propensities.
+    var activePropensity: (propensities: [Float], nativeAA: Int, label: String)? {
+        guard let obj = focusObject,
+              let idx = activeResidueIndex,
+              let set = lastSet[obj] else { return nil }
+        let key = DesignCacheKey(object: obj, state: set.state, sequenceHash: set.sequenceHash)
+        guard let scores = cache.get(key),
+              idx < scores.propensities.count,
+              let props = scores.propensities[idx],
+              !props.isEmpty else { return nil }
+        let res = set.residues[idx]
+        let label = "\(res.chain)/\(res.resi) \(res.resn)"
+        return (propensities: props, nativeAA: res.aa, label: label)
+    }
+
+    /// Update the hovered residue. Only for the FOCUS object; call
+    /// `clearHover()` when the pointer leaves or is over a different object.
+    func setHovered(chain: String, resi: String) {
+        hoveredResidueIndex = residueIndex(chain: chain, resi: resi)
+    }
+
+    /// Clear the hover indicator (pointer left viewport or moved to non-focus object).
+    func clearHover() {
+        hoveredResidueIndex = nil
+    }
+
+    /// Pin or unpin a residue. Tapping the same residue again toggles the pin off.
+    func setPinned(chain: String, resi: String) {
+        let idx = residueIndex(chain: chain, resi: resi)
+        pinnedResidueIndex = (idx == pinnedResidueIndex) ? nil : idx
     }
 
     /// Switch the coloring meaning and immediately recolor the focused object from cache.

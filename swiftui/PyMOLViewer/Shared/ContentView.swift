@@ -651,12 +651,23 @@ struct ContentView: View {
                 longPressActions(hit)
             }
             #if RAYMOL_MPNN
-            // Design mode click-to-focus: a click (left or right) sets longPressHit;
-            // intercept it here and route to DesignController.focus instead of the
-            // context menu. Clears longPressHit so the dialog never fires.
+            // Design mode click routing: a click (left or right) sets longPressHit.
+            // — Click on the FOCUS object's residue → pin/unpin the propensity pill
+            //   row for that residue (keeps current focus, does NOT refocus).
+            // — Click on a DIFFERENT object → refocus to that object (existing behavior).
+            // — Click on empty space (hit.isEmpty) → no-op (no focus change, no pin).
+            // Clears longPressHit so the context-menu dialog never fires in design mode.
             .onChange(of: engine.longPressHit) { hit in
                 guard engine.designMode, let hit = hit else { return }
-                if !hit.obj.isEmpty { engine.designController.focus(hit.obj) }
+                if !hit.obj.isEmpty {
+                    if hit.obj == engine.designController.focusObject && !hit.isEmpty {
+                        // Same object: pin/unpin the clicked residue in the pill row.
+                        engine.designController.setPinned(chain: hit.chain, resi: hit.resi)
+                    } else if hit.obj != engine.designController.focusObject {
+                        // Different object: refocus (existing behavior).
+                        engine.designController.focus(hit.obj)
+                    }
+                }
                 engine.longPressHit = nil
             }
             #endif
@@ -3141,24 +3152,32 @@ private struct DesignOverlayView: View {
     @State private var showModeHelp = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            focusLabel
-            if controller.isScoring {
-                ProgressView().scaleEffect(0.7)
+        VStack(spacing: 0) {
+            // ── Main control strip ──────────────────────────────────────
+            HStack(spacing: 10) {
+                focusLabel
+                if controller.isScoring {
+                    ProgressView().scaleEffect(0.7)
+                }
+                Spacer(minLength: 0)
+                meaningPicker
+                legendBar
+                    .help("Per-residue confidence; domain shown at the ends")
+                helpButton
+                Button {
+                    engine.setDesignMode(false)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
             }
-            Spacer(minLength: 0)
-            meaningPicker
-            legendBar
-                .help("Per-residue confidence; domain shown at the ends")
-            helpButton
-            Button {
-                engine.setDesignMode(false)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
-            }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            // ── Propensity pill row (shown on hover or when pinned) ─────
+            if let ap = controller.activePropensity {
+                Divider().opacity(0.3)
+                propensityRow(ap)
+            }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
     }
@@ -3272,6 +3291,78 @@ private struct DesignOverlayView: View {
             .padding(14)
             .frame(width: 260)
         }
+    }
+
+    // MARK: – Propensity pill row
+
+    /// Residue header + scrollable row of 20 AA pills.
+    private func propensityRow(
+        _ ap: (propensities: [Float], nativeAA: Int, label: String)
+    ) -> some View {
+        let rowMax = ap.propensities.max() ?? 1.0
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: controller.pinnedResidueIndex != nil ? "pin.fill" : "pin")
+                    .font(.system(size: 9))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                Text(ap.label)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .padding(.horizontal, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(0..<min(20, ap.propensities.count), id: \.self) { i in
+                        aaPill(index: i,
+                               propensity: ap.propensities[i],
+                               isNative: i == ap.nativeAA,
+                               rowMax: rowMax)
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+
+    /// Single amino-acid pill: letter + 2-decimal propensity, colored by
+    /// relative frequency (faint → warm), highlighted if native AA.
+    private func aaPill(index: Int,
+                         propensity: Float,
+                         isNative: Bool,
+                         rowMax: Float) -> some View {
+        let letter = index < DesignColor.mpnnAlphabet.count
+            ? DesignColor.mpnnAlphabet[index] : "?"
+        let intensity = rowMax > 0 ? Double(propensity / rowMax) : 0.0
+        // Native pill: solid accent background + white text.
+        // Others: faint→warm orange tint, scaled to intensity within the row.
+        let pillBG: Color = isNative
+            ? theme.active.accent.color
+            : theme.active.panelText.color.opacity(0.04 + intensity * 0.22)
+        let pillFG: Color = isNative
+            ? .white
+            : theme.active.panelText.color.opacity(0.6 + intensity * 0.4)
+        let valueText: String = {
+            let s = String(format: "%.2f", propensity)
+            return s.hasPrefix("0") ? String(s.dropFirst()) : s
+        }()
+        return VStack(spacing: 1) {
+            Text(letter)
+                .font(.system(size: 11,
+                              weight: isNative ? .bold : .regular,
+                              design: .monospaced))
+            Text(valueText)
+                .font(.system(size: 9, design: .monospaced))
+        }
+        .foregroundColor(pillFG)
+        .frame(width: 30, height: 36)
+        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            isNative
+                ? RoundedRectangle(cornerRadius: 5)
+                    .stroke(theme.active.accent.color, lineWidth: 1.5)
+                : nil
+        )
     }
 }
 #endif

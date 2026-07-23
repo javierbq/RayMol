@@ -2271,6 +2271,13 @@ final class PyMOLEngine: ObservableObject {
     private var lastHoverFire = Date.distantPast
     private let kHoverInterval = 0.045        // leading-edge throttle: ≤~22 picks/s
     private let kHoverMinNDC: Float = 0.004   // sub-pixel move gate (NDC²-ish)
+    // Separate throttle state for the design-mode hover path so it doesn't
+    // interfere with the viewing-mode hover path's NDC gate / work item.
+    #if RAYMOL_MPNN
+    private var designHoverWork: DispatchWorkItem?
+    private var lastDesignHoverNDC: (Float, Float)? = nil
+    private var lastDesignHoverFire = Date.distantPast
+    #endif
 
     /// Update the hover pre-selection preview to what a click at (ndcX,ndcY)
     /// would select, without committing to 'sele'. No-op while the feature is
@@ -2310,12 +2317,82 @@ final class PyMOLEngine: ObservableObject {
         hoverWork?.cancel()
         hoverWork = nil
         lastHoverNDC = nil
+        #if RAYMOL_MPNN
+        designHoverWork?.cancel()
+        designHoverWork = nil
+        lastDesignHoverNDC = nil
+        if designMode { MainActor.assumeIsolated { designController.clearHover() } }
+        #endif
         guard isReady else { return }
         // enable=0: never enable '_preselect' — enabling a selection is exclusive
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
         runPython("from pymol import cmd as _c; _c.select('_preselect', 'none', enable=0)")
     }
+
+    #if RAYMOL_MPNN
+    /// Design-mode hover: identify the residue under the cursor, update
+    /// _preselect for the cyan glow, and update the design controller's
+    /// hoveredResidueIndex so the propensity pill row re-renders.
+    /// Uses an independent leading-edge throttle (same rate as hoverPreview).
+    func hoverDesignPreview(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
+        guard isReady else { return }
+        if let last = lastDesignHoverNDC {
+            let dx = ndcX - last.0, dy = ndcY - last.1
+            if abs(dx) < kHoverMinNDC && abs(dy) < kHoverMinNDC { return }
+        }
+        lastDesignHoverNDC = (ndcX, ndcY)
+        designHoverWork?.cancel()
+        let fire: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.lastDesignHoverFire = Date()
+            self.runPython(
+                "from pymol import metal_pick as _mp; "
+                + "_mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+            self.readDesignHoverHit()
+        }
+        let elapsed = Date().timeIntervalSince(lastDesignHoverFire)
+        if elapsed >= kHoverInterval {
+            fire()
+        } else {
+            let work = DispatchWorkItem(block: fire)
+            designHoverWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (kHoverInterval - elapsed), execute: work)
+        }
+    }
+
+    /// Read back pymol_hover_design.json (written synchronously by hover_design_at)
+    /// and update the design controller's hover state.
+    /// Called from the fire closure which already runs on the main queue
+    /// (DispatchQueue.main / @MainActor); uses MainActor.assumeIsolated to
+    /// satisfy the Swift Concurrency actor-isolation check (macOS 14+).
+    private func readDesignHoverHit() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_design.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            MainActor.assumeIsolated { designController.clearHover() }
+            return
+        }
+        let hit = (root["hit"] as? Bool) ?? false
+        if hit {
+            let obj   = root["obj"]   as? String ?? ""
+            let chain = root["chain"] as? String ?? ""
+            let resi  = root["resi"]  as? String ?? ""
+            MainActor.assumeIsolated {
+                if obj == designController.focusObject {
+                    designController.setHovered(chain: chain, resi: resi)
+                } else {
+                    designController.clearHover()
+                }
+            }
+        } else {
+            MainActor.assumeIsolated { designController.clearHover() }
+        }
+    }
+    #endif
 
     /// iOS long-press: identify the atom/residue under the press (read-only —
     /// does NOT change the selection) and publish it so ContentView can show the
