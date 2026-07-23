@@ -3156,6 +3156,7 @@ private struct DesignOverlayView: View {
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
                 focusLabel
+                residueIndicator
                 if controller.isScoring {
                     ProgressView().scaleEffect(0.7)
                 }
@@ -3172,14 +3173,38 @@ private struct DesignOverlayView: View {
                 }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
-            // ── Propensity pill row (shown on hover or when pinned) ─────
-            if let ap = controller.activePropensity {
-                Divider().opacity(0.3)
-                propensityRow(ap)
-            }
+            // ── Propensity pill row (always present; greyed when no residue
+            //    is hovered/pinned so it no longer flickers in and out) ─────
+            Divider().opacity(0.3)
+            propensityRow(controller.activePropensity)
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
+    }
+
+    // Active-residue indicator, shown just to the right of the object name:
+    // the residue label (e.g. "A/96 PHE") plus a pin glyph when the residue is
+    // pinned. Empty when nothing is hovered or pinned (no layout jump — the
+    // strip's other controls are pinned to the trailing edge by the Spacer).
+    private var residueIndicator: some View {
+        Group {
+            if let ap = controller.activePropensity {
+                HStack(spacing: 4) {
+                    if controller.pinnedResidueIndex != nil {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(theme.active.accent.color)
+                    }
+                    Text(ap.label)
+                        .lineLimit(1)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.85))
+                }
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(theme.active.panelText.color.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
     }
 
     private var focusLabel: some View {
@@ -3295,61 +3320,67 @@ private struct DesignOverlayView: View {
 
     // MARK: – Propensity pill row
 
-    /// Residue header + scrollable row of 20 AA pills.
+    /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
+    /// residue hovered or pinned) every pill renders greyed/disabled with a
+    /// neutral ".0" value and no native highlight, so the row no longer appears
+    /// and disappears — only its contents change. When `ap` is present the
+    /// pills show real 2-decimal propensities, colored by relative frequency,
+    /// with the native AA pill highlighted.
     private func propensityRow(
-        _ ap: (propensities: [Float], nativeAA: Int, label: String)
+        _ ap: (propensities: [Float], nativeAA: Int, label: String)?
     ) -> some View {
-        let rowMax = ap.propensities.max() ?? 1.0
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Image(systemName: controller.pinnedResidueIndex != nil ? "pin.fill" : "pin")
-                    .font(.system(size: 9))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
-                Text(ap.label)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+        let rowMax = ap?.propensities.max() ?? 1.0
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
+                    aaPill(index: i,
+                           propensity: hasVal ? ap!.propensities[i] : 0,
+                           isNative: ap != nil && i == ap!.nativeAA,
+                           rowMax: rowMax,
+                           enabled: ap != nil)
+                }
             }
             .padding(.horizontal, 12)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 3) {
-                    ForEach(0..<min(20, ap.propensities.count), id: \.self) { i in
-                        aaPill(index: i,
-                               propensity: ap.propensities[i],
-                               isNative: i == ap.nativeAA,
-                               rowMax: rowMax)
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
         }
         .padding(.vertical, 5)
     }
 
     /// Single amino-acid pill: letter + 2-decimal propensity, colored by
-    /// relative frequency (faint → warm), highlighted if native AA.
+    /// relative frequency (faint → warm), highlighted if native AA. When
+    /// `enabled` is false (idle / no active residue) it renders flat grey with
+    /// a ".0" placeholder and no native highlight.
     private func aaPill(index: Int,
                          propensity: Float,
                          isNative: Bool,
-                         rowMax: Float) -> some View {
+                         rowMax: Float,
+                         enabled: Bool) -> some View {
         let letter = index < DesignColor.mpnnAlphabet.count
             ? DesignColor.mpnnAlphabet[index] : "?"
-        let intensity = rowMax > 0 ? Double(propensity / rowMax) : 0.0
+        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
+        let showNative = enabled && isNative
+        // Disabled (idle): flat faint grey, muted text.
         // Native pill: solid accent background + white text.
         // Others: faint→warm orange tint, scaled to intensity within the row.
-        let pillBG: Color = isNative
-            ? theme.active.accent.color
-            : theme.active.panelText.color.opacity(0.04 + intensity * 0.22)
-        let pillFG: Color = isNative
-            ? .white
-            : theme.active.panelText.color.opacity(0.6 + intensity * 0.4)
+        let pillBG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.04)
+            : (showNative
+                ? theme.active.accent.color
+                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
+        let pillFG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.28)
+            : (showNative
+                ? .white
+                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
         let valueText: String = {
+            if !enabled { return ".0" }
             let s = String(format: "%.2f", propensity)
             return s.hasPrefix("0") ? String(s.dropFirst()) : s
         }()
         return VStack(spacing: 1) {
             Text(letter)
                 .font(.system(size: 11,
-                              weight: isNative ? .bold : .regular,
+                              weight: showNative ? .bold : .regular,
                               design: .monospaced))
             Text(valueText)
                 .font(.system(size: 9, design: .monospaced))
@@ -3358,7 +3389,7 @@ private struct DesignOverlayView: View {
         .frame(width: 30, height: 36)
         .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
         .overlay(
-            isNative
+            showNative
                 ? RoundedRectangle(cornerRadius: 5)
                     .stroke(theme.active.accent.color, lineWidth: 1.5)
                 : nil

@@ -35,6 +35,12 @@ final class DesignController: ObservableObject {
     typealias ColorFn = (_ obj: String, _ values: [(String, String, Float?)],
                          _ palette: String, _ lo: Float, _ hi: Float) -> Void
 
+    /// Show/hide non-destructive sidechain sticks for one residue on `obj`.
+    /// Returns whether WE added the sticks on a show (`on == true`) — the
+    /// residue had none before; `false` if it already had sticks (user's own)
+    /// or on a hide. Used so hover-off only removes sticks we introduced.
+    typealias SticksFn = (_ obj: String, _ chain: String, _ resi: String, _ on: Bool) -> Bool
+
     // MARK: – Injected dependencies
 
     private let enumerate: EnumerateFn
@@ -43,6 +49,7 @@ final class DesignController: ObservableObject {
     private let dim: (String) -> Void
     private let snapshot: ([String]) -> Void
     private let restore: () -> Void
+    private let setSticksFn: SticksFn
     /// Returns the currently-displayed state (1-based) for `object`. Wired to the engine in Task 10.
     private let currentStateFn: (String) -> Int
 
@@ -55,6 +62,12 @@ final class DesignController: ObservableObject {
     private var jobToken = 0
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
+    /// Residues on the focus object for which WE currently show sidechain
+    /// sticks, mapped to whether WE added them (true) vs the user already had
+    /// them (false → never hide/restore). Keyed by `stickKey(chain, resi)`.
+    /// Reconciled after every hover/pin change against the desired set
+    /// {pinnedResidue} ∪ {hoveredResidue}.
+    private var managedSticks: [String: Bool] = [:]
 
     // MARK: – Init
 
@@ -64,6 +77,7 @@ final class DesignController: ObservableObject {
                      dim: @escaping (String) -> Void,
                      snapshot: @escaping ([String]) -> Void,
                      restore: @escaping () -> Void,
+                     setSticks: @escaping SticksFn = { _, _, _, _ in false },
                      currentState: @escaping (String) -> Int = { _ in 1 }) {
         self.enumerate = enumerate
         self.score = score
@@ -71,6 +85,7 @@ final class DesignController: ObservableObject {
         self.dim = dim
         self.snapshot = snapshot
         self.restore = restore
+        self.setSticksFn = setSticks
         self.currentStateFn = currentState
     }
 
@@ -84,6 +99,9 @@ final class DesignController: ObservableObject {
 
     /// Called when exiting Design mode: restore visuals and cancel any pending score.
     func exit() {
+        // Hide any sticks WE added first — restore() only re-applies colors and
+        // transparency, not representation visibility, so it won't undo shown sticks.
+        teardownSticks(on: focusObject)
         restore()
         focusObject = nil
         isScoring = false
@@ -125,19 +143,27 @@ final class DesignController: ObservableObject {
 
     /// Update the hovered residue. Only for the FOCUS object; call
     /// `clearHover()` when the pointer leaves or is over a different object.
+    /// Transient sidechain sticks follow the hovered residue.
     func setHovered(chain: String, resi: String) {
         hoveredResidueIndex = residueIndex(chain: chain, resi: resi)
+        reconcileSticks()
     }
 
-    /// Clear the hover indicator (pointer left viewport or moved to non-focus object).
+    /// Clear the hover indicator (pointer left viewport or moved to non-focus
+    /// object). Drops the transient hover sticks (the pinned residue keeps its).
     func clearHover() {
         hoveredResidueIndex = nil
+        reconcileSticks()
     }
 
-    /// Pin or unpin a residue. Tapping the same residue again toggles the pin off.
+    /// Pin or unpin a residue. Tapping the same residue again toggles the pin
+    /// off. Pinned sticks are persistent; unpinning removes them (unless the
+    /// residue is also currently hovered, in which case reconcile keeps them
+    /// as transient hover sticks).
     func setPinned(chain: String, resi: String) {
         let idx = residueIndex(chain: chain, resi: resi)
         pinnedResidueIndex = (idx == pinnedResidueIndex) ? nil : idx
+        reconcileSticks()
     }
 
     /// Switch the coloring meaning and immediately recolor the focused object from cache.
@@ -156,6 +182,14 @@ final class DesignController: ObservableObject {
     /// On cache miss: scores off-main on `queue`, guards the job token, stores the result, then recolors.
     /// On cache hit: skips scoring, recolors immediately from cache.
     func focusAwait(_ object: String) async {
+        // Switching focus: the previous object's hover/pin indices and managed
+        // sticks are tied to its residue set, so tear them down cleanly.
+        let previous = focusObject
+        if previous != object {
+            teardownSticks(on: previous)
+            hoveredResidueIndex = nil
+            pinnedResidueIndex = nil
+        }
         focusObject = object
         for o in allObjects where o != object { dim(o) }
         // Hoist token capture so both the success continuation and the catch can guard against it.
@@ -227,5 +261,60 @@ final class DesignController: ObservableObject {
 
     /// Current displayed state for `object`. Delegates to the injected closure.
     private func currentState(_ object: String) -> Int { currentStateFn(object) }
+
+    // MARK: – Sidechain-stick reconciliation
+
+    /// Stable dictionary key for a residue (chain + resi). Chain may be empty.
+    private func stickKey(_ chain: String, _ resi: String) -> String {
+        "\(chain)\u{1}\(resi)"
+    }
+
+    private func splitStickKey(_ key: String) -> (chain: String, resi: String) {
+        let parts = key.components(separatedBy: "\u{1}")
+        return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+    }
+
+    /// Drive the on-screen sidechain sticks to match the desired set:
+    /// {pinnedResidue} ∪ {hoveredResidue} on the focus object. Residues we no
+    /// longer want are hidden + their color restored (only if WE added them);
+    /// newly-wanted residues get sticks shown (recording whether we added them).
+    /// A residue that is both pinned and hovered appears once and never flickers.
+    private func reconcileSticks() {
+        guard let obj = focusObject, let set = lastSet[obj] else { return }
+        var desired = Set<String>()
+        func want(_ idx: Int?) {
+            if let i = idx, i >= 0, i < set.residues.count {
+                let r = set.residues[i]
+                desired.insert(stickKey(r.chain, r.resi))
+            }
+        }
+        want(pinnedResidueIndex)
+        want(hoveredResidueIndex)
+
+        // Remove sticks we manage that are no longer wanted.
+        for (key, added) in managedSticks where !desired.contains(key) {
+            if added {
+                let (c, r) = splitStickKey(key)
+                _ = setSticksFn(obj, c, r, false)
+            }
+            managedSticks[key] = nil
+        }
+        // Add sticks for newly-wanted residues (idempotent: skip ones we track).
+        for key in desired where managedSticks[key] == nil {
+            let (c, r) = splitStickKey(key)
+            managedSticks[key] = setSticksFn(obj, c, r, true)
+        }
+    }
+
+    /// Hide every stick WE added on `obj` and forget them. Used on focus change
+    /// and on exit, before restore() (which does not touch representations).
+    private func teardownSticks(on obj: String?) {
+        guard let obj = obj else { managedSticks.removeAll(); return }
+        for (key, added) in managedSticks where added {
+            let (c, r) = splitStickKey(key)
+            _ = setSticksFn(obj, c, r, false)
+        }
+        managedSticks.removeAll()
+    }
 }
 #endif

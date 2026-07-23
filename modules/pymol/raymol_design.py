@@ -233,3 +233,79 @@ def restore_visual_state():
         cmd.alter(o, 'color = _d.get(index, color)', space={'_d': int_colors})
     cmd.recolor()
     return 'DESIGN_RESTORE:ok'
+
+
+# ---------------------------------------------------------------------------
+# Per-residue hover / pin sidechain sticks  (Phase 2a)
+# ---------------------------------------------------------------------------
+# Non-destructive preview: show sidechain sticks (colored by element) for the
+# residue under the pointer (transient) and the pinned residue (persistent).
+# We remember the EXACT per-atom colors we overwrote so stick-off restores them
+# precisely — same faithful capture/restore pattern as snapshot_visual_state,
+# but scoped to a single residue's sidechain. Residues the user already
+# stick-repped themselves are detected and left completely untouched.
+_STICK_COLORS = {}
+
+
+def _residue_sel(obj, chain, resi):
+    """Build a residue selection, tolerating an empty chain id."""
+    if chain:
+        return '(%s) and chain %s and resi %s' % (obj, chain, resi)
+    return '(%s) and resi %s' % (obj, resi)
+
+
+def set_residue_sticks(obj, chain, resi, on):
+    """Non-destructively show/hide sidechain sticks for a single residue.
+
+    on truthy: if the residue's sidechain has no sticks yet AND has sidechain
+      atoms, show sticks there and color by element (util.cnc keeps carbons,
+      colors N/O/S/... ). Remembers the atoms' prior colors so stick-off can
+      restore them, and reports whether WE added the sticks. A residue that
+      already carries sticks (the user's own) is left untouched (added=False).
+    on falsy: hide the sticks and restore the exact colors we overwrote — but
+      only for residues WE previously added (tracked in _STICK_COLORS).
+
+    Writes {'added': bool, 'chain': .., 'resi': ..} to
+    $TMPDIR/raymol_design_sticks.json so the Swift caller can record, on a
+    show, whether it now manages this residue's sticks.
+    Never raises into the caller; returns a short marker string.
+    """
+    added = False
+    try:
+        on = bool(on) if isinstance(on, bool) else bool(int(on))
+        res_sel = _residue_sel(obj, chain, resi)
+        side_sel = '(%s) and sidechain' % res_sel
+        key = '%s\x01%s\x01%s' % (obj, chain, resi)
+        if on:
+            # Only add if the sidechain has atoms and none are already sticks
+            # (never clobber a residue the user drew sticks on).
+            has_atoms = cmd.count_atoms(side_sel) > 0
+            already = cmd.count_atoms('(%s) and rep sticks' % side_sel) > 0
+            if has_atoms and not already:
+                # Capture the exact per-atom colors before recoloring by element.
+                prior = {}
+                cmd.iterate(side_sel, 'prior[index] = color',
+                            space={'prior': prior})
+                _STICK_COLORS[key] = prior
+                cmd.show('sticks', side_sel)
+                try:
+                    cmd.util.cnc(side_sel, _self=cmd)
+                except Exception:
+                    pass
+                added = True
+        else:
+            prior = _STICK_COLORS.pop(key, None)
+            # Only touch residues we actually added sticks to.
+            if prior is not None:
+                cmd.hide('sticks', side_sel)
+                cmd.alter(side_sel, 'color = _d.get(index, color)',
+                          space={'_d': prior})
+                cmd.recolor(side_sel)
+    except Exception:
+        pass
+    try:
+        with open(_tmp('raymol_design_sticks.json'), 'w') as f:
+            json.dump({'added': bool(added), 'chain': chain, 'resi': resi}, f)
+    except Exception:
+        pass
+    return 'DESIGN_STICKS:%s' % ('added' if added else 'noop')

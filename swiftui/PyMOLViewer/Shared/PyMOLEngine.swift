@@ -2031,6 +2031,24 @@ final class PyMOLEngine: ObservableObject {
                 _rd.restore_visual_state()
                 """)
         },
+        setSticks: { [weak self] obj, chain, resi, on in
+            guard let self else { return false }
+            // Residue viz touches the core → must run on the main thread; the
+            // controller already invokes this on the @MainActor.
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_residue_sticks('\(obj)', '\(chain)', '\(resi)', \(on ? 1 : 0))
+                """)
+            // On a show, read back whether WE added the sticks (residue had
+            // none) so the controller only removes/restores ones we introduced.
+            guard on else { return false }
+            let path = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("raymol_design_sticks.json")
+            guard let data = FileManager.default.contents(atPath: path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return false }
+            return (root["added"] as? Bool) ?? false
+        },
         currentState: { [weak self] object in
             self?.objectMeta[object]?.state ?? 1
         }
