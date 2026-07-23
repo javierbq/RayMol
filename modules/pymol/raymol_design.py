@@ -64,7 +64,8 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
     p.mpnn_conf; Open-Source PyMOL falls back to the B-factor column (b).
     Spectrum is run over whichever was set.
     """
-    rows = json.load(open(values_json_path))
+    with open(values_json_path) as f:
+        rows = json.load(f)
     vmap = {(r['chain'], r['resi']): float(r['value'])
             for r in rows if r.get('value') is not None}
 
@@ -77,8 +78,11 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
     try:
         cmd.alter(obj, 'p.mpnn_conf = _lookup(chain, resi)',
                   space={'_lookup': _lookup})
-    except Exception:
-        # Open-Source PyMOL: store in b (B-factor) instead.
+    except Exception as e:
+        if 'IncentiveOnly' not in type(e).__name__:
+            raise
+        # Open-Source PyMOL raises IncentiveOnlyException for p.* properties;
+        # fall back to storing values in the B-factor column instead.
         prop_field = 'b'
         cmd.alter(obj, 'b = _lookup(chain, resi)',
                   space={'_lookup': _lookup})

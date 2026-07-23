@@ -188,7 +188,7 @@
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
-		"TEMP_C2FC212E-97BC-448E-8B22-2B55AD10CFD4" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_6956380C-7485-4056-A3F1-1C749029EBDB" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -342,10 +342,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_CBF8CBF9-1D48-478C-ABFD-E487C3279169" /* swiftui */ = {
+		"TEMP_86A6D18B-B877-47C7-A747-7A51437B9DA6" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_C2FC212E-97BC-448E-8B22-2B55AD10CFD4" /* PyMOLBridge.xcconfig */,
+				"TEMP_6956380C-7485-4056-A3F1-1C749029EBDB" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1231,7 +1231,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_C2FC212E-97BC-448E-8B22-2B55AD10CFD4" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_6956380C-7485-4056-A3F1-1C749029EBDB" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1338,7 +1338,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_C2FC212E-97BC-448E-8B22-2B55AD10CFD4" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_6956380C-7485-4056-A3F1-1C749029EBDB" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1480,7 +1480,7 @@
 			repositoryURL = "https://github.com/javierbq/proteinmpnn-mlx.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.0;
+				minimumVersion = 0.1.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
