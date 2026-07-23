@@ -274,7 +274,9 @@ def set_residue_sticks(obj, chain, resi, on):
     try:
         on = bool(on) if isinstance(on, bool) else bool(int(on))
         res_sel = _residue_sel(obj, chain, resi)
-        side_sel = '(%s) and sidechain' % res_sel
+        # Include CA so the CA–CB bond is drawn — otherwise the sidechain sticks
+        # float detached from the backbone (PyMOL's `sidechain` excludes CA).
+        side_sel = '(%s) and (sidechain or name CA)' % res_sel
         key = '%s\x01%s\x01%s' % (obj, chain, resi)
         if on:
             # Only add if the sidechain has atoms and none are already sticks
