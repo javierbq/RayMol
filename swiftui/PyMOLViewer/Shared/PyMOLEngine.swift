@@ -2089,14 +2089,22 @@ final class PyMOLEngine: ObservableObject {
         },
         compare: { [weak self] on in
             guard let self else { return }
-            // focusObject holds the original (src); working copy is src + "_design".
+            // editSourceObject is the original (parent); focusObject after beginEditIfNeeded
+            // is the working copy — we need the parent for set_compare's color-save/restore.
             // compare is always invoked on the @MainActor (from the @MainActor controller),
             // so MainActor.assumeIsolated is safe here.
-            let src = MainActor.assumeIsolated { self.designController.focusObject } ?? ""
+            let src = MainActor.assumeIsolated { self.designController.editSourceObject } ?? ""
             guard !src.isEmpty else { return }
             self.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.set_compare('\(src)', \(on ? 1 : 0))
+                """)
+        },
+        resetCompare: { [weak self] src in
+            guard let self, !src.isEmpty else { return }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.reset_compare('\(src)')
                 """)
         },
         repack: { [weak self] residues, seq in

@@ -250,6 +250,10 @@ def restore_visual_state():
 # stick-repped themselves are detected and left completely untouched.
 _STICK_COLORS = {}
 
+# Module-level store for per-atom colors saved when compare-on greys the parent.
+# Keyed by src object name; popped on compare-off or reset_compare.
+_COMPARE_COLORS = {}
+
 
 def _residue_sel(obj, chain, resi):
     """Build a residue selection, tolerating an empty chain id."""
@@ -343,14 +347,48 @@ def make_working_copy(src):
 
 
 def set_compare(src, on):
-    """Enable or disable the original src object for a side-by-side compare view.
+    """Enable/disable side-by-side grid compare view for src (original parent).
 
-    on: truthy → enable; falsy → disable.
+    on truthy: save src per-atom colors into _COMPARE_COLORS; set grid_mode 1;
+      enable src; color src grey70 so the parent is visually distinct from the
+      design (which keeps its confidence coloring).
+    on falsy: restore saved colors via alter+recolor; disable src; set grid_mode 0.
+
     Returns 'DESIGN_CMP:ok'.
     """
     _on = bool(on) if isinstance(on, bool) else bool(int(on))
-    (cmd.enable if _on else cmd.disable)(src)
+    if _on:
+        # Save per-atom colors before greying so they can be exactly restored.
+        d = {}
+        cmd.iterate(src, 'd[index] = color', space={'d': d})
+        _COMPARE_COLORS[src] = d
+        cmd.set('grid_mode', 1)
+        cmd.enable(src)
+        cmd.color('grey70', src)
+    else:
+        saved = _COMPARE_COLORS.pop(src, None)
+        if saved is not None:
+            cmd.alter(src, 'color = _d.get(index, color)', space={'_d': saved})
+            cmd.recolor(src)
+        cmd.disable(src)
+        cmd.set('grid_mode', 0)
     return 'DESIGN_CMP:ok'
+
+
+def reset_compare(src):
+    """Restore src's saved compare colors (if any) and clear grid_mode.
+
+    Does NOT enable or disable src.  Called by teardown so grid_mode is turned
+    off and the parent is un-greyed, while the teardown's own enable/discard
+    logic independently handles object visibility.
+    Returns 'DESIGN_CMPRESET:ok'.
+    """
+    saved = _COMPARE_COLORS.pop(src, None)
+    if saved is not None:
+        cmd.alter(src, 'color = _d.get(index, color)', space={'_d': saved})
+        cmd.recolor(src)
+    cmd.set('grid_mode', 0)
+    return 'DESIGN_CMPRESET:ok'
 
 
 def discard_working_copy(src, dst):

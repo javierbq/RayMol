@@ -39,6 +39,9 @@ final class DesignController: ObservableObject {
     typealias EnableOriginalFn = (String) -> Void
     /// Report whether the edit session improved the design (wired in Task 3+).
     typealias CompareFn = (Bool) -> Void
+    /// Restore the parent's saved compare colors and clear grid_mode without enabling/disabling.
+    /// Called during teardown so grid mode never outlasts the edit session.
+    typealias ResetCompareFn = (String) -> Void
 
     /// Run MPNN scoring off-main; called on the inference serial queue.
     typealias ScoreFn = ([MPNNModel.Residue], [Int]) throws -> MPNNModel.ScoreResult
@@ -78,6 +81,7 @@ final class DesignController: ObservableObject {
     private var discard: DiscardFn = { _, _ in }
     private var enableOriginalFn: EnableOriginalFn = { _ in }
     private var compare: CompareFn = { _ in }
+    private var resetCompareFn: ResetCompareFn = { _ in }
     private var repack: RepackFn = { _, _ in "" }
     private var loadRepacked: LoadRepackedFn = { _, _ in }
 
@@ -130,6 +134,7 @@ final class DesignController: ObservableObject {
                      discard: @escaping DiscardFn = { _, _ in },
                      enableOriginal: @escaping EnableOriginalFn = { _ in },
                      compare: @escaping CompareFn = { _ in },
+                     resetCompare: @escaping ResetCompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
                      loadRepacked: @escaping LoadRepackedFn = { _, _ in }) {
         self.enumerate = enumerate
@@ -145,6 +150,7 @@ final class DesignController: ObservableObject {
         self.discard = discard
         self.enableOriginalFn = enableOriginal
         self.compare = compare
+        self.resetCompareFn = resetCompare
         self.repack = repack
         self.loadRepacked = loadRepacked
     }
@@ -402,6 +408,10 @@ final class DesignController: ObservableObject {
     private func teardownEditSession(discardCopy: Bool) {
         let src = editSourceObject
         let w = workingObject
+        // Clear grid_mode and un-grey the parent BEFORE the discard/enable block so
+        // grid mode never outlasts a session and the parent's confidence colors are
+        // restored regardless of how the session ends (discard or keep).
+        if let src { resetCompareFn(src) }
         // Restore focus to the source object (re-enabled below) before clearing state.
         if let src { focusObject = src }
         // Remove the working copy's residue-set entry and clear sticks tracking.
@@ -612,12 +622,14 @@ final class DesignController: ObservableObject {
                     mutateDisplay: @escaping MutateDisplayFn,
                     discard: @escaping DiscardFn,
                     compare: @escaping CompareFn,
-                    enableOriginal: @escaping EnableOriginalFn = { _ in }) {
+                    enableOriginal: @escaping EnableOriginalFn = { _ in },
+                    resetCompare: @escaping ResetCompareFn = { _ in }) {
         self.makeWorkingCopy = makeWorkingCopy
         self.mutateDisplay = mutateDisplay
         self.discard = discard
         self.compare = compare
         self.enableOriginalFn = enableOriginal
+        self.resetCompareFn = resetCompare
     }
 
     /// Override the score closure for testing. Replaces the constructor-injected stub
