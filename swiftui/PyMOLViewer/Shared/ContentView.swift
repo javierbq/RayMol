@@ -576,8 +576,17 @@ struct ContentView: View {
             // Design mode overlay: a separate overlay so the #if guard does not
             // break the if-else chain above. Mutually exclusive with move/measure,
             // so only one overlay is ever shown at a time.
+            // DesignOverlayView holds @ObservedObject controller: DesignController so
+            // colorMeaning / isScoring / focusObject / legendDomain changes re-render
+            // the toggle highlight immediately (ContentView doesn't observe the nested OO).
             .overlay(alignment: .top) {
-                if engine.designMode { designOverlay }
+                if engine.designMode {
+                    DesignOverlayView(
+                        controller: engine.designController,
+                        engine: engine,
+                        theme: themeManager
+                    )
+                }
             }
             #endif
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
@@ -3022,112 +3031,6 @@ struct ContentView: View {
         .tint(themeManager.active.accent.color)
     }
 
-#if RAYMOL_MPNN
-    // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
-    // coloring meaning segmented control, legend gradient, scoring progress.
-    // Split into small subviews to stay within the Swift type-checker complexity limit.
-
-    private var designFocusLabel: some View {
-        Group {
-            if let obj = engine.designController.focusObject {
-                HStack(spacing: 4) {
-                    Image(systemName: "atom")
-                        .foregroundColor(themeManager.active.accent.color)
-                    Text(obj)
-                        .lineLimit(1)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(themeManager.active.panelText.color)
-                }
-            } else {
-                Text("Click an object to design")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
-            }
-        }
-    }
-
-    // Two-button toggle visually equivalent to a segmented control but with per-mode
-    // .help() tooltips — Picker(.segmented) doesn't reliably surface per-segment
-    // tooltips on macOS since the control draws its own chrome.
-    private var designMeaningPicker: some View {
-        HStack(spacing: 1) {
-            Button { engine.designController.setMeaning(.nativeFit) } label: {
-                Text("Native fit")
-                    .font(.system(size: 13))
-                    .padding(.horizontal, 9).padding(.vertical, 4)
-                    .frame(maxWidth: .infinity)
-                    .background(engine.designController.colorMeaning == .nativeFit
-                        ? themeManager.active.accent.color.opacity(0.25)
-                        : Color.clear)
-                    .cornerRadius(5)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
-
-            Button { engine.designController.setMeaning(.certainty) } label: {
-                Text("Certainty")
-                    .font(.system(size: 13))
-                    .padding(.horizontal, 9).padding(.vertical, 4)
-                    .frame(maxWidth: .infinity)
-                    .background(engine.designController.colorMeaning == .certainty
-                        ? themeManager.active.accent.color.opacity(0.25)
-                        : Color.clear)
-                    .cornerRadius(5)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Certainty: how strongly the model prefers a single amino acid at each position (1 − normalized entropy of its prediction). High = structurally constrained; low = many residues plausible.")
-        }
-        .background(themeManager.active.panelBackground.color.opacity(0.6))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(themeManager.active.panelText.color.opacity(0.2), lineWidth: 0.5))
-        .cornerRadius(7)
-        .frame(maxWidth: 180)
-    }
-
-    private var designLegendBar: some View {
-        Group {
-            if let dom = engine.designController.legendDomain {
-                HStack(spacing: 4) {
-                    Text(String(format: "%.1f", dom.lowerBound))
-                        .font(.system(size: 10)).foregroundColor(themeManager.active.panelText.color.opacity(0.7))
-                    LinearGradient(
-                        colors: engine.designController.colorMeaning == .nativeFit
-                            ? [.red, .white, .blue]
-                            : [.blue, .white, .red],
-                        startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 60, height: 10)
-                    .cornerRadius(3)
-                    Text(String(format: "%.1f", dom.upperBound))
-                        .font(.system(size: 10)).foregroundColor(themeManager.active.panelText.color.opacity(0.7))
-                }
-            }
-        }
-    }
-
-    private var designOverlay: some View {
-        HStack(spacing: 10) {
-            designFocusLabel
-            if engine.designController.isScoring {
-                ProgressView().scaleEffect(0.7)
-            }
-            Spacer(minLength: 0)
-            designMeaningPicker
-            designLegendBar
-                .help("Per-residue confidence; domain shown at the ends")
-            Button {
-                engine.setDesignMode(false)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
-            }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(themeManager.active.panelBackground.color)
-        .tint(themeManager.active.accent.color)
-    }
-#endif
-
     // MARK: - Initialization
 
     // Bottom-left viewport shortcut to the Camera overlay.
@@ -3224,6 +3127,154 @@ struct ContentView: View {
         engine.runCommand("set metal_outline, 0")
     }
 }
+
+#if RAYMOL_MPNN
+// Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
+// coloring meaning segmented control, legend gradient, scoring progress, ? help.
+// Extracted into a dedicated View struct so @ObservedObject controller: DesignController
+// causes re-renders on every @Published change (colorMeaning, isScoring, focusObject,
+// legendDomain) — ContentView itself never re-renders for nested-OO changes.
+private struct DesignOverlayView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var engine: PyMOLEngine
+    @ObservedObject var theme: ThemeManager
+    @State private var showModeHelp = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            focusLabel
+            if controller.isScoring {
+                ProgressView().scaleEffect(0.7)
+            }
+            Spacer(minLength: 0)
+            meaningPicker
+            legendBar
+                .help("Per-residue confidence; domain shown at the ends")
+            helpButton
+            Button {
+                engine.setDesignMode(false)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(theme.active.panelBackground.color)
+        .tint(theme.active.accent.color)
+    }
+
+    private var focusLabel: some View {
+        Group {
+            if let obj = controller.focusObject {
+                HStack(spacing: 4) {
+                    Image(systemName: "atom")
+                        .foregroundColor(theme.active.accent.color)
+                    Text(obj)
+                        .lineLimit(1)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(theme.active.panelText.color)
+                }
+            } else {
+                Text("Click an object to design")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }
+        }
+    }
+
+    // Two-button toggle visually equivalent to a segmented control but with per-mode
+    // .help() tooltips — Picker(.segmented) doesn't reliably surface per-segment
+    // tooltips on macOS since the control draws its own chrome.
+    private var meaningPicker: some View {
+        HStack(spacing: 1) {
+            Button { controller.setMeaning(.nativeFit) } label: {
+                Text("Native fit")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(controller.colorMeaning == .nativeFit
+                        ? theme.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
+
+            Button { controller.setMeaning(.certainty) } label: {
+                Text("Certainty")
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(controller.colorMeaning == .certainty
+                        ? theme.active.accent.color.opacity(0.25)
+                        : Color.clear)
+                    .cornerRadius(5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Certainty: how strongly the model prefers a single amino acid at each position (1 − normalized entropy of its prediction). High = structurally constrained; low = many residues plausible.")
+        }
+        .background(theme.active.panelBackground.color.opacity(0.6))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.active.panelText.color.opacity(0.2), lineWidth: 0.5))
+        .cornerRadius(7)
+        .frame(maxWidth: 180)
+    }
+
+    private var legendBar: some View {
+        Group {
+            if let dom = controller.legendDomain {
+                HStack(spacing: 4) {
+                    Text(String(format: "%.1f", dom.lowerBound))
+                        .font(.system(size: 10)).foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    LinearGradient(
+                        colors: controller.colorMeaning == .nativeFit
+                            ? [.red, .white, .blue]
+                            : [.blue, .white, .red],
+                        startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 60, height: 10)
+                    .cornerRadius(3)
+                    Text(String(format: "%.1f", dom.upperBound))
+                        .font(.system(size: 10)).foregroundColor(theme.active.panelText.color.opacity(0.7))
+                }
+            }
+        }
+    }
+
+    // "?" button that pops a brief description of both coloring modes — click-triggered,
+    // reliable on macOS (hover .help() is inconsistent across system versions).
+    private var helpButton: some View {
+        Button { showModeHelp.toggle() } label: {
+            Image(systemName: "questionmark.circle")
+                .foregroundColor(theme.active.panelText.color.opacity(0.6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Design mode help")
+        .popover(isPresented: $showModeHelp) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Native fit")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Log-probability of each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model would rather mutate it.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Certainty")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("How strongly the model prefers a single amino acid at that position (1 − normalized entropy). High = structurally constrained; low = many plausible.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(14)
+            .frame(width: 260)
+        }
+    }
+}
+#endif
 
 // Dimmed scrim + centered card shown while a long PyMOL op runs. The scrim
 // captures hits so no conflicting command can be issued mid-operation (which
