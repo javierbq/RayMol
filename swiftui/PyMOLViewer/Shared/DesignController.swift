@@ -37,8 +37,10 @@ final class DesignController: ObservableObject {
     typealias DiscardFn = (String, String) -> Void
     /// Re-enable the original source object on the Keep path (working copy is preserved).
     typealias EnableOriginalFn = (String) -> Void
-    /// Report whether the edit session improved the design (wired in Task 3+).
-    typealias CompareFn = (Bool) -> Void
+    /// Toggle the compare view on/off with an optional side-by-side grid mode.
+    /// Called with (on, sideBySide): on=true enables compare; sideBySide selects
+    /// overlap (false, default) vs grid (true) layout.
+    typealias CompareFn = (Bool, Bool) -> Void
     /// Restore the parent's saved compare colors and clear grid_mode without enabling/disabling.
     /// Called during teardown so grid mode never outlasts the edit session.
     typealias ResetCompareFn = (String) -> Void
@@ -50,6 +52,9 @@ final class DesignController: ObservableObject {
     typealias RepackFn = ([MPNNModel.Residue], [Int]) throws -> String
     /// Load a repacked PDB string into the named working-copy object.
     typealias LoadRepackedFn = (String, String) -> Void
+
+    /// Show or hide all sidechain sticks on `obj` (with cnc element coloring on show).
+    typealias ShowAllSidechainsFn = (String, Bool) -> Void
 
     /// Apply per-residue coloring to `objectName`.
     /// `values`: (chain, resi, scalar?) for every residue in the set order.
@@ -80,20 +85,26 @@ final class DesignController: ObservableObject {
     private var mutateDisplay: MutateDisplayFn = { _, _, _, _ in }
     private var discard: DiscardFn = { _, _ in }
     private var enableOriginalFn: EnableOriginalFn = { _ in }
-    private var compare: CompareFn = { _ in }
+    private var compare: CompareFn = { _, _ in }
     private var resetCompareFn: ResetCompareFn = { _ in }
     private var repack: RepackFn = { _, _ in "" }
     private var loadRepacked: LoadRepackedFn = { _, _ in }
+    private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
 
     // MARK: – Edit-session published state (Task 2)
 
     @Published private(set) var editing = false
     @Published private(set) var editCount = 0
     @Published private(set) var repackDirty = false
-    @Published var autoRepack = false
+    @Published var autoRepack = true
     @Published private(set) var isRepacking = false
     /// True while the compare toggle is on (original structure shown alongside the working copy).
     @Published private(set) var compareEnabled = false
+    /// True while the Side-by-side grid layout is selected (only meaningful when compareEnabled).
+    /// false = overlap (grey + transparent ghost behind design); true = grid (own confidence colors).
+    @Published private(set) var sideBySide = false
+    /// True while all sidechain sticks are shown on the design (and parent when compare is on).
+    @Published private(set) var showSidechains = false
     private(set) var workingObject: String?
     private(set) var editedSequence: [Int] = []
     /// The source object that the current edit session is based on.
@@ -133,10 +144,11 @@ final class DesignController: ObservableObject {
                      mutateDisplay: @escaping MutateDisplayFn = { _, _, _, _ in },
                      discard: @escaping DiscardFn = { _, _ in },
                      enableOriginal: @escaping EnableOriginalFn = { _ in },
-                     compare: @escaping CompareFn = { _ in },
+                     compare: @escaping CompareFn = { _, _ in },
                      resetCompare: @escaping ResetCompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
-                     loadRepacked: @escaping LoadRepackedFn = { _, _ in }) {
+                     loadRepacked: @escaping LoadRepackedFn = { _, _ in },
+                     showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -153,6 +165,7 @@ final class DesignController: ObservableObject {
         self.resetCompareFn = resetCompare
         self.repack = repack
         self.loadRepacked = loadRepacked
+        self.showAllSidechainsFn = showAllSidechains
     }
 
     // MARK: – Public interface
@@ -558,6 +571,8 @@ final class DesignController: ObservableObject {
                 // and re-add for the pinned/hovered residue on the fresh atoms.
                 teardownSticks(on: w)
                 reconcileSticks()
+                // Re-apply global sidechain display if the user had it turned on.
+                if showSidechains { showAllSidechainsFn(w, true) }
             }
             // else: mutation happened mid-repack; leave repackDirty = true so the
             // next repack (triggered by the new mutation) loads the current coords.
@@ -573,7 +588,30 @@ final class DesignController: ObservableObject {
     /// `compare` closure so the PyMOL display follows.
     func setCompare(_ on: Bool) {
         compareEnabled = on
-        compare(on)
+        compare(on, sideBySide)
+    }
+
+    /// Switch the compare layout between overlap (default) and side-by-side grid.
+    /// Only has a visual effect when `compareEnabled` is true; always updates the
+    /// `sideBySide` flag so the next compare-on picks up the chosen mode.
+    func setSideBySide(_ on: Bool) {
+        sideBySide = on
+        guard compareEnabled else { return }
+        compare(true, on)   // re-apply compare with the new layout
+    }
+
+    /// Show or hide all sidechain sticks on the focus object (and parent when
+    /// compare is on). When turning OFF, calls `reconcileSticks()` so managed
+    /// hover/pin sidechains remain shown.
+    func setShowSidechains(_ on: Bool) {
+        showSidechains = on
+        if let obj = focusObject {
+            showAllSidechainsFn(obj, on)
+            if compareEnabled, let src = editSourceObject {
+                showAllSidechainsFn(src, on)
+            }
+        }
+        if !on { reconcileSticks() }
     }
 
     /// Score the working object off-main using the current `editedSequence`, then
@@ -658,6 +696,11 @@ final class DesignController: ObservableObject {
     func injectRepack(repack: @escaping RepackFn, loadRepacked: @escaping LoadRepackedFn) {
         self.repack = repack
         self.loadRepacked = loadRepacked
+    }
+
+    /// Override the showAllSidechains closure for testing (Change 7).
+    func injectShowAllSidechains(_ fn: @escaping ShowAllSidechainsFn) {
+        self.showAllSidechainsFn = fn
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async

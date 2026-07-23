@@ -2087,7 +2087,7 @@ final class PyMOLEngine: ObservableObject {
             // Keep path: working copy is preserved; re-enable the original so it is visible.
             self?.runPython("from pymol import cmd as _c; _c.enable('\(src)')")
         },
-        compare: { [weak self] on in
+        compare: { [weak self] on, sideBySide in
             guard let self else { return }
             // editSourceObject is the original (parent); focusObject after beginEditIfNeeded
             // is the working copy — we need the parent for set_compare's color-save/restore.
@@ -2097,7 +2097,7 @@ final class PyMOLEngine: ObservableObject {
             guard !src.isEmpty else { return }
             self.runPython("""
                 from pymol import raymol_design as _rd
-                _rd.set_compare('\(src)', \(on ? 1 : 0))
+                _rd.set_compare('\(src)', \(on ? 1 : 0), side_by_side=\(sideBySide ? 1 : 0))
                 """)
         },
         resetCompare: { [weak self] src in
@@ -2125,6 +2125,12 @@ final class PyMOLEngine: ObservableObject {
                 from pymol import raymol_design as _rd
                 with open('\(path)') as _f:
                     _rd.load_repacked('\(obj)', _f.read())
+                """)
+        },
+        showAllSidechains: { [weak self] obj, on in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.show_all_sidechains('\(obj)', \(on ? 1 : 0))
                 """)
         }
     )

@@ -49,53 +49,102 @@ class TestDesignEditing(testing.PyMOLTestCase):
         rd.set_compare('src', False); self.assertNotIn('src', cmd.get_object_list('enabled'))
 
     def testCompareGridAndReferenceColor(self):
-        """set_compare ON: grid_mode 1 + src enabled + src atoms greyed.
-        set_compare OFF: grid_mode 0 + src disabled + colors restored.
-        reset_compare: grid_mode 0 + colors restored (no enable/disable side-effect).
+        """set_compare side_by_side=False (overlap, default):
+             grid_mode 0 + src enabled + src atoms greyed + transparency > 0.
+           set_compare side_by_side=True (grid):
+             grid_mode 1 + src enabled + src colors restored (not grey) + transparency 0.
+           set_compare OFF:
+             grid_mode 0 + src disabled + colors restored + transparency restored.
+           reset_compare:
+             grid_mode 0 + colors restored (no enable/disable side-effect).
         """
         from pymol import raymol_design as rd
         cmd.reinitialize()
         cmd.fragment('ala', 'src')
         cmd.fragment('ala', 'dst')
-        # Capture baseline per-atom colors before greying.
+        # Capture baseline per-atom colors before any compare.
         baseline = {}
         cmd.iterate('src', 'baseline[index] = color', space={'baseline': baseline})
         self.assertTrue(baseline, "no atoms found on src")
 
-        # --- compare ON ---
-        result_on = rd.set_compare('src', True)
+        # --- compare ON, overlap mode (default: side_by_side=False) ---
+        result_on = rd.set_compare('src', True, side_by_side=False)
         self.assertEqual(result_on, 'DESIGN_CMP:ok')
-        self.assertEqual(cmd.get_setting_int('grid_mode'), 1)
+        self.assertEqual(cmd.get_setting_int('grid_mode'), 0,
+                         "overlap mode must use grid_mode 0")
         self.assertIn('src', cmd.get_object_list('enabled'))
         after_grey = {}
         cmd.iterate('src', 'after_grey[index] = color', space={'after_grey': after_grey})
-        # At least one atom must have had its color changed to grey70.
         self.assertNotEqual(baseline, after_grey,
-                            "set_compare(on=True) did not change src atom colors to grey")
+                            "overlap mode did not change src atom colors to grey")
+        ct = cmd.get_setting_float('cartoon_transparency', 'src')
+        self.assertGreater(ct, 0,
+                           "overlap mode did not set transparency > 0 on src")
+
+        # --- switch to grid mode (side_by_side=True) without re-saving state ---
+        result_grid = rd.set_compare('src', True, side_by_side=True)
+        self.assertEqual(result_grid, 'DESIGN_CMP:ok')
+        self.assertEqual(cmd.get_setting_int('grid_mode'), 1,
+                         "grid mode must use grid_mode 1")
+        self.assertIn('src', cmd.get_object_list('enabled'))
+        restored_grid = {}
+        cmd.iterate('src', 'restored_grid[index] = color',
+                    space={'restored_grid': restored_grid})
+        self.assertEqual(baseline, restored_grid,
+                         "grid mode did not restore src colors (should un-grey)")
+        ct2 = cmd.get_setting_float('cartoon_transparency', 'src')
+        self.assertEqual(ct2, 0.0,
+                         "grid mode did not set transparency to 0")
 
         # --- compare OFF ---
         result_off = rd.set_compare('src', False)
         self.assertEqual(result_off, 'DESIGN_CMP:ok')
         self.assertEqual(cmd.get_setting_int('grid_mode'), 0)
         self.assertNotIn('src', cmd.get_object_list('enabled'))
-        restored = {}
-        cmd.iterate('src', 'restored[index] = color', space={'restored': restored})
-        self.assertEqual(baseline, restored,
+        restored_off = {}
+        cmd.iterate('src', 'restored_off[index] = color',
+                    space={'restored_off': restored_off})
+        self.assertEqual(baseline, restored_off,
                          "colors not restored to baseline after set_compare(on=False)")
 
-        # --- reset_compare: ON then reset (no enable/disable changes) ---
-        rd.set_compare('src', True)                      # back on
+        # --- reset_compare: ON then reset (no enable/disable side-effect) ---
+        rd.set_compare('src', True)                   # back on (overlap mode)
         result_reset = rd.reset_compare('src')
         self.assertEqual(result_reset, 'DESIGN_CMPRESET:ok')
         self.assertEqual(cmd.get_setting_int('grid_mode'), 0)
-        # reset_compare must restore colors...
         reset_colors = {}
-        cmd.iterate('src', 'reset_colors[index] = color', space={'reset_colors': reset_colors})
+        cmd.iterate('src', 'reset_colors[index] = color',
+                    space={'reset_colors': reset_colors})
         self.assertEqual(baseline, reset_colors,
                          "reset_compare did not restore src colors")
-        # ...but must NOT disable src (no enable/disable side-effect).
+        # reset_compare must NOT disable src (no enable/disable side-effect).
         self.assertIn('src', cmd.get_object_list('enabled'),
                       "reset_compare incorrectly disabled src")
+
+    def testShowAllSidechains(self):
+        """show_all_sidechains on: sidechain sticks shown (count > 0).
+        show_all_sidechains off: sidechain sticks hidden.
+        """
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        # Use ARG (long sidechain) for a clear signal.
+        cmd.fragment('arg', 'm')
+        # Sticks off initially (cartoon only after fragment).
+        side_sel = 'm and (sidechain or name CA)'
+        before = cmd.count_atoms('%s and rep sticks' % side_sel)
+        self.assertEqual(before, 0, "pre-condition: no sidechain sticks expected initially")
+
+        result_on = rd.show_all_sidechains('m', True)
+        self.assertEqual(result_on, 'DESIGN_SIDECHAINS:on')
+        after_on = cmd.count_atoms('%s and rep sticks' % side_sel)
+        self.assertGreater(after_on, 0,
+                           "show_all_sidechains(on=True) did not add sidechain sticks")
+
+        result_off = rd.show_all_sidechains('m', False)
+        self.assertEqual(result_off, 'DESIGN_SIDECHAINS:off')
+        after_off = cmd.count_atoms('%s and rep sticks' % side_sel)
+        self.assertEqual(after_off, 0,
+                         "show_all_sidechains(on=False) did not hide sidechain sticks")
 
     def testBackboneOnlyHidesSidechain(self):
         from pymol import raymol_design as rd

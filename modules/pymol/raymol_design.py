@@ -250,9 +250,11 @@ def restore_visual_state():
 # stick-repped themselves are detected and left completely untouched.
 _STICK_COLORS = {}
 
-# Module-level store for per-atom colors saved when compare-on greys the parent.
-# Keyed by src object name; popped on compare-off or reset_compare.
-_COMPARE_COLORS = {}
+# Module-level store for the full visual state (per-atom colors + transparency
+# settings) saved when compare first turns on. Keyed by src object name; popped
+# on compare-off or reset_compare.
+# Shape: {src: {'colors': {str(index): color_int}, 'settings': {name: float}}}
+_COMPARE_STATE = {}
 
 
 def _residue_sel(obj, chain, resi):
@@ -346,47 +348,105 @@ def make_working_copy(src):
     return 'DESIGN_WORK:%s' % dst
 
 
-def set_compare(src, on):
-    """Enable/disable side-by-side grid compare view for src (original parent).
+def _restore_compare_state(src):
+    """Restore per-atom colors and transparency settings from _COMPARE_STATE[src].
 
-    on truthy: save src per-atom colors into _COMPARE_COLORS; set grid_mode 1;
-      enable src; color src grey70 so the parent is visually distinct from the
-      design (which keeps its confidence coloring).
-    on falsy: restore saved colors via alter+recolor; disable src; set grid_mode 0.
+    Pops the entry. Returns True if state was present, False otherwise.
+    """
+    state = _COMPARE_STATE.pop(src, None)
+    if state is None:
+        return False
+    int_colors = {int(k): v for k, v in state['colors'].items()}
+    cmd.alter(src, 'color = _d.get(index, color)', space={'_d': int_colors})
+    for s, v in state['settings'].items():
+        try:
+            cmd.set(s, float(v), src)
+        except Exception:
+            pass
+    cmd.recolor(src)
+    return True
+
+
+def _apply_compare_overlap(src):
+    """Overlap mode: grey + transparent, no grid.
+
+    Grid mode 0; enable src; color grey70; set all transparency settings to 0.5.
+    """
+    cmd.set('grid_mode', 0)
+    cmd.enable(src)
+    cmd.color('grey70', src)
+    for s in _TRANSP:
+        try:
+            cmd.set(s, 0.5, src)
+        except Exception:
+            pass
+
+
+def _apply_compare_grid(src):
+    """Grid mode: restore saved colors + fully opaque, grid enabled.
+
+    Restores per-atom colors from _COMPARE_STATE (saved at compare-first-on);
+    sets all transparency settings to 0 (fully opaque); enables grid_mode 1.
+    """
+    state = _COMPARE_STATE.get(src)
+    if state:
+        int_colors = {int(k): v for k, v in state['colors'].items()}
+        cmd.alter(src, 'color = _d.get(index, color)', space={'_d': int_colors})
+        cmd.recolor(src)
+    for s in _TRANSP:
+        try:
+            cmd.set(s, 0.0, src)
+        except Exception:
+            pass
+    cmd.set('grid_mode', 1)
+    cmd.enable(src)
+
+
+def set_compare(src, on, side_by_side=False):
+    """Enable/disable compare view for src (original parent).
+
+    on truthy: save src per-atom colors + transparency into _COMPARE_STATE (once
+      on first call); then apply overlap or grid per side_by_side:
+      - side_by_side=False (overlap, default): grid_mode 0; enable src; color
+        grey70; set transparency ~0.5 so it ghosts behind the design.
+      - side_by_side=True (grid): grid_mode 1; enable src; restore saved colors +
+        set transparency 0 (own confidence coloring, fully opaque).
+      Toggling side_by_side while on switches between the two modes.
+    on falsy: restore saved colors + transparency; disable src; grid_mode 0.
 
     Returns 'DESIGN_CMP:ok'.
     """
     _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    _sbs = bool(side_by_side) if isinstance(side_by_side, bool) else bool(int(side_by_side))
     if _on:
-        # Save per-atom colors before greying so they can be exactly restored.
-        d = {}
-        cmd.iterate(src, 'd[index] = color', space={'d': d})
-        _COMPARE_COLORS[src] = d
-        cmd.set('grid_mode', 1)
-        cmd.enable(src)
-        cmd.color('grey70', src)
+        # Save full visual state on first compare-on; idempotent on subsequent calls.
+        if src not in _COMPARE_STATE:
+            colors = {}
+            cmd.iterate(src, 'colors[index] = color', space={'colors': colors})
+            _COMPARE_STATE[src] = {
+                'colors': {str(k): v for k, v in colors.items()},
+                'settings': _get_transp_settings(src),
+            }
+        if _sbs:
+            _apply_compare_grid(src)
+        else:
+            _apply_compare_overlap(src)
     else:
-        saved = _COMPARE_COLORS.pop(src, None)
-        if saved is not None:
-            cmd.alter(src, 'color = _d.get(index, color)', space={'_d': saved})
-            cmd.recolor(src)
+        _restore_compare_state(src)
         cmd.disable(src)
         cmd.set('grid_mode', 0)
     return 'DESIGN_CMP:ok'
 
 
 def reset_compare(src):
-    """Restore src's saved compare colors (if any) and clear grid_mode.
+    """Restore src's saved compare colors + transparency (if any) and clear grid_mode.
 
     Does NOT enable or disable src.  Called by teardown so grid_mode is turned
     off and the parent is un-greyed, while the teardown's own enable/discard
     logic independently handles object visibility.
     Returns 'DESIGN_CMPRESET:ok'.
     """
-    saved = _COMPARE_COLORS.pop(src, None)
-    if saved is not None:
-        cmd.alter(src, 'color = _d.get(index, color)', space={'_d': saved})
-        cmd.recolor(src)
+    _restore_compare_state(src)
     cmd.set('grid_mode', 0)
     return 'DESIGN_CMPRESET:ok'
 
@@ -466,6 +526,9 @@ def load_repacked(obj, pdb_str):
     On any failure after read but before rename, the temp object is cleaned up.
     Returns 'DESIGN_REPACKED:ok'.
     """
+    # Capture the camera view BEFORE any structural replacement so the viewport
+    # does not jump when load+delete+rename triggers PyMOL's auto-zoom.
+    v = cmd.get_view()
     tmp = cmd.get_unused_name('_rp')
     renamed = False
     try:
@@ -487,4 +550,31 @@ def load_repacked(obj, pdb_str):
     finally:
         if not renamed and tmp in cmd.get_object_list():
             cmd.delete(tmp)
+    # Restore the camera view exactly as it was before the replace (zoom=0 on
+    # create already prevented the initial zoom; this covers the repack path).
+    cmd.set_view(v)
     return 'DESIGN_REPACKED:ok'
+
+
+def show_all_sidechains(obj, on):
+    """Show or hide all sidechain sticks on obj.
+
+    on truthy: show sticks for '(obj) and (sidechain or name CA)' (CA included
+      so the CA–CB bond draws from the backbone), then apply cnc coloring so
+      heteroatoms are colored by element while carbons inherit the residue's
+      current confidence color.
+    on falsy: hide sticks for the same selection.
+
+    Returns 'DESIGN_SIDECHAINS:on' or 'DESIGN_SIDECHAINS:off'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    sel = '(%s) and (sidechain or name CA)' % obj
+    if _on:
+        cmd.show('sticks', sel)
+        try:
+            cmd.util.cnc(sel, _self=cmd)
+        except Exception:
+            pass
+    else:
+        cmd.hide('sticks', sel)
+    return 'DESIGN_SIDECHAINS:%s' % ('on' if _on else 'off')

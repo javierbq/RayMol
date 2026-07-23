@@ -31,7 +31,7 @@ final class DesignEditingTests: XCTestCase {
             makeWorkingCopy: { src in created.append(src); return src + "_design" },
             mutateDisplay: { _, _, _, _ in },
             discard: { _, _ in },
-            compare: { _ in })
+            compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 1, aa: 9)               // -> LEU
         XCTAssertTrue(c.editing)
@@ -51,7 +51,7 @@ final class DesignEditingTests: XCTestCase {
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
             discard: { _, dst in discarded.append(dst) },
-            compare: { _ in })
+            compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 1)
         c.discardEdits()
@@ -67,7 +67,7 @@ final class DesignEditingTests: XCTestCase {
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
             discard: { _, dst in discardCalls.append(dst) },
-            compare: { _ in })
+            compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 9)    // begins session
         XCTAssertTrue(c.editing)
@@ -83,7 +83,7 @@ final class DesignEditingTests: XCTestCase {
             makeWorkingCopy: { $0 + "_design" },
             mutateDisplay: { _, _, _, _ in },
             discard: { _, _ in },
-            compare: { _ in })
+            compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 1, aa: 9)    // real mutation — editCount == 1
         XCTAssertEqual(c.editCount, 1)
@@ -103,7 +103,7 @@ final class DesignEditingTests: XCTestCase {
     func testMutationRescoresWithEditedSequence() async {
         var scoredSeqs: [[Int]] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectScore { _, seq in
             scoredSeqs.append(seq)
             return MPNNModel.ScoreResult(
@@ -121,7 +121,7 @@ final class DesignEditingTests: XCTestCase {
     func testRepackClearsDirtyAndLoadsCoords() async {
         var repackedSeqs: [[Int]] = []; var loaded: [(String, String)] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
@@ -131,7 +131,8 @@ final class DesignEditingTests: XCTestCase {
             repack: { _, seq in repackedSeqs.append(seq); return "PDBDATA" },
             loadRepacked: { obj, pdb in loaded.append((obj, pdb)) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        await c.applyMutationAwait(residueIndex: 0, aa: 1)  // autoRepack=false → stays dirty
+        c.autoRepack = false   // test manual repack path; disable auto so mutation stays dirty
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
         XCTAssertTrue(c.repackDirty)
         await c.repackNowAwait()
         XCTAssertEqual(repackedSeqs.last, [1, 5, 5])        // repack called with edited sequence
@@ -143,7 +144,7 @@ final class DesignEditingTests: XCTestCase {
     func testAutoRepackRepacksOnEachEdit() async {
         var repacks = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
@@ -160,7 +161,7 @@ final class DesignEditingTests: XCTestCase {
     func testKeepAwaitRepacksIfDirty() async {
         var repackCalls = 0
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
@@ -219,7 +220,7 @@ final class DesignEditingTests: XCTestCase {
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectRepack(repack: { _, _ in "PDBDATA" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, true, true])
 
@@ -273,7 +274,7 @@ final class DesignEditingTests: XCTestCase {
             makeWorkingCopy: { _ in "m1_design" },
             mutateDisplay: { _, _, _, _ in },
             discard: { _, _ in },
-            compare: { _ in })
+            compare: { _, _ in })
 
         // Focus + score the original so the native-sequence cache entry exists for "m1".
         await c.focusAwait("m1")
@@ -311,7 +312,7 @@ final class DesignEditingTests: XCTestCase {
     func testRescoreAlignsSequenceToValidResidues() async {
         var scoredSeqs: [[Int]] = []
         let c = makeController()
-        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _ in })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
         c.injectScore { _, seq in
             scoredSeqs.append(seq)
             return MPNNModel.ScoreResult(
@@ -351,8 +352,8 @@ final class DesignEditingTests: XCTestCase {
                 // Simulate discard_working_copy: re-enable original.
                 enabledObjs.append(src)
             },
-            compare: { _ in
-                // compare(false) would call cmd.disable(src) — record it as disabled
+            compare: { _, _ in
+                // compare(false, ...) would call cmd.disable(src) — record it as disabled
                 // so we can detect if teardown incorrectly fires it.
                 if !enabledObjs.isEmpty {
                     disabledObjs.append("compare_false_fired")

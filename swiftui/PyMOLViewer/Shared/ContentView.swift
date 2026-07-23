@@ -3198,7 +3198,38 @@ private struct DesignEditStripView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
-            .help("Toggle between original and edited structure")
+            .help("Show original structure alongside the edited working copy")
+
+            // ── Side-by-side toggle (visible + enabled only when compare is on) ──
+            if controller.compareEnabled {
+                stripDivider
+                Toggle(isOn: Binding(
+                    get: { controller.sideBySide },
+                    set: { controller.setSideBySide($0) }
+                )) {
+                    Text("Side-by-side")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.8))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Grid view: original and design shown in separate panels with own colors (off = overlap, grey ghost)")
+            }
+
+            stripDivider
+
+            // ── Sidechains toggle ─────────────────────────────────────────────
+            Toggle(isOn: Binding(
+                get: { controller.showSidechains },
+                set: { controller.setShowSidechains($0) }
+            )) {
+                Text("Sidechains")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help("Show all sidechain sticks (carbons colored by confidence, heteroatoms by element)")
 
             Spacer(minLength: 0)
 
