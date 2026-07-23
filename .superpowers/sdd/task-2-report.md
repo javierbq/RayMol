@@ -1,4 +1,90 @@
-# Task 2 Report: macOS-only MPNNKit dependency + weights + RAYMOL_MPNN gate
+## Fix: keepEdits isRepacking + guard tests
+
+### Status: DONE
+
+### Commit
+See below (after git commit)
+
+### Changes
+- `DesignController.swift` `keepEdits()`: added `isRepacking = false` to match `discardEdits()` — prevents a stuck spinner if Keep is called mid-repack (Task 4).
+- `DesignEditingTests.swift`: added `testKeepEndsSessionWithoutDiscard` (asserts editing/editCount reset and discard closure not called) and `testSameAAAndOutOfRangeAreNoOps` (same-aa and out-of-range index calls are no-ops).
+- `PyMOLViewer.xcodeproj/project.pbxproj`: regenerated via `xcodegen generate` to pick up the previously-added `DesignEditingTests.swift` file (it existed on disk but was missing from the build target, causing 0 tests to run).
+
+### Test result
+```
+Executed 4 tests, with 0 failures (0 unexpected) in 0.002 seconds
+** TEST SUCCEEDED **
+```
+
+---
+
+# Task 2 Report: edit-session state + applyMutation/discard/keep (Phase 2b)
+
+## Status: DONE
+
+## Commit
+`ebe81a657` — `feat(design): edit-session state + applyMutation/discard/keep (2b)`
+
+## Published state added (inside `#if RAYMOL_MPNN`)
+
+- `@Published private(set) var editing = false`
+- `@Published private(set) var editCount = 0`
+- `@Published private(set) var repackDirty = false`
+- `@Published var autoRepack = false`
+- `@Published private(set) var isRepacking = false`
+- `private(set) var workingObject: String?`
+- `private(set) var editedSequence: [Int] = []`
+
+## Closure typealiases added
+
+- `MakeWorkingCopyFn = (String) -> String`
+- `MutateDisplayFn = (String, Int, Int) -> Void` — obj, residueIndex, aa
+- `DiscardFn = (String) -> Void`
+- `CompareFn = (Bool) -> Void` — isImproved (wired in Task 3+)
+
+Stored as `private var` with default no-ops; existing Phase-2a `init` signature unchanged.
+
+## New public methods
+
+`beginEditIfNeeded()`, `applyMutation(residueIndex:aa:)`, `discardEdits()`, `keepEdits()` — exact logic from the brief.
+
+## Test-hook style (matching Phase-2a)
+
+Phase-2a passes all scoring closures directly to the initializer. Edit closures are a separate lifecycle, so two `#if DEBUG` hooks were added:
+- `injectEdit(makeWorkingCopy:mutateDisplay:discard:compare:)` — replaces `var` closures post-init.
+- `setFocusForTest(_:nativeSequence:)` — sets `focusObject` and synthesises a `lastSet` entry from the given `[Int]` without the async score lifecycle.
+
+## Brief-signature adaptations
+
+None material. `setFocusForTest` was not fully specified; implemented to produce a `DesignResidueSet` with `valid: false` residues (backbone `nil`) so `beginEditIfNeeded()` can read `.aa` from each residue without backbone coordinates.
+
+## Test result (DesignEditingTests only)
+
+```
+Executed 2 tests, with 0 failures (0 unexpected) in 0.002 seconds
+** TEST SUCCEEDED **
+```
+
+## Existing-suite regression check (full PyMOLViewerTests)
+
+```
+Executed 20 tests, with 1 test skipped and 0 failures (0 unexpected)
+** TEST SUCCEEDED **
+```
+(1 skip = DesignInferenceSmokeTests; requires `MPNN_INFERENCE=1`; unchanged.)
+
+## Files changed
+
+- `swiftui/PyMOLViewer/Shared/DesignController.swift`
+- `swiftui/PyMOLViewerTests/DesignEditingTests.swift` (created)
+
+## Report path
+
+`/Users/jcastellanos/repos/RayMol/.claude/worktrees/goofy-swartz-ef2bbb/.superpowers/sdd/task-2-report.md`
+
+---
+
+# Previous Task 2 Report: macOS-only MPNNKit dependency + weights + RAYMOL_MPNN gate
 
 ## Status: DONE_WITH_CONCERNS
 

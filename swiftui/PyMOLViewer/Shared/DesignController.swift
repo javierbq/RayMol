@@ -378,7 +378,7 @@ final class DesignController: ObservableObject {
     /// End the edit session and keep the working-copy object.
     /// Repack-if-dirty is wired in Task 4; here we simply close out the session state.
     func keepEdits() {
-        editing = false; editCount = 0; repackDirty = false
+        editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
     }
 

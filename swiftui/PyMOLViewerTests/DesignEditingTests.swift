@@ -56,5 +56,45 @@ final class DesignEditingTests: XCTestCase {
         XCTAssertEqual(c.editCount, 0)
         XCTAssertEqual(discarded, ["m1_design"])
     }
+
+    func testKeepEndsSessionWithoutDiscard() {
+        var discardCalls: [String] = []
+        let c = makeController()
+        c.injectEdit(
+            makeWorkingCopy: { $0 + "_design" },
+            mutateDisplay: { _, _, _ in },
+            discard: { discardCalls.append($0) },
+            compare: { _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.applyMutation(residueIndex: 0, aa: 9)    // begins session
+        XCTAssertTrue(c.editing)
+        c.keepEdits()
+        XCTAssertFalse(c.editing)
+        XCTAssertEqual(c.editCount, 0)
+        XCTAssertTrue(discardCalls.isEmpty)         // discard closure must NOT have been called
+    }
+
+    func testSameAAAndOutOfRangeAreNoOps() {
+        let c = makeController()
+        c.injectEdit(
+            makeWorkingCopy: { $0 + "_design" },
+            mutateDisplay: { _, _, _ in },
+            discard: { _ in },
+            compare: { _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5])
+        c.applyMutation(residueIndex: 1, aa: 9)    // real mutation — editCount == 1
+        XCTAssertEqual(c.editCount, 1)
+        let dirty = c.repackDirty
+
+        // Same aa at same index — must be a no-op.
+        c.applyMutation(residueIndex: 1, aa: 9)
+        XCTAssertEqual(c.editCount, 1)
+        XCTAssertEqual(c.repackDirty, dirty)
+
+        // Out-of-range indices — must be no-ops.
+        c.applyMutation(residueIndex: -1, aa: 3)
+        c.applyMutation(residueIndex: 100, aa: 3)
+        XCTAssertEqual(c.editCount, 1)
+    }
 }
 #endif
