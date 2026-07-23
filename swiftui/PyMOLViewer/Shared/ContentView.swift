@@ -481,6 +481,20 @@ struct ContentView: View {
             .onChange(of: showThemeStudio) { open in
                 if open { engine.beginThemePreview() } else { engine.endThemePreview() }
             }
+            #if RAYMOL_MPNN
+            // Single lifecycle observer for Design mode: fires on EVERY designMode
+            // transition (toolbar button, menu, Move/Measure exclusion) so the scene
+            // is always restored on exit regardless of which path caused the change.
+            .onChange(of: engine.designMode) { on in
+                if on {
+                    engine.designController.allObjects = engine.objects
+                        .filter { !$0.isSelection }.map { $0.name }
+                    engine.designController.enter()
+                } else {
+                    engine.designController.exit()
+                }
+            }
+            #endif
             .onAppear {
                 initializeEngine()
                 maybePresentFirstBootTheme()
@@ -632,8 +646,8 @@ struct ContentView: View {
             // intercept it here and route to DesignController.focus instead of the
             // context menu. Clears longPressHit so the dialog never fires.
             .onChange(of: engine.longPressHit) { hit in
-                guard engine.designMode, let hit = hit, !hit.obj.isEmpty else { return }
-                engine.designController.focus(hit.obj)
+                guard engine.designMode, let hit = hit else { return }
+                if !hit.obj.isEmpty { engine.designController.focus(hit.obj) }
                 engine.longPressHit = nil
             }
             #endif
@@ -2625,15 +2639,7 @@ struct ContentView: View {
     private var macDesignToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
-                let entering = !engine.designMode
-                engine.setDesignMode(entering)
-                if entering {
-                    engine.designController.allObjects = engine.objects
-                        .filter { !$0.isSelection }.map { $0.name }
-                    engine.designController.enter()
-                } else {
-                    engine.designController.exit()
-                }
+                engine.setDesignMode(!engine.designMode)
             } label: {
                 Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
                     .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
@@ -3082,7 +3088,6 @@ struct ContentView: View {
             designLegendBar
             Button {
                 engine.setDesignMode(false)
-                engine.designController.exit()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(themeManager.active.panelText.color.opacity(0.6))

@@ -191,15 +191,7 @@ struct PyMOLApp: App {
             // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
             CommandMenu("Design") {
                 Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
-                    let entering = !engine.designMode
-                    engine.setDesignMode(entering)
-                    if entering {
-                        engine.designController.allObjects = engine.objects
-                            .filter { !$0.isSelection }.map { $0.name }
-                        engine.designController.enter()
-                    } else {
-                        engine.designController.exit()
-                    }
+                    engine.setDesignMode(!engine.designMode)
                 }.keyboardShortcut("d", modifiers: .control)
             }
             #endif

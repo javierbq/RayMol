@@ -1985,7 +1985,7 @@ final class PyMOLEngine: ObservableObject {
         enumerate: { [weak self] obj, state in
             guard let self else { throw NSError(domain: "raymol.design", code: 2,
                                                 userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
-            self.runCommand("""
+            self.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.enumerate_design_residues('\(obj)', \(state))
                 """)
@@ -2006,27 +2006,27 @@ final class PyMOLEngine: ObservableObject {
                 let p = FileManager.default.temporaryDirectory
                     .appendingPathComponent("raymol_design_vals.json")
                 try? data.write(to: p)
-                self.runCommand("""
+                self.runPython("""
                     from pymol import raymol_design as _rd
                     _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi))
                     """)
             }
         },
         dim: { [weak self] obj in
-            self?.runCommand("""
+            self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.dim_object('\(obj)', 'gray70', 0.7)
                 """)
         },
         snapshot: { [weak self] objs in
             let joined = objs.joined(separator: ",")
-            self?.runCommand("""
+            self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.snapshot_visual_state('\(joined)')
                 """)
         },
         restore: { [weak self] in
-            self?.runCommand("""
+            self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.restore_visual_state()
                 """)
