@@ -3140,6 +3140,126 @@ struct ContentView: View {
 }
 
 #if RAYMOL_MPNN
+// Edit-session strip: Auto-repack toggle, needs-repack indicator, compare toggle,
+// Keep/Discard, and a readout. Extracted into a dedicated View struct so
+// @ObservedObject controller re-renders on every @Published change from the
+// edit session (editing, editCount, repackDirty, isRepacking, compareEnabled).
+private struct DesignEditStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        Group {
+            if controller.isRepacking {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Repacking sidechains…")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else {
+                editControls
+            }
+        }
+    }
+
+    private var editControls: some View {
+        HStack(spacing: 8) {
+            // ── Auto-repack ──────────────────────────────────────────────────
+            Toggle(isOn: $controller.autoRepack) {
+                Text("Auto-repack")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help("Automatically repack sidechains after each mutation")
+
+            stripDivider
+
+            // ── Needs-repack indicator + button ─────────────────────────────
+            Button { controller.repackNow() } label: { repackBadge }
+                .buttonStyle(.plain)
+                .help("Repack sidechains to optimize the current sequence")
+
+            stripDivider
+
+            // ── Compare toggle ───────────────────────────────────────────────
+            Toggle(isOn: Binding(
+                get: { controller.compareEnabled },
+                set: { controller.setCompare($0) }
+            )) {
+                Text("Compare")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help("Toggle between original and edited structure")
+
+            Spacer(minLength: 0)
+
+            // ── Object · edit-count readout ──────────────────────────────────
+            if let name = controller.workingObject {
+                Text("\(name) · \(controller.editCount) \(controller.editCount == 1 ? "edit" : "edits")")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.45))
+                    .lineLimit(1)
+                stripDivider
+            }
+
+            // ── Keep ─────────────────────────────────────────────────────────
+            Button {
+                Task { await controller.keepEditsAwait() }
+            } label: {
+                Text("Keep")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(theme.active.accent.color.opacity(0.15),
+                                in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundColor(theme.active.accent.color)
+            }
+            .buttonStyle(.plain)
+
+            // ── Discard ──────────────────────────────────────────────────────
+            Button { controller.discardEdits() } label: {
+                Text("Discard")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    // Needs-repack pill: accented when dirty (shows edit count), dim otherwise.
+    private var repackBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 10))
+            Text(controller.repackDirty
+                 ? "Repack (\(controller.editCount))"
+                 : "Repack")
+                .font(.system(size: 11))
+        }
+        .foregroundColor(controller.repackDirty
+                         ? theme.active.accent.color
+                         : theme.active.panelText.color.opacity(0.4))
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(controller.repackDirty
+                    ? theme.active.accent.color.opacity(0.12) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private var stripDivider: some View {
+        Rectangle()
+            .fill(theme.active.panelText.color.opacity(0.2))
+            .frame(width: 0.5, height: 14)
+    }
+}
+
 // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
 // coloring meaning segmented control, legend gradient, scoring progress, ? help.
 // Extracted into a dedicated View struct so @ObservedObject controller: DesignController
@@ -3177,6 +3297,11 @@ private struct DesignOverlayView: View {
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
             propensityRow(controller.activePropensity)
+            // ── Edit-session strip (visible only while an edit session is open) ──
+            if controller.editing {
+                Divider().opacity(0.3)
+                DesignEditStripView(controller: controller, theme: theme)
+            }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
@@ -3322,23 +3447,41 @@ private struct DesignOverlayView: View {
 
     /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
     /// residue hovered or pinned) every pill renders greyed/disabled with a
-    /// neutral ".0" value and no native highlight, so the row no longer appears
+    /// neutral ".0" value and no current highlight, so the row no longer appears
     /// and disappears — only its contents change. When `ap` is present the
     /// pills show real 2-decimal propensities, colored by relative frequency,
-    /// with the native AA pill highlighted.
+    /// with the current AA pill highlighted (edited identity in an edit session,
+    /// native AA otherwise). Tapping a pill calls applyMutation when a residue
+    /// is active; ignored silently when there is no active residue.
     private func propensityRow(
         _ ap: (propensities: [Float], nativeAA: Int, label: String)?
     ) -> some View {
         let rowMax = ap?.propensities.max() ?? 1.0
+        let activeIndex = controller.activeResidueIndex
+        // When editing, highlight the current edited identity rather than the native AA.
+        let currentAA: Int = {
+            if let idx = activeIndex, controller.editing,
+               idx < controller.editedSequence.count {
+                return controller.editedSequence[idx]
+            }
+            return ap?.nativeAA ?? -1
+        }()
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 3) {
                 ForEach(0..<20, id: \.self) { i in
                     let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
-                    aaPill(index: i,
-                           propensity: hasVal ? ap!.propensities[i] : 0,
-                           isNative: ap != nil && i == ap!.nativeAA,
-                           rowMax: rowMax,
-                           enabled: ap != nil)
+                    Button {
+                        if let idx = activeIndex {
+                            controller.applyMutation(residueIndex: idx, aa: i)
+                        }
+                    } label: {
+                        aaPill(index: i,
+                               propensity: hasVal ? ap!.propensities[i] : 0,
+                               isCurrent: ap != nil && i == currentAA,
+                               rowMax: rowMax,
+                               enabled: ap != nil)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 12)
@@ -3347,29 +3490,30 @@ private struct DesignOverlayView: View {
     }
 
     /// Single amino-acid pill: letter + 2-decimal propensity, colored by
-    /// relative frequency (faint → warm), highlighted if native AA. When
-    /// `enabled` is false (idle / no active residue) it renders flat grey with
-    /// a ".0" placeholder and no native highlight.
+    /// relative frequency (faint → warm), highlighted if the current AA
+    /// (edited identity in an edit session, native otherwise). When `enabled`
+    /// is false (idle / no active residue) it renders flat grey with a ".0"
+    /// placeholder and no current highlight.
     private func aaPill(index: Int,
                          propensity: Float,
-                         isNative: Bool,
+                         isCurrent: Bool,
                          rowMax: Float,
                          enabled: Bool) -> some View {
         let letter = index < DesignColor.mpnnAlphabet.count
             ? DesignColor.mpnnAlphabet[index] : "?"
         let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
-        let showNative = enabled && isNative
+        let showCurrent = enabled && isCurrent
         // Disabled (idle): flat faint grey, muted text.
-        // Native pill: solid accent background + white text.
+        // Current pill: solid accent background + white text.
         // Others: faint→warm orange tint, scaled to intensity within the row.
         let pillBG: Color = !enabled
             ? theme.active.panelText.color.opacity(0.04)
-            : (showNative
+            : (showCurrent
                 ? theme.active.accent.color
                 : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
         let pillFG: Color = !enabled
             ? theme.active.panelText.color.opacity(0.28)
-            : (showNative
+            : (showCurrent
                 ? .white
                 : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
         let valueText: String = {
@@ -3380,7 +3524,7 @@ private struct DesignOverlayView: View {
         return VStack(spacing: 1) {
             Text(letter)
                 .font(.system(size: 11,
-                              weight: showNative ? .bold : .regular,
+                              weight: showCurrent ? .bold : .regular,
                               design: .monospaced))
             Text(valueText)
                 .font(.system(size: 9, design: .monospaced))
@@ -3389,7 +3533,7 @@ private struct DesignOverlayView: View {
         .frame(width: 30, height: 36)
         .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
         .overlay(
-            showNative
+            showCurrent
                 ? RoundedRectangle(cornerRadius: 5)
                     .stroke(theme.active.accent.color, lineWidth: 1.5)
                 : nil

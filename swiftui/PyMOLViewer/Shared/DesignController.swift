@@ -85,6 +85,8 @@ final class DesignController: ObservableObject {
     @Published private(set) var repackDirty = false
     @Published var autoRepack = false
     @Published private(set) var isRepacking = false
+    /// True while the compare toggle is on (original structure shown alongside the working copy).
+    @Published private(set) var compareEnabled = false
     private(set) var workingObject: String?
     private(set) var editedSequence: [Int] = []
 
@@ -153,6 +155,7 @@ final class DesignController: ObservableObject {
         // transparency, not representation visibility, so it won't undo shown sticks.
         teardownSticks(on: focusObject)
         restore()
+        compareEnabled = false
         focusObject = nil
         isScoring = false
         errorText = nil
@@ -446,6 +449,14 @@ final class DesignController: ObservableObject {
     /// Sync fire-and-forget repack; called by UI buttons (Task 6). Wraps `repackNowAwait` in a Task.
     func repackNow() { Task { await repackNowAwait() } }
 
+    /// Enable or disable the compare view (shows the original structure alongside
+    /// the edited working copy). Updates `compareEnabled` and calls the injected
+    /// `compare` closure so the PyMOL display follows.
+    func setCompare(_ on: Bool) {
+        compareEnabled = on
+        compare(on)
+    }
+
     /// Score the working object off-main using the current `editedSequence`, then
     /// recolor it. Reuses the Phase-2a scoring block shape (serial queue +
     /// withCheckedThrowingContinuation + job-token guard). Task 4 adds repack.
@@ -487,6 +498,7 @@ final class DesignController: ObservableObject {
         rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
+        setCompare(false)
     }
 
     /// End the edit session and keep the working-copy object (sync, no repack).
@@ -496,6 +508,7 @@ final class DesignController: ObservableObject {
         rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
+        setCompare(false)
     }
 
     /// Async variant of `keepEdits`: repacks first if `repackDirty`, then closes the session.
@@ -505,6 +518,7 @@ final class DesignController: ObservableObject {
         rescoreToken += 1; repackToken += 1
         editing = false; editCount = 0; repackDirty = false; isRepacking = false
         workingObject = nil; editedSequence = []
+        setCompare(false)
     }
 
     // MARK: – Test hooks
