@@ -134,6 +134,9 @@ final class PyMOLEngine: ObservableObject {
     // MetalViewport; gizmo holds the projected handle geometry the overlay draws
     // and the handlers hit-test; armedAxis is the iOS tap-to-arm state.
     @Published var interactionMode: InteractionMode = .viewing
+    // Design mode: protein-design overlay (MPNN score/design). Mutually exclusive
+    // with Move and Measure modes — entering any one clears the others.
+    @Published var designMode: Bool = false
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
@@ -1930,6 +1933,7 @@ final class PyMOLEngine: ObservableObject {
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
+            designMode = false                                              // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -1945,6 +1949,20 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_measure as _am\n_am.clear_all()")
     }
 
+    // MARK: - Design mode (protein-design overlay)
+
+    /// Enter or exit Design mode. Entering clears Move and Measure (mutually
+    /// exclusive). The actual MPNN controller startup/teardown is handled by
+    /// the UI layer that observes this flag; this setter is deliberately
+    /// Python-free so it is safe to call from unit tests and in any state.
+    func setDesignMode(_ on: Bool) {
+        if on {
+            if interactionMode == .move { interactionMode = .viewing }
+            if measureMode != nil { measureMode = nil }
+        }
+        designMode = on
+    }
+
     // MARK: - Move mode (rigid-body object gizmo)
 
     /// Viewport aspect (width / height) for the gizmo projection. Falls back to
@@ -1958,6 +1976,7 @@ final class PyMOLEngine: ObservableObject {
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
+            designMode = false                               // mutually exclusive
             refreshGizmo()
         } else {
             armedAxis = nil
