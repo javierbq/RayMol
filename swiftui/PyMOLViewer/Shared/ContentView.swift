@@ -3229,6 +3229,13 @@ private struct DesignSequenceStripView: View {
                     .strokeBorder(designPinnedColor, lineWidth: 1.0)
                 : nil
         )
+        .overlay(alignment: .bottom) {
+            if controller.selectedResidueIndices.contains(i) {
+                Rectangle()
+                    .fill(theme.active.accent.color)
+                    .frame(height: 2)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { hovering in
             if hovering {
@@ -3617,7 +3624,10 @@ private struct DesignOverlayView: View {
     /// is active; ignored silently when there is no active residue.
     private func propensityRow(
         _ ap: (propensities: [Float], nativeAA: Int, label: String)?
-    ) -> some View {
+    ) -> AnyView {
+        if controller.regionModeActive {
+            return AnyView(paletteRow())
+        }
         let rowMax = ap?.propensities.max() ?? 1.0
         let activeIndex = controller.activeResidueIndex
         // When editing, highlight the current edited identity rather than the native AA.
@@ -3628,7 +3638,7 @@ private struct DesignOverlayView: View {
             }
             return ap?.nativeAA ?? -1
         }()
-        return ScrollView(.horizontal, showsIndicators: false) {
+        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 3) {
                 ForEach(0..<20, id: \.self) { i in
                     let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
@@ -3648,7 +3658,7 @@ private struct DesignOverlayView: View {
             }
             .padding(.horizontal, 12)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 5))
     }
 
     /// Single amino-acid pill: letter + 2-decimal propensity, colored by
@@ -3700,6 +3710,40 @@ private struct DesignOverlayView: View {
                     .stroke(theme.active.accent.color, lineWidth: 1.5)
                 : nil
         )
+    }
+
+    // MARK: – Region palette row (numbers hidden; pills are active/inactive toggles)
+
+    private func paletteRow() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    Button { controller.togglePalette(i) } label: {
+                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
+                    }
+                    .buttonStyle(.plain)
+                    .help(controller.paletteAllowed.contains(i)
+                          ? "Allowed during redesign — click to exclude"
+                          : "Excluded from redesign — click to allow")
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func palettePill(index i: Int, active: Bool) -> some View {
+        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
+        return Text(letter)
+            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
+            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
+            .frame(width: 30, height: 36)
+            .background(active
+                        ? theme.active.accent.color.opacity(0.85)
+                        : theme.active.panelText.color.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
     }
 }
 #endif
