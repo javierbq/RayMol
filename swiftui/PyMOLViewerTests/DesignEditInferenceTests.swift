@@ -107,5 +107,46 @@ final class DesignEditInferenceTests: XCTestCase {
         print("[DesignEditInferenceTests] logProbs[3][0..4]: \(sr.logProbs[3].prefix(5).map { String(format: "%.4f", $0) })")
         print("[DesignEditInferenceTests] logProbs[3][9] (LEU prob): \(String(format: "%.4f", sr.logProbs[3][9]))")
     }
+
+    func testDesignRegionFixesRestAndHonorsOmit() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MPNN_INFERENCE"] == "1",
+            "Real-inference; set MPNN_INFERENCE=1 to enable.")
+        let packURL = try XCTUnwrap(MPNNGate.packURL)
+        let model = try MPNNModel(packDirectory: packURL)
+
+        let residues = Self.makeResidues()
+        let native = Self.nativeSequence
+        let L = residues.count
+
+        // Redesign only positions 1 and 2; hold the rest fixed to native.
+        let free: Set<Int> = [1, 2]
+        let fixed = Set(0..<L).subtracting(free)
+        // Omit CYS (index 4) everywhere.
+        let omit = Array(repeating: Set([4]), count: L)
+
+        var opts = MPNNModel.DesignOptions()
+        opts.temperature = 0; opts.seed = 0
+        opts.fixedPositions = fixed
+        opts.nativeSequence = native
+        opts.omit = omit
+        let r1 = try model.design(residues, options: opts)
+        XCTAssertEqual(r1.indices.count, L)
+
+        // Fixed positions keep their native identity.
+        for i in fixed {
+            XCTAssertEqual(r1.indices[i], native[i],
+                           "fixed position \(i) must remain native")
+        }
+        // Omitted AA never appears at a designed position.
+        for i in free {
+            XCTAssertNotEqual(r1.indices[i], 4, "CYS omitted but appeared at \(i)")
+        }
+        // Determinism: same inputs → identical result.
+        let r2 = try model.design(residues, options: opts)
+        XCTAssertEqual(r1.indices, r2.indices, "greedy + fixed seed must be reproducible")
+
+        print("[DesignRegion] free \(Array(free).sorted()) → \(free.map { r1.indices[$0] })")
+    }
 }
 #endif
