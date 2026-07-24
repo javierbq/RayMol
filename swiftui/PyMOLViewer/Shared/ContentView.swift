@@ -152,6 +152,11 @@ struct ContentView: View {
     @State private var showObjectPanel = true
     @State private var showCommandPanel = true
 
+    // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
+    // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
+    // imported. Declining writes a skip marker so we don't ask again.
+    @State private var showRaymolrcMigrationPrompt = false
+
     // Export menu state. exportRayTraced persists across launches; when on, all
     // image exports are ray-traced (AO + shadows) regardless of the live view.
     @AppStorage("exportRayTraced") private var exportRayTraced = true
@@ -417,6 +422,12 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Download a structure from the RCSB PDB.")
+        }
+        .alert("Import your PyMOL startup script?", isPresented: $showRaymolrcMigrationPrompt) {
+            Button("Import") { confirmRaymolrcMigration() }
+            Button("Not Now", role: .cancel) { declineRaymolrcMigration() }
+        } message: {
+            raymolrcMigrationAlertText
         }
         .toolbar {
             // Leading — Open only.
@@ -1143,6 +1154,12 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Download a structure from the RCSB PDB.")
+            }
+            .alert("Import your PyMOL startup script?", isPresented: $showRaymolrcMigrationPrompt) {
+                Button("Import") { confirmRaymolrcMigration() }
+                Button("Not Now", role: .cancel) { declineRaymolrcMigration() }
+            } message: {
+                raymolrcMigrationAlertText
             }
             .alert("Clear session?", isPresented: $showClearSessionConfirm) {
                 Button("Clear", role: .destructive) { engine.clearSessionAndAutosave() }
@@ -3136,6 +3153,46 @@ struct ContentView: View {
         // the user didn't ask for. Users can still enable it live (Display ▸
         // Effects); this only governs the default at launch.
         engine.runCommand("set metal_outline, 0")
+        // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
+        // user's startup script can override them (e.g. a custom bg_color) —
+        // matching vanilla PyMOL, where .pymolrc runs after all built-in
+        // defaults are set.
+        loadRaymolrcOrOfferMigration()
+    }
+
+    // This native app never goes through pymol.invocation's CLI argument
+    // parsing, so a pre-existing ~/.pymolrc(.py) is otherwise silently
+    // ignored (RayMol#225). The first time no ~/.raymolrc(.py) exists yet
+    // and a ~/.pymolrc(.py) is found, ask before importing it rather than
+    // copying it silently — the user may not want an old config carried
+    // over, or may not recognize ~/.raymolrc if we create it behind their
+    // back. Skips the prompt (and loads immediately) once either file
+    // exists or the user has already answered once (~/.raymolrc.skip).
+    private func loadRaymolrcOrOfferMigration() {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let hasRaymolrc = fm.fileExists(atPath: home + "/.raymolrc.py")
+            || fm.fileExists(atPath: home + "/.raymolrc")
+        let alreadyAsked = fm.fileExists(atPath: home + "/.raymolrc.skip")
+        let hasPymolrc = fm.fileExists(atPath: home + "/.pymolrc.py")
+            || fm.fileExists(atPath: home + "/.pymolrc")
+        if !hasRaymolrc && !alreadyAsked && hasPymolrc {
+            showRaymolrcMigrationPrompt = true
+            return
+        }
+        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.load()")
+    }
+
+    private func confirmRaymolrcMigration() {
+        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.migrate(); _raymolrc.load()")
+    }
+
+    private func declineRaymolrcMigration() {
+        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.decline_migration()")
+    }
+
+    private var raymolrcMigrationAlertText: Text {
+        Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
 }
 
