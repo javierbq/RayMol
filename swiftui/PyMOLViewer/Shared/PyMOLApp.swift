@@ -19,6 +19,23 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
 }
 #endif
 
+#if os(macOS)
+// macOS delivers files to open through NSApplicationDelegate.application(_:open:)
+// as the COMPLETE [URL] array — Terminal `open a.pdb b.pdb c.pdb`, Finder "Open
+// With" multi-select, and drag-drop onto the Dock icon all arrive this way.
+// SwiftUI's .onOpenURL surfaces only the FIRST of those URLs and silently drops
+// the rest, so a multi-file open loaded just one file (issue #222). Implementing
+// the delegate method and looping over the whole array is the reliable way to
+// receive every file; macOS therefore routes OS opens here instead of .onOpenURL.
+final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // Called on the main thread; hop to the main actor to reach loadOpenedFile
+        // (@MainActor), mirroring ContentView's drag-drop handler.
+        Task { @MainActor in handleOpenedURLs(urls, into: PyMOLEngine.shared) }
+    }
+}
+#endif
+
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
@@ -28,6 +45,10 @@ struct PyMOLApp: App {
     #if os(iOS)
     @UIApplicationDelegateAdaptor(OrientationLockDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
+    #endif
+    #if os(macOS)
+    // Receives OS file-open events (application(_:open:)); see RayMolAppDelegate.
+    @NSApplicationDelegateAdaptor(RayMolAppDelegate.self) private var appDelegate
     #endif
 
     init() {
@@ -85,22 +106,26 @@ struct PyMOLApp: App {
                 // Accessibility. PYMOL_AUTOLANDSCAPE=left|right; absent = as-is.
                 .onAppear { Self.forceOrientationIfRequested() }
             #endif
-                // Open a file handed to RayMol by the OS (Finder double-click /
-                // "Open With", iOS Files / Share-sheet "Open in RayMol"). The
-                // registered document types (see project.yml) route these here.
-                // PyMOL infers the format from the extension; the object name is
-                // the sanitized filename stem. Engine init runs in ContentView's
-                // .onAppear, so on a cold launch the URL may arrive before the
-                // engine is ready — loadOpenedFile retries briefly until it is.
+                // Open a file handed to RayMol by the OS. iOS delivers a single URL
+                // per open (Files / Share-sheet "Open in RayMol") through
+                // .onOpenURL. macOS instead routes ALL opens (Finder double-click /
+                // "Open With" multi-select / Terminal `open a.pdb b.pdb` / Dock-icon
+                // drop) through RayMolAppDelegate.application(_:open:), because
+                // .onOpenURL surfaces only the FIRST url of a multi-file open and
+                // drops the rest (issue #222). The registered document types (see
+                // project.yml) route these here. PyMOL infers the format from the
+                // extension; the object name is the sanitized filename stem. Engine
+                // init runs in ContentView's .onAppear, so on a cold launch the URL
+                // may arrive before the engine is ready — loadOpenedFile retries.
+                #if os(iOS)
                 .onOpenURL { url in
-                    #if os(iOS)
                     // A launch-to-open-a-file takes precedence over the autosaved
                     // scene: flag it before the (possibly retried) load so the
                     // cold-launch restore doesn't merge the old session underneath.
                     engine.launchOpenRequested = true
-                    #endif
                     loadOpenedFile(url, into: engine)
                 }
+                #endif
             #if os(iOS)
                 // iOS purges backgrounded apps to reclaim memory; persist the
                 // session on the way out so the next cold launch can resume it.
@@ -313,4 +338,15 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
     if name.isEmpty { name = "mol" }
     engine.loadStructure(path: path, name: name)
+}
+
+// Load EVERY URL the OS handed us in one open (multi-file Terminal `open`, Finder
+// "Open With" multi-select, Dock-icon drop). Factored out of RayMolAppDelegate so
+// the "load them all, not just the first" contract (issue #222) is unit-testable
+// without booting the engine: tests pass a spy for `load` (which defaults to
+// loadOpenedFile) and assert every URL is forwarded, in order.
+@MainActor
+func handleOpenedURLs(_ urls: [URL], into engine: PyMOLEngine,
+                      load: @MainActor (URL, PyMOLEngine) -> Void = { loadOpenedFile($0, into: $1) }) {
+    for url in urls { load(url, engine) }
 }
