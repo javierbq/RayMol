@@ -148,3 +148,14 @@ Multiple candidate designs / temperature sampling / N-variants; per-position log
 ## 14. Future slices (unchanged)
 
 2d — iOS/iPad (drop the macOS SPM platform filter, iOS 17, L-cap / chunking for the ~2.4 GB peak). 2e — MAS build. "Predict" (structure prediction) remains a separate, deferred issue.
+
+## 15. Round-2 refinements (post-review, 2026-07-24)
+
+Hands-on testing produced six UI/behavior refinements (same PR):
+
+1. **Focus-object indicator is a dropdown.** The `⚛ <obj>` label is a menu of the loaded objects (current one checked); you can pick the focus object there *or* by clicking a structure in the viewport.
+2. **`Redesign selection` is a call-to-action button** — solid accent fill + wand icon (was a faint info-chip that didn't read as clickable).
+3. **Score / repack / redesign block the UI** via the shared `CalculatingOverlay` ("Scoring…" / "Repacking sidechains…" / "Redesigning region…"), so no conflicting action can be issued mid-inference (belt-and-suspenders over the job tokens). Driven by `DesignController.designBusyLabel`.
+4. **Region is also buildable by shift-clicking positions.** Shift-click a sequence-strip residue toggles it in an ad-hoc "custom" region (`toggleRegionResidue`), alongside picking a named selection from the dropdown. A plain click still pins for single-residue inspection.
+5. **Region dropdown fixes.** Internal `_`-prefixed selections are hidden; the list is scoped to selections touching the **target structure** — the focus object *and* its edit source (`src`), so a selection made on the original still resolves once its working copy is focused (matched by (chain, resi), not object membership). `list_design_selections`/`selected_design_indices` gained a `src` argument.
+6. **Temperature slider + non-deterministic design.** A temperature slider (0–1, default 0.2) feeds `DesignOptions.temperature`, and the engine now passes `seed = nil`, so each **Redesign** samples fresh and can vary. **This reverses §1 success-criterion 2 (deterministic greedy + fixed seed)** — determinism is no longer a goal; diversity is. The on-host inference test still uses a fixed seed to assert the fixed-rest/omit contract deterministically at the model level.

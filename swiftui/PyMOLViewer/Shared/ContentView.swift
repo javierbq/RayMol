@@ -224,7 +224,20 @@ struct ContentView: View {
     @ViewBuilder private var busyOverlay: some View {
         if engine.isBusy {
             CalculatingOverlay(label: engine.busyLabel)
+        } else if let designLabel = designBusyLabel {
+            // Design inference (score / repack / redesign) blocks input just like a
+            // long PyMOL op, so no conflicting action can be issued mid-inference.
+            CalculatingOverlay(label: designLabel)
         }
+    }
+
+    // Label for the blocking overlay while a Design-mode inference runs (nil = idle).
+    private var designBusyLabel: String? {
+        #if RAYMOL_MPNN
+        return engine.designMode ? engine.designController.designBusyLabel : nil
+        #else
+        return nil
+        #endif
     }
 
     // Shared empty-state CTA visuals (atom icon + title + Open/Fetch buttons),
@@ -3244,6 +3257,14 @@ private struct DesignSequenceStripView: View {
                 controller.clearHover()
             }
         }
+        // Shift-click builds an ad-hoc region (add/remove this position); a plain
+        // click still pins for single-residue inspection. The shift gesture takes
+        // priority so it only fires when the modifier is held.
+        .highPriorityGesture(
+            TapGesture().modifiers(.shift).onEnded {
+                controller.toggleRegionResidue(residueIndex: i)
+            }
+        )
         .onTapGesture {
             controller.setPinned(chain: residue.chain, resi: residue.resi)
         }
@@ -3291,17 +3312,9 @@ private struct DesignRegionStripView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
                 stripDivider
-                Button { controller.redesignSelection() } label: {
-                    Text("Redesign selection · \(controller.selectedResidueIndices.count) res")
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(theme.active.accent.color.opacity(0.15),
-                                    in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundColor(theme.active.accent.color)
-                }
-                .buttonStyle(.plain)
-                .disabled(controller.paletteAllowed.filter { $0 < 20 }.isEmpty)
-                .help("Redesign the selected residues; the rest of the sequence is held fixed")
+                temperatureControl
+                stripDivider
+                redesignButton
             }
             if controller.redesignSnapshot != nil {
                 stripDivider
@@ -3376,6 +3389,42 @@ private struct DesignRegionStripView: View {
             }
         }
         .padding(6).frame(maxWidth: 260)
+    }
+
+    // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.
+    private var redesignButton: some View {
+        let disabled = controller.paletteAllowed.filter { $0 < 20 }.isEmpty
+        return Button { controller.redesignSelection() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "wand.and.stars").font(.system(size: 10, weight: .semibold))
+                Text("Redesign selection · \(controller.selectedResidueIndices.count) res")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(disabled ? theme.active.panelText.color.opacity(0.25)
+                                 : theme.active.accent.color,
+                        in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help("Redesign the selected residues; the rest of the sequence is held fixed")
+    }
+
+    // Sampling-temperature slider: 0 = greedy (most likely), higher = more diverse.
+    private var temperatureControl: some View {
+        HStack(spacing: 5) {
+            Text("temp").font(.system(size: 10, design: .monospaced))
+                .foregroundColor(theme.active.panelText.color.opacity(0.5))
+            Slider(value: $controller.designTemperature, in: 0...1)
+                .frame(width: 72)
+                .controlSize(.mini)
+            Text(String(format: "%.2f", controller.designTemperature))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(theme.active.panelText.color.opacity(0.65))
+                .frame(width: 26, alignment: .leading)
+        }
+        .help("Sampling temperature: 0 = most likely (greedy), higher = more variation each run")
     }
 
     private var stripDivider: some View {
@@ -3633,23 +3682,40 @@ private struct DesignOverlayView: View {
         }
     }
 
+    // Focus-object indicator is a dropdown: click a structure in the viewport OR
+    // pick one here. Lists the objects the controller can focus; current is checked.
     private var focusLabel: some View {
-        Group {
-            if let obj = controller.focusObject {
-                HStack(spacing: 4) {
-                    Image(systemName: "atom")
-                        .foregroundColor(theme.active.accent.color)
-                    Text(obj)
-                        .lineLimit(1)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(theme.active.panelText.color)
+        Menu {
+            ForEach(controller.allObjects, id: \.self) { obj in
+                Button {
+                    controller.focus(obj)
+                } label: {
+                    if obj == controller.focusObject {
+                        Label(obj, systemImage: "checkmark")
+                    } else {
+                        Text(obj)
+                    }
                 }
-            } else {
-                Text("Click an object to design")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "atom")
+                    .foregroundColor(theme.active.accent.color)
+                Text(controller.focusObject ?? "Select object to design")
+                    .lineLimit(1)
+                    .font(.system(size: 12, weight: controller.focusObject != nil ? .semibold : .regular))
+                    .foregroundColor(controller.focusObject != nil
+                        ? theme.active.panelText.color
+                        : theme.active.panelText.color.opacity(0.6))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
             }
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(controller.allObjects.isEmpty)
     }
 
     // Two-button toggle visually equivalent to a segmented control but with per-mode

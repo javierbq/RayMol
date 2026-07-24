@@ -73,14 +73,16 @@ final class DesignController: ObservableObject {
     typealias SticksFn = (_ obj: String, _ chain: String, _ resi: String, _ on: Bool) -> Bool
 
     /// Run MPNN region design off-main. Returns designed alphabet indices, length = residues.count.
+    /// `temperature` > 0 samples (non-deterministic); the engine uses a nil seed so runs vary.
     typealias DesignRegionFn = (_ residues: [MPNNModel.Residue],
                                 _ fixedPositions: Set<Int>,
                                 _ nativeSequence: [Int],
-                                _ omit: [Set<Int>]) throws -> [Int]
-    /// List named selections intersecting `obj`'s designable residues.
-    typealias ListSelectionsFn = (_ obj: String, _ state: Int) -> [DesignSelectionOption]
-    /// Map a named selection on `obj` → full-length residue indices (guide order).
-    typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ state: Int) -> [Int]
+                                _ omit: [Set<Int>],
+                                _ temperature: Float) throws -> [Int]
+    /// List selections touching the target (`obj`, plus its source `src` when a working copy is focused).
+    typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
+    /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
+    typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
 
     // MARK: – Injected dependencies
 
@@ -106,9 +108,9 @@ final class DesignController: ObservableObject {
     private var loadRepacked: LoadRepackedFn = { _, _ in }
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
     private var pinnedIndicatorFn: PinnedIndicatorFn = { _, _, _ in }
-    private var designRegionFn: DesignRegionFn = { r, _, _, _ in Array(repeating: 0, count: r.count) }
-    private var listSelectionsFn: ListSelectionsFn = { _, _ in [] }
-    private var selectedIndicesFn: SelectedIndicesFn = { _, _, _ in [] }
+    private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
+    private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
+    private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -146,8 +148,20 @@ final class DesignController: ObservableObject {
     @Published private(set) var redesignSnapshot: RedesignSnapshot?
     /// True while a region design() call is running off-main.
     @Published private(set) var isRedesigning = false
+    /// Sampling temperature for region design (0 = greedy, higher = more diverse). The
+    /// engine pairs this with a nil seed so each Redesign is non-deterministic.
+    @Published var designTemperature: Float = 0.2
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
+
+    /// Label for the blocking "Calculating…" overlay while a design inference runs
+    /// (nil = not busy). Redesign takes precedence, then repack, then scoring.
+    var designBusyLabel: String? {
+        if isRedesigning { return "Redesigning region…" }
+        if isRepacking { return "Repacking sidechains…" }
+        if isScoring { return "Scoring…" }
+        return nil
+    }
 
     struct RedesignSnapshot { let seq: [Int]; let editCount: Int }
 
@@ -196,9 +210,9 @@ final class DesignController: ObservableObject {
                      loadRepacked: @escaping LoadRepackedFn = { _, _ in },
                      showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in },
                      pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in },
-                     designRegion: @escaping DesignRegionFn = { r, _, _, _ in Array(repeating: 0, count: r.count) },
-                     listSelections: @escaping ListSelectionsFn = { _, _ in [] },
-                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _ in [] }) {
+                     designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
+                     listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
+                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -550,19 +564,35 @@ final class DesignController: ObservableObject {
     // MARK: – Region redesign: designation + palette (Task 2)
 
     /// Refresh the dropdown from the current session selections (call on menu open).
+    /// Scoped to the focus object AND its edit source, so selections made on the
+    /// original still appear once a working copy is focused.
     func refreshSelections() {
         guard let obj = focusObject, let set = lastSet[obj] else { availableSelections = []; return }
-        availableSelections = listSelectionsFn(obj, set.state)
+        availableSelections = listSelectionsFn(obj, editSourceObject, set.state)
     }
 
     /// Designate `name` as the region: snapshot its designable residues (valid only)
     /// as `selectedResidueIndices`, in full-length space. Enters region mode.
     func pickSelection(_ name: String) {
         guard let obj = focusObject, let set = lastSet[obj] else { return }
-        let full = selectedIndicesFn(obj, name, set.state)
+        let full = selectedIndicesFn(obj, name, editSourceObject, set.state)
         let valid = full.filter { $0 >= 0 && $0 < set.residues.count && set.residues[$0].valid }
         selectedResidueIndices = valid
         selectedSelectionName = valid.isEmpty ? nil : name
+    }
+
+    /// Add or remove one residue (full-length index) from an ad-hoc region built by
+    /// shift-clicking positions. Only designable (valid) residues can be included.
+    /// Detaches from any named selection (the region is now user-built).
+    func toggleRegionResidue(residueIndex i: Int) {
+        guard let obj = focusObject, let set = lastSet[obj],
+              i >= 0, i < set.residues.count, set.residues[i].valid else { return }
+        if let pos = selectedResidueIndices.firstIndex(of: i) {
+            selectedResidueIndices.remove(at: pos)
+        } else {
+            selectedResidueIndices = (selectedResidueIndices + [i]).sorted()
+        }
+        selectedSelectionName = selectedResidueIndices.isEmpty ? nil : "custom"
     }
 
     /// Clear the region → return to single-residue (Phase-2b) mode.
@@ -620,6 +650,7 @@ final class DesignController: ObservableObject {
         let inactive = Set((0..<20).filter { !paletteAllowed.contains($0) })
         let omit = Array(repeating: inactive, count: L)
         let designFn = designRegionFn
+        let temp = designTemperature
 
         isRedesigning = true
         designToken += 1
@@ -627,12 +658,14 @@ final class DesignController: ObservableObject {
 
         let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
-                do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit)) }
+                do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit, temp)) }
                 catch { cont.resume(throwing: error) }
             }
         }
 
-        guard token == designToken else { isRedesigning = false; return }
+        // A superseded redesign must NOT clear isRedesigning — the winning call owns
+        // the busy flag (and the blocking overlay) until it finishes.
+        guard token == designToken else { return }
         isRedesigning = false
 
         guard let result, result.count == L else {
@@ -943,8 +976,8 @@ final class DesignController: ObservableObject {
 
     /// Override the region closures for testing (Task 2/3).
     func injectRegion(designRegion: @escaping DesignRegionFn,
-                      listSelections: @escaping ListSelectionsFn = { _, _ in [] },
-                      selectedIndices: @escaping SelectedIndicesFn = { _, _, _ in [] }) {
+                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
+                      selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices

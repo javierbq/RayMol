@@ -40,3 +40,34 @@ class TestDesignRegion(testing.PyMOLTestCase):
         names = {d['name']: d['n'] for d in data['selections']}
         self.assertEqual(names.get('reg'), 3)
         self.assertNotIn('empty', names)         # zero-intersection selection filtered out
+
+    def testExcludesInternalSelections(self):
+        obj = self._peptide()
+        cmd.select('reg', '%s and resi 2+3' % obj)
+        cmd.select('_preselect', '%s and resi 1' % obj)   # PyMOL-internal style name
+        from pymol import raymol_design as rd
+        rd.list_design_selections(obj, 1)
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_selections.json')) as f:
+            data = json.load(f)
+        names = {d['name'] for d in data['selections']}
+        self.assertIn('reg', names)
+        self.assertNotIn('_preselect', names)    # internal '_' selections hidden
+
+    def testSourceScopingResolvesOriginalSelection(self):
+        # A selection made on the original resolves onto the focused working copy
+        # (identical residues) when src is supplied — object-membership vs identity.
+        obj = self._peptide()
+        cmd.create('%s_design' % obj, obj, zoom=0)   # working copy
+        cmd.select('loop', '%s and resi 2+4' % obj)  # selection on the ORIGINAL
+        from pymol import raymol_design as rd
+        # Focus = working copy; without src the original selection doesn't intersect.
+        rd.selected_design_indices('%s_design' % obj, 'loop', 1)
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_selected.json')) as f:
+            self.assertEqual(json.load(f)['indices'], [])
+        # With src = original, it maps by (chain, resi) to the copy's guide order.
+        rd.selected_design_indices('%s_design' % obj, 'loop', 1, src=obj)
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_selected.json')) as f:
+            self.assertEqual(json.load(f)['indices'], [1, 3])
