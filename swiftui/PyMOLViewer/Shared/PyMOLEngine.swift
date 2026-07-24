@@ -2051,6 +2051,97 @@ final class PyMOLEngine: ObservableObject {
         },
         currentState: { [weak self] object in
             self?.objectMeta[object]?.state ?? 1
+        },
+        makeWorkingCopy: { [weak self] src in
+            // I2: Python chooses the unique dst name via cmd.get_unused_name and writes
+            // it to a temp JSON file; we read it back so we track the actual name.
+            guard let self else { return src + "_design" }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.make_working_copy('\(src)')
+                """)
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_working.json")
+            if let data = FileManager.default.contents(atPath: path.path),
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let dst = root["dst"] as? String, !dst.isEmpty {
+                return dst
+            }
+            return src + "_design"   // safe fallback
+        },
+        mutateDisplay: { [weak self] obj, chain, resi, aa in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.mutate_residue_display('\(obj)', '\(chain)', '\(resi)', \(aa))
+                """)
+        },
+        discard: { [weak self] src, dst in
+            // I2: src is now passed explicitly (stored as editSourceObject) instead of
+            // being derived by stripping "_design", which breaks for uniquely-named copies.
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.discard_working_copy('\(src)', '\(dst)')
+                """)
+        },
+        enableOriginal: { [weak self] src in
+            // Keep path: working copy is preserved; re-enable the original so it is visible.
+            self?.runPython("from pymol import cmd as _c; _c.enable('\(src)')")
+        },
+        compare: { [weak self] on, sideBySide in
+            guard let self else { return }
+            // editSourceObject is the original (parent); focusObject after beginEditIfNeeded
+            // is the working copy — we need the parent for set_compare's color-save/restore.
+            // compare is always invoked on the @MainActor (from the @MainActor controller),
+            // so MainActor.assumeIsolated is safe here.
+            let src = MainActor.assumeIsolated { self.designController.editSourceObject } ?? ""
+            guard !src.isEmpty else { return }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_compare('\(src)', \(on ? 1 : 0), side_by_side=\(sideBySide ? 1 : 0))
+                """)
+        },
+        resetCompare: { [weak self] src in
+            guard let self, !src.isEmpty else { return }
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.reset_compare('\(src)')
+                """)
+        },
+        repack: { [weak self] residues, seq in
+            guard let self else {
+                throw NSError(domain: "raymol.design", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"])
+            }
+            let model = try self.loadedMPNNModel()
+            return try model.repack(residues, sequence: seq).pdb
+        },
+        loadRepacked: { [weak self] obj, pdb in
+            // Write PDB to a temp file; Python reads it back to avoid multi-line
+            // escaping in the runPython string (same marshalling as applyColoring).
+            let path = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("raymol_repack.pdb")
+            try? pdb.write(toFile: path, atomically: true, encoding: .utf8)
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                with open('\(path)') as _f:
+                    _rd.load_repacked('\(obj)', _f.read())
+                """)
+        },
+        showAllSidechains: { [weak self] obj, on in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.show_all_sidechains('\(obj)', \(on ? 1 : 0))
+                """)
+        },
+        pinnedIndicator: { [weak self] obj, chain, resi in
+            // Commit the pinned residue to 'sele' (pink committed-selection pass) or clear it.
+            // Uses the same idiom as pick_at: cmd.select('sele', ..., enable=1) for the committed
+            // pink pass, or 'none'/enable=0 to clear. Runs on the @MainActor (called from
+            // setPinned / exit / focus-change), so runPython is safe on the main thread.
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_pinned_indicator('\(obj)', '\(chain)', '\(resi)')
+                """)
         }
     )
 #endif

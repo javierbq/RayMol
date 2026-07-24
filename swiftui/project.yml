@@ -16,7 +16,7 @@ packages:
   # platformFilter in the dependency + RAYMOL_MPNN compile-condition guard).
   proteinmpnn-mlx:
     url: https://github.com/javierbq/proteinmpnn-mlx.git
-    from: 0.1.1
+    from: 0.1.2
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh

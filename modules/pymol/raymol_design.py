@@ -13,6 +13,10 @@ _ONE = {'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLN': 'Q', 
         'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'}
 _ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
 _AA_INDEX = {c: i for i, c in enumerate(_ALPHABET)}
+# MPNN alphabet index -> 3-letter resname (index 20 / 'X' -> 'UNK').
+_ONE_LETTER_TO_THREE = {v: k for k, v in _ONE.items()}
+_ONE_LETTER_TO_THREE['X'] = 'UNK'
+_INDEX_TO_THREE = {i: _ONE_LETTER_TO_THREE.get(c, 'UNK') for i, c in enumerate(_ALPHABET)}
 
 
 def _tmp(name):
@@ -246,6 +250,12 @@ def restore_visual_state():
 # stick-repped themselves are detected and left completely untouched.
 _STICK_COLORS = {}
 
+# Module-level store for the full visual state (per-atom colors + transparency
+# settings) saved when compare first turns on. Keyed by src object name; popped
+# on compare-off or reset_compare.
+# Shape: {src: {'colors': {str(index): color_int}, 'settings': {name: float}}}
+_COMPARE_STATE = {}
+
 
 def _residue_sel(obj, chain, resi):
     """Build a residue selection, tolerating an empty chain id."""
@@ -276,7 +286,8 @@ def set_residue_sticks(obj, chain, resi, on):
         res_sel = _residue_sel(obj, chain, resi)
         # Include CA so the CA–CB bond is drawn — otherwise the sidechain sticks
         # float detached from the backbone (PyMOL's `sidechain` excludes CA).
-        side_sel = '(%s) and (sidechain or name CA)' % res_sel
+        # Exclude hydrogens (`not hydro`) — H sticks just clutter the preview.
+        side_sel = '(%s) and (sidechain or name CA) and not hydro' % res_sel
         key = '%s\x01%s\x01%s' % (obj, chain, resi)
         if on:
             # Only add if the sidechain has atoms and none are already sticks
@@ -311,3 +322,280 @@ def set_residue_sticks(obj, chain, resi, on):
     except Exception:
         pass
     return 'DESIGN_STICKS:%s' % ('added' if added else 'noop')
+
+
+# ---- Phase 2b: point-mutation editing helpers (additive) ----
+
+def make_working_copy(src):
+    """Create a non-destructive working copy of src, choosing a unique name.
+
+    Uses cmd.get_unused_name so a previously-kept working copy (e.g. src_design)
+    is not overwritten — the new session gets src_design01 etc.  The chosen
+    name is written to $TMPDIR/raymol_design_working.json for the Swift caller
+    to read back (runPython is fire-and-forget; no return channel).
+    The copy inherits source transformation matrices so the two objects are
+    superposed.  Returns 'DESIGN_WORK:<dst>'.
+    """
+    dst = cmd.get_unused_name(src + '_design')
+    if dst in cmd.get_object_list():
+        cmd.delete(dst)
+    cmd.create(dst, src, zoom=0)  # zoom=0: no camera reset; inherits source matrices → superposed
+    cmd.disable(src)
+    try:
+        with open(_tmp('raymol_design_working.json'), 'w') as f:
+            json.dump({'src': src, 'dst': dst}, f)
+    except Exception:
+        pass
+    return 'DESIGN_WORK:%s' % dst
+
+
+def _restore_compare_state(src):
+    """Restore per-atom colors and transparency settings from _COMPARE_STATE[src].
+
+    Pops the entry. Returns True if state was present, False otherwise.
+    """
+    state = _COMPARE_STATE.pop(src, None)
+    if state is None:
+        return False
+    int_colors = {int(k): v for k, v in state['colors'].items()}
+    cmd.alter(src, 'color = _d.get(index, color)', space={'_d': int_colors})
+    for s, v in state['settings'].items():
+        try:
+            cmd.set(s, float(v), src)
+        except Exception:
+            pass
+    cmd.recolor(src)
+    return True
+
+
+def _apply_compare_overlap(src):
+    """Overlap mode: grey + transparent, no grid.
+
+    Grid mode 0; enable src; color grey70; set all transparency settings to 0.5.
+    """
+    cmd.set('grid_mode', 0)
+    cmd.enable(src)
+    cmd.color('grey70', src)
+    for s in _TRANSP:
+        try:
+            cmd.set(s, 0.5, src)
+        except Exception:
+            pass
+
+
+def _apply_compare_grid(src):
+    """Grid mode: restore saved colors + fully opaque, grid enabled.
+
+    Restores per-atom colors from _COMPARE_STATE (saved at compare-first-on);
+    sets all transparency settings to 0 (fully opaque); enables grid_mode 1.
+    """
+    state = _COMPARE_STATE.get(src)
+    if state:
+        int_colors = {int(k): v for k, v in state['colors'].items()}
+        cmd.alter(src, 'color = _d.get(index, color)', space={'_d': int_colors})
+        cmd.recolor(src)
+    for s in _TRANSP:
+        try:
+            cmd.set(s, 0.0, src)
+        except Exception:
+            pass
+    cmd.set('grid_mode', 1)
+    cmd.enable(src)
+
+
+def set_compare(src, on, side_by_side=False):
+    """Enable/disable compare view for src (original parent).
+
+    on truthy: save src per-atom colors + transparency into _COMPARE_STATE (once
+      on first call); then apply overlap or grid per side_by_side:
+      - side_by_side=False (overlap, default): grid_mode 0; enable src; color
+        grey70; set transparency ~0.5 so it ghosts behind the design.
+      - side_by_side=True (grid): grid_mode 1; enable src; restore saved colors +
+        set transparency 0 (own confidence coloring, fully opaque).
+      Toggling side_by_side while on switches between the two modes.
+    on falsy: restore saved colors + transparency; disable src; grid_mode 0.
+
+    Returns 'DESIGN_CMP:ok'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    _sbs = bool(side_by_side) if isinstance(side_by_side, bool) else bool(int(side_by_side))
+    if _on:
+        # Save full visual state on first compare-on; idempotent on subsequent calls.
+        if src not in _COMPARE_STATE:
+            colors = {}
+            cmd.iterate(src, 'colors[index] = color', space={'colors': colors})
+            _COMPARE_STATE[src] = {
+                'colors': {str(k): v for k, v in colors.items()},
+                'settings': _get_transp_settings(src),
+            }
+        if _sbs:
+            _apply_compare_grid(src)
+        else:
+            _apply_compare_overlap(src)
+    else:
+        _restore_compare_state(src)
+        cmd.disable(src)
+        cmd.set('grid_mode', 0)
+    return 'DESIGN_CMP:ok'
+
+
+def reset_compare(src):
+    """Restore src's saved compare colors + transparency (if any) and clear grid_mode.
+
+    Does NOT enable or disable src.  Called by teardown so grid_mode is turned
+    off and the parent is un-greyed, while the teardown's own enable/discard
+    logic independently handles object visibility.
+    Returns 'DESIGN_CMPRESET:ok'.
+    """
+    _restore_compare_state(src)
+    cmd.set('grid_mode', 0)
+    return 'DESIGN_CMPRESET:ok'
+
+
+def discard_working_copy(src, dst):
+    """Delete the working copy dst and re-enable the original src.
+
+    Safe to call even if dst no longer exists.
+    Returns 'DESIGN_DISCARD:ok'.
+    """
+    if dst in cmd.get_object_list():
+        cmd.delete(dst)
+    cmd.enable(src)
+    return 'DESIGN_DISCARD:ok'
+
+
+def set_residue_backbone_only(obj, chain, resi, on):
+    """Hide sidechain representations for a single residue while a mutation is pending.
+
+    on truthy: hide sticks/lines/spheres/nb_spheres on the sidechain atoms
+      (everything except backbone N, CA, C, O) so stale pre-mutation coordinates
+      are not shown.  Repack + rep-refresh restores them, so the off branch is a
+      deliberate no-op.
+    on falsy: no-op (caller reloads coords via load_repacked, which triggers a
+      full representation refresh).
+    Returns 'DESIGN_BBONLY:ok'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    side = '(%s) and (not name N+CA+C+O)' % _residue_sel(obj, chain, resi)
+    if _on:
+        for rep in ('sticks', 'lines', 'spheres', 'nb_spheres'):
+            cmd.hide(rep, side)
+    return 'DESIGN_BBONLY:ok'
+
+
+def mutate_residue_display(obj, chain, resi, aa_index):
+    """Visually apply a pending single-residue mutation to the working copy.
+
+    1. Updates the residue name (resn) via cmd.alter so labels reflect the new
+       amino-acid identity.
+    2. Hides stale sidechain representations via set_residue_backbone_only so
+       pre-repack side-chain coordinates are not shown to the user.
+
+    aa_index: MPNN alphabet index (0-20); index 20 ('X'/masked) is a no-op.
+    Returns 'DESIGN_MUTDISP:ok' or 'DESIGN_MUTDISP:noop'.
+    """
+    try:
+        idx = int(aa_index)
+    except (ValueError, TypeError):
+        return 'DESIGN_MUTDISP:noop'
+    if idx >= 20:
+        # Masked/unknown residue — leave untouched.
+        return 'DESIGN_MUTDISP:noop'
+    three = _INDEX_TO_THREE.get(idx, 'UNK')
+    res_sel = _residue_sel(obj, chain, resi)
+    try:
+        cmd.alter(res_sel, "resn='%s'" % three)
+        cmd.rebuild(res_sel)  # flush label/rep state that depends on resn immediately
+    except Exception:
+        pass
+    set_residue_backbone_only(obj, chain, resi, True)
+    return 'DESIGN_MUTDISP:ok'
+
+
+def load_repacked(obj, pdb_str):
+    """Replace obj's structure from an all-atom PDB string (repack output).
+
+    Full topology replace: reads pdb_str into a temp object, copies the
+    current transform matrix from obj onto the temp (preserving superposition
+    with the parent), then deletes obj and renames temp → obj.  This correctly
+    adopts point mutations where the residue's atom set changed (e.g. ALA→TRP):
+    cmd.update(matchmaker=1) can only copy coordinates onto atoms that already
+    match by name, so it silently leaves the old sidechain intact when the atom
+    set differs.  Replacing the entire object always adopts the new topology.
+
+    After renaming, cartoon rep is enabled so the replaced object is visible.
+    On any failure after read but before rename, the temp object is cleaned up.
+    Returns 'DESIGN_REPACKED:ok'.
+    """
+    # Capture the camera view BEFORE any structural replacement so the viewport
+    # does not jump when load+delete+rename triggers PyMOL's auto-zoom.
+    v = cmd.get_view()
+    tmp = cmd.get_unused_name('_rp')
+    renamed = False
+    try:
+        cmd.read_pdbstr(pdb_str, tmp)
+        # Copy the source object's transformation matrix to tmp BEFORE deleting
+        # the source, so the replaced object stays in the same frame (superposed
+        # on the original parent).  Silently skip if not supported or if obj is gone.
+        try:
+            cmd.matrix_copy(obj, tmp)
+        except Exception:
+            pass
+        cmd.delete(obj)
+        cmd.set_name(tmp, obj)
+        renamed = True
+        # Replacing the object resets representations; restore cartoon so the
+        # working copy is visible immediately (conf coloring is re-applied by
+        # the Swift caller after this returns).
+        cmd.show_as('cartoon', obj)
+    finally:
+        if not renamed and tmp in cmd.get_object_list():
+            cmd.delete(tmp)
+    # Restore the camera view exactly as it was before the replace (zoom=0 on
+    # create already prevented the initial zoom; this covers the repack path).
+    cmd.set_view(v)
+    return 'DESIGN_REPACKED:ok'
+
+
+def set_pinned_indicator(obj, chain, resi):
+    """Set or clear the persistent committed 'sele' marker for the pinned residue.
+
+    If chain and resi are non-empty, commits the residue's atoms to the PyMOL
+    'sele' selection with enable=1 so the renderer draws the pink committed-
+    selection pass persistently (the same indicator family as a normal click, but
+    driven by the Design-mode pin rather than a user tap).  If either is empty,
+    clears 'sele' to 'none' with enable=0 so no stale marker persists after
+    unpinning, focus-change, teardown, or exit from Design mode.
+    Returns 'DESIGN_PIN:ok'.
+    """
+    if resi:  # resi non-empty → set indicator (chain may legitimately be empty)
+        cmd.select('sele', _residue_sel(obj, chain, resi), enable=1)
+    else:      # resi empty → clear (controller sends ("", "", "") on unpin/teardown)
+        cmd.select('sele', 'none', enable=0)
+    return 'DESIGN_PIN:ok'
+
+
+def show_all_sidechains(obj, on):
+    """Show or hide all sidechain sticks on obj.
+
+    on truthy: show sticks for '(obj) and (sidechain or name CA) and not hydro'
+      (CA included so the CA–CB bond draws from the backbone; hydrogens excluded),
+      then apply cnc coloring so
+      heteroatoms are colored by element while carbons inherit the residue's
+      current confidence color.
+    on falsy: hide sticks for the same selection.
+
+    Returns 'DESIGN_SIDECHAINS:on' or 'DESIGN_SIDECHAINS:off'.
+    """
+    _on = bool(on) if isinstance(on, bool) else bool(int(on))
+    # Exclude hydrogens (`not hydro`) — H sticks just clutter the display.
+    sel = '(%s) and (sidechain or name CA) and not hydro' % obj
+    if _on:
+        cmd.show('sticks', sel)
+        try:
+            cmd.util.cnc(sel, _self=cmd)
+        except Exception:
+            pass
+    else:
+        cmd.hide('sticks', sel)
+    return 'DESIGN_SIDECHAINS:%s' % ('on' if _on else 'off')

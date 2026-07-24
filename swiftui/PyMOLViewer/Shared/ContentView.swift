@@ -3140,6 +3140,270 @@ struct ContentView: View {
 }
 
 #if RAYMOL_MPNN
+// MARK: – Design feature constants
+
+/// Pinned-residue accent color: warm gold/orange, visually distinct from the
+/// hover (subtle neutral grey) and the standard accent. Used in the 2-row
+/// sequence strip column (Feature 11) and the residue badge chip.
+private let designPinnedColor = Color(red: 0.98, green: 0.60, blue: 0.10)
+
+// MARK: – 2-row Design Sequence Strip (Features 10 + 11)
+
+/// Compact horizontally-scrollable strip, one column per residue of the focus
+/// object's residue list.
+///   Top row:    parent (native) 1-letter code in MPNN alphabet order.
+///   Bottom row: edited 1-letter code in the accent color when the residue has
+///               been mutated (differs from the native aa), blank otherwise.
+///
+/// Hover on a column calls the controller's shared setHovered(chain:resi:) /
+/// clearHover() path — the same setters the 3D viewport hover uses — so the
+/// propensity pills, the residue badge, and the hover sidechain sticks all
+/// react identically to hovering here vs. mousing over the structure.
+///
+/// Tapping a column calls setPinned(chain:resi:), the same path as a viewport
+/// click-to-pin, so clicking here pins the same way as clicking in the scene.
+///
+/// Feature 11: the PINNED column gets a persistent gold/orange border + fill;
+/// the HOVERED column gets a transient subtle-grey fill.
+private struct DesignSequenceStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                seqCols
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // Extracted @ViewBuilder so the ForEach body is not nested inside the
+    // ScrollView closure — avoids the Swift type-checker "reasonable time" limit.
+    @ViewBuilder
+    private var seqCols: some View {
+        ForEach(Array(controller.focusResidues.enumerated()), id: \.offset) { i, res in
+            seqColumn(index: i, residue: res)
+        }
+    }
+
+    @ViewBuilder
+    private func seqColumn(index i: Int, residue: DesignResidue) -> some View {
+        let alpha     = DesignColor.mpnnAlphabet
+        let editedAA  = i < controller.editedSequence.count
+                            ? controller.editedSequence[i] : residue.aa
+        let isPinned  = controller.pinnedResidueIndex == i
+        let isHovered = controller.hoveredResidueIndex == i
+        let parent    = residue.aa >= 0 && residue.aa < alpha.count
+                            ? alpha[residue.aa] : "?"
+        let isEdit    = editedAA != residue.aa
+        let edited    = (isEdit && editedAA >= 0 && editedAA < alpha.count)
+                            ? alpha[editedAA] : ""
+
+        VStack(spacing: 0) {
+            // Top row: parent (native) AA
+            Text(parent)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(isPinned
+                    ? designPinnedColor
+                    : theme.active.panelText.color.opacity(0.80))
+                .frame(width: 14, height: 14, alignment: .center)
+            // Bottom row: edited AA in accent color, or blank when unmutated
+            Text(isEdit ? edited : "")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(theme.active.accent.color)
+                .frame(width: 14, height: 14, alignment: .center)
+        }
+        .frame(width: 14)
+        .padding(.vertical, 1)
+        .background(
+            isPinned  ? designPinnedColor.opacity(0.18)
+          : isHovered ? theme.active.panelText.color.opacity(0.10)
+          : Color.clear,
+            in: RoundedRectangle(cornerRadius: 2)
+        )
+        .overlay(
+            isPinned
+                ? RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(designPinnedColor, lineWidth: 1.0)
+                : nil
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                controller.setHovered(chain: residue.chain, resi: residue.resi)
+            } else {
+                controller.clearHover()
+            }
+        }
+        .onTapGesture {
+            controller.setPinned(chain: residue.chain, resi: residue.resi)
+        }
+        .help({
+            var tip = residue.chain.isEmpty ? residue.resi : "\(residue.chain)/\(residue.resi)"
+            if !residue.resn.isEmpty { tip += " \(residue.resn)" }
+            if isEdit { tip += " → \(edited)" }
+            return tip
+        }())
+    }
+}
+
+// MARK: – Edit-session strip
+
+// Edit-session strip: Auto-repack toggle, needs-repack indicator, compare toggle,
+// Keep/Discard, and a readout. Extracted into a dedicated View struct so
+// @ObservedObject controller re-renders on every @Published change from the
+// edit session (editing, editCount, repackDirty, isRepacking, compareEnabled).
+private struct DesignEditStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        Group {
+            if controller.isRepacking {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Repacking sidechains…")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else {
+                editControls
+            }
+        }
+    }
+
+    private var editControls: some View {
+        HStack(spacing: 8) {
+            // ── Auto-repack (always available — a preference for future edits) ──
+            Toggle(isOn: $controller.autoRepack) {
+                Text("Auto-repack")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help("Automatically repack sidechains after each mutation")
+
+            stripDivider
+
+            // ── Needs-repack indicator + button (disabled until edits are dirty) ──
+            Button { controller.repackNow() } label: { repackBadge }
+                .buttonStyle(.plain)
+                .disabled(!controller.repackDirty || controller.isRepacking)
+                .help("Repack sidechains to optimize the current sequence")
+
+            stripDivider
+
+            // ── Sidechains toggle (works on the focused object, edit or not) ──
+            Toggle(isOn: Binding(
+                get: { controller.showSidechains },
+                set: { controller.setShowSidechains($0) }
+            )) {
+                Text("Sidechains")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help("Show all sidechain sticks (carbons colored by confidence, heteroatoms by element)")
+
+            // ── Compare (needs a working copy — only during an edit session) ──
+            if controller.editing {
+                stripDivider
+                Toggle(isOn: Binding(
+                    get: { controller.compareEnabled },
+                    set: { controller.setCompare($0) }
+                )) {
+                    Text("Compare")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.8))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Show original structure alongside the edited working copy")
+
+                // Side-by-side toggle (visible + enabled only when compare is on).
+                if controller.compareEnabled {
+                    stripDivider
+                    Toggle(isOn: Binding(
+                        get: { controller.sideBySide },
+                        set: { controller.setSideBySide($0) }
+                    )) {
+                        Text("Side-by-side")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.active.panelText.color.opacity(0.8))
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .help("Grid view: original and design shown in separate panels with own colors (off = overlap, grey ghost)")
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            // ── Session-only: edit-count readout + Keep / Discard ─────────────
+            if controller.editing {
+                if let name = controller.workingObject {
+                    Text("\(name) · \(controller.editCount) \(controller.editCount == 1 ? "edit" : "edits")")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.45))
+                        .lineLimit(1)
+                    stripDivider
+                }
+
+                Button {
+                    Task { await controller.keepEditsAwait() }
+                } label: {
+                    Text("Keep")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(theme.active.accent.color.opacity(0.15),
+                                    in: RoundedRectangle(cornerRadius: 5))
+                        .foregroundColor(theme.active.accent.color)
+                }
+                .buttonStyle(.plain)
+
+                Button { controller.discardEdits() } label: {
+                    Text("Discard")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    // Needs-repack pill: accented when dirty (shows edit count), dim otherwise.
+    private var repackBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 10))
+            Text(controller.repackDirty
+                 ? "Repack (\(controller.editCount))"
+                 : "Repack")
+                .font(.system(size: 11))
+        }
+        .foregroundColor(controller.repackDirty
+                         ? theme.active.accent.color
+                         : theme.active.panelText.color.opacity(0.4))
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(controller.repackDirty
+                    ? theme.active.accent.color.opacity(0.12) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private var stripDivider: some View {
+        Rectangle()
+            .fill(theme.active.panelText.color.opacity(0.2))
+            .frame(width: 0.5, height: 14)
+    }
+}
+
 // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
 // coloring meaning segmented control, legend gradient, scoring progress, ? help.
 // Extracted into a dedicated View struct so @ObservedObject controller: DesignController
@@ -3156,6 +3420,12 @@ private struct DesignOverlayView: View {
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
                 focusLabel
+                if let s = controller.sequenceScore {
+                    Text(String(format: "score %.2f", s))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.55))
+                        .help("Mean per-residue native-fit log-probability (higher = better fit)")
+                }
                 residueIndicator
                 if controller.isScoring {
                     ProgressView().scaleEffect(0.7)
@@ -3173,10 +3443,22 @@ private struct DesignOverlayView: View {
                 }.buttonStyle(.plain).accessibilityLabel("Exit design mode")
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            // ── 2-row sequence strip (Feature 10) ────────────────────────────
+            // Shown once residues are available; hidden until first focus completes.
+            if !controller.focusResidues.isEmpty {
+                Divider().opacity(0.3)
+                DesignSequenceStripView(controller: controller, theme: theme)
+            }
             // ── Propensity pill row (always present; greyed when no residue
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
             propensityRow(controller.activePropensity)
+            // ── Control strip (always visible once an object is focused; the
+            //    session-only controls inside it appear when editing begins) ──
+            if !controller.focusResidues.isEmpty {
+                Divider().opacity(0.3)
+                DesignEditStripView(controller: controller, theme: theme)
+            }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
@@ -3184,24 +3466,29 @@ private struct DesignOverlayView: View {
 
     // Active-residue indicator, shown just to the right of the object name:
     // the residue label (e.g. "A/96 PHE") plus a pin glyph when the residue is
-    // pinned. Empty when nothing is hovered or pinned (no layout jump — the
-    // strip's other controls are pinned to the trailing edge by the Spacer).
+    // pinned. Pinned = gold/orange special color (Feature 11); hover-only = neutral.
+    // Empty when nothing is hovered or pinned (no layout jump).
     private var residueIndicator: some View {
         Group {
             if let ap = controller.activePropensity {
+                let pinned = controller.pinnedResidueIndex != nil
                 HStack(spacing: 4) {
-                    if controller.pinnedResidueIndex != nil {
+                    if pinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 9))
-                            .foregroundColor(theme.active.accent.color)
+                            .foregroundColor(designPinnedColor)
                     }
                     Text(ap.label)
                         .lineLimit(1)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(theme.active.panelText.color.opacity(0.85))
+                        .foregroundColor(pinned
+                            ? designPinnedColor
+                            : theme.active.panelText.color.opacity(0.85))
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(theme.active.panelText.color.opacity(0.06),
+                .background(pinned
+                    ? designPinnedColor.opacity(0.12)
+                    : theme.active.panelText.color.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 6))
             }
         }
@@ -3322,23 +3609,41 @@ private struct DesignOverlayView: View {
 
     /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
     /// residue hovered or pinned) every pill renders greyed/disabled with a
-    /// neutral ".0" value and no native highlight, so the row no longer appears
+    /// neutral ".0" value and no current highlight, so the row no longer appears
     /// and disappears — only its contents change. When `ap` is present the
     /// pills show real 2-decimal propensities, colored by relative frequency,
-    /// with the native AA pill highlighted.
+    /// with the current AA pill highlighted (edited identity in an edit session,
+    /// native AA otherwise). Tapping a pill calls applyMutation when a residue
+    /// is active; ignored silently when there is no active residue.
     private func propensityRow(
         _ ap: (propensities: [Float], nativeAA: Int, label: String)?
     ) -> some View {
         let rowMax = ap?.propensities.max() ?? 1.0
+        let activeIndex = controller.activeResidueIndex
+        // When editing, highlight the current edited identity rather than the native AA.
+        let currentAA: Int = {
+            if let idx = activeIndex, controller.editing,
+               idx < controller.editedSequence.count {
+                return controller.editedSequence[idx]
+            }
+            return ap?.nativeAA ?? -1
+        }()
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 3) {
                 ForEach(0..<20, id: \.self) { i in
                     let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
-                    aaPill(index: i,
-                           propensity: hasVal ? ap!.propensities[i] : 0,
-                           isNative: ap != nil && i == ap!.nativeAA,
-                           rowMax: rowMax,
-                           enabled: ap != nil)
+                    Button {
+                        if let idx = activeIndex {
+                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
+                        }
+                    } label: {
+                        aaPill(index: i,
+                               propensity: hasVal ? ap!.propensities[i] : 0,
+                               isCurrent: ap != nil && i == currentAA,
+                               rowMax: rowMax,
+                               enabled: ap != nil)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 12)
@@ -3347,29 +3652,30 @@ private struct DesignOverlayView: View {
     }
 
     /// Single amino-acid pill: letter + 2-decimal propensity, colored by
-    /// relative frequency (faint → warm), highlighted if native AA. When
-    /// `enabled` is false (idle / no active residue) it renders flat grey with
-    /// a ".0" placeholder and no native highlight.
+    /// relative frequency (faint → warm), highlighted if the current AA
+    /// (edited identity in an edit session, native otherwise). When `enabled`
+    /// is false (idle / no active residue) it renders flat grey with a ".0"
+    /// placeholder and no current highlight.
     private func aaPill(index: Int,
                          propensity: Float,
-                         isNative: Bool,
+                         isCurrent: Bool,
                          rowMax: Float,
                          enabled: Bool) -> some View {
         let letter = index < DesignColor.mpnnAlphabet.count
             ? DesignColor.mpnnAlphabet[index] : "?"
         let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
-        let showNative = enabled && isNative
+        let showCurrent = enabled && isCurrent
         // Disabled (idle): flat faint grey, muted text.
-        // Native pill: solid accent background + white text.
+        // Current pill: solid accent background + white text.
         // Others: faint→warm orange tint, scaled to intensity within the row.
         let pillBG: Color = !enabled
             ? theme.active.panelText.color.opacity(0.04)
-            : (showNative
+            : (showCurrent
                 ? theme.active.accent.color
                 : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
         let pillFG: Color = !enabled
             ? theme.active.panelText.color.opacity(0.28)
-            : (showNative
+            : (showCurrent
                 ? .white
                 : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
         let valueText: String = {
@@ -3380,7 +3686,7 @@ private struct DesignOverlayView: View {
         return VStack(spacing: 1) {
             Text(letter)
                 .font(.system(size: 11,
-                              weight: showNative ? .bold : .regular,
+                              weight: showCurrent ? .bold : .regular,
                               design: .monospaced))
             Text(valueText)
                 .font(.system(size: 9, design: .monospaced))
@@ -3389,7 +3695,7 @@ private struct DesignOverlayView: View {
         .frame(width: 30, height: 36)
         .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
         .overlay(
-            showNative
+            showCurrent
                 ? RoundedRectangle(cornerRadius: 5)
                     .stroke(theme.active.accent.color, lineWidth: 1.5)
                 : nil

@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/javierbq/proteinmpnn-mlx.git",
       "state" : {
-        "revision" : "ea8d42b5b2b7ce2972fd2059c40c8d1394814a68",
-        "version" : "0.1.1"
+        "revision" : "9cc71d2840a527c139eb9bacd624be01f8f48d95",
+        "version" : "0.1.2"
       }
     },
     {
