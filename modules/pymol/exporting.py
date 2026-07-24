@@ -399,21 +399,28 @@ NOTES
             cPickle.configure_legacy_dump(legacypickle)
 
         if legacyscenes:
-            _self.pymol._scene_dict = {}
+            try:
+                from pymol import raymol_scenes as _rs
+                _ctx = _rs.suspended()
+            except Exception:
+                import contextlib
+                _ctx = contextlib.nullcontext()
+            with _ctx:
+                _self.pymol._scene_dict = {}
 
-            scene_current_name = _self.get('scene_current_name')
-            tempname = '_scene_db96724c3cef00875c3bebb4f348f711'
-            _self.scene(tempname, 'store')
+                scene_current_name = _self.get('scene_current_name')
+                tempname = '_scene_db96724c3cef00875c3bebb4f348f711'
+                _self.scene(tempname, 'store')
 
-            for name in legacyscenes:
-                _self.scene(name, 'recall', animate=0)
-                wizard = _self.get_wizard()
-                message = wizard.message if getattr(wizard, 'from_scene', 0) else None
-                pymol.viewing._legacy_scene(name, 'store', message, _self=_self)
+                for name in legacyscenes:
+                    _self.scene(name, 'recall', animate=0)
+                    wizard = _self.get_wizard()
+                    message = wizard.message if getattr(wizard, 'from_scene', 0) else None
+                    pymol.viewing._legacy_scene(name, 'store', message, _self=_self)
 
-            _self.scene(tempname, 'recall', animate=0)
-            _self.scene(tempname, 'clear')
-            _self.set('scene_current_name', scene_current_name)
+                _self.scene(tempname, 'recall', animate=0)
+                _self.scene(tempname, 'clear')
+                _self.set('scene_current_name', scene_current_name)
 
         if cache:
             cache_opt = _self.get_setting_int('session_cache_optimize')
