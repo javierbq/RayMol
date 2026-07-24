@@ -141,7 +141,17 @@ def place_scene(frame, name, linear=0):
         cmd.frame(n)                 # playhead to n first (applies interpolation)
         cmd.scene(name, 'recall')    # now the live view+reps ARE the scene
         cmd.mview('store', first=n, scene=name)
+        try:
+            from pymol import raymol_scenes as _rs
+            motion = _rs.emit_object_motion(name, n)
+        except Exception:
+            motion = []
         cmd.mview('reinterpolate', power=power, linear=lin)
+        for obj in dict.fromkeys(motion):
+            try:
+                cmd.mview('interpolate', object=obj)
+            except Exception:
+                pass
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
 
@@ -259,12 +269,23 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
             if names:
                 per = max(2, int(round(float(seconds_per_scene) * fps)))
                 ensure(per * len(names))
+                motion = []
                 for i, nm in enumerate(names):
                     f = start + 1 + i * per
                     cmd.frame(f)
                     cmd.scene(nm, 'recall')
                     cmd.mview('store', first=f, scene=nm)
+                    try:
+                        from pymol import raymol_scenes as _rs
+                        motion += _rs.emit_object_motion(nm, f)
+                    except Exception:
+                        pass
                 cmd.mview('reinterpolate', power=0.0, linear=0.0)
+                for obj in dict.fromkeys(motion):
+                    try:
+                        cmd.mview('interpolate', object=obj)
+                    except Exception:
+                        pass
 
         elif k in ('state_loop', 'state_sweep'):
             maxs = 1
@@ -383,6 +404,7 @@ def rebuild(spec_json):
 
         state_clips = [it for it in spec if it.get('states')]
         cam_scene = [it for it in spec if not it.get('states')]
+        motion = []   # objects that received per-scene TTT keyframes (#204)
 
         # Camera + scene keyframes on the GLOBAL track (camera view / scene reps),
         # plus an optional pinned global state for non-swept objects.
@@ -401,6 +423,12 @@ def rebuild(spec_json):
                     cmd.mview('store', first=f, state=int(cmd.get_state()))
                 except Exception:
                     pass
+                # #204: author per-object Move-mode TTT keyframes for this scene.
+                try:
+                    from pymol import raymol_scenes as _rs
+                    motion += _rs.emit_object_motion(name, f)
+                except Exception:
+                    pass
             else:
                 cam = it.get('cam')
                 v = _views.get(str(cam)) if cam is not None else None
@@ -412,6 +440,13 @@ def rebuild(spec_json):
                 cmd.mview('store', first=f, state=int(ps))
         if cam_scene:
             cmd.mview('interpolate')
+        # #204: interpolate each object's matrix track once (keyframes stored with
+        # freeze=1 above). dict.fromkeys de-dups while preserving order.
+        for obj in dict.fromkeys(motion):
+            try:
+                cmd.mview('interpolate', object=obj)
+            except Exception as e:
+                print('MOVIE_ERR:' + str(e))
 
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:

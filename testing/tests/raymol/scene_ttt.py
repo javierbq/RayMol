@@ -19,9 +19,6 @@ class TestSceneTTTHook(testing.PyMOLTestCase):
         for x, y in zip(a, b):
             self.assertAlmostEqual(x, y, delta=delta)
 
-    def _assertMatDiffers(self, a, b, delta=1e-5):
-        self.assertFalse(all(abs(x - y) <= delta for x, y in zip(a, b)))
-
     def testHookCapturesAndRestores(self):
         cmd.reinitialize()
         cmd.fragment('ala', 'm1')
@@ -62,3 +59,34 @@ class TestSceneTTTHook(testing.PyMOLTestCase):
         _rot('m1', 'y', 30)
         cmd.scene('C', 'recall', animate=0)
         self._assertMat(self._mat('m1'), poseA)
+
+
+class TestSceneMovieMotion(testing.PyMOLTestCase):
+    def _mat(self, obj):
+        return cmd.get_object_matrix(obj, incl_ttt=1)
+
+    def _assertMatDiffers(self, a, b, delta=1e-4):
+        self.assertFalse(all(abs(x - y) <= delta for x, y in zip(a, b)))
+
+    def testRebuildInterpolatesObjectMotion(self):
+        import json
+        import base64
+        from pymol import appkit_movie
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.scene('A', 'store')          # m1 unmoved (hook captures)
+        cmd.rotate('x', 90, object='m1', camera=0, object_mode=0)
+        cmd.scene('B', 'store')          # m1 rotated
+
+        def item(frame, name):
+            return {'frame': frame,
+                    'scene': base64.b64encode(name.encode()).decode('ascii'),
+                    'power': 0.0, 'linear': 0}
+
+        appkit_movie.rebuild(json.dumps([item(1, 'A'), item(30, 'B')]))
+        cmd.frame(1);  m_start = self._mat('m1')
+        cmd.frame(30); m_end = self._mat('m1')
+        cmd.frame(15); m_mid = self._mat('m1')
+        self._assertMatDiffers(m_start, m_end)   # object moved across the movie
+        self._assertMatDiffers(m_mid, m_start)   # ...and interpolates in between
+        self._assertMatDiffers(m_mid, m_end)

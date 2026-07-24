@@ -623,9 +623,16 @@ ARGUMENTS
     if n_frame > 0:
         cmd.mset("1 x%d"%act_n_frame,start,freeze=1)
         cnt = 0
+        _scene_motion_objs = set()
         for scene in names:
             frame = start+int((cnt*n_frame)/n_scene)
             cmd.mview("store",frame,scene=scene,freeze=1)
+            try:
+                from pymol import raymol_scenes as _rs
+                for _obj in _rs.emit_object_motion(scene, frame, _self=cmd):
+                    _scene_motion_objs.add(_obj)
+            except Exception:
+                pass
             if rock:
                 cmd.mview("interpolate",cut=cut,wrap=0)
                 sweep_first = frame + 1
@@ -651,6 +658,11 @@ ARGUMENTS
         cmd.mview("interpolate",cut=cut,wrap=loop)
         if rock:
             cmd.mview("smooth")
+        for _obj in _scene_motion_objs:
+            try:
+                cmd.mview("interpolate", object=_obj)
+            except Exception:
+                pass
         cmd.frame(start)
 
 _prefix = "mov"
