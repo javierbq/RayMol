@@ -62,11 +62,24 @@ class TestSceneTTTHook(testing.PyMOLTestCase):
 
 
 class TestSceneMovieMotion(testing.PyMOLTestCase):
-    def _mat(self, obj):
-        return cmd.get_object_matrix(obj, incl_ttt=1)
-
-    def _assertMatDiffers(self, a, b, delta=1e-4):
-        self.assertFalse(all(abs(x - y) <= delta for x, y in zip(a, b)))
+    def _frame_hash(self, fr):
+        """md5 of a ray-rendered frame. We must RENDER to observe movie object
+        motion: the interpolated per-object TTT is applied in the render path,
+        NOT committed to the object's persistent matrix, so get_object_matrix()
+        after cmd.frame() does NOT reflect it (verified). The ray render does."""
+        import hashlib
+        import os
+        import time
+        cmd.frame(fr)
+        cmd.ray(120, 120)
+        with testing.mktemp('.png') as png:
+            cmd.png(png, dpi=0)
+            for _ in range(100):     # png write is sync in -cq, but be defensive
+                if os.path.exists(png) and os.path.getsize(png) > 0:
+                    break
+                time.sleep(0.02)
+            with open(png, 'rb') as fh:
+                return hashlib.md5(fh.read()).hexdigest()
 
     def testRebuildInterpolatesObjectMotion(self):
         import json
@@ -74,19 +87,24 @@ class TestSceneMovieMotion(testing.PyMOLTestCase):
         from pymol import appkit_movie
         cmd.reinitialize()
         cmd.fragment('ala', 'm1')
-        cmd.scene('A', 'store')          # m1 unmoved (hook captures)
-        cmd.rotate('x', 90, object='m1', camera=0, object_mode=0)
-        cmd.scene('B', 'store')          # m1 rotated
+        cmd.hide('everything'); cmd.show('spheres', 'm1')
+        cmd.bg_color('white'); cmd.orient('m1'); cmd.zoom('m1', 6)
+        cmd.scene('A', 'store')                  # m1 unmoved (hook captures)
+        cmd.translate([10, 0, 0], object='m1', camera=0)
+        cmd.scene('B', 'store')                  # m1 translated far
 
         def item(frame, name):
             return {'frame': frame,
                     'scene': base64.b64encode(name.encode()).decode('ascii'),
                     'power': 0.0, 'linear': 0}
 
+        # Keyframes at 1 and 30; sample the true midpoint (15). A STEPPED movie
+        # would leave frame 15 identical to an endpoint — three distinct frames
+        # prove the object glides (interpolates) rather than jumping at the cut.
         appkit_movie.rebuild(json.dumps([item(1, 'A'), item(30, 'B')]))
-        cmd.frame(1);  m_start = self._mat('m1')
-        cmd.frame(30); m_end = self._mat('m1')
-        cmd.frame(15); m_mid = self._mat('m1')
-        self._assertMatDiffers(m_start, m_end)   # object moved across the movie
-        self._assertMatDiffers(m_mid, m_start)   # ...and interpolates in between
-        self._assertMatDiffers(m_mid, m_end)
+        h_start = self._frame_hash(1)
+        h_mid = self._frame_hash(15)
+        h_end = self._frame_hash(30)
+        self.assertNotEqual(h_start, h_end)   # object moved across the movie
+        self.assertNotEqual(h_mid, h_start)   # ...and is mid-way at the midpoint
+        self.assertNotEqual(h_mid, h_end)
