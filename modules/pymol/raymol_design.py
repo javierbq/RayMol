@@ -286,7 +286,8 @@ def set_residue_sticks(obj, chain, resi, on):
         res_sel = _residue_sel(obj, chain, resi)
         # Include CA so the CA–CB bond is drawn — otherwise the sidechain sticks
         # float detached from the backbone (PyMOL's `sidechain` excludes CA).
-        side_sel = '(%s) and (sidechain or name CA)' % res_sel
+        # Exclude hydrogens (`not hydro`) — H sticks just clutter the preview.
+        side_sel = '(%s) and (sidechain or name CA) and not hydro' % res_sel
         key = '%s\x01%s\x01%s' % (obj, chain, resi)
         if on:
             # Only add if the sidechain has atoms and none are already sticks
@@ -577,8 +578,9 @@ def set_pinned_indicator(obj, chain, resi):
 def show_all_sidechains(obj, on):
     """Show or hide all sidechain sticks on obj.
 
-    on truthy: show sticks for '(obj) and (sidechain or name CA)' (CA included
-      so the CA–CB bond draws from the backbone), then apply cnc coloring so
+    on truthy: show sticks for '(obj) and (sidechain or name CA) and not hydro'
+      (CA included so the CA–CB bond draws from the backbone; hydrogens excluded),
+      then apply cnc coloring so
       heteroatoms are colored by element while carbons inherit the residue's
       current confidence color.
     on falsy: hide sticks for the same selection.
@@ -586,7 +588,8 @@ def show_all_sidechains(obj, on):
     Returns 'DESIGN_SIDECHAINS:on' or 'DESIGN_SIDECHAINS:off'.
     """
     _on = bool(on) if isinstance(on, bool) else bool(int(on))
-    sel = '(%s) and (sidechain or name CA)' % obj
+    # Exclude hydrogens (`not hydro`) — H sticks just clutter the display.
+    sel = '(%s) and (sidechain or name CA) and not hydro' % obj
     if _on:
         cmd.show('sticks', sel)
         try:
