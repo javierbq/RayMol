@@ -154,12 +154,15 @@ final class DesignController: ObservableObject {
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
 
-    /// Label for the blocking "Calculating…" overlay while a design inference runs
-    /// (nil = not busy). Redesign takes precedence, then repack, then scoring.
+    /// Label for the blocking "Calculating…" overlay while a long design inference
+    /// runs (nil = not busy). Covers the two edit-triggered heavy ops — a region
+    /// redesign (which holds through its follow-up rescore + repack) and a manual
+    /// repack. The initial focus scoring keeps its lightweight inline spinner
+    /// (`isScoring`) rather than a full-screen block — it's quick on real hardware
+    /// and shouldn't gate the whole UI on every object focus.
     var designBusyLabel: String? {
         if isRedesigning { return "Redesigning region…" }
         if isRepacking { return "Repacking sidechains…" }
-        if isScoring { return "Scoring…" }
         return nil
     }
 
@@ -664,14 +667,17 @@ final class DesignController: ObservableObject {
         }
 
         // A superseded redesign must NOT clear isRedesigning — the winning call owns
-        // the busy flag (and the blocking overlay) until it finishes.
+        // the busy flag (and the blocking overlay) until it finishes. The winner keeps
+        // isRedesigning true through the follow-up rescore + repack so the overlay
+        // stays up for the whole operation (no mid-flow flicker), and clears it on
+        // every terminal path below.
         guard token == designToken else { return }
-        isRedesigning = false
 
         guard let result, result.count == L else {
             if let snap = redesignSnapshot { editedSequence = snap.seq; editCount = snap.editCount }
             redesignSnapshot = nil
             errorText = "Region redesign failed"
+            isRedesigning = false
             return
         }
 
@@ -695,6 +701,7 @@ final class DesignController: ObservableObject {
 
         await rescoreWorkingObject()
         if autoRepack { await repackNowAwait() }
+        isRedesigning = false   // clears the blocking overlay only after the full op completes
     }
 
     /// Undo the last region redesign: restore the pre-batch sequence + editCount.
