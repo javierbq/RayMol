@@ -3136,6 +3136,13 @@ struct ContentView: View {
         // the user didn't ask for. Users can still enable it live (Display ▸
         // Effects); this only governs the default at launch.
         engine.runCommand("set metal_outline, 0")
+        // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
+        // user's startup script can override them (e.g. a custom bg_color) —
+        // matching vanilla PyMOL, where .pymolrc runs after all built-in
+        // defaults are set. Also migrates from ~/.pymolrc(.py) on first
+        // detection, since this native app never goes through
+        // pymol.invocation's CLI argument parsing (RayMol#225).
+        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.load()")
     }
 }
 

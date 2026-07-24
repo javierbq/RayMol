@@ -363,6 +363,17 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // which calls cmd.config_mouse() to set up mouse bindings.
     PyMOL_SetPythonInitStage(pymolInstance, 1);
 
+    // Load ~/.raymolrc(.py), importing it from ~/.pymolrc(.py) on first
+    // detection — this embedding never goes through pymol.invocation's CLI
+    // argument parsing, so vanilla PyMOL's .pymolrc is otherwise never read
+    // (RayMol#225).
+    PyRun_SimpleString(
+        "try:\n"
+        "    from pymol import raymolrc as _raymolrc\n"
+        "    _raymolrc.load()\n"
+        "except Exception as _e:\n"
+        "    import os; os.write(2, ('[PyMOL] raymolrc load failed: %r\\n' % (_e,)).encode())\n");
+
     // Load API keys into Python's os.environ before importing ai_chat.
     // Finder-launched apps don't inherit shell env vars, so we also
     // check ~/.pymol_ai.conf (simple KEY=VALUE format).
