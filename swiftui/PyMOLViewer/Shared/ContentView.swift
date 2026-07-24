@@ -3256,6 +3256,133 @@ private struct DesignSequenceStripView: View {
     }
 }
 
+// MARK: – Region-redesign strip (Phase 2c)
+
+// Selection dropdown + Redesign/Revert + "Redesigning region…" spinner. Its own
+// View struct so @ObservedObject re-renders on region-state @Published changes.
+private struct DesignRegionStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+    @State private var showPicker = false
+
+    var body: some View {
+        Group {
+            if controller.isRedesigning {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Redesigning region…")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else {
+                controls
+            }
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 8) {
+            selectionButton
+            if controller.regionModeActive {
+                stripDivider
+                Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                stripDivider
+                Button { controller.redesignSelection() } label: {
+                    Text("Redesign selection · \(controller.selectedResidueIndices.count) res")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(theme.active.accent.color.opacity(0.15),
+                                    in: RoundedRectangle(cornerRadius: 5))
+                        .foregroundColor(theme.active.accent.color)
+                }
+                .buttonStyle(.plain)
+                .disabled(controller.paletteAllowed.filter { $0 < 20 }.isEmpty)
+                .help("Redesign the selected residues; the rest of the sequence is held fixed")
+            }
+            if controller.redesignSnapshot != nil {
+                stripDivider
+                Button { controller.revertRedesign() } label: {
+                    Text("Revert redesign")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("Undo the last region redesign (keeps earlier manual edits)")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private var selectionButton: some View {
+        Button {
+            controller.refreshSelections()
+            showPicker = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "lasso").font(.system(size: 10))
+                Text(controller.selectedSelectionName ?? "Select region…")
+                    .font(.system(size: 11)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .foregroundColor(theme.active.panelText.color.opacity(0.85))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(theme.active.panelText.color.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showPicker) { pickerContent }
+    }
+
+    private var pickerContent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if controller.availableSelections.isEmpty {
+                Text("No selections — create one first")
+                    .font(.system(size: 11)).foregroundColor(.secondary).padding(8)
+            } else {
+                ForEach(controller.availableSelections) { opt in
+                    Button {
+                        controller.pickSelection(opt.name)
+                        showPicker = false
+                    } label: {
+                        HStack {
+                            Text(opt.name).font(.system(size: 12))
+                            Spacer(minLength: 12)
+                            Text("\(opt.count) res")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5).frame(minWidth: 190)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if controller.regionModeActive {
+                Divider()
+                Button {
+                    controller.clearSelection()
+                    showPicker = false
+                } label: {
+                    Text("Clear selection")
+                        .font(.system(size: 12)).foregroundColor(.red)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6).frame(maxWidth: 260)
+    }
+
+    private var stripDivider: some View {
+        Rectangle().fill(theme.active.panelText.color.opacity(0.2)).frame(width: 0.5, height: 14)
+    }
+}
+
 // MARK: – Edit-session strip
 
 // Edit-session strip: Auto-repack toggle, needs-repack indicator, compare toggle,
@@ -3460,6 +3587,11 @@ private struct DesignOverlayView: View {
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
             propensityRow(controller.activePropensity)
+            // ── Region-redesign strip (Phase 2c) ─────────────────────────────
+            if !controller.focusResidues.isEmpty {
+                Divider().opacity(0.3)
+                DesignRegionStripView(controller: controller, theme: theme)
+            }
             // ── Control strip (always visible once an object is focused; the
             //    session-only controls inside it appear when editing begins) ──
             if !controller.focusResidues.isEmpty {
