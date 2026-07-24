@@ -363,16 +363,52 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     // which calls cmd.config_mouse() to set up mouse bindings.
     PyMOL_SetPythonInitStage(pymolInstance, 1);
 
-    // Load ~/.raymolrc(.py), importing it from ~/.pymolrc(.py) on first
-    // detection — this embedding never goes through pymol.invocation's CLI
-    // argument parsing, so vanilla PyMOL's .pymolrc is otherwise never read
-    // (RayMol#225).
-    PyRun_SimpleString(
-        "try:\n"
-        "    from pymol import raymolrc as _raymolrc\n"
-        "    _raymolrc.load()\n"
-        "except Exception as _e:\n"
-        "    import os; os.write(2, ('[PyMOL] raymolrc load failed: %r\\n' % (_e,)).encode())\n");
+    // Load ~/.raymolrc(.py). This embedding never goes through
+    // pymol.invocation's CLI argument parsing, so vanilla PyMOL's .pymolrc is
+    // otherwise never read (RayMol#225). The first time no ~/.raymolrc(.py)
+    // exists yet and a ~/.pymolrc(.py) is found, ask before importing it
+    // rather than copying it silently.
+    {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *home = NSHomeDirectory();
+        BOOL hasRaymolrc = [fm fileExistsAtPath:[home stringByAppendingPathComponent:@".raymolrc.py"]]
+            || [fm fileExistsAtPath:[home stringByAppendingPathComponent:@".raymolrc"]];
+        BOOL alreadyAsked = [fm fileExistsAtPath:[home stringByAppendingPathComponent:@".raymolrc.skip"]];
+        BOOL hasPymolrc = [fm fileExistsAtPath:[home stringByAppendingPathComponent:@".pymolrc.py"]]
+            || [fm fileExistsAtPath:[home stringByAppendingPathComponent:@".pymolrc"]];
+
+        if (!hasRaymolrc && !alreadyAsked && hasPymolrc) {
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Import your PyMOL startup script?";
+            alert.informativeText = @"RayMol found an existing ~/.pymolrc and can copy it to "
+                @"~/.raymolrc, RayMol's own startup script, so your customizations still run here.";
+            [alert addButtonWithTitle:@"Import"];
+            [alert addButtonWithTitle:@"Not Now"];
+            if ([alert runModal] == NSAlertFirstButtonReturn) {
+                PyRun_SimpleString(
+                    "try:\n"
+                    "    from pymol import raymolrc as _raymolrc\n"
+                    "    _raymolrc.migrate()\n"
+                    "    _raymolrc.load()\n"
+                    "except Exception as _e:\n"
+                    "    import os; os.write(2, ('[PyMOL] raymolrc migrate/load failed: %r\\n' % (_e,)).encode())\n");
+            } else {
+                PyRun_SimpleString(
+                    "try:\n"
+                    "    from pymol import raymolrc as _raymolrc\n"
+                    "    _raymolrc.decline_migration()\n"
+                    "except Exception as _e:\n"
+                    "    import os; os.write(2, ('[PyMOL] raymolrc decline failed: %r\\n' % (_e,)).encode())\n");
+            }
+        } else {
+            PyRun_SimpleString(
+                "try:\n"
+                "    from pymol import raymolrc as _raymolrc\n"
+                "    _raymolrc.load()\n"
+                "except Exception as _e:\n"
+                "    import os; os.write(2, ('[PyMOL] raymolrc load failed: %r\\n' % (_e,)).encode())\n");
+        }
+    }
 
     // Load API keys into Python's os.environ before importing ai_chat.
     // Finder-launched apps don't inherit shell env vars, so we also
