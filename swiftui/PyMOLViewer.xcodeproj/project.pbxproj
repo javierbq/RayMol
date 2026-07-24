@@ -1506,7 +1506,7 @@
 			repositoryURL = "https://github.com/javierbq/proteinmpnn-mlx.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.1;
+				minimumVersion = 0.1.2;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
