@@ -68,8 +68,11 @@ def _obj_residue_order(obj):
     the same order enumerate_design_residues emits, so indices align with the
     Swift DesignResidueSet.residues array."""
     order = []
-    cmd.iterate('(%s) and polymer and guide' % obj,
-                'order.append((chain, resi))', space={'order': order})
+    try:
+        cmd.iterate('(%s) and polymer and guide' % obj,
+                    'order.append((chain, resi))', space={'order': order})
+    except Exception:
+        return []
     return order
 
 
@@ -81,7 +84,6 @@ def list_design_selections(obj, state):
     residues in the intersection; the exact designable subset (full backbone) is
     resolved at pick time by the Swift valid mask. Returns a short marker.
     """
-    int(state)  # tolerate str/float; state is not needed to count residues
     out = []
     for name in _selection_names():
         try:
@@ -104,7 +106,9 @@ def selected_design_indices(obj, selection, state):
     Non-polymer atoms in the selection are ignored. Output:
     $TMPDIR/raymol_design_selected.json = {'indices': [int]}. Returns a marker.
     """
-    int(state)  # tolerate str/float
+    # state is accepted for signature symmetry with enumerate_design_residues but
+    # not used here: guide order is read from the current state. Multi-state objects
+    # at a non-default state may misalign; Design-mode editing is single-state (spec).
     order = _obj_residue_order(obj)
     sel_res = set()
     try:
