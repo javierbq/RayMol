@@ -590,6 +590,94 @@ final class DesignController: ObservableObject {
         designToken += 1   // cancel any in-flight region design
     }
 
+    // MARK: – Region redesign: the design() action + revert (Task 3)
+
+    /// Fire-and-forget region redesign (UI button). Wraps redesignSelectionAwait.
+    func redesignSelection() { Task { await redesignSelectionAwait() } }
+
+    /// Run design() over the picked region with the rest of the sequence fixed,
+    /// scatter the result into editedSequence, then rescore + (auto)repack.
+    /// Snapshots editedSequence first for a one-level revert.
+    func redesignSelectionAwait() async {
+        guard !selectedResidueIndices.isEmpty else { return }
+        guard paletteAllowed.contains(where: { $0 >= 0 && $0 < 20 }) else { return }  // ≥1 allowed AA
+        beginEditIfNeeded()
+        guard editing, let focus = focusObject, let set = lastSet[focus] else { return }
+
+        // One-level revert snapshot (captures earlier manual edits + editCount).
+        redesignSnapshot = RedesignSnapshot(seq: editedSequence, editCount: editCount)
+
+        // Full-length ↔ valid-projected maps (the single-source-of-truth conversion).
+        let validFullIndices = set.residues.enumerated().filter { $0.element.valid }.map { $0.offset }
+        var fullToValid: [Int: Int] = [:]
+        for (v, f) in validFullIndices.enumerated() { fullToValid[f] = v }
+        let residues = set.validResidues
+        let L = residues.count
+        let nativeValid = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+        let freeValid = Set(selectedResidueIndices.compactMap { fullToValid[$0] })
+        guard !freeValid.isEmpty else { redesignSnapshot = nil; return }
+        let fixed = Set(0..<L).subtracting(freeValid)
+        let inactive = Set((0..<20).filter { !paletteAllowed.contains($0) })
+        let omit = Array(repeating: inactive, count: L)
+        let designFn = designRegionFn
+
+        isRedesigning = true
+        designToken += 1
+        let token = designToken
+
+        let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
+            inferenceQueue.async {
+                do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit)) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+
+        guard token == designToken else { isRedesigning = false; return }
+        isRedesigning = false
+
+        guard let result, result.count == L else {
+            if let snap = redesignSnapshot { editedSequence = snap.seq; editCount = snap.editCount }
+            redesignSnapshot = nil
+            errorText = "Region redesign failed"
+            return
+        }
+
+        // Scatter designed identities into free (full-length) positions only.
+        var changed = 0
+        let w = workingObject
+        for v in freeValid {
+            let f = validFullIndices[v]
+            let aa = result[v]
+            if editedSequence[f] != aa {
+                editedSequence[f] = aa
+                changed += 1
+                if let w, f < set.residues.count {
+                    let r = set.residues[f]
+                    mutateDisplay(w, r.chain, r.resi, aa)   // backbone-only until repack
+                }
+            }
+        }
+        editCount += changed
+        repackDirty = true
+
+        await rescoreWorkingObject()
+        if autoRepack { await repackNowAwait() }
+    }
+
+    /// Undo the last region redesign: restore the pre-batch sequence + editCount.
+    /// One level; earlier manual edits (captured in the snapshot) are preserved.
+    func revertRedesign() {
+        guard let snap = redesignSnapshot else { return }
+        editedSequence = snap.seq
+        editCount = snap.editCount
+        redesignSnapshot = nil
+        repackDirty = true
+        Task {
+            await rescoreWorkingObject()
+            if autoRepack { await repackNowAwait() }
+        }
+    }
+
     // MARK: – Edit session (Task 2 + 3 + 4)
 
     /// Starts an edit session for the focused object if one is not already active.
@@ -638,6 +726,7 @@ final class DesignController: ObservableObject {
         editedSequence[i] = aa
         editCount += 1
         repackDirty = true
+        redesignSnapshot = nil   // a manual edit invalidates the one-level region-redesign revert
         if let w = workingObject {
             // Resolve chain + resi from the focus object's residue set (same ordering as editedSequence).
             let chain: String
