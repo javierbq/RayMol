@@ -3278,7 +3278,7 @@ private struct DesignEditStripView: View {
 
     private var editControls: some View {
         HStack(spacing: 8) {
-            // ── Auto-repack ──────────────────────────────────────────────────
+            // ── Auto-repack (always available — a preference for future edits) ──
             Toggle(isOn: $controller.autoRepack) {
                 Text("Auto-repack")
                     .font(.system(size: 11))
@@ -3290,7 +3290,7 @@ private struct DesignEditStripView: View {
 
             stripDivider
 
-            // ── Needs-repack indicator + button ─────────────────────────────
+            // ── Needs-repack indicator + button (disabled until edits are dirty) ──
             Button { controller.repackNow() } label: { repackBadge }
                 .buttonStyle(.plain)
                 .disabled(!controller.repackDirty || controller.isRepacking)
@@ -3298,38 +3298,7 @@ private struct DesignEditStripView: View {
 
             stripDivider
 
-            // ── Compare toggle ───────────────────────────────────────────────
-            Toggle(isOn: Binding(
-                get: { controller.compareEnabled },
-                set: { controller.setCompare($0) }
-            )) {
-                Text("Compare")
-                    .font(.system(size: 11))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.8))
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .help("Show original structure alongside the edited working copy")
-
-            // ── Side-by-side toggle (visible + enabled only when compare is on) ──
-            if controller.compareEnabled {
-                stripDivider
-                Toggle(isOn: Binding(
-                    get: { controller.sideBySide },
-                    set: { controller.setSideBySide($0) }
-                )) {
-                    Text("Side-by-side")
-                        .font(.system(size: 11))
-                        .foregroundColor(theme.active.panelText.color.opacity(0.8))
-                }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .help("Grid view: original and design shown in separate panels with own colors (off = overlap, grey ghost)")
-            }
-
-            stripDivider
-
-            // ── Sidechains toggle ─────────────────────────────────────────────
+            // ── Sidechains toggle (works on the focused object, edit or not) ──
             Toggle(isOn: Binding(
                 get: { controller.showSidechains },
                 set: { controller.setShowSidechains($0) }
@@ -3342,37 +3311,69 @@ private struct DesignEditStripView: View {
             .controlSize(.mini)
             .help("Show all sidechain sticks (carbons colored by confidence, heteroatoms by element)")
 
+            // ── Compare (needs a working copy — only during an edit session) ──
+            if controller.editing {
+                stripDivider
+                Toggle(isOn: Binding(
+                    get: { controller.compareEnabled },
+                    set: { controller.setCompare($0) }
+                )) {
+                    Text("Compare")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.8))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Show original structure alongside the edited working copy")
+
+                // Side-by-side toggle (visible + enabled only when compare is on).
+                if controller.compareEnabled {
+                    stripDivider
+                    Toggle(isOn: Binding(
+                        get: { controller.sideBySide },
+                        set: { controller.setSideBySide($0) }
+                    )) {
+                        Text("Side-by-side")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.active.panelText.color.opacity(0.8))
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .help("Grid view: original and design shown in separate panels with own colors (off = overlap, grey ghost)")
+                }
+            }
+
             Spacer(minLength: 0)
 
-            // ── Object · edit-count readout ──────────────────────────────────
-            if let name = controller.workingObject {
-                Text("\(name) · \(controller.editCount) \(controller.editCount == 1 ? "edit" : "edits")")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.45))
-                    .lineLimit(1)
-                stripDivider
-            }
+            // ── Session-only: edit-count readout + Keep / Discard ─────────────
+            if controller.editing {
+                if let name = controller.workingObject {
+                    Text("\(name) · \(controller.editCount) \(controller.editCount == 1 ? "edit" : "edits")")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.45))
+                        .lineLimit(1)
+                    stripDivider
+                }
 
-            // ── Keep ─────────────────────────────────────────────────────────
-            Button {
-                Task { await controller.keepEditsAwait() }
-            } label: {
-                Text("Keep")
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(theme.active.accent.color.opacity(0.15),
-                                in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundColor(theme.active.accent.color)
-            }
-            .buttonStyle(.plain)
+                Button {
+                    Task { await controller.keepEditsAwait() }
+                } label: {
+                    Text("Keep")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(theme.active.accent.color.opacity(0.15),
+                                    in: RoundedRectangle(cornerRadius: 5))
+                        .foregroundColor(theme.active.accent.color)
+                }
+                .buttonStyle(.plain)
 
-            // ── Discard ──────────────────────────────────────────────────────
-            Button { controller.discardEdits() } label: {
-                Text("Discard")
-                    .font(.system(size: 11))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.55))
+                Button { controller.discardEdits() } label: {
+                    Text("Discard")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.55))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
@@ -3452,8 +3453,9 @@ private struct DesignOverlayView: View {
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
             propensityRow(controller.activePropensity)
-            // ── Edit-session strip (visible only while an edit session is open) ──
-            if controller.editing {
+            // ── Control strip (always visible once an object is focused; the
+            //    session-only controls inside it appear when editing begins) ──
+            if !controller.focusResidues.isEmpty {
                 Divider().opacity(0.3)
                 DesignEditStripView(controller: controller, theme: theme)
             }
