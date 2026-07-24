@@ -654,6 +654,16 @@ ARGUMENTS
             if frame <= act_n_frame:
                 if sweep_mode!=3:
                     cmd.mview("store",frame,scene=scene,freeze=1)
+                    # #204: hold each object's TTT through the scene's dwell too
+                    # (mirroring the camera's dwell store above), so a moved object
+                    # stays put while the camera is static and only glides during
+                    # the transition to the next scene.
+                    try:
+                        from pymol import raymol_scenes as _rs
+                        for _obj in _rs.emit_object_motion(scene, frame, _self=cmd):
+                            _scene_motion_objs.add(_obj)
+                    except Exception:
+                        pass
             cnt = cnt + 1
         cmd.mview("interpolate",cut=cut,wrap=loop)
         if rock:

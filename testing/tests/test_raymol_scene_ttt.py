@@ -60,6 +60,9 @@ class TestEmitObjectMotion(unittest.TestCase):
         for _, kw in stores:
             self.assertEqual(kw.get('first'), 7)
             self.assertIn(kw.get('object'), ('m1', 'm2'))
+            # freeze=1 is load-bearing: keyframes are stored without auto-interp
+            # so the caller can interpolate each object's track once at the end.
+            self.assertEqual(kw.get('freeze'), 1)
 
     def test_emit_skips_absent_objects(self):
         rs = self.rs
