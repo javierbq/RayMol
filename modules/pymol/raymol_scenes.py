@@ -1,18 +1,24 @@
-"""Per-scene render-settings snapshot for RayMol.
+"""Per-scene "extras" snapshot for RayMol (settings + object TTT + autofocus target).
 
 Classic PyMOL scenes store the camera + representations + colors but NOT setting
-values, so the depth-of-field / lighting / metal_* render "look" is not captured
-by `scene ... store` (that's why e.g. metal_dof_aperture didn't persist per
-scene). This module snapshots those render settings when a scene is stored/updated
-and re-applies them on recall, keyed by scene name, and persists them in the .pse
-via registered session save/restore tasks (see cmd._deferred_init_pymol_internals).
+values, per-object Move-mode transforms, or the depth-of-field autofocus target,
+so the render "look", object arrangement, and DOF focus were not captured by
+`scene ... store`. This module snapshots three things per scene name and re-applies
+them on recall, persisting them in the .pse via registered session save/restore
+tasks (see cmd._deferred_init_pymol_internals):
 
-Camera lens / zoom / orthographic / FOV are already restored by the scene's saved
-view, so they're intentionally NOT captured here (the view owns them).
+  * render "look" settings (CAPTURE below) — metal_* / lighting / DOF / fog
+  * per-object TTT matrices (Move mode) — _scene_ttt
+  * the autofocus target selection 'dof_focus' — _scene_focus; a single GLOBAL
+    named selection the native scene never stored, so without it every auto-lock
+    DOF scene focused on whichever target was locked LAST.
 
-Driven from the RayMol Scenes UI, which pairs each `scene ... <action>` command
-with the matching call below (snapshot_current after store/update; apply/
-apply_current after recall/prev/next; prune after delete; clear_all after clear).
+Camera lens / zoom / orthographic / FOV / clip slab are already restored by the
+scene's saved view, so they're intentionally NOT captured here (the view owns them).
+
+Driven from `cmd.scene` via the central on_scene_action hook (snapshot on
+store/update, apply on recall/prev/next, prune on delete, clear_all on clear,
+rename on rename); no per-UI-call-site pairing is needed.
 """
 from pymol import cmd
 
@@ -43,6 +49,16 @@ _IDENTITY_TTT = [1.0, 0.0, 0.0, 0.0,
 # that resets the object to identity. Every object present at store time is a key,
 # so recall can reset as well as move. Persisted into the .pse alongside settings.
 _scene_ttt = {}
+
+# {scene_name: [(model, index), ...]} — membership of the autofocus target
+# selection ('dof_focus'). Auto-lock DOF (metal_dof_autofocus) focuses on this
+# selection's centroid each frame; it is a single GLOBAL named selection the
+# native scene does not store, so without capturing it every auto-lock scene
+# would focus on whichever target was locked LAST. Empty list = no dof_focus at
+# store time. Persisted into the .pse alongside the settings + TTT.
+_scene_focus = {}
+
+_FOCUS_SEL = 'dof_focus'
 
 # Reentrancy guard: internal temp-scene machinery (.pse legacy convert, multi-scene
 # export) increments this so the cmd.scene hook does NOT capture/apply during its
@@ -119,6 +135,51 @@ def _apply_ttt(name, _self=cmd):
             pass
 
 
+def _capture_focus(_self=cmd):
+    """(model, index) atoms of the 'dof_focus' autofocus target selection ([] if
+    the selection is absent/empty)."""
+    out = []
+    try:
+        names = _self.get_names('selections') or []
+    except Exception:
+        names = []
+    if _FOCUS_SEL in names:
+        try:
+            _self.iterate(_FOCUS_SEL, 'out.append((model, index))',
+                          space={'out': out})
+        except Exception:
+            pass
+    return out
+
+
+def _apply_focus(name, _self=cmd):
+    """Re-select 'dof_focus' to scene `name`'s stored atoms (skipping objects that
+    no longer exist); an empty capture clears any existing dof_focus so the
+    renderer falls back to the center of interest — matching a scene stored with
+    no autofocus target. Does nothing for scenes with no captured focus entry."""
+    if name not in _scene_focus:
+        return
+    atoms = _scene_focus.get(name) or []
+    try:
+        live = set(_self.get_names('objects') or [])
+    except Exception:
+        live = set()
+    groups = {}
+    for m, i in atoms:
+        if m in live:
+            groups.setdefault(m, []).append(int(i))
+    try:
+        if groups:
+            expr = ' or '.join(
+                '(%s and index %s)' % (m, '+'.join(str(i) for i in idxs))
+                for m, idxs in groups.items())
+            _self.select(_FOCUS_SEL, expr, quiet=1)
+        elif _FOCUS_SEL in (_self.get_names('selections') or []):
+            _self.select(_FOCUS_SEL, 'none', quiet=1)   # clear, don't spuriously create
+    except Exception:
+        pass
+
+
 def scene_ttt_map(name):
     """Copy of the per-object TTT captured for scene `name` ({} if none)."""
     return dict(_scene_ttt.get(name, {}))
@@ -156,11 +217,13 @@ def snapshot_current(_self=cmd):
     if name:
         _scene_settings[name] = _capture(_self)
         _scene_ttt[name] = _capture_ttt(_self)
+        _scene_focus[name] = _capture_focus(_self)
     return name
 
 
 def apply(name, _self=cmd):
-    """Re-apply scene `name`'s captured render settings and per-object TTT."""
+    """Re-apply scene `name`'s captured render settings, per-object TTT, and
+    autofocus target."""
     d = _scene_settings.get(name)
     if d:
         for s, v in d.items():
@@ -169,6 +232,7 @@ def apply(name, _self=cmd):
             except Exception:
                 pass
     _apply_ttt(name, _self)
+    _apply_focus(name, _self)
 
 
 def apply_current(_self=cmd):
@@ -188,12 +252,16 @@ def prune(_self=cmd):
     for name in list(_scene_ttt.keys()):
         if name not in live:
             _scene_ttt.pop(name, None)
+    for name in list(_scene_focus.keys()):
+        if name not in live:
+            _scene_focus.pop(name, None)
 
 
 def clear_all(_self=cmd):
     """Forget all snapshots (call after `scene *, clear`)."""
     _scene_settings.clear()
     _scene_ttt.clear()
+    _scene_focus.clear()
 
 
 def rename(old, new, _self=cmd):
@@ -204,6 +272,8 @@ def rename(old, new, _self=cmd):
         _scene_settings[new] = _scene_settings.pop(old)
     if old in _scene_ttt:
         _scene_ttt[new] = _scene_ttt.pop(old)
+    if old in _scene_focus:
+        _scene_focus[new] = _scene_focus.pop(old)
 
 
 def on_scene_action(key, action, new_key=None, _self=cmd):
@@ -229,16 +299,21 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
 def session_save(session, *, _self=cmd):
     session["raymol_scene_settings"] = dict(_scene_settings)
     session["raymol_scene_ttt"] = {k: dict(v) for k, v in _scene_ttt.items()}
+    session["raymol_scene_focus"] = {k: list(v) for k, v in _scene_focus.items()}
     return 1
 
 
 def session_restore(session, *, _self=cmd):
     _scene_settings.clear()
     _scene_ttt.clear()
+    _scene_focus.clear()
     d = session.get("raymol_scene_settings")
     if isinstance(d, dict):
         _scene_settings.update(d)
     t = session.get("raymol_scene_ttt")
     if isinstance(t, dict):
         _scene_ttt.update({k: dict(v) for k, v in t.items()})
+    f = session.get("raymol_scene_focus")
+    if isinstance(f, dict):
+        _scene_focus.update({k: list(v) for k, v in f.items()})
     return 1

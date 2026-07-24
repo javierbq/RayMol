@@ -187,3 +187,53 @@ class TestSceneTTT(unittest.TestCase):
         self.assertEqual(rs.scene_ttt_map('S1'), {})
         rs.session_restore(sess, _self=cmd)
         self.assertIn('m1', rs.scene_ttt_map('S1'))
+
+    # --- autofocus target ('dof_focus' selection) per-scene capture ----------
+    def _focus_names(self):
+        out = []
+        try:
+            self.cmd.iterate('dof_focus', 'out.append(name)', space={'out': out})
+        except Exception:
+            pass
+        return sorted(set(out))
+
+    def test_autofocus_target_captured_per_scene(self):
+        cmd, rs = self.cmd, self.rs
+        cmd.fragment('trp', 'm1')
+        # Two scenes locking the autofocus target on different atoms.
+        cmd.select('dof_focus', 'm1 and name CA')
+        cmd.scene('A', 'store'); rs.snapshot_current(_self=cmd)
+        a_target = self._focus_names()
+        cmd.select('dof_focus', 'm1 and name CB')
+        cmd.scene('B', 'store'); rs.snapshot_current(_self=cmd)
+        b_target = self._focus_names()
+        self.assertNotEqual(a_target, b_target)     # distinct targets
+        # Recall A must restore A's target, not leave it stuck on B's (the bug).
+        rs.apply('A', _self=cmd)
+        self.assertEqual(self._focus_names(), a_target)
+        rs.apply('B', _self=cmd)
+        self.assertEqual(self._focus_names(), b_target)
+        rs.apply('A', _self=cmd)
+        self.assertEqual(self._focus_names(), a_target)
+
+    def test_scene_without_focus_stores_empty(self):
+        cmd, rs = self.cmd, self.rs
+        cmd.fragment('trp', 'm1')
+        if 'dof_focus' in (cmd.get_names('selections') or []):
+            cmd.delete('dof_focus')
+        cmd.scene('A', 'store'); rs.snapshot_current(_self=cmd)
+        self.assertEqual(rs._scene_focus.get('A'), [])
+
+    def test_focus_session_roundtrip(self):
+        cmd, rs = self.cmd, self.rs
+        cmd.fragment('trp', 'm1')
+        cmd.select('dof_focus', 'm1 and name CA')
+        cmd.scene('A', 'store'); rs.snapshot_current(_self=cmd)
+        sess = {}
+        rs.session_save(sess, _self=cmd)
+        self.assertIn('raymol_scene_focus', sess)
+        self.assertTrue(sess['raymol_scene_focus'].get('A'))   # non-empty
+        rs.clear_all(_self=cmd)
+        self.assertEqual(rs._scene_focus, {})
+        rs.session_restore(sess, _self=cmd)
+        self.assertIn('A', rs._scene_focus)
