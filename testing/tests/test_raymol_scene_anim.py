@@ -151,8 +151,11 @@ class TestHelpers(unittest.TestCase):
 
 class FakeCmd:
     """Records mappend/set calls; enough surface for track emission."""
-    def __init__(self, objects=None):
+    def __init__(self, objects=None, extent=None):
         self._objects = list(objects or [])
+        # ExecutiveGetExtent's "nothing resolved" placeholder (Cmd.cpp:4529).
+        self._extent = extent or [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]
+        self.extent_calls = []  # [(selection, state)]
         self.appended = []      # [(frame, command_string)] — each individual call
         self.done = []          # [(frame, command_string)] — mdo calls
         self._slots = {}        # {frame: accumulated slot string, as PyMOL stores}
@@ -184,8 +187,9 @@ class FakeCmd:
     def get_names(self, kind='objects'):
         return list(self._objects)
 
-    def iterate_state(self, *a, **k):
-        return 0
+    def get_extent(self, selection, state=0, *a, **k):   # 0 == cmd's ALL_STATES
+        self.extent_calls.append((selection, state))
+        return [list(self._extent[0]), list(self._extent[1])]
 
 
 class TestTrackBuilder(unittest.TestCase):
@@ -355,6 +359,33 @@ class TestFocusPull(unittest.TestCase):
 
     def test_eye_depth_handles_missing_view(self):
         self.assertIsNone(self.anim.eye_depth([0, 0, 0], None))
+
+    def test_focus_centroid_is_the_transformed_bbox_midpoint(self):
+        # The renderer autofocuses on the MIDPOINT of ExecutiveGetExtent(
+        # "dof_focus", transformed=true) (SceneRender.cpp:2053-2056).  Anything
+        # else (e.g. the arithmetic mean of the coords, or untransformed
+        # coordinates) disagrees with the renderer at the bracketing keyframes and
+        # snaps.  cmd.get_extent is the identical call (Cmd.cpp:4523).
+        self.scenes._scene_focus['A'] = [('m1', 1), ('m1', 2), ('m2', 5)]
+        fake = FakeCmd(objects=['m1', 'm2'],
+                       extent=[[0.0, -4.0, 2.0], [10.0, 4.0, 6.0]])
+        self.assertEqual(self.anim.focus_centroid('A', fake), [5.0, 0.0, 4.0])
+        # One selection spanning every surviving object, at state 1.
+        (sel, state), = fake.extent_calls
+        self.assertEqual(state, 1)
+        self.assertIn('m1 and index 1+2', sel)
+        self.assertIn('m2 and index 5', sel)
+        self.assertIn(' or ', sel)
+
+    def test_focus_centroid_none_when_unresolvable(self):
+        a, s = self.anim, self.scenes
+        self.assertIsNone(a.focus_centroid('A', FakeCmd()))       # nothing captured
+        s._scene_focus['A'] = [('gone', 1)]
+        self.assertIsNone(a.focus_centroid('A', FakeCmd(objects=['m1'])))  # object gone
+        s._scene_focus['B'] = [('m1', 1)]
+        # ExecutiveGetExtent returned false -> the +/-0.5 placeholder box, which
+        # must NOT be mistaken for a real target at the origin.
+        self.assertIsNone(a.focus_centroid('B', FakeCmd(objects=['m1'])))
 
     def test_pull_only_when_both_autofocus_and_targets_differ(self):
         a = self.anim

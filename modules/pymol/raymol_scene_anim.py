@@ -246,8 +246,16 @@ def eye_depth(point, view):
 
 
 def focus_centroid(name, _self=cmd):
-    """Mean MODEL-space coordinate of scene `name`'s captured autofocus target
-    atoms, skipping objects that no longer exist. None if unresolvable."""
+    """Bounding-box MIDPOINT of scene `name`'s captured autofocus target atoms,
+    skipping objects that no longer exist. None if unresolvable.
+
+    Must match the renderer exactly, which autofocuses on the midpoint of
+    ExecutiveGetExtent(G, "dof_focus", mn, mx, /*transformed*/ true, -1, false)
+    (SceneRender.cpp:2053-2056) — the bbox midpoint, not the arithmetic mean of
+    the coordinates, and in TRANSFORMED space. cmd.get_extent goes through the
+    identical ExecutiveGetExtent (Cmd.cpp:4523), so the pull's interior distances
+    agree with what the renderer computes at the bracketing keyframes (no snap at
+    either end) and follow an object displaced by a Move-mode TTT."""
     from pymol import raymol_scenes as _rs
     atoms = _rs.scene_focus_map(name)
     if not atoms:
@@ -262,18 +270,20 @@ def focus_centroid(name, _self=cmd):
             groups.setdefault(m, []).append(int(i))
     if not groups:
         return None
-    acc = [0.0, 0.0, 0.0, 0]
-    for m, idxs in groups.items():
-        sel = '(%s and index %s)' % (m, '+'.join(str(i) for i in idxs))
-        try:
-            _self.iterate_state(1, sel,
-                                'acc[0] += x; acc[1] += y; acc[2] += z; acc[3] += 1',
-                                space={'acc': acc})
-        except Exception:
-            pass
-    if acc[3] == 0:
+    # One selection over every surviving object: the renderer likewise takes a
+    # single bbox over the whole 'dof_focus' selection.
+    sel = ' or '.join('(%s and index %s)' % (m, '+'.join(str(i) for i in idxs))
+                      for m, idxs in sorted(groups.items()))
+    try:
+        mn, mx = _self.get_extent(sel, state=1)
+        mid = [(mn[i] + mx[i]) * 0.5 for i in range(3)]
+    except Exception:
         return None
-    return [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]]
+    # ExecutiveGetExtent returning false yields this placeholder unit box
+    # (Cmd.cpp:4529) — nothing resolved, so there is nothing to focus on.
+    if list(mn) == [-0.5, -0.5, -0.5] and list(mx) == [0.5, 0.5, 0.5]:
+        return None
+    return mid
 
 
 def build_focus_pull(keyframes, _self=cmd, power=None):
