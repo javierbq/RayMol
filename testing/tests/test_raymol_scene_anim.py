@@ -125,13 +125,17 @@ class FakeCmd:
     """Records mappend/set calls; enough surface for track emission."""
     def __init__(self, objects=None):
         self._objects = list(objects or [])
-        self.appended = []      # [(frame, command_string)]
+        self.appended = []      # [(frame, command_string)] — each individual call
+        self._slots = {}        # {frame: accumulated slot string, as PyMOL stores}
         self.sets = []          # [(setting, value)]
         self.selected = []      # [(name, expr)]
         self.ttt_calls = []     # [(name, ttt)]
 
     def mappend(self, frame, command):
-        self.appended.append((int(frame), command))
+        f = int(frame)
+        self.appended.append((f, command))
+        existing = self._slots.get(f, '')
+        self._slots[f] = (existing + ';' + command) if existing else (';' + command)
 
     def set(self, setting, value, *a, **k):
         self.sets.append((setting, value))
@@ -410,18 +414,18 @@ class TestAuthorAndSession(unittest.TestCase):
         fake = FakeCmd()
         self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
         # A movie session: slot 5 is the per-frame command list (0-based frames).
+        # Accumulate as real PyMOL does: each mappend appends ';cmd' to the slot.
         cmds = [''] * 8
         for f, s in fake.appended:
-            cmds[f - 1] = s
-        cmds[3] = 'turn y, 1'                    # a rock command we must preserve
-        for f, s in fake.appended:
-            if f - 1 == 3:
-                cmds[3] = 'turn y, 1;' + s
+            cmds[f - 1] = (cmds[f - 1] + ';' + s) if cmds[f - 1] else (';' + s)
+        # Frame 4 (index 3) already had a rock command before our mappend.
+        cmds[3] = 'turn y, 1' + cmds[3]
         sess = {'movie': [None] * 6}
         sess['movie'][5] = cmds
         self.anim.session_save(sess, _self=fake)
         out = sess['movie'][5]
         self.assertNotIn('enter_scene', ''.join(out))    # ours gone
+        self.assertNotIn('set ambient', ''.join(out))    # track cmds gone too
         self.assertIn('turn y, 1', out[3])               # theirs kept
 
     def test_session_restore_rejects_unknown_and_nonnumeric(self):
@@ -436,3 +440,18 @@ class TestAuthorAndSession(unittest.TestCase):
     def test_session_restore_tolerates_absent_key(self):
         self.anim.session_restore({}, _self=FakeCmd())   # must not raise
         self.assertEqual(self.anim._track, {})
+
+    def test_strip_handles_a_frame_carrying_both_mark_and_track(self):
+        self._two_scenes()
+        fake = FakeCmd()
+        # Duplicate keyframe frames put a mark and a track entry on one frame.
+        self.anim.author([(1, 'A', 0.0), (1, 'B', 0.0), (6, 'B', 0.0)], _self=fake)
+        cmds = [''] * 8
+        for f, s in fake.appended:
+            cmds[f - 1] = (cmds[f - 1] + ';' + s) if cmds[f - 1] else (';' + s)
+        sess = {'movie': [None] * 6}
+        sess['movie'][5] = cmds
+        self.anim.session_save(sess, _self=fake)
+        leftover = ''.join(sess['movie'][5])
+        self.assertNotIn('enter_scene', leftover)
+        self.assertNotIn('set ', leftover)

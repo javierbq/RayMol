@@ -303,12 +303,14 @@ def author(keyframes, _self=cmd):
     `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
     movie, in any order (sorted internally by frame). Call AFTER the path's
     cmd.mset and cmd.mview('interpolate'). Returns the number of frames touched."""
+    keyframes = list(keyframes)
+    _track.clear()
+    _scene_marks[:] = []
     marks = [(int(f), n) for f, n, _p in keyframes]
     track = build_track(keyframes)
     # The pull owns focus wherever it applies, so it overrides the plain ramp.
     for f, vals in build_focus_pull(keyframes, _self).items():
         track.setdefault(f, {}).update(vals)
-    _track.clear()
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
     touched = set(emit_scene_marks(_scene_marks, _self))
@@ -317,14 +319,14 @@ def author(keyframes, _self=cmd):
 
 
 def _our_commands():
-    """{frame: command_string} for every frame command this module authored."""
+    """{frame: [piece, ...]} for every frame command piece this module authored."""
     out = {}
     for f, name in _scene_marks:
-        out[int(f)] = scene_mark_command(name)
+        out.setdefault(int(f), []).append(scene_mark_command(name))
     for f, vals in _track.items():
         s = frame_command(vals)
         if s:
-            out[int(f)] = (out[int(f)] + '; ' + s) if int(f) in out else s
+            out.setdefault(int(f), []).append(s)
     return out
 
 
@@ -346,12 +348,13 @@ def session_save(session, *, _self=cmd):
         mv = session.get('movie')
         cmds = mv[5] if (isinstance(mv, list) and len(mv) > 5) else None
         if isinstance(cmds, list):
-            for f, ours in _our_commands().items():
+            for f, pieces in _our_commands().items():
                 i = int(f) - 1                  # movie Cmd[] is 0-based
-                if 0 <= i < len(cmds) and isinstance(cmds[i], str) and ours in cmds[i]:
-                    cmds[i] = cmds[i].replace(';' + ours, '').replace(ours, '')
-    except Exception:
-        pass
+                if 0 <= i < len(cmds) and isinstance(cmds[i], str):
+                    for s in pieces:
+                        cmds[i] = cmds[i].replace(';' + s, '').replace(s, '')
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
     return 1
 
 
