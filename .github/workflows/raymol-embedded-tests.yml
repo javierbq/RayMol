@@ -48,6 +48,7 @@ jobs:
               testing/tests/test_appkit_measure.py \
               testing/tests/test_appkit_sequence.py \
               testing/tests/test_appkit_object_panel.py \
+              testing/tests/test_appkit_objpanel_poll.py \
               testing/tests/test_appkit_settings.py \
               testing/tests/test_appkit_theme_preview.py \
               testing/tests/test_appkit_command_panel.py \

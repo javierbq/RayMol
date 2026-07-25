@@ -1276,20 +1276,7 @@ final class PyMOLEngine: ObservableObject {
     /// the panels reflect the restored scene without lag).
     func refreshAfterRestore() {
         guard isReady else { return }
-        runPython(
-            "import json\n"
-            + "from pymol import cmd as _cmd\n"
-            + "_objs = list(_cmd.get_names('public_objects') or [])\n"
-            + "_sels = list(_cmd.get_names('public_selections') or [])\n"
-            + "_en = set(_cmd.get_names('public_objects', enabled_only=1) or [])\n"
-            + "_en |= set(_cmd.get_names('public_selections', enabled_only=1) or [])\n"
-            + "_sc = {s: _cmd.count_atoms(s) for s in _sels}\n"
-            + "_ns = {o: _cmd.count_states('?' + o) for o in _objs}\n"
-            + "from pymol import appkit_inspector as _ai\n"
-            + "_ht = {o: _ai.object_has_atom_transp(o) for o in _objs}\n"
-            + "print('OBJPANEL:' + json.dumps({'objects': _objs, 'selections': _sels, "
-            + "'enabled': list(_en), 'sel_counts': _sc, 'nstate': _ns, 'has_transp': _ht}))"
-        )
+        runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
         refreshExpandedDetail()
         if sequenceVisible { fetchSequences() }
     }
@@ -2459,22 +2446,11 @@ final class PyMOLEngine: ObservableObject {
 
         // Run via runPython (raw PyRun), NOT runCommand/cmd.do — cmd.do echoes
         // the whole command block into the feedback log every poll, which floods
-        // the log and starves the UI. The print('OBJPANEL:') still reaches the
-        // feedback buffer (parsed by pollFeedback); only the echo is avoided.
-        runPython(
-            "import json\n"
-            + "from pymol import cmd as _cmd\n"
-            + "_objs = list(_cmd.get_names('public_objects') or [])\n"
-            + "_sels = list(_cmd.get_names('public_selections') or [])\n"
-            + "_en = set(_cmd.get_names('public_objects', enabled_only=1) or [])\n"
-            + "_en |= set(_cmd.get_names('public_selections', enabled_only=1) or [])\n"
-            + "_sc = {s: _cmd.count_atoms(s) for s in _sels}\n"
-            + "_ns = {o: _cmd.count_states('?' + o) for o in _objs}\n"
-            + "from pymol import appkit_inspector as _ai\n"
-            + "_ht = {o: _ai.object_has_atom_transp(o) for o in _objs}\n"
-            + "print('OBJPANEL:' + json.dumps({'objects': _objs, 'selections': _sels, "
-            + "'enabled': list(_en), 'sel_counts': _sc, 'nstate': _ns, 'has_transp': _ht}))"
-        )
+        // the log and starves the UI. The print('OBJPANEL:ready') still reaches
+        // the feedback buffer (parsed by pollFeedback); only the echo is avoided.
+        // poll_panel writes the list to a temp file and prints just that marker,
+        // so the payload can't overflow the ~1KB feedback-line cap (#231).
+        runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
 
         pollDetails()
         // Discover/refresh the timeline length + frame (cheap). Fast updates
