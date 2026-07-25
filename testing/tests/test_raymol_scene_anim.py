@@ -413,11 +413,14 @@ class TestAuthorAndSession(unittest.TestCase):
         self._two_scenes()
         fake = FakeCmd()
         self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
-        # A movie session: slot 5 is the per-frame command list (0-based frames).
-        # Accumulate as real PyMOL does: each mappend appends ';cmd' to the slot.
+        # Build cmds from the fake's slot accumulator — the single source of truth
+        # for what PyMOL would store.  Re-implementing the concatenation here would
+        # let the fake and the test drift (exactly the failure mode that hid the
+        # original '; ' vs ';' bug).
         cmds = [''] * 8
-        for f, s in fake.appended:
-            cmds[f - 1] = (cmds[f - 1] + ';' + s) if cmds[f - 1] else (';' + s)
+        for f, slot in fake._slots.items():
+            if 1 <= f <= 8:
+                cmds[f - 1] = slot
         # Frame 4 (index 3) already had a rock command before our mappend.
         cmds[3] = 'turn y, 1' + cmds[3]
         sess = {'movie': [None] * 6}
@@ -426,7 +429,7 @@ class TestAuthorAndSession(unittest.TestCase):
         out = sess['movie'][5]
         self.assertNotIn('enter_scene', ''.join(out))    # ours gone
         self.assertNotIn('set ambient', ''.join(out))    # track cmds gone too
-        self.assertIn('turn y, 1', out[3])               # theirs kept
+        self.assertEqual(out[3], 'turn y, 1')            # exactly theirs, nothing ours
 
     def test_session_restore_rejects_unknown_and_nonnumeric(self):
         sess = {'raymol_movie_anim': {
@@ -442,16 +445,36 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(self.anim._track, {})
 
     def test_strip_handles_a_frame_carrying_both_mark_and_track(self):
-        self._two_scenes()
+        # A restored session can put a track entry and a scene mark on the SAME
+        # frame; real mappend then leaves ";mark;track" in that slot (each
+        # mappend call prefixes ';').  The strip must empty that slot entirely —
+        # a leftover locks the whole movie on the next load.
+        #
+        # The previous version of this test used author() with keyframes designed
+        # to collide but the collision never materialised (span-0 pairs and
+        # same-scene pairs were both skipped), so _track was always empty and only
+        # the mark path was exercised.  session_restore is the reachable path that
+        # genuinely co-locates both pieces on one frame.
         fake = FakeCmd()
-        # Duplicate keyframe frames put a mark and a track entry on one frame.
-        self.anim.author([(1, 'A', 0.0), (1, 'B', 0.0), (6, 'B', 0.0)], _self=fake)
-        cmds = [''] * 8
-        for f, s in fake.appended:
-            cmds[f - 1] = (cmds[f - 1] + ';' + s) if cmds[f - 1] else (';' + s)
+        self.anim.session_restore(
+            {'raymol_movie_anim': {'track': {'1': {'ambient': 0.5}},
+                                   'marks': [[1, 'A']]}}, _self=fake)
+        # Both pieces must have landed on frame 1.
+        self.assertTrue(any(f == 1 and 'enter_scene' in s
+                            for f, s in fake.appended),
+                        "expected enter_scene on frame 1")
+        self.assertTrue(any(f == 1 and 'set ambient' in s
+                            for f, s in fake.appended),
+                        "expected set ambient on frame 1")
+        # Build cmds from the slot accumulator — the single source of truth.
+        cmds = [''] * 4
+        for f, slot in fake._slots.items():
+            if 1 <= f <= 4:
+                cmds[f - 1] = slot
         sess = {'movie': [None] * 6}
         sess['movie'][5] = cmds
         self.anim.session_save(sess, _self=fake)
         leftover = ''.join(sess['movie'][5])
         self.assertNotIn('enter_scene', leftover)
-        self.assertNotIn('set ', leftover)
+        self.assertNotIn('set ambient', leftover)
+        self.assertEqual(sess['movie'][5][0], '')    # frame 1 fully emptied
