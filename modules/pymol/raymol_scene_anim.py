@@ -255,7 +255,9 @@ def build_focus_pull(keyframes, _self=cmd):
 
     Only authored when both scenes have autofocus on and their centroids differ;
     every other combination steps at the cut. Must run AFTER cmd.mview
-    ('interpolate') so cmd.frame(f) yields the interpolated view."""
+    ('interpolate') so cmd.frame(f) yields the interpolated view. Note: this
+    function leaves the playhead at the last interior frame it visited; callers
+    should reset to a specific frame afterwards if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
     kfs = sorted(keyframes, key=lambda k: int(k[0]))

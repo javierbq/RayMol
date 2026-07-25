@@ -276,6 +276,22 @@ class TestFocusPull(unittest.TestCase):
         self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0, 0.0], view), 50.0)
         self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0, 10.0], view), 40.0)
 
+    def test_eye_depth_25float_layout(self):
+        # 25-float view uses stride-4 rotation indices (view[2], view[6], view[10])
+        # and tz/origin at indices 18-21.  Identity rotation with tz=-50 gives
+        # depth = -eye_z = -(r22*(pz - oz) + tz) = -(pz + (-50)) = 50 - pz.
+        view25 = [0.0] * 25
+        view25[0]  = 1.0   # R[0,0]
+        view25[5]  = 1.0   # R[1,1]
+        view25[10] = 1.0   # R[2,2]  — this is r22 for eye_depth (view[10])
+        # view[2]=0, view[6]=0, view[10]=1 → r20=0, r21=0, r22=1
+        view25[18] = -50.0  # tz
+        view25[19] = 0.0    # ox
+        view25[20] = 0.0    # oy
+        view25[21] = 0.0    # oz
+        self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0,  0.0], view25), 50.0)
+        self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0, 10.0], view25), 40.0)
+
     def test_eye_depth_handles_missing_view(self):
         self.assertIsNone(self.anim.eye_depth([0, 0, 0], None))
 
@@ -292,27 +308,55 @@ class TestFocusPull(unittest.TestCase):
         self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
         self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
 
-        view = [1, 0, 0, 0, 1, 0, 0, 0, 1,
-                0.0, 0.0, -50.0, 0.0, 0.0, 0.0, -60.0, -40.0, 20.0]
-
+        # A camera that DOLLIES: each frame pulls back by 0.5 Å, so the depth of
+        # a fixed point differs per frame.  A lerp of endpoint distances would
+        # miss this; only per-frame reprojection tracks the moving camera.
         class ViewCmd(FakeCmd):
+            def __init__(self, *args, **kwargs):
+                FakeCmd.__init__(self, *args, **kwargs)
+                self.frames_seen = []
+                self._tz = -50.0
             def frame(self, f):
-                self.last_frame = int(f)
+                self.frames_seen.append(int(f))
+                self._tz = -50.0 - int(f) * 0.5      # camera moves with the frame
             def get_view(self):
-                return view
+                return [1, 0, 0,
+                        0, 1, 0,
+                        0, 0, 1,
+                        0.0, 0.0, self._tz,
+                        0.0, 0.0, 0.0,
+                        -60.0, -40.0, 20.0]
 
         fake = ViewCmd()
-        # Stub the centroids: A near (z=0 -> depth 50), B far (z=-20 -> depth 70).
+        # Stub the centroids: A near (z=0), B far (z=-20).
         a.focus_centroid = lambda name, _self=None: (
             [0.0, 0.0, 0.0] if name == 'A' else [0.0, 0.0, -20.0])
 
         pull = a.build_focus_pull([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
+
+        # 1. _self.frame(f) must be called once per interior frame, in order.
+        #    An implementation that skips frame() entirely would produce [] here.
+        self.assertEqual(fake.frames_seen, list(range(2, 11)))
+
+        # 2. Interior frames only, monotone distances, autofocus disabled.
         self.assertEqual(sorted(pull), list(range(2, 11)))
         for vals in pull.values():
-            self.assertEqual(vals['metal_dof_autofocus'], 0.0)  # off during pull
+            self.assertEqual(vals['metal_dof_autofocus'], 0.0)
         dists = [pull[f]['metal_dof_focus'] for f in range(2, 11)]
-        self.assertEqual(dists, sorted(dists))                  # monotone
-        self.assertTrue(all(50.0 < d < 70.0 for d in dists))    # between endpoints
+        self.assertEqual(dists, sorted(dists))
+        self.assertTrue(all(d > 50.0 for d in dists))
+
+        # 3. Per-frame reprojection departs from a straight lerp of the endpoint
+        #    depths.  Frame 6 (the midpoint) coincides by easing symmetry; frame 4
+        #    yields a ~0.28 Å gap.  An implementation that lerps endpoint depths
+        #    instead of reprojecting per frame would hit lerp_f4 exactly here.
+        ref = ViewCmd()
+        ref.frame(1)
+        d_start = a.eye_depth([0.0, 0.0, 0.0], ref.get_view())    # centroid A at f=1
+        ref.frame(11)
+        d_end = a.eye_depth([0.0, 0.0, -20.0], ref.get_view())    # centroid B at f=11
+        lerp_f4 = d_start + (d_end - d_start) * a.ease((4 - 1) / 10.0)
+        self.assertGreater(abs(pull[4]['metal_dof_focus'] - lerp_f4), 1e-6)
 
     def test_identical_targets_need_no_pull(self):
         a = self.anim
