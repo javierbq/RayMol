@@ -308,6 +308,39 @@ def poll(objs):
         print('OBJDETAIL_ERR:' + str(e))
 
 
+def poll_panel():
+    """Write the object-list JSON to a temp file and print a short marker.
+
+    Same rationale as poll(), for the object side-panel's list (#231). The payload
+    grows ~62 bytes per object (name + per-object nstate/has_transp), so printing
+    it inline as `OBJPANEL:<json>` overflowed PyMOL's ~1KB feedback-line cap at
+    ~16 objects — e.g. after `split_states` on a 20-model NMR ensemble. The core
+    then split the line: the truncated first fragment still carried the OBJPANEL:
+    prefix but failed JSON decode (so the panel froze on the stale list), and the
+    prefix-less continuation leaked into the console on every poll tick. Keep the
+    payload off the feedback line entirely and emit only `OBJPANEL:ready`."""
+    import json, os, tempfile
+    try:
+        objs = list(cmd.get_names('public_objects') or [])
+        sels = list(cmd.get_names('public_selections') or [])
+        enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])
+        enabled |= set(cmd.get_names('public_selections', enabled_only=1) or [])
+        payload = {
+            'objects': objs,
+            'selections': sels,
+            'enabled': list(enabled),
+            'sel_counts': {s: cmd.count_atoms(s) for s in sels},
+            'nstate': {o: cmd.count_states('?' + o) for o in objs},
+            'has_transp': {o: object_has_atom_transp(o) for o in objs},
+        }
+        p = os.path.join(tempfile.gettempdir(), 'pymol_objpanel.json')
+        with open(p, 'w') as _f:
+            _f.write(json.dumps(payload))
+        print('OBJPANEL:ready')
+    except Exception as e:
+        print('OBJPANEL_ERR:' + str(e))
+
+
 def widen_clip_for_surface(buffer=12.0):
     """When a probe-extended rep (surface / mesh / dots) is shown, widen the
     clipping slab so the rep's ~solvent_radius shell (~3 A beyond the atoms) isn't
