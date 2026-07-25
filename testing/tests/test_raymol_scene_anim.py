@@ -256,3 +256,68 @@ class TestTrackBuilder(unittest.TestCase):
         fake = FakeCmd()
         self.anim.enter_scene('!!!not-base64!!!', _self=fake)   # must not raise
         self.assertEqual(fake.sets, [])
+
+
+class TestFocusPull(unittest.TestCase):
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+
+    def test_eye_depth_matches_hand_math(self):
+        # 18-float view layout: rows 0-8 rotation, 9-11 camera pos, 12-14 origin.
+        view = [1, 0, 0,
+                0, 1, 0,
+                0, 0, 1,
+                0.0, 0.0, -50.0,
+                0.0, 0.0, 0.0,
+                -60.0, -40.0, 20.0]
+        # R_row2 = (v[2], v[5], v[8]) = (0,0,1); tz = v[11] = -50; origin = 0.
+        # eye_z = z - 0 + (-50) = z - 50  ->  depth = 50 - z
+        self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0, 0.0], view), 50.0)
+        self.assertAlmostEqual(self.anim.eye_depth([0.0, 0.0, 10.0], view), 40.0)
+
+    def test_eye_depth_handles_missing_view(self):
+        self.assertIsNone(self.anim.eye_depth([0, 0, 0], None))
+
+    def test_pull_only_when_both_autofocus_and_targets_differ(self):
+        a = self.anim
+        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'off'}
+        # B has autofocus off -> step, no pull.
+        self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
+                                            _self=FakeCmd()), {})
+
+    def test_pull_emits_monotone_distance_and_disables_autofocus(self):
+        a = self.anim
+        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
+
+        view = [1, 0, 0, 0, 1, 0, 0, 0, 1,
+                0.0, 0.0, -50.0, 0.0, 0.0, 0.0, -60.0, -40.0, 20.0]
+
+        class ViewCmd(FakeCmd):
+            def frame(self, f):
+                self.last_frame = int(f)
+            def get_view(self):
+                return view
+
+        fake = ViewCmd()
+        # Stub the centroids: A near (z=0 -> depth 50), B far (z=-20 -> depth 70).
+        a.focus_centroid = lambda name, _self=None: (
+            [0.0, 0.0, 0.0] if name == 'A' else [0.0, 0.0, -20.0])
+
+        pull = a.build_focus_pull([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
+        self.assertEqual(sorted(pull), list(range(2, 11)))
+        for vals in pull.values():
+            self.assertEqual(vals['metal_dof_autofocus'], 0.0)  # off during pull
+        dists = [pull[f]['metal_dof_focus'] for f in range(2, 11)]
+        self.assertEqual(dists, sorted(dists))                  # monotone
+        self.assertTrue(all(50.0 < d < 70.0 for d in dists))    # between endpoints
+
+    def test_identical_targets_need_no_pull(self):
+        a = self.anim
+        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
+        a.focus_centroid = lambda name, _self=None: [1.0, 2.0, 3.0]
+        self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
+                                            _self=FakeCmd()), {})

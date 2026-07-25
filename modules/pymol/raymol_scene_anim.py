@@ -192,6 +192,102 @@ def emit_scene_marks(marks, _self=cmd):
     return done
 
 
+def eye_depth(point, view):
+    """Positive eye-space distance (Angstroms, in front of the camera) of a
+    MODEL-space point under `view` (a cmd.get_view() result). Same camera math as
+    metal_pick._eye_distance: eye_z = R_row2 . (p - origin) + tz, depth = -eye_z."""
+    if not view:
+        return None
+    if len(view) >= 25:
+        r20, r21, r22 = view[2], view[6], view[10]
+        tz = view[18]
+        ox, oy, oz = view[19], view[20], view[21]
+    else:                                   # 18-float layout (this build)
+        r20, r21, r22 = view[2], view[5], view[8]
+        tz = view[11]
+        ox, oy, oz = view[12], view[13], view[14]
+    ez = (r20 * (point[0] - ox) + r21 * (point[1] - oy)
+          + r22 * (point[2] - oz) + tz)
+    return -ez
+
+
+def focus_centroid(name, _self=cmd):
+    """Mean MODEL-space coordinate of scene `name`'s captured autofocus target
+    atoms, skipping objects that no longer exist. None if unresolvable."""
+    from pymol import raymol_scenes as _rs
+    atoms = _rs.scene_focus_map(name)
+    if not atoms:
+        return None
+    try:
+        live = set(_self.get_names('objects') or [])
+    except Exception:
+        live = set()
+    groups = {}
+    for m, i in atoms:
+        if m in live:
+            groups.setdefault(m, []).append(int(i))
+    if not groups:
+        return None
+    acc = [0.0, 0.0, 0.0, 0]
+    for m, idxs in groups.items():
+        sel = '(%s and index %s)' % (m, '+'.join(str(i) for i in idxs))
+        try:
+            _self.iterate_state(1, sel,
+                                'acc[0] += x; acc[1] += y; acc[2] += z; acc[3] += 1',
+                                space={'acc': acc})
+        except Exception:
+            pass
+    if acc[3] == 0:
+        return None
+    return [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]]
+
+
+def build_focus_pull(keyframes, _self=cmd):
+    """Per-frame focus distance for transitions whose autofocus target moves.
+
+    With metal_dof_autofocus on, the renderer recomputes focus from the
+    'dof_focus' selection every frame and DISCARDS metal_dof_focus
+    (SceneRender.cpp:2051), so a changing target can only snap. To pull instead,
+    autofocus is switched off across the transition and the distance is driven
+    per frame: the target centroid is interpolated in model space and its depth
+    resolved under THAT frame's interpolated camera (a straight lerp of the two
+    endpoint distances would drift whenever the camera dollies).
+
+    Only authored when both scenes have autofocus on and their centroids differ;
+    every other combination steps at the cut. Must run AFTER cmd.mview
+    ('interpolate') so cmd.frame(f) yields the interpolated view."""
+    from pymol import raymol_scenes as _rs
+    out = {}
+    kfs = sorted(keyframes, key=lambda k: int(k[0]))
+    for (f0, n0, _p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+        f0, f1 = int(f0), int(f1)
+        span = f1 - f0
+        if span < 2:
+            continue
+        sa = _rs.scene_settings_map(n0)
+        sb = _rs.scene_settings_map(n1)
+        if not (_truthy(sa.get('metal_dof_autofocus'))
+                and _truthy(sb.get('metal_dof_autofocus'))):
+            continue                          # not both locked -> step at the cut
+        ca = focus_centroid(n0, _self)
+        cb = focus_centroid(n1, _self)
+        if ca is None or cb is None or ca == cb:
+            continue
+        power = effective_power(p1)
+        for f in range(f0 + 1, f1):
+            e = ease((f - f0) / float(span), power)
+            p = [ca[i] + (cb[i] - ca[i]) * e for i in range(3)]
+            try:
+                _self.frame(f)
+                d = eye_depth(p, _self.get_view())
+            except Exception:
+                d = None
+            if d is None or d <= 0.0:
+                continue
+            out[f] = {'metal_dof_autofocus': 0.0, 'metal_dof_focus': d}
+    return out
+
+
 def enter_scene(name_b64, _self=cmd):
     """Movie-frame callback: make scene `name`'s captured render settings and
     autofocus target current. Applies ALL captured settings (at a keyframe the
