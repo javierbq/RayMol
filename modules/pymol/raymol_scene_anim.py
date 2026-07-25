@@ -206,8 +206,8 @@ def enter_scene(name_b64, _self=cmd):
     for s, v in _rs.scene_settings_map(name).items():
         try:
             _self.set(s, v)
-        except Exception:
-            pass
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
     try:
         _rs.apply_focus_target(name, _self)
     except Exception:

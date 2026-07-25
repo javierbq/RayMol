@@ -128,12 +128,16 @@ class FakeCmd:
         self.appended = []      # [(frame, command_string)]
         self.sets = []          # [(setting, value)]
         self.selected = []      # [(name, expr)]
+        self.ttt_calls = []     # [(name, ttt)]
 
     def mappend(self, frame, command):
         self.appended.append((int(frame), command))
 
     def set(self, setting, value, *a, **k):
         self.sets.append((setting, value))
+
+    def set_object_ttt(self, name, ttt, *a, **k):
+        self.ttt_calls.append((name, ttt))
 
     def select(self, name, expr, *a, **k):
         self.selected.append((name, expr))
@@ -193,6 +197,26 @@ class TestTrackBuilder(unittest.TestCase):
         # Quarter-way in, the eased ramp lags the linear one.
         self.assertLess(smooth[2]['ambient'], linear[2]['ambient'])
 
+    def test_destination_keyframe_power_drives_easing(self):
+        self._store('A', ambient=0.0)
+        self._store('B', ambient=1.0)
+        # Only the DESTINATION keyframe's power may matter; flipping the source's
+        # must not change the result, flipping the destination's must.
+        dest_linear = self.anim.build_track([(1, 'A', 0.0), (5, 'B', 1.0)])
+        dest_smooth = self.anim.build_track([(1, 'A', 1.0), (5, 'B', 0.0)])
+        self.assertNotEqual(dest_linear[2]['ambient'], dest_smooth[2]['ambient'])
+        # dest_linear is the linear ramp: quarter-way in == 0.25
+        self.assertAlmostEqual(dest_linear[2]['ambient'], 0.25)
+        self.assertLess(dest_smooth[2]['ambient'], 0.25)
+
+    def test_unsorted_keyframes_are_sorted(self):
+        self._store('A', ambient=0.0)
+        self._store('B', ambient=1.0)
+        out_of_order = self.anim.build_track([(11, 'B', 0.0), (1, 'A', 0.0)])
+        in_order = self.anim.build_track([(1, 'A', 0.0), (11, 'B', 0.0)])
+        self.assertEqual(out_of_order, in_order)
+        self.assertEqual(sorted(out_of_order), list(range(2, 11)))
+
     def test_frame_command_and_emit(self):
         fake = FakeCmd()
         track = {3: {'ambient': 0.5, 'metal_dof_aperture': 2.0}}
@@ -226,7 +250,7 @@ class TestTrackBuilder(unittest.TestCase):
         self.assertEqual(applied.get('ambient'), '0.3')
         self.assertEqual(fake.appended, [])            # no frame commands
         # TTT is the movie's own channel — enter_scene must not touch it.
-        self.assertFalse(hasattr(fake, 'set_object_ttt_called'))
+        self.assertEqual(fake.ttt_calls, [])
 
     def test_enter_scene_tolerates_garbage(self):
         fake = FakeCmd()
