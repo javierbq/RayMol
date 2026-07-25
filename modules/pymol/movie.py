@@ -679,12 +679,13 @@ ARGUMENTS
         # Per-scene render settings. Passing BOTH the hold-start and dwell-end
         # keyframes makes the values hold through the dwell (identical endpoints
         # produce no emission) and animate only across the transition.
-        if _scene_kfs:
-            try:
-                from pymol import raymol_scene_anim as _an
-                _an.author(_scene_kfs, _self=cmd)
-            except Exception as e:
-                print('MOVIE_ERR:' + str(e))
+        # Unconditional (author([]) is the reset): a scene-less rebuild must not
+        # inherit the previous movie's animation.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(_scene_kfs, _self=cmd)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
         cmd.frame(start)
 
 _prefix = "mov"

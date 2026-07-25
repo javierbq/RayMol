@@ -18,9 +18,22 @@ testable. Mirrors the appkit_inspector.poll pattern.
 from pymol import cmd
 
 
+def _drop_scene_animation():
+    """Forget the per-scene setting animation authored into the OLD movie. Must
+    run BEFORE the mset that discards it: author([]) blanks the frame commands it
+    owns (while those slots still exist) and clears its track, so the animation
+    cannot be persisted into — or re-authored on top of — an unrelated movie."""
+    try:
+        from pymol import raymol_scene_anim as _an
+        _an.author([])
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+
+
 def reset_movie():
     """Clear the movie timeline (frame sequence + camera keyframes) and rewind."""
     try:
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('')
         cmd.rewind()
@@ -34,6 +47,7 @@ def new_timeline(frames):
     shows state 1. Rewinds to the start."""
     try:
         n = max(2, int(frames))
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('1 x%d' % n)
         cmd.rewind()
@@ -96,6 +110,7 @@ def reset_ensemble():
     """Drop all movie authoring and rewind so a multi-state object plays its raw
     models again (count_frames falls back to the state count)."""
     try:
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('')
         cmd.rewind()
@@ -326,12 +341,13 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                         cmd.mview('interpolate', object=obj)
                     except Exception:
                         pass
-                if scene_kfs:
-                    try:
-                        from pymol import raymol_scene_anim as _an
-                        _an.author(scene_kfs)
-                    except Exception as e:
-                        print('MOVIE_ERR:' + str(e))
+                # Unconditional: author([]) is the reset. Guarding on scene_kfs
+                # would leave a previous movie's animation live in the module.
+                try:
+                    from pymol import raymol_scene_anim as _an
+                    _an.author(scene_kfs)
+                except Exception as e:
+                    print('MOVIE_ERR:' + str(e))
 
         elif k in ('state_loop', 'state_sweep'):
             maxs = 1
@@ -497,12 +513,14 @@ def rebuild(spec_json):
                 print('MOVIE_ERR:' + str(e))
         # Per-scene render settings (DOF etc.) across the transitions. AFTER the
         # interpolate above: the focus pull samples each frame's interpolated view.
-        if scene_kfs:
-            try:
-                from pymol import raymol_scene_anim as _an
-                _an.author(scene_kfs)
-            except Exception as e:
-                print('MOVIE_ERR:' + str(e))
+        # UNCONDITIONAL — a rebuild whose scene items were all deleted must reach
+        # author([]) to drop the previous movie's animation, which mset wipes from
+        # Cmd[] but which would otherwise still be persisted and re-authored.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(scene_kfs)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
 
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:
