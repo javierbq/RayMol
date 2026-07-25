@@ -365,3 +365,74 @@ class TestFocusPull(unittest.TestCase):
         a.focus_centroid = lambda name, _self=None: [1.0, 2.0, 3.0]
         self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
                                             _self=FakeCmd()), {})
+
+
+class TestAuthorAndSession(unittest.TestCase):
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+
+    def _two_scenes(self):
+        self.scenes._scene_settings['A'] = {'ambient': '0.0', 'metal_dof': 'off'}
+        self.scenes._scene_settings['B'] = {'ambient': '1.0', 'metal_dof': 'on'}
+
+    def test_author_emits_marks_and_track_and_records_state(self):
+        self._two_scenes()
+        fake = FakeCmd()
+        n = self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        self.assertGreater(n, 0)
+        frames = [f for f, _ in fake.appended]
+        self.assertIn(1, frames)                 # scene mark at each keyframe
+        self.assertIn(6, frames)
+        self.assertTrue(set(range(2, 6)).issubset(frames))   # interior track
+        self.assertEqual(sorted(self.anim._track), list(range(2, 6)))
+        self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
+
+    def test_session_roundtrip_reauthors(self):
+        self._two_scenes()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=FakeCmd())
+        sess = {}
+        self.anim.session_save(sess, _self=FakeCmd())
+        self.assertIn('raymol_movie_anim', sess)
+        saved_track = dict(self.anim._track)
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+        fake = FakeCmd()
+        self.anim.session_restore(sess, _self=fake)
+        self.assertEqual(self.anim._track, saved_track)
+        self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
+        self.assertTrue(fake.appended)           # commands regenerated, not replayed
+
+    def test_session_save_blanks_only_our_own_commands(self):
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        # A movie session: slot 5 is the per-frame command list (0-based frames).
+        cmds = [''] * 8
+        for f, s in fake.appended:
+            cmds[f - 1] = s
+        cmds[3] = 'turn y, 1'                    # a rock command we must preserve
+        for f, s in fake.appended:
+            if f - 1 == 3:
+                cmds[3] = 'turn y, 1;' + s
+        sess = {'movie': [None] * 6}
+        sess['movie'][5] = cmds
+        self.anim.session_save(sess, _self=fake)
+        out = sess['movie'][5]
+        self.assertNotIn('enter_scene', ''.join(out))    # ours gone
+        self.assertIn('turn y, 1', out[3])               # theirs kept
+
+    def test_session_restore_rejects_unknown_and_nonnumeric(self):
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'ambient': 0.5,
+                            'os.system': 1.0,          # not a captured setting
+                            'metal_dof_aperture': 'rm -rf /'}},   # non-numeric
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(self.anim._track, {3: {'ambient': 0.5}})
+
+    def test_session_restore_tolerates_absent_key(self):
+        self.anim.session_restore({}, _self=FakeCmd())   # must not raise
+        self.assertEqual(self.anim._track, {})

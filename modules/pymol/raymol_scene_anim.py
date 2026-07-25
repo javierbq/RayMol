@@ -290,6 +290,116 @@ def build_focus_pull(keyframes, _self=cmd):
     return out
 
 
+# The animation authored into the CURRENT movie, regenerated on every rebuild.
+# {frame: {setting: float}} for interior transition frames...
+_track = {}
+# ...and [(frame, scene_name)] for the scene keyframes carrying enter_scene.
+_scene_marks = []
+
+
+def author(keyframes, _self=cmd):
+    """Author the whole per-scene setting animation for a movie.
+
+    `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
+    movie, in any order (sorted internally by frame). Call AFTER the path's
+    cmd.mset and cmd.mview('interpolate'). Returns the number of frames touched."""
+    marks = [(int(f), n) for f, n, _p in keyframes]
+    track = build_track(keyframes)
+    # The pull owns focus wherever it applies, so it overrides the plain ramp.
+    for f, vals in build_focus_pull(keyframes, _self).items():
+        track.setdefault(f, {}).update(vals)
+    _track.clear()
+    _track.update(track)
+    _scene_marks[:] = sorted(set(marks))
+    touched = set(emit_scene_marks(_scene_marks, _self))
+    touched.update(emit_track(_track, _self))
+    return len(touched)
+
+
+def _our_commands():
+    """{frame: command_string} for every frame command this module authored."""
+    out = {}
+    for f, name in _scene_marks:
+        out[int(f)] = scene_mark_command(name)
+    for f, vals in _track.items():
+        s = frame_command(vals)
+        if s:
+            out[int(f)] = (out[int(f)] + '; ' + s) if int(f) in out else s
+    return out
+
+
+# --- .pse persistence (registered in cmd._deferred_init_pymol_internals) ---
+def session_save(session, *, _self=cmd):
+    """Persist the animation as STRUCTURED data and strip our own frame commands
+    out of the saved movie.
+
+    Stripping matters: any non-empty frame command makes session load call
+    MovieSetLock (Movie.cpp:459-462), and MovieDoFrameCommand is gated on
+    !Locked (Movie.cpp:1051) — so a locked movie loses its commands, its scene
+    recall AND its camera track, and RayMol has no security-wizard UI to unlock
+    it. We remove only OUR text so a co-located rock/nutate command survives."""
+    session['raymol_movie_anim'] = {
+        'track': {str(f): dict(v) for f, v in _track.items()},
+        'marks': [[int(f), n] for f, n in _scene_marks],
+    }
+    try:
+        mv = session.get('movie')
+        cmds = mv[5] if (isinstance(mv, list) and len(mv) > 5) else None
+        if isinstance(cmds, list):
+            for f, ours in _our_commands().items():
+                i = int(f) - 1                  # movie Cmd[] is 0-based
+                if 0 <= i < len(cmds) and isinstance(cmds[i], str) and ours in cmds[i]:
+                    cmds[i] = cmds[i].replace(';' + ours, '').replace(ours, '')
+    except Exception:
+        pass
+    return 1
+
+
+def session_restore(session, *, _self=cmd):
+    """Rebuild the animation from structured data and RE-AUTHOR the commands.
+
+    Values are validated (known captured setting + real number) and the command
+    strings are regenerated here — stored text is never replayed, so a hostile
+    .pse cannot smuggle executable code through our session key."""
+    _track.clear()
+    _scene_marks[:] = []
+    d = session.get('raymol_movie_anim')
+    if not isinstance(d, dict):
+        return 1
+    from pymol import raymol_scenes as _rs
+    known = set(_rs.CAPTURE)
+    raw = d.get('track')
+    if isinstance(raw, dict):
+        for fs, vals in raw.items():
+            try:
+                f = int(fs)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(vals, dict):
+                continue
+            clean = {}
+            for s, v in vals.items():
+                if s not in known:
+                    continue
+                fv = _as_float(v)
+                if fv is None:
+                    continue
+                clean[s] = fv
+            if clean:
+                _track[f] = clean
+    marks = d.get('marks')
+    if isinstance(marks, list):
+        for m in marks:
+            try:
+                _scene_marks.append((int(m[0]), str(m[1])))
+            except Exception:
+                continue
+    _scene_marks[:] = sorted(set(_scene_marks))
+    emit_scene_marks(_scene_marks, _self)
+    emit_track(_track, _self)
+    return 1
+
+
 def enter_scene(name_b64, _self=cmd):
     """Movie-frame callback: make scene `name`'s captured render settings and
     autofocus target current. Applies ALL captured settings (at a keyframe the

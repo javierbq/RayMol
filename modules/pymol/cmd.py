@@ -65,6 +65,18 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _rs_e:
         print("raymol_scenes registration failed: %s" % _rs_e)
 
+    # RayMol: per-scene render-setting animation across a scene movie. Registered
+    # AFTER raymol_scenes so its restore runs first — the animation is rebuilt
+    # from those captures.
+    try:
+        from pymol import raymol_scene_anim
+        if raymol_scene_anim.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(raymol_scene_anim.session_restore)
+        if raymol_scene_anim.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(raymol_scene_anim.session_save)
+    except Exception as _ra_e:
+        print("raymol_scene_anim registration failed: %s" % _ra_e)
+
     # take care of some deferred initialization
 
     _pymol._view_dict_sc = Shortcut()
