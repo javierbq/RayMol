@@ -57,8 +57,11 @@ over MCP.
   lands **last** and overrides the C++ scene recall.
 - **`mset` wipes all frame commands** (`Movie.cpp:918` `I->Cmd.clear()`), so
   emission must come after the `mset` in the authoring path.
-- **Use `mappend`, not `mdo`.** `movie._rock`/`_nutate` already own frame commands
-  in `add_scenes` (`movie.py:90,114,158,182,210,244`); `mdo` would overwrite them.
+- **Use `mappend`, not `mdo`.** Defensive: `mdo` *sets* the slot, so it would
+  silently overwrite a third-party frame command sharing a frame with ours.
+  PyMOL's `movie` module does write such commands — the LEGACY top-level helpers
+  `rock`/`roll`/`tdroll`/`zoom`/`nutate`/`screw` (`movie.py:90,114,158,182,210,244`)
+  — though *not* on the `add_scenes` path (see below).
 - **⚠ The `.pse` security lock.** Frame commands are serialized into the session
   (`MovieCmdAsPyList`, `Movie.cpp:483`). On load, if any command is non-empty and
   `G->Security` is on (default), `MovieSetLock(G, true)` fires
@@ -232,10 +235,19 @@ Same four authoring paths as the #204 object motion, emitting **after**
   ourselves. We never persist or replay raw command strings, so a hostile `.pse`
   cannot smuggle executable code through our session key. This is why the
   save/restore is not simply "stash and replay `Cmd[]`".
-- **Not taken on:** a movie built by `add_scenes` with rock/nutate also writes its
-  own frame commands, which will still trip the lock on reload. That is
-  pre-existing behavior; taking ownership of arbitrary third-party command strings
-  would reintroduce exactly the security hole above.
+- **`add_scenes` with rock/nutate carries no third-party frame commands, so our
+  strip is sufficient.** An earlier draft of this spec claimed otherwise and
+  listed it as a known limitation; that was wrong. The `mdo` call sites in
+  `movie.py` (90, 114, 158, 182, 210, 244) belong to the LEGACY top-level
+  `rock`/`roll`/`tdroll`/`zoom`/`nutate`/`screw` helpers (defined at
+  `movie.py:64, 93, 118, 167, 185, 214`), which `add_scenes` never calls. The
+  camera animation it *does* use — `_rock` (`movie.py:490`), `_nutate`
+  (`movie.py:543`) and `_nutate_sub` (`movie.py:517`) — authors `mview store`
+  keyframes (`power=-1` / `freeze=1`) and writes **no** frame commands at all.
+  Blanking our own text therefore leaves such a movie with an entirely empty
+  `Cmd[]`, and it reloads unlocked. `mappend` over `mdo` stays the right
+  defensive choice for the general case (a user's own `mdo`), but no limitation
+  remains on the shipping scene-movie paths.
 
 ## Testing
 
