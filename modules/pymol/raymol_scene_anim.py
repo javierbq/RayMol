@@ -190,7 +190,12 @@ def frame_command(values):
 
 def emit_track(track, _self=cmd):
     """Author one mappend per interior frame. mappend (not mdo) so rock/nutate
-    frame commands in movie.add_scenes survive. Returns the frames touched."""
+    frame commands in movie.add_scenes survive. Returns the frames touched.
+
+    Note: this invariant holds only on the SAVE path. The re-author path
+    (clear_authored) deliberately blanks whole slots before re-emitting — a
+    third-party command sharing an exact frame with ours is dropped. See
+    clear_authored for the rationale."""
     done = []
     for f in sorted(track):
         s = frame_command(track[f])
@@ -252,10 +257,13 @@ def focus_centroid(name, _self=cmd):
     Must match the renderer exactly, which autofocuses on the midpoint of
     ExecutiveGetExtent(G, "dof_focus", mn, mx, /*transformed*/ true, -1, false)
     (SceneRender.cpp:2053-2056) — the bbox midpoint, not the arithmetic mean of
-    the coordinates, and in TRANSFORMED space. cmd.get_extent goes through the
-    identical ExecutiveGetExtent (Cmd.cpp:4523), so the pull's interior distances
-    agree with what the renderer computes at the bracketing keyframes (no snap at
-    either end) and follow an object displaced by a Move-mode TTT."""
+    the coordinates, in TRANSFORMED space. The C++ state argument -1 takes the
+    OMOP_MNMX path (ObjectMolecule.cpp:9927,9947) and loops over ALL coordinate
+    sets (all states of the object). cmd.get_extent(state=0) passes int(0)-1=-1
+    to the same ExecutiveGetExtent (Cmd.cpp:4523), so the pull's interior
+    distances agree with what the renderer computes at the bracketing keyframes
+    (no snap at either end) for both single-state and multi-state (NMR/MD)
+    objects alike, and follow an object displaced by a Move-mode TTT."""
     from pymol import raymol_scenes as _rs
     atoms = _rs.scene_focus_map(name)
     if not atoms:
@@ -275,7 +283,7 @@ def focus_centroid(name, _self=cmd):
     sel = ' or '.join('(%s and index %s)' % (m, '+'.join(str(i) for i in idxs))
                       for m, idxs in sorted(groups.items()))
     try:
-        mn, mx = _self.get_extent(sel, state=1)
+        mn, mx = _self.get_extent(sel, state=0)   # ALL_STATES -> C++ -1 (all coord sets)
         mid = [(mn[i] + mx[i]) * 0.5 for i in range(3)]
     except Exception:
         return None
@@ -422,7 +430,14 @@ def session_save(session, *, _self=cmd):
     MovieSetLock (Movie.cpp:459-462), and MovieDoFrameCommand is gated on
     !Locked (Movie.cpp:1051) — so a locked movie loses its commands, its scene
     recall AND its camera track, and RayMol has no security-wizard UI to unlock
-    it. We remove only OUR text so a co-located rock/nutate command survives."""
+    it. We remove only OUR text so a co-located rock/nutate command survives.
+
+    Note: this invariant holds only on the SAVE path. The re-author path uses
+    clear_authored (mdo '', overwriting the whole slot) to blank previously-
+    authored frames before re-emitting — that is intentional, not a bug; a
+    re-author that only appended would pile new commands on top of stale ones
+    and session_save could no longer strip what it cannot regenerate. See
+    clear_authored for the full rationale."""
     session['raymol_movie_anim'] = {
         'track': {str(f): dict(v) for f, v in _track.items()},
         'marks': [[int(f), n] for f, n in _scene_marks],

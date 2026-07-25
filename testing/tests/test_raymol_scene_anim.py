@@ -397,12 +397,35 @@ class TestFocusPull(unittest.TestCase):
         fake = FakeCmd(objects=['m1', 'm2'],
                        extent=[[0.0, -4.0, 2.0], [10.0, 4.0, 6.0]])
         self.assertEqual(self.anim.focus_centroid('A', fake), [5.0, 0.0, 4.0])
-        # One selection spanning every surviving object, at state 1.
+        # One selection spanning every surviving object, at ALL_STATES (state=0):
+        # cmd.get_extent(state=0) passes int(0)-1=-1 to ExecutiveGetExtent, which
+        # takes the OMOP_MNMX all-coord-sets path — matching the renderer exactly
+        # for multi-state (NMR/MD) objects.  state=1 would differ.
         (sel, state), = fake.extent_calls
-        self.assertEqual(state, 1)
+        self.assertEqual(state, 0)      # ALL_STATES, not state 1
         self.assertIn('m1 and index 1+2', sel)
         self.assertIn('m2 and index 5', sel)
         self.assertIn(' or ', sel)
+
+        # Multi-state distinguishing assertion: a FakeCmd that returns a WIDER
+        # bbox for state=0 (all states, what the renderer sees) and a NARROWER
+        # one for state=1 (first state only, the old wrong path) lets us verify
+        # that the fix returns the all-states result.  Under state=1 the midpoint
+        # would be 1.5 (mid of [1,2]) — not 0.0 — so assertNotAlmostEqual proves
+        # the test is not vacuously true.
+        class _MultiStateFakeCmd(FakeCmd):
+            def get_extent(self, selection, state=0, *a, **k):
+                self.extent_calls.append((selection, state))
+                if state == 0:          # all-states union (what renderer computes)
+                    return [[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]
+                else:                   # state-1-only (wrong; old code used this)
+                    return [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        self.scenes._scene_focus['B'] = [('m1', 1)]
+        ms = _MultiStateFakeCmd(objects=['m1'])
+        result = self.anim.focus_centroid('B', ms)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result[0], 0.0)     # midpoint of all-states [-5,5]
+        self.assertNotAlmostEqual(result[0], 1.5)  # would be 1.5 under state=1
 
     def test_focus_centroid_none_when_unresolvable(self):
         a, s = self.anim, self.scenes
