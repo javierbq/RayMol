@@ -224,19 +224,13 @@ struct ContentView: View {
     @ViewBuilder private var busyOverlay: some View {
         if engine.isBusy {
             CalculatingOverlay(label: engine.busyLabel)
-        } else if let designLabel = designBusyLabel {
-            // Design inference (score / repack / redesign) blocks input just like a
-            // long PyMOL op, so no conflicting action can be issued mid-inference.
-            CalculatingOverlay(label: designLabel)
         }
-    }
-
-    // Label for the blocking overlay while a Design-mode inference runs (nil = idle).
-    private var designBusyLabel: String? {
         #if RAYMOL_MPNN
-        return engine.designMode ? engine.designController.designBusyLabel : nil
-        #else
-        return nil
+        // Design inference blocks input like a long PyMOL op. Rendered by a dedicated
+        // view that OBSERVES the controller — see DesignBusyOverlayView.
+        if !engine.isBusy && engine.designMode {
+            DesignBusyOverlayView(controller: engine.designController)
+        }
         #endif
     }
 
@@ -3942,6 +3936,26 @@ private struct DesignOverlayView: View {
                         in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5)
                 .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
+    }
+}
+#endif
+
+#if RAYMOL_MPNN
+// Input-blocking overlay for Design-mode inference (redesign / repack).
+//
+// This MUST be its own View holding the controller as @ObservedObject.
+// ContentView observes only `engine`, and DesignController is a NESTED
+// ObservableObject — its @Published changes do NOT re-render the parent. Driving
+// the overlay from ContentView left it on screen after the work had finished
+// (flag already false), blocking input until some unrelated engine change
+// happened to force a redraw.
+private struct DesignBusyOverlayView: View {
+    @ObservedObject var controller: DesignController
+
+    var body: some View {
+        if let label = controller.designBusyLabel {
+            CalculatingOverlay(label: label)
+        }
     }
 }
 #endif
