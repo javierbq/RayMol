@@ -128,6 +128,28 @@ def clear_keyframe(frame, linear=0):
         print('MOVIE_ERR:' + str(e))
 
 
+def _scene_keyframes():
+    """[(frame, scene_name, power)] for every scene marker currently on the
+    timeline, recovered by scrubbing: a scene-tagged keyframe sets
+    scene_current_name when its frame is displayed."""
+    out = []
+    try:
+        n = int(cmd.count_frames())
+    except Exception:
+        return out
+    seen = None
+    for f in range(1, n + 1):
+        try:
+            cmd.frame(f)
+            cur = cmd.get('scene_current_name') or ''
+        except Exception:
+            continue
+        if cur and cur != seen:
+            out.append((f, cur, 0.0))
+        seen = cur
+    return out
+
+
 def place_scene(frame, name, linear=0):
     """Place scene `name` as a timeline marker at `frame`. Moves the playhead
     there, recalls the scene (so the live camera == the scene's camera), then
@@ -152,6 +174,13 @@ def place_scene(frame, name, linear=0):
                 cmd.mview('interpolate', object=obj)
             except Exception:
                 pass
+        # Re-author the setting animation across the WHOLE movie: a single dropped
+        # marker changes the transitions on both sides of it.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(_scene_keyframes())
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
 
@@ -270,6 +299,7 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                 per = max(2, int(round(float(seconds_per_scene) * fps)))
                 ensure(per * len(names))
                 motion = []
+                scene_kfs = []
                 for i, nm in enumerate(names):
                     f = start + 1 + i * per
                     cmd.frame(f)
@@ -280,12 +310,19 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                         motion += _rs.emit_object_motion(nm, f)
                     except Exception:
                         pass
+                    scene_kfs.append((f, nm, 0.0))
                 cmd.mview('reinterpolate', power=0.0, linear=0.0)
                 for obj in dict.fromkeys(motion):
                     try:
                         cmd.mview('interpolate', object=obj)
                     except Exception:
                         pass
+                if scene_kfs:
+                    try:
+                        from pymol import raymol_scene_anim as _an
+                        _an.author(scene_kfs)
+                    except Exception as e:
+                        print('MOVIE_ERR:' + str(e))
 
         elif k in ('state_loop', 'state_sweep'):
             maxs = 1
@@ -405,6 +442,7 @@ def rebuild(spec_json):
         state_clips = [it for it in spec if it.get('states')]
         cam_scene = [it for it in spec if not it.get('states')]
         motion = []   # objects that received per-scene TTT keyframes (#204)
+        scene_kfs = []   # (frame, scene_name, power) for the setting animation
 
         # Camera + scene keyframes on the GLOBAL track (camera view / scene reps),
         # plus an optional pinned global state for non-swept objects.
@@ -429,6 +467,7 @@ def rebuild(spec_json):
                     motion += _rs.emit_object_motion(name, f)
                 except Exception:
                     pass
+                scene_kfs.append((f, name, power))
             else:
                 cam = it.get('cam')
                 v = _views.get(str(cam)) if cam is not None else None
@@ -445,6 +484,14 @@ def rebuild(spec_json):
         for obj in dict.fromkeys(motion):
             try:
                 cmd.mview('interpolate', object=obj)
+            except Exception as e:
+                print('MOVIE_ERR:' + str(e))
+        # Per-scene render settings (DOF etc.) across the transitions. AFTER the
+        # interpolate above: the focus pull samples each frame's interpolated view.
+        if scene_kfs:
+            try:
+                from pymol import raymol_scene_anim as _an
+                _an.author(scene_kfs)
             except Exception as e:
                 print('MOVIE_ERR:' + str(e))
 
