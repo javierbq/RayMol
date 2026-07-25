@@ -131,12 +131,17 @@ def clear_keyframe(frame, linear=0):
 def _scene_keyframes():
     """[(frame, scene_name, power)] for every scene marker currently on the
     timeline, recovered by scrubbing: a scene-tagged keyframe sets
-    scene_current_name when its frame is displayed."""
+    scene_current_name when its frame is displayed. Restores the playhead before
+    returning — the caller's frame must survive the scrub."""
     out = []
     try:
         n = int(cmd.count_frames())
     except Exception:
         return out
+    try:
+        saved = int(cmd.get_frame() or 1)
+    except Exception:
+        saved = 1
     seen = None
     for f in range(1, n + 1):
         try:
@@ -147,6 +152,10 @@ def _scene_keyframes():
         if cur and cur != seen:
             out.append((f, cur, 0.0))
         seen = cur
+    try:
+        cmd.frame(saved)
+    except Exception:
+        pass
     return out
 
 

@@ -683,8 +683,8 @@ ARGUMENTS
             try:
                 from pymol import raymol_scene_anim as _an
                 _an.author(_scene_kfs, _self=cmd)
-            except Exception:
-                pass
+            except Exception as e:
+                print('MOVIE_ERR:' + str(e))
         cmd.frame(start)
 
 _prefix = "mov"
