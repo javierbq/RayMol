@@ -121,6 +121,29 @@ else:
 
     pymol_test_dir = os.path.abspath(os.path.dirname(__file__))
 
+    def check_installed_layer():
+        '''
+        RayMol: warn when the *installed* pymol Python layer has drifted from
+        this checkout, because the runner imports pymol from site-packages and
+        would otherwise test old code without saying so. Returns the warning
+        text (already printed) or None. Never raises -- a diagnostic must not
+        be able to break the run it is diagnosing.
+        '''
+        try:
+            stale_check = import_from_file(
+                os.path.join(pymol_test_dir, 'stale_check.py'),
+                'raymol_stale_check')
+            warning = stale_check.check_installed_layer(
+                os.path.join(os.path.dirname(pymol_test_dir), 'modules', 'pymol'),
+                os.path.dirname(os.path.abspath(pymol.__file__)))
+        except Exception as e:
+            print('stale_check skipped: %s' % e, file=sys.stderr)
+            return None
+        if warning:
+            print(warning, file=sys.stderr)
+            sys.stderr.flush()
+        return warning
+
     deferred_unlink = []
     deferred_rmtree = []
 
@@ -648,6 +671,8 @@ USAGE
 
     run_testfiles file1 file2 ... [, verbosity [, out ]]
         '''
+        stale_warning = check_installed_layer()
+
         if filenames in ('all', ['all']):
             global run_all
             run_all = True
@@ -704,7 +729,18 @@ USAGE
             import subprocess
             subprocess.call(['rd', '/s', '/q', deferred_rmtree.pop()], shell=True)
 
-        return len(testresult.errors) + len(testresult.failures) + pytest_nfail
+        nfail = len(testresult.errors) + len(testresult.failures) + pytest_nfail
+
+        # Repeat the staleness verdict *after* the results, where it is read.
+        if stale_warning:
+            print('\nREMINDER: the installed pymol Python layer is stale (see the '
+                  'warning above)\n          -- %s here cannot be trusted either '
+                  'way. Refresh, then re-run.'
+                  % ('the %d failure(s)' % nfail if nfail else 'the passes'),
+                  file=sys.stderr)
+            sys.stderr.flush()
+
+        return nfail
 
     def cli():
         '''
