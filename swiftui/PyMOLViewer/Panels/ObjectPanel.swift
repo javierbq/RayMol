@@ -931,17 +931,13 @@ struct ObjectPanel: View {
 
     // Pick-granularity menu (mouse_selection_mode): what a viewport tap selects.
     private func refreshObjects() {
+        // Same file-based payload as the ~500ms poll (see parseObjectPanelFeedback):
+        // poll_panel writes the list to a temp file and prints only the marker, so
+        // a large object list can't overflow the feedback-line cap (#231).
         engine.runCommand(
             "python\n"
-            + "import json\n"
-            + "from pymol import cmd\n"
-            + "objs = list(cmd.get_names('public_objects') or [])\n"
-            + "sels = list(cmd.get_names('public_selections') or [])\n"
-            + "enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])\n"
-            + "enabled |= set(cmd.get_names('public_selections', enabled_only=1) or [])\n"
-            + "sel_counts = {s: cmd.count_atoms(s) for s in sels}\n"
-            + "print('OBJPANEL:' + json.dumps({'objects': objs, 'selections': sels, "
-            + "'enabled': list(enabled), 'sel_counts': sel_counts}))\n"
+            + "from pymol import appkit_inspector as _ai\n"
+            + "_ai.poll_panel()\n"
             + "python end"
         )
     }
@@ -3393,13 +3389,17 @@ extension ObjectEntry {
 // MARK: - PyMOLEngine extensions for object polling
 
 extension PyMOLEngine {
-    /// Parse the OBJPANEL JSON output from feedback and update the objects array.
-    /// Called by the existing pollFeedback timer. Feedback lines starting with
-    /// "OBJPANEL:" carry the JSON payload from our Python query.
+    /// Parse the object-list JSON (written by appkit_inspector.poll_panel to a
+    /// temp file; the feedback line is just the "OBJPANEL:ready" trigger) and
+    /// update the objects array. Called by the existing pollFeedback timer.
+    /// File-based to avoid the ~1KB feedback-line cap splitting the payload —
+    /// inline, the list truncated at ~16 objects (so the panel froze on the stale
+    /// list after e.g. `split_states`) and the continuation leaked to the log (#231).
     func parseObjectPanelFeedback(_ line: String) {
         guard line.hasPrefix("OBJPANEL:") else { return }
-        let jsonStr = String(line.dropFirst("OBJPANEL:".count))
-        guard let data = jsonStr.data(using: .utf8) else { return }
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_objpanel.json")
+        guard let data = FileManager.default.contents(atPath: path) else { return }
 
         struct PanelPayload: Decodable {
             let objects: [String]
