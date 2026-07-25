@@ -42,12 +42,21 @@ def load_modules():
 
 def cpp_ease(fxn, power):
     """Reference port of ViewElemInterpolate's easing (layer1/View.cpp:1165-1177)
-    with bias=1.0 and parabolic=True — what the camera actually does."""
-    if power != 1.0:
+    with bias=1.0 — what the camera actually does. A negative power clears the
+    parabolic flag (View.cpp:897-900), adding the circular pre-warp."""
+    parabolic = True
+    if power < 0.0:
+        parabolic = False
+        power = -power
+    if power != 1.0 or not parabolic:
         if fxn < 0.5:
+            if not parabolic:
+                fxn = (1.0 - math.cos(math.pi * fxn)) * 0.5
             fxn = (fxn * 2.0) ** power * 0.5
         elif fxn > 0.5:
             fxn = 1.0 - fxn
+            if not parabolic:
+                fxn = (1.0 - math.cos(math.pi * fxn)) * 0.5
             fxn = (fxn * 2.0) ** power * 0.5
             fxn = 1.0 - fxn
     return fxn
@@ -58,7 +67,9 @@ class TestHelpers(unittest.TestCase):
         self.scenes, self.anim = load_modules()
 
     def test_ease_matches_cpp_curve(self):
-        for power in (1.4, 1.0, 2.0):
+        # -1.0 exercises the parabolic=false (circular) branch the core takes for
+        # a negative power, e.g. the keyframes movie._rock stores.
+        for power in (1.4, 1.0, 2.0, -1.0, -1.4):
             for i in range(0, 21):
                 t = i / 20.0
                 self.assertAlmostEqual(
@@ -74,10 +85,27 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(self.anim.ease(0.25, 1.0), 0.25)
 
     def test_effective_power(self):
-        # mview power=0 means "use the default", which View.cpp puts at 1.4.
-        self.assertEqual(self.anim.effective_power(0.0), 1.4)
-        self.assertEqual(self.anim.effective_power(None), 1.4)
-        self.assertEqual(self.anim.effective_power(1.0), 1.0)
+        e = self.anim.effective_power
+        # `mview store` records a power only when non-zero (Movie.cpp:1183-1185),
+        # so a 0/None endpoint carries no power_flag and does not vote; with
+        # neither flagged View.cpp falls back to 1.4.
+        self.assertEqual(e(0.0), 1.4)
+        self.assertEqual(e(None), 1.4)
+        self.assertEqual(e(0.0, 0.0), 1.4)
+        self.assertEqual(e(1.0), 1.0)              # only the first is flagged
+        self.assertEqual(e(0.0, 1.0), 1.0)         # only the last is flagged
+        # Both flagged: same sign averages (View.cpp:879-881).
+        self.assertEqual(e(1.0, 2.0), 1.5)
+        self.assertEqual(e(-1.0, -2.0), -1.5)
+        # Mixed signs: bigger magnitude wins, else the negative one
+        # (View.cpp:882-888).
+        self.assertEqual(e(-2.0, 1.0), -2.0)
+        self.assertEqual(e(1.0, -2.0), -2.0)
+        # A non-zero mview interpolate/reinterpolate power is resolved before the
+        # endpoints are consulted at all (View.cpp:877); 0 means "not given".
+        self.assertEqual(e(1.0, 1.0, 2.0), 2.0)
+        self.assertEqual(e(1.0, 1.0, 0.0), 1.0)
+        self.assertEqual(e(0.0, 0.0, 1.0), 1.0)
 
     def test_as_float_and_truthy_handle_pymol_strings(self):
         # cmd.get() returns strings: '0.80000' for floats, 'on'/'off' for bools.
@@ -208,17 +236,39 @@ class TestTrackBuilder(unittest.TestCase):
         # Quarter-way in, the eased ramp lags the linear one.
         self.assertLess(smooth[2]['ambient'], linear[2]['ambient'])
 
-    def test_destination_keyframe_power_drives_easing(self):
+    def test_both_endpoint_powers_resolve_the_easing(self):
         self._store('A', ambient=0.0)
         self._store('B', ambient=1.0)
-        # Only the DESTINATION keyframe's power may matter; flipping the source's
-        # must not change the result, flipping the destination's must.
-        dest_linear = self.anim.build_track([(1, 'A', 0.0), (5, 'B', 1.0)])
-        dest_smooth = self.anim.build_track([(1, 'A', 1.0), (5, 'B', 0.0)])
-        self.assertNotEqual(dest_linear[2]['ambient'], dest_smooth[2]['ambient'])
-        # dest_linear is the linear ramp: quarter-way in == 0.25
-        self.assertAlmostEqual(dest_linear[2]['ambient'], 0.25)
-        self.assertLess(dest_smooth[2]['ambient'], 0.25)
+        a = self.anim
+        # ViewElemInterpolate resolves the power from BOTH endpoints, so the
+        # SOURCE keyframe's easing counts exactly as much as the destination's.
+        # (Using the destination alone desynced the settings from the camera on a
+        # mixed Linear/Smooth timeline.)  Only one endpoint flagged -> that one
+        # decides, whichever end it sits on.
+        src_only = a.build_track([(1, 'A', 1.0), (5, 'B', 0.0)])
+        dst_only = a.build_track([(1, 'A', 0.0), (5, 'B', 1.0)])
+        self.assertEqual(src_only, dst_only)
+        self.assertAlmostEqual(src_only[2]['ambient'], 0.25)      # linear ramp
+        # Neither flagged -> View.cpp's 1.4 default, which lags the linear ramp.
+        neither = a.build_track([(1, 'A', 0.0), (5, 'B', 0.0)])
+        self.assertLess(neither[2]['ambient'], 0.25)
+        # Both flagged and different -> the average power, not either endpoint.
+        mixed = a.build_track([(1, 'A', 1.0), (5, 'B', 2.0)])
+        avg = a.build_track([(1, 'A', 1.5), (5, 'B', 1.5)])
+        self.assertAlmostEqual(mixed[2]['ambient'], avg[2]['ambient'])
+        self.assertNotAlmostEqual(mixed[2]['ambient'], src_only[2]['ambient'])
+
+    def test_interpolate_power_override_beats_the_endpoints(self):
+        self._store('A', ambient=0.0)
+        self._store('B', ambient=1.0)
+        a = self.anim
+        # The power handed to mview interpolate/reinterpolate wins outright —
+        # place_scene passes 1.0 for Linear while the markers store nothing.
+        forced = a.build_track([(1, 'A', 0.0), (5, 'B', 0.0)], power=1.0)
+        self.assertAlmostEqual(forced[2]['ambient'], 0.25)
+        # 0.0 means "no override was given": the endpoints decide again.
+        self.assertEqual(a.build_track([(1, 'A', 0.0), (5, 'B', 0.0)], power=0.0),
+                         a.build_track([(1, 'A', 0.0), (5, 'B', 0.0)]))
 
     def test_unsorted_keyframes_are_sorted(self):
         self._store('A', ambient=0.0)

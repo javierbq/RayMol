@@ -147,7 +147,13 @@ def _scene_keyframes():
     """[(frame, scene_name, power)] for every scene marker currently on the
     timeline, recovered by scrubbing: a scene-tagged keyframe sets
     scene_current_name when its frame is displayed. Restores the playhead before
-    returning — the caller's frame must survive the scrub."""
+    returning — the caller's frame must survive the scrub.
+
+    The per-keyframe power is reported as 0.0 ("none stored") because scrubbing
+    cannot read ViewElem.power back. That is not a loss here: every path that
+    scrubs also drives the easing with a movie-wide `mview reinterpolate power=`,
+    which the core resolves ahead of both endpoints — the caller passes that same
+    value to raymol_scene_anim.author(power=...)."""
     out = []
     try:
         n = int(cmd.count_frames())
@@ -199,10 +205,12 @@ def place_scene(frame, name, linear=0):
             except Exception:
                 pass
         # Re-author the setting animation across the WHOLE movie: a single dropped
-        # marker changes the transitions on both sides of it.
+        # marker changes the transitions on both sides of it. `power` is the same
+        # easing override just handed to reinterpolate (1.0 = Linear), so the
+        # settings ease exactly like the camera.
         try:
             from pymol import raymol_scene_anim as _an
-            _an.author(_scene_keyframes())
+            _an.author(_scene_keyframes(), power=power)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
     except Exception as e:

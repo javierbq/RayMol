@@ -20,6 +20,7 @@ commands in a .pse trip MovieSetLock, which disables the entire per-frame path
 commands out of the saved session.
 """
 import base64
+import math
 
 from pymol import cmd
 
@@ -61,28 +62,59 @@ def _truthy(v):
 
 def ease(t, power=_DEFAULT_POWER):
     """Normalized transition position -> eased position, mirroring
-    ViewElemInterpolate (View.cpp:1165-1177, bias=1, parabolic) so animated
-    settings track the camera instead of desyncing (~24% off at t=0.25)."""
+    ViewElemInterpolate (View.cpp:1165-1177, bias=1) so animated settings track
+    the camera instead of desyncing (~24% off at t=0.25). A NEGATIVE power means
+    parabolic=false there (View.cpp:897-900): a circular warp is applied first and
+    the magnitude is used as the exponent."""
     if t <= 0.0:
         return 0.0
     if t >= 1.0:
         return 1.0
-    if power == 1.0:
+    parabolic = power >= 0.0
+    if not parabolic:
+        power = -power
+    if power == 1.0 and parabolic:
         return t
-    if t < 0.5:
-        return (t * 2.0) ** power * 0.5
-    if t > 0.5:
-        return 1.0 - (((1.0 - t) * 2.0) ** power * 0.5)
-    return 0.5
+    if t == 0.5:
+        return 0.5
+    flip = t > 0.5
+    if flip:
+        t = 1.0 - t
+    if not parabolic:
+        t = (1.0 - math.cos(math.pi * t)) * 0.5    # circular
+    t = (t * 2.0) ** power * 0.5                   # parabolic
+    return 1.0 - t if flip else t
 
 
-def effective_power(power):
-    """mview power=0 means 'use the default'; View.cpp's default is 1.4. Swift
-    encodes Linear as power=1.0 and Smooth as power=0.0."""
-    p = _as_float(power)
-    if p is None or p == 0.0:
-        return _DEFAULT_POWER
-    return p
+def effective_power(first, last=None, override=None):
+    """The easing power the core would use for a transition, per
+    ViewElemInterpolate (View.cpp:877-897).
+
+    A non-zero `override` — the power handed to mview interpolate/reinterpolate —
+    wins outright. Otherwise BOTH endpoints decide: `mview store` records a power
+    only when it is non-zero (Movie.cpp:1183-1185), so a 0/None endpoint carries no
+    power_flag and simply does not vote. Two same-sign powers average; a mixed pair
+    resolves the way View.cpp does; neither flagged falls back to 1.4. Using the
+    destination alone desyncs the settings from the camera on a mixed
+    Linear/Smooth timeline — exactly the defect this module exists to remove."""
+    ov = _as_float(override)
+    if ov is not None and ov != 0.0:
+        return ov
+    a = _as_float(first)
+    b = _as_float(last)
+    if a == 0.0:
+        a = None                      # power=0 -> power_flag never set
+    if b == 0.0:
+        b = None
+    if a is None:
+        return _DEFAULT_POWER if b is None else b
+    if b is None:
+        return a
+    if (a > 0.0) == (b > 0.0):
+        return (a + b) / 2.0
+    if abs(a) > abs(b):
+        return a
+    return b if b < 0.0 else a
 
 
 def interpolatable(setting, a, b):
@@ -107,17 +139,19 @@ def value_at(setting, a, b, e):
     return v
 
 
-def build_track(keyframes):
+def build_track(keyframes, power=None):
     """Per-frame interpolated values for the INTERIOR frames of each transition.
 
-    `keyframes` is an ordered iterable of (frame, scene_name, power) where power
-    is the easing of the transition INTO that keyframe (as passed to mview).
+    `keyframes` is an ordered iterable of (frame, scene_name, power) where power is
+    the one stored WITH that keyframe (as passed to mview store). `power` is the
+    movie-wide override the path passed to mview interpolate/reinterpolate, if any.
+    Both endpoints of a transition contribute — see effective_power.
     Returns {frame: {setting: float}}. Scene keyframes themselves are applied by
     enter_scene (exact captured values), so they are deliberately absent here."""
     from pymol import raymol_scenes as _rs
     track = {}
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, _p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
         f0, f1 = int(f0), int(f1)
         span = f1 - f0
         if span < 2:
@@ -134,9 +168,9 @@ def build_track(keyframes):
             pairs[s] = (fa, fb)
         if not pairs:
             continue
-        power = effective_power(p1)
+        pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
-            e = ease((f - f0) / float(span), power)
+            e = ease((f - f0) / float(span), pw)
             slot = track.setdefault(f, {})
             for s, (fa, fb) in pairs.items():
                 slot[s] = value_at(s, fa, fb, e)
@@ -242,7 +276,7 @@ def focus_centroid(name, _self=cmd):
     return [acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]]
 
 
-def build_focus_pull(keyframes, _self=cmd):
+def build_focus_pull(keyframes, _self=cmd, power=None):
     """Per-frame focus distance for transitions whose autofocus target moves.
 
     With metal_dof_autofocus on, the renderer recomputes focus from the
@@ -261,7 +295,7 @@ def build_focus_pull(keyframes, _self=cmd):
     from pymol import raymol_scenes as _rs
     out = {}
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, _p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
         f0, f1 = int(f0), int(f1)
         span = f1 - f0
         if span < 2:
@@ -275,13 +309,13 @@ def build_focus_pull(keyframes, _self=cmd):
         cb = focus_centroid(n1, _self)
         if ca is None or cb is None or ca == cb:
             continue
-        power = effective_power(p1)
+        pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
-            e = ease((f - f0) / float(span), power)
-            p = [ca[i] + (cb[i] - ca[i]) * e for i in range(3)]
+            e = ease((f - f0) / float(span), pw)
+            pt = [ca[i] + (cb[i] - ca[i]) * e for i in range(3)]
             try:
                 _self.frame(f)
-                d = eye_depth(p, _self.get_view())
+                d = eye_depth(pt, _self.get_view())
             except Exception:
                 d = None
             if d is None or d <= 0.0:
@@ -328,12 +362,15 @@ def clear_authored(_self=cmd):
     return done
 
 
-def author(keyframes, _self=cmd):
+def author(keyframes, _self=cmd, power=None):
     """Author the whole per-scene setting animation for a movie.
 
     `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
-    movie, in any order (sorted internally by frame). Call AFTER the path's
-    cmd.mset and cmd.mview('interpolate'). Returns the number of frames touched.
+    movie, in any order (sorted internally by frame), each power being the one
+    stored with that keyframe. `power` is the movie-wide easing override the path
+    passed to cmd.mview('interpolate'/'reinterpolate') — 0/None means it passed
+    none and the endpoints decide. Call AFTER the path's cmd.mset and
+    cmd.mview('interpolate'). Returns the number of frames touched.
 
     author([]) is the reset: it un-emits the previous pass and clears the track,
     so call it unconditionally — including on a rebuild that has no scenes at all,
@@ -343,9 +380,9 @@ def author(keyframes, _self=cmd):
     _track.clear()
     _scene_marks[:] = []
     marks = [(int(f), n) for f, n, _p in keyframes]
-    track = build_track(keyframes)
+    track = build_track(keyframes, power)
     # The pull owns focus wherever it applies, so it overrides the plain ramp.
-    for f, vals in build_focus_pull(keyframes, _self).items():
+    for f, vals in build_focus_pull(keyframes, _self, power).items():
         track.setdefault(f, {}).update(vals)
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
