@@ -126,21 +126,30 @@ Only settings whose value actually **differs** between the two scenes are emitte
 
 ### Easing — mirror the core
 
-Ported verbatim from `View.cpp:1165-1177` (with `bias` fixed at 1.0, `parabolic`
-true, matching how RayMol authors keyframes):
+Ported verbatim from `View.cpp:1165-1177` (with `bias` fixed at 1.0):
 
 ```python
 def ease(t, power=1.4):
     """Normalized transition position -> eased position. Mirrors
-    ViewElemInterpolate so settings track the camera instead of desyncing."""
-    if power == 1.0:
+    ViewElemInterpolate so settings track the camera instead of desyncing.
+    A NEGATIVE power means parabolic=false (View.cpp:897-900): a circular
+    warp is applied first and the magnitude is used as the exponent."""
+    parabolic = power >= 0.0
+    if not parabolic:
+        power = -power
+    if power == 1.0 and parabolic:
         return t
-    if t < 0.5:
-        return (t * 2.0) ** power * 0.5
-    if t > 0.5:
-        return 1.0 - (((1.0 - t) * 2.0) ** power * 0.5)
-    return 0.5
+    # ... symmetric flip logic; see raymol_scene_anim.py for full code ...
+    if not parabolic:
+        t = (1.0 - math.cos(math.pi * t)) * 0.5   # circular pre-warp
+    t = (t * 2.0) ** power * 0.5                  # parabolic step
+    # (flip symmetry applied around t=0.5)
 ```
+
+`power < 0` is needed because `movie._rock` and `movie._nutate` store `mview`
+keyframes with `power=-1` (`freeze=1`; `View.cpp:897`). The effective_power
+helper (not shown here) resolves the power from both endpoints of a transition
+and the movie-wide `reinterpolate` override, matching `ViewElemInterpolate`.
 
 `power` is 1.4 for Smooth and 1.0 for Linear — matching how Swift encodes the
 transition (`PyMOLEngine.swift:1702-1704`).
@@ -164,8 +173,13 @@ For a transition into scene B from scene A where the effective focus target
 differs (either scene has autofocus on and their `dof_focus` captures differ):
 
 1. At author time, resolve each scene's target **centroid in model coordinates**
-   from its `scene_focus_map` atoms (mean of coordinates; falls back to the
-   scene's `metal_dof_focus` distance, or the origin, when the capture is empty).
+   from its `scene_focus_map` atoms: call `cmd.get_extent(sel, state=0)` over
+   the surviving atoms and take the **bounding-box midpoint** (same as
+   ExecutiveGetExtent with C++ state=-1, which loops over all coordinate sets).
+   `state=0` (ALL_STATES) is critical for multi-state (NMR/MD) objects —
+   `state=1` (first state only) would diverge from the renderer on those objects
+   and re-introduce the endpoint snap. Falls back to None when the capture is
+   empty or the objects no longer exist.
 2. For each interior frame `f`: `cmd.frame(f)` yields the interpolated camera, and
    `cmd.get_view()` gives that frame's view. Compute the eye-space depth of
    `lerp3(centroid_A, centroid_B, ease(t))` under that view — reusing the existing
@@ -228,6 +242,15 @@ Same four authoring paths as the #204 object motion, emitting **after**
   `MovieSetLock`. Persist the animation as **structured data**:
   `session["raymol_movie_anim"] = {frame: {setting: number}}` plus the per-frame
   focus values.
+- `clear_authored` (the **re-author** defence): every authoring path calls
+  `author()`, and `author()` calls `clear_authored()` first — blanking each
+  frame it previously owned via `mdo(f, '')` before writing the new commands.
+  Without this, a second call to `author()` (e.g. after `place_scene` moves a
+  marker) would append the new commands on top of the old ones; `session_save`
+  can only strip what it can regenerate from the current `_track/_scene_marks`,
+  so every orphaned command from the earlier pass would survive into the `.pse`
+  and trip `MovieSetLock`. The save-time strip and `clear_authored` are therefore
+  two complementary halves of the same defence.
 - `session_restore`: **validate** — accept only setting names present in
   `raymol_scenes.CAPTURE` and values that are real numbers — then regenerate the
   `set` command strings and re-apply them with `mappend`.
