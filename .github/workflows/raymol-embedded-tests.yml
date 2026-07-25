@@ -56,4 +56,5 @@ jobs:
               testing/tests/test_appkit_sequence_panel.py \
               testing/tests/test_appkit_ray_overlay.py \
               testing/tests/test_metal_pick.py \
-              testing/tests/test_mouse_panel.py
+              testing/tests/test_mouse_panel.py \
+              testing/tests/test_stale_check.py
