@@ -12,7 +12,6 @@ import importlib.util
 import math
 import os
 import sys
-import types
 import unittest
 
 _MODULES = os.path.normpath(
@@ -20,8 +19,10 @@ _MODULES = os.path.normpath(
 
 
 def _load(mod_name, filename):
-    """Load a repo module file under a unique name, with `pymol.<mod_name>` also
-    registered so intra-module `from pymol import <mod_name>` resolves to it."""
+    """Load a repo module file into sys.modules under the unique name `mod_name`.
+    Binding it onto the `pymol` package — which is what makes an intra-module
+    `from pymol import raymol_scenes` resolve to the copy under test — is
+    load_modules()'s job, done for both modules once they are all loaded."""
     path = os.path.join(_MODULES, "pymol", filename)
     spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -190,6 +191,32 @@ class FakeCmd:
     def get_extent(self, selection, state=0, *a, **k):   # 0 == cmd's ALL_STATES
         self.extent_calls.append((selection, state))
         return [list(self._extent[0]), list(self._extent[1])]
+
+
+class ViewCmd(FakeCmd):
+    """FakeCmd plus a camera that DOLLIES: each frame pulls back 0.5 Å, so the
+    depth of a fixed point differs per frame.
+
+    build_focus_pull needs frame() and get_view(); with a fake that has neither,
+    every per-frame block raises, `d` is None and the loop `continue`s — so the
+    function returns {} no matter what the logic under test does, and any test
+    asserting {} is vacuously green."""
+    def __init__(self, *args, **kwargs):
+        FakeCmd.__init__(self, *args, **kwargs)
+        self.frames_seen = []
+        self._tz = -50.0
+
+    def frame(self, f):
+        self.frames_seen.append(int(f))
+        self._tz = -50.0 - int(f) * 0.5      # camera moves with the frame
+
+    def get_view(self):
+        return [1, 0, 0,
+                0, 1, 0,
+                0, 0, 1,
+                0.0, 0.0, self._tz,
+                0.0, 0.0, 0.0,
+                -60.0, -40.0, 20.0]
 
 
 class TestTrackBuilder(unittest.TestCase):
@@ -391,34 +418,25 @@ class TestFocusPull(unittest.TestCase):
         a = self.anim
         self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
         self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'off'}
+        # Everything ELSE is set up to produce a pull — distinct targets and a
+        # working (dollying) camera — so the autofocus flag is the only thing that
+        # can suppress it.  Delete the autofocus guard and this emits 7 frames.
+        a.focus_centroid = lambda name, _self=None: (
+            [0.0, 0.0, 0.0] if name == 'A' else [0.0, 0.0, -20.0])
+        fake = ViewCmd()
         # B has autofocus off -> step, no pull.
         self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
-                                            _self=FakeCmd()), {})
+                                            _self=fake), {})
+        self.assertEqual(fake.frames_seen, [])   # bailed before the frame loop
 
     def test_pull_emits_monotone_distance_and_disables_autofocus(self):
         a = self.anim
         self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
         self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
 
-        # A camera that DOLLIES: each frame pulls back by 0.5 Å, so the depth of
-        # a fixed point differs per frame.  A lerp of endpoint distances would
+        # ViewCmd's camera DOLLIES: each frame pulls back by 0.5 Å, so the depth
+        # of a fixed point differs per frame.  A lerp of endpoint distances would
         # miss this; only per-frame reprojection tracks the moving camera.
-        class ViewCmd(FakeCmd):
-            def __init__(self, *args, **kwargs):
-                FakeCmd.__init__(self, *args, **kwargs)
-                self.frames_seen = []
-                self._tz = -50.0
-            def frame(self, f):
-                self.frames_seen.append(int(f))
-                self._tz = -50.0 - int(f) * 0.5      # camera moves with the frame
-            def get_view(self):
-                return [1, 0, 0,
-                        0, 1, 0,
-                        0, 0, 1,
-                        0.0, 0.0, self._tz,
-                        0.0, 0.0, 0.0,
-                        -60.0, -40.0, 20.0]
-
         fake = ViewCmd()
         # Stub the centroids: A near (z=0), B far (z=-20).
         a.focus_centroid = lambda name, _self=None: (
@@ -455,8 +473,14 @@ class TestFocusPull(unittest.TestCase):
         self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
         self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
         a.focus_centroid = lambda name, _self=None: [1.0, 2.0, 3.0]
+        # Both autofocus on and a working (dollying) camera, so the identical
+        # targets are the only thing suppressing the pull: delete the `ca == cb`
+        # guard and this emits 7 frames of pointless focus overrides (which would
+        # also switch autofocus OFF across a transition that never needed it).
+        fake = ViewCmd()
         self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
-                                            _self=FakeCmd()), {})
+                                            _self=fake), {})
+        self.assertEqual(fake.frames_seen, [])
 
 
 class TestAuthorAndSession(unittest.TestCase):
