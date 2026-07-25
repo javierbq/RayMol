@@ -331,7 +331,6 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                 per = max(2, int(round(float(seconds_per_scene) * fps)))
                 ensure(per * len(names))
                 motion = []
-                scene_kfs = []
                 for i, nm in enumerate(names):
                     f = start + 1 + i * per
                     cmd.frame(f)
@@ -342,18 +341,23 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                         motion += _rs.emit_object_motion(nm, f)
                     except Exception:
                         pass
-                    scene_kfs.append((f, nm, 0.0))
                 cmd.mview('reinterpolate', power=0.0, linear=0.0)
                 for obj in dict.fromkeys(motion):
                     try:
                         cmd.mview('interpolate', object=obj)
                     except Exception:
                         pass
-                # Unconditional: author([]) is the reset. Guarding on scene_kfs
-                # would leave a previous movie's animation live in the module.
+                # Author from ALL markers currently on the timeline (not just the
+                # ones this batch placed). _scene_keyframes() recovers every
+                # scene-tagged keyframe by scrubbing, so calling append_template
+                # a second time does not wipe the first batch's animation: author
+                # runs once over the union, not twice over disjoint sets.
+                # Unconditional: author([]) is the reset when names is empty;
+                # guarding would leave a previous movie's animation live in the
+                # module for the non-scenes path.
                 try:
                     from pymol import raymol_scene_anim as _an
-                    _an.author(scene_kfs)
+                    _an.author(_scene_keyframes())
                 except Exception as e:
                     print('MOVIE_ERR:' + str(e))
 
