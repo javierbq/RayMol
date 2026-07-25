@@ -7,6 +7,7 @@ animation across a scene movie. No C++ build required:
 The fork's modules are not in the venv's stock pymol, so the modules under test
 are loaded directly from the repo by path.
 """
+import base64
 import importlib.util
 import math
 import os
@@ -118,3 +119,116 @@ class TestHelpers(unittest.TestCase):
                                 a._FLOOR["metal_dof_range"])
         # An unfloored setting interpolates plainly.
         self.assertAlmostEqual(a.value_at("ambient", 0.0, 1.0, 0.25), 0.25)
+
+
+class FakeCmd:
+    """Records mappend/set calls; enough surface for track emission."""
+    def __init__(self, objects=None):
+        self._objects = list(objects or [])
+        self.appended = []      # [(frame, command_string)]
+        self.sets = []          # [(setting, value)]
+        self.selected = []      # [(name, expr)]
+
+    def mappend(self, frame, command):
+        self.appended.append((int(frame), command))
+
+    def set(self, setting, value, *a, **k):
+        self.sets.append((setting, value))
+
+    def select(self, name, expr, *a, **k):
+        self.selected.append((name, expr))
+
+    def get_names(self, kind='objects'):
+        return list(self._objects)
+
+    def iterate_state(self, *a, **k):
+        return 0
+
+
+class TestTrackBuilder(unittest.TestCase):
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+
+    def _store(self, name, **settings):
+        # Mimic a raymol_scenes capture: values arrive as PyMOL strings.
+        self.scenes._scene_settings[name] = {k: str(v) for k, v in settings.items()}
+
+    def test_interior_frames_only_and_monotone(self):
+        self._store('A', metal_dof_aperture=1.0, metal_dof='on')
+        self._store('B', metal_dof_aperture=5.0, metal_dof='on')
+        track = self.anim.build_track([(1, 'A', 0.0), (11, 'B', 0.0)])
+        # Keyframes themselves are handled by enter_scene, not the track.
+        self.assertNotIn(1, track)
+        self.assertNotIn(11, track)
+        self.assertEqual(sorted(track), list(range(2, 11)))
+        vals = [track[f]['metal_dof_aperture'] for f in range(2, 11)]
+        self.assertEqual(vals, sorted(vals))              # monotone increasing
+        self.assertTrue(all(1.0 < v < 5.0 for v in vals))  # strictly between
+
+    def test_unchanged_settings_are_not_emitted(self):
+        self._store('A', metal_dof_aperture=3.0, ambient=0.2)
+        self._store('B', metal_dof_aperture=3.0, ambient=0.9)
+        track = self.anim.build_track([(1, 'A', 0.0), (6, 'B', 0.0)])
+        for vals in track.values():
+            self.assertNotIn('metal_dof_aperture', vals)   # identical -> skipped
+            self.assertIn('ambient', vals)
+
+    def test_stepped_settings_are_not_in_the_track(self):
+        self._store('A', metal_dof='off', surface_quality=1)
+        self._store('B', metal_dof='on', surface_quality=3)
+        track = self.anim.build_track([(1, 'A', 0.0), (6, 'B', 0.0)])
+        self.assertEqual(track, {})     # both step; enter_scene applies them
+
+    def test_adjacent_keyframes_have_no_interior(self):
+        self._store('A', ambient=0.0)
+        self._store('B', ambient=1.0)
+        self.assertEqual(self.anim.build_track([(4, 'A', 0.0), (5, 'B', 0.0)]), {})
+
+    def test_easing_is_applied_not_linear(self):
+        self._store('A', ambient=0.0)
+        self._store('B', ambient=1.0)
+        smooth = self.anim.build_track([(1, 'A', 0.0), (5, 'B', 0.0)])
+        linear = self.anim.build_track([(1, 'A', 1.0), (5, 'B', 1.0)])
+        # Quarter-way in, the eased ramp lags the linear one.
+        self.assertLess(smooth[2]['ambient'], linear[2]['ambient'])
+
+    def test_frame_command_and_emit(self):
+        fake = FakeCmd()
+        track = {3: {'ambient': 0.5, 'metal_dof_aperture': 2.0}}
+        done = self.anim.emit_track(track, _self=fake)
+        self.assertEqual(done, [3])
+        self.assertEqual(len(fake.appended), 1)
+        frame, s = fake.appended[0]
+        self.assertEqual(frame, 3)
+        self.assertIn('set ambient, 0.5', s)
+        self.assertIn('set metal_dof_aperture, 2', s)
+        self.assertIn(';', s)          # multiple sets joined
+
+    def test_emit_scene_marks_is_base64_and_injection_safe(self):
+        fake = FakeCmd()
+        nasty = "ev'il; quit"
+        self.anim.emit_scene_marks([(7, nasty)], _self=fake)
+        frame, s = fake.appended[0]
+        self.assertEqual(frame, 7)
+        self.assertNotIn('quit', s)            # raw name never appears
+        self.assertNotIn("'il", s)
+        self.assertIn('enter_scene', s)
+
+    def test_enter_scene_applies_all_settings_and_focus_not_ttt(self):
+        self._store('A', metal_dof='on', ambient=0.3)
+        self.scenes._scene_ttt['A'] = {'m1': None}     # must NOT be applied
+        fake = FakeCmd(objects=['m1'])
+        b64 = base64.b64encode(b'A').decode('ascii')
+        self.anim.enter_scene(b64, _self=fake)
+        applied = dict(fake.sets)
+        self.assertEqual(applied.get('metal_dof'), 'on')
+        self.assertEqual(applied.get('ambient'), '0.3')
+        self.assertEqual(fake.appended, [])            # no frame commands
+        # TTT is the movie's own channel — enter_scene must not touch it.
+        self.assertFalse(hasattr(fake, 'set_object_ttt_called'))
+
+    def test_enter_scene_tolerates_garbage(self):
+        fake = FakeCmd()
+        self.anim.enter_scene('!!!not-base64!!!', _self=fake)   # must not raise
+        self.assertEqual(fake.sets, [])

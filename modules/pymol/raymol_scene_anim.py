@@ -105,3 +105,110 @@ def value_at(setting, a, b, e):
     if floor is not None and v < floor:
         v = floor
     return v
+
+
+def build_track(keyframes):
+    """Per-frame interpolated values for the INTERIOR frames of each transition.
+
+    `keyframes` is an ordered iterable of (frame, scene_name, power) where power
+    is the easing of the transition INTO that keyframe (as passed to mview).
+    Returns {frame: {setting: float}}. Scene keyframes themselves are applied by
+    enter_scene (exact captured values), so they are deliberately absent here."""
+    from pymol import raymol_scenes as _rs
+    track = {}
+    kfs = sorted(keyframes, key=lambda k: int(k[0]))
+    for (f0, n0, _p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+        f0, f1 = int(f0), int(f1)
+        span = f1 - f0
+        if span < 2:
+            continue                      # no interior frames
+        a = _rs.scene_settings_map(n0)
+        b = _rs.scene_settings_map(n1)
+        pairs = {}
+        for s, bv in b.items():
+            fa, fb = _as_float(a.get(s)), _as_float(bv)
+            if fa is None or fb is None or fa == fb:
+                continue                  # missing, non-numeric, or unchanged
+            if not interpolatable(s, fa, fb):
+                continue
+            pairs[s] = (fa, fb)
+        if not pairs:
+            continue
+        power = effective_power(p1)
+        for f in range(f0 + 1, f1):
+            e = ease((f - f0) / float(span), power)
+            slot = track.setdefault(f, {})
+            for s, (fa, fb) in pairs.items():
+                slot[s] = value_at(s, fa, fb, e)
+    return track
+
+
+def _fmt(v):
+    """Compact, parser-safe number formatting for a command string."""
+    return '%.6g' % float(v)
+
+
+def frame_command(values):
+    """'set a, 1.5; set b, 2' for a frame's {setting: value} map ('' if empty)."""
+    return '; '.join('set %s, %s' % (s, _fmt(v))
+                     for s, v in sorted(values.items()))
+
+
+def emit_track(track, _self=cmd):
+    """Author one mappend per interior frame. mappend (not mdo) so rock/nutate
+    frame commands in movie.add_scenes survive. Returns the frames touched."""
+    done = []
+    for f in sorted(track):
+        s = frame_command(track[f])
+        if not s:
+            continue
+        try:
+            _self.mappend(int(f), s)
+            done.append(int(f))
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
+def scene_mark_command(name):
+    """Frame command that makes a scene's own settings + focus target current.
+    The name is base64-encoded because this string is executed by the PyMOL
+    parser — a raw name containing a quote or semicolon would be an injection."""
+    b64 = base64.b64encode(name.encode('utf-8')).decode('ascii')
+    return ("from pymol import raymol_scene_anim as _a; "
+            "_a.enter_scene('%s')" % b64)
+
+
+def emit_scene_marks(marks, _self=cmd):
+    """Author the enter_scene call at each scene keyframe. `marks` is
+    [(frame, scene_name)]. Returns the frames touched."""
+    done = []
+    for f, name in marks:
+        try:
+            _self.mappend(int(f), scene_mark_command(name))
+            done.append(int(f))
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
+def enter_scene(name_b64, _self=cmd):
+    """Movie-frame callback: make scene `name`'s captured render settings and
+    autofocus target current. Applies ALL captured settings (at a keyframe the
+    scene's own values are by definition the correct endpoint) but deliberately
+    NOT object TTT — the movie owns object motion through its own keyframes and
+    re-applying would fight the interpolation."""
+    try:
+        name = base64.b64decode(name_b64).decode('utf-8')
+    except Exception:
+        return
+    from pymol import raymol_scenes as _rs
+    for s, v in _rs.scene_settings_map(name).items():
+        try:
+            _self.set(s, v)
+        except Exception:
+            pass
+    try:
+        _rs.apply_focus_target(name, _self)
+    except Exception:
+        pass
