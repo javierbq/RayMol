@@ -149,6 +149,15 @@ void PyMOLBridge_Start(PyMOLHandle h)
     PyMOL_Start(INST(h));
     PInit(G, true);
     PyMOL_SetPythonInitStage(INST(h), 1);
+
+    // NOTE: ~/.raymolrc(.py) is intentionally NOT loaded here. PyMOLEngine
+    // applies the RayMol theme defaults (bg color etc.) asynchronously right
+    // after isReady flips true (ContentView's `applyPersistedTheme`), which
+    // runs AFTER this function returns — loading raymolrc here would have it
+    // clobbered by that theme re-assertion moments later. Swift instead calls
+    // PyMOLBridge_RunPython("from pymol import raymolrc; raymolrc.load()")
+    // at the END of applyPersistedTheme, so a user's startup script always
+    // wins over the app's defaults (RayMol#225).
 }
 
 void PyMOLBridge_Stop(PyMOLHandle h)
