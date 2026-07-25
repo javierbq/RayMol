@@ -185,6 +185,24 @@ def scene_ttt_map(name):
     return dict(_scene_ttt.get(name, {}))
 
 
+def scene_settings_map(name):
+    """Copy of the render settings captured for scene `name` ({} if none)."""
+    return dict(_scene_settings.get(name, {}))
+
+
+def scene_focus_map(name):
+    """Copy of the autofocus target atoms captured for scene `name` ([] if none)."""
+    return list(_scene_focus.get(name, []))
+
+
+def apply_focus_target(name, _self=cmd):
+    """Re-point the 'dof_focus' autofocus selection at scene `name`'s captured
+    target. Public wrapper over _apply_focus for the movie animator, which must
+    restore the focus target WITHOUT touching object TTT (a movie owns object
+    motion through its own keyframes)."""
+    _apply_focus(name, _self)
+
+
 def emit_object_motion(name, frame, _self=cmd):
     """Author per-object Move-mode TTT keyframes for scene `name` at movie `frame`:
     apply each captured object TTT, then store an object-matrix mview keyframe
