@@ -297,13 +297,49 @@ _track = {}
 _scene_marks = []
 
 
+def clear_authored(_self=cmd):
+    """Blank the frames a previous author() pass wrote. mdo (not mappend) SETS the
+    slot, so this removes our text; without it a re-author appends on top of the
+    old commands and session_save can no longer strip what it cannot regenerate,
+    leaving a .pse that loads with a LOCKED (dead) movie.
+
+    Trade-off: blanking a slot also drops a third-party command sharing that exact
+    frame. Accepted deliberately — the only frame commands PyMOL's own scene-movie
+    authoring could co-locate with ours would come from movie.add_scenes' camera
+    animation, and its _rock/_nutate (movie.py:490,543) author `mview store`
+    keyframes, not frame commands. Returns the frames blanked."""
+    frames = set(int(f) for f in _track)
+    frames.update(int(f) for f, _n in _scene_marks)
+    try:
+        length = int(_self.get_movie_length())
+    except Exception:
+        length = 0
+    done = []
+    for f in sorted(frames):
+        # Past the end of the current movie there is no Cmd[] slot to blank (a
+        # shorter mset already dropped it); mdo would only print a Movie-Error.
+        if length > 0 and f > length:
+            continue
+        try:
+            _self.mdo(f, '')
+            done.append(f)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
 def author(keyframes, _self=cmd):
     """Author the whole per-scene setting animation for a movie.
 
     `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
     movie, in any order (sorted internally by frame). Call AFTER the path's
-    cmd.mset and cmd.mview('interpolate'). Returns the number of frames touched."""
+    cmd.mset and cmd.mview('interpolate'). Returns the number of frames touched.
+
+    author([]) is the reset: it un-emits the previous pass and clears the track,
+    so call it unconditionally — including on a rebuild that has no scenes at all,
+    which would otherwise persist a stale animation into the new movie."""
     keyframes = list(keyframes)
+    clear_authored(_self)             # BEFORE the reset: needs the old frame list
     _track.clear()
     _scene_marks[:] = []
     marks = [(int(f), n) for f, n, _p in keyframes]

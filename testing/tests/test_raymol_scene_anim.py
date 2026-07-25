@@ -126,6 +126,7 @@ class FakeCmd:
     def __init__(self, objects=None):
         self._objects = list(objects or [])
         self.appended = []      # [(frame, command_string)] — each individual call
+        self.done = []          # [(frame, command_string)] — mdo calls
         self._slots = {}        # {frame: accumulated slot string, as PyMOL stores}
         self.sets = []          # [(setting, value)]
         self.selected = []      # [(name, expr)]
@@ -136,6 +137,12 @@ class FakeCmd:
         self.appended.append((f, command))
         existing = self._slots.get(f, '')
         self._slots[f] = (existing + ';' + command) if existing else (';' + command)
+
+    def mdo(self, frame, command):
+        # MovieSetCommand OVERWRITES the slot (Movie.cpp:1079), unlike mappend.
+        f = int(frame)
+        self.done.append((f, command))
+        self._slots[f] = str(command)
 
     def set(self, setting, value, *a, **k):
         self.sets.append((setting, value))
@@ -393,6 +400,66 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertTrue(set(range(2, 6)).issubset(frames))   # interior track
         self.assertEqual(sorted(self.anim._track), list(range(2, 6)))
         self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
+
+    def _slots_as_cmds(self, fake, n):
+        """The movie's Cmd[] as PyMOL would hold it, from the fake's accumulator."""
+        cmds = [''] * n
+        for f, slot in fake._slots.items():
+            if 1 <= f <= n:
+                cmds[f - 1] = slot
+        return cmds
+
+    def test_reauthoring_leaves_no_orphan_commands(self):
+        # Re-authoring WITHOUT an intervening mset (place_scene does exactly this)
+        # used to append the new pass on top of the previous one's commands.
+        # session_save can only strip what it can regenerate from the CURRENT
+        # _track/_scene_marks, so every orphan survived into the .pse — and a
+        # single non-empty frame command there trips MovieSetLock on load
+        # (Movie.cpp:459-462), killing the commands, the scene recall AND the
+        # camera track.  author() must un-emit its previous output first.
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (21, 'B', 0.0)], _self=fake)
+        self.anim.author([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
+        sess = {'movie': [None] * 6}
+        sess['movie'][5] = self._slots_as_cmds(fake, 24)
+        self.anim.session_save(sess, _self=fake)
+        leftover = ''.join(sess['movie'][5])
+        # Nothing but our own text was ever written, so the strip must empty it all.
+        self.assertEqual(
+            leftover, '',
+            "orphaned frame commands survive into the .pse: %r" %
+            [(i + 1, s) for i, s in enumerate(sess['movie'][5]) if s])
+
+    def test_clear_authored_blanks_every_frame_it_wrote(self):
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        expected = sorted(set(list(self.anim._track) +
+                              [f for f, _n in self.anim._scene_marks]))
+        fake.done[:] = []
+        self.anim.clear_authored(_self=fake)
+        self.assertEqual(sorted(f for f, _c in fake.done), expected)
+        self.assertTrue(all(c == '' for _f, c in fake.done))
+        # mdo SETS the slot, so our text is gone from every frame we owned.
+        self.assertEqual(''.join(self._slots_as_cmds(fake, 8)), '')
+
+    def test_author_empty_clears_previous_state(self):
+        # A movie rebuilt WITHOUT scenes must not keep the old animation: mset
+        # wipes Cmd[] but nothing reset the globals, so session_save persisted a
+        # track belonging to a movie that no longer exists (and session_restore
+        # mappended it back, one Movie-Error per out-of-range frame).
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        self.assertTrue(self.anim._track)
+        self.assertTrue(self.anim._scene_marks)
+        self.assertEqual(self.anim.author([], _self=fake), 0)
+        self.assertEqual(self.anim._track, {})
+        self.assertEqual(self.anim._scene_marks, [])
+        sess = {}
+        self.anim.session_save(sess, _self=fake)
+        self.assertEqual(sess['raymol_movie_anim'], {'track': {}, 'marks': []})
 
     def test_session_roundtrip_reauthors(self):
         self._two_scenes()
