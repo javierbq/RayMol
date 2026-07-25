@@ -197,6 +197,66 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(capturedTemp, 0.7)
     }
 
+    // The busy flags drive an INPUT-BLOCKING overlay: if one is left set the whole UI
+    // is wedged. They must be clear after every outcome — success, failure, and a
+    // redesign whose follow-up repack runs.
+    func testBusyFlagsClearAfterSuccessfulRedesign() async {
+        let c = makeController(); wireEdit(c)
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
+                       selectedIndices: { _, _, _, _ in [1] })
+        c.injectRepack(repack: { _, _ in "REPACKED" }, loadRepacked: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+        await c.redesignSelectionAwait()
+        XCTAssertFalse(c.isRedesigning, "isRedesigning must clear after a successful redesign")
+        XCTAssertFalse(c.isRepacking, "isRepacking must clear after the follow-up repack")
+    }
+
+    // Regression for the stranded blocking overlay: the redesign flag must NOT span
+    // the follow-up repack. When it did, any stall in that tail left "Redesigning
+    // region…" up forever with input blocked (observed on host: sequence applied,
+    // inference idle, overlay stuck). Probe the flag from loadRepacked, which runs
+    // on the main actor while the repack phase is in progress.
+    func testRedesignFlagDoesNotSpanRepackPhase() async {
+        var flagDuringRepack: Bool?
+        let c = makeController(); wireEdit(c)
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
+                       selectedIndices: { _, _, _, _ in [1] })
+        c.injectRepack(repack: { _, _ in "PDB" },
+                       loadRepacked: { [weak c] _, _ in flagDuringRepack = c?.isRedesigning })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+        await c.redesignSelectionAwait()
+        XCTAssertEqual(flagDuringRepack, false,
+                       "isRedesigning must already be clear once the repack phase runs — "
+                     + "otherwise a stalled repack strands the input-blocking overlay")
+        XCTAssertFalse(c.isRedesigning)
+        XCTAssertFalse(c.isRepacking)
+    }
+
+    func testBusyFlagClearsWhenDesignThrows() async {
+        struct Boom: Error {}
+        let c = makeController(); wireEdit(c)
+        c.injectRegion(designRegion: { _, _, _, _, _ in throw Boom() },
+                       selectedIndices: { _, _, _, _ in [1] })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+        await c.redesignSelectionAwait()
+        XCTAssertFalse(c.isRedesigning, "a failed redesign must not strand the blocking overlay")
+        XCTAssertNotNil(c.errorText)
+    }
+
+    func testBusyFlagClearsWhenDesignReturnsWrongLength() async {
+        let c = makeController(); wireEdit(c)
+        c.injectRegion(designRegion: { _, _, _, _, _ in [1, 2, 3, 4, 5, 6, 7] },  // wrong length
+                       selectedIndices: { _, _, _, _ in [1] })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+        await c.redesignSelectionAwait()
+        XCTAssertFalse(c.isRedesigning)
+        XCTAssertEqual(c.editedSequence, [5, 5, 5])   // rolled back
+    }
+
     func testEmptyPaletteBlocksRedesign() async {
         var called = false
         let c = makeController(); wireEdit(c)

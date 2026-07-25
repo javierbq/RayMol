@@ -655,9 +655,14 @@ final class DesignController: ObservableObject {
         let designFn = designRegionFn
         let temp = designTemperature
 
-        isRedesigning = true
         designToken += 1
         let token = designToken
+        isRedesigning = true
+        // The busy flag drives an INPUT-BLOCKING overlay, so it must never be left
+        // set — `defer` clears it on every exit (early return, error, cancellation),
+        // which a chain of manual assignments cannot guarantee. Guarded by the token
+        // so a superseded call doesn't clear the flag out from under the winner.
+        defer { if token == designToken { isRedesigning = false } }
 
         let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
@@ -666,18 +671,12 @@ final class DesignController: ObservableObject {
             }
         }
 
-        // A superseded redesign must NOT clear isRedesigning — the winning call owns
-        // the busy flag (and the blocking overlay) until it finishes. The winner keeps
-        // isRedesigning true through the follow-up rescore + repack so the overlay
-        // stays up for the whole operation (no mid-flow flicker), and clears it on
-        // every terminal path below.
         guard token == designToken else { return }
 
         guard let result, result.count == L else {
             if let snap = redesignSnapshot { editedSequence = snap.seq; editCount = snap.editCount }
             redesignSnapshot = nil
             errorText = "Region redesign failed"
-            isRedesigning = false
             return
         }
 
@@ -699,9 +698,14 @@ final class DesignController: ObservableObject {
         editCount += changed
         repackDirty = true
 
+        // The redesign itself is done (the new sequence is applied). The follow-up
+        // rescore/repack are separate operations that own their own busy flags, so a
+        // slow — or stalled — repack can never strand the "Redesigning region…"
+        // overlay. Repack raises its own "Repacking sidechains…" while it runs.
+        isRedesigning = false
+
         await rescoreWorkingObject()
         if autoRepack { await repackNowAwait() }
-        isRedesigning = false   // clears the blocking overlay only after the full op completes
     }
 
     /// Undo the last region redesign: restore the pre-batch sequence + editCount.
@@ -805,10 +809,13 @@ final class DesignController: ObservableObject {
         guard editing, let w = workingObject, repackDirty else { return }
         // C3: we need the residue set to project the sequence; bail if unavailable.
         guard let focus = focusObject, let set = lastSet[focus] else { return }
-        isRepacking = true
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
+        isRepacking = true
+        // Same input-blocking overlay as the redesign: clear on EVERY exit via
+        // `defer`, token-guarded so a superseded repack can't clear the winner's flag.
+        defer { if token == repackToken { isRepacking = false } }
         // I1: capture the FULL sequence before dispatch so we can detect a mid-repack mutation.
         let capturedFullSeq = editedSequence
         // C3: project through the valid-residue mask to align with validResidues.
@@ -821,7 +828,7 @@ final class DesignController: ObservableObject {
                 catch { cont.resume(throwing: error) }
             }
         }
-        guard token == repackToken else { isRepacking = false; return }
+        guard token == repackToken else { return }
         if let pdb, !pdb.isEmpty {
             // I1: only load if the sequence has not changed since dispatch.
             if capturedFullSeq == editedSequence {
@@ -849,7 +856,7 @@ final class DesignController: ObservableObject {
             // else: mutation happened mid-repack; leave repackDirty = true so the
             // next repack (triggered by the new mutation) loads the current coords.
         }
-        isRepacking = false
+        // isRepacking cleared by the `defer` above (covers every exit path).
     }
 
     /// Sync fire-and-forget repack; called by UI buttons (Task 6). Wraps `repackNowAwait` in a Task.
