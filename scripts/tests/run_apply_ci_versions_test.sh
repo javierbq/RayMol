@@ -77,5 +77,51 @@ if bash "$SCRIPT" "$NOKEYS" "1.9.0" "47" >/dev/null 2>&1; then
   echo "  FAIL: succeeded on a project.yml with neither key"; FAILED=1
 else echo "  ok: fails when the keys are absent"; fi
 
+# Single-key-absent: only MARKETING_VERSION missing.
+NO_MKT="$TMP/no_mkt.yml"
+printf 'settings:\n  base:\n        PRODUCT_NAME: RayMol\n        CURRENT_PROJECT_VERSION: 23\n' > "$NO_MKT"
+if bash "$SCRIPT" "$NO_MKT" "1.9.0" "47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with MARKETING_VERSION absent"; FAILED=1
+else echo "  ok: fails when MARKETING_VERSION is absent"; fi
+
+# Single-key-absent: only CURRENT_PROJECT_VERSION missing.
+NO_CPV="$TMP/no_cpv.yml"
+printf 'settings:\n  base:\n        PRODUCT_NAME: RayMol\n        MARKETING_VERSION: "1.8.0"\n' > "$NO_CPV"
+if bash "$SCRIPT" "$NO_CPV" "1.9.0" "47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with CURRENT_PROJECT_VERSION absent"; FAILED=1
+else echo "  ok: fails when CURRENT_PROJECT_VERSION is absent"; fi
+
+# Duplicate MARKETING_VERSION must fail — nightly_version.sh treats first
+# occurrence as authoritative; silently rewriting all would create a version
+# disagreement that reaches App Store Connect.
+DUP_MKT="$TMP/dup_mkt.yml"
+{
+  echo "settings:"
+  echo "  base:"
+  echo "        MARKETING_VERSION: \"1.8.0\""
+  echo "        CURRENT_PROJECT_VERSION: 23"
+  echo "  targets:"
+  echo "    RayMol:"
+  echo "        MARKETING_VERSION: \"1.8.0\""
+} > "$DUP_MKT"
+if bash "$SCRIPT" "$DUP_MKT" "1.9.0" "47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with duplicate MARKETING_VERSION lines"; FAILED=1
+else echo "  ok: fails when MARKETING_VERSION appears more than once"; fi
+
+# Duplicate CURRENT_PROJECT_VERSION must fail for the same reason.
+DUP_CPV="$TMP/dup_cpv.yml"
+{
+  echo "settings:"
+  echo "  base:"
+  echo "        MARKETING_VERSION: \"1.8.0\""
+  echo "        CURRENT_PROJECT_VERSION: 23"
+  echo "  targets:"
+  echo "    RayMol:"
+  echo "        CURRENT_PROJECT_VERSION: 23"
+} > "$DUP_CPV"
+if bash "$SCRIPT" "$DUP_CPV" "1.9.0" "47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with duplicate CURRENT_PROJECT_VERSION lines"; FAILED=1
+else echo "  ok: fails when CURRENT_PROJECT_VERSION appears more than once"; fi
+
 rm -rf "$TMP"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }

@@ -26,12 +26,23 @@ BUILD="${3:-}"
 [[ "$BUILD" =~ ^[0-9]+$ ]] || {
   echo "ERROR: build number must be a non-negative integer, got '$BUILD'" >&2; exit 1; }
 
-# Both keys must already exist — we rewrite, never append, so we cannot create a
-# duplicate key or land one at the wrong nesting level.
-grep -qE '^[[:space:]]*MARKETING_VERSION:' "$YML" || {
-  echo "ERROR: no MARKETING_VERSION line in $YML" >&2; exit 1; }
-grep -qE '^[[:space:]]*CURRENT_PROJECT_VERSION:' "$YML" || {
-  echo "ERROR: no CURRENT_PROJECT_VERSION line in $YML" >&2; exit 1; }
+# Both keys must appear exactly once — we rewrite, never append, and sed applies
+# the substitution to every matching line. A count of 0 (absent) and a count of
+# 2+ (ambiguous) are both hard failures with distinct messages.
+# Note: grep -c exits 1 when count is 0; || true keeps set -e from firing.
+MKT_COUNT="$(grep -cE '^[[:space:]]*MARKETING_VERSION:' "$YML" || true)"
+case "$MKT_COUNT" in
+  0) echo "ERROR: no MARKETING_VERSION line in $YML" >&2; exit 1 ;;
+  1) ;;
+  *) echo "ERROR: $MKT_COUNT MARKETING_VERSION lines in $YML — ambiguous; refusing to rewrite all" >&2; exit 1 ;;
+esac
+
+CPV_COUNT="$(grep -cE '^[[:space:]]*CURRENT_PROJECT_VERSION:' "$YML" || true)"
+case "$CPV_COUNT" in
+  0) echo "ERROR: no CURRENT_PROJECT_VERSION line in $YML" >&2; exit 1 ;;
+  1) ;;
+  *) echo "ERROR: $CPV_COUNT CURRENT_PROJECT_VERSION lines in $YML — ambiguous; refusing to rewrite all" >&2; exit 1 ;;
+esac
 
 # \1 preserves the original indentation; xcodegen would reject a re-indented file.
 /usr/bin/sed -i '' -E \
