@@ -2224,9 +2224,18 @@ final class PyMOLEngine: ObservableObject {
             hoveredHandle = nil
             activeMoveObject = nil
             gizmo = nil
+            // Clear lastAdjustSent FIRST. adjustFrameToggle and moveShiftHeld
+            // both carry `didSet { syncAdjustFrame() }`, and syncAdjustFrame
+            // calls readGizmo(), which re-reads the gizmo temp file — still
+            // "active" here, because cleanup() below hasn't run yet. That
+            // resurrects the gizmo and activeMoveObject just cleared above.
+            // Zeroing lastAdjustSent first makes syncAdjustFrame's
+            // `want != lastAdjustSent` guard early-return. The skipped
+            // set_adjust(0) round-trip is redundant: cleanup() tears the whole
+            // gizmo down a few lines later.
+            lastAdjustSent = false
             adjustFrameToggle = false
             moveShiftHeld = false
-            lastAdjustSent = false
             runPython("from pymol import metal_move as _mm\n_mm.cleanup()")
         }
     }

@@ -113,6 +113,34 @@ final class DesignModeStateTests: XCTestCase {
             + "in the scene where the user cannot delete it. Captured: \(captured)")
     }
 
+    func testExitingMoveDoesNotPushAdjustFrameDuringTeardown() {
+        let e = PyMOLEngine.shared
+        e.setInteractionMode(.move)
+        e.adjustFrameToggle = true      // arms lastAdjustSent = true
+
+        var captured: [String] = []
+        e.pythonTap = { captured.append($0) }   // install AFTER arming
+
+        e.setInteractionMode(.viewing)
+
+        // Before the fix, clearing adjustFrameToggle fires didSet ->
+        // syncAdjustFrame(), which emits set_adjust(0) AND calls readGizmo() —
+        // re-reading the gizmo temp file before cleanup() has invalidated it,
+        // which resurrects gizmo + activeMoveObject on any host where that file
+        // still describes an active gizmo. Clearing lastAdjustSent first makes
+        // syncAdjustFrame early-return, so no set_adjust is emitted at all.
+        XCTAssertFalse(
+            captured.contains { $0.contains("set_adjust") },
+            "teardown must not push adjust-frame: syncAdjustFrame's readGizmo() "
+            + "can resurrect the state cleanup() is about to drop. "
+            + "Captured: \(captured)")
+        // cleanup() must still be the thing that runs.
+        XCTAssertTrue(
+            captured.contains { $0.contains("_mm.cleanup()") },
+            "Captured: \(captured)")
+        XCTAssertFalse(e.adjustFrameToggle)
+    }
+
     func testEnteringDesignFromMeasureRunsMeasureReset() {
         let e = PyMOLEngine.shared
         e.setMeasureMode(.distance)
