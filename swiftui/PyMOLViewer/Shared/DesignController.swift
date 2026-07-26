@@ -151,6 +151,39 @@ final class DesignController: ObservableObject {
     /// Sampling temperature for region design (0 = greedy, higher = more diverse). The
     /// engine pairs this with a nil seed so each Redesign is non-deterministic.
     @Published var designTemperature: Float = 0.2
+
+    /// Pending oversize confirmation, or nil. Set when a redesign lands in the
+    /// guard's warn band; the UI presents it and calls confirm/cancel.
+    @Published private(set) var pendingSizeWarning: SizeWarning?
+
+    /// A run large enough to be worth confirming. `residueCount` is the total
+    /// object length, not the selection size — MPNN's cost tracks the whole
+    /// object regardless of how few positions are free.
+    struct SizeWarning: Equatable {
+        let residueCount: Int
+        let estimatedBytes: Int
+        let availableBytes: Int
+    }
+
+    /// Size decision for a run over `residueCount` residues. Injectable so the
+    /// controller's warn/confirm/refuse wiring can be tested without depending on
+    /// the guard's constants — which are retuned from device measurements later in
+    /// this phase, and must not be able to silently invalidate these tests.
+    /// The default routes through `evaluate`, which enforces macOS inertness:
+    /// `evaluate` returns `.ok` unconditionally on non-iOS regardless of arguments.
+    var sizeDecisionProvider: (Int) -> DesignSizeGuard.Decision = { count in
+        DesignSizeGuard.evaluate(residueCount: count,
+                                 availableBytes: DesignSizeGuard.availableBytesNow)
+    }
+
+    /// Write a session autosave before a confirmed large run, so a jetsam kill
+    /// costs no user work. Wired to the engine in PyMOLEngine; no-op in tests.
+    var autosaveBeforeLargeRun: () -> Void = { }
+
+    /// Set for exactly one call by `confirmPendingWarning()` so the confirmed run
+    /// is not re-gated into an infinite warn loop. Cleared on read.
+    private var suppressSizeGuardOnce = false
+
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
 
@@ -625,6 +658,7 @@ final class DesignController: ObservableObject {
         redesignSnapshot = nil
         isRedesigning = false
         availableSelections = []
+        pendingSizeWarning = nil
         designToken += 1   // cancel any in-flight region design
     }
 
@@ -641,6 +675,37 @@ final class DesignController: ObservableObject {
         guard paletteAllowed.contains(where: { $0 >= 0 && $0 < 20 }) else { return }  // ≥1 allowed AA
         beginEditIfNeeded()
         guard editing, let focus = focusObject, let set = lastSet[focus] else { return }
+
+        // Memory gate. Consulted here only: repack and rescore run over the same
+        // residue set, so clearing this gate clears them too, and three prompts for
+        // one user action would be hostile. Focus scoring is deliberately ungated —
+        // it is what populates the sequence strip, and refusing it would make an
+        // object unopenable rather than merely un-redesignable.
+        //
+        // `suppressSizeGuardOnce` is set by `confirmPendingWarning()` so the
+        // confirmed re-entry is not re-gated into an infinite warn loop. Binding
+        // the decision to a `let` keeps the `switch` subject a plain value.
+        let residueCount = set.residues.count
+        let skipGuard = suppressSizeGuardOnce
+        suppressSizeGuardOnce = false
+        let sizeDecision: DesignSizeGuard.Decision = skipGuard
+            ? .ok
+            : sizeDecisionProvider(residueCount)
+        switch sizeDecision {
+        case .ok:
+            break
+        case .warn(let estimate, let available):
+            pendingSizeWarning = SizeWarning(residueCount: residueCount,
+                                             estimatedBytes: estimate,
+                                             availableBytes: available)
+            return
+        case .refuse(let maxFitting):
+            pendingSizeWarning = nil
+            errorText = maxFitting > 0
+                ? "This structure is too large to design on this device (\(residueCount) residues; about \(maxFitting) would fit). Free memory or use a smaller structure."
+                : "Not enough free memory to run Design. Close other apps and try again."
+            return
+        }
 
         // One-level revert snapshot (captures earlier manual edits + editCount).
         redesignSnapshot = RedesignSnapshot(seq: editedSequence, editCount: editCount)
@@ -712,6 +777,20 @@ final class DesignController: ObservableObject {
         await rescoreWorkingObject()
         if autoRepack { await repackNowAwait() }
     }
+
+    /// Proceed with a redesign the user confirmed after a size warning. Writes an
+    /// autosave first so a jetsam kill during the run costs no work, then re-enters
+    /// the normal path with the guard suppressed for this one call.
+    func confirmPendingWarning() async {
+        guard pendingSizeWarning != nil else { return }
+        pendingSizeWarning = nil
+        autosaveBeforeLargeRun()
+        suppressSizeGuardOnce = true
+        await redesignSelectionAwait()
+    }
+
+    /// Dismiss a size warning without running anything.
+    func cancelPendingWarning() { pendingSizeWarning = nil }
 
     /// Undo the last region redesign: restore the pre-batch sequence + editCount.
     /// One level; earlier manual edits (captured in the snapshot) are preserved.
