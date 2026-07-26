@@ -4,7 +4,7 @@ import XCTest
 
 final class DesignSizeGuardTests: XCTestCase {
 
-    // 4 GiB of remaining budget. With fixedOverhead 384 MiB (402_653_184 B) and
+    // 4 GiB of remaining budget. With fixedOverhead 448 MiB (469_762_048 B) and
     // 1.4 MB/residue, the ok ceiling is 2_147_483_648 and the warn ceiling (the
     // largest non-refusing estimate) is 3_221_225_472. Every expectation below is
     // arithmetic on those two numbers.
@@ -15,46 +15,46 @@ final class DesignSizeGuardTests: XCTestCase {
     private let fourGiB = 4_294_967_296
 
     func testComfortableSizeIsOK() {
-        // 1000 residues -> 1_802_653_184 B, well under 50% of 4 GiB.
+        // 1000 residues -> 1_869_762_048 B, well under 50% of 4 GiB.
         XCTAssertEqual(DesignSizeGuard.decide(residueCount: 1000, availableBytes: fourGiB), .ok)
     }
 
     func testWellBelowOkCeilingIsOK() {
-        // 1200 residues -> 2_082_653_184 B <= 2_147_483_648 B (ok ceiling).
-        XCTAssertEqual(DesignSizeGuard.decide(residueCount: 1200, availableBytes: fourGiB), .ok)
+        // 1100 residues -> 2_009_762_048 B <= 2_147_483_648 B (ok ceiling).
+        XCTAssertEqual(DesignSizeGuard.decide(residueCount: 1100, availableBytes: fourGiB), .ok)
     }
 
     func testOkWarnBoundary() {
-        // ok/warn boundary: floor((2_147_483_648 - 402_653_184) / 1_400_000)
-        //                 = floor(1_744_830_464 / 1_400_000) = floor(1246.307) = 1246
-        // estimatedBytes(1246) = 402_653_184 + 1_744_400_000 = 2_147_053_184 <= 2_147_483_648 -> .ok
-        XCTAssertEqual(DesignSizeGuard.decide(residueCount: 1246, availableBytes: fourGiB), .ok)
-        // estimatedBytes(1247) = 402_653_184 + 1_745_800_000 = 2_148_453_184 > 2_147_483_648 -> .warn
+        // ok/warn boundary: floor((2_147_483_648 - 469_762_048) / 1_400_000)
+        //                 = floor(1_677_721_600 / 1_400_000) = floor(1198.372) = 1198
+        // estimatedBytes(1198) = 469_762_048 + 1_677_200_000 = 2_146_962_048 <= 2_147_483_648 -> .ok
+        XCTAssertEqual(DesignSizeGuard.decide(residueCount: 1198, availableBytes: fourGiB), .ok)
+        // estimatedBytes(1199) = 469_762_048 + 1_678_600_000 = 2_148_362_048 > 2_147_483_648 -> .warn
         XCTAssertEqual(
-            DesignSizeGuard.decide(residueCount: 1247, availableBytes: fourGiB),
-            .warn(estimatedBytes: 2_148_453_184, availableBytes: fourGiB))
+            DesignSizeGuard.decide(residueCount: 1199, availableBytes: fourGiB),
+            .warn(estimatedBytes: 2_148_362_048, availableBytes: fourGiB))
     }
 
     func testMidBandWarns() {
-        // 1500 residues -> 2_502_653_184 B: over 50%, under 75%.
+        // 1500 residues -> 2_569_762_048 B: over 50%, under 75%.
         XCTAssertEqual(
             DesignSizeGuard.decide(residueCount: 1500, availableBytes: fourGiB),
-            .warn(estimatedBytes: 2_502_653_184, availableBytes: fourGiB))
+            .warn(estimatedBytes: 2_569_762_048, availableBytes: fourGiB))
     }
 
     func testOversizeRefusesAndReportsWhatWouldFit() {
-        // 2300 residues -> 3_622_653_184 B, past the 3_221_225_472 B warn ceiling.
-        // ceiling = 4_294_967_296 * 0.75 - 402_653_184 = 2_818_572_288
-        // maxFit  = floor(2_818_572_288 / 1_400_000) = floor(2013.266) = 2013
+        // 2300 residues -> 3_689_762_048 B, past the 3_221_225_472 B warn ceiling.
+        // ceiling = 4_294_967_296 * 0.75 - 469_762_048 = 2_751_463_424
+        // maxFit  = floor(2_751_463_424 / 1_400_000) = floor(1965.331) = 1965
         XCTAssertEqual(
             DesignSizeGuard.decide(residueCount: 2300, availableBytes: fourGiB),
-            .refuse(maxFittingResidues: 2013))
+            .refuse(maxFittingResidues: 1965))
     }
 
     func testMaxFittingIsTheBoundaryItClaims() {
-        // warn/refuse boundary: maxFit = 2013
-        // estimatedBytes(2013) = 3_220_853_184 <= 3_221_225_472 -> .warn
-        // estimatedBytes(2014) = 3_222_253_184 >  3_221_225_472 -> .refuse
+        // warn/refuse boundary: maxFit = 1965
+        // estimatedBytes(1965) = 3_220_762_048 <= 3_221_225_472 -> .warn
+        // estimatedBytes(1966) = 3_222_162_048 >  3_221_225_472 -> .refuse
         let maxFit = DesignSizeGuard.maxFittingResidues(availableBytes: fourGiB)
         XCTAssertEqual(DesignSizeGuard.decide(residueCount: maxFit, availableBytes: fourGiB),
                        .warn(estimatedBytes: DesignSizeGuard.estimatedBytes(residueCount: maxFit),
@@ -87,8 +87,8 @@ final class DesignSizeGuardTests: XCTestCase {
 
     // Guards the derivation: the constants must still match the measured upper envelope.
     func testEstimateMatchesMeasuredModel() {
-        XCTAssertEqual(DesignSizeGuard.estimatedBytes(residueCount: 0), 402_653_184)
-        XCTAssertEqual(DesignSizeGuard.estimatedBytes(residueCount: 1000), 1_802_653_184)
+        XCTAssertEqual(DesignSizeGuard.estimatedBytes(residueCount: 0), 469_762_048)
+        XCTAssertEqual(DesignSizeGuard.estimatedBytes(residueCount: 1000), 1_869_762_048)
     }
 
     // An absurd input (e.g. garbage from a parse failure) must refuse, not trap.
