@@ -3638,6 +3638,42 @@ private struct DesignEditStripView: View {
     }
 }
 
+// Error banner for Design mode. `errorText` was previously written in six places
+// in DesignController and read nowhere, so every Design failure was silent —
+// including a missing weight pack, which is the first thing that goes wrong on a
+// new platform. Tap or wait to dismiss.
+#if RAYMOL_MPNN
+struct DesignErrorBanner: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        if let text = controller.errorText {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                Text(text)
+                    .font(.system(size: 11))
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.red.opacity(0.85))
+            .contentShape(Rectangle())
+            .onTapGesture { controller.clearError() }
+            .task(id: text) {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                controller.clearError()
+            }
+            .accessibilityLabel("Design error: \(text). Tap to dismiss.")
+        }
+    }
+}
+#endif
+
 // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
 // coloring meaning segmented control, legend gradient, scoring progress, ? help.
 // Extracted into a dedicated View struct so @ObservedObject controller: DesignController
@@ -3651,6 +3687,8 @@ private struct DesignOverlayView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // ── Error banner (only when something failed) ───────────────
+            DesignErrorBanner(controller: controller, theme: theme)
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
                 focusLabel

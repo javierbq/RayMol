@@ -271,6 +271,11 @@ final class DesignController: ObservableObject {
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
     }
 
+    /// Dismiss the current error message. The Design overlay's error banner calls
+    /// this on tap and on its auto-dismiss timer; `errorText` is otherwise only
+    /// cleared implicitly by the next successful operation.
+    func clearError() { errorText = nil }
+
     // MARK: – Propensity hover/pin
 
     /// The "active" index for the propensity pill row: pinned takes precedence
