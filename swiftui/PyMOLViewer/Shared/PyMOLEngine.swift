@@ -1965,7 +1965,7 @@ final class PyMOLEngine: ObservableObject {
             throw NSError(domain: "raymol.design", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "MPNN model pack not found in bundle."])
         }
-        let m = try MPNNModel(packDirectory: url)
+        let m = try MPNNRuntime.withMLXErrorsAsThrows { try MPNNModel(packDirectory: url) }
         _mpnnModel = m
         return m
     }

@@ -438,5 +438,22 @@ final class DesignIOSPortTests: XCTestCase {
 
         XCTAssertFalse(c.regionEditMode)
     }
+
+    // MARK: – Task 8: MPNNRuntime configuration
+
+    // The constant must match the value measured by the reference harness as the
+    // point beyond which the MLX buffer pool causes guaranteed jetsam kills on any iPhone.
+    func testCacheLimitConstantIs96MB() {
+        XCTAssertEqual(MPNNRuntime.cacheLimitBytes, 96 * 1024 * 1024)
+    }
+
+    // configureOnce() must genuinely install the limit, not merely declare it.
+    // activeCacheLimitBytes is a thin read-through of MLX.Memory.cacheLimit, exposed
+    // on MPNNRuntime so the test target can assert without importing MLX directly.
+    func testConfigureOnceInstallsCacheLimit() {
+        MPNNRuntime.configureOnce()
+        XCTAssertEqual(MPNNRuntime.activeCacheLimitBytes, MPNNRuntime.cacheLimitBytes,
+                       "configureOnce() must set MLX.Memory.cacheLimit to cacheLimitBytes")
+    }
 }
 #endif
