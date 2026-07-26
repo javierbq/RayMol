@@ -224,6 +224,59 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertNil(c.pendingSizeWarning, "refuse is terminal — must not leave a pending warning")
     }
 
+    // MARK: – Compact panel: colorMeaning binding correctness
+
+    // Setting colorMeaning via Picker's $binding in DesignSettingsSheet used to
+    // set the @Published property directly, bypassing setMeaning(_:) and therefore
+    // never calling recolor(). This test verifies that setMeaning updates the
+    // property AND invokes applyColoring — the symptom was a Picker that moved but
+    // left the structure visually unchanged until an unrelated redraw fired.
+    //
+    // setMeaning calls recolor(focusObject) which only calls applyColoring when
+    // there are scores in the cache, so the test must run the full focus/scoring
+    // pipeline via focusAwait before exercising setMeaning. A local controller is
+    // constructed (rather than makeController()) so we can count applyColoring calls.
+    func testSetMeaningUpdatesPropertyAndTriggersRecolor() async {
+        var lastPalette: String?
+        let residueSet = DesignResidueSet(object: "stub", state: 1, residues: [
+            DesignResidue(chain: "A", resi: "1", resn: "ALA", aa: 0,
+                          backbone: .init(n: .zero, ca: .zero, c: .zero, o: .zero, chain: 0, resSeq: 1),
+                          valid: true)])
+        let c = DesignController(
+            enumerate: { _, _ in residueSet },
+            score: { _, _ in
+                MPNNModel.ScoreResult(
+                    logProbs: [[Float](repeating: Float(log(1.0 / 21.0)), count: 21)],
+                    currentAALogProb: [-1.0])
+            },
+            applyColoring: { _, _, palette, _, _ in lastPalette = palette },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.enter()
+        await c.focusAwait("stub")
+
+        // After focus, the default meaning is nativeFit → red_white_blue palette.
+        XCTAssertEqual(c.colorMeaning, .nativeFit,
+                       "default colorMeaning must be nativeFit after focus")
+        XCTAssertEqual(lastPalette, "red_white_blue",
+                       "focus must apply the nativeFit palette")
+
+        // Changing meaning via setMeaning must (a) update the property and
+        // (b) call applyColoring (recolor) immediately with the new palette.
+        // The DesignSettingsSheet binding bug was: $controller.colorMeaning bypassed
+        // setMeaning, so the palette never changed until an unrelated redraw fired.
+        c.setMeaning(.certainty)
+        XCTAssertEqual(c.colorMeaning, .certainty,
+                       "setMeaning must update colorMeaning")
+        XCTAssertEqual(lastPalette, "blue_white_red",
+                       "setMeaning must call recolor — direct @Published binding bypasses this and leaves the palette stale")
+
+        // Switching back must also trigger a recolor.
+        c.setMeaning(.nativeFit)
+        XCTAssertEqual(c.colorMeaning, .nativeFit)
+        XCTAssertEqual(lastPalette, "red_white_blue",
+                       "setMeaning(.nativeFit) must also trigger a recolor")
+    }
+
     // MARK: – Task 5: model release on exit
 
     // Exiting Design mode must free the ~model-resident weights, and must do it on

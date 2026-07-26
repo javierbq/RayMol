@@ -3361,10 +3361,15 @@ struct DesignSequenceStripView: View {
                     .frame(height: 2)
             }
         }
-        // Keep the column 14 pt wide visually — a legible sequence needs it — but
-        // give touch a taller, slightly wider target. contentShape does not affect
-        // layout, so neighbouring columns are unmoved.
-        .contentShape(Rectangle().inset(by: -6))
+        // Keep the column 14 pt wide visually. Grow the hit target vertically only:
+        // a horizontal inset (the original approach) made each column's contentShape
+        // overlap its neighbour's glyph, causing the front-to-back HStack hit-test
+        // to route taps on the right half of column i to residue i+1. Vertical-only
+        // growth via .padding(.vertical) stays within the 14 pt frame width and does
+        // not shift any horizontal neighbour. The transparent padding is clipped by
+        // the ScrollView so it never changes the strip's visible appearance.
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
         .onHover { hovering in
             if hovering {
                 controller.setHovered(chain: residue.chain, resi: residue.resi)
@@ -3743,6 +3748,147 @@ struct DesignErrorBanner: View {
 }
 #endif
 
+// MARK: – Propensity / palette pill row (shared by macOS/iPad overlay and iPhone compact panel)
+
+/// Scrollable row of 20 amino-acid pills shown below the sequence strip.
+///
+/// In region mode (controller.regionModeActive == true) each pill is an
+/// active/inactive toggle that adds or removes an amino acid from the redesign
+/// palette — tapping a pill calls controller.togglePalette(_:).
+///
+/// In hover/pin mode each pill shows the model's propensity for that amino acid
+/// at the active residue; tapping calls applyMutationAwait to commit the mutation.
+/// When no residue is active every pill renders greyed/disabled so the row
+/// stays in the layout without appearing and disappearing.
+///
+/// Extracted from DesignOverlayView so DesignCompactPanel (iPhone) can reuse it
+/// without duplicating the logic. DesignOverlayView now delegates to this struct.
+struct DesignPillRow: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        if controller.regionModeActive {
+            paletteRow()
+        } else {
+            propensityScrollRow()
+        }
+    }
+
+    // MARK: – Propensity row
+
+    private func propensityScrollRow() -> some View {
+        let ap = controller.activePropensity
+        let rowMax = ap?.propensities.max() ?? 1.0
+        let activeIndex = controller.activeResidueIndex
+        let currentAA: Int = {
+            if let idx = activeIndex, controller.editing,
+               idx < controller.editedSequence.count {
+                return controller.editedSequence[idx]
+            }
+            return ap?.nativeAA ?? -1
+        }()
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
+                    Button {
+                        if let idx = activeIndex {
+                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
+                        }
+                    } label: {
+                        aaPill(index: i,
+                               propensity: hasVal ? ap!.propensities[i] : 0,
+                               isCurrent: ap != nil && i == currentAA,
+                               rowMax: rowMax,
+                               enabled: ap != nil)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func aaPill(index: Int,
+                        propensity: Float,
+                        isCurrent: Bool,
+                        rowMax: Float,
+                        enabled: Bool) -> some View {
+        let letter = index < DesignColor.mpnnAlphabet.count
+            ? DesignColor.mpnnAlphabet[index] : "?"
+        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
+        let showCurrent = enabled && isCurrent
+        let pillBG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.04)
+            : (showCurrent
+                ? theme.active.accent.color
+                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
+        let pillFG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.28)
+            : (showCurrent
+                ? .white
+                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
+        let valueText: String = {
+            if !enabled { return ".0" }
+            let s = String(format: "%.2f", propensity)
+            return s.hasPrefix("0") ? String(s.dropFirst()) : s
+        }()
+        return VStack(spacing: 1) {
+            Text(letter)
+                .font(.system(size: 11,
+                              weight: showCurrent ? .bold : .regular,
+                              design: .monospaced))
+            Text(valueText)
+                .font(.system(size: 9, design: .monospaced))
+        }
+        .foregroundColor(pillFG)
+        .frame(width: 30, height: 36)
+        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            showCurrent
+                ? RoundedRectangle(cornerRadius: 5)
+                    .stroke(theme.active.accent.color, lineWidth: 1.5)
+                : nil
+        )
+    }
+
+    // MARK: – Palette row (region mode)
+
+    private func paletteRow() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    Button { controller.togglePalette(i) } label: {
+                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
+                    }
+                    .buttonStyle(.plain)
+                    .help(controller.paletteAllowed.contains(i)
+                          ? "Allowed during redesign — click to exclude"
+                          : "Excluded from redesign — click to allow")
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func palettePill(index i: Int, active: Bool) -> some View {
+        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
+        return Text(letter)
+            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
+            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
+            .frame(width: 30, height: 36)
+            .background(active
+                        ? theme.active.accent.color.opacity(0.85)
+                        : theme.active.panelText.color.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
+    }
+}
+
 // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
 // coloring meaning segmented control, legend gradient, scoring progress, ? help.
 // Extracted into a dedicated View struct so @ObservedObject controller: DesignController
@@ -3790,10 +3936,10 @@ private struct DesignOverlayView: View {
                 Divider().opacity(0.3)
                 DesignSequenceStripView(controller: controller, theme: theme)
             }
-            // ── Propensity pill row (always present; greyed when no residue
-            //    is hovered/pinned so it no longer flickers in and out) ─────
+            // ── Propensity / palette pill row (always present; greyed when no
+            //    residue is hovered/pinned so it no longer flickers in and out) ─
             Divider().opacity(0.3)
-            propensityRow(controller.activePropensity)
+            DesignPillRow(controller: controller, theme: theme)
             // ── Region-redesign strip (Phase 2c) ─────────────────────────────
             if !controller.focusResidues.isEmpty {
                 Divider().opacity(0.3)
@@ -3882,7 +4028,7 @@ private struct DesignOverlayView: View {
     private var meaningPicker: some View {
         HStack(spacing: 1) {
             Button { controller.setMeaning(.nativeFit) } label: {
-                Text("Native fit")
+                Text(DesignColorMeaning.nativeFit.label)
                     .font(.system(size: 13))
                     .padding(.horizontal, 9).padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
@@ -3896,7 +4042,7 @@ private struct DesignOverlayView: View {
             .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
 
             Button { controller.setMeaning(.certainty) } label: {
-                Text("Certainty")
+                Text(DesignColorMeaning.certainty.label)
                     .font(.system(size: 13))
                     .padding(.horizontal, 9).padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
@@ -3969,139 +4115,6 @@ private struct DesignOverlayView: View {
         }
     }
 
-    // MARK: – Propensity pill row
-
-    /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
-    /// residue hovered or pinned) every pill renders greyed/disabled with a
-    /// neutral ".0" value and no current highlight, so the row no longer appears
-    /// and disappears — only its contents change. When `ap` is present the
-    /// pills show real 2-decimal propensities, colored by relative frequency,
-    /// with the current AA pill highlighted (edited identity in an edit session,
-    /// native AA otherwise). Tapping a pill calls applyMutation when a residue
-    /// is active; ignored silently when there is no active residue.
-    private func propensityRow(
-        _ ap: (propensities: [Float], nativeAA: Int, label: String)?
-    ) -> AnyView {
-        if controller.regionModeActive {
-            return AnyView(paletteRow())
-        }
-        let rowMax = ap?.propensities.max() ?? 1.0
-        let activeIndex = controller.activeResidueIndex
-        // When editing, highlight the current edited identity rather than the native AA.
-        let currentAA: Int = {
-            if let idx = activeIndex, controller.editing,
-               idx < controller.editedSequence.count {
-                return controller.editedSequence[idx]
-            }
-            return ap?.nativeAA ?? -1
-        }()
-        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(0..<20, id: \.self) { i in
-                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
-                    Button {
-                        if let idx = activeIndex {
-                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
-                        }
-                    } label: {
-                        aaPill(index: i,
-                               propensity: hasVal ? ap!.propensities[i] : 0,
-                               isCurrent: ap != nil && i == currentAA,
-                               rowMax: rowMax,
-                               enabled: ap != nil)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 5))
-    }
-
-    /// Single amino-acid pill: letter + 2-decimal propensity, colored by
-    /// relative frequency (faint → warm), highlighted if the current AA
-    /// (edited identity in an edit session, native otherwise). When `enabled`
-    /// is false (idle / no active residue) it renders flat grey with a ".0"
-    /// placeholder and no current highlight.
-    private func aaPill(index: Int,
-                         propensity: Float,
-                         isCurrent: Bool,
-                         rowMax: Float,
-                         enabled: Bool) -> some View {
-        let letter = index < DesignColor.mpnnAlphabet.count
-            ? DesignColor.mpnnAlphabet[index] : "?"
-        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
-        let showCurrent = enabled && isCurrent
-        // Disabled (idle): flat faint grey, muted text.
-        // Current pill: solid accent background + white text.
-        // Others: faint→warm orange tint, scaled to intensity within the row.
-        let pillBG: Color = !enabled
-            ? theme.active.panelText.color.opacity(0.04)
-            : (showCurrent
-                ? theme.active.accent.color
-                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
-        let pillFG: Color = !enabled
-            ? theme.active.panelText.color.opacity(0.28)
-            : (showCurrent
-                ? .white
-                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
-        let valueText: String = {
-            if !enabled { return ".0" }
-            let s = String(format: "%.2f", propensity)
-            return s.hasPrefix("0") ? String(s.dropFirst()) : s
-        }()
-        return VStack(spacing: 1) {
-            Text(letter)
-                .font(.system(size: 11,
-                              weight: showCurrent ? .bold : .regular,
-                              design: .monospaced))
-            Text(valueText)
-                .font(.system(size: 9, design: .monospaced))
-        }
-        .foregroundColor(pillFG)
-        .frame(width: 30, height: 36)
-        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
-        .overlay(
-            showCurrent
-                ? RoundedRectangle(cornerRadius: 5)
-                    .stroke(theme.active.accent.color, lineWidth: 1.5)
-                : nil
-        )
-    }
-
-    // MARK: – Region palette row (numbers hidden; pills are active/inactive toggles)
-
-    private func paletteRow() -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(0..<20, id: \.self) { i in
-                    Button { controller.togglePalette(i) } label: {
-                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
-                    }
-                    .buttonStyle(.plain)
-                    .help(controller.paletteAllowed.contains(i)
-                          ? "Allowed during redesign — click to exclude"
-                          : "Excluded from redesign — click to allow")
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 5)
-    }
-
-    private func palettePill(index i: Int, active: Bool) -> some View {
-        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
-        return Text(letter)
-            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
-            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
-            .frame(width: 30, height: 36)
-            .background(active
-                        ? theme.active.accent.color.opacity(0.85)
-                        : theme.active.panelText.color.opacity(0.05),
-                        in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5)
-                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
-    }
 }
 #endif
 

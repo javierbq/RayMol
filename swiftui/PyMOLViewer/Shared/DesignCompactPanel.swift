@@ -1,37 +1,35 @@
 #if RAYMOL_MPNN
 import SwiftUI
 
-// DesignColorMeaning is CaseIterable but carries no built-in label property.
-// This extension is private to this file; the existing meaningPicker in
-// ContentView.swift uses custom buttons and never needed a label.
-private extension DesignColorMeaning {
-    var label: String {
-        switch self {
-        case .nativeFit: return "Native fit"
-        case .certainty: return "Certainty"
-        }
-    }
-}
-
 // MARK: – Shared selection picker
 
 /// Selection popover shared by DesignRegionStripView (macOS/iPad strip) and
-/// DesignCompactPanel (iPhone dock). `fontSize` and `minWidth` are caller-supplied
-/// so each context meets its own touch-target requirements without forking the view.
+/// DesignCompactPanel (iPhone dock). `fontSize`, `minWidth`, `itemHPadding`, and
+/// `itemVPadding` are caller-supplied so each context meets its own touch-target
+/// requirements without forking the view.
+///
+/// `clearButtonText` defaults to "Clear selection" — the original macOS label.
+/// Pass a different string only if the call site genuinely needs different wording.
 struct DesignSelectionPicker: View {
     @ObservedObject var controller: DesignController
     /// Point size for item-row text.
     let fontSize: CGFloat
     /// Minimum row width (not including the internal horizontal padding).
     let minWidth: CGFloat
-    /// Called when the user picks an item or taps "Clear region".
+    /// Horizontal padding on each row item. Default = 10 (macOS/iPad).
+    var itemHPadding: CGFloat = 10
+    /// Vertical padding on each row item. Default = 5 (macOS/iPad).
+    var itemVPadding: CGFloat = 5
+    /// Label for the "clear" button shown when a region is active.
+    var clearButtonText: String = "Clear selection"
+    /// Called when the user picks an item or taps the clear button.
     let dismiss: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if controller.availableSelections.isEmpty {
                 Text("No selections — create one first")
-                    .font(.system(size: fontSize))
+                    .font(.system(size: 11))   // 11 pt for empty state (original macOS size)
                     .foregroundColor(.secondary)
                     .padding(8)
             } else {
@@ -47,7 +45,7 @@ struct DesignSelectionPicker: View {
                                 .font(.system(size: max(fontSize - 1, 10)))
                                 .foregroundColor(.secondary)
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .padding(.horizontal, itemHPadding).padding(.vertical, itemVPadding)
                         .frame(minWidth: minWidth)
                         .contentShape(Rectangle())
                     }
@@ -60,10 +58,10 @@ struct DesignSelectionPicker: View {
                     controller.clearSelection()
                     dismiss()
                 } label: {
-                    Text("Clear region")
+                    Text(clearButtonText)
                         .font(.system(size: fontSize))
                         .foregroundColor(.red)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .padding(.horizontal, itemHPadding).padding(.vertical, itemVPadding)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -79,10 +77,10 @@ struct DesignSelectionPicker: View {
 /// Compact Design panel for iPhone (compact width, either orientation).
 ///
 /// The macOS overlay is five non-scrolling rows wanting roughly 600-700 pt; an
-/// iPhone has ~390. Rather than shrink everything, this keeps the four rows that
-/// carry a primary action docked (~110 pt) and moves set-once controls into a
-/// sheet.  `Compare` stays docked on purpose — it is toggled repeatedly while
-/// judging a design, unlike the preferences beside it.
+/// iPhone has ~390. Rather than shrink everything, this keeps four docked rows
+/// (header, sequence strip, propensity/palette pills, action row) and moves
+/// set-once controls into a sheet. `Compare` stays docked on purpose — it is
+/// toggled repeatedly while judging a design, unlike the preferences beside it.
 ///
 /// iPad and macOS keep DesignOverlayView; see ContentView.designModeBar.
 struct DesignCompactPanel: View {
@@ -96,22 +94,28 @@ struct DesignCompactPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             // Reuse the existing error banner (internal access in ContentView.swift).
-            // It has a 6-second auto-dismiss timer and tap-to-dismiss — both superior
-            // to a compact-only clone that would drift from the original over time.
             DesignErrorBanner(controller: controller, theme: theme)
             sizeWarningRow
             headerRow
             if !controller.focusResidues.isEmpty {
+                // Row 2: 2-row sequence strip
                 Divider().opacity(0.3)
                 DesignSequenceStripView(controller: controller, theme: theme)
+                // Row 3: propensity / palette pills (identical logic to macOS overlay)
+                Divider().opacity(0.3)
+                DesignPillRow(controller: controller, theme: theme)
+                // Row 4: region picker · edit-mode toggle · redesign · actions
                 Divider().opacity(0.3)
                 actionRow
             }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
+        // Close the region picker if the user switches to a different object —
+        // the existing selection may no longer be valid.
+        .onChange(of: controller.focusObject) { _ in showPicker = false }
         .sheet(isPresented: $showSettings) {
-            DesignSettingsSheet(controller: controller, theme: theme)
+            DesignSettingsSheet(controller: controller)
         }
     }
 
@@ -167,8 +171,8 @@ struct DesignCompactPanel: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
-    // Row 2: region picker · edit-mode toggle · redesign button (region mode only) ·
-    // spacer · compare toggle + Keep / Discard (editing only).
+    // Row 4: region picker · edit-mode toggle · redesign (region only) · revert (if snapshot) ·
+    // spacer · repack (editing) · compare (editing) · Keep / Discard (editing).
     //
     // Decomposed into leaf properties to keep each expression short for the Swift
     // type-checker, following the pattern in DesignSequenceStripView.seqCols.
@@ -177,6 +181,7 @@ struct DesignCompactPanel: View {
             regionButton
             regionEditButton
             if controller.regionModeActive { redesignButton }
+            if controller.redesignSnapshot != nil { revertButton }
             Spacer(minLength: 0)
             if controller.editing { editControls }
         }
@@ -190,8 +195,10 @@ struct DesignCompactPanel: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "lasso").font(.system(size: 11))
+                // Cap the label so a long selection name cannot crowd Keep/Discard.
                 Text(controller.selectedSelectionName ?? "Region")
                     .font(.system(size: 12)).lineLimit(1)
+                    .frame(maxWidth: 100)
             }
             .foregroundColor(theme.active.panelText.color.opacity(0.85))
             .padding(.horizontal, 9).padding(.vertical, 6)
@@ -203,6 +210,8 @@ struct DesignCompactPanel: View {
             DesignSelectionPicker(controller: controller,
                                   fontSize: 14,
                                   minWidth: 220,
+                                  itemHPadding: 12,
+                                  itemVPadding: 9,
                                   dismiss: { showPicker = false })
                 .presentationCompactAdaptation(.popover)
         }
@@ -248,24 +257,62 @@ struct DesignCompactPanel: View {
             "Redesign \(controller.selectedResidueIndices.count) residues")
     }
 
+    /// Revert the last region redesign. Shown only when a snapshot exists —
+    /// matches the macOS condition (controller.redesignSnapshot != nil).
+    private var revertButton: some View {
+        Button { controller.revertRedesign() } label: {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.system(size: 11))
+                .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(theme.active.panelText.color.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Revert redesign")
+    }
+
     // `Compare` stays docked because it is toggled repeatedly while judging a
     // design — unlike the set-once controls that live in the sheet.
     @ViewBuilder
     private var editControls: some View {
-        Toggle("", isOn: Binding(get: { controller.compareEnabled },
-                                 set: { controller.setCompare($0) }))
-            .labelsHidden()
-            .accessibilityLabel("Compare with original")
+        // Manual repack — matches macOS enable/disable condition.
+        Button { controller.repackNow() } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 13))
+                .foregroundColor(controller.repackDirty
+                                 ? theme.active.accent.color
+                                 : theme.active.panelText.color.opacity(0.4))
+        }
+        .buttonStyle(.plain)
+        .disabled(!controller.repackDirty || controller.isRepacking)
+        .accessibilityLabel("Repack sidechains")
+
+        // Compare: give it a compact visible label so the switch is identifiable
+        // on a four-control row.
+        Toggle(isOn: Binding(get: { controller.compareEnabled },
+                             set: { controller.setCompare($0) })) {
+            Text("Cmp")
+                .font(.system(size: 11))
+                .foregroundColor(theme.active.panelText.color.opacity(0.8))
+        }
+        .fixedSize()
+        .accessibilityLabel("Compare with original")
+
+        // Keep/Discard: .fixedSize() so a long selection name in regionButton
+        // cannot push these off-screen.
         Button { Task { await controller.keepEditsAwait() } } label: {
             Text("Keep").font(.system(size: 12, weight: .semibold))
         }
         .buttonStyle(.plain)
+        .fixedSize()
         Button { controller.discardEdits() } label: {
             Text("Discard")
                 .font(.system(size: 12))
                 .foregroundColor(.red)
         }
         .buttonStyle(.plain)
+        .fixedSize()
     }
 
     // Oversize confirmation rendered inline so it cannot be dismissed by accident
@@ -283,12 +330,18 @@ struct DesignCompactPanel: View {
                 .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
+                    // .buttonStyle(.plain) + explicit white prevents the panel's
+                    // .tint(accent) from rendering accent-on-accent text on some themes.
                     Button("Run anyway") {
                         Task { await controller.confirmPendingWarning() }
                     }
                     .font(.system(size: 12, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white)
                     Button("Cancel") { controller.cancelPendingWarning() }
                         .font(.system(size: 12))
+                        .buttonStyle(.plain)
+                        .foregroundColor(.white.opacity(0.8))
                     Spacer(minLength: 0)
                 }
             }
@@ -303,9 +356,10 @@ struct DesignCompactPanel: View {
 
 /// Set-once Design controls moved off the iPhone dock to keep the viewport large.
 /// Presented as a half-sheet; the user can pull it full-screen.
+/// Note: no ThemeManager parameter — the Form adapts to system appearance automatically,
+/// and an unused @ObservedObject re-renders on every theme publish.
 struct DesignSettingsSheet: View {
     @ObservedObject var controller: DesignController
-    @ObservedObject var theme: ThemeManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -371,7 +425,12 @@ struct DesignSettingsSheet: View {
 
     private var colourSection: some View {
         Section("Colouring") {
-            Picker("Meaning", selection: $controller.colorMeaning) {
+            // Bind via setMeaning so it also calls recolor(focusObject) —
+            // the @Published property alone does NOT trigger a recolor.
+            Picker("Meaning", selection: Binding(
+                get: { controller.colorMeaning },
+                set: { controller.setMeaning($0) }
+            )) {
                 ForEach(DesignColorMeaning.allCases, id: \.self) { m in
                     Text(m.label).tag(m)
                 }
