@@ -16,7 +16,7 @@
 - **Repo:** `javierbq/RayMol` (public). `gh` CLI locally defaults to the upstream `schrodinger/pymol-open-source` — always pass `-R javierbq/RayMol` in local commands. Inside GitHub Actions the current repo is implicit.
 - **Git flow:** never commit or push to `master`. Work on the current feature branch and open a PR into `master`.
 - **Worktree:** all edits go to the worktree path `/Users/jcastellanos/repos/RayMol/.claude/worktrees/icloud-run-nightly-beta-27099f`, never `/Users/jcastellanos/repos/RayMol` (which is checked out to an unrelated branch, `codex/test`).
-- **Fingerprint format:** first **12 lowercase hex characters** of a sha256, over exactly these five files in this fixed order: `scripts/setup_ios_deps.sh`, `scripts/fetch_ios_python.sh`, `scripts/build_ios_deps.sh`, `scripts/build_numpy_ios.sh`, `scripts/bundle_biopython.sh`.
+- **Fingerprint format:** first **12 lowercase hex characters** of a sha256, over exactly these six files in this fixed order: `scripts/setup_ios_deps.sh`, `scripts/fetch_ios_python.sh`, `scripts/build_ios_deps.sh`, `scripts/build_numpy_ios.sh`, `scripts/bundle_biopython.sh`, `scripts/prune_ios_deps.sh`. `prune_ios_deps.sh` is included because it shapes the published artifact's contents — tightening the prune changes what the artifact contains, not just the bring-up behaviour. *(Human-approved amendment to the original plan.)*
 - **Artifact naming:** release tag `ios-deps-<fingerprint>`, assets `deps_ios-<fingerprint>.tar.gz` and `deps_ios-<fingerprint>.tar.gz.sha256`. Always a **prerelease** — it must never become `latest`, which would break the macOS updater's `releases/latest/download/appcast.xml` feed.
 - **Marketing version is derived from `swiftui/project.yml`, never from git tags.** `git tag | sort -V | tail -1` yields `v3.2.0` (inherited PyMOL line) while RayMol's own releases top out at `v1.8.0`. A tag-based scheme would stamp betas `3.3.0` and permanently burn that version in App Store Connect.
 - **Pinned dep versions** (all default literals inside the dep scripts): `PY_APPLE_SUPPORT_TAG=3.13-b12`, `FREETYPE_VERSION=2.13.3`, `LIBPNG_VERSION=1.6.44`, `NUMPY_VERSION=2.4.6`, `BIO_VERSION=1.87`, `IOS_DEPLOYMENT_TARGET=16.0`.
@@ -198,7 +198,7 @@ Delete the `SPIKE — validation` workflow in App Store Connect so it cannot fir
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `bash scripts/ios_deps_fingerprint.sh` → prints 12 lowercase hex chars to stdout, exit 0. Exits 1 with a message on stderr if any of the five input files is missing. Called by Task 7 (workflow) and Task 8 (`ci_post_clone.sh`).
+- Produces: `bash scripts/ios_deps_fingerprint.sh` → prints 12 lowercase hex chars to stdout, exit 0. Exits 1 with a message on stderr if any of the six input files is missing. Called by Task 7 (workflow) and Task 8 (`ci_post_clone.sh`). *(Human-approved amendment: sixth file `scripts/prune_ios_deps.sh` added.)*
 
 - [ ] **Step 1: Write the failing test**
 
@@ -222,7 +222,7 @@ check () {  # $1=label  $2=expected  $3=actual
 }
 
 INPUTS=(setup_ios_deps.sh fetch_ios_python.sh build_ios_deps.sh
-        build_numpy_ios.sh bundle_biopython.sh)
+        build_numpy_ios.sh bundle_biopython.sh prune_ios_deps.sh)
 
 # Build a throwaway repo whose scripts/ holds stubs + a copy of the script under
 # test. The script derives its root from its own location, so this fully
@@ -275,6 +275,25 @@ REAL="$(bash "$SCRIPT")"
 if [[ "$REAL" =~ ^[0-9a-f]{12}$ ]]; then echo "  ok: real repo → $REAL"
 else echo "  FAIL: real repo gave '$REAL'"; FAILED=1; fi
 
+# 7. ordering is asserted against an independently-computed anchor.
+#    Catches a transposition in the script's FILES array: the stubs are
+#    filename-unique ("stub setup_ios_deps.sh" etc.), so concatenating them in
+#    different orders produces different digests.  The canonical order is spelled
+#    out here in the test — independent of the script's internal FILES array —
+#    so any drift between the two sources of truth fails immediately.
+E="$(make_fixture)"
+EXPECTED="$(cat \
+  "$E/scripts/setup_ios_deps.sh" \
+  "$E/scripts/fetch_ios_python.sh" \
+  "$E/scripts/build_ios_deps.sh" \
+  "$E/scripts/build_numpy_ios.sh" \
+  "$E/scripts/bundle_biopython.sh" \
+  "$E/scripts/prune_ios_deps.sh" \
+  | shasum -a 256 | cut -c1-12)"
+check "fixture matches independently-computed expected order" \
+  "$EXPECTED" "$(bash "$E/scripts/ios_deps_fingerprint.sh")"
+rm -rf "$E"
+
 rm -rf "$A" "$B" "$D"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }
 ```
@@ -303,12 +322,15 @@ Create `scripts/ios_deps_fingerprint.sh`:
 # so the deps a build links can never silently disagree with the dep scripts in
 # that checkout. There is no lockfile to drift.
 #
-# Hashing the script BODIES covers every pinned version implicitly, because each
-# pin is a default literal inside them:
+# Six scripts are hashed (in fixed order):
 #   fetch_ios_python.sh    PY_APPLE_SUPPORT_TAG  3.13-b12
 #   build_ios_deps.sh      FREETYPE_VERSION 2.13.3 / LIBPNG_VERSION 1.6.44
 #   build_numpy_ios.sh     NUMPY_VERSION 2.4.6
 #   bundle_biopython.sh    BIO_VERSION 1.87
+#   setup_ios_deps.sh      (orchestrates the above four)
+#   prune_ios_deps.sh      included because it shapes the published artifact's
+#                          contents — tightening the prune changes what the
+#                          artifact contains, not just the bring-up behaviour
 # Bump any pin and the fingerprint changes, invalidating the old artifact. That
 # is the intended behaviour, not a side effect.
 set -euo pipefail
@@ -322,6 +344,7 @@ FILES=(
   scripts/build_ios_deps.sh
   scripts/build_numpy_ios.sh
   scripts/bundle_biopython.sh
+  scripts/prune_ios_deps.sh
 )
 
 for f in "${FILES[@]}"; do
@@ -963,6 +986,9 @@ make_fixture () {
   : >     "$r/deps_ios/install_device/lib/libpng16.a"
   : >     "$r/deps_ios/install_device/lib/libfreetype.a"
   mkdir -p "$r/deps_ios/numpy-ios/device/numpy"
+  # Simulator headers are required even for the device build: appkit/CMakeLists.txt
+  # unconditionally points its Python header search at this simulator slice.
+  mkdir -p "$r/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"
   make_lib arm64 "$r/build_ios_device/libpymol_core.a"
   echo "$r"
 }
@@ -983,7 +1009,8 @@ for req in \
   "deps_ios/Python.xcframework/ios-arm64/lib/python3.13/site-packages/Bio" \
   "deps_ios/install_device/lib/libpng16.a" \
   "deps_ios/install_device/lib/libfreetype.a" \
-  "deps_ios/numpy-ios/device/numpy"; do
+  "deps_ios/numpy-ios/device/numpy" \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"; do
   F="$(make_fixture)"; rm -rf "$F/$req"
   if bash "$SCRIPT" "$F" >/dev/null 2>&1; then
     echo "  FAIL: passed with $req missing"; FAILED=1
@@ -1038,8 +1065,12 @@ Create `scripts/assert_ios_build_inputs.sh`:
 # anything the iOS DEVICE build links is missing or the wrong architecture.
 #
 # Without this, a missing dependency surfaces as an opaque linker error minutes
-# into an Xcode Cloud archive. Every path below is one the device slice of
-# swiftui/PyMOLBridge.xcconfig points at.
+# into an Xcode Cloud archive. Paths below come from two sources:
+#   swiftui/PyMOLBridge.xcconfig — the linked libraries and Python headers for
+#     the device slice (Python.framework/Python, Python.framework/Headers,
+#     install_device/lib/libpng16.a, install_device/lib/libfreetype.a)
+#   swiftui/project.yml (iOS build phases) — the bundled stdlib, Biopython
+#     and numpy paths (lib/python3.13, site-packages/Bio, numpy-ios/device/)
 #
 # Usage: assert_ios_build_inputs.sh [repo-root]     (defaults to this repo)
 set -euo pipefail
@@ -1070,6 +1101,14 @@ REQUIRED=(
   "deps_ios/install_device/lib/libpng16.a"
   "deps_ios/install_device/lib/libfreetype.a"
   "deps_ios/numpy-ios/device/numpy"
+  # Required despite being a simulator path: appkit/CMakeLists.txt line 90
+  # unconditionally points the Python header search path at the simulator slice
+  # for ALL iOS core builds, including the device build done here. Without these
+  # headers the compiler silently falls back to Homebrew's python@3.13 headers,
+  # compiling the core against the wrong Python ABI. Do not remove this entry
+  # to "clean up" the apparent inconsistency — it is load-bearing.
+  # (Human-approved amendment — Finding 3 from the Task 7 review.)
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"
 )
 
 # Report EVERY problem in one pass — fixing these one build at a time is slow.
@@ -1714,8 +1753,12 @@ values to record rather than "configure as needed".
 order matches between Tasks 3, 5 and 8. `assert_ios_build_inputs.sh [repo-root]`
 is called with `"$CI_PRIMARY_REPOSITORY_PATH"` in Task 8, matching its optional
 first argument in Task 6. Required-path lists in Tasks 4 and 6 are consistent:
-Task 4 asserts both slices (it publishes both), Task 6 asserts only the device
-slice (that is all the archive links).
+Task 4 asserts both slices (it publishes both); Task 6 asserts the device slice
+plus the simulator Python headers (`ios-arm64_x86_64-simulator/Python.framework/
+Headers`) — because `appkit/CMakeLists.txt` line 90 unconditionally reads those
+headers for all iOS core builds including device, so they are device-build
+load-bearing even though they look like a simulator path. *(Human-approved
+amendment — Finding 3 from the Task 7 review.)*
 
 **Ordering constraint:** Task 1 is a hard gate — do not start Task 2 until repo
 mutations are confirmed to persist. Task 8 additionally requires Task 7 step 4 to

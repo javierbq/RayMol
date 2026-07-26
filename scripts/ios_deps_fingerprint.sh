@@ -8,12 +8,15 @@
 # so the deps a build links can never silently disagree with the dep scripts in
 # that checkout. There is no lockfile to drift.
 #
-# Hashing the script BODIES covers every pinned version implicitly, because each
-# pin is a default literal inside them:
+# Six scripts are hashed (in fixed order):
 #   fetch_ios_python.sh    PY_APPLE_SUPPORT_TAG  3.13-b12
 #   build_ios_deps.sh      FREETYPE_VERSION 2.13.3 / LIBPNG_VERSION 1.6.44
 #   build_numpy_ios.sh     NUMPY_VERSION 2.4.6
 #   bundle_biopython.sh    BIO_VERSION 1.87
+#   setup_ios_deps.sh      (orchestrates the above four)
+#   prune_ios_deps.sh      included because it shapes the published artifact's
+#                          contents — tightening the prune changes what the
+#                          artifact contains, not just the bring-up behaviour
 # Bump any pin and the fingerprint changes, invalidating the old artifact. That
 # is the intended behaviour, not a side effect.
 set -euo pipefail
@@ -27,6 +30,7 @@ FILES=(
   scripts/build_ios_deps.sh
   scripts/build_numpy_ios.sh
   scripts/bundle_biopython.sh
+  scripts/prune_ios_deps.sh
 )
 
 for f in "${FILES[@]}"; do

@@ -3,8 +3,12 @@
 # anything the iOS DEVICE build links is missing or the wrong architecture.
 #
 # Without this, a missing dependency surfaces as an opaque linker error minutes
-# into an Xcode Cloud archive. Every path below is one the device slice of
-# swiftui/PyMOLBridge.xcconfig points at.
+# into an Xcode Cloud archive. Paths below come from two sources:
+#   swiftui/PyMOLBridge.xcconfig — the linked libraries and Python headers for
+#     the device slice (Python.framework/Python, Python.framework/Headers,
+#     install_device/lib/libpng16.a, install_device/lib/libfreetype.a)
+#   swiftui/project.yml (iOS build phases) — the bundled stdlib, Biopython
+#     and numpy paths (lib/python3.13, site-packages/Bio, numpy-ios/device/)
 #
 # Usage: assert_ios_build_inputs.sh [repo-root]     (defaults to this repo)
 set -euo pipefail
@@ -35,6 +39,13 @@ REQUIRED=(
   "deps_ios/install_device/lib/libpng16.a"
   "deps_ios/install_device/lib/libfreetype.a"
   "deps_ios/numpy-ios/device/numpy"
+  # Required despite being a simulator path: appkit/CMakeLists.txt line 90
+  # unconditionally points the Python header search path at the simulator slice
+  # for ALL iOS core builds, including the device build done here. Without these
+  # headers the compiler silently falls back to Homebrew's python@3.13 headers,
+  # compiling the core against the wrong Python ABI. Do not remove this entry
+  # to "clean up" the apparent inconsistency — it is load-bearing.
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"
 )
 
 # Report EVERY problem in one pass — fixing these one build at a time is slow.

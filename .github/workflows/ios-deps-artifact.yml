@@ -42,7 +42,14 @@ jobs:
 
       - name: Compute deps fingerprint
         id: fp
-        run: echo "fp=$(bash scripts/ios_deps_fingerprint.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          fp="$(bash scripts/ios_deps_fingerprint.sh)"
+          [[ "$fp" =~ ^[0-9a-f]{12}$ ]] || {
+            echo "ERROR: fingerprint must be 12 lowercase hex chars, got '$fp'" >&2
+            exit 1
+          }
+          echo "fp=$fp" >> "$GITHUB_OUTPUT"
 
       # Skip the ~30 minute bring-up when this exact fingerprint is already
       # published, so re-runs and unrelated pushes are nearly free.

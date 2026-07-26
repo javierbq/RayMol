@@ -3,12 +3,14 @@
 # links, so the published artifact stays as small as possible to download on
 # every Xcode Cloud build.
 #
-# What the build actually reads (see swiftui/PyMOLBridge.xcconfig):
-#   Python.xcframework/<slice>/Python.framework/{Python,Headers}
-#   Python.xcframework/<slice>/lib/python3.13          (stdlib + staged Bio)
-#   install/lib/{libpng16.a,libfreetype.a}             simulator (platform 7)
-#   install_device/lib/{libpng16.a,libfreetype.a}      device    (platform 2)
-#   numpy-ios/{simulator,device}/numpy
+# What the build actually reads:
+#   swiftui/PyMOLBridge.xcconfig — the linked libraries and Python headers:
+#     Python.xcframework/<slice>/Python.framework/{Python,Headers}
+#     install/lib/{libpng16.a,libfreetype.a}             simulator (platform 7)
+#     install_device/lib/{libpng16.a,libfreetype.a}      device    (platform 2)
+#   swiftui/project.yml (iOS build phases) — the bundled stdlib and packages:
+#     Python.xcframework/<slice>/lib/python3.13          (stdlib + staged Bio)
+#     numpy-ios/{simulator,device}/numpy
 # Everything else is intermediate: CMake build trees, extracted freetype/libpng
 # sources, and the downloaded tarballs.
 #

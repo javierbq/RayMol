@@ -67,7 +67,8 @@ New workflow `.github/workflows/ios-deps-artifact.yml`, `runs-on: macos-latest`
 **Triggers:** `workflow_dispatch`, plus `push` to `master` touching any of
 `scripts/setup_ios_deps.sh`, `scripts/fetch_ios_python.sh`,
 `scripts/build_ios_deps.sh`, `scripts/build_numpy_ios.sh`,
-`scripts/bundle_biopython.sh`.
+`scripts/bundle_biopython.sh`, `scripts/ios_deps_fingerprint.sh`, or
+`scripts/prune_ios_deps.sh`.
 
 **Steps:**
 
@@ -81,8 +82,12 @@ New workflow `.github/workflows/ios-deps-artifact.yml`, `runs-on: macos-latest`
    pick one explicitly.
 3. Run `scripts/setup_ios_deps.sh` unmodified — it is already idempotent and
    ordered.
-4. **Prune** to only what the Xcode build consumes, per
-   `swiftui/PyMOLBridge.xcconfig`:
+4. **Prune** to only what the Xcode build consumes. Paths come from two sources:
+   `swiftui/PyMOLBridge.xcconfig` supplies the linked libraries and Python
+   headers (`Python.framework/{Python,Headers}`, `install/` and
+   `install_device/lib/`); `swiftui/project.yml`'s iOS build phases supply the
+   bundled stdlib, Biopython and numpy (`<slice>/lib/python3.13`,
+   `numpy-ios/{simulator,device}/`). Concretely:
    - keep `Python.xcframework/` (with Biopython staged into
      `<slice>/lib/python3.13/site-packages`), `install/`, `install_device/`,
      `numpy-ios/{simulator,device}/`
@@ -102,7 +107,12 @@ deps it was built against.
 ### The fingerprint
 
 New `scripts/ios_deps_fingerprint.sh` emits the **first 12 hex characters of a
-sha256** over the four dep scripts plus `setup_ios_deps.sh`, in a fixed order.
+sha256** over six scripts in a fixed order: the four dep scripts
+(`fetch_ios_python.sh`, `build_ios_deps.sh`, `build_numpy_ios.sh`,
+`bundle_biopython.sh`), `setup_ios_deps.sh`, and `scripts/prune_ios_deps.sh`.
+`prune_ios_deps.sh` is included because it shapes the published artifact's
+contents — tightening the prune changes what the artifact contains, not just
+the bring-up behaviour.
 Hashing the script bodies covers the pins implicitly, since every pin
 (`PY_APPLE_SUPPORT_TAG`, `FREETYPE_VERSION`, `LIBPNG_VERSION`,
 `NUMPY_VERSION`) is a default literal inside those scripts. **Both pipelines
@@ -150,9 +160,11 @@ Scripts run with `ci_scripts` as the working directory, under `zsh`, **without
    setting was once reverted.
 7. `bash swiftui/build_ios.sh device` → `build_ios_device/libpymol_core.a`
 8. **Assert before handing off to `xcodebuild`:** `libpymol_core.a` exists and
-   `lipo -archs` reports `arm64`; every `deps_ios` path named in
-   `PyMOLBridge.xcconfig` exists. Fail loudly — a missing dep otherwise
-   surfaces as an opaque link error minutes later.
+   `lipo -archs` reports `arm64`; every `deps_ios` path the device build needs
+   is present — linked libraries and Python headers per `PyMOLBridge.xcconfig`,
+   bundled stdlib, Biopython and numpy per `project.yml`'s iOS build phases.
+   Fail loudly — a missing dep otherwise surfaces as an opaque link error
+   minutes later.
 
 No `ci_pre_xcodebuild.sh` or `ci_post_xcodebuild.sh` is needed for v1. Build
 notifications use Xcode Cloud's native email/Slack post-actions rather than a

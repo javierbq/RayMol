@@ -15,7 +15,7 @@ check () {  # $1=label  $2=expected  $3=actual
 }
 
 INPUTS=(setup_ios_deps.sh fetch_ios_python.sh build_ios_deps.sh
-        build_numpy_ios.sh bundle_biopython.sh)
+        build_numpy_ios.sh bundle_biopython.sh prune_ios_deps.sh)
 
 # Build a throwaway repo whose scripts/ holds stubs + a copy of the script under
 # test. The script derives its root from its own location, so this fully
@@ -81,6 +81,7 @@ EXPECTED="$(cat \
   "$E/scripts/build_ios_deps.sh" \
   "$E/scripts/build_numpy_ios.sh" \
   "$E/scripts/bundle_biopython.sh" \
+  "$E/scripts/prune_ios_deps.sh" \
   | shasum -a 256 | cut -c1-12)"
 check "fixture matches independently-computed expected order" \
   "$EXPECTED" "$(bash "$E/scripts/ios_deps_fingerprint.sh")"

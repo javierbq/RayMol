@@ -30,6 +30,9 @@ make_fixture () {
   : >     "$r/deps_ios/install_device/lib/libpng16.a"
   : >     "$r/deps_ios/install_device/lib/libfreetype.a"
   mkdir -p "$r/deps_ios/numpy-ios/device/numpy"
+  # Simulator headers are required even for the device build: appkit/CMakeLists.txt
+  # unconditionally points its Python header search at this simulator slice.
+  mkdir -p "$r/deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"
   make_lib arm64 "$r/build_ios_device/libpymol_core.a"
   echo "$r"
 }
@@ -50,7 +53,8 @@ for req in \
   "deps_ios/Python.xcframework/ios-arm64/lib/python3.13/site-packages/Bio" \
   "deps_ios/install_device/lib/libpng16.a" \
   "deps_ios/install_device/lib/libfreetype.a" \
-  "deps_ios/numpy-ios/device/numpy"; do
+  "deps_ios/numpy-ios/device/numpy" \
+  "deps_ios/Python.xcframework/ios-arm64_x86_64-simulator/Python.framework/Headers"; do
   F="$(make_fixture)"; rm -rf "$F/$req"
   if bash "$SCRIPT" "$F" >/dev/null 2>&1; then
     echo "  FAIL: passed with $req missing"; FAILED=1
