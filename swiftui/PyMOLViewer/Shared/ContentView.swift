@@ -3312,11 +3312,17 @@ private struct DesignSequenceStripView: View {
         // `TapGesture().modifiers(_:)` is unavailable on iOS — this was the single
         // iOS compile error in the whole Design feature. The cross-platform path is
         // controller.regionEditMode, which a plain tap honours (see tapResidue).
+        //
+        // The shift gesture is DISABLED while regionEditMode is on: in that mode a
+        // plain tap already toggles the region, so leaving both active would make
+        // correctness depend on SwiftUI suppressing one of them. If it ever failed to,
+        // the position would be toggled twice — added then removed — a silent no-op.
         #if os(macOS)
         .highPriorityGesture(
             TapGesture().modifiers(.shift).onEnded {
                 controller.toggleRegionResidue(residueIndex: i)
-            }
+            },
+            including: controller.regionEditMode ? .subviews : .all
         )
         #endif
         .onTapGesture {

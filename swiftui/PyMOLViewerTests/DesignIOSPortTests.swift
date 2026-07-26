@@ -409,9 +409,11 @@ final class DesignIOSPortTests: XCTestCase {
 
         c.tapResidue(residueIndex: 0)
         XCTAssertEqual(c.selectedResidueIndices, [0, 1], "region stays sorted")
+        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
 
         c.tapResidue(residueIndex: 1)
         XCTAssertEqual(c.selectedResidueIndices, [0], "a second tap removes")
+        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
     }
 
     // Non-designable positions cannot enter a region, however they are tapped.
