@@ -155,7 +155,11 @@ struct ContentView: View {
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
     // imported. Declining writes a skip marker so we don't ask again.
+    // macOS-only: a startup rc file is a desktop concept, and iOS has no
+    // user-visible home directory to put one in (see loadRaymolrcOrOfferMigration).
+    #if os(macOS)
     @State private var showRaymolrcMigrationPrompt = false
+    #endif
 
     // Export menu state. exportRayTraced persists across launches; when on, all
     // image exports are ray-traced (AO + shadows) regardless of the live view.
@@ -543,18 +547,21 @@ struct ContentView: View {
             }
     }
 
-    // Esc → two-stage clear selection (issues #163 + #166). A local key-down
-    // monitor (not .onKeyPress, which is macOS 14+; deployment target is macOS
-    // 13) so the whole main window catches Esc even when the viewport isn't the
-    // SwiftUI focus. We must NOT swallow Esc that belongs to something else:
+    // Esc → back out one level. A local key-down monitor rather than .onKeyPress
+    // because the whole main window must catch Esc even when the viewport isn't
+    // the SwiftUI focus — MetalViewport deliberately declines first-responder
+    // status (issue #73) so the command line stays hot for typing.
+    //
+    // The ladder, in order (issues #163 + #166, then #235):
     //   (a) a sheet / panel / popover is up (their window is key, not the main
-    //       RayMol window) — Esc should dismiss it, or
-    //   (b) the first responder is a text/field editor (the command line is
-    //       being edited) — Esc there cancels the field edit.
-    // In those cases we return the event unhandled so the system routes it
-    // normally. Otherwise we run the shared clear-selection helper and consume
-    // the event (return nil). Non-Esc keys always pass through untouched.
-    // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here).
+    //       RayMol window) — Esc belongs to it, pass through so it dismisses;
+    //   (b) an exclusive interaction mode (Move / Design / Measure) is active —
+    //       leave it, then consume;
+    //   (c) otherwise — two-stage clear selection, then consume.
+    // Non-Esc keys always pass through untouched.
+    // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here);
+    // the routing itself lives on PyMOLEngine and is platform-neutral, so wiring
+    // iOS later is just a key source, not a second policy.
     private func installEscKeyMonitor() {
         guard escKeyMonitor == nil else { return }
         escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -569,9 +576,16 @@ struct ContentView: View {
                 if keyWindow.isSheet || keyWindow is NSPanel { return event }
             }
             // NOTE: intentionally does NOT defer to a focused text field — Esc
-            // clears the selection regardless of keyboard focus (incl. while the
-            // command-line box is focused), per product decision. Only true
-            // modal/sheet/panel windows above still get Esc for dismissal.
+            // acts regardless of keyboard focus (incl. while the command-line box
+            // is focused), per product decision. Only true modal/sheet/panel
+            // windows above still get Esc for dismissal.
+            //
+            // (b) Leaving an interaction mode outranks clearing the selection —
+            // #166 anticipated exactly this ("exiting a mode should take priority
+            // before the selection stages kick in"). Routed through the engine so
+            // Esc reuses each mode's own exit path rather than duplicating it.
+            if engine.exitActiveInteractionMode() { return nil }
+            // (c) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
         }
@@ -1161,12 +1175,6 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Download a structure from the RCSB PDB.")
-            }
-            .alert("Import your PyMOL startup script?", isPresented: $showRaymolrcMigrationPrompt) {
-                Button("Import") { confirmRaymolrcMigration() }
-                Button("Not Now", role: .cancel) { declineRaymolrcMigration() }
-            } message: {
-                raymolrcMigrationAlertText
             }
             .alert("Clear session?", isPresented: $showClearSessionConfirm) {
                 Button("Clear", role: .destructive) { engine.clearSessionAndAutosave() }
@@ -3163,8 +3171,11 @@ struct ContentView: View {
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
         // user's startup script can override them (e.g. a custom bg_color) —
         // matching vanilla PyMOL, where .pymolrc runs after all built-in
-        // defaults are set.
+        // defaults are set. macOS-only (RayMol#225 left iOS as an open
+        // question): there is no user-visible ~ on iOS to author an rc file in.
+        #if os(macOS)
         loadRaymolrcOrOfferMigration()
+        #endif
     }
 
     // This native app never goes through pymol.invocation's CLI argument
@@ -3175,17 +3186,17 @@ struct ContentView: View {
     // over, or may not recognize ~/.raymolrc if we create it behind their
     // back. Skips the prompt (and loads immediately) once either file
     // exists or the user has already answered once (~/.raymolrc.skip).
+    //
+    // macOS-only, for two reasons: homeDirectoryForCurrentUser is unavailable
+    // on iOS, and more fundamentally a dotfile in ~ is a desktop concept —
+    // iOS's ~ is the app container, which the user can neither see nor write
+    // to, so an iOS build could only ever no-op here. RayMol#225 explicitly
+    // left "whether iOS needs an equivalent (likely app-container-relative)"
+    // as an open question; it is deliberately still open.
+    #if os(macOS)
     private func loadRaymolrcOrOfferMigration() {
         let fm = FileManager.default
-        #if os(macOS)
         let home = fm.homeDirectoryForCurrentUser.path
-        #else
-        // homeDirectoryForCurrentUser is unavailable on iOS — there is no user home
-        // directory, only the app sandbox. NSHomeDirectory() is that sandbox root: the
-        // closest equivalent, and where a .raymolrc would have to live if iOS ever
-        // supports one. On a fresh install nothing matches, so this simply no-ops.
-        let home = NSHomeDirectory()
-        #endif
         let hasRaymolrc = fm.fileExists(atPath: home + "/.raymolrc.py")
             || fm.fileExists(atPath: home + "/.raymolrc")
         let alreadyAsked = fm.fileExists(atPath: home + "/.raymolrc.skip")
@@ -3209,6 +3220,7 @@ struct ContentView: View {
     private var raymolrcMigrationAlertText: Text {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
+    #endif
 }
 
 #if RAYMOL_MPNN
