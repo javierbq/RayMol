@@ -524,7 +524,8 @@ def rebuild(spec_json):
             except Exception as e:
                 print('MOVIE_ERR:' + str(e))
         # Per-scene render settings (DOF etc.) across the transitions. AFTER the
-        # interpolate above: the focus pull samples each frame's interpolated view.
+        # interpolate above: the DOF builder resolves focus under each frame's
+        # interpolated view.
         # UNCONDITIONAL — a rebuild whose scene items were all deleted must reach
         # author([]) to drop the previous movie's animation, which mset wipes from
         # Cmd[] but which would otherwise still be persisted and re-authored.

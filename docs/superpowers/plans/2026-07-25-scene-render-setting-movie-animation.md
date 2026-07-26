@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-25-scene-render-setting-movie-animation-design.md`
 
+## Amendment — depth of field (supersedes Task 3 below)
+
+Task 3's focus pull was too narrow and its "0 = auto, so step" rule was simply wrong; a real four-scene session (`001` dof=off focus=0 ap=14 → `002` dof=on focus=0 ap=14 → `003` dof=on focus=120 ap=14 → `004` dof=on focus=40 ap=40) animated nothing at all across its first two transitions. Two corrections, both implemented in `modules/pymol/raymol_scene_anim.py`:
+
+1. **`metal_dof_focus == 0` means AUTO, not "no value."** The renderer resolves a concrete distance every frame (`SceneRender.cpp:2043-2072`): the autofocus target's transformed bbox-midpoint depth when auto-lock is on (a stale manual value is *discarded* — it is zeroed at `:2050`), else the manual value if `> 0`, else the centre of interest (the rotation origin, whose own eye depth is `-tz`). New `resolve_focus(name, view, _self)` mirrors that, and the pull ramps the two RESOLVED distances. Consequently the 0-endpoint exception is gone from `interpolatable()`, and `build_track` no longer emits `metal_dof_focus` at all (`_DOF_OWNED`) — one writer only.
+2. **`metal_dof` is boolean, so switching it popped.** `build_focus_pull` is replaced by `build_dof_transition(keyframes, _self, power)`, which additionally *fades*: where the two scenes disagree on `metal_dof` it forces `metal_dof = 1` across the interior frames and ramps the aperture between `_FLOOR` (0.02, never `≤ 0`) and the enabled scene's aperture, holding focus on the enabled side's resolved plane. The disabled side's captured aperture is ignored (nothing was rendered with it). Both-off transitions emit nothing. The destination keyframe's `enter_scene` restores the captured values, including turning `metal_dof` back off after a fade-out.
+
+Everything else in Task 3 (both-endpoint easing power, per-frame reprojection under the interpolated camera, `author()` overlaying DOF on top of `build_track`, emit-after-`mview interpolate`) stands. Tests: `TestResolveFocus`, `TestDofFade`, `TestUserSessionRegression` in `testing/tests/test_raymol_scene_anim.py`.
+
 ## Global Constraints
 
 - Python 3.9+. No Python formatter — match surrounding style.
