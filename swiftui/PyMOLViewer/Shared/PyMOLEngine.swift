@@ -1074,7 +1074,20 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Debug: run raw Python in the embedded interpreter.
+#if DEBUG
+    /// Test seam: observes every Python string this engine emits. Placed BEFORE
+    /// the isReady guard so it reports what the engine *intended* to run,
+    /// independent of whether the core is initialized — that keeps tests of
+    /// teardown behaviour (metal_move.cleanup / appkit_measure.reset, which
+    /// leave no Swift-side trace) working under any host configuration.
+    /// Compiled out of Release; cost in Debug is one optional-closure call.
+    var pythonTap: ((String) -> Void)? = nil
+#endif
+
     func runPython(_ code: String) {
+#if DEBUG
+        pythonTap?(code)
+#endif
         guard isReady else { return }
         PyMOLBridge_RunPython(code)
     }
