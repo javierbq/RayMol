@@ -32,25 +32,47 @@ enum MPNNRuntime {
     /// Applied exactly once, thread-safely: a `static let` initializer is run at
     /// most once by the runtime, which is precisely the semantics wanted here.
     private static let applied: Void = {
-        // ORDER MATTERS: setenv must precede any call that can construct a Metal
-        // device. Setting the cache limit lazily builds MLX's MetalAllocator, whose
-        // constructor latches the GPU architecture from MLX_METAL_GPU_ARCH into a
-        // function-local static — first call wins. If the cache limit is set first,
-        // the env var is read while still unset and this fallback silently does
-        // nothing. (The proteinmpnn-ios reference harness has the reverse order;
-        // it appears never to have been verified in a simulator.)
         #if targetEnvironment(simulator)
-        // The iOS Simulator's Metal cannot allocate MLX's private-storage heaps
-        // (MTLStorageModePrivate assertion), and its architecture()->name() is null
-        // (std::string(nullptr) abort under iOS 26 libc++ hardening). Force the CPU
-        // backend and supply an arch string so the pipeline can run in the Simulator.
-        // Real devices use the GPU — this block is simulator-only, and without it the
-        // first inference in any simulator ABORTS the process rather than throwing.
+        // KNOWN LIMITATION — MLX does not run in the iOS Simulator, and this block
+        // does NOT make it work. Keep it anyway: it is the documented upstream
+        // workaround, it is harmless, and it may be sufficient on other
+        // Simulator/mlx-swift combinations.
+        //
+        // Measured on 2026-07-26, iPhone 17 Pro Simulator (iOS 26) + mlx-swift 0.31.6:
+        // the first Design inference aborts with
+        //   -[MTLSimDevice newHeapWithDescriptor:]:1226: failed assertion
+        //   `MTLStorageModePrivate is required for heaps'
+        // and it still aborts with `Device(.cpu)` as the default AND with the
+        // Memory.cacheLimit assignment moved out of this path (both were tried).
+        // Cause: MLX's allocator is Metal-backed regardless of the compute device —
+        // Apple-silicon unified memory means arrays live in Metal buffers even for CPU
+        // compute — so it builds heaps the Simulator forbids. MPNNKit requests no
+        // device or stream of its own (verified), so there is nothing to override.
+        //
+        // Isolated to Design mode: launching with a structure loaded and Design never
+        // entered produces no assertion; only entering Design does. So this is MLX,
+        // not RayMol's Metal renderer.
+        //
+        // Consequence for verification: the Simulator can exercise Design's UI, entry
+        // points and layout, but NOT inference. Anything touching MPNN requires real
+        // hardware. The PYMOL_AUTODESIGN hook is still useful — it drives macOS and
+        // real devices.
+        //
+        // ORDER MATTERS if this is ever revisited: setenv must precede anything that
+        // can construct a Metal device, because MLX latches MLX_METAL_GPU_ARCH into a
+        // function-local static on first read — first call wins.
         setenv("MLX_METAL_GPU_ARCH", "applegpu_g15g", 1)
         MLX.Device.setDefault(device: Device(.cpu))
-        #endif
 
+        // Not setting Memory.cacheLimit here: assigning it constructs MLX's
+        // MetalAllocator directly. Skipping it does not avoid the abort (see above),
+        // but the clamp exists to bound GPU memory against jetsam and is meaningless
+        // for a CPU default, so there is no reason to trip the allocator early.
+        #else
+        // Bound MLX's buffer cache on real devices, where it matters: unclamped the
+        // pool was measured above 5 GB at L~1000, a guaranteed jetsam kill.
         MLX.Memory.cacheLimit = cacheLimitBytes
+        #endif
     }()
 
     /// Idempotent; safe to call from any thread. Call before the first MPNNKit call.
