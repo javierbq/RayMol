@@ -133,9 +133,13 @@ class TestHelpers(unittest.TestCase):
         a = self.anim
         self.assertTrue(a.interpolatable("metal_dof_aperture", 1.0, 5.0))
         self.assertFalse(a.interpolatable("metal_dof", 0.0, 1.0))   # stepped
-        # 0 is the "auto" sentinel for focus — stepping avoids a bogus ramp.
-        self.assertFalse(a.interpolatable("metal_dof_focus", 0.0, 12.0))
-        self.assertFalse(a.interpolatable("metal_dof_focus", 12.0, 0.0))
+        # focus = 0 means AUTO, not "no value": the renderer resolves it to a real
+        # distance every frame (SceneRender.cpp:2043-2072), so there is nothing
+        # unrampable about a 0 endpoint.  Refusing it is what left the user's
+        # 0 -> 120 transition dead.  (Focus never reaches build_track anyway —
+        # build_dof_transition owns it, see _DOF_OWNED.)
+        self.assertTrue(a.interpolatable("metal_dof_focus", 0.0, 12.0))
+        self.assertTrue(a.interpolatable("metal_dof_focus", 12.0, 0.0))
         self.assertTrue(a.interpolatable("metal_dof_focus", 8.0, 12.0))
 
     def test_value_at_clamps_sentinel_floor(self):
@@ -197,10 +201,9 @@ class ViewCmd(FakeCmd):
     """FakeCmd plus a camera that DOLLIES: each frame pulls back 0.5 Å, so the
     depth of a fixed point differs per frame.
 
-    build_focus_pull needs frame() and get_view(); with a fake that has neither,
-    every per-frame block raises, `d` is None and the loop `continue`s — so the
-    function returns {} no matter what the logic under test does, and any test
-    asserting {} is vacuously green."""
+    build_dof_transition needs frame() and get_view(); with a fake that has
+    neither, every per-frame view is None and no focus can resolve — so a test
+    asserting an empty (or focus-free) result would be vacuously green."""
     def __init__(self, *args, **kwargs):
         FakeCmd.__init__(self, *args, **kwargs)
         self.frames_seen = []
@@ -247,6 +250,19 @@ class TestTrackBuilder(unittest.TestCase):
         for vals in track.values():
             self.assertNotIn('metal_dof_aperture', vals)   # identical -> skipped
             self.assertIn('ambient', vals)
+
+    def test_build_track_never_emits_focus(self):
+        # Ownership moved: metal_dof_focus is resolved per frame by
+        # build_dof_transition (0 = auto, and autofocus has to be switched off
+        # while we drive it).  build_track emitting a raw ramp of the CAPTURED
+        # numbers would fight it, the winner decided by dict.update ordering.
+        self._store('A', metal_dof_focus=8.0, metal_dof_aperture=1.0)
+        self._store('B', metal_dof_focus=12.0, metal_dof_aperture=5.0)
+        track = self.anim.build_track([(1, 'A', 0.0), (11, 'B', 0.0)])
+        self.assertTrue(track)
+        for vals in track.values():
+            self.assertNotIn('metal_dof_focus', vals)
+            self.assertIn('metal_dof_aperture', vals)   # its neighbour still ramps
 
     def test_stepped_settings_are_not_in_the_track(self):
         self._store('A', metal_dof='off', surface_quality=1)
@@ -437,25 +453,34 @@ class TestFocusPull(unittest.TestCase):
         # must NOT be mistaken for a real target at the origin.
         self.assertIsNone(a.focus_centroid('B', FakeCmd(objects=['m1'])))
 
-    def test_pull_only_when_both_autofocus_and_targets_differ(self):
+    def test_a_mixed_autofocus_pair_still_pulls(self):
         a = self.anim
-        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
-        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'off'}
-        # Everything ELSE is set up to produce a pull — distinct targets and a
-        # working (dollying) camera — so the autofocus flag is the only thing that
-        # can suppress it.  Delete the autofocus guard and this emits 7 frames.
-        a.focus_centroid = lambda name, _self=None: (
-            [0.0, 0.0, 0.0] if name == 'A' else [0.0, 0.0, -20.0])
+        # A auto-locks onto a target; B uses a manual distance.  The renderer
+        # shows a concrete plane for BOTH, so the transition between them is a
+        # real focus pull — the old "only when both autofocus" rule refused it and
+        # the focus snapped at the cut.
+        self.scenes._scene_settings['A'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'off',
+                                            'metal_dof_focus': '120'}
+        a.focus_centroid = lambda name, _self=None: [0.0, 0.0, 0.0]
         fake = ViewCmd()
-        # B has autofocus off -> step, no pull.
-        self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
-                                            _self=fake), {})
-        self.assertEqual(fake.frames_seen, [])   # bailed before the frame loop
+        pull = a.build_dof_transition([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
+        self.assertEqual(sorted(pull), list(range(2, 11)))
+        dists = [pull[f]['metal_dof_focus'] for f in range(2, 11)]
+        self.assertEqual(dists, sorted(dists))          # ramps toward 120
+        self.assertLess(dists[0], 60.0)                 # starts at A's own depth
+        self.assertGreater(dists[-1], 110.0)            # ends approaching 120
+        for vals in pull.values():
+            self.assertEqual(vals['metal_dof_autofocus'], 0.0)
 
     def test_pull_emits_monotone_distance_and_disables_autofocus(self):
         a = self.anim
-        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
-        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['A'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'on'}
 
         # ViewCmd's camera DOLLIES: each frame pulls back by 0.5 Å, so the depth
         # of a fixed point differs per frame.  A lerp of endpoint distances would
@@ -465,7 +490,7 @@ class TestFocusPull(unittest.TestCase):
         a.focus_centroid = lambda name, _self=None: (
             [0.0, 0.0, 0.0] if name == 'A' else [0.0, 0.0, -20.0])
 
-        pull = a.build_focus_pull([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
+        pull = a.build_dof_transition([(1, 'A', 0.0), (11, 'B', 0.0)], _self=fake)
 
         # 1. _self.frame(f) must be called once per interior frame, in order.
         #    An implementation that skips frame() entirely would produce [] here.
@@ -493,17 +518,279 @@ class TestFocusPull(unittest.TestCase):
 
     def test_identical_targets_need_no_pull(self):
         a = self.anim
-        self.scenes._scene_settings['A'] = {'metal_dof_autofocus': 'on'}
-        self.scenes._scene_settings['B'] = {'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['A'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'on'}
+        self.scenes._scene_settings['B'] = {'metal_dof': 'on',
+                                            'metal_dof_autofocus': 'on'}
         a.focus_centroid = lambda name, _self=None: [1.0, 2.0, 3.0]
-        # Both autofocus on and a working (dollying) camera, so the identical
-        # targets are the only thing suppressing the pull: delete the `ca == cb`
-        # guard and this emits 7 frames of pointless focus overrides (which would
-        # also switch autofocus OFF across a transition that never needed it).
+        # DOF on both sides and a working (dollying) camera, so the identical
+        # targets are the only thing suppressing the pull: delete the
+        # equal-distance guard and this emits 7 frames of pointless focus
+        # overrides (which would also switch autofocus OFF across a transition
+        # that never needed it).
         fake = ViewCmd()
-        self.assertEqual(a.build_focus_pull([(1, 'A', 0.0), (9, 'B', 0.0)],
-                                            _self=fake), {})
-        self.assertEqual(fake.frames_seen, [])
+        self.assertEqual(a.build_dof_transition([(1, 'A', 0.0), (9, 'B', 0.0)],
+                                                _self=fake), {})
+        # The frames WERE visited: the empty result comes from the distances
+        # matching, not from an early bail that would mask a broken pull.
+        self.assertEqual(fake.frames_seen, list(range(2, 9)))
+
+
+def _view(tz=-50.0, origin=(0.0, 0.0, 0.0)):
+    """An 18-float cmd.get_view() with identity rotation, camera at `tz` and the
+    rotation origin at `origin`."""
+    return [1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+            0.0, 0.0, float(tz),
+            float(origin[0]), float(origin[1]), float(origin[2]),
+            -60.0, -40.0, 20.0]
+
+
+class TestResolveFocus(unittest.TestCase):
+    """resolve_focus mirrors SceneRender.cpp:2043-2072 — the ONLY place that knows
+    what distance the renderer will actually show for a scene."""
+
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+
+    def test_manual_distance_wins_over_the_fallback(self):
+        self.scenes._scene_settings['A'] = {'metal_dof_focus': '14.00000',
+                                            'metal_dof_autofocus': 'off'}
+        # Centre of interest here is 50 Å, so 14 can only come from the manual value.
+        self.assertAlmostEqual(
+            self.anim.resolve_focus('A', _view(), FakeCmd()), 14.0)
+
+    def test_autofocus_uses_the_centroid_depth_and_discards_a_stale_manual(self):
+        # The renderer zeroes dofFocus before the autofocus block
+        # (SceneRender.cpp:2050), and the UI leaves the manual slider's stale
+        # value behind while auto-lock is on — so 99 must NOT be what we resolve.
+        self.scenes._scene_settings['A'] = {'metal_dof_focus': '99.0',
+                                            'metal_dof_autofocus': 'on'}
+        self.scenes._scene_focus['A'] = [('m1', 1)]
+        fake = FakeCmd(objects=['m1'], extent=[[0.0, 0.0, 10.0],
+                                               [0.0, 0.0, 30.0]])
+        # bbox midpoint z = 20 -> depth = -(20 - 50) = 30.
+        self.assertAlmostEqual(
+            self.anim.resolve_focus('A', _view(), fake), 30.0)
+
+    def test_auto_zero_resolves_to_the_centre_of_interest(self):
+        # focus = 0 with autofocus off: the renderer falls back to the rotation
+        # origin's own depth, which is -tz whatever the origin's coordinates are.
+        self.scenes._scene_settings['A'] = {'metal_dof_focus': '0.00000',
+                                            'metal_dof_autofocus': 'off'}
+        for origin in ((0.0, 0.0, 0.0), (7.0, -8.0, 9.0)):
+            self.assertAlmostEqual(
+                self.anim.resolve_focus('A', _view(-50.0, origin), FakeCmd()),
+                50.0, msg=str(origin))
+        self.assertAlmostEqual(
+            self.anim.resolve_focus('A', _view(-123.0), FakeCmd()), 123.0)
+
+    def test_autofocus_with_a_dead_target_falls_through_to_the_origin(self):
+        self.scenes._scene_settings['A'] = {'metal_dof_focus': '99.0',
+                                            'metal_dof_autofocus': 'on'}
+        self.scenes._scene_focus['A'] = [('gone', 1)]      # object deleted since
+        self.assertAlmostEqual(
+            self.anim.resolve_focus('A', _view(), FakeCmd(objects=['m1'])), 50.0)
+
+    def test_none_when_nothing_resolves(self):
+        self.scenes._scene_settings['A'] = {'metal_dof_focus': '0',
+                                            'metal_dof_autofocus': 'off'}
+        a = self.anim
+        self.assertIsNone(a.resolve_focus('A', None, FakeCmd()))     # no view
+        # Camera BEHIND the origin: the centre of interest is not in front of it,
+        # so there is no distance to focus at (the renderer leaves dofFocus 0 and
+        # the shader samples the centre pixel instead).
+        self.assertIsNone(a.resolve_focus('A', _view(50.0), FakeCmd()))
+        self.assertIsNone(a.resolve_focus('unknown-scene', _view(0.0), FakeCmd()))
+
+
+class TestDofFade(unittest.TestCase):
+    """metal_dof is boolean, so a scene switching it POPS. build_dof_transition
+    keeps DOF enabled across such a transition and dissolves the blur instead."""
+
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.floor = self.anim._FLOOR['metal_dof_aperture']
+
+    def _store(self, name, **settings):
+        self.scenes._scene_settings[name] = {k: str(v)
+                                             for k, v in settings.items()}
+
+    def _pair(self):
+        self._store('OFF', metal_dof='off', metal_dof_aperture=14,
+                    metal_dof_focus=0, metal_dof_autofocus='off')
+        self._store('ON', metal_dof='on', metal_dof_aperture=6,
+                    metal_dof_focus=30, metal_dof_autofocus='off')
+
+    def test_fade_in_ramps_the_aperture_up_from_the_floor(self):
+        self._pair()
+        out = self.anim.build_dof_transition([(1, 'OFF', 0.0), (11, 'ON', 0.0)],
+                                             _self=ViewCmd())
+        self.assertEqual(sorted(out), list(range(2, 11)))
+        aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
+        self.assertEqual(aps, sorted(aps))                     # monotone up
+        # NEVER <= 0: that is the renderer's MAXIMUM-blur sentinel
+        # (RendererMetal.mm:2528), so a fade that reached it would flash full blur.
+        self.assertTrue(all(v > 0.0 for v in aps), aps)
+        self.assertTrue(all(v >= self.floor for v in aps), aps)
+        # Starts at the FLOOR (no blur), not at either scene's captured aperture.
+        self.assertLess(aps[0], 1.0)
+        self.assertLess(aps[-1], 6.0)
+        self.assertGreater(aps[-1], 5.0)
+        for f in range(2, 11):
+            self.assertEqual(out[f]['metal_dof'], 1.0)         # renderable at all
+            # Focus HOLDS at the enabled side's plane, autofocus off or the
+            # renderer would discard it.
+            self.assertAlmostEqual(out[f]['metal_dof_focus'], 30.0)
+            self.assertEqual(out[f]['metal_dof_autofocus'], 0.0)
+
+    def test_fade_ramp_hits_the_floor_and_the_enabled_aperture_exactly(self):
+        # With a LINEAR power the ramp's own endpoints can be recovered by
+        # extrapolating one step past each interior frame — pinning them without
+        # re-deriving the eased values the code under test computes.
+        self._pair()
+        out = self.anim.build_dof_transition([(1, 'OFF', 0.0), (11, 'ON', 0.0)],
+                                             _self=ViewCmd(), power=1.0)
+        aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
+        step = aps[1] - aps[0]
+        self.assertAlmostEqual(aps[0] - step, self.floor)      # t=0 -> floor
+        self.assertAlmostEqual(aps[-1] + step, 6.0)            # t=1 -> ON's value
+
+    def test_fade_out_is_the_mirror_image(self):
+        self._pair()
+        kf_in = [(1, 'OFF', 0.0), (11, 'ON', 0.0)]
+        kf_out = [(1, 'ON', 0.0), (11, 'OFF', 0.0)]
+        fin = self.anim.build_dof_transition(kf_in, _self=ViewCmd())
+        fout = self.anim.build_dof_transition(kf_out, _self=ViewCmd())
+        self.assertEqual(sorted(fout), list(range(2, 11)))
+        aps = [fout[f]['metal_dof_aperture'] for f in range(2, 11)]
+        self.assertEqual(aps, sorted(aps, reverse=True))       # monotone down
+        self.assertTrue(all(v > 0.0 for v in aps), aps)
+        self.assertGreater(aps[0], 5.0)                        # starts at ON's 6
+        self.assertLess(aps[-1], 1.0)                          # ends at the floor
+        # The easing is symmetric (ease(t) + ease(1-t) == 1), so frame f of the
+        # fade-out must equal frame 12-f of the fade-in exactly.
+        for f in range(2, 11):
+            self.assertAlmostEqual(fout[f]['metal_dof_aperture'],
+                                   fin[12 - f]['metal_dof_aperture'])
+            self.assertEqual(fout[f]['metal_dof'], 1.0)
+            self.assertAlmostEqual(fout[f]['metal_dof_focus'], 30.0)
+
+    def test_the_destination_keyframe_restores_dof_off_after_a_fade_out(self):
+        # The fade leaves metal_dof=1 on the interior frames; nothing turns it back
+        # off except the destination scene's own mark, so that has to be authored
+        # and it has to carry the captured 'off'.
+        self._pair()
+        fake = ViewCmd()
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+        self.anim.author([(1, 'ON', 0.0), (11, 'OFF', 0.0)], _self=fake)
+        self.assertIn((11, 'OFF'), self.anim._scene_marks)
+        marked = FakeCmd()
+        self.anim.enter_scene(base64.b64encode(b'OFF').decode('ascii'),
+                              _self=marked)
+        self.assertEqual(dict(marked.sets).get('metal_dof'), 'off')
+
+    def test_dof_off_on_both_sides_emits_nothing(self):
+        # Differing focus AND aperture, so the only reason to stay silent is that
+        # DOF is never visible across this transition.
+        self._store('A', metal_dof='off', metal_dof_aperture=2,
+                    metal_dof_focus=10, metal_dof_autofocus='off')
+        self._store('B', metal_dof='off', metal_dof_aperture=20,
+                    metal_dof_focus=90, metal_dof_autofocus='off')
+        self.assertEqual(
+            self.anim.build_dof_transition([(1, 'A', 0.0), (11, 'B', 0.0)],
+                                           _self=ViewCmd()), {})
+
+    def test_the_fade_overrides_the_plain_aperture_ramp(self):
+        # The disabled side's captured aperture is meaningless — nothing was ever
+        # rendered with it — so build_track's 2 -> 20 ramp must not survive
+        # underneath the fade (author applies the DOF builder last).
+        self._store('OFF', metal_dof='off', metal_dof_aperture=2)
+        self._store('ON', metal_dof='on', metal_dof_aperture=20)
+        fake = ViewCmd()
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+        self.anim.author([(1, 'OFF', 0.0), (11, 'ON', 0.0)], _self=fake)
+        plain = self.anim.build_track([(1, 'OFF', 0.0), (11, 'ON', 0.0)])
+        self.assertGreater(plain[2]['metal_dof_aperture'], 2.0)   # the ramp exists
+        self.assertLess(self.anim._track[2]['metal_dof_aperture'], 2.0)
+
+
+class TestUserSessionRegression(unittest.TestCase):
+    """The four scenes from the reported session (issue #204), verbatim:
+
+        001  dof=off  focus=0    aperture=14
+        002  dof=on   focus=0    aperture=14
+        003  dof=on   focus=120  aperture=14
+        004  dof=on   focus=40   aperture=40
+
+    Before the fix 001->002 animated NOTHING (DOF popped on) and 002->003
+    animated NOTHING (a 0 endpoint was refused), which is exactly what the user
+    saw: "aperture interpolates but focus doesn't", plus a hard pop.
+    """
+
+    KFS = [(1, '001', 0.0), (11, '002', 0.0), (21, '003', 0.0), (31, '004', 0.0)]
+
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+        for name, dof, focus, ap in (('001', 'off', 0, 14), ('002', 'on', 0, 14),
+                                     ('003', 'on', 120, 14), ('004', 'on', 40, 40)):
+            self.scenes._scene_settings[name] = {
+                'metal_dof': dof, 'metal_dof_focus': '%.5f' % focus,
+                'metal_dof_aperture': '%.5f' % ap, 'metal_dof_autofocus': 'off'}
+
+    def _authored(self):
+        """What author() actually writes into the movie, DOF builder overlaid on
+        the plain ramp — the combination is what the user sees."""
+        self.anim.author(self.KFS, _self=ViewCmd())
+        return dict(self.anim._track)
+
+    def test_001_to_002_fades_dof_in_instead_of_popping(self):
+        track = self._authored()
+        frames = list(range(2, 11))
+        for f in frames:
+            self.assertIn(f, track, "001->002 animates nothing on frame %d" % f)
+            self.assertEqual(track[f]['metal_dof'], 1.0)
+            self.assertGreater(track[f]['metal_dof_focus'], 0.0)   # held, resolved
+            self.assertEqual(track[f]['metal_dof_autofocus'], 0.0)
+        aps = [track[f]['metal_dof_aperture'] for f in frames]
+        self.assertEqual(aps, sorted(aps))
+        self.assertTrue(all(v > 0.0 for v in aps), aps)
+        self.assertLess(aps[0], 1.0)          # starts at the floor, not at 14
+        self.assertGreater(aps[-1], 12.0)     # ends approaching the captured 14
+
+    def test_002_to_003_ramps_focus_from_the_resolved_auto_distance(self):
+        track = self._authored()
+        frames = list(range(12, 21))
+        for f in frames:
+            self.assertIn(f, track, "002->003 animates nothing on frame %d" % f)
+            self.assertIn('metal_dof_focus', track[f])
+            self.assertEqual(track[f]['metal_dof_autofocus'], 0.0)
+        d = [track[f]['metal_dof_focus'] for f in frames]
+        self.assertEqual(d, sorted(d))        # monotone toward 120
+        # 002's focus of 0 is AUTO: under ViewCmd's camera the centre of interest
+        # sits ~56-60 Å out, so the ramp starts there rather than at a literal 0.
+        self.assertGreater(d[0], 50.0)
+        self.assertLess(d[0], 70.0)
+        self.assertGreater(d[-1], 110.0)      # ends approaching 120
+        self.assertLess(d[-1], 120.0)
+
+    def test_003_to_004_still_ramps_both_aperture_and_focus(self):
+        track = self._authored()
+        frames = list(range(22, 31))
+        aps = [track[f]['metal_dof_aperture'] for f in frames]
+        self.assertEqual(aps, sorted(aps))                     # 14 -> 40
+        self.assertTrue(all(14.0 < v < 40.0 for v in aps), aps)
+        d = [track[f]['metal_dof_focus'] for f in frames]
+        self.assertEqual(d, sorted(d, reverse=True))           # 120 -> 40
+        self.assertTrue(all(40.0 < v < 120.0 for v in d), d)
 
 
 class TestAuthorAndSession(unittest.TestCase):

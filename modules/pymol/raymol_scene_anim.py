@@ -10,8 +10,10 @@ the only vehicle is a per-frame movie command.
 This module reads raymol_scenes' captures and authors those commands with
 cmd.mappend: continuous settings are interpolated across each transition using
 the SAME easing curve the camera uses (View.cpp ViewElemInterpolate), discrete
-ones step at the scene cut via enter_scene(), and differing depth-of-field
-autofocus targets produce a true focus pull.
+ones step at the scene cut via enter_scene(), and depth of field gets a
+dedicated builder — the captured focus number is not the distance on screen
+(0 means "auto") and metal_dof is boolean, so DOF would otherwise both refuse to
+pull and pop on/off.
 
 The authored track is persisted as STRUCTURED DATA and the command strings are
 regenerated locally on restore — never persisted or replayed as text. Frame
@@ -38,6 +40,18 @@ INTERPOLATE = frozenset([
 # Values at/below the renderer's sentinel are reinterpreted as 14 (MAXIMUM blur)
 # — RendererMetal.mm:2528,2532 — so an interpolated fade must never reach them.
 _FLOOR = {"metal_dof_aperture": 0.02, "metal_dof_range": 0.02}
+
+# Settings build_track must NOT emit because build_dof_transition owns them
+# outright. Focus is not a plain number: the renderer RESOLVES it every frame
+# (0 = auto), so only the DOF builder — which resolves both sides under each
+# frame's camera and switches autofocus off while it drives them — may write it.
+# Two writers on one setting would fight, the later dict.update winning by
+# accident of ordering.
+_DOF_OWNED = frozenset(["metal_dof_focus"])
+
+# Focus distances closer together than this (Angstroms) are the same plane;
+# ramping between them would only switch autofocus off for no visible gain.
+_FOCUS_EPS = 1e-6
 
 # View.cpp resolves an unspecified mview power to this.
 _DEFAULT_POWER = 1.4
@@ -118,14 +132,17 @@ def effective_power(first, last=None, override=None):
 
 
 def interpolatable(setting, a, b):
-    """True if `setting` should ramp between numeric endpoints a and b."""
+    """True if `setting` should ramp between numeric endpoints a and b.
+
+    Note there is no 0-endpoint exception for metal_dof_focus: 0 means AUTO, not
+    "no value", and the renderer resolves it to a real distance every frame
+    (SceneRender.cpp:2043-2072), so it is always rampable in principle. What it
+    is NOT rampable between are the CAPTURED numbers, which is why build_track
+    leaves focus alone entirely (_DOF_OWNED) and build_dof_transition ramps the
+    RESOLVED distances instead."""
     if setting not in INTERPOLATE:
         return False
     if a is None or b is None:
-        return False
-    # 0 means "auto (center of interest)" for focus (SceneRender.cpp:2061);
-    # ramping through it would sweep to a meaningless plane, so step instead.
-    if setting == "metal_dof_focus" and (a == 0.0 or b == 0.0):
         return False
     return True
 
@@ -147,7 +164,8 @@ def build_track(keyframes, power=None):
     movie-wide override the path passed to mview interpolate/reinterpolate, if any.
     Both endpoints of a transition contribute — see effective_power.
     Returns {frame: {setting: float}}. Scene keyframes themselves are applied by
-    enter_scene (exact captured values), so they are deliberately absent here."""
+    enter_scene (exact captured values), so they are deliberately absent here,
+    as is everything in _DOF_OWNED (build_dof_transition's territory)."""
     from pymol import raymol_scenes as _rs
     track = {}
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
@@ -160,6 +178,8 @@ def build_track(keyframes, power=None):
         b = _rs.scene_settings_map(n1)
         pairs = {}
         for s, bv in b.items():
+            if s in _DOF_OWNED:
+                continue                  # build_dof_transition drives this one
             fa, fb = _as_float(a.get(s)), _as_float(bv)
             if fa is None or fb is None or fa == fb:
                 continue                  # missing, non-numeric, or unchanged
@@ -231,22 +251,34 @@ def emit_scene_marks(marks, _self=cmd):
     return done
 
 
+def _view_origin(view):
+    """The rotation origin (PyMOL's "centre of interest") inside a cmd.get_view()
+    result, or None if `view` is not one. Sole home for the origin's layout
+    indices so eye_depth and resolve_focus cannot disagree about where it lives."""
+    if not view:
+        return None
+    if len(view) >= 25:
+        return [view[19], view[20], view[21]]
+    if len(view) >= 18:                     # 18-float layout (this build)
+        return [view[12], view[13], view[14]]
+    return None
+
+
 def eye_depth(point, view):
     """Positive eye-space distance (Angstroms, in front of the camera) of a
     MODEL-space point under `view` (a cmd.get_view() result). Same camera math as
     metal_pick._eye_distance: eye_z = R_row2 . (p - origin) + tz, depth = -eye_z."""
-    if not view:
+    o = _view_origin(view)
+    if o is None:
         return None
     if len(view) >= 25:
         r20, r21, r22 = view[2], view[6], view[10]
         tz = view[18]
-        ox, oy, oz = view[19], view[20], view[21]
     else:                                   # 18-float layout (this build)
         r20, r21, r22 = view[2], view[5], view[8]
         tz = view[11]
-        ox, oy, oz = view[12], view[13], view[14]
-    ez = (r20 * (point[0] - ox) + r21 * (point[1] - oy)
-          + r22 * (point[2] - oz) + tz)
+    ez = (r20 * (point[0] - o[0]) + r21 * (point[1] - o[1])
+          + r22 * (point[2] - o[2]) + tz)
     return -ez
 
 
@@ -294,24 +326,71 @@ def focus_centroid(name, _self=cmd):
     return mid
 
 
-def build_focus_pull(keyframes, _self=cmd, power=None):
-    """Per-frame focus distance for transitions whose autofocus target moves.
+def resolve_focus(name, view, _self=cmd):
+    """Effective eye-space focus distance for scene `name` under `view`, mirroring
+    how the renderer resolves it (SceneRender.cpp:2043-2072):
+      the autofocus target's transformed bbox-midpoint depth -> else the manual
+      metal_dof_focus if > 0 -> else the centre of interest (rotation origin).
+    Returns a positive distance, or None if nothing resolves.
 
-    With metal_dof_autofocus on, the renderer recomputes focus from the
-    'dof_focus' selection every frame and DISCARDS metal_dof_focus
-    (SceneRender.cpp:2051), so a changing target can only snap. To pull instead,
-    autofocus is switched off across the transition and the distance is driven
-    per frame: the target centroid is interpolated in model space and its depth
-    resolved under THAT frame's interpolated camera (a straight lerp of the two
-    endpoint distances would drift whenever the camera dollies).
+    metal_dof_focus == 0 therefore does NOT mean "no value": it means AUTO, and
+    the renderer still shows a concrete plane for it. Treating 0 as unrampable is
+    what left a captured 0 -> 120 focus change completely dead.
 
-    Only authored when both scenes have autofocus on and their centroids differ;
-    every other combination steps at the cut. Must run AFTER cmd.mview
+    Precedence detail: the renderer zeroes dofFocus BEFORE the autofocus block
+    (SceneRender.cpp:2050), so an enabled autofocus discards the manual value
+    outright — and a stale one is always there, because the UI only disables the
+    focus slider while auto-lock is on (ObjectPanel.swift:2521-2530) rather than
+    clearing it. Consulting manual first would aim at a plane the renderer never
+    shows, and snap back at the keyframe."""
+    from pymol import raymol_scenes as _rs
+    settings = _rs.scene_settings_map(name)
+    if _truthy(settings.get('metal_dof_autofocus')):
+        centroid = focus_centroid(name, _self)
+        if centroid is not None:
+            d = eye_depth(centroid, view)
+            if d is not None and d > 0.0:
+                return d
+        # Target gone/unresolvable: the renderer falls through to the origin, NOT
+        # back to the manual value it just discarded.
+    else:
+        manual = _as_float(settings.get('metal_dof_focus'))
+        if manual is not None and manual > 0.0:
+            return manual
+    d = eye_depth(_view_origin(view), view)      # centre of interest: -tz
+    if d is not None and d > 0.0:
+        return d
+    return None
+
+
+def build_dof_transition(keyframes, _self=cmd, power=None):
+    """Per-frame depth-of-field animation across each transition: a focus pull
+    while DOF stays on, and a blur FADE where it switches on or off.
+
+    Two things the plain build_track ramp cannot do:
+
+    * metal_dof is boolean, so a scene that turns DOF on or off POPS. Across such
+      a transition DOF is force-enabled for the interior frames and the aperture
+      ramps between the enabled scene's value and _FLOOR (0.02 = no visible blur;
+      never <= 0, which is the renderer's MAXIMUM-blur sentinel), dissolving the
+      effect in or out. The aperture captured on the DISABLED side is meaningless
+      — nothing was ever rendered with it — so it takes no part.
+    * metal_dof_focus is resolved by the renderer every frame, so the captured
+      numbers are not the distances on screen. resolve_focus turns each side into
+      the distance the renderer would actually use under THAT frame's
+      interpolated camera and the ramp runs between those (a lerp of two
+      endpoint depths would drift whenever the camera dollies). Autofocus is
+      switched off whenever we drive focus, or the renderer discards our value
+      (SceneRender.cpp:2050).
+
+    Returns {frame: {setting: float}} for interior frames only; author() overlays
+    it on top of build_track, so these win. Must run AFTER cmd.mview
     ('interpolate') so cmd.frame(f) yields the interpolated view. Note: this
     function leaves the playhead at the last interior frame it visited; callers
     should reset to a specific frame afterwards if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
+    floor = _FLOOR['metal_dof_aperture']
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
     for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
         f0, f1 = int(f0), int(f1)
@@ -320,25 +399,49 @@ def build_focus_pull(keyframes, _self=cmd, power=None):
             continue
         sa = _rs.scene_settings_map(n0)
         sb = _rs.scene_settings_map(n1)
-        if not (_truthy(sa.get('metal_dof_autofocus'))
-                and _truthy(sb.get('metal_dof_autofocus'))):
-            continue                          # not both locked -> step at the cut
-        ca = focus_centroid(n0, _self)
-        cb = focus_centroid(n1, _self)
-        if ca is None or cb is None or ca == cb:
-            continue
+        dof_a = _truthy(sa.get('metal_dof'))
+        dof_b = _truthy(sb.get('metal_dof'))
+        if not (dof_a or dof_b):
+            continue                      # DOF never visible -> nothing to animate
+        fade = dof_a != dof_b
+        if fade:
+            # The enabled side owns both the aperture and the focus target; the
+            # other side contributes only the fact that it is off.
+            on_name = n1 if dof_b else n0
+            ap_on = _as_float((sb if dof_b else sa).get('metal_dof_aperture'))
+            if ap_on is None:
+                ap_on = 14.0              # RendererMetal's own maximum-blur value
+            ap_on = max(ap_on, floor)
+            ap_from, ap_to = (floor, ap_on) if dof_b else (ap_on, floor)
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
-            pt = [ca[i] + (cb[i] - ca[i]) * e for i in range(3)]
             try:
                 _self.frame(f)
-                d = eye_depth(pt, _self.get_view())
+                view = _self.get_view()
             except Exception:
-                d = None
-            if d is None or d <= 0.0:
-                continue
-            out[f] = {'metal_dof_autofocus': 0.0, 'metal_dof_focus': d}
+                view = None               # focus cannot resolve; the fade still can
+            vals = {}
+            if fade:
+                vals['metal_dof'] = 1.0
+                vals['metal_dof_aperture'] = value_at(
+                    'metal_dof_aperture', ap_from, ap_to, e)
+                # Focus HOLDS on the enabled side's target — re-resolved per frame,
+                # so it stays glued to it as the camera moves.
+                d = resolve_focus(on_name, view, _self)
+                if d:
+                    vals['metal_dof_focus'] = d
+                    vals['metal_dof_autofocus'] = 0.0
+            else:
+                da = resolve_focus(n0, view, _self)
+                db = resolve_focus(n1, view, _self)
+                if da is not None and db is not None and abs(db - da) > _FOCUS_EPS:
+                    vals['metal_dof_focus'] = da + (db - da) * e
+                    vals['metal_dof_autofocus'] = 0.0
+                # Equal distances: same plane. Emitting nothing leaves autofocus
+                # on, still tracking its target correctly by itself.
+            if vals:
+                out[f] = vals
     return out
 
 
@@ -399,8 +502,10 @@ def author(keyframes, _self=cmd, power=None):
     _scene_marks[:] = []
     marks = [(int(f), n) for f, n, _p in keyframes]
     track = build_track(keyframes, power)
-    # The pull owns focus wherever it applies, so it overrides the plain ramp.
-    for f, vals in build_focus_pull(keyframes, _self, power).items():
+    # DOF owns focus/aperture/enable wherever it applies, so it goes on LAST and
+    # overrides the plain ramp (build_track's aperture ramp across a fade would
+    # otherwise start from the disabled side's meaningless captured value).
+    for f, vals in build_dof_transition(keyframes, _self, power).items():
         track.setdefault(f, {}).update(vals)
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
