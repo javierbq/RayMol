@@ -302,6 +302,44 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertEqual(cache.get(k)?.nativeFit, [-2], "overwrite must win, and survive")
     }
 
+    // An overwrite must NOT reset the key's eviction position.
+    //
+    // Under correct FIFO the earliest-inserted key is always the eviction victim
+    // regardless of subsequent overwrites.  An LRU-on-overwrite implementation
+    // would move the key to the back of the eviction order on each write, causing
+    // a different (and still-useful) key to be dropped instead.
+    //
+    // Scenario (capacity 2):
+    //   set(k1)          → order: [k1]
+    //   set(k2)          → order: [k1, k2]   (full)
+    //   set(k1, updated) → order must stay [k1, k2] — overwrite keeps k1's slot
+    //   set(k3)          → evicts k1 (FIFO); surviving: k2, k3
+    //
+    // If order became [k2, k1] after the overwrite, k2 would be evicted — wrong.
+    func testOverwriteDoesNotResetEvictionPosition() {
+        let cache = DesignScoreCache(capacity: 2)
+        func key(_ i: Int) -> DesignCacheKey {
+            DesignCacheKey(object: "m1", state: 1, sequenceHash: i)
+        }
+        let k1 = key(1), k2 = key(2), k3 = key(3)
+
+        cache.set(k1, DesignScores(nativeFit: [-1], certainty: [0.1]))  // k1 inserted first
+        cache.set(k2, DesignScores(nativeFit: [-2], certainty: [0.2]))  // k2 inserted second
+        cache.set(k1, DesignScores(nativeFit: [-9], certainty: [0.9]))  // overwrite — must NOT move k1 to back
+        cache.set(k3, DesignScores(nativeFit: [-3], certainty: [0.3]))  // triggers one eviction
+
+        // FIFO: k1 was inserted first → k1 is the victim; k2 and k3 survive.
+        // LRU-on-overwrite bug: k2 would be evicted instead (k1 was "most recently written").
+        XCTAssertEqual(cache.count, 2,
+                       "FIFO: exactly 2 entries must survive after one eviction from a capacity-2 cache")
+        XCTAssertNil(cache.get(k1),
+                     "FIFO invariant: k1 was inserted first and must be the eviction victim — overwriting k1 must not promote it past k2")
+        XCTAssertNotNil(cache.get(k2),
+                        "FIFO invariant: k2 was inserted second; overwriting k1 must not bump k2 to the front of the eviction order")
+        XCTAssertNotNil(cache.get(k3),
+                        "FIFO invariant: k3 was just inserted and must always survive")
+    }
+
     func testInvalidateDropsOnlyTheNamedObject() {
         let cache = DesignScoreCache(capacity: 8)
         let scores = DesignScores(nativeFit: [-1], certainty: [0.5])
