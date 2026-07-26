@@ -2174,6 +2174,11 @@ final class PyMOLEngine: ObservableObject {
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let idx = root["indices"] as? [Int] else { return [] }
             return idx
+        },
+        releaseModel: { [weak self] in
+            // Called on DesignController's inference queue, which is the only
+            // context that touches _mpnnModel — see loadedMPNNModel().
+            self?._mpnnModel = nil
         }
     )
 #endif

@@ -224,6 +224,53 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertNil(c.pendingSizeWarning, "refuse is terminal — must not leave a pending warning")
     }
 
+    // MARK: – Task 5: model release on exit
+
+    // Exiting Design mode must free the ~model-resident weights, and must do it on
+    // the inference queue so it can never race a running job.
+    func testExitReleasesModelOffTheMainThread() {
+        let c = makeController()
+        let released = expectation(description: "model released")
+        var releasedOnMain = true
+        c.injectReleaseModel {
+            releasedOnMain = Thread.isMainThread
+            released.fulfill()
+        }
+        c.exit()
+        wait(for: [released], timeout: 2.0)
+        XCTAssertFalse(releasedOnMain,
+                       "release must run on the inference queue, not the main thread")
+    }
+
+    // Release is ordered behind any queued inference, which is what makes it safe.
+    func testReleaseIsOrderedAfterInFlightInference() async {
+        let c = makeController()
+        var order: [String] = []
+        let done = expectation(description: "released")
+        c.injectRegion(designRegion: { r, _, _, _, _ in
+                           order.append("design")
+                           return Array(repeating: 0, count: r.count)
+                       },
+                       selectedIndices: { _, _, _, _ in [0, 1] })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.injectReleaseModel { order.append("release"); done.fulfill() }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+
+        await c.redesignSelectionAwait()
+        c.exit()
+        await fulfillment(of: [done], timeout: 2.0)
+        XCTAssertEqual(order, ["design", "release"],
+                       "release must not jump ahead of inference already dispatched")
+    }
+
     // The default sizeDecisionProvider routes through DesignSizeGuard.evaluate,
     // which returns .ok unconditionally on macOS regardless of residue count.
     // This test exercises the genuine production path and proves shipped macOS

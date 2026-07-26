@@ -83,6 +83,9 @@ final class DesignController: ObservableObject {
     typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
     /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
     typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
+    /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
+    /// never on the main thread — the model is owned by that queue.
+    typealias ReleaseModelFn = () -> Void
 
     // MARK: – Injected dependencies
 
@@ -111,6 +114,7 @@ final class DesignController: ObservableObject {
     private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
     private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
     private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
+    private var releaseModelFn: ReleaseModelFn = { }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -248,7 +252,8 @@ final class DesignController: ObservableObject {
                      pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in },
                      designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
-                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
+                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] },
+                     releaseModel: @escaping ReleaseModelFn = { }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -270,6 +275,7 @@ final class DesignController: ObservableObject {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
+        self.releaseModelFn = releaseModel
     }
 
     // MARK: – Public interface
@@ -302,6 +308,12 @@ final class DesignController: ObservableObject {
         pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
         clearRegionState()
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
+        // Free the model's resident weights. Dispatched to the inference queue
+        // rather than run inline: `_mpnnModel` is unsynchronized and owned by that
+        // serial queue, so a main-thread nil-out would race a running job. Queueing
+        // it also orders the release behind any inference already dispatched.
+        let release = releaseModelFn
+        inferenceQueue.async { release() }
     }
 
     /// Dismiss the current error message. The Design overlay's error banner calls
@@ -1087,6 +1099,11 @@ final class DesignController: ObservableObject {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
+    }
+
+    /// Override the model-release closure for testing (Phase 2d).
+    func injectReleaseModel(_ fn: @escaping ReleaseModelFn) {
+        self.releaseModelFn = fn
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async
