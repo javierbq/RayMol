@@ -674,12 +674,14 @@ Create `scripts/prune_ios_deps.sh`:
 # links, so the published artifact stays as small as possible to download on
 # every Xcode Cloud build.
 #
-# What the build actually reads (see swiftui/PyMOLBridge.xcconfig):
-#   Python.xcframework/<slice>/Python.framework/{Python,Headers}
-#   Python.xcframework/<slice>/lib/python3.13          (stdlib + staged Bio)
-#   install/lib/{libpng16.a,libfreetype.a}             simulator (platform 7)
-#   install_device/lib/{libpng16.a,libfreetype.a}      device    (platform 2)
-#   numpy-ios/{simulator,device}/numpy
+# What the build actually reads:
+#   swiftui/PyMOLBridge.xcconfig — the linked libraries and Python headers:
+#     Python.xcframework/<slice>/Python.framework/{Python,Headers}
+#     install/lib/{libpng16.a,libfreetype.a}             simulator (platform 7)
+#     install_device/lib/{libpng16.a,libfreetype.a}      device    (platform 2)
+#   swiftui/project.yml (iOS build phases) — the bundled stdlib and packages:
+#     Python.xcframework/<slice>/lib/python3.13          (stdlib + staged Bio)
+#     numpy-ios/{simulator,device}/numpy
 # Everything else is intermediate: CMake build trees, extracted freetype/libpng
 # sources, and the downloaded tarballs.
 #
@@ -745,7 +747,7 @@ git add scripts/prune_ios_deps.sh scripts/tests/run_prune_ios_deps_test.sh
 git commit -m "feat(ci): prune deps_ios to the shipping set before publishing
 
 Drops CMake build trees, extracted sources and tarballs, then asserts
-every path PyMOLBridge.xcconfig links is still present. The assertion is
+every path PyMOLBridge.xcconfig links and project.yml's iOS build phases bundle is still present. The assertion is
 the point: an over-broad prune would otherwise surface as an opaque
 linker error inside Xcode Cloud."
 ```
