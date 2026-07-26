@@ -271,6 +271,48 @@ final class DesignIOSPortTests: XCTestCase {
                        "release must not jump ahead of inference already dispatched")
     }
 
+    // MARK: – Task 6: bounded DesignScoreCache
+
+    // The cache key includes the sequence hash, so every edit inserts a new entry.
+    // Without a bound it grows for the whole session.
+    func testCacheEvictsOldestPastCapacity() {
+        let cache = DesignScoreCache(capacity: 3)
+        func key(_ i: Int) -> DesignCacheKey {
+            DesignCacheKey(object: "m1", state: 1, sequenceHash: i)
+        }
+        let scores = DesignScores(nativeFit: [-1], certainty: [0.5])
+        for i in 0..<5 { cache.set(key(i), scores) }
+
+        XCTAssertEqual(cache.count, 3, "cache must not grow past its capacity")
+        XCTAssertNil(cache.get(key(0)), "oldest entry must be evicted")
+        XCTAssertNil(cache.get(key(1)))
+        XCTAssertNotNil(cache.get(key(4)), "newest entry must survive")
+    }
+
+    // Re-setting an existing key must refresh it in place, not consume a second slot.
+    func testOverwritingAKeyDoesNotConsumeCapacity() {
+        let cache = DesignScoreCache(capacity: 2)
+        let k = DesignCacheKey(object: "m1", state: 1, sequenceHash: 7)
+        cache.set(k, DesignScores(nativeFit: [-1], certainty: [0.1]))
+        cache.set(k, DesignScores(nativeFit: [-2], certainty: [0.2]))
+        cache.set(DesignCacheKey(object: "m1", state: 1, sequenceHash: 8),
+                  DesignScores(nativeFit: [-3], certainty: [0.3]))
+
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertEqual(cache.get(k)?.nativeFit, [-2], "overwrite must win, and survive")
+    }
+
+    func testInvalidateDropsOnlyTheNamedObject() {
+        let cache = DesignScoreCache(capacity: 8)
+        let scores = DesignScores(nativeFit: [-1], certainty: [0.5])
+        cache.set(DesignCacheKey(object: "keep", state: 1, sequenceHash: 1), scores)
+        cache.set(DesignCacheKey(object: "drop", state: 1, sequenceHash: 2), scores)
+        cache.invalidate(object: "drop")
+
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertNotNil(cache.get(DesignCacheKey(object: "keep", state: 1, sequenceHash: 1)))
+    }
+
     // The default sizeDecisionProvider routes through DesignSizeGuard.evaluate,
     // which returns .ok unconditionally on macOS regardless of residue count.
     // This test exercises the genuine production path and proves shipped macOS
