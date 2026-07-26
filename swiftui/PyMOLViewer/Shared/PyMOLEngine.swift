@@ -1955,13 +1955,26 @@ final class PyMOLEngine: ObservableObject {
     // MARK: - Design mode (protein-design overlay)
 
     /// Enter or exit Design mode. Entering clears Move and Measure (mutually
-    /// exclusive). The actual MPNN controller startup/teardown is handled by
-    /// the UI layer that observes this flag; this setter is deliberately
-    /// Python-free so it is safe to call from unit tests and in any state.
+    /// exclusive) through their canonical setters — NOT bare assignments. Move
+    /// and Measure teardown is imperative and lives INSIDE those setters
+    /// (metal_move.cleanup() / appkit_measure.reset()), so a bare assignment
+    /// silently skips it and strands the "_move_gizmo" CGO in the scene, where
+    /// its "_" prefix hides it from the object panel and the user cannot delete
+    /// it. designMode is the odd one out: its teardown is observer-driven
+    /// (.onChange(of: engine.designMode) in ContentView), so it fires on any
+    /// assignment — which is why the reverse direction can stay a plain set.
+    ///
+    /// The MPNN controller startup/teardown is handled by that UI observer.
+    /// Still safe to call in any state: the only Python reached goes through
+    /// runPython, which no-ops via `guard isReady` before the core is up, and
+    /// otherwise runs exactly the paths the "exit Move" / "exit Measure"
+    /// buttons already use.
     func setDesignMode(_ on: Bool) {
         if on {
-            if interactionMode == .move { interactionMode = .viewing }
-            if measureMode != nil { measureMode = nil }
+            // Recursion-free: both setters only touch designMode in their
+            // ENTERING branch, and the clearing block below is `if on`-guarded.
+            if interactionMode == .move { setInteractionMode(.viewing) }
+            if measureMode != nil { setMeasureMode(nil) }
         }
         designMode = on
     }

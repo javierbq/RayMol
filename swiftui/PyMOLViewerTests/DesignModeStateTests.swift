@@ -74,4 +74,61 @@ final class DesignModeStateTests: XCTestCase {
         XCTAssertFalse(e.designMode)
         XCTAssertEqual(e.interactionMode, .move)
     }
+
+    func testEnteringDesignFromMoveTearsDownMoveState() {
+        let e = PyMOLEngine.shared
+        // SEEDING ORDER MATTERS — two constraints:
+        //  1. Move mode first: the hoveredHandle didSet is guarded on
+        //     interactionMode == .move, so seeding it earlier is a no-op.
+        //  2. adjustFrameToggle/moveShiftHeld fire didSet -> syncAdjustFrame(),
+        //     which calls readGizmo() and NILS gizmo + activeMoveObject (live
+        //     Python writes active:false — no structure is loaded). So set the
+        //     toggles BEFORE the plain fields, or the seed is wiped out.
+        e.setInteractionMode(.move)
+        e.adjustFrameToggle = true      // triggers readGizmo
+        e.moveShiftHeld = true          // syncAdjustFrame early-returns here
+        e.hoveredHandle = .rz           // didSet emits set_hover, no readGizmo
+        e.armedAxis = .y
+        e.activeMoveObject = "mol1"
+        e.gizmo = GizmoGeometry(json: ["obj": "mol1", "center": [0.0, 0.0]])
+        XCTAssertNotNil(e.gizmo, "precondition: seeded gizmo geometry")
+        XCTAssertNotNil(e.activeMoveObject, "precondition: seeded active object")
+
+        var captured: [String] = []
+        e.pythonTap = { captured.append($0) }   // install AFTER seeding
+
+        e.setDesignMode(true)
+
+        XCTAssertTrue(e.designMode)
+        XCTAssertEqual(e.interactionMode, .viewing)
+        XCTAssertNil(e.activeMoveObject)
+        XCTAssertNil(e.gizmo)
+        XCTAssertNil(e.armedAxis)
+        XCTAssertNil(e.hoveredHandle)
+        XCTAssertFalse(e.adjustFrameToggle)
+        XCTAssertFalse(e.moveShiftHeld)
+        XCTAssertTrue(
+            captured.contains { $0.contains("_mm.cleanup()") },
+            "metal_move.cleanup() must run, or the _move_gizmo CGO is stranded "
+            + "in the scene where the user cannot delete it. Captured: \(captured)")
+    }
+
+    func testEnteringDesignFromMeasureRunsMeasureReset() {
+        let e = PyMOLEngine.shared
+        e.setMeasureMode(.distance)
+        XCTAssertEqual(e.measureMode, .distance, "precondition: in measure mode")
+
+        var captured: [String] = []
+        e.pythonTap = { captured.append($0) }
+
+        e.setDesignMode(true)
+
+        XCTAssertTrue(e.designMode)
+        XCTAssertNil(e.measureMode)
+        // The measureMode flag alone passes both before and after the fix — the
+        // bare assignment already nils it. Only the emission proves teardown ran.
+        XCTAssertTrue(
+            captured.contains { $0.contains("_am.reset()") },
+            "appkit_measure.reset() must run. Captured: \(captured)")
+    }
 }
