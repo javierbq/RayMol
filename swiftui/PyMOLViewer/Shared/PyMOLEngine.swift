@@ -1957,6 +1957,9 @@ final class PyMOLEngine: ObservableObject {
     // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
     private var _mpnnModel: MPNNModel?
     private func loadedMPNNModel() throws -> MPNNModel {
+        // Must precede any MLX allocation: sets the buffer-cache ceiling and, in a
+        // simulator, switches MLX to the CPU backend (GPU there aborts).
+        MPNNRuntime.configureOnce()
         if let m = _mpnnModel { return m }
         guard let url = MPNNGate.packURL else {
             throw NSError(domain: "raymol.design", code: 1,
@@ -1984,7 +1987,9 @@ final class PyMOLEngine: ObservableObject {
             guard let self else { throw NSError(domain: "raymol.design", code: 2,
                                                 userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
             let model = try self.loadedMPNNModel()
-            return try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+            return try MPNNRuntime.withMLXErrorsAsThrows {
+                try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+            }
         },
         applyColoring: { [weak self] obj, values, palette, lo, hi in
             guard let self else { return }
@@ -2100,7 +2105,7 @@ final class PyMOLEngine: ObservableObject {
                               userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"])
             }
             let model = try self.loadedMPNNModel()
-            return try model.repack(residues, sequence: seq).pdb
+            return try MPNNRuntime.withMLXErrorsAsThrows { try model.repack(residues, sequence: seq).pdb }
         },
         loadRepacked: { [weak self] obj, pdb in
             // Write PDB to a temp file; Python reads it back to avoid multi-line
@@ -2142,7 +2147,7 @@ final class PyMOLEngine: ObservableObject {
             opts.fixedPositions = fixed
             opts.nativeSequence = native
             opts.omit = omit
-            return try model.design(residues, options: opts).indices
+            return try MPNNRuntime.withMLXErrorsAsThrows { try model.design(residues, options: opts).indices }
         },
         listSelections: { [weak self] obj, src, state in
             guard let self else { return [] }

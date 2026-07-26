@@ -17,6 +17,14 @@ packages:
   proteinmpnn-mlx:
     url: https://github.com/javierbq/proteinmpnn-mlx.git
     from: 0.1.2
+  # mlx-swift, linked DIRECTLY rather than only transitively through MPNNKit, so
+  # MPNNRuntime can set the process-wide buffer-cache limit and the simulator CPU
+  # fallback — neither is reachable through MPNNKit's API. `from:` not `exact:`:
+  # MPNNKit pins mlx-swift exactly and that pin wins during resolution, so this
+  # entry never needs bumping in lockstep.
+  mlx-swift:
+    url: https://github.com/ml-explore/mlx-swift
+    from: 0.31.6
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -449,6 +457,9 @@ targets:
       # out of the iOS build. All usage is also guarded by #if RAYMOL_MPNN.
       - package: proteinmpnn-mlx
         product: MPNNKit
+        platforms: [macOS]
+      - package: mlx-swift
+        product: MLX
         platforms: [macOS]
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it

@@ -7,11 +7,15 @@ import os
 /// Predicts the peak memory an MPNN inference run will need and decides whether
 /// to proceed silently, warn, or refuse.
 ///
-/// This exists because overshoot on iOS is unrecoverable in two independent ways:
-/// jetsam is an uncatchable SIGKILL, and mlx-swift's default error handler prints
-/// then exits (mlx-swift/Source/MLX/ErrorHandler.swift:4), so DesignController's
-/// do/catch can never observe an allocation failure. The only workable strategy is
-/// prediction before dispatch.
+/// This exists because iOS memory overshoot is ultimately unrecoverable via jetsam —
+/// an OS SIGKILL that cannot be caught regardless of error handling. MLX-**reported**
+/// errors (shape mismatches, allocation failures that MLX detects and reports) ARE
+/// catchable as of mlx-swift 0.31.6 via `withError()` (see `MPNNRuntime.withMLXErrorsAsThrows`),
+/// so DesignController's do/catch can now observe those. A jetsam kill is entirely
+/// different: the OS terminates the process asynchronously when physical memory pressure
+/// exceeds the app's budget, and no Swift handler can intercept it. The guard must
+/// therefore remain preventive rather than reactive — it prevents the inference from
+/// starting when the predicted memory footprint would push into jetsam territory.
 ///
 /// Constants derive from a physical-device measurement table (iPhone 15 Pro, 8 GB)
 /// in ~/repos/proteinmpnn-ios/device_results/on_device_results_optimized.json.
