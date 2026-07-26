@@ -68,5 +68,23 @@ REAL="$(bash "$SCRIPT")"
 if [[ "$REAL" =~ ^[0-9a-f]{12}$ ]]; then echo "  ok: real repo → $REAL"
 else echo "  FAIL: real repo gave '$REAL'"; FAILED=1; fi
 
+# 7. ordering is asserted against an independently-computed anchor.
+#    Catches a transposition in the script's FILES array: the stubs are
+#    filename-unique ("stub setup_ios_deps.sh" etc.), so concatenating them in
+#    different orders produces different digests.  The canonical order is spelled
+#    out here in the test — independent of the script's internal FILES array —
+#    so any drift between the two sources of truth fails immediately.
+E="$(make_fixture)"
+EXPECTED="$(cat \
+  "$E/scripts/setup_ios_deps.sh" \
+  "$E/scripts/fetch_ios_python.sh" \
+  "$E/scripts/build_ios_deps.sh" \
+  "$E/scripts/build_numpy_ios.sh" \
+  "$E/scripts/bundle_biopython.sh" \
+  | shasum -a 256 | cut -c1-12)"
+check "fixture matches independently-computed expected order" \
+  "$EXPECTED" "$(bash "$E/scripts/ios_deps_fingerprint.sh")"
+rm -rf "$E"
+
 rm -rf "$A" "$B" "$D"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }
