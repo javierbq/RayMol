@@ -2574,6 +2574,34 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// Commit a Design-mode residue pick from a viewport tap (iOS). Calls the same
+    /// Python hover pick that the hover path uses (hover_design_at writes the hit
+    /// JSON synchronously), reads the result back, resolves a full-length residue
+    /// index, and hands it to DesignController.tapResidue, which pins or edits the
+    /// region per mode. Only acts when the hit lands on the current focus object.
+    /// Runs on the main thread (UIKit tap callback); uses MainActor.assumeIsolated
+    /// to satisfy Swift Concurrency's actor-isolation check (same pattern as
+    /// readDesignHoverHit).
+    func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
+        guard designMode, isReady else { return }
+        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_design.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hit = root["hit"] as? Bool, hit,
+              let chain = root["chain"] as? String,
+              let resi  = root["resi"]  as? String
+        else { return }
+        let focusObj = root["obj"] as? String ?? ""
+        MainActor.assumeIsolated {
+            guard focusObj == designController.focusObject,
+                  let idx = designController.residueIndex(chain: chain, resi: resi)
+            else { return }
+            designController.tapResidue(residueIndex: idx)
+        }
+    }
+
     /// Read back pymol_hover_design.json (written synchronously by hover_design_at)
     /// and update the design controller's hover state.
     /// Called from the fire closure which already runs on the main queue

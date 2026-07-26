@@ -217,6 +217,22 @@ struct ContentView: View {
                     whatsNew.isPresented = false
                 }
             }
+            #if RAYMOL_MPNN
+            // Single lifecycle observer for Design mode, shared by macOS and iOS:
+            // fires on EVERY designMode transition (rail pill, toolbar button, menu,
+            // Move/Measure exclusion) so the scene is always restored on exit
+            // regardless of which path caused the change. Hoisted out of the macOS
+            // layout in Phase 2d — without it, iOS dims and recolours with no restore.
+            .onChange(of: engine.designMode) { on in
+                if on {
+                    engine.designController.allObjects = engine.objects
+                        .filter { !$0.isSelection }.map { $0.name }
+                    engine.designController.enter()
+                } else {
+                    engine.designController.exit()
+                }
+            }
+            #endif
     }
 
     @ViewBuilder private var layout: some View {
@@ -503,20 +519,6 @@ struct ContentView: View {
             .onChange(of: showThemeStudio) { open in
                 if open { engine.beginThemePreview() } else { engine.endThemePreview() }
             }
-            #if RAYMOL_MPNN
-            // Single lifecycle observer for Design mode: fires on EVERY designMode
-            // transition (toolbar button, menu, Move/Measure exclusion) so the scene
-            // is always restored on exit regardless of which path caused the change.
-            .onChange(of: engine.designMode) { on in
-                if on {
-                    engine.designController.allObjects = engine.objects
-                        .filter { !$0.isSelection }.map { $0.name }
-                    engine.designController.enter()
-                } else {
-                    engine.designController.exit()
-                }
-            }
-            #endif
             .onAppear {
                 initializeEngine()
                 maybePresentFirstBootTheme()
@@ -1185,9 +1187,11 @@ struct ContentView: View {
             // Long-press context menu: a native action sheet for the atom/residue
             // under the press (or scene-level actions on empty space). Presented
             // when handleLongPress → engine.longPressPick sets engine.longPressHit.
+            // Suppressed in Design mode — taps route to DesignController instead
+            // (see handleTap #if RAYMOL_MPNN block) so the action sheet must not fire.
             .confirmationDialog(
                 engine.longPressHit?.title ?? "",
-                isPresented: Binding(get: { engine.longPressHit != nil },
+                isPresented: Binding(get: { engine.longPressHit != nil && !engine.designMode },
                                      set: { if !$0 { engine.longPressHit = nil } }),
                 titleVisibility: .visible,
                 presenting: engine.longPressHit
@@ -1439,7 +1443,8 @@ struct ContentView: View {
         // RayMol title. Collapsed → the rail floats over the full-bleed viewport.
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil)
+            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
             // RayMol title on the left, Open/Save/Export on the right. It takes the
@@ -1468,6 +1473,7 @@ struct ContentView: View {
                 }
                 if engine.interactionMode == .move { moveOverlay }
                 else if engine.measureMode != nil { measureOverlay }
+                else if engine.designMode { designModeBar }
             }
             viewportView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1526,7 +1532,8 @@ struct ContentView: View {
         let clampedTermH = min(max(termH, 60), maxTerm)
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil)
+            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
             // toolbar buttons floating over its top edge. The 3D viewport bleeds
@@ -1549,6 +1556,7 @@ struct ContentView: View {
                     }
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
+                    else if engine.designMode { designModeBar }
                 }
                 viewportView
                     .overlay(alignment: .top) {
@@ -1661,6 +1669,7 @@ struct ContentView: View {
         // floats over the full-bleed viewport. Move & Measure share the bottom slot.
         let anyTop = cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode
 
         if landscape {
             // LANDSCAPE (iPad + iPhone landscape): left stack (terminal/sequence/
@@ -1687,6 +1696,7 @@ struct ContentView: View {
                         // exclusive, on matching chrome.
                         if engine.interactionMode == .move { moveOverlay }
                         else if engine.measureMode != nil { measureOverlay }
+                        else if engine.designMode { designModeBar }
                     }
                     viewportView
                         // Collapsed: the rail floats over the full-bleed viewport.
@@ -1751,6 +1761,7 @@ struct ContentView: View {
                     }
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
+                    else if engine.designMode { designModeBar }
                 }
                 viewportView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1877,6 +1888,28 @@ struct ContentView: View {
     // Always drawn, so it's the permanent seam between the top pane-stack and the 3D
     // view — the top mirror of the bottom inspector tongue. iPad layout only.
     @ViewBuilder
+    // Design-mode docked bar for the iOS layouts. Resolves to EmptyView when the
+    // feature is compiled out, so the mode chain in all four layouts can reference
+    // it unconditionally. iPhone (compact width) gets the same overlay panel as
+    // iPad for now — Task 11 swaps the compact branch to DesignCompactPanel.
+    @ViewBuilder
+    private var designModeBar: some View {
+        #if RAYMOL_MPNN
+        if hSize == .compact {
+            // Task 11: replace this branch with DesignCompactPanel(…)
+            DesignOverlayView(controller: engine.designController,
+                              engine: engine,
+                              theme: themeManager)
+        } else {
+            DesignOverlayView(controller: engine.designController,
+                              engine: engine,
+                              theme: themeManager)
+        }
+        #else
+        EmptyView()
+        #endif
+    }
+
     // The pinned toggle rail: Console · Seq · Move · Measure. `floating` (nothing
     // open) wraps the pills in a tight blur capsule that hugs them and floats over
     // the full-bleed viewport; when a panel is open the caller docks the rail on
@@ -1891,6 +1924,13 @@ struct ContentView: View {
             railToggle(icon: "ruler", label: "Measure",
                        isOn: engine.measureMode != nil,
                        action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
+            #if RAYMOL_MPNN
+            if DesignAvailability.isSupported {
+                railToggle(icon: "wand.and.stars", label: "Design",
+                           isOn: engine.designMode,
+                           action: { engine.setDesignMode(!engine.designMode) })
+            }
+            #endif
         }
         .padding(.horizontal, floating ? 8 : 0)
         .padding(.vertical, floating ? 5 : 6)
@@ -1967,7 +2007,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Move mode, \(isOn ? "on" : "off")")
+        .accessibilityLabel("\(label) mode, \(isOn ? "on" : "off")")
     }
 
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
@@ -3430,7 +3470,10 @@ private struct DesignRegionStripView: View {
                         in: RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showPicker) { pickerContent }
+        .popover(isPresented: $showPicker) {
+            pickerContent
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
     // Explicit region-building mode: while on, a plain tap on a sequence column or
@@ -3955,6 +3998,7 @@ private struct DesignOverlayView: View {
             }
             .padding(14)
             .frame(width: 260)
+            .presentationCompactAdaptation(.popover)
         }
     }
 

@@ -1047,6 +1047,15 @@ extension MetalViewport {
                 engine.moveSetActiveAt(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
                 return
             }
+            #if RAYMOL_MPNN
+            if engine.designMode {
+                // In Design mode a viewport tap targets a residue, mirroring the
+                // macOS long-press path. Region-edit mode makes it toggle region
+                // membership instead of pinning — see DesignController.tapResidue.
+                engine.designPickResidue(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
+                return
+            }
+            #endif
             if engine.measureMode != nil {
                 engine.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
             } else {
