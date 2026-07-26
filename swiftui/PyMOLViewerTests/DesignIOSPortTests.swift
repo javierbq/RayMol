@@ -121,10 +121,13 @@ final class DesignIOSPortTests: XCTestCase {
     }
 
     // An explicit .ok decision (representing any non-blocking case) must never
-    // hold or refuse the run.
+    // hold or refuse the run. The provider must be consulted exactly once so
+    // this test fails if the entire guard block were deleted (provider would be
+    // consulted 0 times, not 1).
     func testOkDecisionNeverBlocks() async {
         let c = makeController()
         var designCalls = 0
+        var providerCalls = 0
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
@@ -138,13 +141,87 @@ final class DesignIOSPortTests: XCTestCase {
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
-        c.sizeDecisionProvider = { _ in .ok }
+        c.sizeDecisionProvider = { _ in providerCalls += 1; return .ok }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
 
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning)
         XCTAssertEqual(designCalls, 1)
+        XCTAssertEqual(providerCalls, 1,
+                       "the guard must consult the provider exactly once per run")
+    }
+
+    // Regression: `suppressSizeGuardOnce` must not leak across calls.
+    //
+    // Failure scenario (pre-fix):
+    // 1. Run lands in warn band → pendingSizeWarning is set.
+    // 2. User clears the region (clearSelection does NOT clear pendingSizeWarning).
+    // 3. User confirms the stale warning → confirmPendingWarning() sets
+    //    suppressSizeGuardOnce=true and calls redesignSelectionAwait(), which
+    //    immediately hits the "guard !selectedResidueIndices.isEmpty" early return
+    //    BEFORE the flag is read and cleared (pre-fix location).  Flag stays true.
+    // 4. Re-establish region; switch provider to .refuse.
+    // 5. Next redesignSelectionAwait() bypasses the guard (flag=true), dispatches
+    //    inference, and the device may be killed by jetsam with no diagnostic.
+    //
+    // After the fix the flag is consumed at function ENTRY (before every guard),
+    // so step 3's early return leaves it cleared, and step 5 correctly refuses.
+    func testSuppressSizeGuardOnceDoesNotLeak() async {
+        let c = makeController()
+        var designCalls = 0
+        var providerCalls = 0
+
+        c.injectRegion(designRegion: { r, _, _, _, _ in
+                           designCalls += 1
+                           return Array(repeating: 0, count: r.count)
+                       },
+                       selectedIndices: { _, _, _, _ in [0, 1] })
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+
+        // Step 1: first redesign lands in the warn band — run is held.
+        c.sizeDecisionProvider = { _ in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.pickSelection("reg")
+
+        await c.redesignSelectionAwait()
+        XCTAssertNotNil(c.pendingSizeWarning, "warn band must set pendingSizeWarning")
+        XCTAssertEqual(designCalls, 0, "warn band must hold the run")
+
+        // Step 2: user clears the region while the warning is still pending.
+        c.clearSelection()
+
+        // Step 3: user confirms the (now stale) warning.
+        // confirmPendingWarning() sets suppressSizeGuardOnce=true and calls
+        // redesignSelectionAwait(). That re-entry hits the early return
+        // (selectedResidueIndices is empty). Pre-fix: flag leaks as true.
+        // Post-fix: flag is consumed at entry and cleared before any early return.
+        await c.confirmPendingWarning()
+
+        // Step 4: re-establish a region and switch to a refuse provider.
+        c.pickSelection("reg")
+        c.sizeDecisionProvider = { _ in providerCalls += 1; return .refuse(maxFittingResidues: 0) }
+
+        // Step 5: the next redesign must be refused.
+        // Pre-fix: stale suppressSizeGuardOnce=true bypasses the guard →
+        //   designCalls=1, providerCalls=0. Test fails.
+        // Post-fix: flag is false → provider is consulted → .refuse →
+        //   designCalls=0, providerCalls=1. Test passes.
+        await c.redesignSelectionAwait()
+
+        XCTAssertEqual(designCalls, 0,
+                       "a refused run must not dispatch inference — stale suppressSizeGuardOnce must not bypass the guard")
+        XCTAssertEqual(providerCalls, 1,
+                       "the size-guard provider must be consulted exactly once (leaked flag would skip it)")
+        XCTAssertNotNil(c.errorText, "a refused run must set errorText")
+        XCTAssertNil(c.pendingSizeWarning, "refuse is terminal — must not leave a pending warning")
     }
 
     // The default sizeDecisionProvider routes through DesignSizeGuard.evaluate,

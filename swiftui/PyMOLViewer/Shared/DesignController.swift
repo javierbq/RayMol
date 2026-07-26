@@ -659,6 +659,7 @@ final class DesignController: ObservableObject {
         isRedesigning = false
         availableSelections = []
         pendingSizeWarning = nil
+        suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
         designToken += 1   // cancel any in-flight region design
     }
 
@@ -671,6 +672,14 @@ final class DesignController: ObservableObject {
     /// scatter the result into editedSequence, then rescore + (auto)repack.
     /// Snapshots editedSequence first for a one-level revert.
     func redesignSelectionAwait() async {
+        // Consume the one-shot guard suppression at entry, before any early return.
+        // Any path out of this function must leave the flag cleared — a stale `true`
+        // would silently skip the memory check on a LATER, unrelated redesign, which
+        // is the exact failure this guard exists to prevent (the guard is read below,
+        // after beginEditIfNeeded() and the `set` lookup, where it has always lived).
+        let skipGuard = suppressSizeGuardOnce
+        suppressSizeGuardOnce = false
+
         guard !selectedResidueIndices.isEmpty else { return }
         guard paletteAllowed.contains(where: { $0 >= 0 && $0 < 20 }) else { return }  // ≥1 allowed AA
         beginEditIfNeeded()
@@ -683,11 +692,10 @@ final class DesignController: ObservableObject {
         // object unopenable rather than merely un-redesignable.
         //
         // `suppressSizeGuardOnce` is set by `confirmPendingWarning()` so the
-        // confirmed re-entry is not re-gated into an infinite warn loop. Binding
-        // the decision to a `let` keeps the `switch` subject a plain value.
+        // confirmed re-entry is not re-gated into an infinite warn loop. It is
+        // consumed at function entry (above) so no early return can leave it stale.
+        // Binding the decision to a `let` keeps the `switch` subject a plain value.
         let residueCount = set.residues.count
-        let skipGuard = suppressSizeGuardOnce
-        suppressSizeGuardOnce = false
         let sizeDecision: DesignSizeGuard.Decision = skipGuard
             ? .ok
             : sizeDecisionProvider(residueCount)
