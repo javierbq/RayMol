@@ -383,5 +383,58 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertNil(c.errorText)   // no error from the guard
         XCTAssertEqual(designCalls, 1, "macOS default provider must let the design run")
     }
+
+    // Region-edit OFF: a plain tap pins for inspection, exactly as before.
+    func testTapPinsWhenRegionEditModeIsOff() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        XCTAssertFalse(c.regionEditMode)
+
+        c.tapResidue(residueIndex: 1)
+
+        XCTAssertEqual(c.pinnedResidueIndex, 1)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "pinning must not build a region")
+    }
+
+    // Region-edit ON: the same tap toggles region membership and does not pin.
+    func testTapTogglesRegionWhenRegionEditModeIsOn() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.regionEditMode = true
+
+        c.tapResidue(residueIndex: 1)
+        XCTAssertEqual(c.selectedResidueIndices, [1])
+        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
+
+        c.tapResidue(residueIndex: 0)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 1], "region stays sorted")
+
+        c.tapResidue(residueIndex: 1)
+        XCTAssertEqual(c.selectedResidueIndices, [0], "a second tap removes")
+    }
+
+    // Non-designable positions cannot enter a region, however they are tapped.
+    func testTapIgnoresInvalidResiduesInRegionEditMode() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, false, true])
+        c.regionEditMode = true
+
+        c.tapResidue(residueIndex: 1)
+
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "an invalid residue must never join the region")
+    }
+
+    // Leaving Design mode must not strand the toggle on for the next session.
+    func testExitClearsRegionEditMode() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.regionEditMode = true
+
+        c.exit()
+
+        XCTAssertFalse(c.regionEditMode)
+    }
 }
 #endif

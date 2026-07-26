@@ -191,6 +191,12 @@ final class DesignController: ObservableObject {
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
 
+    /// True while the user is building an ad-hoc region by tapping positions.
+    /// Replaces shift-click, which does not exist on touch (and whose SwiftUI
+    /// modifier is unavailable on iOS). Ships on macOS too — the explicit toggle
+    /// is the discoverable path; shift-click remains as a power-user shortcut.
+    @Published var regionEditMode = false
+
     /// Label for the blocking "Calculating…" overlay while a long design inference
     /// runs (nil = not busy). Covers the two edit-triggered heavy ops — a region
     /// redesign (which holds through its follow-up rescore + repack) and a manual
@@ -648,6 +654,20 @@ final class DesignController: ObservableObject {
         selectedSelectionName = selectedResidueIndices.isEmpty ? nil : "custom"
     }
 
+    /// Route a plain tap on residue `i` (full-length index). In region-edit mode a
+    /// tap toggles region membership; otherwise it pins the residue for inspection,
+    /// which is the pre-existing behaviour.
+    func tapResidue(residueIndex i: Int) {
+        if regionEditMode {
+            toggleRegionResidue(residueIndex: i)
+            return
+        }
+        guard let obj = focusObject, let set = lastSet[obj],
+              i >= 0, i < set.residues.count else { return }
+        let r = set.residues[i]
+        setPinned(chain: r.chain, resi: r.resi)
+    }
+
     /// Clear the region → return to single-residue (Phase-2b) mode.
     func clearSelection() {
         selectedResidueIndices = []
@@ -672,6 +692,7 @@ final class DesignController: ObservableObject {
         availableSelections = []
         pendingSizeWarning = nil
         suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
+        regionEditMode = false
         designToken += 1   // cancel any in-flight region design
     }
 

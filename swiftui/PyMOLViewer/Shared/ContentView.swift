@@ -3308,16 +3308,19 @@ private struct DesignSequenceStripView: View {
                 controller.clearHover()
             }
         }
-        // Shift-click builds an ad-hoc region (add/remove this position); a plain
-        // click still pins for single-residue inspection. The shift gesture takes
-        // priority so it only fires when the modifier is held.
+        // macOS keeps shift-click as a shortcut for building an ad-hoc region.
+        // `TapGesture().modifiers(_:)` is unavailable on iOS — this was the single
+        // iOS compile error in the whole Design feature. The cross-platform path is
+        // controller.regionEditMode, which a plain tap honours (see tapResidue).
+        #if os(macOS)
         .highPriorityGesture(
             TapGesture().modifiers(.shift).onEnded {
                 controller.toggleRegionResidue(residueIndex: i)
             }
         )
+        #endif
         .onTapGesture {
-            controller.setPinned(chain: residue.chain, resi: residue.resi)
+            controller.tapResidue(residueIndex: i)
         }
         .help({
             var tip = residue.chain.isEmpty ? residue.resi : "\(residue.chain)/\(residue.resi)"
@@ -3357,6 +3360,8 @@ private struct DesignRegionStripView: View {
     private var controls: some View {
         HStack(spacing: 8) {
             selectionButton
+            stripDivider
+            regionEditToggle
             if controller.regionModeActive {
                 stripDivider
                 Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
@@ -3400,6 +3405,34 @@ private struct DesignRegionStripView: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showPicker) { pickerContent }
+    }
+
+    // Explicit region-building mode: while on, a plain tap on a sequence column or
+    // in the viewport adds/removes that position. This is the touch replacement for
+    // shift-click, and the discoverable path on macOS too.
+    private var regionEditToggle: some View {
+        Button {
+            controller.regionEditMode.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: controller.regionEditMode
+                        ? "hand.tap.fill" : "hand.tap")
+                    .font(.system(size: 10))
+                Text("Tap to edit")
+                    .font(.system(size: 11,
+                                  weight: controller.regionEditMode ? .semibold : .regular))
+            }
+            .foregroundColor(controller.regionEditMode
+                             ? .white : theme.active.panelText.color.opacity(0.85))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(controller.regionEditMode
+                        ? theme.active.accent.color
+                        : theme.active.panelText.color.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help("Build a region by tapping positions in the sequence or the structure")
+        .accessibilityLabel("Tap to edit region, \(controller.regionEditMode ? "on" : "off")")
     }
 
     private var pickerContent: some View {
