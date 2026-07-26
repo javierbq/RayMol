@@ -1881,13 +1881,6 @@ struct ContentView: View {
                             y: seam && axis == .horizontal ? -9 : 0)
     }
 
-    // The twin-tongue "seam rail" welded to the viewport's TOP edge (iPad). Mirrors
-    // the bottom inspector tongue: two labeled pills in FIXED slots — Console (left)
-    // + Sequence (right) — each toggling its own pane. Shown = accent fill + chevron
-    // up (retract the pane up); hidden = muted outline + chevron down (drop it down).
-    // Always drawn, so it's the permanent seam between the top pane-stack and the 3D
-    // view — the top mirror of the bottom inspector tongue. iPad layout only.
-    @ViewBuilder
     // Design-mode docked bar for the iOS layouts. Resolves to EmptyView when the
     // feature is compiled out, so the mode chain in all four layouts can reference
     // it unconditionally. iPhone (compact width) gets the same overlay panel as
@@ -1910,10 +1903,18 @@ struct ContentView: View {
         #endif
     }
 
-    // The pinned toggle rail: Console · Seq · Move · Measure. `floating` (nothing
-    // open) wraps the pills in a tight blur capsule that hugs them and floats over
-    // the full-bleed viewport; when a panel is open the caller docks the rail on
+    // The twin-tongue "seam rail" welded to the viewport's TOP edge (iPad). Mirrors
+    // the bottom inspector tongue: two labeled pills in FIXED slots — Console (left)
+    // + Sequence (right) — each toggling its own pane. Shown = accent fill + chevron
+    // up (retract the pane up); hidden = muted outline + chevron down (drop it down).
+    // Always drawn, so it's the permanent seam between the top pane-stack and the 3D
+    // view — the top mirror of the bottom inspector tongue. iPad layout only.
+    //
+    // The pinned toggle rail: Console · Seq · Move · Measure · Design. `floating`
+    // (nothing open) wraps the pills in a tight blur capsule that hugs them and floats
+    // over the full-bleed viewport; when a panel is open the caller docks the rail on
     // matching panel chrome and passes floating:false (bare pills, no capsule).
+    @ViewBuilder
     private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
