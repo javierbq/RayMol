@@ -1345,6 +1345,52 @@ struct ContentView: View {
                                        first: f, last: l, fps: 15, rayTraced: false)
                 }
             }
+            #if RAYMOL_MPNN
+            // Test affordance (PYMOL_AUTODESIGN="<object>[,<selection>]"): enter
+            // Design mode, focus the object, and optionally designate a selection as
+            // the region and run one redesign. Logs a grep-able marker on completion.
+            // This is the only headless way to drive Design mode; pair with
+            // PYMOL_AUTOLOAD to get a structure in first.
+            if let d = ProcessInfo.processInfo.environment["PYMOL_AUTODESIGN"] {
+                let parts = d.split(separator: ",").map(String.init)
+                let objectName = parts.first ?? ""
+                let selectionName = parts.count > 1 ? parts[1] : nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    guard !objectName.isEmpty else {
+                        NSLog("AUTODESIGN_FAIL: no object given")
+                        return
+                    }
+                    guard DesignAvailability.isSupported else {
+                        NSLog("AUTODESIGN_FAIL: Design mode not supported on this OS (requires iOS \(DesignAvailability.minimumIOSMajorVersion)+)")
+                        return
+                    }
+                    engine.setDesignMode(true)
+                    let c = engine.designController
+                    Task { @MainActor in
+                        await c.focusAwait(objectName)
+                        guard c.focusObject != nil, !c.focusResidues.isEmpty else {
+                            NSLog("AUTODESIGN_FAIL: focus produced no residues for \(objectName)")
+                            return
+                        }
+                        if let sel = selectionName {
+                            c.refreshSelections()
+                            c.pickSelection(sel)
+                            guard c.regionModeActive else {
+                                NSLog("AUTODESIGN_FAIL: selection '\(sel)' matched no designable residues")
+                                return
+                            }
+                            await c.redesignSelectionAwait()
+                            if let err = c.errorText {
+                                NSLog("AUTODESIGN_FAIL: \(err)")
+                                return
+                            }
+                        }
+                        let score = c.sequenceScore.map { String(format: "%.4f", $0) } ?? "nil"
+                        NSLog("AUTODESIGN_DONE: \(objectName) score=\(score) edits=\(c.editCount)")
+                    }
+                }
+            }
+            #endif
         }
         // The Movie tab IS the timeline: on iPhone it renders inside the tab UI
         // (tab bar stays visible — no Done). Keep timelineMode synced to the tab
