@@ -1,0 +1,123 @@
+name: iOS deps artifact
+
+# Builds the pinned iOS dependency tree (deps_ios/) and publishes it as a
+# fingerprinted GitHub prerelease asset, so Xcode Cloud can fetch it in a couple
+# of minutes instead of re-running the numpy meson cross-build on every build.
+#
+# This workflow exists because Xcode Cloud has NO arbitrary-directory cache:
+# without a prebuilt artifact, every single build would repeat a ~30 minute
+# bring-up (a ~500 MB Python.xcframework download, freetype/libpng cross-builds
+# for two slices, numpy via meson twice, Biopython staging).
+#
+# The tag is ios-deps-<fingerprint> from scripts/ios_deps_fingerprint.sh — the
+# SAME script swiftui/ci_scripts/ci_post_clone.sh calls — so the artifact a
+# build fetches always matches the dep scripts in that checkout.
+#
+# PRERELEASE on purpose: it must never become "latest", which would break the
+# macOS updater's releases/latest/download/appcast.xml feed.
+#
+# Re-running is safe: an already-published fingerprint short-circuits.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - scripts/setup_ios_deps.sh
+      - scripts/fetch_ios_python.sh
+      - scripts/build_ios_deps.sh
+      - scripts/build_numpy_ios.sh
+      - scripts/bundle_biopython.sh
+      - scripts/ios_deps_fingerprint.sh
+      - scripts/prune_ios_deps.sh
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # gh release create
+
+jobs:
+  build-deps:
+    runs-on: macos-latest   # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute deps fingerprint
+        id: fp
+        run: echo "fp=$(bash scripts/ios_deps_fingerprint.sh)" >> "$GITHUB_OUTPUT"
+
+      # Skip the ~30 minute bring-up when this exact fingerprint is already
+      # published, so re-runs and unrelated pushes are nearly free.
+      - name: Check whether this fingerprint is already published
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "ios-deps-${{ steps.fp.outputs.fp }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ios-deps-${{ steps.fp.outputs.fp }} already published — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C build dependencies
+        if: steps.check.outputs.exists == 'false'
+        run: brew install cmake glm
+
+      - name: Set up host Python 3.13
+        id: py
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install cross-build tooling
+        if: steps.check.outputs.exists == 'false'
+        # lief is required by build_numpy_ios.sh to rewrite numpy's extension
+        # modules from MH_BUNDLE to MH_DYLIB; without it App Store validation
+        # rejects the upload (errors 90124/90171).
+        run: python -m pip install --upgrade pip meson ninja cython build lief
+
+      - name: Build deps_ios
+        if: steps.check.outputs.exists == 'false'
+        env:
+          # build_numpy_ios.sh defaults PYHOST to Homebrew's python3.13, which
+          # does NOT have meson/ninja/cython/lief installed above. Point it at
+          # the setup-python interpreter that does.
+          PYHOST: ${{ steps.py.outputs.python-path }}
+        run: bash scripts/setup_ios_deps.sh
+
+      - name: Prune to the shipping set
+        if: steps.check.outputs.exists == 'false'
+        run: bash scripts/prune_ios_deps.sh deps_ios
+
+      - name: Package
+        if: steps.check.outputs.exists == 'false'
+        env:
+          FP: ${{ steps.fp.outputs.fp }}
+        run: |
+          set -euo pipefail
+          tar -czf "deps_ios-$FP.tar.gz" deps_ios
+          # Written without a path component so `shasum -c` works from any cwd.
+          shasum -a 256 "deps_ios-$FP.tar.gz" > "deps_ios-$FP.tar.gz.sha256"
+          ls -lh "deps_ios-$FP.tar.gz"
+          cat "deps_ios-$FP.tar.gz.sha256"
+
+      - name: Publish prerelease
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FP: ${{ steps.fp.outputs.fp }}
+        run: |
+          set -euo pipefail
+          gh release create "ios-deps-$FP" \
+            --prerelease \
+            --title "iOS deps $FP" \
+            --notes "Prebuilt \`deps_ios\` for RayMol iOS builds.
+
+          Fingerprint \`$FP\` covers scripts/{setup_ios_deps,fetch_ios_python,build_ios_deps,build_numpy_ios,bundle_biopython}.sh.
+          Fetched by \`swiftui/ci_scripts/ci_post_clone.sh\` on every Xcode Cloud build.
+
+          Pins: Python-Apple-support 3.13-b12, freetype 2.13.3, libpng 1.6.44, numpy 2.4.6, biopython 1.87, iOS deployment target 16.0.
+
+          Prerelease so it never becomes \`latest\` (that would break the macOS Sparkle appcast feed). Do not delete while any branch still fingerprints to $FP." \
+            "deps_ios-$FP.tar.gz" \
+            "deps_ios-$FP.tar.gz.sha256"
