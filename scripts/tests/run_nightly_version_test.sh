@@ -56,11 +56,17 @@ if bash "$SCRIPT" "$TMP/does-not-exist.yml" >/dev/null 2>&1; then
   echo "  FAIL: missing file should exit non-zero"; FAILED=1
 else echo "  ok: missing file exits non-zero"; fi
 
-# Against the real repo (project.yml is at 1.8.0 today) the answer is 1.9.0,
-# and with no argument it must default to swiftui/project.yml.
-REAL="$(bash "$SCRIPT" 2>/dev/null)"
-if [ "$REAL" = "1.9.0" ]; then echo "  ok: real repo → 1.9.0"
-else echo "  FAIL: real repo → '$REAL' (expected 1.9.0; did project.yml move on?)"; FAILED=1; fi
+# Smoke-test the real repo file: with no argument the script must default to
+# swiftui/project.yml, exit 0, and emit a valid release-version string.
+# We do NOT assert a literal value here (e.g. "1.9.0") because that would
+# make CI fail on every release once project.yml is bumped — the arithmetic
+# is already exhaustively proven by the fixture cases above.  Deriving the
+# expectation from the script itself (expected="$(bash "$SCRIPT")") would be
+# circular and would pass even if the script were completely broken.
+# Asserting the structural contract — exit 0 + X.Y.0 form — is release-proof.
+if REAL="$(bash "$SCRIPT" 2>/dev/null)" && [[ "$REAL" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
+  echo "  ok: real repo → $REAL"
+else echo "  FAIL: real repo gave '$REAL' (expected X.Y.0 and exit 0)"; FAILED=1; fi
 
 rm -rf "$TMP"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }

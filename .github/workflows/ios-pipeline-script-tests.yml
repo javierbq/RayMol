@@ -29,6 +29,13 @@ name: iOS pipeline script tests
 
 on: [push, pull_request]
 
+# Cancel in-progress runs for the same ref so a rapid series of pushes to a
+# PR branch does not queue redundant macOS jobs (macOS runner minutes are billed
+# at a premium and the suite finishes in seconds, so a stale run has no value).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
