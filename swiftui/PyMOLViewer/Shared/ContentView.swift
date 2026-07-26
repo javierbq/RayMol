@@ -1889,10 +1889,9 @@ struct ContentView: View {
     private var designModeBar: some View {
         #if RAYMOL_MPNN
         if hSize == .compact {
-            // Task 11: replace this branch with DesignCompactPanel(…)
-            DesignOverlayView(controller: engine.designController,
-                              engine: engine,
-                              theme: themeManager)
+            DesignCompactPanel(controller: engine.designController,
+                               engine: engine,
+                               theme: themeManager)
         } else {
             DesignOverlayView(controller: engine.designController,
                               engine: engine,
@@ -3290,7 +3289,8 @@ private let designPinnedColor = Color(red: 0.98, green: 0.60, blue: 0.10)
 ///
 /// Feature 11: the PINNED column gets a persistent gold/orange border + fill;
 /// the HOVERED column gets a transient subtle-grey fill.
-private struct DesignSequenceStripView: View {
+// Internal (not private) so DesignCompactPanel.swift can reference it.
+struct DesignSequenceStripView: View {
     @ObservedObject var controller: DesignController
     @ObservedObject var theme: ThemeManager
 
@@ -3361,7 +3361,10 @@ private struct DesignSequenceStripView: View {
                     .frame(height: 2)
             }
         }
-        .contentShape(Rectangle())
+        // Keep the column 14 pt wide visually — a legible sequence needs it — but
+        // give touch a taller, slightly wider target. contentShape does not affect
+        // layout, so neighbouring columns are unmoved.
+        .contentShape(Rectangle().inset(by: -6))
         .onHover { hovering in
             if hovering {
                 controller.setHovered(chain: residue.chain, resi: residue.resi)
@@ -3472,7 +3475,10 @@ private struct DesignRegionStripView: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showPicker) {
-            pickerContent
+            DesignSelectionPicker(controller: controller,
+                                  fontSize: 12,
+                                  minWidth: 190,
+                                  dismiss: { showPicker = false })
                 .presentationCompactAdaptation(.popover)
         }
     }
@@ -3503,46 +3509,6 @@ private struct DesignRegionStripView: View {
         .buttonStyle(.plain)
         .help("Build a region by tapping positions in the sequence or the structure")
         .accessibilityLabel("Tap to edit region, \(controller.regionEditMode ? "on" : "off")")
-    }
-
-    private var pickerContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if controller.availableSelections.isEmpty {
-                Text("No selections — create one first")
-                    .font(.system(size: 11)).foregroundColor(.secondary).padding(8)
-            } else {
-                ForEach(controller.availableSelections) { opt in
-                    Button {
-                        controller.pickSelection(opt.name)
-                        showPicker = false
-                    } label: {
-                        HStack {
-                            Text(opt.name).font(.system(size: 12))
-                            Spacer(minLength: 12)
-                            Text("\(opt.count) res")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 5).frame(minWidth: 190)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            if controller.regionModeActive {
-                Divider()
-                Button {
-                    controller.clearSelection()
-                    showPicker = false
-                } label: {
-                    Text("Clear selection")
-                        .font(.system(size: 12)).foregroundColor(.red)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(6).frame(maxWidth: 260)
     }
 
     // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.
