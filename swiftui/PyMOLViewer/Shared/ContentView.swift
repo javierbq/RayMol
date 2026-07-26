@@ -3177,7 +3177,15 @@ struct ContentView: View {
     // exists or the user has already answered once (~/.raymolrc.skip).
     private func loadRaymolrcOrOfferMigration() {
         let fm = FileManager.default
+        #if os(macOS)
         let home = fm.homeDirectoryForCurrentUser.path
+        #else
+        // homeDirectoryForCurrentUser is unavailable on iOS — there is no user home
+        // directory, only the app sandbox. NSHomeDirectory() is that sandbox root: the
+        // closest equivalent, and where a .raymolrc would have to live if iOS ever
+        // supports one. On a fresh install nothing matches, so this simply no-ops.
+        let home = NSHomeDirectory()
+        #endif
         let hasRaymolrc = fm.fileExists(atPath: home + "/.raymolrc.py")
             || fm.fileExists(atPath: home + "/.raymolrc")
         let alreadyAsked = fm.fileExists(atPath: home + "/.raymolrc.skip")
