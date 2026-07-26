@@ -72,6 +72,18 @@ final class DesignController: ObservableObject {
     /// or on a hide. Used so hover-off only removes sticks we introduced.
     typealias SticksFn = (_ obj: String, _ chain: String, _ resi: String, _ on: Bool) -> Bool
 
+    /// Run MPNN region design off-main. Returns designed alphabet indices, length = residues.count.
+    /// `temperature` > 0 samples (non-deterministic); the engine uses a nil seed so runs vary.
+    typealias DesignRegionFn = (_ residues: [MPNNModel.Residue],
+                                _ fixedPositions: Set<Int>,
+                                _ nativeSequence: [Int],
+                                _ omit: [Set<Int>],
+                                _ temperature: Float) throws -> [Int]
+    /// List selections touching the target (`obj`, plus its source `src` when a working copy is focused).
+    typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
+    /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
+    typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
+
     // MARK: – Injected dependencies
 
     private let enumerate: EnumerateFn
@@ -96,6 +108,9 @@ final class DesignController: ObservableObject {
     private var loadRepacked: LoadRepackedFn = { _, _ in }
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
     private var pinnedIndicatorFn: PinnedIndicatorFn = { _, _, _ in }
+    private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
+    private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
+    private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -121,6 +136,38 @@ final class DesignController: ObservableObject {
     /// Set when the session begins; cleared in teardownEditSession.
     private(set) var editSourceObject: String?
 
+    /// Full-length residue indices (into set.residues) of the picked region, valid only.
+    @Published private(set) var selectedResidueIndices: [Int] = []
+    /// Allowed amino-acid alphabet indices (0..<20) for region sampling; toggled off → omit.
+    @Published var paletteAllowed: Set<Int> = Set(0..<20)
+    /// Name of the selection currently designated as the region (nil = single-residue mode).
+    @Published private(set) var selectedSelectionName: String?
+    /// Selections available in the dropdown, refreshed on open.
+    @Published private(set) var availableSelections: [DesignSelectionOption] = []
+    /// Pre-batch sequence + editCount captured before the last region redesign (nil = nothing to revert).
+    @Published private(set) var redesignSnapshot: RedesignSnapshot?
+    /// True while a region design() call is running off-main.
+    @Published private(set) var isRedesigning = false
+    /// Sampling temperature for region design (0 = greedy, higher = more diverse). The
+    /// engine pairs this with a nil seed so each Redesign is non-deterministic.
+    @Published var designTemperature: Float = 0.2
+    /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
+    var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
+
+    /// Label for the blocking "Calculating…" overlay while a long design inference
+    /// runs (nil = not busy). Covers the two edit-triggered heavy ops — a region
+    /// redesign (which holds through its follow-up rescore + repack) and a manual
+    /// repack. The initial focus scoring keeps its lightweight inline spinner
+    /// (`isScoring`) rather than a full-screen block — it's quick on real hardware
+    /// and shouldn't gate the whole UI on every object focus.
+    var designBusyLabel: String? {
+        if isRedesigning { return "Redesigning region…" }
+        if isRepacking { return "Repacking sidechains…" }
+        return nil
+    }
+
+    struct RedesignSnapshot { let seq: [Int]; let editCount: Int }
+
     // MARK: – Private state
 
     private let cache = DesignScoreCache()
@@ -131,6 +178,8 @@ final class DesignController: ObservableObject {
     private var rescoreToken: Int = 0
     /// Incremented on each repack; superseded repacks are discarded without touching rescoreToken.
     private var repackToken: Int = 0
+    /// Incremented on each region redesign; a superseded design() checks this before applying.
+    private var designToken: Int = 0
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
     /// Published residue list for the focus object. Updated whenever `focusObject` or
@@ -163,7 +212,10 @@ final class DesignController: ObservableObject {
                      repack: @escaping RepackFn = { _, _ in "" },
                      loadRepacked: @escaping LoadRepackedFn = { _, _ in },
                      showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in },
-                     pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in }) {
+                     pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in },
+                     designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
+                     listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
+                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -182,6 +234,9 @@ final class DesignController: ObservableObject {
         self.loadRepacked = loadRepacked
         self.showAllSidechainsFn = showAllSidechains
         self.pinnedIndicatorFn = pinnedIndicator
+        self.designRegionFn = designRegion
+        self.listSelectionsFn = listSelections
+        self.selectedIndicesFn = selectedIndices
     }
 
     // MARK: – Public interface
@@ -212,6 +267,7 @@ final class DesignController: ObservableObject {
         hoveredResidueIndex = nil
         pinnedResidueIndex = nil
         pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
+        clearRegionState()
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
     }
 
@@ -310,6 +366,7 @@ final class DesignController: ObservableObject {
             hoveredResidueIndex = nil
             pinnedResidueIndex = nil
             pinnedIndicatorFn("", "", "")  // clear stale 'sele' marker for the previous focus
+            clearRegionState()
         }
         focusObject = object
         for o in allObjects where o != object { dim(o) }
@@ -503,7 +560,166 @@ final class DesignController: ObservableObject {
         workingObject = nil
         editedSequence = []
         editSourceObject = nil
+        clearRegionState()
         compareEnabled = false   // bare assignment — do NOT call setCompare(false)
+    }
+
+    // MARK: – Region redesign: designation + palette (Task 2)
+
+    /// Refresh the dropdown from the current session selections (call on menu open).
+    /// Scoped to the focus object AND its edit source, so selections made on the
+    /// original still appear once a working copy is focused.
+    func refreshSelections() {
+        guard let obj = focusObject, let set = lastSet[obj] else { availableSelections = []; return }
+        availableSelections = listSelectionsFn(obj, editSourceObject, set.state)
+    }
+
+    /// Designate `name` as the region: snapshot its designable residues (valid only)
+    /// as `selectedResidueIndices`, in full-length space. Enters region mode.
+    func pickSelection(_ name: String) {
+        guard let obj = focusObject, let set = lastSet[obj] else { return }
+        let full = selectedIndicesFn(obj, name, editSourceObject, set.state)
+        let valid = full.filter { $0 >= 0 && $0 < set.residues.count && set.residues[$0].valid }
+        selectedResidueIndices = valid
+        selectedSelectionName = valid.isEmpty ? nil : name
+    }
+
+    /// Add or remove one residue (full-length index) from an ad-hoc region built by
+    /// shift-clicking positions. Only designable (valid) residues can be included.
+    /// Detaches from any named selection (the region is now user-built).
+    func toggleRegionResidue(residueIndex i: Int) {
+        guard let obj = focusObject, let set = lastSet[obj],
+              i >= 0, i < set.residues.count, set.residues[i].valid else { return }
+        if let pos = selectedResidueIndices.firstIndex(of: i) {
+            selectedResidueIndices.remove(at: pos)
+        } else {
+            selectedResidueIndices = (selectedResidueIndices + [i]).sorted()
+        }
+        selectedSelectionName = selectedResidueIndices.isEmpty ? nil : "custom"
+    }
+
+    /// Clear the region → return to single-residue (Phase-2b) mode.
+    func clearSelection() {
+        selectedResidueIndices = []
+        selectedSelectionName = nil
+    }
+
+    /// Toggle an amino acid (0..<20) in/out of the region sampling palette.
+    func togglePalette(_ aa: Int) {
+        guard aa >= 0, aa < 20 else { return }
+        if paletteAllowed.contains(aa) { paletteAllowed.remove(aa) } else { paletteAllowed.insert(aa) }
+    }
+
+    /// Reset all region state. Region state can exist without an edit session
+    /// (a selection picked before the first redesign), so this is called on
+    /// mode exit and focus change too, not only in teardownEditSession.
+    private func clearRegionState() {
+        selectedResidueIndices = []
+        selectedSelectionName = nil
+        paletteAllowed = Set(0..<20)
+        redesignSnapshot = nil
+        isRedesigning = false
+        availableSelections = []
+        designToken += 1   // cancel any in-flight region design
+    }
+
+    // MARK: – Region redesign: the design() action + revert (Task 3)
+
+    /// Fire-and-forget region redesign (UI button). Wraps redesignSelectionAwait.
+    func redesignSelection() { Task { await redesignSelectionAwait() } }
+
+    /// Run design() over the picked region with the rest of the sequence fixed,
+    /// scatter the result into editedSequence, then rescore + (auto)repack.
+    /// Snapshots editedSequence first for a one-level revert.
+    func redesignSelectionAwait() async {
+        guard !selectedResidueIndices.isEmpty else { return }
+        guard paletteAllowed.contains(where: { $0 >= 0 && $0 < 20 }) else { return }  // ≥1 allowed AA
+        beginEditIfNeeded()
+        guard editing, let focus = focusObject, let set = lastSet[focus] else { return }
+
+        // One-level revert snapshot (captures earlier manual edits + editCount).
+        redesignSnapshot = RedesignSnapshot(seq: editedSequence, editCount: editCount)
+
+        // Full-length ↔ valid-projected maps (the single-source-of-truth conversion).
+        let validFullIndices = set.residues.enumerated().filter { $0.element.valid }.map { $0.offset }
+        var fullToValid: [Int: Int] = [:]
+        for (v, f) in validFullIndices.enumerated() { fullToValid[f] = v }
+        let residues = set.validResidues
+        let L = residues.count
+        let nativeValid = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+        let freeValid = Set(selectedResidueIndices.compactMap { fullToValid[$0] })
+        guard !freeValid.isEmpty else { redesignSnapshot = nil; return }
+        let fixed = Set(0..<L).subtracting(freeValid)
+        let inactive = Set((0..<20).filter { !paletteAllowed.contains($0) })
+        let omit = Array(repeating: inactive, count: L)
+        let designFn = designRegionFn
+        let temp = designTemperature
+
+        designToken += 1
+        let token = designToken
+        isRedesigning = true
+        // The busy flag drives an INPUT-BLOCKING overlay, so it must never be left
+        // set — `defer` clears it on every exit (early return, error, cancellation),
+        // which a chain of manual assignments cannot guarantee. Guarded by the token
+        // so a superseded call doesn't clear the flag out from under the winner.
+        defer { if token == designToken { isRedesigning = false } }
+
+        let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
+            inferenceQueue.async {
+                do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit, temp)) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+
+        guard token == designToken else { return }
+
+        guard let result, result.count == L else {
+            if let snap = redesignSnapshot { editedSequence = snap.seq; editCount = snap.editCount }
+            redesignSnapshot = nil
+            errorText = "Region redesign failed"
+            return
+        }
+
+        // Scatter designed identities into free (full-length) positions only.
+        var changed = 0
+        let w = workingObject
+        for v in freeValid {
+            let f = validFullIndices[v]
+            let aa = result[v]
+            if editedSequence[f] != aa {
+                editedSequence[f] = aa
+                changed += 1
+                if let w, f < set.residues.count {
+                    let r = set.residues[f]
+                    mutateDisplay(w, r.chain, r.resi, aa)   // backbone-only until repack
+                }
+            }
+        }
+        editCount += changed
+        repackDirty = true
+
+        // The redesign itself is done (the new sequence is applied). The follow-up
+        // rescore/repack are separate operations that own their own busy flags, so a
+        // slow — or stalled — repack can never strand the "Redesigning region…"
+        // overlay. Repack raises its own "Repacking sidechains…" while it runs.
+        isRedesigning = false
+
+        await rescoreWorkingObject()
+        if autoRepack { await repackNowAwait() }
+    }
+
+    /// Undo the last region redesign: restore the pre-batch sequence + editCount.
+    /// One level; earlier manual edits (captured in the snapshot) are preserved.
+    func revertRedesign() {
+        guard let snap = redesignSnapshot else { return }
+        editedSequence = snap.seq
+        editCount = snap.editCount
+        redesignSnapshot = nil
+        repackDirty = true
+        Task {
+            await rescoreWorkingObject()
+            if autoRepack { await repackNowAwait() }
+        }
     }
 
     // MARK: – Edit session (Task 2 + 3 + 4)
@@ -554,6 +770,7 @@ final class DesignController: ObservableObject {
         editedSequence[i] = aa
         editCount += 1
         repackDirty = true
+        redesignSnapshot = nil   // a manual edit invalidates the one-level region-redesign revert
         if let w = workingObject {
             // Resolve chain + resi from the focus object's residue set (same ordering as editedSequence).
             let chain: String
@@ -592,10 +809,13 @@ final class DesignController: ObservableObject {
         guard editing, let w = workingObject, repackDirty else { return }
         // C3: we need the residue set to project the sequence; bail if unavailable.
         guard let focus = focusObject, let set = lastSet[focus] else { return }
-        isRepacking = true
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
+        isRepacking = true
+        // Same input-blocking overlay as the redesign: clear on EVERY exit via
+        // `defer`, token-guarded so a superseded repack can't clear the winner's flag.
+        defer { if token == repackToken { isRepacking = false } }
         // I1: capture the FULL sequence before dispatch so we can detect a mid-repack mutation.
         let capturedFullSeq = editedSequence
         // C3: project through the valid-residue mask to align with validResidues.
@@ -608,7 +828,7 @@ final class DesignController: ObservableObject {
                 catch { cont.resume(throwing: error) }
             }
         }
-        guard token == repackToken else { isRepacking = false; return }
+        guard token == repackToken else { return }
         if let pdb, !pdb.isEmpty {
             // I1: only load if the sequence has not changed since dispatch.
             if capturedFullSeq == editedSequence {
@@ -636,7 +856,7 @@ final class DesignController: ObservableObject {
             // else: mutation happened mid-repack; leave repackDirty = true so the
             // next repack (triggered by the new mutation) loads the current coords.
         }
-        isRepacking = false
+        // isRepacking cleared by the `defer` above (covers every exit path).
     }
 
     /// Sync fire-and-forget repack; called by UI buttons (Task 6). Wraps `repackNowAwait` in a Task.
@@ -766,6 +986,15 @@ final class DesignController: ObservableObject {
     /// Override the setSticks closure for testing (Change 8).
     func injectSetSticks(_ fn: @escaping SticksFn) {
         self.setSticksFn = fn
+    }
+
+    /// Override the region closures for testing (Task 2/3).
+    func injectRegion(designRegion: @escaping DesignRegionFn,
+                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
+                      selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
+        self.designRegionFn = designRegion
+        self.listSelectionsFn = listSelections
+        self.selectedIndicesFn = selectedIndices
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async

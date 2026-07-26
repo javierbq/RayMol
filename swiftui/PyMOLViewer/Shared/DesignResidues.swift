@@ -39,4 +39,11 @@ struct DesignResidueSet {
         return DesignResidueSet(object: raw.object, state: raw.state, residues: residues)
     }
 }
+
+/// One entry in the region-redesign selection dropdown.
+struct DesignSelectionOption: Identifiable, Equatable {
+    let name: String
+    let count: Int
+    var id: String { name }
+}
 #endif

@@ -55,6 +55,99 @@ def enumerate_design_residues(obj, state):
     return 'DESIGN_RESIDUES:ready'
 
 
+def _selection_names():
+    """User-facing named selections in the session (includes the active 'sele').
+
+    Excludes PyMOL's internal selections (leading underscore, e.g. '_preselect',
+    '_pkbase2') which are transient machinery, not things a user would redesign.
+    """
+    try:
+        return [n for n in cmd.get_names('selections') if not n.startswith('_')]
+    except Exception:
+        return []
+
+
+def _scope(obj, src):
+    """Selection scope covering the target object and (if editing) its source.
+
+    A region selection is normally made on the ORIGINAL object; once editing
+    begins the focus is the working copy '<obj>_designNN', which has identical
+    (chain, resi) residues. Scoping to both means selections made on either
+    resolve to the target structure by residue identity, so they don't vanish
+    from the dropdown the moment a working copy is created.
+    """
+    if src and src != obj:
+        return '((%s) or (%s))' % (obj, src)
+    return '(%s)' % obj
+
+
+def _obj_residue_order(obj):
+    """(chain, resi) for obj's polymer residues in canonical guide order —
+    the same order enumerate_design_residues emits, so indices align with the
+    Swift DesignResidueSet.residues array."""
+    order = []
+    try:
+        cmd.iterate('(%s) and polymer and guide' % obj,
+                    'order.append((chain, resi))', space={'order': order})
+    except Exception:
+        return []
+    return order
+
+
+def list_design_selections(obj, state, src=''):
+    """Write user selections that touch the target structure's residues, w/ counts.
+
+    Only selections intersecting the target (obj, plus its source `src` when a
+    working copy is focused) are listed — internal '_' selections are already
+    excluded by _selection_names. Output:
+    $TMPDIR/raymol_design_selections.json = {'selections': [{'name','n'}]}.
+    The count is polymer (guide) residues in the intersection. Returns a marker.
+    """
+    scope = _scope(obj, src)
+    out = []
+    for name in _selection_names():
+        try:
+            n = cmd.count_atoms('%s and (%s) and polymer and guide' % (scope, name))
+        except Exception:
+            n = 0
+        if n > 0:
+            out.append({'name': name, 'n': int(n)})
+    try:
+        with open(_tmp('raymol_design_selections.json'), 'w') as f:
+            json.dump({'selections': out}, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELECTIONS:%d' % len(out)
+
+
+def selected_design_indices(obj, selection, state, src=''):
+    """Map a selection → full-length residue indices in obj's guide order.
+
+    The selection's residues are read within the target scope (obj + `src`), so
+    a selection made on the ORIGINAL object still maps onto the focused working
+    copy by (chain, resi) identity. Output:
+    $TMPDIR/raymol_design_selected.json = {'indices': [int]}. Returns a marker.
+    """
+    # state is accepted for signature symmetry with enumerate_design_residues but
+    # not used here: guide order is read from the current state. Multi-state objects
+    # at a non-default state may misalign; Design-mode editing is single-state (spec).
+    order = _obj_residue_order(obj)
+    scope = _scope(obj, src)
+    sel_res = set()
+    try:
+        cmd.iterate('%s and (%s) and polymer and guide' % (scope, selection),
+                    'sel_res.add((chain, resi))', space={'sel_res': sel_res})
+    except Exception:
+        pass
+    indices = [i for i, cr in enumerate(order) if cr in sel_res]
+    try:
+        with open(_tmp('raymol_design_selected.json'), 'w') as f:
+            json.dump({'indices': indices}, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELECTED:%d' % len(indices)
+
+
 def apply_design_coloring(obj, values_json_path, palette, lo, hi):
     """Write per-residue scalar and apply spectrum coloring.
 

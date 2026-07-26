@@ -230,6 +230,13 @@ struct ContentView: View {
         if engine.isBusy {
             CalculatingOverlay(label: engine.busyLabel)
         }
+        #if RAYMOL_MPNN
+        // Design inference blocks input like a long PyMOL op. Rendered by a dedicated
+        // view that OBSERVES the controller — see DesignBusyOverlayView.
+        if !engine.isBusy && engine.designMode {
+            DesignBusyOverlayView(controller: engine.designController)
+        }
+        #endif
     }
 
     // Shared empty-state CTA visuals (atom icon + title + Open/Fetch buttons),
@@ -3286,6 +3293,13 @@ private struct DesignSequenceStripView: View {
                     .strokeBorder(designPinnedColor, lineWidth: 1.0)
                 : nil
         )
+        .overlay(alignment: .bottom) {
+            if controller.selectedResidueIndices.contains(i) {
+                Rectangle()
+                    .fill(theme.active.accent.color)
+                    .frame(height: 2)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { hovering in
             if hovering {
@@ -3294,6 +3308,14 @@ private struct DesignSequenceStripView: View {
                 controller.clearHover()
             }
         }
+        // Shift-click builds an ad-hoc region (add/remove this position); a plain
+        // click still pins for single-residue inspection. The shift gesture takes
+        // priority so it only fires when the modifier is held.
+        .highPriorityGesture(
+            TapGesture().modifiers(.shift).onEnded {
+                controller.toggleRegionResidue(residueIndex: i)
+            }
+        )
         .onTapGesture {
             controller.setPinned(chain: residue.chain, resi: residue.resi)
         }
@@ -3303,6 +3325,161 @@ private struct DesignSequenceStripView: View {
             if isEdit { tip += " → \(edited)" }
             return tip
         }())
+    }
+}
+
+// MARK: – Region-redesign strip (Phase 2c)
+
+// Selection dropdown + Redesign/Revert + "Redesigning region…" spinner. Its own
+// View struct so @ObservedObject re-renders on region-state @Published changes.
+private struct DesignRegionStripView: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+    @State private var showPicker = false
+
+    var body: some View {
+        Group {
+            if controller.isRedesigning {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Redesigning region…")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.7))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else {
+                controls
+            }
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 8) {
+            selectionButton
+            if controller.regionModeActive {
+                stripDivider
+                Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                stripDivider
+                temperatureControl
+                stripDivider
+                redesignButton
+            }
+            if controller.redesignSnapshot != nil {
+                stripDivider
+                Button { controller.revertRedesign() } label: {
+                    Text("Revert redesign")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("Undo the last region redesign (keeps earlier manual edits)")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private var selectionButton: some View {
+        Button {
+            controller.refreshSelections()
+            showPicker = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "lasso").font(.system(size: 10))
+                Text(controller.selectedSelectionName ?? "Select region…")
+                    .font(.system(size: 11)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .foregroundColor(theme.active.panelText.color.opacity(0.85))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(theme.active.panelText.color.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showPicker) { pickerContent }
+    }
+
+    private var pickerContent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if controller.availableSelections.isEmpty {
+                Text("No selections — create one first")
+                    .font(.system(size: 11)).foregroundColor(.secondary).padding(8)
+            } else {
+                ForEach(controller.availableSelections) { opt in
+                    Button {
+                        controller.pickSelection(opt.name)
+                        showPicker = false
+                    } label: {
+                        HStack {
+                            Text(opt.name).font(.system(size: 12))
+                            Spacer(minLength: 12)
+                            Text("\(opt.count) res")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5).frame(minWidth: 190)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if controller.regionModeActive {
+                Divider()
+                Button {
+                    controller.clearSelection()
+                    showPicker = false
+                } label: {
+                    Text("Clear selection")
+                        .font(.system(size: 12)).foregroundColor(.red)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6).frame(maxWidth: 260)
+    }
+
+    // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.
+    private var redesignButton: some View {
+        let disabled = controller.paletteAllowed.filter { $0 < 20 }.isEmpty
+        return Button { controller.redesignSelection() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "wand.and.stars").font(.system(size: 10, weight: .semibold))
+                Text("Redesign selection · \(controller.selectedResidueIndices.count) res")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(disabled ? theme.active.panelText.color.opacity(0.25)
+                                 : theme.active.accent.color,
+                        in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help("Redesign the selected residues; the rest of the sequence is held fixed")
+    }
+
+    // Sampling-temperature slider: 0 = greedy (most likely), higher = more diverse.
+    private var temperatureControl: some View {
+        HStack(spacing: 5) {
+            Text("temp").font(.system(size: 10, design: .monospaced))
+                .foregroundColor(theme.active.panelText.color.opacity(0.5))
+            Slider(value: $controller.designTemperature, in: 0...1)
+                .frame(width: 72)
+                .controlSize(.mini)
+            Text(String(format: "%.2f", controller.designTemperature))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(theme.active.panelText.color.opacity(0.65))
+                .frame(width: 26, alignment: .leading)
+        }
+        .help("Sampling temperature: 0 = most likely (greedy), higher = more variation each run")
+    }
+
+    private var stripDivider: some View {
+        Rectangle().fill(theme.active.panelText.color.opacity(0.2)).frame(width: 0.5, height: 14)
     }
 }
 
@@ -3510,6 +3687,11 @@ private struct DesignOverlayView: View {
             //    is hovered/pinned so it no longer flickers in and out) ─────
             Divider().opacity(0.3)
             propensityRow(controller.activePropensity)
+            // ── Region-redesign strip (Phase 2c) ─────────────────────────────
+            if !controller.focusResidues.isEmpty {
+                Divider().opacity(0.3)
+                DesignRegionStripView(controller: controller, theme: theme)
+            }
             // ── Control strip (always visible once an object is focused; the
             //    session-only controls inside it appear when editing begins) ──
             if !controller.focusResidues.isEmpty {
@@ -3551,23 +3733,40 @@ private struct DesignOverlayView: View {
         }
     }
 
+    // Focus-object indicator is a dropdown: click a structure in the viewport OR
+    // pick one here. Lists the objects the controller can focus; current is checked.
     private var focusLabel: some View {
-        Group {
-            if let obj = controller.focusObject {
-                HStack(spacing: 4) {
-                    Image(systemName: "atom")
-                        .foregroundColor(theme.active.accent.color)
-                    Text(obj)
-                        .lineLimit(1)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(theme.active.panelText.color)
+        Menu {
+            ForEach(controller.allObjects, id: \.self) { obj in
+                Button {
+                    controller.focus(obj)
+                } label: {
+                    if obj == controller.focusObject {
+                        Label(obj, systemImage: "checkmark")
+                    } else {
+                        Text(obj)
+                    }
                 }
-            } else {
-                Text("Click an object to design")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "atom")
+                    .foregroundColor(theme.active.accent.color)
+                Text(controller.focusObject ?? "Select object to design")
+                    .lineLimit(1)
+                    .font(.system(size: 12, weight: controller.focusObject != nil ? .semibold : .regular))
+                    .foregroundColor(controller.focusObject != nil
+                        ? theme.active.panelText.color
+                        : theme.active.panelText.color.opacity(0.6))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
             }
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(controller.allObjects.isEmpty)
     }
 
     // Two-button toggle visually equivalent to a segmented control but with per-mode
@@ -3674,7 +3873,10 @@ private struct DesignOverlayView: View {
     /// is active; ignored silently when there is no active residue.
     private func propensityRow(
         _ ap: (propensities: [Float], nativeAA: Int, label: String)?
-    ) -> some View {
+    ) -> AnyView {
+        if controller.regionModeActive {
+            return AnyView(paletteRow())
+        }
         let rowMax = ap?.propensities.max() ?? 1.0
         let activeIndex = controller.activeResidueIndex
         // When editing, highlight the current edited identity rather than the native AA.
@@ -3685,7 +3887,7 @@ private struct DesignOverlayView: View {
             }
             return ap?.nativeAA ?? -1
         }()
-        return ScrollView(.horizontal, showsIndicators: false) {
+        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 3) {
                 ForEach(0..<20, id: \.self) { i in
                     let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
@@ -3705,7 +3907,7 @@ private struct DesignOverlayView: View {
             }
             .padding(.horizontal, 12)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 5))
     }
 
     /// Single amino-acid pill: letter + 2-decimal propensity, colored by
@@ -3757,6 +3959,60 @@ private struct DesignOverlayView: View {
                     .stroke(theme.active.accent.color, lineWidth: 1.5)
                 : nil
         )
+    }
+
+    // MARK: – Region palette row (numbers hidden; pills are active/inactive toggles)
+
+    private func paletteRow() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    Button { controller.togglePalette(i) } label: {
+                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
+                    }
+                    .buttonStyle(.plain)
+                    .help(controller.paletteAllowed.contains(i)
+                          ? "Allowed during redesign — click to exclude"
+                          : "Excluded from redesign — click to allow")
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func palettePill(index i: Int, active: Bool) -> some View {
+        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
+        return Text(letter)
+            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
+            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
+            .frame(width: 30, height: 36)
+            .background(active
+                        ? theme.active.accent.color.opacity(0.85)
+                        : theme.active.panelText.color.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
+    }
+}
+#endif
+
+#if RAYMOL_MPNN
+// Input-blocking overlay for Design-mode inference (redesign / repack).
+//
+// This MUST be its own View holding the controller as @ObservedObject.
+// ContentView observes only `engine`, and DesignController is a NESTED
+// ObservableObject — its @Published changes do NOT re-render the parent. Driving
+// the overlay from ContentView left it on screen after the work had finished
+// (flag already false), blocking input until some unrelated engine change
+// happened to force a redraw.
+private struct DesignBusyOverlayView: View {
+    @ObservedObject var controller: DesignController
+
+    var body: some View {
+        if let label = controller.designBusyLabel {
+            CalculatingOverlay(label: label)
+        }
     }
 }
 #endif
