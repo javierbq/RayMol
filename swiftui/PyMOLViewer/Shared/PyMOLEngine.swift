@@ -1936,7 +1936,7 @@ final class PyMOLEngine: ObservableObject {
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
-            designMode = false                                              // mutually exclusive
+            setDesignMode(false)                                            // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -2217,7 +2217,7 @@ final class PyMOLEngine: ObservableObject {
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
-            designMode = false                               // mutually exclusive
+            setDesignMode(false)                             // mutually exclusive
             refreshGizmo()
         } else {
             armedAxis = nil
