@@ -80,6 +80,13 @@ Both teardown paths reached by the fix are test-safe:
 `requestViewportRedraw()` (reachable via the `hoveredHandle` didSet) only posts
 a `NotificationCenter` notification — also test-safe.
 
+Note that the guard is the *fallback* safety property, not the one tests
+actually exercise: under the `TEST_HOST` bundle the engine is initialized and
+`isReady` is true (see "Test-host reality" below), so the teardown Python really
+runs. That is fine and in fact more realistic — the paths invoked are exactly
+the ones the existing "exit Move mode" and "exit Measure mode" buttons use. The
+guard matters for callers that run before initialization.
+
 The comment must be rewritten: the setter is no longer Python-free, but it
 remains safe to call in any state, for a different and now-documented reason.
 
@@ -190,13 +197,25 @@ below.
 
 In `swiftui/PyMOLViewerTests/DesignModeStateTests.swift`.
 
+**Test-host reality (verified empirically).** The test bundle runs in-process
+inside `RayMol.app` via `TEST_HOST`/`BUNDLE_LOADER`, the app initializes the
+engine, and **`isReady` is true — real Python executes during these tests**. A
+baseline run of the existing suite printed `MEASURE:{"kind": "distance", ...}`,
+emitted by `modules/pymol/appkit_measure.py:45`.
+
+Two consequences shape the tests:
+
+- `runPython` genuinely runs, so these are integration-flavoured tests.
+- No structure is loaded, so `metal_move`'s `_active` is `None` and every
+  `_emit(...)` writes `{"active": false}` to `/tmp/pymol_gizmo.json`. **The temp
+  file is owned by live Python and is unusable as an assertion surface** — a
+  test cannot seed an "active" gizmo into it. Assertions therefore target tap
+  emissions, not temp-file side effects.
+
 **`setUp`/`tearDown`.** `PyMOLEngine.shared` is a singleton shared across the
 whole test target, so each test resets all three modes and clears `pythonTap`.
-Both also delete `/tmp/pymol_gizmo.json`, establishing a known-empty baseline so
-`readGizmo()` cannot import a stale gizmo left by a real app run on the dev
-machine — without this the assertions are machine-dependent. A test that needs
-`readGizmo()` to find something (test 3) writes the file itself as part of its
-arrangement; `tearDown` removes it again.
+Both also delete `/tmp/pymol_gizmo.json` as hygiene, so a stale file from a real
+app run can never leak an active gizmo into a fixture.
 
 **Tap discipline.** Seeding `adjustFrameToggle`/`moveShiftHeld` fires
 `didSet → syncAdjustFrame()`, which emits `set_adjust(1)`. Tests therefore
@@ -219,13 +238,19 @@ equality. Never assert on exact emission counts.
    *Fails pre-fix:* no `_am.reset()` emission. The `measureMode == nil` flag
    assertion alone passes both pre- and post-fix, which is precisely why the
    tap is needed.
-3. **Exiting Move with adjust-frame active does not resurrect the gizmo.**
-   Regression test for §3. Write a `/tmp/pymol_gizmo.json` with
-   `active: true` and a valid two-element `center`, enter Move mode, set
-   `adjustFrameToggle = true`, then `setInteractionMode(.viewing)`; assert
-   `gizmo == nil` and `activeMoveObject == nil`.
-   *Fails pre-fix:* `syncAdjustFrame`'s `readGizmo()` re-reads the still-active
-   file and repopulates both fields.
+3. **Exiting Move does not push adjust-frame during teardown.** Regression test
+   for §3. Enter Move mode, set `adjustFrameToggle = true` (arming
+   `lastAdjustSent`), install the tap, then `setInteractionMode(.viewing)`;
+   assert no `set_adjust` was emitted and that `_mm.cleanup()` was.
+   *Fails pre-fix:* `set_adjust(0)` is emitted, which is the observable proxy
+   for the `readGizmo()` call that does the resurrecting.
+
+   The emission — not `gizmo == nil` — is the assertion, because asserting on
+   the field would be vacuous under the test host: live Python writes
+   `active: false`, so `readGizmo()` nils the fields either way and the test
+   would pass before and after the fix. The resurrection is still a real defect
+   on a host where the temp file describes an active gizmo; the emission is what
+   distinguishes fixed from broken deterministically.
 
 Seeding is possible because all the fields are internal `@Published var` and
 the test target uses `@testable import RayMol`. `GizmoHandle` is a plain enum
