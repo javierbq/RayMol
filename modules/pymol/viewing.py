@@ -1193,6 +1193,21 @@ SEE ALSO
 
         r = _self._call_with_opengl_context(func)
 
+        # RayMol: capture/restore per-scene extras (render settings + object TTT)
+        # on every scene action, from any path (UI, console, MCP, movie build).
+        # `action` is already normalized above (update/append -> store,
+        # clear -> delete, auto-recall -> next). Guarded so non-RayMol builds and
+        # upstream merges stay unaffected.
+        try:
+            from pymol import raymol_scenes as _rs
+        except Exception:
+            _rs = None
+        if _rs is not None:
+            try:
+                _rs.on_scene_action(key, action, new_key=new_key, _self=_self)
+            except Exception:
+                pass
+
         # for presentation auto quit
         pymol._scene_quit_on_action = action
 
@@ -1269,29 +1284,36 @@ SEE ALSO
         # Restore scenes from old session files (<= 1.7.4)
 
         if 'scene_dict' in session:
-            _self.scene('*', 'clear')
+            try:
+                from pymol import raymol_scenes as _rs
+                _ctx = _rs.suspended()
+            except Exception:
+                import contextlib
+                _ctx = contextlib.nullcontext()
+            with _ctx:
+                _self.scene('*', 'clear')
 
-            # save initial scene
-            tempname = '_initial_scene'
-            while tempname in session['scene_dict']:
-                tempname += '_'
-            _self.scene(tempname, 'store')
+                # save initial scene
+                tempname = '_initial_scene'
+                while tempname in session['scene_dict']:
+                    tempname += '_'
+                _self.scene(tempname, 'store')
 
-            frame = 0
-            if _self.get_movie_playing():
-                _self.mstop()
-                frame = _self.get_frame()
+                frame = 0
+                if _self.get_movie_playing():
+                    _self.mstop()
+                    frame = _self.get_frame()
 
-            for key, data in list(session['scene_dict'].items()):
-                _convert_legacy_scene(key, data, _self)
+                for key, data in list(session['scene_dict'].items()):
+                    _convert_legacy_scene(key, data, _self)
 
-            if frame:
-                _self.frame(frame)
-                _self.mplay()
+                if frame:
+                    _self.frame(frame)
+                    _self.mplay()
 
-            # restore initial scene
-            _self.scene(tempname, 'recall', animate=0)
-            _self.scene(tempname, 'clear')
+                # restore initial scene
+                _self.scene(tempname, 'recall', animate=0)
+                _self.scene(tempname, 'clear')
 
         if 'scene_order' in session:
             _self.scene_order(' '.join(session['scene_order']))
