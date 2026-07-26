@@ -155,7 +155,11 @@ struct ContentView: View {
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
     // imported. Declining writes a skip marker so we don't ask again.
+    // macOS-only: a startup rc file is a desktop concept, and iOS has no
+    // user-visible home directory to put one in (see loadRaymolrcOrOfferMigration).
+    #if os(macOS)
     @State private var showRaymolrcMigrationPrompt = false
+    #endif
 
     // Export menu state. exportRayTraced persists across launches; when on, all
     // image exports are ray-traced (AO + shadows) regardless of the live view.
@@ -1171,12 +1175,6 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Download a structure from the RCSB PDB.")
-            }
-            .alert("Import your PyMOL startup script?", isPresented: $showRaymolrcMigrationPrompt) {
-                Button("Import") { confirmRaymolrcMigration() }
-                Button("Not Now", role: .cancel) { declineRaymolrcMigration() }
-            } message: {
-                raymolrcMigrationAlertText
             }
             .alert("Clear session?", isPresented: $showClearSessionConfirm) {
                 Button("Clear", role: .destructive) { engine.clearSessionAndAutosave() }
@@ -3173,8 +3171,11 @@ struct ContentView: View {
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
         // user's startup script can override them (e.g. a custom bg_color) —
         // matching vanilla PyMOL, where .pymolrc runs after all built-in
-        // defaults are set.
+        // defaults are set. macOS-only (RayMol#225 left iOS as an open
+        // question): there is no user-visible ~ on iOS to author an rc file in.
+        #if os(macOS)
         loadRaymolrcOrOfferMigration()
+        #endif
     }
 
     // This native app never goes through pymol.invocation's CLI argument
@@ -3185,6 +3186,14 @@ struct ContentView: View {
     // over, or may not recognize ~/.raymolrc if we create it behind their
     // back. Skips the prompt (and loads immediately) once either file
     // exists or the user has already answered once (~/.raymolrc.skip).
+    //
+    // macOS-only, for two reasons: homeDirectoryForCurrentUser is unavailable
+    // on iOS, and more fundamentally a dotfile in ~ is a desktop concept —
+    // iOS's ~ is the app container, which the user can neither see nor write
+    // to, so an iOS build could only ever no-op here. RayMol#225 explicitly
+    // left "whether iOS needs an equivalent (likely app-container-relative)"
+    // as an open question; it is deliberately still open.
+    #if os(macOS)
     private func loadRaymolrcOrOfferMigration() {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
@@ -3211,6 +3220,7 @@ struct ContentView: View {
     private var raymolrcMigrationAlertText: Text {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
+    #endif
 }
 
 #if RAYMOL_MPNN
