@@ -543,18 +543,21 @@ struct ContentView: View {
             }
     }
 
-    // Esc → two-stage clear selection (issues #163 + #166). A local key-down
-    // monitor (not .onKeyPress, which is macOS 14+; deployment target is macOS
-    // 13) so the whole main window catches Esc even when the viewport isn't the
-    // SwiftUI focus. We must NOT swallow Esc that belongs to something else:
+    // Esc → back out one level. A local key-down monitor rather than .onKeyPress
+    // because the whole main window must catch Esc even when the viewport isn't
+    // the SwiftUI focus — MetalViewport deliberately declines first-responder
+    // status (issue #73) so the command line stays hot for typing.
+    //
+    // The ladder, in order (issues #163 + #166, then #235):
     //   (a) a sheet / panel / popover is up (their window is key, not the main
-    //       RayMol window) — Esc should dismiss it, or
-    //   (b) the first responder is a text/field editor (the command line is
-    //       being edited) — Esc there cancels the field edit.
-    // In those cases we return the event unhandled so the system routes it
-    // normally. Otherwise we run the shared clear-selection helper and consume
-    // the event (return nil). Non-Esc keys always pass through untouched.
-    // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here).
+    //       RayMol window) — Esc belongs to it, pass through so it dismisses;
+    //   (b) an exclusive interaction mode (Move / Design / Measure) is active —
+    //       leave it, then consume;
+    //   (c) otherwise — two-stage clear selection, then consume.
+    // Non-Esc keys always pass through untouched.
+    // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here);
+    // the routing itself lives on PyMOLEngine and is platform-neutral, so wiring
+    // iOS later is just a key source, not a second policy.
     private func installEscKeyMonitor() {
         guard escKeyMonitor == nil else { return }
         escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -569,9 +572,16 @@ struct ContentView: View {
                 if keyWindow.isSheet || keyWindow is NSPanel { return event }
             }
             // NOTE: intentionally does NOT defer to a focused text field — Esc
-            // clears the selection regardless of keyboard focus (incl. while the
-            // command-line box is focused), per product decision. Only true
-            // modal/sheet/panel windows above still get Esc for dismissal.
+            // acts regardless of keyboard focus (incl. while the command-line box
+            // is focused), per product decision. Only true modal/sheet/panel
+            // windows above still get Esc for dismissal.
+            //
+            // (b) Leaving an interaction mode outranks clearing the selection —
+            // #166 anticipated exactly this ("exiting a mode should take priority
+            // before the selection stages kick in"). Routed through the engine so
+            // Esc reuses each mode's own exit path rather than duplicating it.
+            if engine.exitActiveInteractionMode() { return nil }
+            // (c) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
         }
