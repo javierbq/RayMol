@@ -1953,6 +1953,32 @@ final class PyMOLEngine: ObservableObject {
         designMode = on
     }
 
+    // MARK: - Exclusive interaction modes (Move / Design / Measure)
+
+    /// Leave whichever exclusive interaction mode is active, each through that
+    /// mode's OWN existing exit path — so the Esc key (see
+    /// ContentView.installEscKeyMonitor) and the overlays' ✕ buttons converge on
+    /// identical behavior. In particular Design goes through `setDesignMode(false)`,
+    /// whose `.onChange` observer in ContentView runs the visual-state restore and
+    /// edit-session teardown; Esc must never grow a second, divergent path. (#235)
+    ///
+    /// The three modes are mutually exclusive, so in practice at most one branch
+    /// runs. They are checked independently rather than with early returns so a
+    /// desynchronized state still unwinds completely instead of leaving one mode
+    /// stranded.
+    ///
+    /// - Returns: whether any mode was actually exited. Callers use this to fall
+    ///   through to their next behavior (Esc clears the selection) when Escape
+    ///   found no mode to leave.
+    @discardableResult
+    func exitActiveInteractionMode() -> Bool {
+        var exited = false
+        if designMode { setDesignMode(false); exited = true }
+        if interactionMode == .move { setInteractionMode(.viewing); exited = true }
+        if measureMode != nil { setMeasureMode(nil); exited = true }
+        return exited
+    }
+
 #if RAYMOL_MPNN
     // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
     private var _mpnnModel: MPNNModel?
