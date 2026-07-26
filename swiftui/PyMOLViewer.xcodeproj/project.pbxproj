@@ -45,6 +45,7 @@
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		52B5620BEF26DEB8E3A700C1 /* DesignResiduesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */; };
 		5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
+		54D986046911571938A3CF13 /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 80B2210B207942EBB65BAF59 /* MPNNKit */; };
 		54F313461574BD8EEE414E3E /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
 		55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		56CC6A9A8A95D5B1B8D92688 /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
@@ -100,6 +101,7 @@
 		BE397E89274A3180A2E649BF /* DesignColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
 		C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */; };
+		C97C087311C3D159E74FA96A /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 69935BE3EFD2F08B88D4AEE9 /* MLX */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
 		CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		CE45D81735E70E8FFFD49875 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
@@ -221,7 +223,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_E1F53BC2-713D-42C1-9B85-B76DC69154D1" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_0685B898-99FF-4CCB-AD73-3787456825CF" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -240,6 +242,15 @@
 				48E340346AD8FF81AF09F501 /* MPNNKit in Frameworks */,
 				6E945630A8B9A6195B98A958 /* MLX in Frameworks */,
 				B6FBF55DD1FA97A86C678618 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FB23646F44642041FD58D674 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				54D986046911571938A3CF13 /* MPNNKit in Frameworks */,
+				C97C087311C3D159E74FA96A /* MLX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -390,10 +401,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_A2CB1D7F-A23D-492E-B93E-C2334F9BD88D" /* swiftui */ = {
+		"TEMP_3034D27F-AD61-4FE5-A763-0ABBEF76966F" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_E1F53BC2-713D-42C1-9B85-B76DC69154D1" /* PyMOLBridge.xcconfig */,
+				"TEMP_0685B898-99FF-4CCB-AD73-3787456825CF" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -418,7 +429,7 @@
 				CD8CDE496B92B386AFFAF903 /* macOS: Bundle Python + modules + data */,
 				9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */,
 				B650AF53FA2F4FEAA543F840 /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
-				87DC253C5CE9B7B08ABD716E /* macOS: Bundle MPNN.mpnnpack */,
+				8BEF1B8DF38196521747DA4E /* Bundle MPNN.mpnnpack */,
 			);
 			buildRules = (
 			);
@@ -440,6 +451,7 @@
 			buildPhases = (
 				CA0704A170D844CE72B9AB3E /* Sources */,
 				61D7B61F4D5ACB99F6B7EA8D /* Resources */,
+				FB23646F44642041FD58D674 /* Frameworks */,
 				2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */,
 				2AC63EBF7745B988799768CA /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				20F6E2447B7743E74607108B /* Brand: register molecular document types */,
@@ -450,7 +462,7 @@
 				D4BACCBE2A1F237569400BDF /* macOS: Bundle Python + modules + data */,
 				BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */,
 				383CF53EC37C88EB8111EAAB /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
-				6568FD77AAC0A7CA2FA0E4AF /* macOS: Bundle MPNN.mpnnpack */,
+				A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */,
 			);
 			buildRules = (
 			);
@@ -458,6 +470,8 @@
 			);
 			name = PyMOLViewer_iOS;
 			packageProductDependencies = (
+				80B2210B207942EBB65BAF59 /* MPNNKit */,
+				69935BE3EFD2F08B88D4AEE9 /* MLX */,
 			);
 			productName = PyMOLViewer_iOS;
 			productReference = C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */;
@@ -703,25 +717,6 @@
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi\nmkdir -p \"$CODESIGNING_FOLDER_PATH/python/lib\"\nrsync -au --delete \"$SRCROOT/../deps_ios/Python.xcframework/$SLICE/lib/\" \"$CODESIGNING_FOLDER_PATH/python/lib/\"\n# App Review compliance (mirrors the macOS prune; mostly defensive on iOS\n# since BeeWare ships no Tk binaries and its stdlib already omits the\n# itms-services token):\n#  (2.5.1) Drop any Tcl/Tk binaries + the dead pure-Python tkinter package\n#  so the bundle carries zero Tk references. The native Metal/SwiftUI app\n#  never launches the legacy pmg_tk Tkinter GUI.\nPYLIB=\"$CODESIGNING_FOLDER_PATH/python/lib\"\nrm -rf \"$PYLIB\"/libtcl*.dylib \"$PYLIB\"/libtk*.dylib \\\n       \"$PYLIB\"/tcl* \"$PYLIB\"/tk* \"$PYLIB\"/itcl* \"$PYLIB\"/thread* \\\n       \"$PYLIB\"/python*/tkinter\nrm -f  \"$PYLIB\"/python*/lib-dynload/_tkinter*.so\n#  (2.5.2) Strip 'itms-services' from urllib/parse.py's uses_netloc. No-op\n#  on the current BeeWare build, but guarantees parity if a future stdlib\n#  bump reintroduces the literal Apple's static scanner flags.\n/usr/bin/sed -i '' \"s/, 'itms-services'//g\" \"$PYLIB\"/python*/urllib/parse.py\n";
 		};
-		6568FD77AAC0A7CA2FA0E4AF /* macOS: Bundle MPNN.mpnnpack */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Bundle MPNN.mpnnpack";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_macos/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
-		};
 		674165941FEA5412EAD0F21B /* iOS: Embed Python.framework */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -761,25 +756,6 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
-		87DC253C5CE9B7B08ABD716E /* macOS: Bundle MPNN.mpnnpack */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Bundle MPNN.mpnnpack";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_macos/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
-		};
 		888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -818,6 +794,25 @@
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n    # \"commonly used third-party SDK\" list requires to carry a privacy\n    # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n    # signed with the framework in the codesign pass below.\n    case \"$FULL_MODULE_NAME\" in\n      _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n    esac\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
+		8BEF1B8DF38196521747DA4E /* Bundle MPNN.mpnnpack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle MPNN.mpnnpack";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
+		};
 		9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -836,6 +831,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\n/usr/bin/python3 \"$SRCROOT/../scripts/compile_metal_shaders.py\" --sdk macosx --output \"/tmp/pymol_macos.metallib\" || true\n[ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib \"$RES/pymol.metallib\" || echo \"metallib skipped (runtime-compile fallback)\"\n";
+		};
+		A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle MPNN.mpnnpack";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
 		};
 		AAD907DBCD08F79F40554C45 /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1172,6 +1186,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1203,6 +1219,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -1237,6 +1255,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
@@ -1291,6 +1311,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1299,7 +1321,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E1F53BC2-713D-42C1-9B85-B76DC69154D1" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_0685B898-99FF-4CCB-AD73-3787456825CF" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1349,7 +1371,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -1406,7 +1428,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E1F53BC2-713D-42C1-9B85-B76DC69154D1" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_0685B898-99FF-4CCB-AD73-3787456825CF" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1450,7 +1472,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -1562,12 +1584,22 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		69935BE3EFD2F08B88D4AEE9 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
 		791C3459ADD4745BE10E27AA /* MPNNKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
 			productName = MPNNKit;
 		};
 		7A0C20547CE6C050BA30EDA0 /* MPNNKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
+			productName = MPNNKit;
+		};
+		80B2210B207942EBB65BAF59 /* MPNNKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
 			productName = MPNNKit;
