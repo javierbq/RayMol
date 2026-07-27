@@ -1322,19 +1322,39 @@ Sparkle appcast feed."
 
 - [ ] **Step 4: Human — run the workflow once and confirm the artifact**
 
-The workflow must publish before Task 8's `ci_post_clone.sh` can succeed. Push the branch, then run it manually (the `push` trigger is scoped to `master`, so a feature branch needs `workflow_dispatch`):
+The workflow must publish before Task 8's `ci_post_clone.sh` can succeed.
+
+**`workflow_dispatch` does NOT work on a feature branch.** GitHub only registers a
+workflow as dispatchable once its file is on the **default** branch. Verified
+empirically on 2026-07-26: `gh workflow run "iOS deps artifact"` answers
+`could not find any workflows named iOS deps artifact` both before *and* after
+pushing the branch, and `gh workflow list` omits the workflow entirely. (Branch-
+defined `push` and `pull_request` triggers *do* fire from a feature branch —
+only dispatch is gated.) An earlier revision of this step told you to push and
+then dispatch; that is impossible, and this note replaces it.
+
+So bootstrap the first artifact one of two ways:
+
+- **Preferred — exercise the real workflow off-master.** In one throwaway commit,
+  add your branch to the workflow's `branches:` list and disable its `paths:`
+  filter so the run cannot be skipped, push, let it publish, then revert both
+  edits. This proves the workflow itself works; hand-publishing a tarball would
+  leave it unexercised until the next pin bump.
+- **Or land the workflow on `master` first**, after which
+  `gh workflow run "iOS deps artifact" -R javierbq/RayMol --ref <branch>` works
+  normally for every later run.
+
+Then verify the assets exist under the expected names:
 
 ```bash
-gh workflow run "iOS deps artifact" -R javierbq/RayMol --ref "$(git rev-parse --abbrev-ref HEAD)"
-```
-
-Watch it, then verify the assets exist under the expected names:
-
-```bash
-gh run watch -R javierbq/RayMol
 FP="$(bash scripts/ios_deps_fingerprint.sh)"
 gh release view "ios-deps-$FP" -R javierbq/RayMol
 ```
+
+**Observed on the first real run (2026-07-26), for calibration:** the whole job
+took **6m39s** — considerably faster than the ~30 min this plan estimated — and
+produced a **66 MB** tarball from a 267 MB pruned tree (304 MB before pruning).
+numpy cross-built for both slices at 14 extension modules each.
 
 Expected: a prerelease holding `deps_ios-<FP>.tar.gz` and `deps_ios-<FP>.tar.gz.sha256`. Record the wall-clock duration and the tarball size in the plan — the tarball size sets the per-build download cost in Xcode Cloud.
 

@@ -20,31 +20,24 @@ name: iOS deps artifact
 
 on:
   push:
-    # === TEMPORARY BOOTSTRAP — REVERT THE NEXT TWO EDITS AFTER THE FIRST RUN ===
-    # `workflow_dispatch` cannot be used yet: GitHub only registers a
-    # dispatchable workflow once its file is on the DEFAULT branch, and this file
-    # has never been on master (verified — `gh workflow run` answers "could not
-    # find any workflows named iOS deps artifact" even with the branch pushed).
-    # So there is no way to produce the very first deps artifact, which Task 8
-    # needs in order to be built and tested at all.
-    #
-    # Bootstrap: trigger on this feature branch once, with the paths filter
-    # removed so the run cannot be skipped, then revert both edits. This
-    # deliberately exercises the REAL workflow rather than hand-publishing a
-    # tarball, so a bug in the workflow surfaces now instead of at the next pin
-    # bump. Restore to exactly:
-    #     branches: [master]
-    #     paths: [the seven scripts listed below]
-    branches: [master, claude/icloud-run-nightly-beta-27099f]
-    # paths:  <- intentionally disabled for the bootstrap run; restore with:
-    #   - scripts/setup_ios_deps.sh
-    #   - scripts/fetch_ios_python.sh
-    #   - scripts/build_ios_deps.sh
-    #   - scripts/build_numpy_ios.sh
-    #   - scripts/bundle_biopython.sh
-    #   - scripts/ios_deps_fingerprint.sh
-    #   - scripts/prune_ios_deps.sh
-    # === END TEMPORARY BOOTSTRAP ===
+    branches: [master]
+    paths:
+      - scripts/setup_ios_deps.sh
+      - scripts/fetch_ios_python.sh
+      - scripts/build_ios_deps.sh
+      - scripts/build_numpy_ios.sh
+      - scripts/bundle_biopython.sh
+      - scripts/ios_deps_fingerprint.sh
+      - scripts/prune_ios_deps.sh
+  # NOTE ON BOOTSTRAPPING (learned the hard way, 2026-07-26): workflow_dispatch
+  # only becomes usable once THIS FILE IS ON THE DEFAULT BRANCH. GitHub does not
+  # register a dispatchable workflow that exists solely on a feature branch —
+  # `gh workflow run "iOS deps artifact"` answers "could not find any workflows
+  # named ..." and `gh workflow list` omits it entirely, even with the branch
+  # pushed. Branch-defined `push`/`pull_request` triggers DO fire; only dispatch
+  # is gated. So on a fresh clone of this pipeline, the first artifact cannot be
+  # produced by dispatch: either land this file on master first, or temporarily
+  # add your branch to `branches:` above and disable `paths:` for one run.
   workflow_dispatch: {}
 
 permissions:
