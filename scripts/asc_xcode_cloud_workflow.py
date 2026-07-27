@@ -11,9 +11,11 @@ in .github/workflows rather than in a web UI.
 WHAT IT CREATES
 ===============
 Workflow "iOS Beta (master)" on the RayMol ciProduct:
-  * One ARCHIVE action, scheme PyMOLViewer_iOS, platform IOS
+  * One ARCHIVE action, scheme PyMOLViewer_iOS, platform IOS,
+    buildDistributionAudience INTERNAL_ONLY (permanent — see comment in payload)
   * Branch start condition on master, autoCancel enabled
-  * Files-and-folders rule excluding docs/** and *.md
+  * filesAndFoldersRule: null at creation (undocumented matcher shape — add in UI,
+    then read back via GET and encode here; see comment in payload)
   * isEnabled: true, isLockedForEditing: FALSE (unlocked at creation — see below)
 
 Run with --dry-run (the default) to print the payload and send nothing.
@@ -223,20 +225,28 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                             {"pattern": PRODUCTION_BRANCH, "isPrefix": False}
                         ],
                     },
-                    "filesAndFoldersRule": {
-                        "matchers": [
-                            {
-                                "pattern": "docs",
-                                "matchType": "DIRECTORY_OR_DESCENDANT",
-                                "inverse": True,
-                            },
-                            {
-                                "pattern": ".md",
-                                "matchType": "FILE_EXTENSION",
-                                "inverse": True,
-                            },
-                        ]
-                    },
+                    # filesAndFoldersRule: set to None (no rule at creation).
+                    #
+                    # INTENT: skip builds for docs/**-only and *.md-only pushes.
+                    #
+                    # WHY NULL: our initial guess of
+                    #   matchers[].{pattern, matchType, inverse}
+                    # was rejected by Apple with "contains additional unknown
+                    # property 'pattern'" (and matchType, and inverse). The real
+                    # CiFilesAndFoldersCondition matcher field names are not
+                    # publicly documented and cannot be inferred safely.
+                    #
+                    # CORRECT PROCEDURE (one-time, after --write):
+                    #   1. Add the docs/**/*.md exclusion rule once in the
+                    #      App Store Connect UI (the workflow is created unlocked,
+                    #      so the edit affordance is active).
+                    #   2. Read the real shape back:
+                    #        GET /v1/ciWorkflows/<id>
+                    #      and inspect branchStartCondition.filesAndFoldersRule
+                    #      in the response.
+                    #   3. Encode the real shape here and commit it, so future
+                    #      re-creations set the rule via the API.
+                    "filesAndFoldersRule": None,
                     "autoCancel": True,
                 },
                 "actions": [
@@ -244,11 +254,19 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                         "name": "Archive iOS",
                         "actionType": "ARCHIVE",
                         "destination": None,
-                        # INTERNAL_TESTERS routes the IPA to internal testers but
-                        # does NOT select a specific named TestFlight group — that
-                        # step must be configured in the post-action UI. See the
-                        # "What this cannot set" section in this file's header.
-                        "buildDistributionAudience": "INTERNAL_TESTERS",
+                        # INTERNAL_ONLY: the pipeline's explicit policy decision.
+                        # Valid values from Apple are INTERNAL_ONLY and
+                        # APP_STORE_ELIGIBLE; INTERNAL_TESTERS is not valid.
+                        #
+                        # PERMANENT CONSEQUENCE: a build archived as INTERNAL_ONLY
+                        # can NEVER be promoted to external testing or submitted
+                        # to the App Store — it is permanently restricted to
+                        # internal tester groups. This is intentional: real iOS
+                        # App Store submissions use swiftui/archive_appstore.sh,
+                        # not this pipeline. If APP_STORE_ELIGIBLE is ever needed,
+                        # PATCH the workflow and produce a NEW build; existing
+                        # INTERNAL_ONLY builds stay ineligible forever.
+                        "buildDistributionAudience": "INTERNAL_ONLY",
                         "testConfiguration": None,
                         "scheme": SCHEME,
                         "platform": "IOS",
