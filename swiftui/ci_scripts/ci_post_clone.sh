@@ -44,6 +44,24 @@ curl -fsSL -o /tmp/spike-probe.txt \
   "https://raw.githubusercontent.com/javierbq/RayMol/master/README.md"
 echo "  fetched $(wc -c < /tmp/spike-probe.txt) bytes from raw.githubusercontent.com"
 
+echo "== spike: point the xcconfig at the REAL Homebrew prefix =="
+# Build 4 got all the way into xcodebuild and then failed with
+#   layer1/Ray.h:22: fatal error: 'glm/vec3.hpp' file not found
+# because swiftui/PyMOLBridge.xcconfig HARDCODES `PYMOL_EXTERNAL_PREFIX =
+# /opt/homebrew` (line 22) and feeds it to the compiler as
+# `-I$(PYMOL_EXTERNAL_PREFIX)/include` (line 44). On Xcode Cloud the prefix is
+# /usr/local, so that include path does not exist.
+#
+# TWO places need the prefix, not one: the CMake core build reads the env var we
+# exported above, while the Xcode build reads this literal. Patch it in the
+# ephemeral checkout — same treatment project.yml gets in production.
+sed -i '' "s|^PYMOL_EXTERNAL_PREFIX = .*|PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX|" \
+  swiftui/PyMOLBridge.xcconfig
+grep -n '^PYMOL_EXTERNAL_PREFIX' swiftui/PyMOLBridge.xcconfig | sed 's/^/  xcconfig now: /'
+test -f "$PYMOL_EXTERNAL_PREFIX/include/glm/vec3.hpp" \
+  && echo "  glm/vec3.hpp present under the patched prefix" \
+  || { echo "ERROR: glm/vec3.hpp missing under $PYMOL_EXTERNAL_PREFIX/include" >&2; exit 1; }
+
 echo "== spike: Q1 write markers into the repository =="
 echo "post-clone build ${CI_BUILD_NUMBER:-?}" > SPIKE_MARKER.txt
 mkdir -p spike_marker_dir && echo ok > spike_marker_dir/inside.txt
