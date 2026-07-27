@@ -590,6 +590,165 @@ final class DesignIOSPortTests: XCTestCase {
                      "an empty object name must not pin any residue")
     }
 
+    // MARK: – Phase 2d: Mode-lock (isCalculating) tests
+
+    // 1. isCalculating is true for each of the four flags independently, and false when all clear.
+    //    isRescoring, isRedesigning, isRepacking are private(set) so we verify the OR logic
+    //    through isScoring (the one publicly-writable flag). A separate test covers each
+    //    private flag end-to-end via its triggering operation.
+    func testIsCalculatingReflectsEachFlag() {
+        let c = makeController()
+        XCTAssertFalse(c.isCalculating, "baseline: all flags clear → isCalculating must be false")
+
+        c.isScoring = true
+        XCTAssertTrue(c.isCalculating, "isScoring=true must make isCalculating true")
+        c.isScoring = false
+        XCTAssertFalse(c.isCalculating, "isScoring=false must restore isCalculating to false")
+    }
+
+    // 2. A superseded cache-miss focus followed by a cache-hit focus must not strand isScoring.
+    //    This is the regression test for defect (b): the old code did not clear isScoring at
+    //    the top of focusAwait, so a superseded job's `true` persisted through a cache-hit
+    //    successor that returned early without touching the flag.
+    func testSuperseededScoringThenCacheHitDoesNotStrandIsScoring() async {
+        let semaphore = DispatchSemaphore(value: 0)
+        let obj2Scoring = XCTestExpectation(description: "obj2 score in flight")
+
+        let oneResidue: [DesignResidue] = [
+            DesignResidue(chain: "A", resi: "1", resn: "ALA", aa: 0,
+                          backbone: .init(n: .zero, ca: .zero, c: .zero, o: .zero, chain: 0, resSeq: 1),
+                          valid: true)
+        ]
+        let obj1Set = DesignResidueSet(object: "obj1", state: 1, residues: oneResidue)
+        let obj2Set = DesignResidueSet(object: "obj2", state: 1, residues: oneResidue)
+        let goodResult = MPNNModel.ScoreResult(
+            logProbs: [[Float](repeating: -3, count: 21)], currentAALogProb: [-3])
+        var isFirstCall = true
+
+        let c = DesignController(
+            enumerate: { obj, _ in obj == "obj1" ? obj1Set : obj2Set },
+            score: { _, _ in
+                if isFirstCall {
+                    isFirstCall = false
+                    return goodResult   // obj1: fast, seeds the cache
+                }
+                // obj2: slow — blocks until released
+                obj2Scoring.fulfill()
+                semaphore.wait()
+                return goodResult
+            },
+            applyColoring: { _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+
+        // Step 1: seed cache for obj1
+        await c.focusAwait("obj1")
+        XCTAssertFalse(c.isScoring, "isScoring must be clear after a successful cache-miss focus")
+
+        // Step 2: start slow focus on obj2 (non-awaited)
+        let slowTask = Task { await c.focusAwait("obj2") }
+        await fulfillment(of: [obj2Scoring], timeout: 2.0)
+        XCTAssertTrue(c.isScoring, "isScoring must be true while obj2 is scoring")
+
+        // Step 3: re-focus obj1 (cache hit) — bumps token.
+        //   Bug:  isScoring is NOT cleared at the token bump → cache hit returns → isScoring stranded.
+        //   Fix:  isScoring IS cleared at the token bump → cache hit returns → isScoring = false.
+        await c.focusAwait("obj1")
+
+        // Step 4: release obj2 and let its task finish
+        semaphore.signal()
+        await slowTask.value
+
+        XCTAssertFalse(c.isScoring,
+            "isScoring must not be stranded: a superseded cache-miss followed by " +
+            "a cache-hit must leave isScoring false")
+    }
+
+    // 3. rescoreWorkingObject's isRescoring flag is set during its inference and cleared afterwards.
+    //    The flag is read inside the score closure (which runs on the inference queue). This
+    //    is technically outside the @MainActor isolation of DesignController, but is safe for
+    //    this one-shot test read: isRescoring was set true on the main actor before dispatch
+    //    (happens-before), and the inference queue reads it atomically.
+    func testIsRescoringSetDuringRescoreAndClearedAfter() async {
+        var capturedIsRescoring = false
+        let c = makeController()
+        c.autoRepack = false
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectScore { [weak c] _, s in
+            // isRescoring is set true by rescoreWorkingObject before this closure is dispatched.
+            capturedIsRescoring = c?.isRescoring ?? false
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
+
+        XCTAssertTrue(capturedIsRescoring,
+            "isRescoring must be true while rescoreWorkingObject is dispatched on the inference queue")
+        XCTAssertFalse(c.isRescoring,
+            "isRescoring must be cleared by the token-guarded defer after inference completes")
+    }
+
+    // 4. Engine setters are blocked when isCalculating is true.
+    //    PyMOLEngine is a singleton wired to the live C core; its lazy designController
+    //    initializer sets up real Python closures but does not execute them at init time, so
+    //    accessing it in tests is safe. We verify the guard through PyMOLEngine.shared (the
+    //    same singleton InteractionModeExitTests already uses) by setting isScoring — the one
+    //    publicly-writable flag — to simulate an ongoing calculation.
+    func testEngineSettersBlockedByIsCalculating() {
+        let engine = PyMOLEngine.shared
+        // Ensure a clean baseline (design controller lazily initialized on first access).
+        engine.setInteractionMode(.viewing)
+        engine.setDesignMode(false)
+        engine.setMeasureMode(nil)
+
+        // Simulate an ongoing MLX inference via the publicly-writable isScoring flag.
+        engine.designController.isScoring = true
+        XCTAssertTrue(engine.designController.isCalculating,
+            "precondition: isScoring=true must make isCalculating true")
+
+        engine.setInteractionMode(.move)
+        XCTAssertEqual(engine.interactionMode, .viewing,
+            "setInteractionMode must not change mode when isCalculating is true")
+
+        engine.setMeasureMode(.distance)
+        XCTAssertNil(engine.measureMode,
+            "setMeasureMode must not change mode when isCalculating is true")
+
+        // Clean up so downstream tests start from a known state.
+        engine.designController.isScoring = false
+        XCTAssertFalse(engine.designController.isCalculating)
+    }
+
+    // 5. exitActiveInteractionMode returns false when all setters are blocked.
+    //    A false return lets the Esc monitor propagate the key rather than silently
+    //    consuming it with nothing happening.
+    func testExitActiveInteractionModeReturnsFalseWhenBlocked() {
+        let engine = PyMOLEngine.shared
+        // Force design mode on via direct assignment (bypasses the setter guard,
+        // matching the desynchronized-state pattern in InteractionModeExitTests:114-116).
+        engine.designMode = true
+
+        engine.designController.isScoring = true
+        XCTAssertTrue(engine.designController.isCalculating,
+            "precondition: isScoring=true must make isCalculating true")
+
+        let result = engine.exitActiveInteractionMode()
+
+        XCTAssertFalse(result,
+            "exitActiveInteractionMode must return false when all setters are blocked — " +
+            "so the Esc monitor propagates the key instead of silently consuming it")
+        XCTAssertTrue(engine.designMode,
+            "designMode must remain true when the exit is blocked by an ongoing calculation")
+
+        // Clean up.
+        engine.designController.isScoring = false
+        engine.designMode = false
+    }
+
     // MARK: – Bug 2: repack error reporting
 
     // `repackNowAwait` previously swallowed every error with `try?`, so a failing

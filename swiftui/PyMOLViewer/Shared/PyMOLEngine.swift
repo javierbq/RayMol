@@ -1933,6 +1933,9 @@ final class PyMOLEngine: ObservableObject {
     // MARK: - Interactive measurement
 
     func setMeasureMode(_ k: MeasureKind?) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
@@ -1970,6 +1973,9 @@ final class PyMOLEngine: ObservableObject {
     /// otherwise runs exactly the paths the "exit Move" / "exit Measure"
     /// buttons already use.
     func setDesignMode(_ on: Bool) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         if on {
             // Recursion-free: both setters only touch designMode in their
             // ENTERING branch, and the clearing block below is `if on`-guarded.
@@ -1999,13 +2005,27 @@ final class PyMOLEngine: ObservableObject {
     @discardableResult
     func exitActiveInteractionMode() -> Bool {
         var exited = false
-        if designMode { setDesignMode(false); exited = true }
-        if interactionMode == .move { setInteractionMode(.viewing); exited = true }
-        if measureMode != nil { setMeasureMode(nil); exited = true }
+        // Each setter may return early when isCalculating is true (Part 2 guard).
+        // Check the actual state AFTER the call so `exited` reflects whether an
+        // exit ACTUALLY happened — a blocked setter leaves the mode unchanged, so
+        // Esc must not be consumed as if the exit succeeded (Part 3 fix).
+        if designMode     { setDesignMode(false);       exited = exited || !designMode }
+        if interactionMode == .move { setInteractionMode(.viewing); exited = exited || interactionMode != .move }
+        if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         return exited
     }
 
 #if RAYMOL_MPNN
+    /// True while any MLX inference is in flight (DesignController.isCalculating).
+    /// Kept in sync via a Combine subscription so PyMOLEngine.objectWillChange fires
+    /// and ContentView (which observes engine via @EnvironmentObject) re-renders to
+    /// disable the mode controls during calculations. Read this from views; read
+    /// `designController.isCalculating` from engine-layer code that already holds a
+    /// reference to the controller.
+    @Published private(set) var isDesignCalculating: Bool = false
+    /// Retains the Combine subscription that keeps `isDesignCalculating` in sync.
+    private var _designCalcCancellable: AnyCancellable?
+
     // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
     private var _mpnnModel: MPNNModel?
     private func loadedMPNNModel() throws -> MPNNModel {
@@ -2023,7 +2043,8 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// Real DesignController wired to this engine's Python helpers.
-    lazy var designController: DesignController = DesignController(
+    lazy var designController: DesignController = {
+        let dc = DesignController(
         enumerate: { [weak self] obj, state in
             guard let self else { throw NSError(domain: "raymol.design", code: 2,
                                                 userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
@@ -2237,7 +2258,24 @@ final class PyMOLEngine: ObservableObject {
             // context that touches _mpnnModel — see loadedMPNNModel().
             self?._mpnnModel = nil
         }
-    )
+        )
+        // Propagate isCalculating into @Published isDesignCalculating so
+        // PyMOLEngine.objectWillChange fires and ContentView (which observes engine)
+        // re-renders to disable the mode controls during any MLX inference.
+        // CombineLatest4 fires with the NEW value — unlike objectWillChange which fires
+        // before the change — so no extra run-loop hop is required.
+        // `assumeIsolated` is safe here: designController is always first accessed from
+        // @MainActor code (UI callbacks, engine methods) and the pattern is already used
+        // throughout this file (clearHoverPreview, designPickResidue, etc.).
+        _designCalcCancellable = MainActor.assumeIsolated {
+            Publishers.CombineLatest4(
+                dc.$isScoring, dc.$isRescoring, dc.$isRedesigning, dc.$isRepacking)
+                .map { $0 || $1 || $2 || $3 }
+                .receive(on: RunLoop.main)
+                .sink { [weak self] in self?.isDesignCalculating = $0 }
+        }
+        return dc
+    }()
 #endif
 
     // MARK: - Move mode (rigid-body object gizmo)
@@ -2250,6 +2288,9 @@ final class PyMOLEngine: ObservableObject {
     }
 
     func setInteractionMode(_ mode: InteractionMode) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive

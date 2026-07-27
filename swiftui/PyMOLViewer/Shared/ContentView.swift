@@ -911,6 +911,20 @@ struct ContentView: View {
         Button("Cancel", role: .cancel) {}
     }
 
+    /// True while any MLX Design inference is in flight. Routes through
+    /// PyMOLEngine.isDesignCalculating (a @Published property kept in sync via Combine)
+    /// so ContentView re-renders and the `.disabled()` modifiers below take effect.
+    /// Placed before the #if os(iOS) block so it is visible to both iOS rail toggles
+    /// (inside that block) and macOS toolbar items (outside it).
+    /// Returns false unconditionally in non-MPNN builds (no design mode exists).
+    private var isDesignLocked: Bool {
+        #if RAYMOL_MPNN
+        return engine.isDesignCalculating
+        #else
+        return false
+        #endif
+    }
+
     #if os(iOS)
     // Default to the Objects tab: a touch user tunes representations far more
     // than they type commands, and it avoids greeting them with console log text.
@@ -1960,18 +1974,32 @@ struct ContentView: View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
             railTongue(icon: "textformat.abc", label: "Seq", shown: $engine.sequenceVisible)
+            // Move / Measure / Design are mutually-exclusive interaction modes.
+            // When RAYMOL_MPNN is active they are disabled while any MLX inference
+            // runs so the user cannot silently discard an in-progress calculation.
+            // In non-MPNN builds there is no Design mode, so no lock is needed.
+            #if RAYMOL_MPNN
+            HStack(spacing: 8) {
+                railToggle(icon: "move.3d", label: "Move",
+                           isOn: engine.interactionMode == .move,
+                           action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
+                railToggle(icon: "ruler", label: "Measure",
+                           isOn: engine.measureMode != nil,
+                           action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
+                if DesignAvailability.isSupported {
+                    railToggle(icon: "wand.and.stars", label: "Design",
+                               isOn: engine.designMode,
+                               action: { engine.setDesignMode(!engine.designMode) })
+                }
+            }
+            .disabled(isDesignLocked)
+            #else
             railToggle(icon: "move.3d", label: "Move",
                        isOn: engine.interactionMode == .move,
                        action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
             railToggle(icon: "ruler", label: "Measure",
                        isOn: engine.measureMode != nil,
                        action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
-            #if RAYMOL_MPNN
-            if DesignAvailability.isSupported {
-                railToggle(icon: "wand.and.stars", label: "Design",
-                           isOn: engine.designMode,
-                           action: { engine.setDesignMode(!engine.designMode) })
-            }
             #endif
         }
         .padding(.horizontal, floating ? 8 : 0)
@@ -2743,6 +2771,7 @@ struct ContentView: View {
             } label: {
                 Label("Measure", systemImage: engine.measureMode == nil ? "ruler" : "ruler.fill")
             }
+            .disabled(isDesignLocked)
             .help("Measure distance / angle / dihedral by tapping atoms")
         }
     }
@@ -2759,6 +2788,7 @@ struct ContentView: View {
                 Label("Move", systemImage: "move.3d")
                     .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
             }
+            .disabled(isDesignLocked)
             .help("Move objects: drag the gizmo to translate / rotate the active object")
         }
     }
@@ -2778,6 +2808,7 @@ struct ContentView: View {
                 Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
                     .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
             }
+            .disabled(isDesignLocked)
             .help("Design mode: score/color protein residues with MPNN")
         }
     }

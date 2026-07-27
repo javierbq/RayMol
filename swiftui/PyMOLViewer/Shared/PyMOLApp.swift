@@ -145,6 +145,16 @@ struct PyMOLApp: App {
             #endif
         }
     #if os(macOS)
+    /// True while any MLX Design inference is in flight. Mirrors ContentView.isDesignLocked
+    /// so the macOS menu commands (⌃M, ⌃D) respect the same lock as toolbar and rail buttons.
+    private var isDesignLocked: Bool {
+        #if RAYMOL_MPNN
+        return engine.isDesignCalculating
+        #else
+        return false
+        #endif
+    }
+
     // Native menus (macOS only). File: Open / Fetch / Save / Export. App menu:
     // website + GitHub links, plus Check for Updates on the Developer-ID build.
     // Connect: MCP server control. Buttons post notifications ContentView's macOS
@@ -210,14 +220,18 @@ struct PyMOLApp: App {
             CommandMenu("Mouse") {
                 Button(engine.interactionMode == .move ? "Stop Moving Objects" : "Move Objects") {
                     engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
-                }.keyboardShortcut("m", modifiers: .control)
+                }
+                .disabled(isDesignLocked)
+                .keyboardShortcut("m", modifiers: .control)
             }
             #if RAYMOL_MPNN
             // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
             CommandMenu("Design") {
                 Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
                     engine.setDesignMode(!engine.designMode)
-                }.keyboardShortcut("d", modifiers: .control)
+                }
+                .disabled(isDesignLocked)
+                .keyboardShortcut("d", modifiers: .control)
             }
             #endif
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the

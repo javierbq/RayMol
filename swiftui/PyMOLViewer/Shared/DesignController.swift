@@ -123,6 +123,10 @@ final class DesignController: ObservableObject {
     @Published private(set) var repackDirty = false
     @Published var autoRepack = true
     @Published private(set) var isRepacking = false
+    /// True while `rescoreWorkingObject` has a score in flight on the inference queue.
+    /// Follows the same token-guarded `defer` pattern as `isRepacking` and `isRedesigning`
+    /// so a stranded flag can never permanently lock the toolbar.
+    @Published private(set) var isRescoring = false
     /// True while the compare toggle is on (original structure shown alongside the working copy).
     @Published private(set) var compareEnabled = false
     /// True while the Side-by-side grid layout is selected (only meaningful when compareEnabled).
@@ -198,9 +202,11 @@ final class DesignController: ObservableObject {
     @Published var regionEditMode = false
 
     /// Label for the blocking "Calculating…" overlay while a long design inference
-    /// runs (nil = not busy). Covers the two edit-triggered heavy ops — a region
-    /// redesign (which holds through its follow-up rescore + repack) and a manual
-    /// repack. The initial focus scoring keeps its lightweight inline spinner
+    /// runs (nil = not busy). Covers exactly two edit-triggered heavy ops — a region
+    /// redesign and a manual repack. The redesign clears `isRedesigning` BEFORE the
+    /// follow-up rescore + repack (see `redesignSelectionAwait` line ~841), so this
+    /// label does NOT span the follow-up phases; repack raises its own label while
+    /// it runs. The initial focus scoring keeps its lightweight inline spinner
     /// (`isScoring`) rather than a full-screen block — it's quick on real hardware
     /// and shouldn't gate the whole UI on every object focus.
     var designBusyLabel: String? {
@@ -208,6 +214,13 @@ final class DesignController: ObservableObject {
         if isRepacking { return "Repacking sidechains…" }
         return nil
     }
+
+    /// True while ANY MLX inference is in flight (focus scoring, working-object
+    /// rescore, region redesign, or sidechain repack). This is the mode-lock
+    /// predicate — distinct from `designBusyLabel`, which covers only the two
+    /// long blocking operations and deliberately does NOT cover focus scoring or
+    /// the post-redesign rescore.
+    var isCalculating: Bool { isScoring || isRescoring || isRedesigning || isRepacking }
 
     struct RedesignSnapshot { let seq: [Int]; let editCount: Int }
 
@@ -454,6 +467,10 @@ final class DesignController: ObservableObject {
         // Hoist token capture so both the success continuation and the catch can guard against it.
         rescoreToken += 1
         let token = rescoreToken
+        // New job owns the flag: wipe any stale `true` left by a superseded job.
+        // This covers the cache-hit path too — a cache hit returns early without
+        // ever reaching the `isScoring = true` below, so the flag stays false.
+        isScoring = false
         do {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
@@ -470,6 +487,10 @@ final class DesignController: ObservableObject {
             // Cache miss: score off main.
             isScoring = true
             errorText = nil
+            // Cleared on EVERY exit from the do-block (normal, guard, thrown) so a stranded
+            // true can never permanently lock the toolbar. Token-guarded so a superseded job's
+            // defer does not clear the flag out from under the winner.
+            defer { if token == rescoreToken { isScoring = false } }
 
             // Capture what we need before leaving the main actor.
             let residues = set.validResidues
@@ -493,14 +514,15 @@ final class DesignController: ObservableObject {
 
             errorText = nil
             cache.set(key, scores)
-            isScoring = false
+            // isScoring cleared by the defer above on any exit from the do-block.
             updateSequenceScore(from: scores)
             recolor(object)
 
         } catch {
             // A superseded or post-exit() throw must not clobber state owned by the current job.
+            // The defer in the do-block already ran by this point (Swift defers before catch),
+            // so isScoring is already false for the winning token; no bare assignment needed.
             guard token == rescoreToken else { return }
-            isScoring = false
             errorText = "\(error)"
         }
     }
@@ -1071,6 +1093,12 @@ final class DesignController: ObservableObject {
               let set = lastSet[focus] else { return }
         rescoreToken += 1
         let token = rescoreToken
+        // New job takes ownership: wipe any stale `true` from a superseded rescore.
+        isRescoring = false
+        isRescoring = true
+        // Cleared on every exit via token-guarded defer — same pattern as isRepacking and
+        // isRedesigning — so a stranded flag cannot permanently lock the mode controls.
+        defer { if token == rescoreToken { isRescoring = false } }
         let residues = set.validResidues
         // C3: project editedSequence through the valid mask to align with validResidues.
         let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
@@ -1085,6 +1113,7 @@ final class DesignController: ObservableObject {
         }
 
         // Back on MainActor. Discard if a newer mutation superseded this one.
+        // isRescoring cleared by the defer above when control leaves this function.
         guard token == rescoreToken, let r = result else { return }
 
         let scores = DesignColor.scores(from: r, validMask: validMask)
