@@ -28,21 +28,36 @@ Apple requires isLockedForEditing: true for any workflow whose archive action
 distributes review-eligible builds to TestFlight. HOWEVER, a locked workflow
 is read-only in the App Store Connect UI — the edit affordance is disabled.
 
-Two mandatory post-creation steps cannot be done via the API (see below):
-the TestFlight internal-testing post-action and failure notifications. Those
-MUST be added in the UI before the workflow is locked. Creating the workflow
-locked and then telling the operator to "edit it in the UI" sends them to a
-read-only page — a dead end with no error message.
+Three mandatory post-creation steps cannot be done via the API (see below):
+the files/folders exclusion rule, the TestFlight internal-testing post-action,
+and failure notifications. All three MUST be added in the UI before the
+workflow is locked. Creating the workflow locked and then telling the operator
+to "edit it in the UI" sends them to a read-only page — a dead end with no
+error message.
 
 Correct order:
   1. --write   : create unlocked, so the UI is editable
-  2. UI         : add TestFlight post-action (group 'Beta') + notifications
+  2. UI         : add all THREE settings, files/folders rule first —
+                    a. files/folders rule: exclude 'docs/**' and '*.md'
+                    b. TestFlight Internal Testing post-action (group 'Beta')
+                    c. failure notification (email and/or Slack)
   3. --lock     : PATCH isLockedForEditing to true (review eligibility)
+
+Skipping (a) is the costly one: once locked, the exclusion is unreachable
+without unlocking again, and every docs-only push to master then archives and
+uploads a pointless build.
 
 WHAT THIS CANNOT SET VIA THE API
 =================================
 The following settings are NOT expressible through the ciWorkflows REST endpoint
 and must be configured manually in App Store Connect after the workflow is created:
+
+  * Files/folders exclusion rule (exclude 'docs/**' and '*.md'): Apple's
+    CiFilePatternMatcher field names are undocumented and an initial guess
+    (pattern, matchType, inverse) was rejected as unknown properties, so
+    filesAndFoldersRule is sent as null at creation. Add the rule in the UI,
+    then read the real shape back via GET /v1/ciWorkflows/<id> and encode it
+    here so future re-creations can set it via the API.
 
   * TestFlight internal testing post-action: there is no documented REST endpoint
     for ciWorkflow post-actions that attaches a TestFlight internal-testing step
@@ -56,7 +71,7 @@ and must be configured manually in App Store Connect after the workflow is creat
   * Email and Slack notifications: ciWorkflow notification settings are not
     exposed by the App Store Connect REST API v1 as of July 2026.
 
-These two items remain manual. This script prints an explicit reminder.
+These three items remain manual. This script prints an explicit reminder.
 
 PREREQUISITES
 =============
@@ -205,14 +220,16 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                 "name": WORKFLOW_NAME,
                 "description": (
                     "Nightly iOS beta pipeline: every non-docs push to master "
-                    "archives PyMOLViewer_iOS and distributes to internal testers "
-                    "via TestFlight. Managed by scripts/asc_xcode_cloud_workflow.py."
+                    "archives PyMOLViewer_iOS and routes it for internal "
+                    "TestFlight testing. Managed by "
+                    "scripts/asc_xcode_cloud_workflow.py."
                 ),
                 "isEnabled": True,
                 # isLockedForEditing is passed as a parameter (default False).
                 # At creation it must be False so the operator can edit the
-                # workflow in the UI to add the TestFlight post-action and
-                # notifications (neither is expressible via the API). Once those
+                # workflow in the UI to add the files/folders exclusion rule,
+                # the TestFlight post-action and notifications (none of the
+                # three is expressible via the API). Once those
                 # UI steps are done, run `--lock --update-id <ID> --write` to
                 # patch it to True. Apple requires True for review-eligible
                 # builds, but setting True at creation makes the UI read-only,
@@ -347,8 +364,10 @@ def main():
     if args.lock:
         print(f"== lock workflow {args.update_id} ==")
         print("  Patching isLockedForEditing=true (review eligibility).")
-        print("  Confirm the TestFlight post-action and notifications are already")
-        print("  configured in the UI — a locked workflow cannot be edited.")
+        print("  Confirm ALL THREE UI settings are already configured — the")
+        print("  files/folders exclusion rule ('docs/**', '*.md'), the TestFlight")
+        print("  post-action (group 'Beta') and failure notifications. A locked")
+        print("  workflow cannot be edited, so anything missing stays missing.")
         lock_payload = {
             "data": {
                 "type": "ciWorkflows",
@@ -424,7 +443,11 @@ def main():
 
     print()
     print("== what this script CANNOT set (manual steps required after creation) ==")
-    print("  1. TestFlight internal testing post-action with a named group ('Beta').")
+    print("  1. Files/folders exclusion rule (exclude 'docs/**' and '*.md').")
+    print("     filesAndFoldersRule is sent as null: Apple's CiFilePatternMatcher")
+    print("     field names are undocumented. Add it in the UI, then read the real")
+    print("     shape back via GET /v1/ciWorkflows/<id> and encode it here.")
+    print("  2. TestFlight internal testing post-action with a named group ('Beta').")
     print("     The ARCHIVE action sets buildDistributionAudience=INTERNAL_ONLY,")
     print("     which marks the *build* as internal-only (it can never be promoted")
     print("     to external testing or submitted to the App Store — permanent).")
@@ -432,14 +455,15 @@ def main():
     print("     group; that is the UI post-action step. Whether the post-action")
     print("     then auto-distributes is unverified — Apple's docs are ambiguous.")
     print("     The named group ('Beta') must be selected in the workflow editor.")
-    print("  2. Email / Slack failure notifications.")
+    print("  3. Email / Slack failure notifications.")
     print("     Workflow notification settings are not exposed by the ASC REST API.")
     print()
     print("  Ordered steps after --write:")
     print("    1. UI: App Store Connect → Xcode Cloud → iOS Beta (master) → Edit")
+    print("           Add the files/folders rule: exclude 'docs/**' and '*.md'")
     print("           Add TestFlight Internal Testing post-action (group 'Beta')")
-    print("           Add failure notification (email / Slack)")
-    print("           Possible because the workflow is created UNLOCKED.")
+    print("           Add failure notification (email and/or Slack)")
+    print("           All THREE — possible because the workflow is created UNLOCKED.")
     print("    2. script: --lock --update-id <ID> --write  (locks for review eligibility)")
     print("           A locked workflow is read-only in the UI — do this LAST.")
 
@@ -479,10 +503,14 @@ def main():
     print("NEXT STEPS — complete in order:")
     print()
     print("  1. (UI) Open the workflow in App Store Connect → Xcode Cloud →")
-    print("         iOS Beta (master) → Edit")
-    print("         Add post-action: TestFlight Internal Testing → group 'Beta'")
-    print("         Add notification: email on failure (and optionally Slack webhook)")
+    print("         iOS Beta (master) → Edit, and add all THREE settings:")
+    print("         a. Files/folders rule: exclude 'docs/**' and '*.md'")
+    print("         b. Post-action: TestFlight Internal Testing → group 'Beta'")
+    print("         c. Notification: email on failure (and optionally Slack webhook)")
     print("         The workflow is UNLOCKED so the edit button is active.")
+    print("         Do NOT skip (a): after step 2 locks the workflow the exclusion")
+    print("         is unreachable, and every docs-only push to master would then")
+    print("         archive and upload a pointless build.")
     print()
     print("  2. (script) Lock the workflow once step 1 is done — Apple requires")
     print("     isLockedForEditing=true for review-eligible builds. A locked workflow")
