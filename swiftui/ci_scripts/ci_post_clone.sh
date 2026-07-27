@@ -21,7 +21,18 @@ echo "  preinstalled cmake?        = $(command -v cmake || echo NO)"
 echo "  preinstalled python3       = $(python3 --version 2>&1)"
 
 echo "== spike: Q3 toolchain via Homebrew (no sudo) =="
-brew install cmake glm xcodegen
+# The COMPLETE set the iOS core build needs. Derived by reading
+# appkit/CMakeLists.txt's iOS branch rather than by guessing:
+#   cmake, xcodegen  - tools, neither preinstalled on Xcode Cloud
+#   glm              - find_path(GLM_INCLUDE glm/glm.hpp HINTS $BREW/include)
+#   libpng, freetype - PNG_INCLUDE_DIRS / FREETYPE_INCLUDE_DIRS are read straight
+#                      from $BREW/include; only the .a LIBRARIES come from
+#                      deps_ios/install_device. Build 3 reached 14% and then died
+#                      on "'png.h' file not found" for exactly this reason.
+# Deliberately NOT installed: GLEW, libxml2, libomp and netcdf are all inside
+# `NOT PYMOL_IOS` guards in appkit/CMakeLists.txt, so the iOS build never looks
+# for them.
+brew install cmake glm xcodegen libpng freetype
 export PYMOL_EXTERNAL_PREFIX="$(brew --prefix)"
 echo "  PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX"
 echo "  glm header            = $(ls "$PYMOL_EXTERNAL_PREFIX/include/glm/glm.hpp")"
