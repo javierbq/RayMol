@@ -1074,7 +1074,20 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Debug: run raw Python in the embedded interpreter.
+#if DEBUG
+    /// Test seam: observes every Python string this engine emits. Placed BEFORE
+    /// the isReady guard so it reports what the engine *intended* to run,
+    /// independent of whether the core is initialized — that keeps tests of
+    /// teardown behaviour (metal_move.cleanup / appkit_measure.reset, which
+    /// leave no Swift-side trace) working under any host configuration.
+    /// Compiled out of Release; cost in Debug is one optional-closure call.
+    var pythonTap: ((String) -> Void)? = nil
+#endif
+
     func runPython(_ code: String) {
+#if DEBUG
+        pythonTap?(code)
+#endif
         guard isReady else { return }
         PyMOLBridge_RunPython(code)
     }
@@ -1923,7 +1936,7 @@ final class PyMOLEngine: ObservableObject {
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
-            designMode = false                                              // mutually exclusive
+            setDesignMode(false)                                            // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -1942,15 +1955,54 @@ final class PyMOLEngine: ObservableObject {
     // MARK: - Design mode (protein-design overlay)
 
     /// Enter or exit Design mode. Entering clears Move and Measure (mutually
-    /// exclusive). The actual MPNN controller startup/teardown is handled by
-    /// the UI layer that observes this flag; this setter is deliberately
-    /// Python-free so it is safe to call from unit tests and in any state.
+    /// exclusive) through their canonical setters — NOT bare assignments. Move
+    /// and Measure teardown is imperative and lives INSIDE those setters
+    /// (metal_move.cleanup() / appkit_measure.reset()), so a bare assignment
+    /// silently skips it and strands the "_move_gizmo" CGO in the scene, where
+    /// its "_" prefix hides it from the object panel and the user cannot delete
+    /// it. designMode is the odd one out: its teardown is observer-driven
+    /// (.onChange(of: engine.designMode) in ContentView), so it fires on any
+    /// assignment — which is why the reverse direction can stay a plain set.
+    ///
+    /// The MPNN controller startup/teardown is handled by that UI observer.
+    /// Still safe to call in any state: the only Python reached goes through
+    /// runPython, which no-ops via `guard isReady` before the core is up, and
+    /// otherwise runs exactly the paths the "exit Move" / "exit Measure"
+    /// buttons already use.
     func setDesignMode(_ on: Bool) {
         if on {
-            if interactionMode == .move { interactionMode = .viewing }
-            if measureMode != nil { measureMode = nil }
+            // Recursion-free: both setters only touch designMode in their
+            // ENTERING branch, and the clearing block below is `if on`-guarded.
+            if interactionMode == .move { setInteractionMode(.viewing) }
+            if measureMode != nil { setMeasureMode(nil) }
         }
         designMode = on
+    }
+
+    // MARK: - Exclusive interaction modes (Move / Design / Measure)
+
+    /// Leave whichever exclusive interaction mode is active, each through that
+    /// mode's OWN existing exit path — so the Esc key (see
+    /// ContentView.installEscKeyMonitor) and the overlays' ✕ buttons converge on
+    /// identical behavior. In particular Design goes through `setDesignMode(false)`,
+    /// whose `.onChange` observer in ContentView runs the visual-state restore and
+    /// edit-session teardown; Esc must never grow a second, divergent path. (#235)
+    ///
+    /// The three modes are mutually exclusive, so in practice at most one branch
+    /// runs. They are checked independently rather than with early returns so a
+    /// desynchronized state still unwinds completely instead of leaving one mode
+    /// stranded.
+    ///
+    /// - Returns: whether any mode was actually exited. Callers use this to fall
+    ///   through to their next behavior (Esc clears the selection) when Escape
+    ///   found no mode to leave.
+    @discardableResult
+    func exitActiveInteractionMode() -> Bool {
+        var exited = false
+        if designMode { setDesignMode(false); exited = true }
+        if interactionMode == .move { setInteractionMode(.viewing); exited = true }
+        if measureMode != nil { setMeasureMode(nil); exited = true }
+        return exited
     }
 
 #if RAYMOL_MPNN
@@ -2191,16 +2243,25 @@ final class PyMOLEngine: ObservableObject {
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
-            designMode = false                               // mutually exclusive
+            setDesignMode(false)                             // mutually exclusive
             refreshGizmo()
         } else {
             armedAxis = nil
             hoveredHandle = nil
             activeMoveObject = nil
             gizmo = nil
+            // Clear lastAdjustSent FIRST. adjustFrameToggle and moveShiftHeld
+            // both carry `didSet { syncAdjustFrame() }`, and syncAdjustFrame
+            // calls readGizmo(), which re-reads the gizmo temp file — still
+            // "active" here, because cleanup() below hasn't run yet. That
+            // resurrects the gizmo and activeMoveObject just cleared above.
+            // Zeroing lastAdjustSent first makes syncAdjustFrame's
+            // `want != lastAdjustSent` guard early-return. The skipped
+            // set_adjust(0) round-trip is redundant: cleanup() tears the whole
+            // gizmo down a few lines later.
+            lastAdjustSent = false
             adjustFrameToggle = false
             moveShiftHeld = false
-            lastAdjustSent = false
             runPython("from pymol import metal_move as _mm\n_mm.cleanup()")
         }
     }

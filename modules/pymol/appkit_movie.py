@@ -18,9 +18,22 @@ testable. Mirrors the appkit_inspector.poll pattern.
 from pymol import cmd
 
 
+def _drop_scene_animation():
+    """Forget the per-scene setting animation authored into the OLD movie. Must
+    run BEFORE the mset that discards it: author([]) blanks the frame commands it
+    owns (while those slots still exist) and clears its track, so the animation
+    cannot be persisted into — or re-authored on top of — an unrelated movie."""
+    try:
+        from pymol import raymol_scene_anim as _an
+        _an.author([])
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+
+
 def reset_movie():
     """Clear the movie timeline (frame sequence + camera keyframes) and rewind."""
     try:
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('')
         cmd.rewind()
@@ -34,6 +47,7 @@ def new_timeline(frames):
     shows state 1. Rewinds to the start."""
     try:
         n = max(2, int(frames))
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('1 x%d' % n)
         cmd.rewind()
@@ -96,6 +110,7 @@ def reset_ensemble():
     """Drop all movie authoring and rewind so a multi-state object plays its raw
     models again (count_frames falls back to the state count)."""
     try:
+        _drop_scene_animation()
         cmd.mview('reset')
         cmd.mset('')
         cmd.rewind()
@@ -128,6 +143,43 @@ def clear_keyframe(frame, linear=0):
         print('MOVIE_ERR:' + str(e))
 
 
+def _scene_keyframes():
+    """[(frame, scene_name, power)] for every scene marker currently on the
+    timeline, recovered by scrubbing: a scene-tagged keyframe sets
+    scene_current_name when its frame is displayed. Restores the playhead before
+    returning — the caller's frame must survive the scrub.
+
+    The per-keyframe power is reported as 0.0 ("none stored") because scrubbing
+    cannot read ViewElem.power back. That is not a loss here: every path that
+    scrubs also drives the easing with a movie-wide `mview reinterpolate power=`,
+    which the core resolves ahead of both endpoints — the caller passes that same
+    value to raymol_scene_anim.author(power=...)."""
+    out = []
+    try:
+        n = int(cmd.count_frames())
+    except Exception:
+        return out
+    try:
+        saved = int(cmd.get_frame() or 1)
+    except Exception:
+        saved = 1
+    seen = None
+    for f in range(1, n + 1):
+        try:
+            cmd.frame(f)
+            cur = cmd.get('scene_current_name') or ''
+        except Exception:
+            continue
+        if cur and cur != seen:
+            out.append((f, cur, 0.0))
+        seen = cur
+    try:
+        cmd.frame(saved)
+    except Exception:
+        pass
+    return out
+
+
 def place_scene(frame, name, linear=0):
     """Place scene `name` as a timeline marker at `frame`. Moves the playhead
     there, recalls the scene (so the live camera == the scene's camera), then
@@ -141,7 +193,26 @@ def place_scene(frame, name, linear=0):
         cmd.frame(n)                 # playhead to n first (applies interpolation)
         cmd.scene(name, 'recall')    # now the live view+reps ARE the scene
         cmd.mview('store', first=n, scene=name)
+        try:
+            from pymol import raymol_scenes as _rs
+            motion = _rs.emit_object_motion(name, n)
+        except Exception:
+            motion = []
         cmd.mview('reinterpolate', power=power, linear=lin)
+        for obj in dict.fromkeys(motion):
+            try:
+                cmd.mview('interpolate', object=obj)
+            except Exception:
+                pass
+        # Re-author the setting animation across the WHOLE movie: a single dropped
+        # marker changes the transitions on both sides of it. `power` is the same
+        # easing override just handed to reinterpolate (1.0 = Linear), so the
+        # settings ease exactly like the camera.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(_scene_keyframes(), power=power)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
 
@@ -259,12 +330,36 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
             if names:
                 per = max(2, int(round(float(seconds_per_scene) * fps)))
                 ensure(per * len(names))
+                motion = []
                 for i, nm in enumerate(names):
                     f = start + 1 + i * per
                     cmd.frame(f)
                     cmd.scene(nm, 'recall')
                     cmd.mview('store', first=f, scene=nm)
+                    try:
+                        from pymol import raymol_scenes as _rs
+                        motion += _rs.emit_object_motion(nm, f)
+                    except Exception:
+                        pass
                 cmd.mview('reinterpolate', power=0.0, linear=0.0)
+                for obj in dict.fromkeys(motion):
+                    try:
+                        cmd.mview('interpolate', object=obj)
+                    except Exception:
+                        pass
+                # Author from ALL markers currently on the timeline (not just the
+                # ones this batch placed). _scene_keyframes() recovers every
+                # scene-tagged keyframe by scrubbing, so calling append_template
+                # a second time does not wipe the first batch's animation: author
+                # runs once over the union, not twice over disjoint sets.
+                # Unconditional: author([]) is the reset when names is empty;
+                # guarding would leave a previous movie's animation live in the
+                # module for the non-scenes path.
+                try:
+                    from pymol import raymol_scene_anim as _an
+                    _an.author(_scene_keyframes())
+                except Exception as e:
+                    print('MOVIE_ERR:' + str(e))
 
         elif k in ('state_loop', 'state_sweep'):
             maxs = 1
@@ -383,6 +478,8 @@ def rebuild(spec_json):
 
         state_clips = [it for it in spec if it.get('states')]
         cam_scene = [it for it in spec if not it.get('states')]
+        motion = []   # objects that received per-scene TTT keyframes (#204)
+        scene_kfs = []   # (frame, scene_name, power) for the setting animation
 
         # Camera + scene keyframes on the GLOBAL track (camera view / scene reps),
         # plus an optional pinned global state for non-swept objects.
@@ -401,6 +498,13 @@ def rebuild(spec_json):
                     cmd.mview('store', first=f, state=int(cmd.get_state()))
                 except Exception:
                     pass
+                # #204: author per-object Move-mode TTT keyframes for this scene.
+                try:
+                    from pymol import raymol_scenes as _rs
+                    motion += _rs.emit_object_motion(name, f)
+                except Exception:
+                    pass
+                scene_kfs.append((f, name, power))
             else:
                 cam = it.get('cam')
                 v = _views.get(str(cam)) if cam is not None else None
@@ -412,6 +516,24 @@ def rebuild(spec_json):
                 cmd.mview('store', first=f, state=int(ps))
         if cam_scene:
             cmd.mview('interpolate')
+        # #204: interpolate each object's matrix track once (keyframes stored with
+        # freeze=1 above). dict.fromkeys de-dups while preserving order.
+        for obj in dict.fromkeys(motion):
+            try:
+                cmd.mview('interpolate', object=obj)
+            except Exception as e:
+                print('MOVIE_ERR:' + str(e))
+        # Per-scene render settings (DOF etc.) across the transitions. AFTER the
+        # interpolate above: the DOF builder resolves focus under each frame's
+        # interpolated view.
+        # UNCONDITIONAL — a rebuild whose scene items were all deleted must reach
+        # author([]) to drop the previous movie's animation, which mset wipes from
+        # Cmd[] but which would otherwise still be persisted and re-authored.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(scene_kfs)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
 
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:

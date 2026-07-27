@@ -623,9 +623,18 @@ ARGUMENTS
     if n_frame > 0:
         cmd.mset("1 x%d"%act_n_frame,start,freeze=1)
         cnt = 0
+        _scene_motion_objs = set()
+        _scene_kfs = []      # (frame, scene, power) — hold start AND dwell end
         for scene in names:
             frame = start+int((cnt*n_frame)/n_scene)
             cmd.mview("store",frame,scene=scene,freeze=1)
+            try:
+                from pymol import raymol_scenes as _rs
+                for _obj in _rs.emit_object_motion(scene, frame, _self=cmd):
+                    _scene_motion_objs.add(_obj)
+            except Exception:
+                pass
+            _scene_kfs.append((frame, scene, 0.0))
             if rock:
                 cmd.mview("interpolate",cut=cut,wrap=0)
                 sweep_first = frame + 1
@@ -647,10 +656,36 @@ ARGUMENTS
             if frame <= act_n_frame:
                 if sweep_mode!=3:
                     cmd.mview("store",frame,scene=scene,freeze=1)
+                    # #204: hold each object's TTT through the scene's dwell too
+                    # (mirroring the camera's dwell store above), so a moved object
+                    # stays put while the camera is static and only glides during
+                    # the transition to the next scene.
+                    try:
+                        from pymol import raymol_scenes as _rs
+                        for _obj in _rs.emit_object_motion(scene, frame, _self=cmd):
+                            _scene_motion_objs.add(_obj)
+                    except Exception:
+                        pass
+                    _scene_kfs.append((frame, scene, 0.0))
             cnt = cnt + 1
         cmd.mview("interpolate",cut=cut,wrap=loop)
         if rock:
             cmd.mview("smooth")
+        for _obj in _scene_motion_objs:
+            try:
+                cmd.mview("interpolate", object=_obj)
+            except Exception:
+                pass
+        # Per-scene render settings. Passing BOTH the hold-start and dwell-end
+        # keyframes makes the values hold through the dwell (identical endpoints
+        # produce no emission) and animate only across the transition.
+        # Unconditional (author([]) is the reset): a scene-less rebuild must not
+        # inherit the previous movie's animation.
+        try:
+            from pymol import raymol_scene_anim as _an
+            _an.author(_scene_kfs, _self=cmd)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
         cmd.frame(start)
 
 _prefix = "mov"

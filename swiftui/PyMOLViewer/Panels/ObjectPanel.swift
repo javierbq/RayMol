@@ -2850,19 +2850,15 @@ struct ScenesPane: View {
                     HStack(spacing: 8) {
                         sceneActionButton("Update", "arrow.clockwise") {
                             engine.runCommand("scene auto, update")
-                            engine.runPython("from pymol import raymol_scenes as _rs; _rs.snapshot_current()")
                         }
                         sceneActionButton("Prev", "chevron.left") {
                             engine.runCommand("scene auto, previous")
-                            engine.runPython("from pymol import raymol_scenes as _rs; _rs.apply_current()")
                         }
                         sceneActionButton("Next", "chevron.right") {
                             engine.runCommand("scene auto, next")
-                            engine.runPython("from pymol import raymol_scenes as _rs; _rs.apply_current()")
                         }
                         sceneActionButton("Delete", "trash", danger: true) {
                             engine.runCommand("scene auto, delete")
-                            engine.runPython("from pymol import raymol_scenes as _rs; _rs.prune()")
                         }
                     }
                 }
@@ -2878,7 +2874,6 @@ struct ScenesPane: View {
                 actionRow("Build movie from scenes", "film") { onOpenMovie?() }
                 actionRow("Clear all scenes", "xmark", destructive: true) {
                     engine.runCommand("scene *, clear")
-                    engine.runPython("from pymol import raymol_scenes as _rs; _rs.clear_all()")
                 }
             }
             .padding(.horizontal, 12)
@@ -2902,7 +2897,6 @@ struct ScenesPane: View {
         let sel = name == engine.currentScene
         return Button {
             engine.runCommand("scene \(name), recall, animate=1")
-            engine.runPython("from pymol import raymol_scenes as _rs; _rs.apply('\(name)')")
         } label: {
             Text(name)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
@@ -2928,7 +2922,6 @@ struct ScenesPane: View {
     private var addChip: some View {
         Button {
             engine.runCommand("scene new, store")
-            engine.runPython("from pymol import raymol_scenes as _rs; _rs.snapshot_current()")
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 15, weight: .bold))
