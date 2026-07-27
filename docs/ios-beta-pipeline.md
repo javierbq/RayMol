@@ -64,13 +64,27 @@ Product RayMol, App ID `6781513038`, repository `javierbq/RayMol`.
 | Auto-cancel Builds | **On** |
 | Environment | Xcode latest release, macOS latest |
 | Action | **Archive**, scheme `PyMOLViewer_iOS`, platform iOS |
-| Restrict Editing | **On** (`isLockedForEditing: true`; Apple requires it for review-eligible builds) |
+| Restrict Editing | **On** (`isLockedForEditing: true`; Apple requires it for review-eligible builds — see ordering note below) |
 | Post-action | TestFlight **internal** testing → group `Beta` |
 | Post-action | Email and/or Slack notification on failure |
 
-`scripts/asc_xcode_cloud_workflow.py` can create or update most of these
-settings via the API (see that script's "What this cannot set" section for the
-exceptions). Run it with `--dry-run` first.
+`scripts/asc_xcode_cloud_workflow.py` can create most of these settings via the
+API. Run it with `--dry-run` first to inspect the payload.
+
+**Required ordering — the lock must come last:**
+A locked workflow (`isLockedForEditing: true`) is **read-only in the UI** — the
+edit affordance is disabled. The TestFlight post-action and notifications cannot
+be set via the API (see that script's "What this cannot set" section), so the
+workflow must be editable when those steps happen. The correct sequence is:
+
+1. `python3 scripts/asc_xcode_cloud_workflow.py --write` — creates the workflow
+   **unlocked** so the UI is editable.
+2. In App Store Connect → Xcode Cloud → *iOS Beta (master)* → **Edit**:
+   add the TestFlight Internal Testing post-action (group `Beta`) and a failure
+   notification (email and/or Slack).
+3. `python3 scripts/asc_xcode_cloud_workflow.py --lock --update-id <ID> --write`
+   — patches `isLockedForEditing` to `true` for review eligibility. Do this
+   **after** step 2; a locked workflow cannot be edited.
 
 A files/folders condition is only available for branch, pull-request and tag
 changes — not for schedules. That is a deliberate reason this pipeline is

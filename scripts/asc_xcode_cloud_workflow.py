@@ -14,10 +14,28 @@ Workflow "iOS Beta (master)" on the RayMol ciProduct:
   * One ARCHIVE action, scheme PyMOLViewer_iOS, platform IOS
   * Branch start condition on master, autoCancel enabled
   * Files-and-folders rule excluding docs/** and *.md
-  * isEnabled: true, isLockedForEditing: true
+  * isEnabled: true, isLockedForEditing: FALSE (unlocked at creation — see below)
 
 Run with --dry-run (the default) to print the payload and send nothing.
-Pass --write to actually create or update the workflow.
+Pass --write to create the workflow.
+Pass --lock --update-id <ID> --write to lock it AFTER the UI steps are done.
+
+WHY isLockedForEditing IS DEFERRED (not set at creation)
+=========================================================
+Apple requires isLockedForEditing: true for any workflow whose archive action
+distributes review-eligible builds to TestFlight. HOWEVER, a locked workflow
+is read-only in the App Store Connect UI — the edit affordance is disabled.
+
+Two mandatory post-creation steps cannot be done via the API (see below):
+the TestFlight internal-testing post-action and failure notifications. Those
+MUST be added in the UI before the workflow is locked. Creating the workflow
+locked and then telling the operator to "edit it in the UI" sends them to a
+read-only page — a dead end with no error message.
+
+Correct order:
+  1. --write   : create unlocked, so the UI is editable
+  2. UI         : add TestFlight post-action (group 'Beta') + notifications
+  3. --lock     : PATCH isLockedForEditing to true (review eligibility)
 
 WHAT THIS CANNOT SET VIA THE API
 =================================
@@ -156,7 +174,7 @@ def _pick(items, label, chooser=None):
 # ---------------------------------------------------------------------------
 
 
-def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str) -> dict:
+def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked: bool = False) -> dict:
     """Return the ciWorkflows POST/PATCH body for the production workflow.
 
     FILES-AND-FOLDERS RULE NOTE
@@ -187,9 +205,15 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str) -> dict
                     "via TestFlight. Managed by scripts/asc_xcode_cloud_workflow.py."
                 ),
                 "isEnabled": True,
-                # isLockedForEditing: Apple requires this to be true for any
-                # workflow that uploads to TestFlight (i.e. review-eligible builds).
-                "isLockedForEditing": True,
+                # isLockedForEditing is passed as a parameter (default False).
+                # At creation it must be False so the operator can edit the
+                # workflow in the UI to add the TestFlight post-action and
+                # notifications (neither is expressible via the API). Once those
+                # UI steps are done, run `--lock --update-id <ID> --write` to
+                # patch it to True. Apple requires True for review-eligible
+                # builds, but setting True at creation makes the UI read-only,
+                # blocking the mandatory manual steps — a dead end.
+                "isLockedForEditing": locked,
                 "clean": True,
                 "containerFilePath": CONTAINER_FILE_PATH,
                 "branchStartCondition": {
@@ -269,7 +293,25 @@ def main():
         default=None,
         help="PATCH an existing workflow instead of creating a new one.",
     )
+    ap.add_argument(
+        "--lock",
+        action="store_true",
+        default=False,
+        help=(
+            "PATCH isLockedForEditing to true on --update-id. "
+            "Run this AFTER adding the TestFlight post-action and notifications "
+            "in the App Store Connect UI (a locked workflow is read-only in the UI). "
+            "Requires --update-id and --write."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.lock and not args.update_id:
+        sys.exit("ERROR: --lock requires --update-id <WORKFLOW_ID>")
+    if args.lock and args.dry_run:
+        print("(dry run) Would PATCH isLockedForEditing=true on workflow", args.update_id)
+        print("  Pass --write to actually send the patch.")
+        return
 
     if not (KEY_ID and ISSUER):
         sys.exit(
@@ -280,6 +322,26 @@ def main():
             "                (default: ~/.appstoreconnect/private_keys/"
             "AuthKey_<ASC_KEY_ID>.p8)"
         )
+
+    # --lock --write: only needs to PATCH one field; skip full discovery.
+    if args.lock:
+        print(f"== lock workflow {args.update_id} ==")
+        print("  Patching isLockedForEditing=true (review eligibility).")
+        print("  Confirm the TestFlight post-action and notifications are already")
+        print("  configured in the UI — a locked workflow cannot be edited.")
+        lock_payload = {
+            "data": {
+                "type": "ciWorkflows",
+                "id": args.update_id,
+                "attributes": {"isLockedForEditing": True},
+            }
+        }
+        wf = _call("PATCH", f"ciWorkflows/{args.update_id}", lock_payload)["data"]
+        wid = wf["id"]
+        locked_val = wf.get("attributes", {}).get("isLockedForEditing")
+        print(f"  workflow {wid} isLockedForEditing={locked_val}")
+        print("Workflow is now locked (read-only in the UI).")
+        return
 
     print("== discover ==")
     products = _call("GET", "ciProducts?limit=50").get("data", [])
@@ -332,7 +394,9 @@ def main():
     )
     print(f"  macos   {mac['id']}  {mac.get('attributes', {}).get('name')!r}")
 
-    payload = _build_payload(pid, repo["id"], xcode["id"], mac["id"])
+    # Create unlocked so the UI is editable for the mandatory post-action and
+    # notification steps. Lock separately with --lock after those are done.
+    payload = _build_payload(pid, repo["id"], xcode["id"], mac["id"], locked=False)
 
     print()
     print("== payload ==")
@@ -347,10 +411,13 @@ def main():
     print("  2. Email / Slack failure notifications.")
     print("     Workflow notification settings are not exposed by the ASC REST API.")
     print()
-    print("  After running --write, complete these two steps in the UI:")
-    print("    App Store Connect → Xcode Cloud → iOS Beta (master) → Edit")
-    print("    Add post-action: TestFlight Internal Testing → group 'Beta'")
-    print("    Add notification: email on failure (and optionally Slack webhook)")
+    print("  Ordered steps after --write:")
+    print("    1. UI: App Store Connect → Xcode Cloud → iOS Beta (master) → Edit")
+    print("           Add TestFlight Internal Testing post-action (group 'Beta')")
+    print("           Add failure notification (email / Slack)")
+    print("           Possible because the workflow is created UNLOCKED.")
+    print("    2. script: --lock --update-id <ID> --write  (locks for review eligibility)")
+    print("           A locked workflow is read-only in the UI — do this LAST.")
 
     if args.dry_run:
         print()
@@ -385,14 +452,22 @@ def main():
         "https://appstoreconnect.apple.com/teams/<team>/apps/6781513038/xcode/workflows"
     )
     print()
-    print("NEXT STEPS (manual):")
-    print("  1. Open the workflow in App Store Connect and add the TestFlight")
-    print("     internal testing post-action pointing at group 'Beta'.")
-    print("  2. Add a failure notification (email and/or Slack).")
-    print(
-        "  3. Delete the 'SPIKE - validation' throwaway workflow "
-        "(ID d6ebe935-3298-4b47-831a-b03af5ec4fe2) once the production"
-    )
+    print("NEXT STEPS — complete in order:")
+    print()
+    print("  1. (UI) Open the workflow in App Store Connect → Xcode Cloud →")
+    print("         iOS Beta (master) → Edit")
+    print("         Add post-action: TestFlight Internal Testing → group 'Beta'")
+    print("         Add notification: email on failure (and optionally Slack webhook)")
+    print("         The workflow is UNLOCKED so the edit button is active.")
+    print()
+    print("  2. (script) Lock the workflow once step 1 is done — Apple requires")
+    print("     isLockedForEditing=true for review-eligible builds. A locked workflow")
+    print("     is read-only in the UI, so this step MUST come after step 1:")
+    print(f"       python3 scripts/asc_xcode_cloud_workflow.py \\")
+    print(f"         --lock --update-id {wid} --write")
+    print()
+    print("  3. (UI) Delete the 'SPIKE - validation' throwaway workflow")
+    print("     (ID d6ebe935-3298-4b47-831a-b03af5ec4fe2) once the production")
     print("     workflow has produced its first successful archive.")
 
 
