@@ -148,7 +148,7 @@ struct DesignCompactPanel: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(theme.active.panelText.color.opacity(0.55))
             }
-            if controller.isScoring { ProgressView().scaleEffect(0.6) }
+            if controller.isScoring || controller.isRescoring { ProgressView().scaleEffect(0.6) }
 
             Spacer(minLength: 0)
 

@@ -3987,7 +3987,7 @@ private struct DesignOverlayView: View {
                         .help("Mean per-residue native-fit log-probability (higher = better fit)")
                 }
                 residueIndicator
-                if controller.isScoring {
+                if controller.isScoring || controller.isRescoring {
                     ProgressView().scaleEffect(0.7)
                 }
                 Spacer(minLength: 0)

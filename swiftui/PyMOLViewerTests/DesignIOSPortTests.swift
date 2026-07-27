@@ -900,8 +900,10 @@ final class DesignIOSPortTests: XCTestCase {
                      discard: { _, _ in }, compare: { _, _ in })
         c.injectRepack(repack: { _, _ in throw RepError(msg: "simulated MLX failure") },
                        loadRepacked: { _, _ in })
-        // Rescore (called before repack) must succeed; inject a well-formed result so
-        // it doesn't throw and erroneously set errorText from a different code path.
+        // Rescore (called after repack in the new order) must succeed; inject a
+        // well-formed result so it doesn't throw and erroneously set errorText from a
+        // different code path. rescoreWorkingObject does not clear errorText, so the
+        // error set by the failing repack survives until the test's XCTAssertNotNil.
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
@@ -916,6 +918,129 @@ final class DesignIOSPortTests: XCTestCase {
                         "a throwing repack must set errorText so the error banner fires")
         XCTAssertFalse(c.isRepacking,
                        "the token-guarded defer must clear isRepacking even on the error path")
+    }
+
+    // MARK: – Phase 2d: mutation immediacy (repack-before-rescore + sidechain sticks)
+
+    // 1. `applyMutationAwait` must invoke the repack closure BEFORE the score closure.
+    //
+    // Rationale: the repack is what the user SEES (new sidechain geometry) and is
+    // several times cheaper; the score only drives confidence colouring. Running repack
+    // first makes the structural change visible on-screen ~5× sooner on a physical device.
+    // Both closures run on the same serial inference queue, so the order is deterministic.
+    func testApplyMutationRepacksBeforeRescoring() async {
+        var callOrder: [String] = []
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        // repack closure runs on the inference queue (off-main).
+        c.injectRepack(
+            repack: { _, _ in callOrder.append("repack"); return "ATOM  ..." },
+            loadRepacked: { _, _ in })
+        // score closure also runs on the inference queue (off-main); both are serial.
+        c.injectScore { _, s in
+            callOrder.append("score")
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
+
+        XCTAssertEqual(callOrder, ["repack", "score"],
+            "repack must be invoked before score — the structural change must " +
+            "arrive on-screen before the more expensive confidence-colouring pass; " +
+            "assert is on CALL ORDER, not just that both happened")
+    }
+
+    // 2. The mutated residue's sidechain is requested after the mutation and is
+    //    re-requested after the repack's topology replace.
+    //
+    // Mechanism: `reconcileSticks()` includes the pinned residue in the desired
+    // set, so after `loadRepacked` clears PyMOL's per-atom representations,
+    // `teardownSticks + reconcileSticks` re-adds the sticks on the fresh atoms.
+    // This is already wired: no extra code is needed beyond what was already there,
+    // but this test pins down the behaviour so a refactor can't silently break it.
+    func testMutatedResidueSticksShownAndReShownAfterRepack() async {
+        var events: [String] = []
+
+        let c = makeController()
+        c.injectSetSticks { _, _, resi, on in
+            events.append(on ? "show-\(resi)" : "hide-\(resi)")
+            return on   // report that WE added the sticks so teardown will hide them
+        }
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        // loadRepacked runs on the main actor (synchronously after the continuation).
+        // teardownSticks + reconcileSticks also run on the main actor, so ordering
+        // within the block is deterministic.
+        c.injectRepack(
+            repack: { _, _ in "ATOM  ..." },
+            loadRepacked: { _, _ in events.append("topology-replace") })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        // Pin residue 1 (chain "A", resi "2") — this is the residue we will mutate.
+        // On iOS, pill mutations always apply to the active (pinned) residue.
+        c.setPinned(chain: "A", resi: "2")
+
+        // Clear events collected during setPinned so we can focus on the mutation path.
+        events.removeAll()
+
+        await c.applyMutationAwait(residueIndex: 1, aa: 9)
+
+        // Verify that "show-2" appears AFTER "topology-replace" in the event log.
+        // This proves that reconcileSticks re-adds the pinned residue's sticks on
+        // the freshly-loaded topology (not just before the repack).
+        let ri = events.firstIndex(of: "topology-replace")
+        XCTAssertNotNil(ri, "loadRepacked (topology replace) must have been called")
+        if let ri {
+            let showAfterRepack = events[ri...].contains { $0 == "show-2" }
+            XCTAssertTrue(showAfterRepack,
+                "the mutated residue's sidechain (resi '2') must be re-requested after " +
+                "the topology replace — reconcileSticks must add pinned sticks post-repack")
+        }
+    }
+
+    // 3. Sticks the controller did not add (setSticksFn returned false = user's own)
+    //    must never be hidden by the controller. This is the ownership rule baked into
+    //    reconcileSticks and teardownSticks via the `managedSticks[key] = added` guard.
+    //
+    // No existing test covers this specific invariant — testReconcileSticksIsNoOpWhenShowSidechainsOn
+    // tests the early-return guard (showSidechains == true), which is a separate path.
+    func testSticksNotOwnedByControllerAreNeverRemoved() {
+        var hiddenResidue: [String] = []
+        let c = makeController()
+        // setSticksFn always returns false: the residue already has sticks (user's own).
+        c.injectSetSticks { _, _, resi, on in
+            if !on { hiddenResidue.append(resi) }
+            return false   // report that the residue already had sticks — WE did not add them
+        }
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        // Pin resi "2": setSticksFn(on=true) returns false → managedSticks["A\u{1}2"] = false.
+        c.setPinned(chain: "A", resi: "2")
+
+        hiddenResidue.removeAll()   // ignore any hide calls that happened before the test body
+
+        // Switch pin to resi "3": reconcileSticks sees "2" no longer wanted.
+        // Because managedSticks["A\u{1}2"] == false (not added by us), it must NOT
+        // call setSticksFn(on=false) for resi "2" — the ownership rule.
+        c.setPinned(chain: "A", resi: "3")
+
+        XCTAssertFalse(hiddenResidue.contains("2"),
+            "a residue whose sticks the controller did not add (setSticksFn returned false) " +
+            "must never be hidden by the controller — ownership rule: only remove what we added")
     }
 }
 #endif

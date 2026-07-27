@@ -1030,11 +1030,17 @@ final class DesignController: ObservableObject {
         NSLog("[Design][TMPDIAG] applyMutation: idx=%d aa=%d editing=%d autoRepack=%d",
               i, aa, editing ? 1 : 0, autoRepack ? 1 : 0)
         guard applyMutationState(residueIndex: i, aa: aa) else { return }
-        await rescoreWorkingObject()
+        // Repack before rescore: the repack is what the user SEES (new sidechain
+        // geometry) and is several times cheaper than scoring; the rescore only
+        // drives confidence colouring. Running repack first makes the structural
+        // change visible on-screen ~5× sooner on a physical device. Total time on
+        // the serial inference queue is unchanged — only the order in which
+        // feedback arrives.
+        if autoRepack { await repackNowAwait() }
         // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
         NSLog("[Design][TMPDIAG] applyMutation: rescore done autoRepack=%d repackDirty=%d editing=%d workingObject=%@",
               autoRepack ? 1 : 0, repackDirty ? 1 : 0, editing ? 1 : 0, workingObject ?? "nil")
-        if autoRepack { await repackNowAwait() }
+        await rescoreWorkingObject()
     }
 
     /// Place all sidechains for the current edited sequence off-main, then load the
