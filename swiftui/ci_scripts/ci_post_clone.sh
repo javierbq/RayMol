@@ -39,9 +39,30 @@ mkdir -p spike_marker_dir && echo ok > spike_marker_dir/inside.txt
 ( cd swiftui && xcodegen generate )   # mutates the committed .xcodeproj
 echo "  wrote SPIKE_MARKER.txt, spike_marker_dir/, and regenerated the project"
 
+echo "== spike: fetch prebuilt deps_ios (build 2 failed without this) =="
+# Build 2 skipped this and the core build died in contrib/champ with
+# "'Python.h' file not found": with no deps_ios/Python.xcframework present,
+# appkit/CMakeLists.txt takes its else() branch and points at
+# $(brew --prefix)/opt/python@3.13/... which is not installed on Xcode Cloud.
+# That is the silent-fallback hazard assert_ios_build_inputs.sh exists to catch.
+# Fetch the real artifact, exactly as the production ci_post_clone.sh will.
+FP="$(bash scripts/ios_deps_fingerprint.sh)"
+TARBALL="deps_ios-$FP.tar.gz"
+BASE="https://github.com/javierbq/RayMol/releases/download/ios-deps-$FP"
+echo "  fingerprint=$FP"
+curl -fL --retry 3 --retry-delay 5 -o "$TARBALL" "$BASE/$TARBALL"
+curl -fL --retry 3 --retry-delay 5 -o "$TARBALL.sha256" "$BASE/$TARBALL.sha256"
+shasum -a 256 -c "$TARBALL.sha256"
+tar -xzf "$TARBALL"
+rm -f "$TARBALL" "$TARBALL.sha256"
+echo "  deps_ios staged: $(du -sh deps_ios | cut -f1)"
+
 echo "== spike: Q4 time a full core build =="
 START=$(date +%s)
 bash swiftui/build_ios.sh device
 echo "  CORE_BUILD_SECONDS=$(( $(date +%s) - START ))"
 ls -la build_ios_device/libpymol_core.a
 lipo -archs build_ios_device/libpymol_core.a
+
+echo "== spike: assert build inputs (rehearses the production gate) =="
+bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
