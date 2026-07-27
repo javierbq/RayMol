@@ -2595,10 +2595,10 @@ final class PyMOLEngine: ObservableObject {
         else { return }
         let focusObj = root["obj"] as? String ?? ""
         MainActor.assumeIsolated {
-            guard focusObj == designController.focusObject,
-                  let idx = designController.residueIndex(chain: chain, resi: resi)
-            else { return }
-            designController.tapResidue(residueIndex: idx)
+            designController.handleViewportHit(object: focusObj,
+                                               chain: chain,
+                                               resi: resi,
+                                               hasResidue: true)   // guard above ensures hit==true
         }
     }
 

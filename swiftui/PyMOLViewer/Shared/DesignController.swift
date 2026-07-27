@@ -327,6 +327,31 @@ final class DesignController: ObservableObject {
     /// cleared implicitly by the next successful operation.
     func clearError() { errorText = nil }
 
+    /// Unified viewport-hit routing shared between iOS (`designPickResidue`) and
+    /// macOS (`onChange(of: engine.longPressHit)`).
+    ///
+    /// Three-way rule:
+    ///   - `object` empty → no-op (tap on empty space or non-object background)
+    ///   - `object != focusObject` → `focus(object)` (retarget design to new structure)
+    ///   - `object == focusObject && hasResidue` → `tapResidue(residueIndex:)` for the residue;
+    ///     no-op if the residue doesn't resolve (e.g. missing backbone)
+    ///   - `object == focusObject && !hasResidue` → no-op (tap on backbone/solvent patch)
+    ///
+    /// Using `tapResidue` (not `setPinned` directly) for the same-object case means
+    /// region-edit mode works on both platforms: a tap in region-edit mode toggles
+    /// region membership rather than pinning.  The previous macOS `onChange` block
+    /// called `setPinned` directly and therefore ignored region-edit mode; routing
+    /// through this shared method fixes that uniformly.
+    func handleViewportHit(object: String, chain: String, resi: String, hasResidue: Bool) {
+        guard !object.isEmpty else { return }
+        if object != focusObject {
+            focus(object)
+        } else if hasResidue, let idx = residueIndex(chain: chain, resi: resi) {
+            tapResidue(residueIndex: idx)
+        }
+        // object == focusObject && !hasResidue → no-op
+    }
+
     // MARK: – Propensity hover/pin
 
     /// The "active" index for the propensity pill row: pinned takes precedence
@@ -947,40 +972,59 @@ final class DesignController: ObservableObject {
         let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
         let residues = set.validResidues
         let repackFn = repack     // capture @MainActor-isolated property before leaving
-        let pdb: String? = try? await withCheckedThrowingContinuation { cont in
-            inferenceQueue.async {
-                do { cont.resume(returning: try repackFn(residues, seq)) }
-                catch { cont.resume(throwing: error) }
+        // Use do/catch instead of try? so MLX / MPNNKit errors surface to the user
+        // via the error banner (Task 1) rather than being silently swallowed.
+        let pdb: String
+        do {
+            pdb = try await withCheckedThrowingContinuation { cont in
+                inferenceQueue.async {
+                    do { cont.resume(returning: try repackFn(residues, seq)) }
+                    catch { cont.resume(throwing: error) }
+                }
             }
+        } catch {
+            // Only report the error if this repack is still the winner; a superseded
+            // job must not stomp the errorText owned by the cancelling call.
+            guard token == repackToken else { return }
+            errorText = "Repack failed: \(error)"
+            return   // isRepacking cleared by the `defer` above
         }
         guard token == repackToken else { return }
-        if let pdb, !pdb.isEmpty {
-            // I1: only load if the sequence has not changed since dispatch.
-            if capturedFullSeq == editedSequence {
-                loadRepacked(w, pdb)
-                repackDirty = false
-                // Full topology replace (load_repacked deletes+renames the object) clears
-                // PyMOL's per-atom colors and representations.  Re-apply confidence
-                // coloring from the cache — the sequence didn't change so no new score
-                // is needed; the last rescoreWorkingObject() result is still valid.
-                let colorSeq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
-                let colorKey = DesignCacheKey(object: w, state: set.state, sequenceHash: colorSeq.hashValue)
-                if let scores = cache.get(colorKey) {
-                    let scalar = DesignColor.scalar(scores, colorMeaning)
-                    let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
-                    let dom = DesignColor.domain(colorMeaning)
-                    applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
-                }
-                // Stale sidechain sticks are gone (object was replaced); clear tracking
-                // and re-add for the pinned/hovered residue on the fresh atoms.
-                teardownSticks(on: w)
-                reconcileSticks()
-                // Re-apply global sidechain display if the user had it turned on.
-                if showSidechains { showAllSidechainsFn(w, true) }
-            }
-            // else: mutation happened mid-repack; leave repackDirty = true so the
-            // next repack (triggered by the new mutation) loads the current coords.
+        guard !pdb.isEmpty else {
+            errorText = "Repack produced no structure."
+            return   // isRepacking cleared by the `defer` above
         }
+        // I1: only load if the sequence has not changed since dispatch.
+        if capturedFullSeq == editedSequence {
+            // NSLog intentionally unconditional: a device console log from the user's
+            // next run will show whether loadRepacked was reached and with what PDB size,
+            // diagnosing case (d) of the silent-repack bug without a device-attached build.
+            // TODO: remove or downgrade to #if DEBUG once the root cause is confirmed.
+            NSLog("[Design] loadRepacked: starting, pdb=%d chars into '%@'", pdb.count, w)
+            loadRepacked(w, pdb)
+            NSLog("[Design] loadRepacked: done")
+            repackDirty = false
+            // Full topology replace (load_repacked deletes+renames the object) clears
+            // PyMOL's per-atom colors and representations.  Re-apply confidence
+            // coloring from the cache — the sequence didn't change so no new score
+            // is needed; the last rescoreWorkingObject() result is still valid.
+            let colorSeq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+            let colorKey = DesignCacheKey(object: w, state: set.state, sequenceHash: colorSeq.hashValue)
+            if let scores = cache.get(colorKey) {
+                let scalar = DesignColor.scalar(scores, colorMeaning)
+                let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
+                let dom = DesignColor.domain(colorMeaning)
+                applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+            }
+            // Stale sidechain sticks are gone (object was replaced); clear tracking
+            // and re-add for the pinned/hovered residue on the fresh atoms.
+            teardownSticks(on: w)
+            reconcileSticks()
+            // Re-apply global sidechain display if the user had it turned on.
+            if showSidechains { showAllSidechainsFn(w, true) }
+        }
+        // else: mutation happened mid-repack (case c); repackDirty stays true so the
+        // next repack (triggered by the new mutation) loads the current coords.
         // isRepacking cleared by the `defer` above (covers every exit path).
     }
 

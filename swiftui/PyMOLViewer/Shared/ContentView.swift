@@ -686,22 +686,18 @@ struct ContentView: View {
             }
             #if RAYMOL_MPNN
             // Design mode click routing: a click (left or right) sets longPressHit.
-            // — Click on the FOCUS object's residue → pin/unpin the propensity pill
-            //   row for that residue (keeps current focus, does NOT refocus).
-            // — Click on a DIFFERENT object → refocus to that object (existing behavior).
-            // — Click on empty space (hit.isEmpty) → no-op (no focus change, no pin).
+            // Routes through the shared handleViewportHit three-way rule so iOS and
+            // macOS behave identically — and so region-edit mode is honoured on macOS
+            // (the previous direct setPinned call bypassed tapResidue and therefore
+            // always pinned even when the user was building a region by clicking).
             // Clears longPressHit so the context-menu dialog never fires in design mode.
             .onChange(of: engine.longPressHit) { hit in
                 guard engine.designMode, let hit = hit else { return }
-                if !hit.obj.isEmpty {
-                    if hit.obj == engine.designController.focusObject && !hit.isEmpty {
-                        // Same object: pin/unpin the clicked residue in the pill row.
-                        engine.designController.setPinned(chain: hit.chain, resi: hit.resi)
-                    } else if hit.obj != engine.designController.focusObject {
-                        // Different object: refocus (existing behavior).
-                        engine.designController.focus(hit.obj)
-                    }
-                }
+                engine.designController.handleViewportHit(
+                    object: hit.obj,
+                    chain: hit.chain,
+                    resi: hit.resi,
+                    hasResidue: !hit.isEmpty)
                 engine.longPressHit = nil
             }
             #endif

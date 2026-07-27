@@ -426,6 +426,10 @@ final class DesignIOSPortTests: XCTestCase {
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         // sizeDecisionProvider is NOT injected — exercises the real default path.
+        // autoRepack disabled: this test is about the size guard, not repack success.
+        // (After the Bug-2 fix, a no-op repack closure would set errorText, which
+        // would incorrectly shadow the guard assertion below.)
+        c.autoRepack = false
         c.setFocusForTest("m1", nativeSequence: Array(repeating: 5, count: count),
                           validFlags: allValid(count))
         c.pickSelection("reg")   // selectedIndices returns [0]
@@ -433,7 +437,8 @@ final class DesignIOSPortTests: XCTestCase {
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning,
                      "macOS default provider (evaluate → .ok) must never block")
-        XCTAssertNil(c.errorText)   // no error from the guard
+        XCTAssertNil(c.errorText,
+                     "no error from the size guard on macOS; autoRepack disabled so repack cannot set errorText here")
         XCTAssertEqual(designCalls, 1, "macOS default provider must let the design run")
     }
 
@@ -507,6 +512,114 @@ final class DesignIOSPortTests: XCTestCase {
         MPNNRuntime.configureOnce()
         XCTAssertEqual(MPNNRuntime.activeCacheLimitBytes, MPNNRuntime.cacheLimitBytes,
                        "configureOnce() must set MLX.Memory.cacheLimit to cacheLimitBytes")
+    }
+
+    // MARK: – Bug 1: unified viewport-hit routing (handleViewportHit)
+
+    // This is the exact failure the user reported: touching a different structure
+    // to retarget the design did nothing on iOS, because the iOS guard returned early
+    // for the "different object" case (and always for nil focusObject).
+    func testHandleViewportHitRefocusesOnDifferentObject() async {
+        let c = makeController()
+        c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        XCTAssertEqual(c.focusObject, "obj1")
+
+        c.handleViewportHit(object: "obj2", chain: "", resi: "", hasResidue: false)
+        // focus() spawns a Task on the MainActor; yield so it runs until its first
+        // suspension point, by which time focusObject has been set to "obj2".
+        await Task.yield()
+
+        XCTAssertEqual(c.focusObject, "obj2",
+                       "tapping a different object must refocus — this is the reported iOS bug")
+    }
+
+    // Multi-object scenario: nothing is focused yet when the user taps a structure
+    // (enter() only auto-focuses when there is exactly ONE object).
+    func testHandleViewportHitRefocusesWhenFocusIsNil() async {
+        let c = makeController()
+        XCTAssertNil(c.focusObject, "focusObject starts nil")
+
+        c.handleViewportHit(object: "obj1", chain: "", resi: "", hasResidue: false)
+        await Task.yield()
+
+        XCTAssertEqual(c.focusObject, "obj1",
+                       "tapping any object when nothing is focused must refocus")
+    }
+
+    // Same-object tap with a valid residue → pin via tapResidue (not setPinned directly,
+    // so region-edit mode is honoured consistently on both platforms).
+    func testHandleViewportHitPinsOnFocusObjectWithResidue() {
+        let c = makeController()
+        c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        // setFocusForTest creates residues chain "A" resi "1"/"2"/"3" at indices 0/1/2.
+
+        c.handleViewportHit(object: "obj1", chain: "A", resi: "2", hasResidue: true)
+
+        XCTAssertEqual(c.pinnedResidueIndex, 1,
+                       "hitting the focus object's residue (resi '2' = index 1) must pin it")
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "pinning via handleViewportHit must not build a region")
+    }
+
+    // Same-object tap in region-edit mode → toggleRegionResidue via tapResidue.
+    // This is the improvement over the previous macOS behaviour: the old onChange
+    // block called setPinned directly, bypassing region-edit mode.
+    func testHandleViewportHitInRegionEditModeTogglesRegion() {
+        let c = makeController()
+        c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.regionEditMode = true
+
+        c.handleViewportHit(object: "obj1", chain: "A", resi: "2", hasResidue: true)
+
+        XCTAssertEqual(c.selectedResidueIndices, [1],
+                       "in region-edit mode, tapping a residue on the focus object must toggle its region membership")
+        XCTAssertNil(c.pinnedResidueIndex,
+                     "region editing via handleViewportHit must not also pin")
+    }
+
+    // An empty object name means the tap landed on empty space — must be a no-op.
+    func testHandleViewportHitEmptyObjectIsNoOp() {
+        let c = makeController()
+        c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        c.handleViewportHit(object: "", chain: "A", resi: "1", hasResidue: true)
+
+        XCTAssertEqual(c.focusObject, "obj1",
+                       "an empty object name must be a no-op — focus must not change")
+        XCTAssertNil(c.pinnedResidueIndex,
+                     "an empty object name must not pin any residue")
+    }
+
+    // MARK: – Bug 2: repack error reporting
+
+    // `repackNowAwait` previously swallowed every error with `try?`, so a failing
+    // repack was invisible to the user despite the error banner having been added in
+    // Task 1 precisely for this purpose.  After the fix, a thrown repack error must
+    // set errorText and the token-guarded `defer` must still clear isRepacking.
+    func testRepackErrorSetsErrorTextAndClearsIsRepacking() async {
+        struct RepError: Error { let msg: String }
+        let c = makeController()
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectRepack(repack: { _, _ in throw RepError(msg: "simulated MLX failure") },
+                       loadRepacked: { _, _ in })
+        // Rescore (called before repack) must succeed; inject a well-formed result so
+        // it doesn't throw and erroneously set errorText from a different code path.
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        // Mutate residue 0 from aa=5 to aa=1; autoRepack=true → triggers repackNowAwait.
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
+
+        XCTAssertNotNil(c.errorText,
+                        "a throwing repack must set errorText so the error banner fires")
+        XCTAssertFalse(c.isRepacking,
+                       "the token-guarded defer must clear isRepacking even on the error path")
     }
 }
 #endif
