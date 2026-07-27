@@ -3,6 +3,27 @@ import Foundation
 import MPNNKit
 import Combine
 
+/// Thread-safe mirror of a @MainActor job token so the inference closure — which
+/// runs on the serial background queue — can tell whether it has already been
+/// superseded BEFORE spending an inference on a result nobody will read.
+private final class TokenMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func set(_ v: Int) { lock.lock(); value = v; lock.unlock() }
+    func get() -> Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// Sentinel thrown inside an inference closure when the job token has already been
+/// superseded by the time the closure starts. Using a typed error lets catch sites
+/// distinguish "superseded" from "failed":
+///   - rescoreWorkingObject uses `try?` → nil → existing guard returns early, no errorText.
+///   - repackNowAwait uses do/catch → the `guard token == repackToken` check exits early.
+///   - focusAwait uses do/catch → the `guard token == rescoreToken` check exits early.
+///   - redesignSelectionAwait uses `try?` → nil → existing guard exits early, no errorText.
+/// None of these paths reaches an `errorText = …` assignment, so supersession is never
+/// reported as a failure to the user.
+private struct SupersededJobError: Error {}
+
 /// Orchestrates the Design mode lifecycle: scores residues off the main thread on a serial queue
 /// with a job token (superseded focuses are discarded), caches results, and applies per-residue
 /// coloring. Model lifecycle is managed by the injected `score` closure (wired in Task 10).
@@ -236,6 +257,13 @@ final class DesignController: ObservableObject {
     private var repackToken: Int = 0
     /// Incremented on each region redesign; a superseded design() checks this before applying.
     private var designToken: Int = 0
+    /// Thread-safe mirrors of the main-actor job tokens for use inside inference
+    /// closures (which run on the serial background queue).  Updated on the main
+    /// actor immediately after each token increment; read by the closure at the top
+    /// of each dispatch to bail before running inference when already superseded.
+    private let rescoreMirror = TokenMirror()
+    private let repackMirror  = TokenMirror()
+    private let designMirror  = TokenMirror()
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
     /// Published residue list for the focus object. Updated whenever `focusObject` or
@@ -327,6 +355,7 @@ final class DesignController: ObservableObject {
         pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
         clearRegionState()
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
+        rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
         // Free the model's resident weights. Dispatched to the inference queue
         // rather than run inline: `_mpnnModel` is unsynchronized and owned by that
         // serial queue, so a main-thread nil-out would race a running job. Queueing
@@ -467,6 +496,7 @@ final class DesignController: ObservableObject {
         // Hoist token capture so both the success continuation and the catch can guard against it.
         rescoreToken += 1
         let token = rescoreToken
+        rescoreMirror.set(token)   // update before dispatch so in-queue closures see the new value
         // New job owns the flag: wipe any stale `true` left by a superseded job.
         // This covers the cache-hit path too — a cache hit returns early without
         // ever reaching the `isScoring = true` below, so the flag stays false.
@@ -498,8 +528,15 @@ final class DesignController: ObservableObject {
             let validMask = set.residues.map { $0.valid }
             let scoreFn = score     // capture @MainActor-isolated property on main, then hand off
 
+            let mirror = rescoreMirror   // capture class reference (not current value)
             let scores: DesignScores = try await withCheckedThrowingContinuation { cont in
                 inferenceQueue.async {
+                    // Early-exit BEFORE calling the model if this job was already superseded
+                    // while waiting in the serial queue.  SupersededJobError is caught by the
+                    // outer do/catch; the `guard token == rescoreToken` there exits cleanly.
+                    guard mirror.get() == token else {
+                        cont.resume(throwing: SupersededJobError()); return
+                    }
                     do {
                         let result = try scoreFn(residues, native)
                         cont.resume(returning: DesignColor.scores(from: result, validMask: validMask))
@@ -656,6 +693,7 @@ final class DesignController: ObservableObject {
             if let src { enableOriginalFn(src) }
         }
         rescoreToken += 1; repackToken += 1
+        rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
         editing = false
         editCount = 0
         repackDirty = false
@@ -741,6 +779,7 @@ final class DesignController: ObservableObject {
         suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
         regionEditMode = false
         designToken += 1   // cancel any in-flight region design
+        designMirror.set(designToken)
     }
 
     // MARK: – Region redesign: the design() action + revert (Task 3)
@@ -815,6 +854,7 @@ final class DesignController: ObservableObject {
 
         designToken += 1
         let token = designToken
+        designMirror.set(token)   // update before dispatch so queued closures see the new value
         isRedesigning = true
         // The busy flag drives an INPUT-BLOCKING overlay, so it must never be left
         // set — `defer` clears it on every exit (early return, error, cancellation),
@@ -822,8 +862,14 @@ final class DesignController: ObservableObject {
         // so a superseded call doesn't clear the flag out from under the winner.
         defer { if token == designToken { isRedesigning = false } }
 
+        let dMirror = designMirror   // capture class reference (not current value)
         let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
+                // Early-exit BEFORE calling the model if this job was already superseded.
+                // SupersededJobError + try? → nil result; existing guard exits cleanly.
+                guard dMirror.get() == token else {
+                    cont.resume(throwing: SupersededJobError()); return
+                }
                 do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit, temp)) }
                 catch { cont.resume(throwing: error) }
             }
@@ -934,10 +980,21 @@ final class DesignController: ObservableObject {
     @discardableResult
     private func applyMutationState(residueIndex i: Int, aa: Int) -> Bool {
         beginEditIfNeeded()
-        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return false }
+        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else {
+            // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+            NSLog("[Design][TMPDIAG] applyMutationState SKIPPED: editing=%d i=%d seqLen=%d sameAA=%d aa=%d",
+                  editing ? 1 : 0, i, editedSequence.count,
+                  (i >= 0 && i < editedSequence.count && editedSequence[i] == aa) ? 1 : 0, aa)
+            return false
+        }
         // M2: invalid (missing-backbone) residues are not mutable.
         if let focus = focusObject, let set = lastSet[focus] {
-            guard i < set.residues.count, set.residues[i].valid else { return false }
+            guard i < set.residues.count, set.residues[i].valid else {
+                // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+                NSLog("[Design][TMPDIAG] applyMutationState SKIPPED (invalid residue): i=%d setCount=%d valid=%d",
+                      i, set.residues.count, (i < set.residues.count && set.residues[i].valid) ? 1 : 0)
+                return false
+            }
         }
         editedSequence[i] = aa
         editCount += 1
@@ -969,8 +1026,14 @@ final class DesignController: ObservableObject {
     /// completes before asserting. The sync `applyMutation` uses the same state-update
     /// path then fires `rescoreWorkingObject` in a background Task.
     func applyMutationAwait(residueIndex i: Int, aa: Int) async {
+        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+        NSLog("[Design][TMPDIAG] applyMutation: idx=%d aa=%d editing=%d autoRepack=%d",
+              i, aa, editing ? 1 : 0, autoRepack ? 1 : 0)
         guard applyMutationState(residueIndex: i, aa: aa) else { return }
         await rescoreWorkingObject()
+        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+        NSLog("[Design][TMPDIAG] applyMutation: rescore done autoRepack=%d repackDirty=%d editing=%d workingObject=%@",
+              autoRepack ? 1 : 0, repackDirty ? 1 : 0, editing ? 1 : 0, workingObject ?? "nil")
         if autoRepack { await repackNowAwait() }
     }
 
@@ -978,12 +1041,26 @@ final class DesignController: ObservableObject {
     /// resulting all-atom PDB into the working object and clear `repackDirty`.
     /// Job-token guarded (superseded by a subsequent mutation or focus change).
     func repackNowAwait() async {
-        guard editing, let w = workingObject, repackDirty else { return }
+        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+        // These two guards were the only unlogged exit from the repack path, so a
+        // skipped repack was indistinguishable from one that ran and failed.
+        guard editing, let w = workingObject, repackDirty else {
+            NSLog("[Design][TMPDIAG] repack SKIPPED at entry: editing=%d workingObject=%@ repackDirty=%d",
+                  editing ? 1 : 0, workingObject ?? "nil", repackDirty ? 1 : 0)
+            return
+        }
         // C3: we need the residue set to project the sequence; bail if unavailable.
-        guard let focus = focusObject, let set = lastSet[focus] else { return }
+        guard let focus = focusObject, let set = lastSet[focus] else {
+            NSLog("[Design][TMPDIAG] repack SKIPPED (no residue set): focusObject=%@ hasCachedSet=%d",
+                  focusObject ?? "nil", (focusObject.map { lastSet[$0] != nil } ?? false) ? 1 : 0)
+            return
+        }
+        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
+        NSLog("[Design][TMPDIAG] repack ENTERED: obj=%@ focus=%@", w, focus)
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
+        repackMirror.set(token)   // update before dispatch so queued closures see the new value
         isRepacking = true
         // Same input-blocking overlay as the redesign: clear on EVERY exit via
         // `defer`, token-guarded so a superseded repack can't clear the winner's flag.
@@ -996,10 +1073,20 @@ final class DesignController: ObservableObject {
         let repackFn = repack     // capture @MainActor-isolated property before leaving
         // Use do/catch instead of try? so MLX / MPNNKit errors surface to the user
         // via the error banner (Task 1) rather than being silently swallowed.
+        let pMirror = repackMirror   // capture class reference (not current value)
         let pdb: String
         do {
             pdb = try await withCheckedThrowingContinuation { cont in
                 inferenceQueue.async {
+                    // Early-exit BEFORE calling the model if this job was already superseded.
+                    // SupersededJobError → catch below → guard token==repackToken exits clean
+                    // (token won't match since the mirror advanced when we were superseded).
+                    // This is NOT the same as an empty-PDB: that path reaches the
+                    // `guard !pdb.isEmpty` check after a SUCCESSFUL return from repackFn;
+                    // a superseded job never calls repackFn at all and never sets pdb.
+                    guard pMirror.get() == token else {
+                        cont.resume(throwing: SupersededJobError()); return
+                    }
                     do { cont.resume(returning: try repackFn(residues, seq)) }
                     catch { cont.resume(throwing: error) }
                 }
@@ -1007,6 +1094,8 @@ final class DesignController: ObservableObject {
         } catch {
             // Only report the error if this repack is still the winner; a superseded
             // job must not stomp the errorText owned by the cancelling call.
+            // SupersededJobError lands here too, but its token will not match,
+            // so the guard below exits without setting errorText.
             guard token == repackToken else { return }
             errorText = "Repack failed: \(error)"
             return   // isRepacking cleared by the `defer` above
@@ -1093,6 +1182,7 @@ final class DesignController: ObservableObject {
               let set = lastSet[focus] else { return }
         rescoreToken += 1
         let token = rescoreToken
+        rescoreMirror.set(token)   // update before dispatch so queued closures see the new value
         // New job takes ownership: wipe any stale `true` from a superseded rescore.
         isRescoring = false
         isRescoring = true
@@ -1105,8 +1195,14 @@ final class DesignController: ObservableObject {
         let validMask = set.residues.map { $0.valid }
         let scoreFn = score               // capture @MainActor-isolated property before leaving
 
+        let rMirror = rescoreMirror   // capture class reference (not current value)
         let result: MPNNModel.ScoreResult? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
+                // Early-exit BEFORE calling the model if this job was already superseded.
+                // SupersededJobError + try? → nil result; existing guard exits cleanly.
+                guard rMirror.get() == token else {
+                    cont.resume(throwing: SupersededJobError()); return
+                }
                 do { cont.resume(returning: try scoreFn(residues, seq)) }
                 catch { cont.resume(throwing: error) }
             }

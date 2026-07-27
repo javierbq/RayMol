@@ -749,6 +749,143 @@ final class DesignIOSPortTests: XCTestCase {
         engine.designMode = false
     }
 
+    // MARK: – Phase 2d: Superseded-job optimisation (TokenMirror fix)
+
+    // 1. A superseded rescore must NOT invoke the score closure for every mutation.
+    //
+    // Mechanism: the score closure signals that it has started (blocking the serial inference
+    // queue), then waits for the test to release it.  While it waits, the test dispatches two
+    // more mutations — these update the rescoreMirror to their tokens and queue their closures.
+    // Once the gate opens: closure 1 finishes; closure 2 finds mirror=3 ≠ token=2 → bails;
+    // closure 3 finds mirror=3 == token=3 → runs.  Total scoreFn invocations: 2 (not 3).
+    //
+    // Non-flake argument: score closure 1 explicitly blocks the inference queue via a
+    // DispatchSemaphore (background thread only — never the main actor).  Mutations 2 and 3
+    // are dispatched only AFTER closure 1 has signaled it is blocking (XCTestExpectation).
+    // `Task.yield()` is used to give the main-actor Tasks time to reach their first suspension
+    // point (after dispatching to the queue and updating the mirror), before the gate opens.
+    // The final `fulfillment(of:)` waits for a definite "all done" signal, not a sleep.
+    func testSupersededRescoreDoesNotInvokeScoreClosure() async {
+        let c = makeController()
+        c.autoRepack = false
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: Array(repeating: 5, count: 5), validFlags: allValid(5))
+
+        var scoreInvocations = 0
+        let score1Started = XCTestExpectation(description: "score closure 1 started")
+        let score1Gate    = DispatchSemaphore(value: 0)
+        let allDone       = XCTestExpectation(description: "all three mutations done")
+        allDone.expectedFulfillmentCount = 3
+        var firstCall = true
+
+        c.injectScore { _, s in
+            scoreInvocations += 1
+            if firstCall {
+                firstCall = false
+                score1Started.fulfill()   // signal main actor: queue is now blocked
+                score1Gate.wait()         // block inference queue (NOT main thread)
+            }
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+
+        // Mutation 1: dispatches its score closure to the queue (starts, then blocks).
+        Task { await c.applyMutationAwait(residueIndex: 0, aa: 1); allDone.fulfill() }
+        await Task.yield()   // let task 1 reach its suspension point (closure dispatched)
+
+        // Wait until score closure 1 is actually inside scoreFn (blocking the queue).
+        await fulfillment(of: [score1Started], timeout: 2.0)
+
+        // Queue is now blocked.  Dispatch mutations 2 and 3 — they update the mirror to 2/3
+        // and queue their closures, but cannot start until closure 1 releases the queue.
+        Task { await c.applyMutationAwait(residueIndex: 1, aa: 2); allDone.fulfill() }
+        await Task.yield(); await Task.yield()   // let task 2 dispatch + update mirror → 2
+        Task { await c.applyMutationAwait(residueIndex: 2, aa: 3); allDone.fulfill() }
+        await Task.yield(); await Task.yield()   // let task 3 dispatch + update mirror → 3
+
+        // Release the gate: closure 1 returns; closure 2 → mirror check bails; closure 3 runs.
+        score1Gate.signal()
+
+        await fulfillment(of: [allDone], timeout: 5.0)
+
+        // With fix:    scoreInvocations == 2 (closures 1 and 3 ran; closure 2 was superseded)
+        // Without fix: scoreInvocations == 3 (all three ran)
+        XCTAssertLessThan(scoreInvocations, 3,
+            "with the TokenMirror fix, superseded score closure 2 must bail before invoking " +
+            "scoreFn; only closures 1 (already started before superseded) and 3 (winner) run")
+    }
+
+    // 2. A superseded rescore must NOT set errorText — supersession is not a failure.
+    func testSupersededRescoreDoesNotSetErrorText() async {
+        let c = makeController()
+        c.autoRepack = false
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: Array(repeating: 5, count: 5), validFlags: allValid(5))
+
+        let score1Started = XCTestExpectation(description: "score closure 1 started")
+        let score1Gate    = DispatchSemaphore(value: 0)
+        let allDone       = XCTestExpectation(description: "all mutations done")
+        allDone.expectedFulfillmentCount = 2
+        var firstCall = true
+
+        c.injectScore { _, s in
+            if firstCall {
+                firstCall = false
+                score1Started.fulfill()
+                score1Gate.wait()
+            }
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+
+        // Start mutation 1, wait for its closure to be inside scoreFn.
+        Task { await c.applyMutationAwait(residueIndex: 0, aa: 1); allDone.fulfill() }
+        await Task.yield()
+        await fulfillment(of: [score1Started], timeout: 2.0)
+
+        // Dispatch mutation 2 to supersede mutation 1 (updates mirror → 2).
+        Task { await c.applyMutationAwait(residueIndex: 1, aa: 2); allDone.fulfill() }
+        await Task.yield(); await Task.yield()
+
+        // Release gate: closure 1 finishes; closure 2 bails via mirror check (with fix).
+        score1Gate.signal()
+        await fulfillment(of: [allDone], timeout: 5.0)
+
+        XCTAssertNil(c.errorText,
+            "a superseded score job must not set errorText — " +
+            "SupersededJobError is an implementation detail, not a user-visible failure")
+    }
+
+    // 3. The non-superseded path (single mutation, no racing) must still run and produce a result.
+    func testNonSupersededRescoreStillProducesResult() async {
+        let c = makeController()
+        c.autoRepack = false
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3.0, count: s.count))
+        }
+
+        await c.applyMutationAwait(residueIndex: 0, aa: 1)
+
+        XCTAssertNil(c.errorText,
+            "a single (non-superseded) rescore must not set errorText")
+        XCTAssertNotNil(c.sequenceScore,
+            "a single rescore must update sequenceScore")
+        XCTAssertFalse(c.isRescoring,
+            "isRescoring must be cleared after a successful rescore")
+    }
+
     // MARK: – Bug 2: repack error reporting
 
     // `repackNowAwait` previously swallowed every error with `try?`, so a failing
