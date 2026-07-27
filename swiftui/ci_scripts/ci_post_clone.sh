@@ -49,6 +49,15 @@ echo "  PYMOL_EXTERNAL_PREFIX=$PYMOL_EXTERNAL_PREFIX"
 # step 3.
 sed -i '' "s|^PYMOL_EXTERNAL_PREFIX = .*|PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX|" \
   swiftui/PyMOLBridge.xcconfig
+# `sed` exits 0 whether or not the pattern matched. Verify the substitution
+# applied before we discover the failure deep inside xcodebuild with the same
+# 'glm/vec3.hpp' file not found symptom that cost us build 4. This is the same
+# discipline apply_ci_versions.sh follows: "a silent no-op here ships the wrong
+# version" — here, a silent no-op ships /opt/homebrew to a machine that has none.
+grep -q "^PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX$" swiftui/PyMOLBridge.xcconfig || {
+  echo "ERROR: the PYMOL_EXTERNAL_PREFIX patch did not apply to swiftui/PyMOLBridge.xcconfig." >&2
+  echo "       Its line 22 format probably changed; the sed pattern needs updating." >&2
+  exit 1; }
 test -f "$PYMOL_EXTERNAL_PREFIX/include/glm/vec3.hpp" \
   && echo "  glm/vec3.hpp present under the patched prefix" \
   || { echo "ERROR: glm/vec3.hpp missing under $PYMOL_EXTERNAL_PREFIX/include" >&2; exit 1; }
