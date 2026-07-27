@@ -258,7 +258,7 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                         "destination": None,
                         # INTERNAL_ONLY: the pipeline's explicit policy decision.
                         # Valid values from Apple are INTERNAL_ONLY and
-                        # APP_STORE_ELIGIBLE (INTERNAL_TESTERS was rejected: not valid).
+                        # APP_STORE_ELIGIBLE. (A third value was rejected by Apple as invalid.)
                         #
                         # PERMANENT CONSEQUENCE: a build archived as INTERNAL_ONLY
                         # can NEVER be promoted to external testing or submitted
