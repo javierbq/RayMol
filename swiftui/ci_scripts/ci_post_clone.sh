@@ -1,26 +1,25 @@
 #!/bin/bash
-# TEMPORARY Xcode Cloud validation spike — replaced by the real script in Task 8.
+# ci_post_clone.sh — Xcode Cloud post-clone: stage everything xcodebuild needs
+# that is not in the repository, then build the C++ core.
 #
-# Answers four questions that Apple's documentation leaves open, in one build:
-#   1. Do files this script writes into the repository survive to later stages?
-#   2. Does network egress work through the mandated $HTTP_PROXY?
-#   3. Do `brew install cmake glm xcodegen` succeed with no sudo available?
-#   4. How long does a full PyMOL iOS core build take on this hardware?
+# Apple's environment, all of which this script depends on:
+#   * runs with swiftui/ci_scripts as the working directory, so we cd to the repo
+#   * NO sudo is available — Homebrew is preinstalled and needs none
+#   * network egress goes through $HTTP_PROXY/$HTTPS_PROXY (curl honours them)
+#   * only ONE ci_scripts directory is recognised per repo, and it must sit
+#     beside the .xcodeproj — hence swiftui/ci_scripts/
+#   * CI_PRIMARY_REPOSITORY_PATH = /Volumes/workspace/repository
+#   * CI_BUILD_NUMBER is a monotonic integer assigned by Xcode Cloud
+#
+# `set -u` deliberately makes this fail fast outside Xcode Cloud, where
+# CI_PRIMARY_REPOSITORY_PATH and CI_BUILD_NUMBER are unset.
 set -euo pipefail
 
 cd "$CI_PRIMARY_REPOSITORY_PATH"
 
-echo "== spike: environment =="
-echo "  CI_PRIMARY_REPOSITORY_PATH = $CI_PRIMARY_REPOSITORY_PATH"
-echo "  CI_BUILD_NUMBER            = ${CI_BUILD_NUMBER:-<unset>}"
-echo "  CI_START_CONDITION         = ${CI_START_CONDITION:-<unset>}"
-echo "  HTTPS_PROXY                = ${HTTPS_PROXY:-<unset>}"
-echo "  sw_vers                    = $(sw_vers -productVersion)"
-echo "  xcodebuild                 = $(xcodebuild -version | head -1)"
-echo "  preinstalled cmake?        = $(command -v cmake || echo NO)"
-echo "  preinstalled python3       = $(python3 --version 2>&1)"
+REPO="javierbq/RayMol"
 
-echo "== spike: Q3 toolchain via Homebrew (no sudo) =="
+echo "== 1/6  Toolchain =="
 # The COMPLETE set the iOS core build needs. Derived by reading
 # appkit/CMakeLists.txt's iOS branch rather than by guessing:
 #   cmake, xcodegen  - tools, neither preinstalled on Xcode Cloud
@@ -33,65 +32,68 @@ echo "== spike: Q3 toolchain via Homebrew (no sudo) =="
 # `NOT PYMOL_IOS` guards in appkit/CMakeLists.txt, so the iOS build never looks
 # for them.
 brew install cmake glm xcodegen libpng freetype
+# Read the prefix rather than trusting /opt/homebrew: Xcode Cloud runs at
+# /usr/local. Hardcoding /opt/homebrew here would be the same mistake line 22
+# of PyMOLBridge.xcconfig made before the sed patch below.
 export PYMOL_EXTERNAL_PREFIX="$(brew --prefix)"
-echo "  PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX"
-echo "  glm header            = $(ls "$PYMOL_EXTERNAL_PREFIX/include/glm/glm.hpp")"
+echo "  PYMOL_EXTERNAL_PREFIX=$PYMOL_EXTERNAL_PREFIX"
 
-echo "== spike: Q2 network through the proxy =="
-# Any small public asset. A GitHub release download is the exact path the real
-# script will use to fetch the deps artifact.
-curl -fsSL -o /tmp/spike-probe.txt \
-  "https://raw.githubusercontent.com/javierbq/RayMol/master/README.md"
-echo "  fetched $(wc -c < /tmp/spike-probe.txt) bytes from raw.githubusercontent.com"
-
-echo "== spike: point the xcconfig at the REAL Homebrew prefix =="
-# Build 4 got all the way into xcodebuild and then failed with
-#   layer1/Ray.h:22: fatal error: 'glm/vec3.hpp' file not found
-# because swiftui/PyMOLBridge.xcconfig HARDCODES `PYMOL_EXTERNAL_PREFIX =
-# /opt/homebrew` (line 22) and feeds it to the compiler as
-# `-I$(PYMOL_EXTERNAL_PREFIX)/include` (line 44). On Xcode Cloud the prefix is
-# /usr/local, so that include path does not exist.
-#
-# TWO places need the prefix, not one: the CMake core build reads the env var we
-# exported above, while the Xcode build reads this literal. Patch it in the
-# ephemeral checkout — same treatment project.yml gets in production.
+# TWO places need the Homebrew prefix, not one:
+#   - The CMake core build reads PYMOL_EXTERNAL_PREFIX from the env var above.
+#   - swiftui/PyMOLBridge.xcconfig line 22 hardcodes
+#       PYMOL_EXTERNAL_PREFIX = /opt/homebrew
+#     and feeds it to every compile unit via "-I$(PYMOL_EXTERNAL_PREFIX)/include"
+#     (line 44). On Xcode Cloud the prefix is /usr/local, so that path is absent.
+# Build 4 failed with 'glm/vec3.hpp' file not found for exactly this reason.
+# Patch the ephemeral checkout in place — same treatment project.yml gets in
+# step 3.
 sed -i '' "s|^PYMOL_EXTERNAL_PREFIX = .*|PYMOL_EXTERNAL_PREFIX = $PYMOL_EXTERNAL_PREFIX|" \
   swiftui/PyMOLBridge.xcconfig
-grep -n '^PYMOL_EXTERNAL_PREFIX' swiftui/PyMOLBridge.xcconfig | sed 's/^/  xcconfig now: /'
 test -f "$PYMOL_EXTERNAL_PREFIX/include/glm/vec3.hpp" \
   && echo "  glm/vec3.hpp present under the patched prefix" \
   || { echo "ERROR: glm/vec3.hpp missing under $PYMOL_EXTERNAL_PREFIX/include" >&2; exit 1; }
 
-echo "== spike: Q1 write markers into the repository =="
-echo "post-clone build ${CI_BUILD_NUMBER:-?}" > SPIKE_MARKER.txt
-mkdir -p spike_marker_dir && echo ok > spike_marker_dir/inside.txt
-( cd swiftui && xcodegen generate )   # mutates the committed .xcodeproj
-echo "  wrote SPIKE_MARKER.txt, spike_marker_dir/, and regenerated the project"
-
-echo "== spike: fetch prebuilt deps_ios (build 2 failed without this) =="
-# Build 2 skipped this and the core build died in contrib/champ with
-# "'Python.h' file not found": with no deps_ios/Python.xcframework present,
-# appkit/CMakeLists.txt takes its else() branch and points at
-# $(brew --prefix)/opt/python@3.13/... which is not installed on Xcode Cloud.
-# That is the silent-fallback hazard assert_ios_build_inputs.sh exists to catch.
-# Fetch the real artifact, exactly as the production ci_post_clone.sh will.
+echo "== 2/6  Fetch prebuilt deps_ios =="
 FP="$(bash scripts/ios_deps_fingerprint.sh)"
 TARBALL="deps_ios-$FP.tar.gz"
-BASE="https://github.com/javierbq/RayMol/releases/download/ios-deps-$FP"
+BASE="https://github.com/$REPO/releases/download/ios-deps-$FP"
 echo "  fingerprint=$FP"
-curl -fL --retry 3 --retry-delay 5 -o "$TARBALL" "$BASE/$TARBALL"
+# Build 2 skipped this step: appkit/CMakeLists.txt silently fell back to an
+# uninstalled $(brew --prefix)/opt/python@3.13/... and died in contrib/champ
+# with "'Python.h' file not found". deps_ios MUST be staged before the core
+# build in step 5.
+#
+# Fail loudly when the artifact is absent. NEVER fall back to building deps
+# inline, and never accept a different fingerprint: today's core linked against
+# yesterday's numpy is exactly the stale-artifact class of bug that make_dmg.sh
+# grew its staleness assertions to prevent.
+curl -fL --retry 3 --retry-delay 5 -o "$TARBALL" "$BASE/$TARBALL" || {
+  echo "ERROR: no published deps artifact for fingerprint $FP." >&2
+  echo "       Run the 'iOS deps artifact' GitHub Actions workflow on master," >&2
+  echo "       then re-run this build. Refusing to build deps inline." >&2
+  exit 1; }
 curl -fL --retry 3 --retry-delay 5 -o "$TARBALL.sha256" "$BASE/$TARBALL.sha256"
 shasum -a 256 -c "$TARBALL.sha256"
 tar -xzf "$TARBALL"
 rm -f "$TARBALL" "$TARBALL.sha256"
-echo "  deps_ios staged: $(du -sh deps_ios | cut -f1)"
 
-echo "== spike: Q4 time a full core build =="
-START=$(date +%s)
+echo "== 3/6  Stamp marketing version + build number =="
+MKT="$(bash scripts/nightly_version.sh)"
+# apply_ci_versions.sh must run before xcodegen (step 4): xcodegen propagates
+# MARKETING_VERSION and CURRENT_PROJECT_VERSION from project.yml into the
+# generated .pbxproj.
+bash scripts/apply_ci_versions.sh swiftui/project.yml "$MKT" "$CI_BUILD_NUMBER"
+
+echo "== 4/6  Regenerate the Xcode project =="
+# project.yml is the source of truth and the committed .pbxproj can lag it —
+# skipping this is how PR #124's app-icon setting was once silently reverted.
+# It is also what picks up the version stamp from step 3.
+( cd swiftui && xcodegen generate )
+
+echo "== 5/6  Build libpymol_core.a (device) =="
 bash swiftui/build_ios.sh device
-echo "  CORE_BUILD_SECONDS=$(( $(date +%s) - START ))"
-ls -la build_ios_device/libpymol_core.a
-lipo -archs build_ios_device/libpymol_core.a
 
-echo "== spike: assert build inputs (rehearses the production gate) =="
+echo "== 6/6  Assert build inputs before xcodebuild =="
 bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
+
+echo "ci_post_clone OK — $MKT ($CI_BUILD_NUMBER), deps fingerprint $FP"
