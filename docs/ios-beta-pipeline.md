@@ -16,7 +16,10 @@ path (`swiftui/make_dmg.sh`, `swiftui/publish_release.sh`).
    Homebrew prefix in `swiftui/PyMOLBridge.xcconfig`, stamp the version,
    `xcodegen`, build `libpymol_core.a`, assert inputs.
 3. The Archive action signs (Apple manages the certificates) and the TestFlight
-   internal post-action distributes to the beta group.
+   internal post-action distributes to the beta group. Builds are archived
+   `INTERNAL_ONLY` — permanently internal-only, never App Store eligible — and
+   whether the post-action truly auto-distributes is unverified. See
+   *Build distribution audience* below before relying on either.
 
 ## One-time setup (human only — cannot be scripted)
 
@@ -64,12 +67,41 @@ Product RayMol, App ID `6781513038`, repository `javierbq/RayMol`.
 | Auto-cancel Builds | **On** |
 | Environment | Xcode latest release, macOS latest |
 | Action | **Archive**, scheme `PyMOLViewer_iOS`, platform iOS |
+| Build distribution audience | `INTERNAL_ONLY` — **permanent per build**, see note below |
 | Restrict Editing | **On** (`isLockedForEditing: true`; Apple requires it for review-eligible builds — see ordering note below) |
 | Post-action | TestFlight **internal** testing → group `Beta` |
 | Post-action | Email and/or Slack notification on failure |
 
 `scripts/asc_xcode_cloud_workflow.py` can create most of these settings via the
 API. Run it with `--dry-run` first to inspect the payload.
+
+**Build distribution audience — `INTERNAL_ONLY`, and it is irreversible:**
+The Archive action sets `buildDistributionAudience: INTERNAL_ONLY`, which marks
+every build this pipeline produces as internal-only. That marking is permanent
+for a build once archived: an `INTERNAL_ONLY` build can **never** be promoted to
+external TestFlight testing, and can never be submitted to the App Store. It is
+restricted to internal tester groups forever.
+
+The escape is a PATCH plus a rebuild, and it does not rescue existing builds:
+PATCH the workflow's `buildDistributionAudience` to `APP_STORE_ELIGIBLE`, then
+produce a **new** build. Every build archived before that change stays
+ineligible permanently.
+
+This is a deliberate choice rather than an oversight — the real iOS App Store
+submission path is `swiftui/archive_appstore.sh`, entirely separate from this
+pipeline, so nothing here ever needs to be App Store eligible.
+
+Two further limits on what the audience value actually does:
+
+- `INTERNAL_ONLY` does **not** by itself attach a build to a TestFlight group.
+  Attaching it to group `Beta` is the post-action's job — the UI step in the
+  table above, which the ASC API cannot express.
+- Whether that post-action then genuinely auto-distributes to the group is
+  **unverified**. Apple's own documentation contradicts itself: one page states
+  that Xcode Cloud builds must be added to groups manually, another describes an
+  automatic internal-testing post-action. This is a known open risk in the
+  design, not a settled fact. Confirm on the first real build that testers were
+  actually notified; if they were not, add the build to the group by hand.
 
 **Required ordering — the lock must come last:**
 A locked workflow (`isLockedForEditing: true`) is **read-only in the UI** — the
@@ -181,6 +213,11 @@ Holder, Admin, App Manager, Developer or Marketing role.
 Add one: App Store Connect → Users and Access → invite with one of those roles,
 then TestFlight → Internal Testing → group `Beta` → add the tester.
 
+**External testers are not available on this pipeline.** Its builds are archived
+`INTERNAL_ONLY`, so they can never be promoted to external testing — internal
+groups are the only possible audience. See *Build distribution audience* above
+for the PATCH-plus-rebuild escape.
+
 Builds remain installable for **90 days**, and up to **100 builds** can be
 active at once. At a few builds per week this stays well inside both limits.
 If it approaches them, expire the oldest builds in App Store Connect.
@@ -246,6 +283,8 @@ ever updated, exclude assets matching `deps_ios-*.tar.gz` explicitly.
 | `gh workflow run` reports "could not find any workflows named ..." | The workflow file is not on the default branch yet. See the bootstrap note above. |
 | Xcode Cloud build start returns `409 branch ... is not associated with the workflow` | The branch being built is not listed in the workflow's start condition patterns. Add it, or switch to a build run on the branch already in the condition. |
 | Default workflow fires on every push and fails | The `Default` wizard-created workflow is still enabled. Disable or delete it in App Store Connect. |
+| A build cannot be promoted to external testing or submitted to the App Store | It was archived `INTERNAL_ONLY` — permanent for that build. PATCH the workflow to `APP_STORE_ELIGIBLE` and produce a NEW build; this one stays ineligible. For an actual App Store submission use `swiftui/archive_appstore.sh` instead. |
+| A build appears in TestFlight but testers were not notified | The `INTERNAL_ONLY` audience does not attach a build to a group; only the UI post-action does, and its auto-distribution is unverified. Add the build to group `Beta` manually in App Store Connect. |
 
 ## Local checks
 
