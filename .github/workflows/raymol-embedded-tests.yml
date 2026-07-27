@@ -57,4 +57,9 @@ jobs:
               testing/tests/test_appkit_ray_overlay.py \
               testing/tests/test_metal_pick.py \
               testing/tests/test_mouse_panel.py \
-              testing/tests/test_stale_check.py
+              testing/tests/test_stale_check.py \
+              testing/tests/raymol/design_color.py \
+              testing/tests/raymol/design_editing.py \
+              testing/tests/raymol/design_enumerate.py \
+              testing/tests/raymol/design_region.py \
+              testing/tests/raymol/design_saverestore.py
