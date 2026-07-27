@@ -46,10 +46,12 @@ and must be configured manually in App Store Connect after the workflow is creat
 
   * TestFlight internal testing post-action: there is no documented REST endpoint
     for ciWorkflow post-actions that attaches a TestFlight internal-testing step
-    with a named group (e.g. "Beta"). The ARCHIVE action can specify
-    buildDistributionAudience = INTERNAL_TESTERS to route the IPA to internal
-    testers, but selecting a specific named TestFlight group requires the Xcode
-    or App Store Connect UI.
+    with a named group (e.g. "Beta"). The ARCHIVE action sets
+    buildDistributionAudience = INTERNAL_ONLY, which marks the build as
+    internal-only (permanent — it can never be promoted to external testing or
+    App Store submission). INTERNAL_ONLY does NOT attach the build to a named
+    TestFlight group; that requires a UI post-action step. Whether that post-action
+    auto-distributes is unverified (Apple's docs are ambiguous on this point).
 
   * Email and Slack notifications: ciWorkflow notification settings are not
     exposed by the App Store Connect REST API v1 as of July 2026.
@@ -256,7 +258,7 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                         "destination": None,
                         # INTERNAL_ONLY: the pipeline's explicit policy decision.
                         # Valid values from Apple are INTERNAL_ONLY and
-                        # APP_STORE_ELIGIBLE; INTERNAL_TESTERS is not valid.
+                        # APP_STORE_ELIGIBLE (INTERNAL_TESTERS was rejected: not valid).
                         #
                         # PERMANENT CONSEQUENCE: a build archived as INTERNAL_ONLY
                         # can NEVER be promoted to external testing or submitted
@@ -423,9 +425,13 @@ def main():
     print()
     print("== what this script CANNOT set (manual steps required after creation) ==")
     print("  1. TestFlight internal testing post-action with a named group ('Beta').")
-    print("     The ARCHIVE action sets buildDistributionAudience=INTERNAL_TESTERS,")
-    print("     which routes the IPA, but selecting a specific TestFlight group")
-    print("     requires the App Store Connect or Xcode UI workflow editor.")
+    print("     The ARCHIVE action sets buildDistributionAudience=INTERNAL_ONLY,")
+    print("     which marks the *build* as internal-only (it can never be promoted")
+    print("     to external testing or submitted to the App Store — permanent).")
+    print("     INTERNAL_ONLY does NOT by itself attach the build to a TestFlight")
+    print("     group; that is the UI post-action step. Whether the post-action")
+    print("     then auto-distributes is unverified — Apple's docs are ambiguous.")
+    print("     The named group ('Beta') must be selected in the workflow editor.")
     print("  2. Email / Slack failure notifications.")
     print("     Workflow notification settings are not exposed by the ASC REST API.")
     print()
