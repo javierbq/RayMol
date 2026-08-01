@@ -233,6 +233,21 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolToggleTimeline, object: nil)
                 }.keyboardShortcut("m", modifiers: [.command, .option])
             }
+            CommandMenu("Notes") {
+                Button("Insert Camera View Link") {
+                    NotificationCenter.default.post(name: .raymolInsertNoteView, object: nil)
+                }.keyboardShortcut("l", modifiers: [.command, .option])
+                Button("Toggle Edit / Preview") {
+                    NotificationCenter.default.post(name: .raymolToggleNotePreview, object: nil)
+                }.keyboardShortcut("p", modifiers: [.command, .option])
+                Divider()
+                Button("Increase Note Font Size") {
+                    NotificationCenter.default.post(name: .raymolNotesFontIncrease, object: nil)
+                }.keyboardShortcut("+", modifiers: [.command, .option])
+                Button("Decrease Note Font Size") {
+                    NotificationCenter.default.post(name: .raymolNotesFontDecrease, object: nil)
+                }.keyboardShortcut("-", modifiers: [.command, .option])
+            }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             CommandMenu("Connect") {
                 Toggle("Enable AI control", isOn: Binding(

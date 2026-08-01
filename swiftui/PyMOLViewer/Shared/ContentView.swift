@@ -53,6 +53,14 @@ extension Notification.Name {
     // Posted by the macOS app-menu item and the iOS Settings row to open the
     // "What's New" splash on demand; observed in ContentView.body.
     static let raymolShowWhatsNew = Notification.Name("raymol.menu.showWhatsNew")
+    static let raymolInsertNoteView = Notification.Name("raymol.notes.insertView")
+    static let raymolToggleNotePreview = Notification.Name("raymol.notes.togglePreview")
+    static let raymolNotesFontIncrease = Notification.Name("raymol.notes.fontIncrease")
+    static let raymolNotesFontDecrease = Notification.Name("raymol.notes.fontDecrease")
+    static let raymolPerformInsertNoteView = Notification.Name("raymol.notes.performInsertView")
+    static let raymolPerformToggleNotePreview = Notification.Name("raymol.notes.performTogglePreview")
+    static let raymolPerformFontIncrease = Notification.Name("raymol.notes.performFontIncrease")
+    static let raymolPerformFontDecrease = Notification.Name("raymol.notes.performFontDecrease")
 }
 
 #if os(iOS)
@@ -217,6 +225,18 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .raymolShowWhatsNew)) { _ in
                 whatsNew.presentManually()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .raymolInsertNoteView)) { _ in
+                openNotesAndPost(.raymolPerformInsertNoteView)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .raymolToggleNotePreview)) { _ in
+                openNotesAndPost(.raymolPerformToggleNotePreview)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .raymolNotesFontIncrease)) { _ in
+                openNotesAndPost(.raymolPerformFontIncrease)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .raymolNotesFontDecrease)) { _ in
+                openNotesAndPost(.raymolPerformFontDecrease)
             }
             .sheet(isPresented: $whatsNew.isPresented, onDismiss: { whatsNew.didDismiss() }) {
                 WhatsNewModal(pages: whatsNew.pages,
@@ -791,6 +811,13 @@ struct ContentView: View {
     @State private var sceneRenameTarget: String? = nil
     @State private var sceneRenameText: String = ""
     @State private var showCameraPanel = false   // viewport Camera overlay (shared macOS/iOS)
+
+    private func openNotesAndPost(_ name: Notification.Name) {
+        inspectorTab = .notes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NotificationCenter.default.post(name: name, object: nil)
+        }
+    }
 
     // Floating scene chips over the viewport (teal/global), shown only when the
     // Scenes tab's "Show scene buttons in viewport" toggle is on. Tap = recall.
@@ -2437,7 +2464,7 @@ struct ContentView: View {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.pse")
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         if FileManager.default.fileExists(atPath: url.path) {
-            let items = [url, notes.writePortableSidecar(nextTo: url)].compactMap { $0 }
+            let items = [url] + notes.portableCompanions(nextTo: url)
             presentShareSheet(items)
         }
     }
@@ -2455,7 +2482,7 @@ struct ContentView: View {
               let root = scene.keyWindow?.rootViewController else { return }
         var top = root
         while let presented = top.presentedViewController { top = presented }
-        let items = [url, notes.writePortableSidecar(nextTo: url)].compactMap { $0 }
+        let items = [url] + notes.portableCompanions(nextTo: url)
         let picker = UIDocumentPickerViewController(forExporting: items, asCopy: true)
         if let pop = picker.popoverPresentationController {
             pop.sourceView = top.view
@@ -2958,7 +2985,7 @@ struct ContentView: View {
         let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_share.pse")
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(tmp)''')")
         let sessionURL = URL(fileURLWithPath: tmp)
-        let items = [sessionURL, notes.writePortableSidecar(nextTo: sessionURL)].compactMap { $0 }
+        let items = [sessionURL] + notes.portableCompanions(nextTo: sessionURL)
         presentShare(items: items)
     }
 

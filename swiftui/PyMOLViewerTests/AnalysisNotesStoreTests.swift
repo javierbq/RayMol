@@ -79,4 +79,54 @@ final class AnalysisNotesStoreTests: XCTestCase {
         XCTAssertTrue(reader.text.contains("raymol-view://\(bookmark.id.uuidString)"))
         XCTAssertEqual(reader.viewBookmark(for: URL(string: "raymol-view://\(bookmark.id.uuidString)")!), bookmark)
     }
+
+    @MainActor
+    func testSceneBookmarkPersistsKindAndSceneName() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = AnalysisNotesStore(fallbackDirectory: root, debounceInterval: 60)
+        let bookmark = try XCTUnwrap(store.addViewBookmark(
+            title: "Complete interface", view: (0..<25).map(Float.init),
+            kind: .scene, sceneName: "__raymol_note_test"
+        ))
+        XCTAssertEqual(bookmark.resolvedKind, .scene)
+        XCTAssertEqual(bookmark.sceneName, "__raymol_note_test")
+        XCTAssertTrue(store.cleanMarkdown.contains("**Scene view:** Complete interface"))
+        XCTAssertFalse(store.cleanMarkdown.contains("raymol-view://"))
+    }
+
+    @MainActor
+    func testHeadingsAndTagsAreDerivedFromMarkdown() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.text = "# Binding site\n## Contacts\nLook at #interface and #glycan.\n#interface"
+
+        XCTAssertEqual(store.headings.map(\.title), ["Binding site", "Contacts"])
+        XCTAssertEqual(store.tags, ["#glycan", "#interface"])
+    }
+
+    @MainActor
+    func testScreenshotIsBundledWithPortableSidecar() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("source.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: source)
+        let store = AnalysisNotesStore(
+            fallbackDirectory: root.appendingPathComponent("fallback", isDirectory: true),
+            debounceInterval: 60
+        )
+        let asset = try XCTUnwrap(store.addScreenshot(title: "Metal view", from: source))
+        let session = root.appendingPathComponent("shared.pse")
+        let companions = store.portableCompanions(nextTo: session)
+
+        XCTAssertTrue(store.text.contains("raymol-asset://\(asset.id.uuidString)"))
+        XCTAssertEqual(companions.filter { $0.pathExtension == "json" }.count, 1)
+        XCTAssertEqual(companions.filter { $0.pathExtension == "png" }.count, 1)
+        XCTAssertEqual(store.cleanMarkdown, "**Figure:** Metal view")
+    }
 }

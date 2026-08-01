@@ -2950,7 +2950,11 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        let scenes = (root["scenes"] as? [String]) ?? []
+        // Note-linked full-scene bookmarks are implementation details. Keep them
+        // inside the .pse for reliable restoration without cluttering the user's
+        // Scenes panel, timeline composer, or viewport scene chips.
+        let scenes = ((root["scenes"] as? [String]) ?? [])
+            .filter { !$0.hasPrefix("__raymol_note_") }
         let curScene = (root["cur_scene"] as? String) ?? ""
 
         DispatchQueue.main.async {

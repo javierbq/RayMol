@@ -1,6 +1,12 @@
 // NotesInspectorView.swift — session-linked analysis scratchpad.
 
 import SwiftUI
+import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Plain-text analysis notes associated with the current PyMOL session.
 ///
@@ -12,20 +18,40 @@ import SwiftUI
 final class AnalysisNotesStore: ObservableObject {
     static let shared = AnalysisNotesStore()
 
+    enum BookmarkKind: String, Codable, CaseIterable {
+        case camera
+        case scene
+
+        var label: String { self == .camera ? "Camera" : "Scene" }
+    }
+
     struct ViewBookmark: Codable, Identifiable, Equatable {
         let id: UUID
         var title: String
         let view: [Float]
         let createdAt: Date
+        // Optional fields preserve version-2 camera-only sidecars.
+        var kind: BookmarkKind?
+        var sceneName: String?
+
+        var resolvedKind: BookmarkKind { kind ?? .camera }
+    }
+
+    struct ScreenshotAsset: Codable, Identifiable, Equatable {
+        let id: UUID
+        var title: String
+        let fileName: String
+        let createdAt: Date
     }
 
     struct Document: Codable {
-        var version = 2
+        var version = 3
         var sessionName: String?
         var updatedAt: Date
         var text: String
         // Optional keeps version-1 sidecars backward compatible.
         var viewBookmarks: [ViewBookmark]?
+        var screenshots: [ScreenshotAsset]?
     }
 
     @Published var text: String = "" {
@@ -38,6 +64,7 @@ final class AnalysisNotesStore: ObservableObject {
     @Published private(set) var sessionURL: URL?
     @Published private(set) var saveState: SaveState = .saved
     @Published private(set) var viewBookmarks: [ViewBookmark] = []
+    @Published private(set) var screenshots: [ScreenshotAsset] = []
 
     enum SaveState: Equatable {
         case saved
@@ -82,6 +109,7 @@ final class AnalysisNotesStore: ObservableObject {
         let document = loadDocument(for: normalized)
         text = document?.text ?? ""
         viewBookmarks = document?.viewBookmarks ?? []
+        screenshots = document?.screenshots ?? []
         isLoading = false
         saveState = .saved
     }
@@ -92,8 +120,10 @@ final class AnalysisNotesStore: ObservableObject {
     func sessionDidSave(to url: URL) {
         pendingSave?.cancel()
         pendingSave = nil
+        let oldURL = sessionURL
         hasOpenedSession = true
         sessionURL = url.standardizedFileURL
+        migrateFallbackAssets(from: oldURL, to: sessionURL)
         persist()
     }
 
@@ -111,19 +141,100 @@ final class AnalysisNotesStore: ObservableObject {
     }
 
     @discardableResult
-    func addViewBookmark(title: String, view: [Float]) -> ViewBookmark? {
+    func addViewBookmark(id: UUID = UUID(), title: String, view: [Float],
+                         kind: BookmarkKind = .camera,
+                         sceneName: String? = nil) -> ViewBookmark? {
         guard view.count == 25 else { return nil }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let bookmark = ViewBookmark(id: UUID(),
+        let bookmark = ViewBookmark(id: id,
                                     title: cleanTitle.isEmpty ? "Saved view" : cleanTitle,
                                     view: view,
-                                    createdAt: Date())
+                                    createdAt: portableTimestamp(), kind: kind,
+                                    sceneName: sceneName)
         viewBookmarks.append(bookmark)
         let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
         text += "\(separator)[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))"
         saveState = .pending
         scheduleSave()
         return bookmark
+    }
+
+    @discardableResult
+    func addScreenshot(title: String, from sourceURL: URL) -> ScreenshotAsset? {
+        let id = UUID()
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let asset = ScreenshotAsset(id: id,
+                                    title: cleanTitle.isEmpty ? "Molecular view" : cleanTitle,
+                                    fileName: "\(id.uuidString).png", createdAt: portableTimestamp())
+        do {
+            let directory = fallbackAssetsDirectory(for: sessionURL)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent(asset.fileName)
+            try? fileManager.removeItem(at: destination)
+            try fileManager.copyItem(at: sourceURL, to: destination)
+            screenshots.append(asset)
+            let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
+            text += "\(separator)![\(asset.title)](raymol-asset://\(asset.id.uuidString))"
+            saveState = .pending
+            scheduleSave()
+            return asset
+        } catch {
+            saveState = .failed(error.localizedDescription)
+            return nil
+        }
+    }
+
+    func screenshot(for url: URL) -> ScreenshotAsset? {
+        guard url.scheme == "raymol-asset" else { return nil }
+        let identifier = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let id = UUID(uuidString: identifier) else { return nil }
+        return screenshots.first { $0.id == id }
+    }
+
+    func screenshotURL(for asset: ScreenshotAsset) -> URL? {
+        if let sessionURL {
+            let portable = assetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
+            if fileManager.fileExists(atPath: portable.path) { return portable }
+            // Share sheets and multi-file document pickers may flatten the
+            // companion asset folder. Accept a PNG beside the .pse as well.
+            let sibling = sessionURL.deletingLastPathComponent().appendingPathComponent(asset.fileName)
+            if fileManager.fileExists(atPath: sibling.path) { return sibling }
+        }
+        let fallback = fallbackAssetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
+        return fileManager.fileExists(atPath: fallback.path) ? fallback : nil
+    }
+
+    var headings: [(level: Int, title: String)] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).compactMap { line in
+            let prefix = line.prefix { $0 == "#" }
+            guard (1...6).contains(prefix.count), line.dropFirst(prefix.count).first == " " else { return nil }
+            return (prefix.count, String(line.dropFirst(prefix.count + 1)).trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    var tags: [String] {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_–-"))
+        let found = text.components(separatedBy: .whitespacesAndNewlines).compactMap { token -> String? in
+            guard token.hasPrefix("#"), token.count > 1 else { return nil }
+            let body = token.dropFirst().unicodeScalars.prefix { allowed.contains($0) }
+            return body.isEmpty ? nil : "#" + body.map(String.init).joined()
+        }
+        return Array(Set(found)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Portable, human-readable Markdown with RayMol-only URL schemes removed.
+    var cleanMarkdown: String {
+        var result = text
+        for bookmark in viewBookmarks {
+            let source = "[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))"
+            result = result.replacingOccurrences(of: source,
+                with: "**\(bookmark.resolvedKind.label) view:** \(bookmark.title)")
+        }
+        for asset in screenshots {
+            let source = "![\(asset.title)](raymol-asset://\(asset.id.uuidString))"
+            result = result.replacingOccurrences(of: source, with: "**Figure:** \(asset.title)")
+        }
+        return result
     }
 
     func viewBookmark(for url: URL) -> ViewBookmark? {
@@ -138,7 +249,8 @@ final class AnalysisNotesStore: ObservableObject {
     func writePortableSidecar(nextTo sessionURL: URL) -> URL? {
         let document = Document(sessionName: sessionURL.lastPathComponent,
                                 updatedAt: Date(), text: text,
-                                viewBookmarks: viewBookmarks)
+                                viewBookmarks: viewBookmarks,
+                                screenshots: screenshots)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -150,6 +262,24 @@ final class AnalysisNotesStore: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    /// Sidecar plus linked image assets for Share and document export flows.
+    func portableCompanions(nextTo sessionURL: URL) -> [URL] {
+        var urls: [URL] = []
+        if let sidecar = writePortableSidecar(nextTo: sessionURL) { urls.append(sidecar) }
+        let directory = assetsDirectory(for: sessionURL)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        for asset in screenshots {
+            guard let source = screenshotURL(for: asset) else { continue }
+            let destination = directory.appendingPathComponent(asset.fileName)
+            if source.standardizedFileURL != destination.standardizedFileURL {
+                try? fileManager.removeItem(at: destination)
+                try? fileManager.copyItem(at: source, to: destination)
+            }
+            if fileManager.fileExists(atPath: destination.path) { urls.append(destination) }
+        }
+        return urls
     }
 
     private func scheduleSave() {
@@ -165,7 +295,8 @@ final class AnalysisNotesStore: ObservableObject {
 
         let document = Document(sessionName: sessionURL?.lastPathComponent,
                                 updatedAt: Date(), text: text,
-                                viewBookmarks: viewBookmarks)
+                                viewBookmarks: viewBookmarks,
+                                screenshots: screenshots)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -183,6 +314,7 @@ final class AnalysisNotesStore: ObservableObject {
                 let scoped = sessionURL.startAccessingSecurityScopedResource()
                 defer { if scoped { sessionURL.stopAccessingSecurityScopedResource() } }
                 try? data.write(to: sidecarURL(for: sessionURL), options: .atomic)
+                _ = portableCompanions(nextTo: sessionURL)
             }
             saveState = .saved
         } catch {
@@ -226,6 +358,31 @@ final class AnalysisNotesStore: ObservableObject {
         return fallbackDirectory.appendingPathComponent("\(stableHash(sessionURL.absoluteString)).json")
     }
 
+    private func assetsDirectory(for sessionURL: URL) -> URL {
+        let stem = sessionURL.deletingPathExtension().lastPathComponent
+        return sessionURL.deletingLastPathComponent()
+            .appendingPathComponent("\(stem).raymol-notes-assets", isDirectory: true)
+    }
+
+    private func fallbackAssetsDirectory(for sessionURL: URL?) -> URL {
+        let key = sessionURL.map { stableHash($0.absoluteString) } ?? "untitled"
+        return fallbackDirectory.appendingPathComponent("Assets", isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true)
+    }
+
+    private func migrateFallbackAssets(from oldURL: URL?, to newURL: URL?) {
+        let source = fallbackAssetsDirectory(for: oldURL)
+        let destination = fallbackAssetsDirectory(for: newURL)
+        guard source.standardizedFileURL != destination.standardizedFileURL,
+              let files = try? fileManager.contentsOfDirectory(at: source,
+                                                                includingPropertiesForKeys: nil) else { return }
+        try? fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for file in files {
+            let target = destination.appendingPathComponent(file.lastPathComponent)
+            if !fileManager.fileExists(atPath: target.path) { try? fileManager.copyItem(at: file, to: target) }
+        }
+    }
+
     /// Deterministic FNV-1a keeps fallback filenames stable without adding a
     /// CryptoKit deployment dependency.
     private func stableHash(_ value: String) -> String {
@@ -236,6 +393,35 @@ final class AnalysisNotesStore: ObservableObject {
         }
         return String(hash, radix: 16)
     }
+
+    private func portableTimestamp() -> Date {
+        Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+    }
+}
+
+struct MarkdownNoteDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        text = configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+private struct AnalysisNoteTemplate: Identifiable {
+    let id: String
+    let name: String
+    let text: String
+    static let all: [Self] = [
+        .init(id: "observation", name: "Structural observation", text: "# Structural observation\n\n## Context\n\n## Observation\n\n## Interpretation\n\n## Follow-up\n"),
+        .init(id: "binding", name: "Binding site", text: "# Binding-site analysis\n\n## Ligand and pose\n\n## Key contacts\n\n- Hydrogen bonds:\n- Hydrophobic contacts:\n- Waters / ions:\n\n## Open questions\n\n#binding-site\n"),
+        .init(id: "interface", name: "Protein interface", text: "# Interface analysis\n\n## Chains / partners\n\n## Contact residues\n\n## Hotspot hypothesis\n\n## Validation plan\n\n#interface\n"),
+        .init(id: "mutation", name: "Mutation comparison", text: "# Mutation comparison\n\n## Wild type\n\n## Variant\n\n## Structural change\n\n## Functional hypothesis\n\n#mutation\n"),
+        .init(id: "glycan", name: "Glycan / PTM", text: "# Glycan or PTM analysis\n\n## Site and chemistry\n\n## Local environment\n\n## Conformational effects\n\n## Evidence\n\n#ptm\n")
+    ]
 }
 
 struct NotesInspectorView: View {
@@ -246,6 +432,10 @@ struct NotesInspectorView: View {
     @State private var showingViewNamePrompt = false
     @State private var viewName = ""
     @State private var pendingView: [Float]?
+    @State private var pendingKind: AnalysisNotesStore.BookmarkKind = .camera
+    @State private var searchText = ""
+    @State private var showingMarkdownExporter = false
+    @State private var showingShareHelp = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -257,6 +447,41 @@ struct NotesInspectorView: View {
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
                 saveStatus
+            }
+
+
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search notes", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .onSubmit { isPreviewing = true }
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+
+                Menu {
+                    if notes.headings.isEmpty { Text("No Markdown headings") }
+                    ForEach(Array(notes.headings.enumerated()), id: \.offset) { _, heading in
+                        Button(String(repeating: "  ", count: max(0, heading.level - 1)) + heading.title) {
+                            searchText = heading.title
+                            isPreviewing = true
+                        }
+                    }
+                } label: { Image(systemName: "list.bullet.indent") }
+                .help("Heading outline")
+
+                Menu {
+                    if notes.tags.isEmpty { Text("Use tags such as #interface") }
+                    ForEach(notes.tags, id: \.self) { tag in
+                        Button(tag) { searchText = tag }
+                    }
+                } label: { Image(systemName: "number") }
+                .help("Note tags")
             }
 
             HStack(spacing: 8) {
@@ -303,20 +528,36 @@ struct NotesInspectorView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack(spacing: 8) {
-                Button {
-                    guard let view = engine.captureView() else { return }
-                    pendingView = view
-                    viewName = "View \(notes.viewBookmarks.count + 1)"
-                    showingViewNamePrompt = true
+                Menu {
+                    Button("Camera Only") { beginViewLink(.camera) }
+                    Button("Full Scene") { beginViewLink(.scene) }
                 } label: {
                     Label("Insert View Link", systemImage: "camera.viewfinder")
                 }
                 .disabled(!engine.isReady)
-                .help("Capture the current molecular camera and insert a link")
+                .help("Insert a camera-only or full-scene link (⌥⌘L)")
+
+                Menu {
+                    ForEach(AnalysisNoteTemplate.all) { template in
+                        Button(template.name) { appendTemplate(template) }
+                    }
+                } label: { Image(systemName: "doc.badge.plus") }
+                .help("Append an analysis template")
+
+                Button { insertMetalScreenshot() } label: {
+                    Image(systemName: "camera")
+                }
+                .disabled(!engine.isReady)
+                .help("Insert a Metal-rendered screenshot")
+
+                Menu {
+                    Button("Export Clean Markdown…") { showingMarkdownExporter = true }
+                    Button("Sharing Notes & Sessions…") { showingShareHelp = true }
+                } label: { Image(systemName: "square.and.arrow.up") }
 
                 Spacer()
 
-                Text("\(notes.text.count) characters · \(notes.viewBookmarks.count) views")
+                Text(summaryLabel)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             }
@@ -329,7 +570,30 @@ struct NotesInspectorView: View {
             Button("Insert") { insertPendingView() }
             Button("Cancel", role: .cancel) { pendingView = nil }
         } message: {
-            Text("Name the current molecular view. Clicking its link in Preview will return to this camera position.")
+            Text(pendingKind == .camera
+                 ? "Camera links restore orientation, zoom, and clipping."
+                 : "Scene links restore the full PyMOL scene. Save the .pse after adding one so the scene travels with the session.")
+        }
+        .alert("Sharing Analysis Notes", isPresented: $showingShareHelp) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Share Session and Save Session automatically include the .raymol-notes.json sidecar and linked PNG images. Keep the files together. Full-scene links also require the saved .pse because their scene data lives inside the PyMOL session.")
+        }
+        .fileExporter(isPresented: $showingMarkdownExporter,
+                      document: MarkdownNoteDocument(text: notes.cleanMarkdown),
+                      contentType: .plainText,
+                      defaultFilename: markdownFilename) { _ in }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolPerformInsertNoteView)) { _ in
+            beginViewLink(.camera)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolPerformToggleNotePreview)) { _ in
+            isPreviewing.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolPerformFontIncrease)) { _ in
+            fontSize = min(28, fontSize + 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolPerformFontDecrease)) { _ in
+            fontSize = max(12, fontSize - 1)
         }
     }
 
@@ -353,6 +617,7 @@ struct NotesInspectorView: View {
 
     private var preview: some View {
         ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
             if notes.text.isEmpty {
                 Text("Nothing to preview yet.")
                     .foregroundStyle(.tertiary)
@@ -362,12 +627,37 @@ struct NotesInspectorView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if !notes.viewBookmarks.isEmpty {
+                Divider()
+                Text("VIEW LINKS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(notes.viewBookmarks) { bookmark in
+                    Button { restore(bookmark) } label: {
+                        HStack {
+                            Image(systemName: bookmark.resolvedKind == .camera ? "camera.viewfinder" : "rectangle.on.rectangle")
+                            Text(bookmark.title).lineLimit(1)
+                            Spacer()
+                            Text(bookmark.resolvedKind.label)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(Color.accentColor.opacity(0.14), in: Capsule())
+                        }
+                    }.buttonStyle(.plain)
+                }
+            }
+            if !notes.screenshots.isEmpty {
+                Divider()
+                Text("LINKED IMAGES").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(notes.screenshots) { asset in
+                    screenshotView(asset)
+                }
+            }
+            }
         }
         .font(.system(size: fontSize))
         .padding(12)
         .environment(\.openURL, OpenURLAction { url in
             guard let bookmark = notes.viewBookmark(for: url) else { return .systemAction }
-            engine.restoreView(bookmark.view)
+            restore(bookmark)
             return .handled
         })
     }
@@ -376,14 +666,75 @@ struct NotesInspectorView: View {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        return (try? AttributedString(markdown: notes.text, options: options))
-            ?? AttributedString(notes.text)
+        let source = filteredNoteText
+        return (try? AttributedString(markdown: source, options: options))
+            ?? AttributedString(source)
+    }
+
+    private var filteredNoteText: String {
+        guard !searchText.isEmpty else { return notes.text }
+        return notes.text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { String($0).localizedCaseInsensitiveContains(searchText) }
+            .joined(separator: "\n")
+    }
+
+    @ViewBuilder private func screenshotView(_ asset: AnalysisNotesStore.ScreenshotAsset) -> some View {
+        if let url = notes.screenshotURL(for: asset) {
+            #if os(macOS)
+            if let image = NSImage(contentsOf: url) {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                Text(asset.title).font(.caption).foregroundStyle(.secondary)
+            }
+            #else
+            if let image = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                Text(asset.title).font(.caption).foregroundStyle(.secondary)
+            }
+            #endif
+        }
+    }
+
+    private func beginViewLink(_ kind: AnalysisNotesStore.BookmarkKind) {
+        guard let view = engine.captureView() else { return }
+        pendingView = view
+        pendingKind = kind
+        viewName = kind == .camera ? "Camera \(notes.viewBookmarks.count + 1)" : "Scene \(notes.viewBookmarks.count + 1)"
+        showingViewNamePrompt = true
     }
 
     private func insertPendingView() {
         guard let view = pendingView else { return }
-        _ = notes.addViewBookmark(title: markdownSafe(viewName), view: view)
+        let id = UUID()
+        let sceneName = pendingKind == .scene ? "__raymol_note_\(id.uuidString.replacingOccurrences(of: "-", with: ""))" : nil
+        if let sceneName { engine.runCommand("scene \(sceneName), store") }
+        _ = notes.addViewBookmark(id: id, title: markdownSafe(viewName), view: view,
+                                  kind: pendingKind, sceneName: sceneName)
         pendingView = nil
+        isPreviewing = true
+    }
+
+    private func restore(_ bookmark: AnalysisNotesStore.ViewBookmark) {
+        if bookmark.resolvedKind == .scene, let sceneName = bookmark.sceneName {
+            engine.runCommand("scene \(sceneName), recall, animate=0.45")
+        } else {
+            engine.restoreView(bookmark.view)
+        }
+    }
+
+    private func appendTemplate(_ template: AnalysisNoteTemplate) {
+        let separator = notes.text.isEmpty ? "" : (notes.text.hasSuffix("\n\n") ? "" : "\n\n")
+        notes.text += separator + template.text
+    }
+
+    private func insertMetalScreenshot() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-\(UUID().uuidString).png")
+        engine.renderHiResPNG(url.path, width: 1600, height: 1200)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        _ = notes.addScreenshot(title: "Molecular view \(notes.screenshots.count + 1)", from: url)
+        try? FileManager.default.removeItem(at: url)
         isPreviewing = true
     }
 
@@ -394,6 +745,17 @@ struct NotesInspectorView: View {
 
     private var sessionLabel: String {
         notes.sessionURL?.lastPathComponent ?? "Unsaved session"
+    }
+
+    private var markdownFilename: String {
+        let base = notes.sessionURL?.deletingPathExtension().lastPathComponent ?? "RayMol Analysis Notes"
+        return "\(base).md"
+    }
+
+    private var summaryLabel: String {
+        let matches = searchText.isEmpty ? nil : notes.text.split(separator: "\n").filter { String($0).localizedCaseInsensitiveContains(searchText) }.count
+        if let matches { return "\(matches) matches" }
+        return "\(notes.viewBookmarks.count) views · \(notes.tags.count) tags"
     }
 
     @ViewBuilder private var saveStatus: some View {

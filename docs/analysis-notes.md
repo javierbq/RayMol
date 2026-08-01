@@ -1,21 +1,37 @@
 # Analysis Notes
 
-Analysis Notes is a session-linked scratchpad for recording structural observations directly inside RayMol. Its purpose is to keep scientific reasoning close to the molecular model, so users do not need to move repeatedly between RayMol and a separate notes application.
+Analysis Notes keeps structural observations, hypotheses, and visual evidence beside the molecular session where they were made. Open the Inspector and choose **Notes**; edits save automatically.
 
-## Using the feature
+## Everyday workflow
 
-Open the Inspector and select the **Notes** tab. Notes save automatically while you type.
+- Write plain text or Markdown. Use `#` headings for the outline and inline tags such as `#interface` for organization.
+- Use the search field to filter matching lines. The outline and tag menus provide quick navigation.
+- Choose the template button to append one of five scientific note structures: structural observation, binding site, interface, mutation comparison, or glycan/PTM.
+- Adjust the reading size with **A−** and **A+**, then switch between **Edit** and **Preview**.
+- Export the note as clean Markdown from the share menu.
 
-- Use **A−** and **A+** to adjust the text size. RayMol remembers the chosen size.
-- Zoom or rotate to an important interaction, then select **Insert View Link** and give the view a descriptive name.
-- Switch from **Edit** to **Preview** to see clickable links. Selecting a view link restores the saved camera position, zoom, origin, and clipping planes.
+## View links
 
-## Storage
+Choose **Insert View Link**, then select:
 
-Notes are associated with the current PyMOL session. For a saved `.pse` file, RayMol writes a portable companion file named `<session>.raymol-notes.json`. A local Application Support copy is also maintained for recovery and for file-provider locations that are temporarily read-only.
+- **Camera Only** — restores orientation, zoom, origin, and clipping planes.
+- **Full Scene** — restores the complete PyMOL scene, including representations, colors, selections, and settings captured by PyMOL.
 
-The sidecar stores plain-text Markdown plus the camera data for each view link. It does not modify the `.pse` file and can be copied or shared alongside the session.
+Preview shows each link with a **Camera** or **Scene** badge. Full-scene links are stored as hidden PyMOL scenes, so save the `.pse` after inserting one. The hidden scenes do not appear in RayMol's normal Scenes panel.
 
-## Current scope
+On macOS, use **Option–Command–L** to insert a camera link and **Option–Command–P** to switch Edit/Preview. **Option–Command–+** and **Option–Command––** adjust note size.
 
-View links restore the molecular camera but do not yet restore selections, representation visibility, or colors. Links are clickable in **Preview** mode; **Edit** mode displays their Markdown source.
+## Linked Metal screenshots
+
+The camera button in the Notes footer captures the current viewport through RayMol's Metal export pipeline and inserts it as a linked image. Screenshots appear in Preview and travel with the notes when the session is saved or shared.
+
+## Saving and sharing
+
+For `experiment.pse`, RayMol writes:
+
+- `experiment.raymol-notes.json` — Markdown, view-link metadata, and image metadata.
+- `experiment.raymol-notes-assets/` — linked PNG screenshots, when present.
+
+RayMol also keeps an Application Support recovery copy for sandboxed or temporarily read-only locations. **Share Session** and **Save Session** automatically include the notes sidecar and each linked PNG. Keep those companion files with the `.pse`; full-scene links additionally depend on the scene data embedded in the saved `.pse`.
+
+Older camera-only sidecars remain readable.
