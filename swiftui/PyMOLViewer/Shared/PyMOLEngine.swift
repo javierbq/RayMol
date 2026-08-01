@@ -821,6 +821,25 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// Snapshot the complete PyMOL camera state for a note bookmark.
+    func captureView() -> [Float]? {
+        guard isReady, let instance else { return nil }
+        var view = [Float](repeating: 0, count: 25)
+        let captured = view.withUnsafeMutableBufferPointer { buffer in
+            PyMOLBridge_GetView(instance, buffer.baseAddress, Int32(buffer.count))
+        }
+        return captured == 1 ? view : nil
+    }
+
+    /// Fly back to a camera state previously captured by `captureView()`.
+    func restoreView(_ view: [Float], animate: Float = 0.45) {
+        guard isReady, let instance, view.count == 25 else { return }
+        let restored = view.withUnsafeBufferPointer { buffer in
+            PyMOLBridge_SetView(instance, buffer.baseAddress, Int32(buffer.count), animate)
+        }
+        if restored == 1 { requestViewportRedraw() }
+    }
+
     // Synchronous command body. Safe on the main thread (light commands) or on
     // coreQueue (heavy commands): it calls only direct bridge/runPython helpers,
     // never runCommand, so it can't re-enter the heavy-dispatch path.

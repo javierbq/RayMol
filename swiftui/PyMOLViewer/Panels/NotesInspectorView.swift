@@ -12,11 +12,20 @@ import SwiftUI
 final class AnalysisNotesStore: ObservableObject {
     static let shared = AnalysisNotesStore()
 
+    struct ViewBookmark: Codable, Identifiable, Equatable {
+        let id: UUID
+        var title: String
+        let view: [Float]
+        let createdAt: Date
+    }
+
     struct Document: Codable {
-        var version = 1
+        var version = 2
         var sessionName: String?
         var updatedAt: Date
         var text: String
+        // Optional keeps version-1 sidecars backward compatible.
+        var viewBookmarks: [ViewBookmark]?
     }
 
     @Published var text: String = "" {
@@ -28,6 +37,7 @@ final class AnalysisNotesStore: ObservableObject {
     }
     @Published private(set) var sessionURL: URL?
     @Published private(set) var saveState: SaveState = .saved
+    @Published private(set) var viewBookmarks: [ViewBookmark] = []
 
     enum SaveState: Equatable {
         case saved
@@ -69,7 +79,9 @@ final class AnalysisNotesStore: ObservableObject {
         sessionURL = normalized
 
         isLoading = true
-        text = loadDocument(for: normalized)?.text ?? ""
+        let document = loadDocument(for: normalized)
+        text = document?.text ?? ""
+        viewBookmarks = document?.viewBookmarks ?? []
         isLoading = false
         saveState = .saved
     }
@@ -98,11 +110,35 @@ final class AnalysisNotesStore: ObservableObject {
         sessionURL.deletingPathExtension().appendingPathExtension("raymol-notes.json")
     }
 
+    @discardableResult
+    func addViewBookmark(title: String, view: [Float]) -> ViewBookmark? {
+        guard view.count == 25 else { return nil }
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bookmark = ViewBookmark(id: UUID(),
+                                    title: cleanTitle.isEmpty ? "Saved view" : cleanTitle,
+                                    view: view,
+                                    createdAt: Date())
+        viewBookmarks.append(bookmark)
+        let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
+        text += "\(separator)[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))"
+        saveState = .pending
+        scheduleSave()
+        return bookmark
+    }
+
+    func viewBookmark(for url: URL) -> ViewBookmark? {
+        guard url.scheme == "raymol-view" else { return nil }
+        let identifier = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let id = UUID(uuidString: identifier) else { return nil }
+        return viewBookmarks.first { $0.id == id }
+    }
+
     /// Write a portable companion for an exported copy of a session without
     /// rebinding the live document to that temporary export URL.
     func writePortableSidecar(nextTo sessionURL: URL) -> URL? {
         let document = Document(sessionName: sessionURL.lastPathComponent,
-                                updatedAt: Date(), text: text)
+                                updatedAt: Date(), text: text,
+                                viewBookmarks: viewBookmarks)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -128,7 +164,8 @@ final class AnalysisNotesStore: ObservableObject {
         pendingSave = nil
 
         let document = Document(sessionName: sessionURL?.lastPathComponent,
-                                updatedAt: Date(), text: text)
+                                updatedAt: Date(), text: text,
+                                viewBookmarks: viewBookmarks)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -203,6 +240,12 @@ final class AnalysisNotesStore: ObservableObject {
 
 struct NotesInspectorView: View {
     @EnvironmentObject private var notes: AnalysisNotesStore
+    @EnvironmentObject private var engine: PyMOLEngine
+    @AppStorage("analysisNotesFontSize") private var fontSize = 16.0
+    @State private var isPreviewing = false
+    @State private var showingViewNamePrompt = false
+    @State private var viewName = ""
+    @State private var pendingView: [Float]?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -216,36 +259,137 @@ struct NotesInspectorView: View {
                 saveStatus
             }
 
-            TextEditor(text: $notes.text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .background(Color.primary.opacity(0.035))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.primary.opacity(0.12))
+            HStack(spacing: 8) {
+                Picker("Note mode", selection: $isPreviewing) {
+                    Label("Edit", systemImage: "square.and.pencil").tag(false)
+                    Label("Preview", systemImage: "link").tag(true)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .accessibilityLabel("Analysis notes")
-                .overlay(alignment: .topLeading) {
-                    if notes.text.isEmpty {
-                        Text("Record observations, hypotheses, residue details, or commands to revisit…")
-                            .font(.body)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 14)
-                            .allowsHitTesting(false)
-                    }
-                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 190)
 
-            Text("\(notes.text.count) characters")
+                Spacer(minLength: 4)
+
+                Button { fontSize = max(12, fontSize - 1) } label: {
+                    Image(systemName: "textformat.size.smaller")
+                }
+                .disabled(fontSize <= 12)
+                .help("Decrease note text size")
+
+                Text("\(Int(fontSize))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 20)
+
+                Button { fontSize = min(28, fontSize + 1) } label: {
+                    Image(systemName: "textformat.size.larger")
+                }
+                .disabled(fontSize >= 28)
+                .help("Increase note text size")
+            }
+
+            Group {
+                if isPreviewing {
+                    preview
+                } else {
+                    editor
+                }
+            }
+            .background(Color.primary.opacity(0.035))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(0.12))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 8) {
+                Button {
+                    guard let view = engine.captureView() else { return }
+                    pendingView = view
+                    viewName = "View \(notes.viewBookmarks.count + 1)"
+                    showingViewNamePrompt = true
+                } label: {
+                    Label("Insert View Link", systemImage: "camera.viewfinder")
+                }
+                .disabled(!engine.isReady)
+                .help("Capture the current molecular camera and insert a link")
+
+                Spacer()
+
+                Text("\(notes.text.count) characters · \(notes.viewBookmarks.count) views")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { notes.flush() }
+        .alert("Insert View Link", isPresented: $showingViewNamePrompt) {
+            TextField("Link name", text: $viewName)
+            Button("Insert") { insertPendingView() }
+            Button("Cancel", role: .cancel) { pendingView = nil }
+        } message: {
+            Text("Name the current molecular view. Clicking its link in Preview will return to this camera position.")
+        }
+    }
+
+    private var editor: some View {
+        TextEditor(text: $notes.text)
+            .font(.system(size: fontSize))
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .accessibilityLabel("Analysis notes")
+            .overlay(alignment: .topLeading) {
+                if notes.text.isEmpty {
+                    Text("Record observations, hypotheses, residue details, or commands to revisit…")
+                        .font(.system(size: fontSize))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 14)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    private var preview: some View {
+        ScrollView {
+            if notes.text.isEmpty {
+                Text("Nothing to preview yet.")
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(renderedNotes)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .font(.system(size: fontSize))
+        .padding(12)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let bookmark = notes.viewBookmark(for: url) else { return .systemAction }
+            engine.restoreView(bookmark.view)
+            return .handled
+        })
+    }
+
+    private var renderedNotes: AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        return (try? AttributedString(markdown: notes.text, options: options))
+            ?? AttributedString(notes.text)
+    }
+
+    private func insertPendingView() {
+        guard let view = pendingView else { return }
+        _ = notes.addViewBookmark(title: markdownSafe(viewName), view: view)
+        pendingView = nil
+        isPreviewing = true
+    }
+
+    private func markdownSafe(_ title: String) -> String {
+        title.replacingOccurrences(of: "[", with: "(")
+            .replacingOccurrences(of: "]", with: ")")
     }
 
     private var sessionLabel: String {

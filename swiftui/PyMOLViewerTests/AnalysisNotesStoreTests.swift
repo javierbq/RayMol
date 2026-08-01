@@ -58,4 +58,25 @@ final class AnalysisNotesStoreTests: XCTestCase {
         reader.openSession(at: nil)
         XCTAssertEqual(reader.text, writer.text)
     }
+
+    @MainActor
+    func testViewBookmarkPersistsWithClickableNoteLink() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let session = root.appendingPathComponent("interaction.pse")
+        let fallback = root.appendingPathComponent("fallback", isDirectory: true)
+        let writer = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
+        let view = (0..<25).map(Float.init)
+        let bookmark = try XCTUnwrap(writer.addViewBookmark(title: "Ligand contact", view: view))
+        writer.sessionDidSave(to: session)
+
+        let reader = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
+        reader.openSession(at: session)
+        XCTAssertEqual(reader.viewBookmarks, [bookmark])
+        XCTAssertTrue(reader.text.contains("raymol-view://\(bookmark.id.uuidString)"))
+        XCTAssertEqual(reader.viewBookmark(for: URL(string: "raymol-view://\(bookmark.id.uuidString)")!), bookmark)
+    }
 }

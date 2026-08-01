@@ -59,6 +59,11 @@ void PyMOLBridge_PopValidContext(PyMOLHandle instance);
 // --- Python execution ---
 void PyMOLBridge_RunCommand(const char *command);
 
+// Capture/restore PyMOL's complete camera state (rotation, origin, zoom, and
+// clipping). `view` must point to exactly 25 floats (cSceneViewSize).
+int PyMOLBridge_GetView(PyMOLHandle instance, float *view, int count);
+int PyMOLBridge_SetView(PyMOLHandle instance, const float *view, int count, float animate);
+
 // Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
 // on the current input and returns the completed string (extended to the
 // unambiguous prefix; the candidate list, when ambiguous, is printed to the
