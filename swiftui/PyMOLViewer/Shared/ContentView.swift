@@ -78,10 +78,10 @@ private struct SafeAreaReader: UIViewRepresentable {
 }
 #endif
 
-/// Segments of the iPad/macOS right-inspector switcher (mirrors the iPhone tabs:
+/// Segments of the adaptive right/bottom inspector switcher:
 /// Console = left terminal; Settings = the Display render card).
 private enum InspectorTab: String, CaseIterable, Identifiable {
-    case objects = "Objects", scenes = "Scenes", movie = "Movie", display = "Display"
+    case objects = "Objects", scenes = "Scenes", movie = "Movie", notes = "Notes", display = "Display"
     var id: String { rawValue }
     /// Matches the iPhone tab-bar symbols (Settings → Display uses the slider icon).
     var systemImage: String {
@@ -89,6 +89,7 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
         case .objects: return "cube"
         case .scenes:  return "rectangle.on.rectangle"
         case .movie:   return "film"
+        case .notes:   return "note.text"
         case .display: return "slider.horizontal.3"
         }
     }
@@ -98,6 +99,7 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
         case .objects: return "Structures, representations & model playback"
         case .scenes:  return "Store & recall saved views"
         case .movie:   return "Camera keyframes, scenes & model clips"
+        case .notes:   return "Session-linked observations & analysis"
         case .display: return "Background, lighting & effects"
         }
     }
@@ -141,6 +143,7 @@ private extension View {
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
+    @EnvironmentObject private var notes: AnalysisNotesStore
     // "What's New" splash: auto-shows once after a version bump; also opened on
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
@@ -204,9 +207,13 @@ struct ContentView: View {
             // What's New splash (both platforms, single hook): once-per-launch
             // auto-show, the manual-open notification, and the sheet itself.
             .onAppear {
+                notes.openSession(at: engine.currentSessionURL)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                     whatsNew.presentAutoIfNeeded()
                 }
+            }
+            .onChange(of: engine.currentSessionURL) { url in
+                notes.openSession(at: url)
             }
             .onReceive(NotificationCenter.default.publisher(for: .raymolShowWhatsNew)) { _ in
                 whatsNew.presentManually()
@@ -1420,6 +1427,7 @@ struct ContentView: View {
         case .objects: return engine.expandedDetail != nil ? total * 0.5 : total / 3
         case .scenes:  return hug(5, cap: total * 0.5)
         case .movie:   return hug(2, cap: total * 0.72)
+        case .notes:   return total * 0.5
         case .display: return total * 0.5
         }
     }
@@ -2428,7 +2436,10 @@ struct ContentView: View {
     private func iosShareSession() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.pse")
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
-        if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
+        if FileManager.default.fileExists(atPath: url.path) {
+            let items = [url, notes.writePortableSidecar(nextTo: url)].compactMap { $0 }
+            presentShareSheet(items)
+        }
     }
 
     // Dedicated Save: write the session .pse to a temp file, then present the
@@ -2444,7 +2455,8 @@ struct ContentView: View {
               let root = scene.keyWindow?.rootViewController else { return }
         var top = root
         while let presented = top.presentedViewController { top = presented }
-        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        let items = [url, notes.writePortableSidecar(nextTo: url)].compactMap { $0 }
+        let picker = UIDocumentPickerViewController(forExporting: items, asCopy: true)
         if let pop = picker.popoverPresentationController {
             pop.sourceView = top.view
             pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY,
@@ -2458,12 +2470,16 @@ struct ContentView: View {
     // (iPad requires a popover source or it throws). Avoids hosting the activity
     // controller inside a SwiftUI .sheet (which crashes without a source view).
     private func presentShareSheet(_ url: URL) {
+        presentShareSheet([url])
+    }
+
+    private func presentShareSheet(_ urls: [URL]) {
         guard let scene = UIApplication.shared.connectedScenes
                 .compactMap({ $0 as? UIWindowScene }).first,
               let root = scene.keyWindow?.rootViewController else { return }
         var top = root
         while let presented = top.presentedViewController { top = presented }
-        let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let av = UIActivityViewController(activityItems: urls, applicationActivities: nil)
         if let pop = av.popoverPresentationController {
             pop.sourceView = top.view
             pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY,
@@ -2488,7 +2504,7 @@ struct ContentView: View {
     // MARK: Regular-layout inspector switcher (iPad + macOS)
     //
     // The desktop/iPad right inspector mirrors the iPhone bottom tabs as a
-    // segmented switcher: Objects · Scenes · Movie · Display. (Console is the
+    // segmented switcher: Objects · Scenes · Movie · Notes · Display. (Console is the
     // left terminal; Settings → the Display render card.) Each segment swaps in
     // an existing shared view — nothing is rebuilt. Works by touch (iPad) and
     // pointer (macOS); macOS menubar items are additive accelerators.
@@ -2568,6 +2584,8 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         .background(TimelineTheme.bar)
                 }
+            case .notes:
+                NotesInspectorView()
             case .display:
                 // The SCENE render card (bg/lighting/effects/ray); its
                 // "All settings…" opens the shared searchable SettingsSheet. Theme
@@ -2890,6 +2908,7 @@ struct ContentView: View {
     private func saveSession() {
         if let url = engine.currentSessionURL {
             engine.saveSession(to: url)
+            notes.sessionDidSave(to: url)
         } else {
             saveSessionAs()
         }
@@ -2910,6 +2929,7 @@ struct ContentView: View {
         panel.title = "Save Session"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         engine.saveSession(to: url)
+        notes.sessionDidSave(to: url)
     }
 
     // Save the whole scene to a molecular or 3D file. cmd.save infers the format
@@ -2937,13 +2957,20 @@ struct ContentView: View {
     private func shareSession() {
         let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_share.pse")
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(tmp)''')")
-        presentShare(forFileAt: tmp)
+        let sessionURL = URL(fileURLWithPath: tmp)
+        let items = [sessionURL, notes.writePortableSidecar(nextTo: sessionURL)].compactMap { $0 }
+        presentShare(items: items)
     }
 
     private func presentShare(forFileAt path: String) {
         guard FileManager.default.fileExists(atPath: path) else { return }
+        presentShare(items: [URL(fileURLWithPath: path)])
+    }
+
+    private func presentShare(items: [URL]) {
+        guard !items.isEmpty else { return }
         guard let window = NSApp.keyWindow, let anchor = window.contentView else { return }
-        let picker = NSSharingServicePicker(items: [URL(fileURLWithPath: path)])
+        let picker = NSSharingServicePicker(items: items)
         picker.show(relativeTo: .zero, of: anchor, preferredEdge: .minY)
     }
     #endif
@@ -4058,4 +4085,3 @@ struct CalculatingOverlay: View {
         }
     }
 }
-

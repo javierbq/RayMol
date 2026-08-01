@@ -38,6 +38,7 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
+    @StateObject private var notes = AnalysisNotesStore.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @StateObject private var mcp = MCPServerManager.shared
     @StateObject private var updater = RayMolUpdater()
@@ -88,6 +89,8 @@ struct PyMOLApp: App {
                 .environmentObject(engine)
                 .environmentObject(engine.playback)
                 .environmentObject(ThemeManager.shared)
+                .environmentObject(notes)
+                .onDisappear { notes.flush() }
             #if os(macOS)
                 // Bring the app/window to the front on launch (a GUI app should
                 // foreground itself; also lets it be launched from a terminal).
@@ -140,7 +143,10 @@ struct PyMOLApp: App {
                     // it during transient .inactive (Control Center, switcher peek)
                     // is harmless.
                     if phase == .inactive { engine.captureRestoreSnapshot() }
-                    if phase == .background { engine.autosaveSession() }
+                    if phase == .background {
+                        notes.flush()
+                        engine.autosaveSession()
+                    }
                 }
             #endif
         }

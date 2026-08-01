@@ -10,8 +10,11 @@
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
+		B1C2D3E4F5061728394A5B6D /* AnalysisNotesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5061728394A5B6C /* AnalysisNotesStoreTests.swift */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
+		A1B2C3D4E5F60718293A4B5D /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* NotesInspectorView.swift */; };
+		A1B2C3D4E5F60718293A4B5E /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* NotesInspectorView.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
@@ -140,6 +143,7 @@
 /* Begin PBXFileReference section */
 		05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditingTests.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5061728394A5B6C /* AnalysisNotesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisNotesStoreTests.swift; sourceTree = "<group>"; };
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraOverlayUITests.swift; sourceTree = "<group>"; };
@@ -180,6 +184,7 @@
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* NotesInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInspectorView.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
@@ -241,6 +246,7 @@
 				221117550FAD97CF81924E05 /* MousePanel.swift */,
 				0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */,
 				8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */,
+				A1B2C3D4E5F60718293A4B5C /* NotesInspectorView.swift */,
 				A73267D4D7B506E647B7A995 /* ObjectPanel.swift */,
 				474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */,
 				85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */,
@@ -334,6 +340,7 @@
 		7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */ = {
 			isa = PBXGroup;
 			children = (
+				B1C2D3E4F5061728394A5B6C /* AnalysisNotesStoreTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
 				4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */,
@@ -1006,6 +1013,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B1C2D3E4F5061728394A5B6D /* AnalysisNotesStoreTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
 				FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */,
@@ -1043,6 +1051,7 @@
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5D /* NotesInspectorView.swift in Sources */,
 				4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */,
 				F6C4DEEFED66EB440E6359AF /* PyMOLApp.swift in Sources */,
 				24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */,
@@ -1083,6 +1092,7 @@
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5E /* NotesInspectorView.swift in Sources */,
 				5992346BC7D06026A673BA71 /* ObjectPanel.swift in Sources */,
 				5C923361D76329D2A466FFA9 /* PyMOLApp.swift in Sources */,
 				5D4BC69196C1256F5164E56A /* PyMOLBridge.mm in Sources */,
