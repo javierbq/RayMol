@@ -6,30 +6,29 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.8.0</title>
+      <title>RayMol 1.8.1</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.8.0
+## RayMol 1.8.1
 
-A maintenance release: Move-gizmo and rendering fixes, plus stability
-refinements. (The iPhone and iPad apps also get a redesigned control-rail
-interface in this version.)
+A stability patch for sessions that hold many objects or selections.
 
-### Fixes
-- **Move gizmo.** Ring and axis selection and rigid-body motion are smoother and
-  more reliable — the handle you grab responds the way you expect.
-- **Move and Measure are now mutually exclusive.** Entering one leaves the other,
-  so the two interaction modes no longer overlap.
-- **No more blank-on-launch.** The viewport reliably paints its first frame on
-  startup instead of occasionally staying empty until you interact with it.
-- Rendering and stability refinements throughout.
+- **Fixed: the object panel stayed empty and the console filled with raw JSON
+  on larger sessions.** Opening a session with roughly sixteen or more objects —
+  or a dozen structures each carrying several chain selections — left the side
+  panel reporting "No objects loaded" and the **No structure loaded** placeholder
+  sitting on top of structures that had in fact loaded and were being rendered.
+  The console meanwhile filled with repeating fragments of raw object data. The
+  object list is now handed to the panel out-of-band instead of over a
+  length-capped status line, so the panel populates and the log stays clean no
+  matter how large the session is.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Fri, 17 Jul 2026 19:26:01 +0000</pubDate>
-      <sparkle:version>22</sparkle:version>
-      <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
+      <pubDate>Mon, 03 Aug 2026 19:12:38 +0000</pubDate>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>1.8.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.8.0/RayMol-1.8.0.dmg" type="application/octet-stream" sparkle:edSignature="Nc/JQWAfSu+F+Eqnd75QXhYHIUCi++Y4dYDeVagR9hGae0QX5iHdpvf/6zuvonyItf8ThlPdScVgW3DuhTjoAg==" length="57936809" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.8.1/RayMol-1.8.1.dmg" type="application/octet-stream" sparkle:edSignature="utrjT/d9u88jHgEwP8gGV+sSz7QtfkbKz/705W0acrQqlZ0MEbqxpStlALK/KDiWHhs/ZTtiGr1tgmM6rGvaCQ==" length="58204193" />
     </item>
   </channel>
 </rss>
