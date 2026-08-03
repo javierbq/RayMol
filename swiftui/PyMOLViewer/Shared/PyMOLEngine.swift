@@ -1971,6 +1971,64 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_measure as _am\n_am.clear_all()")
     }
 
+    /// Structured residue rows for Analysis Notes. `contacts` returns residues
+    /// outside the current `sele` selection with an atom within the cutoff.
+    func noteResidues(contacts: Bool, cutoff: Double = 4.0) -> [[String: String]] {
+        guard isReady else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-residues-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        let selection = contacts
+            ? "byres (((sele) around \(cutoff)) and not (sele))"
+            : "sele"
+        runPython("""
+        import base64 as _b64, json as _json
+        from pymol import cmd as _c
+        _rows, _seen = [], set()
+        for _a in _c.get_model(r'''\(selection)''').atom:
+            _key = (_a.model, _a.chain, _a.resi, _a.resn)
+            if _key not in _seen:
+                _seen.add(_key)
+                _rows.append({'object': _a.model, 'chain': _a.chain,
+                              'resi': _a.resi, 'resn': _a.resn})
+        with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
+            _json.dump(_rows, _f)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return [] }
+        return rows
+    }
+
+    func noteMeasurements() -> [[String: Any]] {
+        guard isReady else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-measurements-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64, json as _json
+        from pymol import appkit_measure as _am
+        with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
+            _json.dump(_am.history(), _f)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return rows
+    }
+
+    /// Safe residue selection used by raymol-residue links in note Preview.
+    func selectNoteResidue(object: String, chain: String, resi: String) {
+        let values = [object, chain, resi].map { Data($0.utf8).base64EncodedString() }
+        runPython("""
+        import base64 as _b64
+        from pymol import cmd as _c
+        _o, _ch, _ri = [_b64.b64decode(_v).decode('utf-8') for _v in \(values)]
+        _expr = '(model %s and chain %s and resi %s)' % (_o, _ch, _ri)
+        _c.select('sele', _expr); _c.enable('sele'); _c.zoom('sele', buffer=4.0, animate=0.45)
+        """)
+    }
+
     // MARK: - Design mode (protein-design overlay)
 
     /// Enter or exit Design mode. Entering clears Move and Measure (mutually

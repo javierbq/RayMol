@@ -129,4 +129,45 @@ final class AnalysisNotesStoreTests: XCTestCase {
         XCTAssertEqual(companions.filter { $0.pathExtension == "png" }.count, 1)
         XCTAssertEqual(store.cleanMarkdown, "**Figure:** Metal view")
     }
+
+    @MainActor
+    func testMultipleNamedNotesPersistIndependently() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = root.appendingPathComponent("notebook.pse")
+        let fallback = root.appendingPathComponent("fallback", isDirectory: true)
+
+        let writer = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
+        writer.openSession(at: session)
+        writer.renameActivePage("Interface")
+        writer.text = "Interface observation"
+        let firstID = try XCTUnwrap(writer.activePageID)
+        writer.createPage(named: "Mutations")
+        writer.text = "Variant observation"
+        writer.sessionDidSave(to: session)
+
+        let reader = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
+        reader.openSession(at: session)
+        XCTAssertEqual(reader.notePages.map(\.title), ["Interface", "Mutations"])
+        reader.selectPage(firstID)
+        XCTAssertEqual(reader.text, "Interface observation")
+    }
+
+    @MainActor
+    func testHTMLAndPDFExportsHaveExpectedDocumentStructure() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.text = "# Interface\nA concise structural observation."
+
+        let html = store.exportHTML()
+        let pdf = store.exportPDFData()
+        XCTAssertTrue(html.contains("<!doctype html>"))
+        XCTAssertTrue(html.contains("<h1>Interface</h1>"))
+        XCTAssertTrue(String(data: pdf.prefix(4), encoding: .ascii)?.hasPrefix("%PDF") == true)
+        XCTAssertGreaterThan(pdf.count, 500)
+        if let path = ProcessInfo.processInfo.environment["RAYMOL_NOTES_PDF_QA"] {
+            try? pdf.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
 }

@@ -76,6 +76,14 @@ struct PyMOLApp: App {
             .windowStyle(.titleBar)
             .defaultSize(width: 1200, height: 800)
             .commands { macCommands }
+        Window("Analysis Notes", id: "analysis-notes") {
+            NotesInspectorView()
+                .environmentObject(engine)
+                .environmentObject(notes)
+                .frame(minWidth: 440, minHeight: 520)
+                .onDisappear { notes.flush() }
+        }
+        .defaultSize(width: 560, height: 720)
         #else
         WindowGroup { rootView }
         #endif
