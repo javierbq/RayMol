@@ -355,7 +355,13 @@ final class AnalysisNotesStore: ObservableObject {
         if let sidecar = writePortableSidecar(nextTo: sessionURL) { urls.append(sidecar) }
         let directory = assetsDirectory(for: sessionURL)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let assets = notePages.flatMap(\.screenshots)
+        // Include the live page explicitly. Before the first session is opened,
+        // there is no NotePage to commit into yet, but its screenshots still
+        // need to travel with a shared or newly saved session.
+        var seenAssetIDs = Set<UUID>()
+        let assets = (notePages.flatMap(\.screenshots) + screenshots).filter {
+            seenAssetIDs.insert($0.id).inserted
+        }
         for asset in assets {
             guard let source = screenshotURL(for: asset) else { continue }
             let destination = directory.appendingPathComponent(asset.fileName)
