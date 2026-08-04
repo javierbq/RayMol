@@ -120,9 +120,17 @@ fi
 rm -rf "$RELEASE_DD/Build"
 XCLOG="$LOGDIR/xcodebuild-release.log"
 echo "  (full xcodebuild output → $XCLOG)"
+# -skipPackagePluginValidation / -skipMacroValidation: MPNNKit (Design mode, new
+# in 1.9.0) pulls in mlx-swift, which ships a "CudaBuild" package plug-in. Xcode
+# refuses to run an unvalidated plug-in in a non-interactive build, so without
+# these the Release build dies at "Validate plug-in CudaBuild in package
+# mlx-swift" — which is exactly how the first 1.9.0 DMG attempt failed. Every
+# Design-mode dev/test command already passes both; this is the release path
+# catching up.
 if ! xcodebuild -project "$SWIFTUI/PyMOLViewer.xcodeproj" -scheme PyMOLViewer_macOS \
   -configuration Release -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$RELEASE_DD" \
+  -skipPackagePluginValidation -skipMacroValidation \
   CODE_SIGNING_ALLOWED=NO clean build >"$XCLOG" 2>&1; then
   echo "ERROR: Release build failed. Last 60 lines of $XCLOG:"; tail -60 "$XCLOG"; exit 1
 fi
