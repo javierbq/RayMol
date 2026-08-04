@@ -6,29 +6,74 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.8.1</title>
+      <title>RayMol 1.9.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.8.1
+## RayMol 1.9.0
 
-A stability patch for sessions that hold many objects or selections.
+A feature release: **Design mode** brings on-device protein sequence design to
+RayMol, scenes now remember where you put things, and RayMol gets a startup
+script of its own.
 
-- **Fixed: the object panel stayed empty and the console filled with raw JSON
-  on larger sessions.** Opening a session with roughly sixteen or more objects —
-  or a dozen structures each carrying several chain selections — left the side
-  panel reporting "No objects loaded" and the **No structure loaded** placeholder
-  sitting on top of structures that had in fact loaded and were being rendered.
-  The console meanwhile filled with repeating fragments of raw object data. The
-  object list is now handed to the panel out-of-band instead of over a
-  length-capped status line, so the panel populates and the log stays clean no
-  matter how large the session is.
+### Design mode
+
+- **Redesign sequences on your Mac — offline.** A new Design mode (**⌃D**),
+  peer to Move and Measure, runs ProteinMPNN entirely on-device. Nothing is
+  uploaded and no server is involved; the model ships inside the app.
+- **Per-residue confidence coloring.** Color a structure by how well the model
+  thinks each position fits the residue that's actually there (*Native-fit*) or
+  by how sure it is of its own pick (*Certainty*), with a legend and inline
+  help.
+- **Propensity inspector.** Hover or pin any residue to see its full
+  20-amino-acid propensity distribution, with element-colored side-chain sticks
+  previewed on hover — nothing is modified.
+- **Point mutations with live rescore and repack.** Mutate a position and
+  RayMol immediately re-scores the sequence and repacks the side chain in
+  place. Auto-repack is a toggle, and every edit lands in a working copy you
+  can keep or discard.
+- **Region redesign.** Pick a selection and redesign that whole region with the
+  rest of the structure held fixed — with one-level revert, and a pill row for
+  restricting which amino acids the model may use.
+
+Design mode is macOS-only for now.
+
+### Scenes
+
+- **Scenes remember object placement.** A scene now stores each object's
+  Move-mode position and orientation alongside the camera, so recalling it
+  restores the arrangement you built — not just the viewpoint. Movies built
+  from scenes interpolate that object motion between keyframes.
+
+### Startup
+
+- **`~/.raymolrc` startup script.** RayMol now runs `~/.raymolrc` (or
+  `~/.raymolrc.py`) at launch, after the theme defaults so your script can
+  override them. Bare `cmd.…` calls work as they do in the command-line PyMOL.
+  If you have a `~/.pymolrc` and no `~/.raymolrc`, RayMol offers — once — to
+  import it; declining is remembered.
+
+### Fixes
+
+- **Escape exits Move, Design, and Measure mode.** Entering a mode by keyboard
+  (**⌃M** / **⌃D**) no longer means hunting for a mouse target to leave it. Esc
+  dismisses an open sheet or popover first, then leaves the active mode, then
+  falls through to clearing the selection.
+- **Entering Design mode no longer strands the move gizmo.** Switching modes
+  now runs each mode's real teardown, so the on-screen gizmo can't be left
+  behind in the scene.
+- **A multi-file open loads every file.** `open a.pdb b.pdb c.pdb`, Finder's
+  "Open With" on a multi-selection, and dropping several files on the Dock icon
+  now load all of them as separate structures instead of just the first.
+- Also included for anyone coming from 1.8.0: the 1.8.1 fix for the object
+  panel freezing and spamming the log in sessions with many objects or
+  selections.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Mon, 03 Aug 2026 19:12:38 +0000</pubDate>
-      <sparkle:version>24</sparkle:version>
-      <sparkle:shortVersionString>1.8.1</sparkle:shortVersionString>
+      <pubDate>Tue, 04 Aug 2026 20:54:44 +0000</pubDate>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.8.1/RayMol-1.8.1.dmg" type="application/octet-stream" sparkle:edSignature="utrjT/d9u88jHgEwP8gGV+sSz7QtfkbKz/705W0acrQqlZ0MEbqxpStlALK/KDiWHhs/ZTtiGr1tgmM6rGvaCQ==" length="58204193" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.9.0/RayMol-1.9.0.dmg" type="application/octet-stream" sparkle:edSignature="Frz1uWNQDPGvZ8MV+Ea19esIuUONnspjXFRM51rP+m3kKYIlLWWiwiPPNFIRhbeNpEyBQhbNFHSNgcd6HnAKAA==" length="88073312" />
     </item>
   </channel>
 </rss>
