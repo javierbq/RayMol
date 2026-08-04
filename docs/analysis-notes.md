@@ -10,6 +10,7 @@ Each session can contain multiple named note documents. Use the document menu be
 - Use the search field to filter matching lines. The outline and tag menus provide quick navigation.
 - Choose the template button to append one of five scientific note structures: structural observation, binding site, interface, mutation comparison, or glycan/PTM.
 - Adjust the reading size with **A−** and **A+**, then switch between **Edit** and **Preview**.
+- On iPhone or iPad, tap the microphone button in the editor, then tap the microphone on Apple's keyboard to dictate into the note. Dictation uses the system keyboard and does not require separate RayMol microphone access.
 - Export the note as clean Markdown from the share menu.
 
 ## Scientific inserts

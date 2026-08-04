@@ -718,6 +718,9 @@ struct NotesInspectorView: View {
     @State private var showingNewPagePrompt = false
     @State private var showingRenamePagePrompt = false
     @State private var pageName = ""
+    #if os(iOS)
+    @FocusState private var noteEditorFocused: Bool
+    #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
@@ -934,10 +937,23 @@ struct NotesInspectorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformFontDecrease)) { _ in
             fontSize = max(12, fontSize - 1)
         }
+        #if os(iOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Label("Use the keyboard microphone to dictate", systemImage: "mic")
+                    .font(.caption)
+                Spacer()
+                Button("Done") { noteEditorFocused = false }
+            }
+        }
+        #endif
     }
 
     private var editor: some View {
         TextEditor(text: $notes.text)
+            #if os(iOS)
+            .focused($noteEditorFocused)
+            #endif
             .font(.system(size: fontSize))
             .scrollContentBackground(.hidden)
             .padding(6)
@@ -952,6 +968,23 @@ struct NotesInspectorView: View {
                         .allowsHitTesting(false)
                 }
             }
+            #if os(iOS)
+            .overlay(alignment: .bottomTrailing) {
+                if !noteEditorFocused {
+                    Button {
+                        noteEditorFocused = true
+                    } label: {
+                        Image(systemName: "mic.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(12)
+                    .accessibilityLabel("Open keyboard for dictation")
+                    .help("Open the keyboard, then tap its microphone to dictate")
+                }
+            }
+            #endif
     }
 
     private var preview: some View {
