@@ -1884,7 +1884,9 @@ struct ContentView: View {
     private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
-            railTongue(icon: "textformat.abc", label: "Seq", shown: $engine.sequenceVisible)
+            // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
+            // rendered as a literal "Abc", so the pill read "Abc Seq".
+            railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible)
             railToggle(icon: "move.3d", label: "Move",
                        isOn: engine.interactionMode == .move,
                        action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
@@ -1914,16 +1916,22 @@ struct ContentView: View {
         }
     }
 
-    private func railTongue(icon: String, label: String, shown: Binding<Bool>) -> some View {
+    // `icon` is optional: a tongue whose label already names the pane (Seq) shows the
+    // word alone rather than pairing it with a redundant glyph.
+    private func railTongue(icon: String?, label: String, shown: Binding<Bool>) -> some View {
         let on = shown.wrappedValue
         return Button {
             withAnimation(.easeInOut(duration: 0.25)) { shown.wrappedValue.toggle() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+                }
                 // Icon-only in iPhone landscape: the narrow viewport shares its top
-                // with the floating Open/Save/Export pills, so labels won't fit.
-                if !isPhoneLandscape {
+                // with the floating Open/Save/Export pills, so labels won't fit. An
+                // icon-less tongue keeps its label there — dropping it would leave
+                // nothing but a chevron.
+                if !isPhoneLandscape || icon == nil {
                     Text(label).font(.system(size: 11, weight: .medium))
                 }
                 Image(systemName: on ? "chevron.up" : "chevron.down")
@@ -2474,6 +2482,14 @@ struct ContentView: View {
     }
     #endif
 
+    // SF Symbols has no glyph for "sequence", and `textformat.abc` drew the word
+    // "Abc" — it read as a text-formatting control, not the sequence viewer. The
+    // macOS toolbar toggle therefore letters its own icon: the word "Seq". Declared
+    // outside the iOS #if so the shared toolbar can use it.
+    private var seqGlyph: some View {
+        Text("Seq").font(.system(size: 11, weight: .semibold))
+    }
+
     // The expanded-timeline dock's Expand button is disabled only in iPad portrait
     // (a landscape-only, iOS concept); always enabled on macOS. Declared outside the
     // iOS #if so the shared inspectorSwitcher can read it on both platforms.
@@ -2719,8 +2735,13 @@ struct ContentView: View {
                 Label("Console", systemImage: "terminal")
             }
             Toggle(isOn: $engine.sequenceVisible) {
-                Label("Sequence", systemImage: "textformat.abc")
+                Label {
+                    Text("Sequence")
+                } icon: {
+                    seqGlyph
+                }
             }
+            .accessibilityLabel("Sequence")
             Toggle(isOn: $showObjectPanel) {
                 Label("Inspector", systemImage: "sidebar.right")
             }
