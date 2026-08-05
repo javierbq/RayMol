@@ -23,8 +23,9 @@ import io
 import json
 import os
 import tempfile
+from unittest.mock import patch
 
-from pymol import cmd, testing
+from pymol import cgo, cmd, testing
 from pymol import appkit_inspector as ai
 
 # layer0/PyMOLGlobals.h: OrthoLineLength — the per-line feedback cap that the
@@ -72,6 +73,21 @@ class TestObjPanelPoll(testing.PyMOLTestCase):
                 cmd.select(sel, '%s and (%s)' % (obj, expr), quiet=1)
                 sels.append(sel)
         return objs, sels
+
+    def _mixed_object_session(self):
+        """Create one molecule plus the non-molecular object kinds from #219."""
+        cmd.delete('all')
+        cmd.fragment('gly', 'mol')
+        atoms = ['mol and index %d' % i for i in range(1, 5)]
+        cmd.distance('dist01', *atoms[:2])
+        cmd.angle('ang01', *atoms[:3])
+        cmd.dihedral('dih01', *atoms[:4])
+        cmd.load_cgo([cgo.STOP], 'cgo01')
+        non_molecules = ['dist01', 'ang01', 'dih01', 'cgo01']
+        self.assertEqual(cmd.get_type('mol'), 'object:molecule')
+        for name in non_molecules:
+            self.assertNotEqual(cmd.get_type(name), 'object:molecule')
+        return non_molecules
 
     def _poll(self):
         """Run poll_panel(), returning (printed_lines, payload_from_temp_file)."""
@@ -171,3 +187,20 @@ class TestObjPanelPoll(testing.PyMOLTestCase):
         large, _ = self._poll()
 
         self.assertEqual(small, large)
+
+    def testTransparencyInspectionSkipsNonMolecularObjects(self):
+        non_molecules = self._mixed_object_session()
+
+        # poll_panel() drives collapsed-row badges; _build() is the independent
+        # expanded-card path. Across both paths only the molecule may be treated
+        # as an atom selection by the transparency inspector.
+        with patch.object(ai.cmd, 'iterate', wraps=ai.cmd.iterate) as iterate:
+            _, payload = self._poll()
+            detail = ai._build(non_molecules)['detail']
+
+        inspected = [call.args[0] for call in iterate.call_args_list]
+        self.assertEqual(inspected, ['mol'])
+        for name in non_molecules:
+            self.assertIn(name, payload['has_transp'])
+            self.assertFalse(payload['has_transp'][name])
+            self.assertEqual(detail[name], [])

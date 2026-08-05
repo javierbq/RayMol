@@ -171,6 +171,13 @@ def transp_summary(obj):
     no atom-level override exists (it never returns None here), so comparing the
     effective range to the object-level value is what detects a genuine override.
     """
+    # Measurement, CGO, map, and other non-molecular objects are not atom
+    # selections. Passing their names to iterate emits a Selector-Error before
+    # Python can catch the exception, which floods the native app's feedback log
+    # on every object-panel poll. They cannot carry per-atom overrides anyway.
+    if cmd.get_type(obj) != 'object:molecule':
+        return {}
+
     objlv = {s: _num(s, obj) for s in TRANSP_SETTINGS}
     mn = {s: None for s in TRANSP_SETTINGS}
     mx = {s: None for s in TRANSP_SETTINGS}
