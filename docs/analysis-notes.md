@@ -2,15 +2,14 @@
 
 Analysis Notes keeps structural observations, hypotheses, and visual evidence beside the molecular session where they were made. Open the Inspector and choose **Notes**; edits save automatically.
 
-Each session can contain multiple named note documents. Use the document menu beside the save status to create, switch, rename, or delete notes. View links and screenshots belong to the note where they were inserted.
+Each session can contain multiple named note documents. Use the document menu at the top to create, switch, rename, or delete notes. View links and screenshots belong to the note where they were inserted.
 
 ## Everyday workflow
 
 - Write plain text or Markdown. Use `#` headings for the outline and inline tags such as `#interface` for organization.
 - Use the search field to filter matching lines. The outline and tag menus provide quick navigation.
-- Choose the template button to append one of five scientific note structures: structural observation, binding site, interface, mutation comparison, or glycan/PTM.
 - Adjust the reading size with **A−** and **A+**, then switch between **Edit** and **Preview**.
-- On iPhone or iPad, tap the microphone button in the editor, then tap the microphone on Apple's keyboard to dictate into the note. Dictation uses the system keyboard and does not require separate RayMol microphone access.
+- On iPhone or iPad, tap the keyboard button, then tap the microphone on Apple's keyboard to dictate into the note. Dictation uses the system keyboard and does not require separate RayMol microphone access.
 - Export the note as clean Markdown from the share menu.
 
 ## Scientific inserts
@@ -25,10 +24,10 @@ Residue identifiers in the first two inserts are clickable in Preview. Clicking 
 
 ## View links
 
-Choose **Insert View Link**, then select:
+Choose **Insert Image / View**, then select:
 
-- **Camera Only** — restores orientation, zoom, origin, and clipping planes.
-- **Full Scene** — restores the complete PyMOL scene, including representations, colors, selections, and settings captured by PyMOL.
+- **Camera Link** — restores orientation, zoom, origin, and clipping planes.
+- **Scene Link** — restores the complete PyMOL scene, including representations, colors, selections, and settings captured by PyMOL.
 
 Preview shows each link with a **Camera** or **Scene** badge. Full-scene links are stored as hidden PyMOL scenes, so save the `.pse` after inserting one. The hidden scenes do not appear in RayMol's normal Scenes panel.
 
@@ -36,7 +35,7 @@ On macOS, use **Option–Command–L** to insert a camera link and **Option–Co
 
 ## Linked Metal screenshots
 
-The camera button in the Notes footer captures the current viewport through RayMol's Metal export pipeline and inserts it as a linked image. Screenshots appear in Preview and travel with the notes when the session is saved or shared.
+Choose **Image from Current View** in the **Insert Image / View** menu to capture the viewport through RayMol's Metal export pipeline. Screenshots appear in Preview and travel with the notes when the session is saved or shared.
 
 ## Export and detachable window
 

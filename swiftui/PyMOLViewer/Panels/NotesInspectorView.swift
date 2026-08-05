@@ -92,18 +92,17 @@ final class AnalysisNotesStore: ObservableObject {
 
     init(fileManager: FileManager = .default,
          fallbackDirectory: URL? = nil,
-         debounceInterval: TimeInterval = 0.6) {
+         debounceInterval: TimeInterval = 10) {
         self.fileManager = fileManager
         self.debounceInterval = debounceInterval
         if let fallbackDirectory {
             self.fallbackDirectory = fallbackDirectory
         } else {
-            let base = fileManager.urls(for: .applicationSupportDirectory,
-                                        in: .userDomainMask).first
-                ?? fileManager.temporaryDirectory
-            self.fallbackDirectory = base
+            self.fallbackDirectory = fileManager.temporaryDirectory
                 .appendingPathComponent("RayMol", isDirectory: true)
                 .appendingPathComponent("AnalysisNotes", isDirectory: true)
+                .appendingPathComponent(String(ProcessInfo.processInfo.processIdentifier),
+                                        isDirectory: true)
         }
     }
 
@@ -274,16 +273,18 @@ final class AnalysisNotesStore: ObservableObject {
     }
 
     func screenshotURL(for asset: ScreenshotAsset) -> URL? {
+        let fallback = fallbackAssetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
+        if fileManager.fileExists(atPath: fallback.path) { return fallback }
+
+        // Read legacy companion assets for migration, but never write new
+        // working files beside the session.
         if let sessionURL {
-            let portable = assetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
+            let portable = legacyAssetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
             if fileManager.fileExists(atPath: portable.path) { return portable }
-            // Share sheets and multi-file document pickers may flatten the
-            // companion asset folder. Accept a PNG beside the .pse as well.
             let sibling = sessionURL.deletingLastPathComponent().appendingPathComponent(asset.fileName)
             if fileManager.fileExists(atPath: sibling.path) { return sibling }
         }
-        let fallback = fallbackAssetsDirectory(for: sessionURL).appendingPathComponent(asset.fileName)
-        return fileManager.fileExists(atPath: fallback.path) ? fallback : nil
+        return nil
     }
 
     var headings: [(level: Int, title: String)] {
@@ -456,7 +457,7 @@ final class AnalysisNotesStore: ObservableObject {
         isLoading = false
     }
 
-    private func assetsDirectory(for sessionURL: URL) -> URL {
+    private func legacyAssetsDirectory(for sessionURL: URL) -> URL {
         let stem = sessionURL.deletingPathExtension().lastPathComponent
         return sessionURL.deletingLastPathComponent()
             .appendingPathComponent("\(stem).raymol-notes-assets", isDirectory: true)
@@ -497,20 +498,8 @@ final class AnalysisNotesStore: ObservableObject {
     }
 }
 
-struct MarkdownNoteDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.plainText] }
-    var text: String
-    init(text: String) { self.text = text }
-    init(configuration: ReadConfiguration) throws {
-        text = configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-    }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: Data(text.utf8))
-    }
-}
-
 struct AnalysisExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.data, .html, .pdf] }
+    static var readableContentTypes: [UTType] { [.data, .plainText, .html, .pdf] }
     let data: Data
     init(data: Data) { self.data = data }
     init(configuration: ReadConfiguration) throws {
@@ -675,19 +664,6 @@ private enum AnalysisNotesExporter {
     }
 }
 
-private struct AnalysisNoteTemplate: Identifiable {
-    let id: String
-    let name: String
-    let text: String
-    static let all: [Self] = [
-        .init(id: "observation", name: "Structural observation", text: "# Structural observation\n\n## Context\n\n## Observation\n\n## Interpretation\n\n## Follow-up\n"),
-        .init(id: "binding", name: "Binding site", text: "# Binding-site analysis\n\n## Ligand and pose\n\n## Key contacts\n\n- Hydrogen bonds:\n- Hydrophobic contacts:\n- Waters / ions:\n\n## Open questions\n\n#binding-site\n"),
-        .init(id: "interface", name: "Protein interface", text: "# Interface analysis\n\n## Chains / partners\n\n## Contact residues\n\n## Hotspot hypothesis\n\n## Validation plan\n\n#interface\n"),
-        .init(id: "mutation", name: "Mutation comparison", text: "# Mutation comparison\n\n## Wild type\n\n## Variant\n\n## Structural change\n\n## Functional hypothesis\n\n#mutation\n"),
-        .init(id: "glycan", name: "Glycan / PTM", text: "# Glycan or PTM analysis\n\n## Site and chemistry\n\n## Local environment\n\n## Conformational effects\n\n## Evidence\n\n#ptm\n")
-    ]
-}
-
 struct NotesInspectorView: View {
     @EnvironmentObject private var notes: AnalysisNotesStore
     @EnvironmentObject private var engine: PyMOLEngine
@@ -698,13 +674,14 @@ struct NotesInspectorView: View {
     @State private var pendingView: [Float]?
     @State private var pendingKind: AnalysisNotesStore.BookmarkKind = .camera
     @State private var searchText = ""
-    @State private var showingMarkdownExporter = false
-    @State private var showingShareHelp = false
-    @State private var showingHTMLExporter = false
-    @State private var showingPDFExporter = false
+    @State private var showingExporter = false
+    @State private var exportData = Data()
+    @State private var exportContentType: UTType = .data
+    @State private var exportFilename = "RayMol Notes"
     @State private var showingNewPagePrompt = false
     @State private var showingRenamePagePrompt = false
     @State private var showingDictationHelp = false
+    @State private var insertionNotice: String?
     @State private var pageName = ""
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -764,6 +741,7 @@ struct NotesInspectorView: View {
                     if !searchText.isEmpty {
                         Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .help("Clear note search")
                     }
                 }
                 .padding(.horizontal, 8).padding(.vertical, 6)
@@ -801,6 +779,7 @@ struct NotesInspectorView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(maxWidth: 190)
+                .help("Switch between editing and rendered preview")
 
                 Spacer(minLength: 4)
 
@@ -810,32 +789,11 @@ struct NotesInspectorView: View {
                 .disabled(fontSize <= 12)
                 .help("Decrease note text size")
 
-                Text("\(Int(fontSize))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 20)
-
                 Button { fontSize = min(28, fontSize + 1) } label: {
                     Image(systemName: "textformat.size.larger")
                 }
                 .disabled(fontSize >= 28)
                 .help("Increase note text size")
-            }
-
-            if compactLayout {
-                HStack {
-                    Menu {
-                        Button("Camera Only") { beginViewLink(.camera) }
-                        Button("Full Scene") { beginViewLink(.scene) }
-                    } label: {
-                        Label("Insert View Link", systemImage: "camera.viewfinder")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!engine.isReady)
-                    .help("Insert a camera-only or full-scene link (⌥⌘L)")
-
-                    Spacer(minLength: 0)
-                }
             }
 
             Group {
@@ -853,27 +811,23 @@ struct NotesInspectorView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack(spacing: 8) {
-                if !compactLayout {
-                    Menu {
-                        Button("Camera Only") { beginViewLink(.camera) }
-                        Button("Full Scene") { beginViewLink(.scene) }
-                    } label: {
-                        Label("Insert View Link", systemImage: "camera.viewfinder")
-                    }
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .disabled(!engine.isReady)
-                    .help("Insert a camera-only or full-scene link (⌥⌘L)")
-                }
-
                 Menu {
-                    ForEach(AnalysisNoteTemplate.all) { template in
-                        Button(template.name) { appendTemplate(template) }
+                    Button("Image from Current View") { insertMetalScreenshot() }
+                    Divider()
+                    Button("Camera Link") { beginViewLink(.camera) }
+                    Button("Scene Link") { beginViewLink(.scene) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "camera")
+                        Text(compactLayout ? "Insert" : "Insert Image / View")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
                     }
-                } label: { Image(systemName: "doc.badge.plus") }
+                }
                 .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Append an analysis template")
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(!engine.isReady)
+                .help("Insert an image, camera link, or full-scene link")
 
                 Menu {
                     Button("Selected Residues") { insertResidueSummary(contacts: false) }
@@ -885,25 +839,19 @@ struct NotesInspectorView: View {
                 .disabled(!engine.isReady)
                 .help("Insert structured scientific data")
 
-                Button { insertMetalScreenshot() } label: {
-                    Image(systemName: "camera")
-                }
-                .disabled(!engine.isReady)
-                .help("Insert a Metal-rendered screenshot")
-
                 Button { useSystemDictation() } label: {
                     Image(systemName: "keyboard")
                 }
                 .help(dictationHelpText)
 
                 Menu {
-                    Button("Export Clean Markdown…") { showingMarkdownExporter = true }
-                    Button("Export HTML with Images…") { showingHTMLExporter = true }
-                    Button("Export PDF with Images…") { showingPDFExporter = true }
-                    Button("Sharing Notes & Sessions…") { showingShareHelp = true }
+                    Button("Export Clean Markdown…") { beginExport(.plainText) }
+                    Button("Export HTML with Images…") { beginExport(.html) }
+                    Button("Export PDF with Images…") { beginExport(.pdf) }
                 } label: { Image(systemName: "square.and.arrow.up") }
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .help("Export Analysis Notes")
 
                 #if os(macOS)
                 Button { openWindow(id: "analysis-notes") } label: {
@@ -928,10 +876,13 @@ struct NotesInspectorView: View {
                  ? "Camera links restore orientation, zoom, and clipping."
                  : "Scene links restore the full PyMOL scene. Save the .pse after adding one so the scene travels with the session.")
         }
-        .alert("Sharing Analysis Notes", isPresented: $showingShareHelp) {
-            Button("OK", role: .cancel) { }
+        .alert("Nothing to Insert", isPresented: Binding(
+            get: { insertionNotice != nil },
+            set: { if !$0 { insertionNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) { insertionNotice = nil }
         } message: {
-            Text("Analysis Notes, view-link metadata, and linked images are embedded in the saved .pse. Share the single session file; no companion sidecar or image folder is required.")
+            Text(insertionNotice ?? "")
         }
         .alert("New Note", isPresented: $showingNewPagePrompt) {
             TextField("Note name", text: $pageName)
@@ -948,18 +899,10 @@ struct NotesInspectorView: View {
         } message: {
             Text(dictationHelpText)
         }
-        .fileExporter(isPresented: $showingMarkdownExporter,
-                      document: MarkdownNoteDocument(text: notes.cleanMarkdown),
-                      contentType: .plainText,
-                      defaultFilename: markdownFilename) { _ in }
-        .fileExporter(isPresented: $showingHTMLExporter,
-                      document: AnalysisExportDocument(data: Data(notes.exportHTML().utf8)),
-                      contentType: .html,
-                      defaultFilename: exportBaseName + ".html") { _ in }
-        .fileExporter(isPresented: $showingPDFExporter,
-                      document: AnalysisExportDocument(data: notes.exportPDFData()),
-                      contentType: .pdf,
-                      defaultFilename: exportBaseName + ".pdf") { _ in }
+        .fileExporter(isPresented: $showingExporter,
+                      document: AnalysisExportDocument(data: exportData),
+                      contentType: exportContentType,
+                      defaultFilename: exportFilename) { _ in }
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformInsertNoteView)) { _ in
             beginViewLink(.camera)
         }
@@ -1116,11 +1059,6 @@ struct NotesInspectorView: View {
         }
     }
 
-    private func appendTemplate(_ template: AnalysisNoteTemplate) {
-        let separator = notes.text.isEmpty ? "" : (notes.text.hasSuffix("\n\n") ? "" : "\n\n")
-        notes.text += separator + template.text
-    }
-
     private func insertMetalScreenshot() {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("raymol-note-\(UUID().uuidString).png")
@@ -1133,19 +1071,19 @@ struct NotesInspectorView: View {
 
     private func insertResidueSummary(contacts: Bool) {
         let rows = engine.noteResidues(contacts: contacts)
+        guard !rows.isEmpty else {
+            insertionNotice = "Create a `sele` selection in the 3D view first. The note was not changed."
+            return
+        }
         let heading = contacts ? "## Contacts around selection (4.0 Å)" : "## Selected residues"
         var lines = [heading, ""]
-        if rows.isEmpty {
-            lines.append("_No residues found. Create a `sele` selection in the 3D view first._")
-        } else {
-            lines += rows.map { row in
-                let chain = row["chain", default: ""]
-                let resi = row["resi", default: ""]
-                let resn = row["resn", default: "UNK"]
-                let object = row["object", default: ""]
-                let label = [resn, chain.isEmpty ? nil : "chain \(chain)", resi].compactMap { $0 }.joined(separator: " ")
-                return "- [\(label)](\(residueURL(object: object, chain: chain, resi: resi)))"
-            }
+        lines += rows.map { row in
+            let chain = row["chain", default: ""]
+            let resi = row["resi", default: ""]
+            let resn = row["resn", default: "UNK"]
+            let object = row["object", default: ""]
+            let label = [resn, chain.isEmpty ? nil : "chain \(chain)", resi].compactMap { $0 }.joined(separator: " ")
+            return "- [\(label)](\(residueURL(object: object, chain: chain, resi: resi)))"
         }
         appendMarkdown(lines.joined(separator: "\n") + "\n")
         isPreviewing = true
@@ -1153,18 +1091,18 @@ struct NotesInspectorView: View {
 
     private func insertMeasurementSummary() {
         let rows = engine.noteMeasurements()
+        guard !rows.isEmpty else {
+            insertionNotice = "Create a RayMol measurement first. The note was not changed."
+            return
+        }
         var lines = ["## Measurements", ""]
-        if rows.isEmpty {
-            lines.append("_No RayMol measurements have been created in this run._")
-        } else {
-            lines += rows.map { row in
-                let name = row["name"] as? String ?? "measurement"
-                let kind = row["kind"] as? String ?? "distance"
-                let value = (row["value"] as? NSNumber)?.doubleValue ?? 0
-                let unit = kind == "distance" ? "Å" : "°"
-                let picks = (row["picks"] as? [String])?.joined(separator: " → ") ?? ""
-                return "- **\(name)** (\(kind)): \(String(format: kind == "distance" ? "%.2f" : "%.1f", value)) \(unit) — \(picks)"
-            }
+        lines += rows.map { row in
+            let name = row["name"] as? String ?? "measurement"
+            let kind = row["kind"] as? String ?? "distance"
+            let value = (row["value"] as? NSNumber)?.doubleValue ?? 0
+            let unit = kind == "distance" ? "Å" : "°"
+            let picks = (row["picks"] as? [String])?.joined(separator: " → ") ?? ""
+            return "- **\(name)** (\(kind)): \(String(format: kind == "distance" ? "%.2f" : "%.1f", value)) \(unit) — \(picks)"
         }
         appendMarkdown(lines.joined(separator: "\n") + "\n")
         isPreviewing = true
@@ -1203,6 +1141,22 @@ struct NotesInspectorView: View {
 
     private var sessionLabel: String {
         notes.sessionURL?.lastPathComponent ?? "Unsaved session"
+    }
+
+    private func beginExport(_ contentType: UTType) {
+        exportContentType = contentType
+        switch contentType {
+        case .plainText:
+            exportData = Data(notes.cleanMarkdown.utf8)
+            exportFilename = markdownFilename
+        case .html:
+            exportData = Data(notes.exportHTML().utf8)
+            exportFilename = exportBaseName + ".html"
+        default:
+            exportData = notes.exportPDFData()
+            exportFilename = exportBaseName + ".pdf"
+        }
+        showingExporter = true
     }
 
     private var markdownFilename: String {

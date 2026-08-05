@@ -22,7 +22,11 @@ final class AnalysisNotesStoreTests: XCTestCase {
 
         XCTAssertNotNil(stagedDocument)
         XCTAssertTrue(FileManager.default.fileExists(atPath: stagedDocument?.path ?? ""))
+        XCTAssertNotEqual(stagedDocument?.deletingLastPathComponent(),
+                          session.deletingLastPathComponent())
         XCTAssertFalse(FileManager.default.fileExists(atPath: writer.sidecarURL(for: session).path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("experiment.raymol-notes-assets").path))
 
         let reader = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
         reader.openSession(at: session)
@@ -51,7 +55,7 @@ final class AnalysisNotesStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testUntitledScratchpadUsesApplicationSupportFallback() throws {
+    func testUntitledScratchpadUsesTemporaryStagingFallback() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -127,6 +131,8 @@ final class AnalysisNotesStoreTests: XCTestCase {
             fallbackDirectory: root.appendingPathComponent("fallback", isDirectory: true),
             debounceInterval: 60
         )
+        let session = root.appendingPathComponent("shared.pse")
+        store.openSession(at: session)
         var stagedAssets: [URL] = []
         store.configureEmbeddedPersistence(
             stage: { _, directory in
@@ -141,6 +147,8 @@ final class AnalysisNotesStoreTests: XCTestCase {
 
         XCTAssertTrue(store.text.contains("raymol-asset://\(asset.id.uuidString)"))
         XCTAssertEqual(stagedAssets.filter { $0.pathExtension == "png" }.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("shared.raymol-notes-assets").path))
         XCTAssertEqual(store.cleanMarkdown, "**Figure:** Metal view")
     }
 
