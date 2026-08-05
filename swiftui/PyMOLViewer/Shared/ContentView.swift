@@ -215,6 +215,10 @@ struct ContentView: View {
             // What's New splash (both platforms, single hook): once-per-launch
             // auto-show, the manual-open notification, and the sheet itself.
             .onAppear {
+                notes.configureEmbeddedPersistence(
+                    stage: { engine.stageAnalysisNotes(documentURL: $0, assetsDirectory: $1) },
+                    export: { engine.exportAnalysisNotes(documentURL: $0, assetsDirectory: $1) }
+                )
                 notes.openSession(at: engine.currentSessionURL)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                     whatsNew.presentAutoIfNeeded()
@@ -994,6 +998,9 @@ struct ContentView: View {
     // Currently always off — the explicit toggle was removed; collapse the rail +
     // inspector instead for an immersive view.
     @State private var iosFullScreen = false
+    // Notes needs an editor-sized canvas on iPhone. Selecting its inspector tab
+    // opens a dedicated workspace instead of squeezing it into the bottom/side pane.
+    @State private var showPhoneNotes = false
     // Settings tab: in-panel drill into the display-settings card.
     @State private var settingsSceneOpen = false
     // Panel fraction to restore after the Theme Studio closes (it temporarily
@@ -1399,6 +1406,20 @@ struct ContentView: View {
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: url, to: dst)
             NSLog("EXPORTTEST_DONE: \(dst.path)")
+        }
+        .fullScreenCover(isPresented: $showPhoneNotes) {
+            NavigationStack {
+                NotesInspectorView()
+                    .environmentObject(notes)
+                    .environmentObject(engine)
+                    .navigationTitle("Analysis Notes")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showPhoneNotes = false }
+                        }
+                    }
+            }
         }
     }
 
@@ -2462,10 +2483,10 @@ struct ContentView: View {
 
     private func iosShareSession() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.pse")
+        notes.flush()
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         if FileManager.default.fileExists(atPath: url.path) {
-            let items = [url] + notes.portableCompanions(nextTo: url)
-            presentShareSheet(items)
+            presentShareSheet(url)
         }
     }
 
@@ -2475,6 +2496,7 @@ struct ContentView: View {
     private func iosSaveSession() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("RayMol.pse")
         try? FileManager.default.removeItem(at: url)
+        notes.flush()
         engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
         guard FileManager.default.fileExists(atPath: url.path),
               let scene = UIApplication.shared.connectedScenes
@@ -2482,8 +2504,7 @@ struct ContentView: View {
               let root = scene.keyWindow?.rootViewController else { return }
         var top = root
         while let presented = top.presentedViewController { top = presented }
-        let items = [url] + notes.portableCompanions(nextTo: url)
-        let picker = UIDocumentPickerViewController(forExporting: items, asCopy: true)
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
         if let pop = picker.popoverPresentationController {
             pop.sourceView = top.view
             pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY,
@@ -2554,9 +2575,19 @@ struct ContentView: View {
                 .padding(.top, 8)
             }
             #endif
-            Picker("", selection: $inspectorTab) {
+            Picker("", selection: inspectorTabBinding) {
                 ForEach(InspectorTab.allCases) { tab in
+                    #if os(iOS)
+                    if hSize == .compact {
+                        Image(systemName: tab.systemImage)
+                            .accessibilityLabel(tab.rawValue)
+                            .tag(tab)
+                    } else {
+                        Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                    }
+                    #else
                     Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                    #endif
                 }
             }
             .pickerStyle(.segmented)
@@ -2670,6 +2701,21 @@ struct ContentView: View {
         .onChange(of: engine.timelineMode) { on in
             if on { engine.pause(); engine.stopAllObjectStates() }
         }
+    }
+
+    private var inspectorTabBinding: Binding<InspectorTab> {
+        Binding(
+            get: { inspectorTab },
+            set: { tab in
+                #if os(iOS)
+                if hSize == .compact && tab == .notes {
+                    showPhoneNotes = true
+                    return
+                }
+                #endif
+                inspectorTab = tab
+            }
+        )
     }
 
     // MARK: - Toolbar
@@ -2934,8 +2980,8 @@ struct ContentView: View {
     // when no document is tracked (never-saved session, or a non-.pse was opened).
     private func saveSession() {
         if let url = engine.currentSessionURL {
-            engine.saveSession(to: url)
             notes.sessionDidSave(to: url)
+            engine.saveSession(to: url)
         } else {
             saveSessionAs()
         }
@@ -2955,8 +3001,8 @@ struct ContentView: View {
         panel.canCreateDirectories = true
         panel.title = "Save Session"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        engine.saveSession(to: url)
         notes.sessionDidSave(to: url)
+        engine.saveSession(to: url)
     }
 
     // Save the whole scene to a molecular or 3D file. cmd.save infers the format
@@ -2983,10 +3029,10 @@ struct ContentView: View {
 
     private func shareSession() {
         let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_share.pse")
+        notes.flush()
         engine.runPython("from pymol import cmd as _c; _c.save(r'''\(tmp)''')")
         let sessionURL = URL(fileURLWithPath: tmp)
-        let items = [sessionURL] + notes.portableCompanions(nextTo: sessionURL)
-        presentShare(items: items)
+        presentShare(items: [sessionURL])
     }
 
     private func presentShare(forFileAt path: String) {

@@ -46,11 +46,14 @@ On macOS, choose the window button in the Notes footer to open a detachable **An
 
 ## Saving and sharing
 
-For `experiment.pse`, RayMol writes:
+For `experiment.pse`, RayMol stores:
 
-- `experiment.raymol-notes.json` — Markdown, view-link metadata, and image metadata.
-- `experiment.raymol-notes-assets/` — linked PNG screenshots, when present.
+Notes are stored inside the `.pse` session itself under RayMol's backward-compatible
+`raymol_notes` key. Markdown and note metadata remain ordinary JSON-compatible
+values; linked images are base64 encoded in a nested dictionary keyed by MD5.
+**Share Session** therefore shares one self-contained file, with no sidecar or
+asset folder to keep together.
 
-RayMol also keeps an Application Support recovery copy for sandboxed or temporarily read-only locations. **Share Session** and **Save Session** automatically include the notes sidecar and each linked PNG. Keep those companion files with the `.pse`; full-scene links additionally depend on the scene data embedded in the saved `.pse`.
-
-Older camera-only sidecars remain readable.
+RayMol keeps a temporary working/recovery copy while the session is open. Older
+`.raymol-notes.json` sidecars and camera-only links remain readable and are
+migrated into the next saved `.pse`.

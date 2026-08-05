@@ -3,7 +3,7 @@ import XCTest
 
 final class AnalysisNotesStoreTests: XCTestCase {
     @MainActor
-    func testSavedSessionWritesAndReloadsPortableSidecar() throws {
+    func testSavedSessionStagesEmbeddedDocumentAndReloadsRecoveryCopy() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -12,10 +12,17 @@ final class AnalysisNotesStoreTests: XCTestCase {
         let session = root.appendingPathComponent("experiment.pse")
         let fallback = root.appendingPathComponent("fallback", isDirectory: true)
         let writer = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
+        var stagedDocument: URL?
+        writer.configureEmbeddedPersistence(
+            stage: { document, _ in stagedDocument = document; return true },
+            export: { _, _ in false }
+        )
         writer.text = "Chain A moves toward the ligand after minimization."
         writer.sessionDidSave(to: session)
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: writer.sidecarURL(for: session).path))
+        XCTAssertNotNil(stagedDocument)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagedDocument?.path ?? ""))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: writer.sidecarURL(for: session).path))
 
         let reader = AnalysisNotesStore(fallbackDirectory: fallback, debounceInterval: 60)
         reader.openSession(at: session)
@@ -108,7 +115,7 @@ final class AnalysisNotesStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testScreenshotIsBundledWithPortableSidecar() throws {
+    func testScreenshotIsStagedWithEmbeddedDocument() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -120,13 +127,20 @@ final class AnalysisNotesStoreTests: XCTestCase {
             fallbackDirectory: root.appendingPathComponent("fallback", isDirectory: true),
             debounceInterval: 60
         )
+        var stagedAssets: [URL] = []
+        store.configureEmbeddedPersistence(
+            stage: { _, directory in
+                stagedAssets = (try? FileManager.default.contentsOfDirectory(
+                    at: directory, includingPropertiesForKeys: nil)) ?? []
+                return true
+            },
+            export: { _, _ in false }
+        )
         let asset = try XCTUnwrap(store.addScreenshot(title: "Metal view", from: source))
-        let session = root.appendingPathComponent("shared.pse")
-        let companions = store.portableCompanions(nextTo: session)
+        store.flush()
 
         XCTAssertTrue(store.text.contains("raymol-asset://\(asset.id.uuidString)"))
-        XCTAssertEqual(companions.filter { $0.pathExtension == "json" }.count, 1)
-        XCTAssertEqual(companions.filter { $0.pathExtension == "png" }.count, 1)
+        XCTAssertEqual(stagedAssets.filter { $0.pathExtension == "png" }.count, 1)
         XCTAssertEqual(store.cleanMarkdown, "**Figure:** Metal view")
     }
 

@@ -350,10 +350,6 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
     let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
-    // Track an opened .pse as the current document (so ⌘S overwrites it). Capture
-    // the ORIGINAL url, never the temp copy loaded below. Covers Finder open +
-    // drag-drop, which both funnel here. A non-.pse structure clears the document.
-    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
     let temp = FileManager.default.temporaryDirectory
         .appendingPathComponent("open_\(UUID().uuidString.prefix(8)).\(ext)")
     try? FileManager.default.removeItem(at: temp)
@@ -367,6 +363,9 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
     if name.isEmpty { name = "mol" }
     engine.loadStructure(path: path, name: name)
+    // Publish the original document URL only after PyMOL has restored the PSE,
+    // so observers read the newly restored embedded Analysis Notes payload.
+    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
 }
 
 // Load EVERY URL the OS handed us in one open (multi-file Terminal `open`, Finder

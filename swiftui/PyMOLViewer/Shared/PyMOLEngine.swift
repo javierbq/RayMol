@@ -1144,6 +1144,36 @@ final class PyMOLEngine: ObservableObject {
         currentSessionURL = url
     }
 
+    /// Stage/export Analysis Notes through the Python session extension. Paths
+    /// are base64 encoded so quotes and non-ASCII filenames never become Python.
+    func stageAnalysisNotes(documentURL: URL, assetsDirectory: URL) -> Bool {
+        guard isReady, FileManager.default.fileExists(atPath: documentURL.path) else { return false }
+        let document = Data(documentURL.path.utf8).base64EncodedString()
+        let assets = Data(assetsDirectory.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol import raymol_notes as _rn
+        _rn.stage(_b64.b64decode('\(document)').decode('utf-8'),
+                  _b64.b64decode('\(assets)').decode('utf-8'))
+        """)
+        return true
+    }
+
+    func exportAnalysisNotes(documentURL: URL, assetsDirectory: URL) -> Bool {
+        guard isReady else { return false }
+        try? FileManager.default.removeItem(at: documentURL)
+        try? FileManager.default.removeItem(at: assetsDirectory)
+        let document = Data(documentURL.path.utf8).base64EncodedString()
+        let assets = Data(assetsDirectory.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol import raymol_notes as _rn
+        _rn.export(_b64.b64decode('\(document)').decode('utf-8'),
+                   _b64.b64decode('\(assets)').decode('utf-8'))
+        """)
+        return FileManager.default.fileExists(atPath: documentURL.path)
+    }
+
     // MARK: - Theme
 
     /// Whether the passive launch-time theme re-assertion
@@ -1985,12 +2015,13 @@ final class PyMOLEngine: ObservableObject {
         import base64 as _b64, json as _json
         from pymol import cmd as _c
         _rows, _seen = [], set()
-        for _a in _c.get_model(r'''\(selection)''').atom:
-            _key = (_a.model, _a.chain, _a.resi, _a.resn)
-            if _key not in _seen:
-                _seen.add(_key)
-                _rows.append({'object': _a.model, 'chain': _a.chain,
-                              'resi': _a.resi, 'resn': _a.resn})
+        if 'sele' in (_c.get_names('selections') or []):
+            for _a in _c.get_model(r'''\(selection)''').atom:
+                _key = (_a.model, _a.chain, _a.resi, _a.resn)
+                if _key not in _seen:
+                    _seen.add(_key)
+                    _rows.append({'object': _a.model, 'chain': _a.chain,
+                                  'resi': _a.resi, 'resn': _a.resn})
         with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
             _json.dump(_rows, _f)
         """)

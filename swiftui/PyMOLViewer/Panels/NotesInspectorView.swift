@@ -9,13 +9,9 @@ import AppKit
 import UIKit
 #endif
 
-/// Plain-text analysis notes associated with the current PyMOL session.
-///
-/// A portable JSON sidecar is preferred (`sample.raymol-notes.json`). Sandboxed
-/// file-provider URLs are not always writable after their picker access ends, so
-/// every note is also mirrored into Application Support under a stable URL key.
-/// That fallback keeps notes available on iPhone/iPad without requiring broad
-/// file-system access.
+/// Analysis notes associated with the current PyMOL session. The live document
+/// is staged locally while editing and embedded into the `.pse` on session save.
+/// Legacy `.raymol-notes.json` sidecars remain readable for migration.
 final class AnalysisNotesStore: ObservableObject {
     static let shared = AnalysisNotesStore()
 
@@ -91,6 +87,8 @@ final class AnalysisNotesStore: ObservableObject {
     private var pendingSave: DispatchWorkItem?
     private var isLoading = false
     private var hasOpenedSession = false
+    private var stageEmbeddedDocument: ((URL, URL) -> Bool)?
+    private var exportEmbeddedDocument: ((URL, URL) -> Bool)?
 
     init(fileManager: FileManager = .default,
          fallbackDirectory: URL? = nil,
@@ -109,6 +107,16 @@ final class AnalysisNotesStore: ObservableObject {
         }
     }
 
+    /// Connect the store to PyMOL's session save/restore extension. Kept as
+    /// closures so persistence can be tested without initializing the engine.
+    func configureEmbeddedPersistence(
+        stage: @escaping (URL, URL) -> Bool,
+        export: @escaping (URL, URL) -> Bool
+    ) {
+        stageEmbeddedDocument = stage
+        exportEmbeddedDocument = export
+    }
+
     /// Load notes for a newly opened session. Passing nil selects the persistent
     /// untitled-session scratchpad used before a `.pse` has been saved.
     func openSession(at url: URL?) {
@@ -119,7 +127,8 @@ final class AnalysisNotesStore: ObservableObject {
         sessionURL = normalized
 
         isLoading = true
-        let document = loadDocument(for: normalized)
+        let embeddedDocument = loadEmbeddedDocument(for: normalized)
+        let document = embeddedDocument ?? loadDocument(for: normalized)
         if let pages = document?.notePages, !pages.isEmpty {
             notePages = pages
             activePageID = pages.contains { $0.id == document?.activePageID }
@@ -138,6 +147,12 @@ final class AnalysisNotesStore: ObservableObject {
         }
         isLoading = false
         saveState = .saved
+        // Stage legacy sidecars/recovery documents immediately so Share Session
+        // can produce a self-contained PSE even before the user edits the note.
+        if embeddedDocument == nil, document != nil {
+            saveState = .pending
+            persist()
+        }
     }
 
     /// Rebind the current text after Save/Save As without loading over it. This is
@@ -325,55 +340,6 @@ final class AnalysisNotesStore: ObservableObject {
         return viewBookmarks.first { $0.id == id }
     }
 
-    /// Write a portable companion for an exported copy of a session without
-    /// rebinding the live document to that temporary export URL.
-    func writePortableSidecar(nextTo sessionURL: URL) -> URL? {
-        commitActivePage()
-        let document = Document(sessionName: sessionURL.lastPathComponent,
-                                updatedAt: Date(), text: text,
-                                viewBookmarks: viewBookmarks,
-                                screenshots: screenshots,
-                                notePages: notePages,
-                                activePageID: activePageID)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(document) else { return nil }
-        let url = sidecarURL(for: sessionURL)
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            return nil
-        }
-    }
-
-    /// Sidecar plus linked image assets for Share and document export flows.
-    func portableCompanions(nextTo sessionURL: URL) -> [URL] {
-        commitActivePage()
-        var urls: [URL] = []
-        if let sidecar = writePortableSidecar(nextTo: sessionURL) { urls.append(sidecar) }
-        let directory = assetsDirectory(for: sessionURL)
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        // Include the live page explicitly. Before the first session is opened,
-        // there is no NotePage to commit into yet, but its screenshots still
-        // need to travel with a shared or newly saved session.
-        var seenAssetIDs = Set<UUID>()
-        let assets = (notePages.flatMap(\.screenshots) + screenshots).filter {
-            seenAssetIDs.insert($0.id).inserted
-        }
-        for asset in assets {
-            guard let source = screenshotURL(for: asset) else { continue }
-            let destination = directory.appendingPathComponent(asset.fileName)
-            if source.standardizedFileURL != destination.standardizedFileURL {
-                try? fileManager.removeItem(at: destination)
-                try? fileManager.copyItem(at: source, to: destination)
-            }
-            if fileManager.fileExists(atPath: destination.path) { urls.append(destination) }
-        }
-        return urls
-    }
-
     private func scheduleSave() {
         pendingSave?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.persist() }
@@ -403,15 +369,10 @@ final class AnalysisNotesStore: ObservableObject {
                                             withIntermediateDirectories: true)
             try data.write(to: fallback, options: .atomic)
 
-            // The fallback is authoritative in a sandbox. The sidecar is an
-            // additional portable copy when the session's directory is writable.
-            if let sessionURL {
-                let scoped = sessionURL.startAccessingSecurityScopedResource()
-                defer { if scoped { sessionURL.stopAccessingSecurityScopedResource() } }
-                try? data.write(to: sidecarURL(for: sessionURL), options: .atomic)
-                _ = portableCompanions(nextTo: sessionURL)
-            }
-            saveState = .saved
+            let assets = fallbackAssetsDirectory(for: sessionURL)
+            try fileManager.createDirectory(at: assets, withIntermediateDirectories: true)
+            let staged = stageEmbeddedDocument?(fallback, assets) ?? true
+            saveState = staged ? .saved : .failed("Could not stage notes in the PyMOL session")
         } catch {
             saveState = .failed(error.localizedDescription)
         }
@@ -444,6 +405,32 @@ final class AnalysisNotesStore: ObservableObject {
         case (nil, nil):
             return nil
         }
+    }
+
+    private func loadEmbeddedDocument(for sessionURL: URL?) -> Document? {
+        guard let exportEmbeddedDocument else { return nil }
+        let root = fallbackDirectory.appendingPathComponent("Restored", isDirectory: true)
+        let documentURL = root.appendingPathComponent("document.json")
+        let restoredAssets = root.appendingPathComponent("Assets", isDirectory: true)
+        try? fileManager.removeItem(at: root)
+        guard exportEmbeddedDocument(documentURL, restoredAssets) else { return nil }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: documentURL),
+              let document = try? decoder.decode(Document.self, from: data) else { return nil }
+
+        let liveAssets = fallbackAssetsDirectory(for: sessionURL)
+        try? fileManager.createDirectory(at: liveAssets, withIntermediateDirectories: true)
+        if let files = try? fileManager.contentsOfDirectory(at: restoredAssets,
+                                                             includingPropertiesForKeys: nil) {
+            for file in files {
+                let destination = liveAssets.appendingPathComponent(file.lastPathComponent)
+                try? fileManager.removeItem(at: destination)
+                try? fileManager.copyItem(at: file, to: destination)
+            }
+        }
+        return document
     }
 
     private func fallbackURL(for sessionURL: URL?) -> URL {
@@ -719,6 +706,7 @@ struct NotesInspectorView: View {
     @State private var showingRenamePagePrompt = false
     @State private var pageName = ""
     #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @FocusState private var noteEditorFocused: Bool
     #endif
     #if os(macOS)
@@ -752,6 +740,8 @@ struct NotesInspectorView: View {
                     Label(notes.activePageTitle, systemImage: "doc.on.doc")
                         .font(.caption).lineLimit(1)
                 }
+                .menuIndicator(.hidden)
+                .fixedSize(horizontal: true, vertical: false)
                 .help("Named note documents")
                 saveStatus
             }
@@ -760,8 +750,9 @@ struct NotesInspectorView: View {
             HStack(spacing: 8) {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search notes", text: $searchText)
+                    TextField(compactLayout ? "Search" : "Search notes", text: $searchText)
                         .textFieldStyle(.plain)
+                        .frame(minWidth: compactLayout ? 56 : 90)
                         .onSubmit { isPreviewing = true }
                     if !searchText.isEmpty {
                         Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -780,6 +771,8 @@ struct NotesInspectorView: View {
                         }
                     }
                 } label: { Image(systemName: "list.bullet.indent") }
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .help("Heading outline")
 
                 Menu {
@@ -788,6 +781,8 @@ struct NotesInspectorView: View {
                         Button(tag) { searchText = tag }
                     }
                 } label: { Image(systemName: "number") }
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .help("Note tags")
             }
 
@@ -839,8 +834,14 @@ struct NotesInspectorView: View {
                     Button("Camera Only") { beginViewLink(.camera) }
                     Button("Full Scene") { beginViewLink(.scene) }
                 } label: {
-                    Label("Insert View Link", systemImage: "camera.viewfinder")
+                    if compactLayout {
+                        Image(systemName: "camera.viewfinder")
+                    } else {
+                        Label("Insert View Link", systemImage: "camera.viewfinder")
+                    }
                 }
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .disabled(!engine.isReady)
                 .help("Insert a camera-only or full-scene link (⌥⌘L)")
 
@@ -849,6 +850,8 @@ struct NotesInspectorView: View {
                         Button(template.name) { appendTemplate(template) }
                     }
                 } label: { Image(systemName: "doc.badge.plus") }
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .help("Append an analysis template")
 
                 Menu {
@@ -856,6 +859,8 @@ struct NotesInspectorView: View {
                     Button("Contacts Around Selection") { insertResidueSummary(contacts: true) }
                     Button("Current Measurements") { insertMeasurementSummary() }
                 } label: { Image(systemName: "atom") }
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .disabled(!engine.isReady)
                 .help("Insert structured scientific data")
 
@@ -871,6 +876,8 @@ struct NotesInspectorView: View {
                     Button("Export PDF with Images…") { showingPDFExporter = true }
                     Button("Sharing Notes & Sessions…") { showingShareHelp = true }
                 } label: { Image(systemName: "square.and.arrow.up") }
+                .menuIndicator(.hidden)
+                .fixedSize()
 
                 #if os(macOS)
                 Button { openWindow(id: "analysis-notes") } label: {
@@ -879,11 +886,7 @@ struct NotesInspectorView: View {
                 .help("Open Notes in a detachable window")
                 #endif
 
-                Spacer()
-
-                Text(summaryLabel)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
             }
         }
         .padding(12)
@@ -901,7 +904,7 @@ struct NotesInspectorView: View {
         .alert("Sharing Analysis Notes", isPresented: $showingShareHelp) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("Share Session and Save Session automatically include the .raymol-notes.json sidecar and linked PNG images. Keep the files together. Full-scene links also require the saved .pse because their scene data lives inside the PyMOL session.")
+            Text("Analysis Notes, view-link metadata, and linked images are embedded in the saved .pse. Share the single session file; no companion sidecar or image folder is required.")
         }
         .alert("New Note", isPresented: $showingNewPagePrompt) {
             TextField("Note name", text: $pageName)
@@ -1197,20 +1200,18 @@ struct NotesInspectorView: View {
         return "\(session) - \(page)"
     }
 
-    private var summaryLabel: String {
-        let matches = searchText.isEmpty ? nil : notes.text.split(separator: "\n").filter { String($0).localizedCaseInsensitiveContains(searchText) }.count
-        if let matches { return "\(matches) matches" }
-        return "\(notes.viewBookmarks.count) views · \(notes.tags.count) tags"
+    private var compactLayout: Bool {
+        #if os(iOS)
+        return horizontalSizeClass == .compact
+        #else
+        return false
+        #endif
     }
 
     @ViewBuilder private var saveStatus: some View {
         switch notes.saveState {
-        case .saved:
-            Label("Saved", systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-        case .pending:
-            Label("Saving…", systemImage: "clock")
-                .foregroundStyle(.secondary)
+        case .saved, .pending:
+            EmptyView()
         case .failed(let message):
             Label("Not saved", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
