@@ -12,6 +12,11 @@
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
+		A13600000000000000000011 /* MutagenesisWizardContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13600000000000000000001 /* MutagenesisWizardContract.swift */; };
+		A13600000000000000000012 /* MutagenesisWizardContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13600000000000000000001 /* MutagenesisWizardContract.swift */; };
+		A13600000000000000000013 /* MutagenesisWizardPrototype.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13600000000000000000002 /* MutagenesisWizardPrototype.swift */; };
+		A13600000000000000000014 /* MutagenesisWizardPrototype.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13600000000000000000002 /* MutagenesisWizardPrototype.swift */; };
+		A13600000000000000000015 /* MutagenesisWizardContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13600000000000000000003 /* MutagenesisWizardContractTests.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
@@ -190,6 +195,9 @@
 		99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PyMOLViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignRegionTests.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
+		A13600000000000000000001 /* MutagenesisWizardContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MutagenesisWizardContract.swift; sourceTree = "<group>"; };
+		A13600000000000000000002 /* MutagenesisWizardPrototype.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MutagenesisWizardPrototype.swift; sourceTree = "<group>"; };
+		A13600000000000000000003 /* MutagenesisWizardContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MutagenesisWizardContractTests.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
@@ -251,6 +259,7 @@
 				B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */,
 				FB1304C662D9011F7C4505FC /* MCPStatusView.swift */,
 				221117550FAD97CF81924E05 /* MousePanel.swift */,
+				A13600000000000000000002 /* MutagenesisWizardPrototype.swift */,
 				0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */,
 				8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */,
 				A73267D4D7B506E647B7A995 /* ObjectPanel.swift */,
@@ -334,6 +343,7 @@
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
+				A13600000000000000000001 /* MutagenesisWizardContract.swift */,
 				D965CB609C447033E5DB0046 /* PyMOLApp.swift */,
 				33D6A753E4525628B96C259C /* PyMOLEngine.swift */,
 				9371B6FFB30D6166234C678B /* RayMolMain.swift */,
@@ -360,6 +370,7 @@
 				48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */,
 				D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
+				A13600000000000000000003 /* MutagenesisWizardContractTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
 				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
 			);
@@ -1040,6 +1051,7 @@
 				52B5620BEF26DEB8E3A700C1 /* DesignResiduesTests.swift in Sources */,
 				6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,
+				A13600000000000000000015 /* MutagenesisWizardContractTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,
 				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
 			);
@@ -1062,6 +1074,8 @@
 				77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */,
 				64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */,
 				90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */,
+				A13600000000000000000011 /* MutagenesisWizardContract.swift in Sources */,
+				A13600000000000000000013 /* MutagenesisWizardPrototype.swift in Sources */,
 				CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
@@ -1102,6 +1116,8 @@
 				F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */,
 				3ECB633FC33E73F4767D3AF5 /* MCPServerManager.swift in Sources */,
 				DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */,
+				A13600000000000000000012 /* MutagenesisWizardContract.swift in Sources */,
+				A13600000000000000000014 /* MutagenesisWizardPrototype.swift in Sources */,
 				1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
