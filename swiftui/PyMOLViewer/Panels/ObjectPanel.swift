@@ -3391,7 +3391,7 @@ extension PyMOLEngine {
     func parseObjectPanelFeedback(_ line: String) {
         guard line.hasPrefix("OBJPANEL:") else { return }
         let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_objpanel.json")
+            .appendingPathComponent("pymol_objpanel_\(ProcessInfo.processInfo.processIdentifier).json")
         guard let data = FileManager.default.contents(atPath: path) else { return }
 
         struct PanelPayload: Decodable {

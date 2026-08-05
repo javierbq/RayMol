@@ -2978,7 +2978,8 @@ final class PyMOLEngine: ObservableObject {
     // sceneState. File-based to avoid the ~1KB feedback-line cap splitting the
     // payload and leaking continuation lines into the terminal log.
     func parseObjectDetailFeedback(_ line: String) {
-        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_objdetail.json")
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_objdetail_\(ProcessInfo.processInfo.processIdentifier).json")
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
