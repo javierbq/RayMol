@@ -160,6 +160,24 @@ def _color_setting_rgb(setting, fallback=(0.0, 0.0, 0.0)):
     return [float(t[0]), float(t[1]), float(t[2])]
 
 
+def is_molecule(obj):
+    """True when `obj` is a molecular object — i.e. something an atom selection is
+    allowed to name.
+
+    Measurement objects (`dist01`/`ang01`/`dih01`), CGOs, maps and groups are not.
+    Handing one to `cmd.iterate` / `cmd.count_atoms` makes the C++ selector reject
+    it and write `Selector-Error: Invalid selection name "<obj>"` straight to the
+    feedback log. A Python-level try/except cannot suppress that: the selector has
+    already emitted the line by the time it raises. Since the object panel polls
+    ~2x/second, an unguarded probe floods the console for as long as the object
+    exists — issue #219.
+    """
+    try:
+        return cmd.get_type(obj) == 'object:molecule'
+    except Exception:
+        return False
+
+
 def transp_summary(obj):
     """One pass over `obj`'s atoms → {setting: (min, max, over)} for the atom-level
     transparency settings, where min/max are the EFFECTIVE per-atom transparency
@@ -170,7 +188,12 @@ def transp_summary(obj):
     Reading `s.<setting>` in iterate always resolves to the object-level value when
     no atom-level override exists (it never returns None here), so comparing the
     effective range to the object-level value is what detects a genuine override.
+
+    Non-molecular objects are rejected up front (see is_molecule): they cannot
+    carry per-atom transparency anyway, so probing them is both wrong and noisy.
     """
+    if not is_molecule(obj):
+        return {}
     objlv = {s: _num(s, obj) for s in TRANSP_SETTINGS}
     mn = {s: None for s in TRANSP_SETTINGS}
     mx = {s: None for s in TRANSP_SETTINGS}
@@ -219,6 +242,13 @@ def _build(objs):
     detail = {}
     for o in objs:
         reps = []
+        # Non-molecular objects (measurements, CGOs, maps, groups) have no reps to
+        # describe, and every probe below — transp_summary's iterate and the
+        # per-rep count_atoms — would make the selector log an error per poll tick
+        # (issue #219). Emit an empty rep list instead of interrogating them.
+        if not is_molecule(o):
+            detail[o] = reps
+            continue
         # Effective per-atom transparency range per setting, computed once per
         # object; attached to the rep whose transparency setting is overridden so
         # the expanded card can show "per-atom: min–max" and a Clear action.
