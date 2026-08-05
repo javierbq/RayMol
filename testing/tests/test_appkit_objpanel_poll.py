@@ -22,10 +22,34 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 
 from pymol import cmd, testing
 from pymol import appkit_inspector as ai
+
+
+@contextlib.contextmanager
+def capture_console():
+    """Capture the REAL console stream (fd 1), not just sys.stdout.
+
+    Needed for issue #219: the `Selector-Error: Invalid selection name "dist01".`
+    line is written by the C++ selector through PyMOL's feedback system directly
+    to fd 1. contextlib.redirect_stdout only rebinds the Python-level sys.stdout
+    object, so it never sees that line — a test built on it would pass against the
+    unfixed code.
+    """
+    sys.stdout.flush()
+    saved = os.dup(1)
+    tmp = tempfile.TemporaryFile(mode='w+b')
+    try:
+        os.dup2(tmp.fileno(), 1)
+        yield tmp
+        sys.stdout.flush()
+    finally:
+        os.dup2(saved, 1)
+        os.close(saved)
+        tmp.seek(0)
 
 # layer0/PyMOLGlobals.h: OrthoLineLength — the per-line feedback cap that the
 # old inline payload overflowed.
@@ -171,3 +195,88 @@ class TestObjPanelPoll(testing.PyMOLTestCase):
         large, _ = self._poll()
 
         self.assertEqual(small, large)
+
+
+class TestNonMolecularObjectsAreNotProbed(testing.PyMOLTestCase):
+    """Regression coverage for issue #219.
+
+    Creating a measurement made the console repeat
+
+        Selector-Error: Invalid selection name "dist01".
+        dist01<--
+
+    at 2.00 lines/second, indefinitely (measured on the pre-fix build). The panel
+    poll probed EVERY public object for a per-atom transparency override without
+    filtering by type, so `cmd.iterate` was handed a measurement object and the
+    C++ selector rejected it. The Python try/except around the iterate swallowed
+    the exception but not the already-written feedback line — so it could only be
+    fixed by not making the call.
+    """
+
+    SELECTOR_ERROR = b'Invalid selection name'
+
+    def _measured_session(self):
+        cmd.delete('all')
+        cmd.fab('ACDEFG', 'mol')
+        cmd.distance('dist01', 'mol and i. 1 and n. CA', 'mol and i. 3 and n. CA')
+        cmd.angle('ang01', 'mol and i. 1 and n. CA', 'mol and i. 2 and n. CA',
+                  'mol and i. 3 and n. CA')
+        self.assertEqual(cmd.get_type('dist01'), 'object:measurement')
+        return list(cmd.get_names('public_objects'))
+
+    def testIsMoleculeRejectsMeasurements(self):
+        self._measured_session()
+        self.assertTrue(ai.is_molecule('mol'))
+        self.assertFalse(ai.is_molecule('dist01'))
+        self.assertFalse(ai.is_molecule('ang01'))
+        self.assertFalse(ai.is_molecule('no_such_object'))
+
+    def testPollPanelEmitsNoSelectorErrorForMeasurements(self):
+        objs = self._measured_session()
+        self.assertIn('dist01', objs,
+                      'the measurement must be in public_objects, else the poll '
+                      'never probes it and this test proves nothing')
+
+        with capture_console() as out:
+            for _ in range(5):        # the real panel polls ~2x/second
+                ai.poll_panel()
+        console = out.read()
+
+        self.assertNotIn(self.SELECTOR_ERROR, console,
+                         'poll_panel must not hand a non-molecular object to the '
+                         'selector (issue #219); console was: %r' % console)
+
+    def testExpandedCardBuildEmitsNoSelectorErrorForMeasurements(self):
+        # The rep-detail path reaches transp_summary independently of poll_panel,
+        # and spams identically when a measurement's card is expanded.
+        objs = self._measured_session()
+
+        with capture_console() as out:
+            for _ in range(5):
+                ai.poll(objs)
+        console = out.read()
+
+        self.assertNotIn(self.SELECTOR_ERROR, console,
+                         'poll()/_build must not probe non-molecular objects '
+                         '(issue #219); console was: %r' % console)
+
+    def testPanelStillReportsMeasurementsAndRealTransparency(self):
+        # The fix must silence the probe without dropping the objects from the
+        # panel or breaking per-atom transparency detection on real molecules.
+        self._measured_session()
+        cmd.show('cartoon', 'mol')
+        cmd.alter('mol and resi 1-2', 's.cartoon_transparency = 0.5')
+
+        ai.poll_panel()
+        with open(PANEL_JSON) as f:
+            payload = json.load(f)
+
+        for name in ('mol', 'dist01', 'ang01'):
+            self.assertIn(name, payload['objects'])
+            self.assertIn(name, payload['has_transp'])
+        self.assertFalse(payload['has_transp']['dist01'])
+        self.assertFalse(payload['has_transp']['ang01'])
+        # A measurement contributes an empty rep list rather than being probed.
+        detail = ai._build(['mol', 'dist01'])['detail']
+        self.assertEqual(detail['dist01'], [])
+        self.assertTrue(detail['mol'], 'the molecule must still describe its reps')
