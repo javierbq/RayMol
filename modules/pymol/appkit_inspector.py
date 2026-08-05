@@ -347,22 +347,18 @@ def widen_clip_for_surface(buffer=12.0):
     front-clipped by the atom-fit slab that orient/reset/load set (which would
     slice the surface front and expose the interior).
 
-    Re-fit tight to the visible content first (zoom buffer 0 — idempotent, keeps
-    the molecule the same size), THEN push the near/far planes out by `buffer`.
-    The zoom reset makes repeated calls non-accumulating; the direct plane move
-    (not a camera dolly) clears the shell without shrinking the molecule, and
-    moving BOTH planes keeps the slab centered so depth precision stays good.
-    No-op when no such rep is shown."""
+    Use `clip atoms, buffer, visible`: it sets the near/far planes from the
+    visible atoms' extent about their CURRENT camera positions plus `buffer`,
+    touching only the clip planes -- never the camera position, rotation, or
+    center of rotation. That preserves the user's current view (previously a
+    `zoom visible` here recentered/rezoomed the camera every time dots/surface
+    was shown -- issue #195). It is absolute (recomputed from atom extents each
+    call), so repeated calls don't accumulate. No-op when no such rep is shown."""
     try:
         if (cmd.count_atoms('rep surface') + cmd.count_atoms('rep mesh')
                 + cmd.count_atoms('rep dots')) > 0:
-            cmd.zoom('visible', 0.0, complete=1)   # reset slab to tight visible fit
-            # `clip near, +d` moves the near plane TOWARD the viewer (front -= d);
-            # `clip far, -d` moves the far plane AWAY (back += d). Together they
-            # WIDEN the slab so the ~solvent_radius surface shell at both faces is
-            # inside it. (The opposite signs would narrow the slab and clip the
-            # surface — and the interior — away.)
-            cmd.clip('near', float(buffer))
-            cmd.clip('far', -float(buffer))
+            # Widen the slab to enclose the visible atoms +/- buffer WITHOUT
+            # moving the camera: clip atoms only calls SceneClipSet(front, back).
+            cmd.clip('atoms', float(buffer), 'visible')
     except Exception:
         pass
