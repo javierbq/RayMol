@@ -704,6 +704,7 @@ struct NotesInspectorView: View {
     @State private var showingPDFExporter = false
     @State private var showingNewPagePrompt = false
     @State private var showingRenamePagePrompt = false
+    @State private var showingDictationHelp = false
     @State private var pageName = ""
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -714,6 +715,12 @@ struct NotesInspectorView: View {
     #endif
 
     var body: some View {
+        GeometryReader { geometry in
+            content(compactLayout: isCompactLayout(width: geometry.size.width))
+        }
+    }
+
+    private func content(compactLayout: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Label(sessionLabel, systemImage: notes.sessionURL == nil ? "doc" : "doc.text")
@@ -819,7 +826,7 @@ struct NotesInspectorView: View {
                 if isPreviewing {
                     preview
                 } else {
-                    editor
+                    editor(compactLayout: compactLayout)
                 }
             }
             .background(Color.primary.opacity(0.035))
@@ -870,6 +877,11 @@ struct NotesInspectorView: View {
                 .disabled(!engine.isReady)
                 .help("Insert a Metal-rendered screenshot")
 
+                Button { useSystemDictation() } label: {
+                    Image(systemName: "keyboard")
+                }
+                .help(dictationHelpText)
+
                 Menu {
                     Button("Export Clean Markdown…") { showingMarkdownExporter = true }
                     Button("Export HTML with Images…") { showingHTMLExporter = true }
@@ -889,7 +901,8 @@ struct NotesInspectorView: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(12)
+        .padding(.horizontal, compactLayout ? 4 : 12)
+        .padding(.vertical, compactLayout ? 8 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { notes.flush() }
         .alert("Insert View Link", isPresented: $showingViewNamePrompt) {
@@ -915,6 +928,11 @@ struct NotesInspectorView: View {
             TextField("Note name", text: $pageName)
             Button("Rename") { notes.renameActivePage(pageName) }
             Button("Cancel", role: .cancel) { }
+        }
+        .alert("Use System Dictation", isPresented: $showingDictationHelp) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(dictationHelpText)
         }
         .fileExporter(isPresented: $showingMarkdownExporter,
                       document: MarkdownNoteDocument(text: notes.cleanMarkdown),
@@ -943,7 +961,7 @@ struct NotesInspectorView: View {
         #if os(iOS)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
-                Label("Use the keyboard microphone to dictate", systemImage: "mic")
+                Label("Tap the Apple keyboard microphone to dictate", systemImage: "mic")
                     .font(.caption)
                 Spacer()
                 Button("Done") { noteEditorFocused = false }
@@ -952,14 +970,14 @@ struct NotesInspectorView: View {
         #endif
     }
 
-    private var editor: some View {
+    private func editor(compactLayout: Bool) -> some View {
         TextEditor(text: $notes.text)
             #if os(iOS)
             .focused($noteEditorFocused)
             #endif
             .font(.system(size: fontSize))
             .scrollContentBackground(.hidden)
-            .padding(6)
+            .padding(compactLayout ? 1 : 6)
             .accessibilityLabel("Analysis notes")
             .overlay(alignment: .topLeading) {
                 if notes.text.isEmpty {
@@ -971,23 +989,6 @@ struct NotesInspectorView: View {
                         .allowsHitTesting(false)
                 }
             }
-            #if os(iOS)
-            .overlay(alignment: .bottomTrailing) {
-                if !noteEditorFocused {
-                    Button {
-                        noteEditorFocused = true
-                    } label: {
-                        Image(systemName: "mic.circle.fill")
-                            .font(.title2)
-                            .symbolRenderingMode(.hierarchical)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(12)
-                    .accessibilityLabel("Open keyboard for dictation")
-                    .help("Open the keyboard, then tap its microphone to dictate")
-                }
-            }
-            #endif
     }
 
     private var preview: some View {
@@ -1200,11 +1201,27 @@ struct NotesInspectorView: View {
         return "\(session) - \(page)"
     }
 
-    private var compactLayout: Bool {
+    private func isCompactLayout(width: CGFloat) -> Bool {
         #if os(iOS)
-        return horizontalSizeClass == .compact
+        return horizontalSizeClass == .compact || width < 430
         #else
-        return false
+        return width < 430
+        #endif
+    }
+
+    private func useSystemDictation() {
+        #if os(iOS)
+        noteEditorFocused = true
+        #else
+        showingDictationHelp = true
+        #endif
+    }
+
+    private var dictationHelpText: String {
+        #if os(iOS)
+        return "RayMol will open the Apple keyboard. Tap the microphone on that keyboard to start Dictation. If it is missing, enable Dictation in Settings → General → Keyboard."
+        #else
+        return "Place the cursor in the note, then use the Dictation shortcut configured in System Settings → Keyboard → Dictation. RayMol cannot start macOS system Dictation itself."
         #endif
     }
 
