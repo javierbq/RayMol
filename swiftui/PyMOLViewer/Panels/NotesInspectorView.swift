@@ -822,6 +822,22 @@ struct NotesInspectorView: View {
                 .help("Increase note text size")
             }
 
+            if compactLayout {
+                HStack {
+                    Menu {
+                        Button("Camera Only") { beginViewLink(.camera) }
+                        Button("Full Scene") { beginViewLink(.scene) }
+                    } label: {
+                        Label("Insert View Link", systemImage: "camera.viewfinder")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!engine.isReady)
+                    .help("Insert a camera-only or full-scene link (⌥⌘L)")
+
+                    Spacer(minLength: 0)
+                }
+            }
+
             Group {
                 if isPreviewing {
                     preview
@@ -837,20 +853,18 @@ struct NotesInspectorView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack(spacing: 8) {
-                Menu {
-                    Button("Camera Only") { beginViewLink(.camera) }
-                    Button("Full Scene") { beginViewLink(.scene) }
-                } label: {
-                    if compactLayout {
-                        Image(systemName: "camera.viewfinder")
-                    } else {
+                if !compactLayout {
+                    Menu {
+                        Button("Camera Only") { beginViewLink(.camera) }
+                        Button("Full Scene") { beginViewLink(.scene) }
+                    } label: {
                         Label("Insert View Link", systemImage: "camera.viewfinder")
                     }
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(!engine.isReady)
+                    .help("Insert a camera-only or full-scene link (⌥⌘L)")
                 }
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(!engine.isReady)
-                .help("Insert a camera-only or full-scene link (⌥⌘L)")
 
                 Menu {
                     ForEach(AnalysisNoteTemplate.all) { template in
