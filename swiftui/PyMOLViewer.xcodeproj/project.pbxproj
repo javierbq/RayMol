@@ -23,6 +23,7 @@
 		1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
+		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
 		2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
@@ -59,6 +60,7 @@
 		5CEF96397383F4A7F731F9A0 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
 		5D4BC69196C1256F5164E56A /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		5E0DDAA214299444AB084E74 /* KeyboardDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */; };
+		600E5AC8003783270FBBB117 /* whatsnew-190-raymolrc.png in Resources */ = {isa = PBXBuildFile; fileRef = 7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */; };
 		64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */; };
 		65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
 		667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
@@ -69,6 +71,7 @@
 		6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
 		7406A4027A2BE46708BA6282 /* DesignIOSPortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */; };
+		77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		78893185798035F798A26A9B /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
@@ -94,6 +97,7 @@
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		B2697EF48D85EF14D4A19163 /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
 		B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
+		B39D2F9676F6394CD354209A /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
 		B6FBF55DD1FA97A86C678618 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
@@ -106,13 +110,17 @@
 		C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */; };
 		C97C087311C3D159E74FA96A /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 69935BE3EFD2F08B88D4AEE9 /* MLX */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
+		CCC5944AB82CA9D946A60F10 /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
 		CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		CE45D81735E70E8FFFD49875 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
+		D1810E28536159A86EF507F8 /* whatsnew-190-raymolrc.png in Resources */ = {isa = PBXBuildFile; fileRef = 7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */; };
 		D35B766612AA47956AB18A75 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
 		D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		D3F658C89098D8D9A4022C9A /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
 		D48D80E395852871CAC65FCA /* DesignColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */; };
+		D50987A4819C8D752F68443F /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
 		DA6EB8C81B26582A4F3AB478 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
+		DC5CF59CDC22D0FCB6A58BE5 /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
 		DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
 		DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1304C662D9011F7C4505FC /* MCPStatusView.swift */; };
 		E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */ = {isa = PBXBuildFile; fileRef = 57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */; };
@@ -158,6 +166,7 @@
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraOverlayUITests.swift; sourceTree = "<group>"; };
 		10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-redesign.png"; sourceTree = "<group>"; };
 		14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
@@ -165,6 +174,7 @@
 		221117550FAD97CF81924E05 /* MousePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MousePanel.swift; sourceTree = "<group>"; };
 		2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailabilityTests.swift; sourceTree = "<group>"; };
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
+		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
@@ -183,10 +193,12 @@
 		58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewUITests.swift; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
+		6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */ = {isa = PBXFileReference; path = "whatsnew-190-scenes.mp4"; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
+		7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-raymolrc.png"; sourceTree = "<group>"; };
 		7D3E805AC2D63B01AB7EE29C /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
@@ -228,7 +240,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_E5FF7C9A-75FD-4152-A9AA-76E22BECC435" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_79B62BE1-A2AF-4AEA-A6DD-991559CAFF20" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -295,6 +307,10 @@
 				6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */,
 				0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */,
 				4C570F9CAC877E201F237016 /* whatsnew-170-move.png */,
+				2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */,
+				7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */,
+				137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */,
+				6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
 			path = Resources;
@@ -408,10 +424,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_BE6B7331-3BB6-428F-A1CC-5B17C967CAF3" /* swiftui */ = {
+		"TEMP_0DCAF2B0-7A7D-4574-821A-E548D1F5F641" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_E5FF7C9A-75FD-4152-A9AA-76E22BECC435" /* PyMOLBridge.xcconfig */,
+				"TEMP_79B62BE1-A2AF-4AEA-A6DD-991559CAFF20" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -581,6 +597,10 @@
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
 				1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */,
 				020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */,
+				D50987A4819C8D752F68443F /* whatsnew-190-design.png in Resources */,
+				600E5AC8003783270FBBB117 /* whatsnew-190-raymolrc.png in Resources */,
+				CCC5944AB82CA9D946A60F10 /* whatsnew-190-redesign.png in Resources */,
+				77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -601,6 +621,10 @@
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
 				4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */,
 				EE156FFB12BEFB4FC132D610 /* whatsnew-170-move.png in Resources */,
+				DC5CF59CDC22D0FCB6A58BE5 /* whatsnew-190-design.png in Resources */,
+				D1810E28536159A86EF507F8 /* whatsnew-190-raymolrc.png in Resources */,
+				B39D2F9676F6394CD354209A /* whatsnew-190-redesign.png in Resources */,
+				272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1177,7 +1201,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1191,7 +1215,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.0;
+				MARKETING_VERSION = 1.9.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1210,7 +1234,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1224,7 +1248,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.0;
+				MARKETING_VERSION = 1.9.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1244,7 +1268,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1260,7 +1284,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.0;
+				MARKETING_VERSION = 1.9.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1300,7 +1324,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1316,7 +1340,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.0;
+				MARKETING_VERSION = 1.9.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1331,7 +1355,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E5FF7C9A-75FD-4152-A9AA-76E22BECC435" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_79B62BE1-A2AF-4AEA-A6DD-991559CAFF20" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1438,7 +1462,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E5FF7C9A-75FD-4152-A9AA-76E22BECC435" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_79B62BE1-A2AF-4AEA-A6DD-991559CAFF20" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

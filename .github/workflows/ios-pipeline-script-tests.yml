@@ -1,0 +1,87 @@
+name: iOS pipeline script tests
+
+# Runs the unit tests for the iOS beta-pipeline helper scripts:
+#   scripts/ios_deps_fingerprint.sh    scripts/apply_ci_versions.sh
+#   scripts/nightly_version.sh         scripts/assert_ios_build_inputs.sh
+#   scripts/prune_ios_deps.sh
+#
+# WHY THIS WORKFLOW EXISTS. These suites are the only automated check on that
+# pipeline. Neither half of it can be exercised in a PR: the deps workflow needs
+# a ~30 minute macOS run to say anything, and the Xcode Cloud `ci_scripts` hooks
+# only ever execute inside Xcode Cloud. The design therefore pushes every real
+# decision out of the YAML and out of the hooks and into these five scripts —
+# which is a hollow claim unless something actually runs their tests. This is
+# that something.
+#
+# WHY macOS, AND WHY IT IS NOT A PREFERENCE. The scripts are deliberately
+# macOS-only, because both consumers (a macos-latest runner and Xcode Cloud) are:
+#   * apply_ci_versions.sh uses BSD `sed -i ''`, which GNU sed rejects
+#   * ios_deps_fingerprint.sh uses `shasum` (macOS-native)
+#   * run_assert_ios_build_inputs_test.sh builds REAL arm64 and x86_64 static
+#     libraries with clang + ar and inspects them with `lipo`, so the arch gate
+#     is exercised for real rather than stubbed
+# On a Linux runner these would fail for reasons that tell you nothing.
+#
+# WHY IT IS SEPARATE FROM raymol-embedded-tests.yml. That job builds the whole
+# PyMOL core before it can run anything, so a shell-script regression would be
+# masked by — or reported long after — any unrelated build failure. These suites
+# finish in seconds and should report on their own.
+
+on: [push, pull_request]
+
+# Cancel in-progress runs for the same ref so a rapid series of pushes to a
+# PR branch does not queue redundant macOS jobs (macOS runner minutes are billed
+# at a premium and the suite finishes in seconds, so a stale run has no value).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  script-tests:
+    runs-on: macos-latest   # Apple Silicon (arm64); see "WHY macOS" above
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run every scripts/tests suite
+        run: |
+          set -euo pipefail
+          shopt -s nullglob   # an unmatched glob must yield nothing, not a literal
+          suites=(scripts/tests/run_*_test.sh)
+
+          # A glob that matches nothing has to FAIL. Otherwise the loop below
+          # runs zero suites, the step exits 0, and CI reports green while
+          # testing absolutely nothing — the exact silent-success failure mode
+          # these scripts are written to avoid.
+          if [ "${#suites[@]}" -eq 0 ]; then
+            echo "ERROR: no suites matched scripts/tests/run_*_test.sh" >&2
+            echo "       Either the tests moved or the naming convention changed;" >&2
+            echo "       refusing to report success without running anything." >&2
+            exit 1
+          fi
+          echo "discovered ${#suites[@]} suite(s)"
+
+          # Run ALL of them even after one fails, so a single push surfaces every
+          # broken suite instead of one per re-run. Same rationale as
+          # assert_ios_build_inputs.sh reporting every missing path at once.
+          failed=()
+          for s in "${suites[@]}"; do
+            echo "::group::$s"
+            if bash "$s"; then
+              echo "PASS $s"
+            else
+              echo "FAIL $s"
+              failed+=("$s")
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "ERROR: ${#failed[@]} of ${#suites[@]} suite(s) failed:" >&2
+            printf '  %s\n' "${failed[@]}" >&2
+            exit 1
+          fi
+          echo "all ${#suites[@]} suite(s) passed"

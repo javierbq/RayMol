@@ -117,8 +117,8 @@ targets:
         # AppIcon.appiconset fallback. Applies to both macOS + iOS.
         ASSETCATALOG_COMPILER_APPICON_NAME: RayMol
         INFOPLIST_GENERATION_MODE: GeneratedFile
-        MARKETING_VERSION: "1.8.0"
-        CURRENT_PROJECT_VERSION: 23
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: 25
         GENERATE_INFOPLIST_FILE: YES
         # Generate a launch screen so iOS renders at the device's NATIVE
         # resolution. Without it the app is letterboxed at a legacy size on
