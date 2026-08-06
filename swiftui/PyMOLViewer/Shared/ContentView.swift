@@ -217,6 +217,22 @@ struct ContentView: View {
                     whatsNew.isPresented = false
                 }
             }
+            #if RAYMOL_MPNN
+            // Single lifecycle observer for Design mode, shared by macOS and iOS:
+            // fires on EVERY designMode transition (rail pill, toolbar button, menu,
+            // Move/Measure exclusion) so the scene is always restored on exit
+            // regardless of which path caused the change. Hoisted out of the macOS
+            // layout in Phase 2d — without it, iOS dims and recolours with no restore.
+            .onChange(of: engine.designMode) { on in
+                if on {
+                    engine.designController.allObjects = engine.objects
+                        .filter { !$0.isSelection }.map { $0.name }
+                    engine.designController.enter()
+                } else {
+                    engine.designController.exit()
+                }
+            }
+            #endif
     }
 
     @ViewBuilder private var layout: some View {
@@ -503,20 +519,6 @@ struct ContentView: View {
             .onChange(of: showThemeStudio) { open in
                 if open { engine.beginThemePreview() } else { engine.endThemePreview() }
             }
-            #if RAYMOL_MPNN
-            // Single lifecycle observer for Design mode: fires on EVERY designMode
-            // transition (toolbar button, menu, Move/Measure exclusion) so the scene
-            // is always restored on exit regardless of which path caused the change.
-            .onChange(of: engine.designMode) { on in
-                if on {
-                    engine.designController.allObjects = engine.objects
-                        .filter { !$0.isSelection }.map { $0.name }
-                    engine.designController.enter()
-                } else {
-                    engine.designController.exit()
-                }
-            }
-            #endif
             .onAppear {
                 initializeEngine()
                 maybePresentFirstBootTheme()
@@ -684,22 +686,18 @@ struct ContentView: View {
             }
             #if RAYMOL_MPNN
             // Design mode click routing: a click (left or right) sets longPressHit.
-            // — Click on the FOCUS object's residue → pin/unpin the propensity pill
-            //   row for that residue (keeps current focus, does NOT refocus).
-            // — Click on a DIFFERENT object → refocus to that object (existing behavior).
-            // — Click on empty space (hit.isEmpty) → no-op (no focus change, no pin).
+            // Routes through the shared handleViewportHit three-way rule so iOS and
+            // macOS behave identically — and so region-edit mode is honoured on macOS
+            // (the previous direct setPinned call bypassed tapResidue and therefore
+            // always pinned even when the user was building a region by clicking).
             // Clears longPressHit so the context-menu dialog never fires in design mode.
             .onChange(of: engine.longPressHit) { hit in
                 guard engine.designMode, let hit = hit else { return }
-                if !hit.obj.isEmpty {
-                    if hit.obj == engine.designController.focusObject && !hit.isEmpty {
-                        // Same object: pin/unpin the clicked residue in the pill row.
-                        engine.designController.setPinned(chain: hit.chain, resi: hit.resi)
-                    } else if hit.obj != engine.designController.focusObject {
-                        // Different object: refocus (existing behavior).
-                        engine.designController.focus(hit.obj)
-                    }
-                }
+                engine.designController.handleViewportHit(
+                    object: hit.obj,
+                    chain: hit.chain,
+                    resi: hit.resi,
+                    hasResidue: !hit.isEmpty)
                 engine.longPressHit = nil
             }
             #endif
@@ -911,6 +909,20 @@ struct ContentView: View {
         }
         Button("By element") { engine.runCommand("python\nfrom pymol import util; util.cnc('(\(sel))')\npython end") }
         Button("Cancel", role: .cancel) {}
+    }
+
+    /// True while any MLX Design inference is in flight. Routes through
+    /// PyMOLEngine.isDesignCalculating (a @Published property kept in sync via Combine)
+    /// so ContentView re-renders and the `.disabled()` modifiers below take effect.
+    /// Placed before the #if os(iOS) block so it is visible to both iOS rail toggles
+    /// (inside that block) and macOS toolbar items (outside it).
+    /// Returns false unconditionally in non-MPNN builds (no design mode exists).
+    private var isDesignLocked: Bool {
+        #if RAYMOL_MPNN
+        return engine.isDesignCalculating
+        #else
+        return false
+        #endif
     }
 
     #if os(iOS)
@@ -1185,9 +1197,11 @@ struct ContentView: View {
             // Long-press context menu: a native action sheet for the atom/residue
             // under the press (or scene-level actions on empty space). Presented
             // when handleLongPress → engine.longPressPick sets engine.longPressHit.
+            // Suppressed in Design mode — taps route to DesignController instead
+            // (see handleTap #if RAYMOL_MPNN block) so the action sheet must not fire.
             .confirmationDialog(
                 engine.longPressHit?.title ?? "",
-                isPresented: Binding(get: { engine.longPressHit != nil },
+                isPresented: Binding(get: { engine.longPressHit != nil && !engine.designMode },
                                      set: { if !$0 { engine.longPressHit = nil } }),
                 titleVisibility: .visible,
                 presenting: engine.longPressHit
@@ -1341,6 +1355,52 @@ struct ContentView: View {
                                        first: f, last: l, fps: 15, rayTraced: false)
                 }
             }
+            #if RAYMOL_MPNN
+            // Test affordance (PYMOL_AUTODESIGN="<object>[,<selection>]"): enter
+            // Design mode, focus the object, and optionally designate a selection as
+            // the region and run one redesign. Logs a grep-able marker on completion.
+            // This is the only headless way to drive Design mode; pair with
+            // PYMOL_AUTOLOAD to get a structure in first.
+            if let d = ProcessInfo.processInfo.environment["PYMOL_AUTODESIGN"] {
+                let parts = d.split(separator: ",").map(String.init)
+                let objectName = parts.first ?? ""
+                let selectionName = parts.count > 1 ? parts[1] : nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    guard !objectName.isEmpty else {
+                        NSLog("AUTODESIGN_FAIL: no object given")
+                        return
+                    }
+                    guard DesignAvailability.isSupported else {
+                        NSLog("AUTODESIGN_FAIL: Design mode not supported on this OS (requires iOS \(DesignAvailability.minimumIOSMajorVersion)+)")
+                        return
+                    }
+                    engine.setDesignMode(true)
+                    let c = engine.designController
+                    Task { @MainActor in
+                        await c.focusAwait(objectName)
+                        guard c.focusObject != nil, !c.focusResidues.isEmpty else {
+                            NSLog("AUTODESIGN_FAIL: focus produced no residues for \(objectName)")
+                            return
+                        }
+                        if let sel = selectionName {
+                            c.refreshSelections()
+                            c.pickSelection(sel)
+                            guard c.regionModeActive else {
+                                NSLog("AUTODESIGN_FAIL: selection '\(sel)' matched no designable residues")
+                                return
+                            }
+                            await c.redesignSelectionAwait()
+                            if let err = c.errorText {
+                                NSLog("AUTODESIGN_FAIL: \(err)")
+                                return
+                            }
+                        }
+                        let score = c.sequenceScore.map { String(format: "%.4f", $0) } ?? "nil"
+                        NSLog("AUTODESIGN_DONE: \(objectName) score=\(score) edits=\(c.editCount)")
+                    }
+                }
+            }
+            #endif
         }
         // The Movie tab IS the timeline: on iPhone it renders inside the tab UI
         // (tab bar stays visible — no Done). Keep timelineMode synced to the tab
@@ -1439,7 +1499,8 @@ struct ContentView: View {
         // RayMol title. Collapsed → the rail floats over the full-bleed viewport.
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil)
+            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
             // RayMol title on the left, Open/Save/Export on the right. It takes the
@@ -1468,6 +1529,7 @@ struct ContentView: View {
                 }
                 if engine.interactionMode == .move { moveOverlay }
                 else if engine.measureMode != nil { measureOverlay }
+                else if engine.designMode { designModeBar }
             }
             viewportView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1526,7 +1588,8 @@ struct ContentView: View {
         let clampedTermH = min(max(termH, 60), maxTerm)
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil)
+            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
             // toolbar buttons floating over its top edge. The 3D viewport bleeds
@@ -1549,6 +1612,7 @@ struct ContentView: View {
                     }
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
+                    else if engine.designMode { designModeBar }
                 }
                 viewportView
                     .overlay(alignment: .top) {
@@ -1661,6 +1725,7 @@ struct ContentView: View {
         // floats over the full-bleed viewport. Move & Measure share the bottom slot.
         let anyTop = cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode
 
         if landscape {
             // LANDSCAPE (iPad + iPhone landscape): left stack (terminal/sequence/
@@ -1687,6 +1752,7 @@ struct ContentView: View {
                         // exclusive, on matching chrome.
                         if engine.interactionMode == .move { moveOverlay }
                         else if engine.measureMode != nil { measureOverlay }
+                        else if engine.designMode { designModeBar }
                     }
                     viewportView
                         // Collapsed: the rail floats over the full-bleed viewport.
@@ -1751,6 +1817,7 @@ struct ContentView: View {
                     }
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
+                    else if engine.designMode { designModeBar }
                 }
                 viewportView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1870,29 +1937,72 @@ struct ContentView: View {
                             y: seam && axis == .horizontal ? -9 : 0)
     }
 
+    // Design-mode docked bar for the iOS layouts. Resolves to EmptyView when the
+    // feature is compiled out, so the mode chain in all four layouts can reference
+    // it unconditionally. iPhone (compact width) gets the same overlay panel as
+    // iPad for now — Task 11 swaps the compact branch to DesignCompactPanel.
+    @ViewBuilder
+    private var designModeBar: some View {
+        #if RAYMOL_MPNN
+        if hSize == .compact {
+            DesignCompactPanel(controller: engine.designController,
+                               engine: engine,
+                               theme: themeManager)
+        } else {
+            DesignOverlayView(controller: engine.designController,
+                              engine: engine,
+                              theme: themeManager)
+        }
+        #else
+        EmptyView()
+        #endif
+    }
+
     // The twin-tongue "seam rail" welded to the viewport's TOP edge (iPad). Mirrors
     // the bottom inspector tongue: two labeled pills in FIXED slots — Console (left)
     // + Sequence (right) — each toggling its own pane. Shown = accent fill + chevron
     // up (retract the pane up); hidden = muted outline + chevron down (drop it down).
     // Always drawn, so it's the permanent seam between the top pane-stack and the 3D
     // view — the top mirror of the bottom inspector tongue. iPad layout only.
-    @ViewBuilder
-    // The pinned toggle rail: Console · Seq · Move · Measure. `floating` (nothing
-    // open) wraps the pills in a tight blur capsule that hugs them and floats over
-    // the full-bleed viewport; when a panel is open the caller docks the rail on
+    //
+    // The pinned toggle rail: Console · Seq · Move · Measure · Design. `floating`
+    // (nothing open) wraps the pills in a tight blur capsule that hugs them and floats
+    // over the full-bleed viewport; when a panel is open the caller docks the rail on
     // matching panel chrome and passes floating:false (bare pills, no capsule).
+    @ViewBuilder
     private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
             // rendered as a literal "Abc", so the pill read "Abc Seq".
             railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible)
+            // Move / Measure / Design are mutually-exclusive interaction modes.
+            // When RAYMOL_MPNN is active they are disabled while any MLX inference
+            // runs so the user cannot silently discard an in-progress calculation.
+            // In non-MPNN builds there is no Design mode, so no lock is needed.
+            #if RAYMOL_MPNN
+            HStack(spacing: 8) {
+                railToggle(icon: "move.3d", label: "Move",
+                           isOn: engine.interactionMode == .move,
+                           action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
+                railToggle(icon: "ruler", label: "Measure",
+                           isOn: engine.measureMode != nil,
+                           action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
+                if DesignAvailability.isSupported {
+                    railToggle(icon: "wand.and.stars", label: "Design",
+                               isOn: engine.designMode,
+                               action: { engine.setDesignMode(!engine.designMode) })
+                }
+            }
+            .disabled(isDesignLocked)
+            #else
             railToggle(icon: "move.3d", label: "Move",
                        isOn: engine.interactionMode == .move,
                        action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
             railToggle(icon: "ruler", label: "Measure",
                        isOn: engine.measureMode != nil,
                        action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
+            #endif
         }
         .padding(.horizontal, floating ? 8 : 0)
         .padding(.vertical, floating ? 5 : 6)
@@ -1975,7 +2085,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Move mode, \(isOn ? "on" : "off")")
+        .accessibilityLabel("\(label) mode, \(isOn ? "on" : "off")")
     }
 
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
@@ -2677,6 +2787,7 @@ struct ContentView: View {
             } label: {
                 Label("Measure", systemImage: engine.measureMode == nil ? "ruler" : "ruler.fill")
             }
+            .disabled(isDesignLocked)
             .help("Measure distance / angle / dihedral by tapping atoms")
         }
     }
@@ -2693,6 +2804,7 @@ struct ContentView: View {
                 Label("Move", systemImage: "move.3d")
                     .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
             }
+            .disabled(isDesignLocked)
             .help("Move objects: drag the gizmo to translate / rotate the active object")
         }
     }
@@ -2712,6 +2824,7 @@ struct ContentView: View {
                 Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
                     .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
             }
+            .disabled(isDesignLocked)
             .help("Design mode: score/color protein residues with MPNN")
         }
     }
@@ -3270,7 +3383,8 @@ private let designPinnedColor = Color(red: 0.98, green: 0.60, blue: 0.10)
 ///
 /// Feature 11: the PINNED column gets a persistent gold/orange border + fill;
 /// the HOVERED column gets a transient subtle-grey fill.
-private struct DesignSequenceStripView: View {
+// Internal (not private) so DesignCompactPanel.swift can reference it.
+struct DesignSequenceStripView: View {
     @ObservedObject var controller: DesignController
     @ObservedObject var theme: ThemeManager
 
@@ -3341,6 +3455,14 @@ private struct DesignSequenceStripView: View {
                     .frame(height: 2)
             }
         }
+        // Keep the column 14 pt wide visually. Grow the hit target vertically only:
+        // a horizontal inset (the original approach) made each column's contentShape
+        // overlap its neighbour's glyph, causing the front-to-back HStack hit-test
+        // to route taps on the right half of column i to residue i+1. Vertical-only
+        // growth via .padding(.vertical) stays within the 14 pt frame width and does
+        // not shift any horizontal neighbour. The transparent padding is clipped by
+        // the ScrollView so it never changes the strip's visible appearance.
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onHover { hovering in
             if hovering {
@@ -3349,16 +3471,25 @@ private struct DesignSequenceStripView: View {
                 controller.clearHover()
             }
         }
-        // Shift-click builds an ad-hoc region (add/remove this position); a plain
-        // click still pins for single-residue inspection. The shift gesture takes
-        // priority so it only fires when the modifier is held.
+        // macOS keeps shift-click as a shortcut for building an ad-hoc region.
+        // `TapGesture().modifiers(_:)` is unavailable on iOS — this was the single
+        // iOS compile error in the whole Design feature. The cross-platform path is
+        // controller.regionEditMode, which a plain tap honours (see tapResidue).
+        //
+        // The shift gesture is DISABLED while regionEditMode is on: in that mode a
+        // plain tap already toggles the region, so leaving both active would make
+        // correctness depend on SwiftUI suppressing one of them. If it ever failed to,
+        // the position would be toggled twice — added then removed — a silent no-op.
+        #if os(macOS)
         .highPriorityGesture(
             TapGesture().modifiers(.shift).onEnded {
                 controller.toggleRegionResidue(residueIndex: i)
-            }
+            },
+            including: controller.regionEditMode ? .subviews : .all
         )
+        #endif
         .onTapGesture {
-            controller.setPinned(chain: residue.chain, resi: residue.resi)
+            controller.tapResidue(residueIndex: i)
         }
         .help({
             var tip = residue.chain.isEmpty ? residue.resi : "\(residue.chain)/\(residue.resi)"
@@ -3398,6 +3529,8 @@ private struct DesignRegionStripView: View {
     private var controls: some View {
         HStack(spacing: 8) {
             selectionButton
+            stripDivider
+            regionEditToggle
             if controller.regionModeActive {
                 stripDivider
                 Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
@@ -3440,47 +3573,41 @@ private struct DesignRegionStripView: View {
                         in: RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showPicker) { pickerContent }
+        .popover(isPresented: $showPicker) {
+            DesignSelectionPicker(controller: controller,
+                                  fontSize: 12,
+                                  minWidth: 190,
+                                  dismiss: { showPicker = false })
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
-    private var pickerContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if controller.availableSelections.isEmpty {
-                Text("No selections — create one first")
-                    .font(.system(size: 11)).foregroundColor(.secondary).padding(8)
-            } else {
-                ForEach(controller.availableSelections) { opt in
-                    Button {
-                        controller.pickSelection(opt.name)
-                        showPicker = false
-                    } label: {
-                        HStack {
-                            Text(opt.name).font(.system(size: 12))
-                            Spacer(minLength: 12)
-                            Text("\(opt.count) res")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 5).frame(minWidth: 190)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+    // Explicit region-building mode: while on, a plain tap on a sequence column or
+    // in the viewport adds/removes that position. This is the touch replacement for
+    // shift-click, and the discoverable path on macOS too.
+    private var regionEditToggle: some View {
+        Button {
+            controller.regionEditMode.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: controller.regionEditMode
+                        ? "hand.tap.fill" : "hand.tap")
+                    .font(.system(size: 10))
+                Text("Tap to edit")
+                    .font(.system(size: 11,
+                                  weight: controller.regionEditMode ? .semibold : .regular))
             }
-            if controller.regionModeActive {
-                Divider()
-                Button {
-                    controller.clearSelection()
-                    showPicker = false
-                } label: {
-                    Text("Clear selection")
-                        .font(.system(size: 12)).foregroundColor(.red)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+            .foregroundColor(controller.regionEditMode
+                             ? .white : theme.active.panelText.color.opacity(0.85))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(controller.regionEditMode
+                        ? theme.active.accent.color
+                        : theme.active.panelText.color.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 5))
         }
-        .padding(6).frame(maxWidth: 260)
+        .buttonStyle(.plain)
+        .help("Build a region by tapping positions in the sequence or the structure")
+        .accessibilityLabel("Tap to edit region, \(controller.regionEditMode ? "on" : "off")")
     }
 
     // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.
@@ -3679,6 +3806,183 @@ private struct DesignEditStripView: View {
     }
 }
 
+// Error banner for Design mode. `errorText` was previously written in six places
+// in DesignController and read nowhere, so every Design failure was silent —
+// including a missing weight pack, which is the first thing that goes wrong on a
+// new platform. Tap or wait to dismiss.
+#if RAYMOL_MPNN
+struct DesignErrorBanner: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        if let text = controller.errorText {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                Text(text)
+                    .font(.system(size: 11))
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.red.opacity(0.85))
+            .contentShape(Rectangle())
+            .onTapGesture { controller.clearError() }
+            .task(id: text) {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                controller.clearError()
+            }
+            .accessibilityLabel("Design error: \(text). Tap to dismiss.")
+        }
+    }
+}
+#endif
+
+// MARK: – Propensity / palette pill row (shared by macOS/iPad overlay and iPhone compact panel)
+
+/// Scrollable row of 20 amino-acid pills shown below the sequence strip.
+///
+/// In region mode (controller.regionModeActive == true) each pill is an
+/// active/inactive toggle that adds or removes an amino acid from the redesign
+/// palette — tapping a pill calls controller.togglePalette(_:).
+///
+/// In hover/pin mode each pill shows the model's propensity for that amino acid
+/// at the active residue; tapping calls applyMutationAwait to commit the mutation.
+/// When no residue is active every pill renders greyed/disabled so the row
+/// stays in the layout without appearing and disappearing.
+///
+/// Extracted from DesignOverlayView so DesignCompactPanel (iPhone) can reuse it
+/// without duplicating the logic. DesignOverlayView now delegates to this struct.
+struct DesignPillRow: View {
+    @ObservedObject var controller: DesignController
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        if controller.regionModeActive {
+            paletteRow()
+        } else {
+            propensityScrollRow()
+        }
+    }
+
+    // MARK: – Propensity row
+
+    private func propensityScrollRow() -> some View {
+        let ap = controller.activePropensity
+        let rowMax = ap?.propensities.max() ?? 1.0
+        let activeIndex = controller.activeResidueIndex
+        let currentAA: Int = {
+            if let idx = activeIndex, controller.editing,
+               idx < controller.editedSequence.count {
+                return controller.editedSequence[idx]
+            }
+            return ap?.nativeAA ?? -1
+        }()
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
+                    Button {
+                        if let idx = activeIndex {
+                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
+                        }
+                    } label: {
+                        aaPill(index: i,
+                               propensity: hasVal ? ap!.propensities[i] : 0,
+                               isCurrent: ap != nil && i == currentAA,
+                               rowMax: rowMax,
+                               enabled: ap != nil)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func aaPill(index: Int,
+                        propensity: Float,
+                        isCurrent: Bool,
+                        rowMax: Float,
+                        enabled: Bool) -> some View {
+        let letter = index < DesignColor.mpnnAlphabet.count
+            ? DesignColor.mpnnAlphabet[index] : "?"
+        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
+        let showCurrent = enabled && isCurrent
+        let pillBG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.04)
+            : (showCurrent
+                ? theme.active.accent.color
+                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
+        let pillFG: Color = !enabled
+            ? theme.active.panelText.color.opacity(0.28)
+            : (showCurrent
+                ? .white
+                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
+        let valueText: String = {
+            if !enabled { return ".0" }
+            let s = String(format: "%.2f", propensity)
+            return s.hasPrefix("0") ? String(s.dropFirst()) : s
+        }()
+        return VStack(spacing: 1) {
+            Text(letter)
+                .font(.system(size: 11,
+                              weight: showCurrent ? .bold : .regular,
+                              design: .monospaced))
+            Text(valueText)
+                .font(.system(size: 9, design: .monospaced))
+        }
+        .foregroundColor(pillFG)
+        .frame(width: 30, height: 36)
+        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            showCurrent
+                ? RoundedRectangle(cornerRadius: 5)
+                    .stroke(theme.active.accent.color, lineWidth: 1.5)
+                : nil
+        )
+    }
+
+    // MARK: – Palette row (region mode)
+
+    private func paletteRow() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { i in
+                    Button { controller.togglePalette(i) } label: {
+                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
+                    }
+                    .buttonStyle(.plain)
+                    .help(controller.paletteAllowed.contains(i)
+                          ? "Allowed during redesign — click to exclude"
+                          : "Excluded from redesign — click to allow")
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 5)
+    }
+
+    private func palettePill(index i: Int, active: Bool) -> some View {
+        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
+        return Text(letter)
+            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
+            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
+            .frame(width: 30, height: 36)
+            .background(active
+                        ? theme.active.accent.color.opacity(0.85)
+                        : theme.active.panelText.color.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
+    }
+}
+
 // Design mode overlay bar (mirrors measureOverlay/moveOverlay): focus-object name,
 // coloring meaning segmented control, legend gradient, scoring progress, ? help.
 // Extracted into a dedicated View struct so @ObservedObject controller: DesignController
@@ -3692,6 +3996,8 @@ private struct DesignOverlayView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // ── Error banner (only when something failed) ───────────────
+            DesignErrorBanner(controller: controller, theme: theme)
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
                 focusLabel
@@ -3702,7 +4008,7 @@ private struct DesignOverlayView: View {
                         .help("Mean per-residue native-fit log-probability (higher = better fit)")
                 }
                 residueIndicator
-                if controller.isScoring {
+                if controller.isScoring || controller.isRescoring {
                     ProgressView().scaleEffect(0.7)
                 }
                 Spacer(minLength: 0)
@@ -3724,10 +4030,10 @@ private struct DesignOverlayView: View {
                 Divider().opacity(0.3)
                 DesignSequenceStripView(controller: controller, theme: theme)
             }
-            // ── Propensity pill row (always present; greyed when no residue
-            //    is hovered/pinned so it no longer flickers in and out) ─────
+            // ── Propensity / palette pill row (always present; greyed when no
+            //    residue is hovered/pinned so it no longer flickers in and out) ─
             Divider().opacity(0.3)
-            propensityRow(controller.activePropensity)
+            DesignPillRow(controller: controller, theme: theme)
             // ── Region-redesign strip (Phase 2c) ─────────────────────────────
             if !controller.focusResidues.isEmpty {
                 Divider().opacity(0.3)
@@ -3816,7 +4122,7 @@ private struct DesignOverlayView: View {
     private var meaningPicker: some View {
         HStack(spacing: 1) {
             Button { controller.setMeaning(.nativeFit) } label: {
-                Text("Native fit")
+                Text(DesignColorMeaning.nativeFit.label)
                     .font(.system(size: 13))
                     .padding(.horizontal, 9).padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
@@ -3830,7 +4136,7 @@ private struct DesignOverlayView: View {
             .help("Native-fit: the model's log-probability for each residue's current amino acid given the rest of the structure (leave-one-out). Low = the model disfavors this residue here — a candidate to mutate.")
 
             Button { controller.setMeaning(.certainty) } label: {
-                Text("Certainty")
+                Text(DesignColorMeaning.certainty.label)
                     .font(.system(size: 13))
                     .padding(.horizontal, 9).padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
@@ -3899,142 +4205,10 @@ private struct DesignOverlayView: View {
             }
             .padding(14)
             .frame(width: 260)
+            .presentationCompactAdaptation(.popover)
         }
     }
 
-    // MARK: – Propensity pill row
-
-    /// Scrollable row of 20 AA pills. Always present: when `ap` is nil (no
-    /// residue hovered or pinned) every pill renders greyed/disabled with a
-    /// neutral ".0" value and no current highlight, so the row no longer appears
-    /// and disappears — only its contents change. When `ap` is present the
-    /// pills show real 2-decimal propensities, colored by relative frequency,
-    /// with the current AA pill highlighted (edited identity in an edit session,
-    /// native AA otherwise). Tapping a pill calls applyMutation when a residue
-    /// is active; ignored silently when there is no active residue.
-    private func propensityRow(
-        _ ap: (propensities: [Float], nativeAA: Int, label: String)?
-    ) -> AnyView {
-        if controller.regionModeActive {
-            return AnyView(paletteRow())
-        }
-        let rowMax = ap?.propensities.max() ?? 1.0
-        let activeIndex = controller.activeResidueIndex
-        // When editing, highlight the current edited identity rather than the native AA.
-        let currentAA: Int = {
-            if let idx = activeIndex, controller.editing,
-               idx < controller.editedSequence.count {
-                return controller.editedSequence[idx]
-            }
-            return ap?.nativeAA ?? -1
-        }()
-        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(0..<20, id: \.self) { i in
-                    let hasVal = ap != nil && i < (ap?.propensities.count ?? 0)
-                    Button {
-                        if let idx = activeIndex {
-                            Task { await controller.applyMutationAwait(residueIndex: idx, aa: i) }
-                        }
-                    } label: {
-                        aaPill(index: i,
-                               propensity: hasVal ? ap!.propensities[i] : 0,
-                               isCurrent: ap != nil && i == currentAA,
-                               rowMax: rowMax,
-                               enabled: ap != nil)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 5))
-    }
-
-    /// Single amino-acid pill: letter + 2-decimal propensity, colored by
-    /// relative frequency (faint → warm), highlighted if the current AA
-    /// (edited identity in an edit session, native otherwise). When `enabled`
-    /// is false (idle / no active residue) it renders flat grey with a ".0"
-    /// placeholder and no current highlight.
-    private func aaPill(index: Int,
-                         propensity: Float,
-                         isCurrent: Bool,
-                         rowMax: Float,
-                         enabled: Bool) -> some View {
-        let letter = index < DesignColor.mpnnAlphabet.count
-            ? DesignColor.mpnnAlphabet[index] : "?"
-        let intensity = (enabled && rowMax > 0) ? Double(propensity / rowMax) : 0.0
-        let showCurrent = enabled && isCurrent
-        // Disabled (idle): flat faint grey, muted text.
-        // Current pill: solid accent background + white text.
-        // Others: faint→warm orange tint, scaled to intensity within the row.
-        let pillBG: Color = !enabled
-            ? theme.active.panelText.color.opacity(0.04)
-            : (showCurrent
-                ? theme.active.accent.color
-                : theme.active.panelText.color.opacity(0.04 + intensity * 0.22))
-        let pillFG: Color = !enabled
-            ? theme.active.panelText.color.opacity(0.28)
-            : (showCurrent
-                ? .white
-                : theme.active.panelText.color.opacity(0.6 + intensity * 0.4))
-        let valueText: String = {
-            if !enabled { return ".0" }
-            let s = String(format: "%.2f", propensity)
-            return s.hasPrefix("0") ? String(s.dropFirst()) : s
-        }()
-        return VStack(spacing: 1) {
-            Text(letter)
-                .font(.system(size: 11,
-                              weight: showCurrent ? .bold : .regular,
-                              design: .monospaced))
-            Text(valueText)
-                .font(.system(size: 9, design: .monospaced))
-        }
-        .foregroundColor(pillFG)
-        .frame(width: 30, height: 36)
-        .background(pillBG, in: RoundedRectangle(cornerRadius: 5))
-        .overlay(
-            showCurrent
-                ? RoundedRectangle(cornerRadius: 5)
-                    .stroke(theme.active.accent.color, lineWidth: 1.5)
-                : nil
-        )
-    }
-
-    // MARK: – Region palette row (numbers hidden; pills are active/inactive toggles)
-
-    private func paletteRow() -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(0..<20, id: \.self) { i in
-                    Button { controller.togglePalette(i) } label: {
-                        palettePill(index: i, active: controller.paletteAllowed.contains(i))
-                    }
-                    .buttonStyle(.plain)
-                    .help(controller.paletteAllowed.contains(i)
-                          ? "Allowed during redesign — click to exclude"
-                          : "Excluded from redesign — click to allow")
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 5)
-    }
-
-    private func palettePill(index i: Int, active: Bool) -> some View {
-        let letter = i < DesignColor.mpnnAlphabet.count ? DesignColor.mpnnAlphabet[i] : "?"
-        return Text(letter)
-            .font(.system(size: 12, weight: active ? .bold : .regular, design: .monospaced))
-            .foregroundColor(active ? .white : theme.active.panelText.color.opacity(0.32))
-            .frame(width: 30, height: 36)
-            .background(active
-                        ? theme.active.accent.color.opacity(0.85)
-                        : theme.active.panelText.color.opacity(0.05),
-                        in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5)
-                .stroke(active ? theme.active.accent.color : Color.clear, lineWidth: 1))
-    }
 }
 #endif
 

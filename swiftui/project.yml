@@ -3,7 +3,10 @@ options:
   bundleIdPrefix: io.raymol
   deploymentTarget:
     macOS: "14.0"
-    iOS: "16.0"
+    # 17.0 is forced: MPNNKit and mlx-swift both declare .iOS(.v17), and SPM
+    # refuses to resolve below a dependency's floor. Design mode itself requires
+    # iOS 18 at runtime (DesignAvailability) — the app does not.
+    iOS: "17.0"
   xcodeVersion: "16.0"
   createIntermediateGroups: true
 
@@ -12,11 +15,19 @@ configFiles:
   Release: PyMOLBridge.xcconfig
 
 packages:
-  # MPNNKit: on-device ProteinMPNN inference (macOS only; iOS excluded via
-  # platformFilter in the dependency + RAYMOL_MPNN compile-condition guard).
+  # MPNNKit: on-device ProteinMPNN inference. Linked on both platforms as of
+  # Phase 2d; usage guarded by #if RAYMOL_MPNN + DesignAvailability (iOS 18+).
   proteinmpnn-mlx:
     url: https://github.com/javierbq/proteinmpnn-mlx.git
     from: 0.1.2
+  # mlx-swift, linked DIRECTLY rather than only transitively through MPNNKit, so
+  # MPNNRuntime can set the process-wide buffer-cache limit and the simulator CPU
+  # fallback — neither is reachable through MPNNKit's API. `from:` not `exact:`:
+  # MPNNKit pins mlx-swift exactly and that pin wins during resolution, so this
+  # entry never needs bumping in lockstep.
+  mlx-swift:
+    url: https://github.com/ml-explore/mlx-swift
+    from: 0.31.6
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -82,10 +93,14 @@ targets:
           - "**/*.md"
     settings:
       base:
-        # Design mode: RAYMOL_MPNN enables MPNNKit (ProteinMPNN inference) on macOS.
-        # The [sdk=macosx*] conditional ensures this flag is never set for the iOS
-        # slice of this shared target, keeping mlx-swift and MPNNKit out of iOS.
+        # Design mode: RAYMOL_MPNN enables MPNNKit (ProteinMPNN inference) on both
+        # platforms as of Phase 2d. Kept as two per-SDK keys rather than one
+        # unconditional setting so either slice can be turned off independently
+        # without disturbing the other. Availability on iOS is additionally gated at
+        # RUNTIME to iOS 18+ by DesignAvailability — see the Phase 2d spec §4.
         "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]": "$(inherited) RAYMOL_MPNN"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]": "$(inherited) RAYMOL_MPNN"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]": "$(inherited) RAYMOL_MPNN"
         # Apple-silicon only: the embedded standalone Python 3.13, libpymol_core.a,
         # and Homebrew deps are all arm64-only, so Release/Archive (which would
         # otherwise build "Any Mac" incl. x86_64) must be pinned to arm64 or the
@@ -429,27 +444,31 @@ targets:
             /usr/bin/python3 "$SRCROOT/../scripts/bundle_macos_dylibs.py" \
               "$CODESIGNING_FOLDER_PATH"
           fi
-      # macOS-only: copy the MPNN weight pack into the built app as a real
-      # directory (folder reference) so Bundle.main.url(forResource:withExtension:)
-      # resolves the whole directory as a single URL (MPNNGate.packURL /
-      # canLoadModel()). Lives in swiftui/resources_macos/ (outside the
-      # auto-scanned PyMOLViewer/ tree) so xcodegen never adds it to either
-      # target's Copy Bundle Resources phase — the iOS build remains 24 MB lighter.
-      - name: "macOS: Bundle MPNN.mpnnpack"
+      # Copy the MPNN weight pack into the built app as a real directory (folder
+      # reference) so Bundle.main.url(forResource:withExtension:) resolves the whole
+      # directory as a single URL (MPNNGate.packURL). Lives in swiftui/resources_mpnn/
+      # (outside the auto-scanned PyMOLViewer/ tree) so xcodegen never adds it to a
+      # Copy Bundle Resources phase — it must be copied exactly once, here.
+      # UNLOCALIZED_RESOURCES_FOLDER_PATH resolves to Contents/Resources on macOS and
+      # to the flat app root on iOS, which is where MPNNGate.packURL looks on each.
+      - name: "Bundle MPNN.mpnnpack"
         basedOnDependencyAnalysis: false
         script: |
-          case "$PLATFORM_NAME" in macosx*) ;; *) exit 0 ;; esac
           set -e
-          DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+          DEST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
           mkdir -p "$DEST"
           rm -rf "$DEST/MPNN.mpnnpack"
-          cp -R "${SRCROOT}/resources_macos/MPNN.mpnnpack" "$DEST/MPNN.mpnnpack"
+          cp -R "${SRCROOT}/resources_mpnn/MPNN.mpnnpack" "$DEST/MPNN.mpnnpack"
     dependencies:
-      # macOS-only: MPNNKit (mlx-swift) has no iOS slice; platformFilter keeps it
-      # out of the iOS build. All usage is also guarded by #if RAYMOL_MPNN.
+      # MPNNKit: on-device ProteinMPNN inference. Linked on BOTH platforms as of
+      # Phase 2d. All usage is guarded by #if RAYMOL_MPNN, and iOS availability is
+      # gated at runtime to iOS 18+ by DesignAvailability.
+      # NOTE: this entry must stay OUTSIDE the RAYMOL_SPARKLE_BEGIN/END markers
+      # below, or archive_appstore.sh's sed-strip removes it from the MAS build.
       - package: proteinmpnn-mlx
         product: MPNNKit
-        platforms: [macOS]
+      - package: mlx-swift
+        product: MLX
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
@@ -475,13 +494,13 @@ targets:
       - target: PyMOLViewer_macOS
         link: false
       # MPNNKit: required so DesignResiduesTests (which does `import MPNNKit` inside
-      # #if RAYMOL_MPNN) and DesignResidues.swift both compile. macOS-only, matching
-      # the app target's platformFilter. The test bundle runs in-process inside
-      # RayMol.app (BUNDLE_LOADER), which already links MPNNKit; this dep adds the
-      # Swift module to the test target's compile search path.
+      # #if RAYMOL_MPNN) and DesignResidues.swift both compile. The test target is
+      # macOS-only by its own `platform: macOS`, so no platformFilter is needed here.
+      # The test bundle runs in-process inside RayMol.app (BUNDLE_LOADER), which
+      # already links MPNNKit; this dep adds the Swift module to the test target's
+      # compile search path.
       - package: proteinmpnn-mlx
         product: MPNNKit
-        platforms: [macOS]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests

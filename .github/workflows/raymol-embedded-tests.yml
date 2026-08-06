@@ -59,4 +59,9 @@ jobs:
               testing/tests/test_mouse_panel.py \
               testing/tests/test_stale_check.py \
               testing/tests/test_appkit_widen_clip.py \
-              testing/tests/test_inspector_transparency.py
+              testing/tests/test_inspector_transparency.py \
+              testing/tests/raymol/design_color.py \
+              testing/tests/raymol/design_editing.py \
+              testing/tests/raymol/design_enumerate.py \
+              testing/tests/raymol/design_region.py \
+              testing/tests/raymol/design_saverestore.py
