@@ -980,21 +980,10 @@ final class DesignController: ObservableObject {
     @discardableResult
     private func applyMutationState(residueIndex i: Int, aa: Int) -> Bool {
         beginEditIfNeeded()
-        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else {
-            // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-            NSLog("[Design][TMPDIAG] applyMutationState SKIPPED: editing=%d i=%d seqLen=%d sameAA=%d aa=%d",
-                  editing ? 1 : 0, i, editedSequence.count,
-                  (i >= 0 && i < editedSequence.count && editedSequence[i] == aa) ? 1 : 0, aa)
-            return false
-        }
+        guard editing, i >= 0, i < editedSequence.count, editedSequence[i] != aa else { return false }
         // M2: invalid (missing-backbone) residues are not mutable.
         if let focus = focusObject, let set = lastSet[focus] {
-            guard i < set.residues.count, set.residues[i].valid else {
-                // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-                NSLog("[Design][TMPDIAG] applyMutationState SKIPPED (invalid residue): i=%d setCount=%d valid=%d",
-                      i, set.residues.count, (i < set.residues.count && set.residues[i].valid) ? 1 : 0)
-                return false
-            }
+            guard i < set.residues.count, set.residues[i].valid else { return false }
         }
         editedSequence[i] = aa
         editCount += 1
@@ -1026,9 +1015,6 @@ final class DesignController: ObservableObject {
     /// completes before asserting. The sync `applyMutation` uses the same state-update
     /// path then fires `rescoreWorkingObject` in a background Task.
     func applyMutationAwait(residueIndex i: Int, aa: Int) async {
-        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-        NSLog("[Design][TMPDIAG] applyMutation: idx=%d aa=%d editing=%d autoRepack=%d",
-              i, aa, editing ? 1 : 0, autoRepack ? 1 : 0)
         guard applyMutationState(residueIndex: i, aa: aa) else { return }
         // Repack before rescore: the repack is what the user SEES (new sidechain
         // geometry) and is several times cheaper than scoring; the rescore only
@@ -1037,9 +1023,6 @@ final class DesignController: ObservableObject {
         // the serial inference queue is unchanged — only the order in which
         // feedback arrives.
         if autoRepack { await repackNowAwait() }
-        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-        NSLog("[Design][TMPDIAG] applyMutation: rescore done autoRepack=%d repackDirty=%d editing=%d workingObject=%@",
-              autoRepack ? 1 : 0, repackDirty ? 1 : 0, editing ? 1 : 0, workingObject ?? "nil")
         await rescoreWorkingObject()
     }
 
@@ -1047,22 +1030,9 @@ final class DesignController: ObservableObject {
     /// resulting all-atom PDB into the working object and clear `repackDirty`.
     /// Job-token guarded (superseded by a subsequent mutation or focus change).
     func repackNowAwait() async {
-        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-        // These two guards were the only unlogged exit from the repack path, so a
-        // skipped repack was indistinguishable from one that ran and failed.
-        guard editing, let w = workingObject, repackDirty else {
-            NSLog("[Design][TMPDIAG] repack SKIPPED at entry: editing=%d workingObject=%@ repackDirty=%d",
-                  editing ? 1 : 0, workingObject ?? "nil", repackDirty ? 1 : 0)
-            return
-        }
+        guard editing, let w = workingObject, repackDirty else { return }
         // C3: we need the residue set to project the sequence; bail if unavailable.
-        guard let focus = focusObject, let set = lastSet[focus] else {
-            NSLog("[Design][TMPDIAG] repack SKIPPED (no residue set): focusObject=%@ hasCachedSet=%d",
-                  focusObject ?? "nil", (focusObject.map { lastSet[$0] != nil } ?? false) ? 1 : 0)
-            return
-        }
-        // TEMP-DIAG (Phase 2d repack investigation) — remove once root cause is fixed.
-        NSLog("[Design][TMPDIAG] repack ENTERED: obj=%@ focus=%@", w, focus)
+        guard let focus = focusObject, let set = lastSet[focus] else { return }
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
@@ -1113,13 +1083,13 @@ final class DesignController: ObservableObject {
         }
         // I1: only load if the sequence has not changed since dispatch.
         if capturedFullSeq == editedSequence {
-            // NSLog intentionally unconditional: a device console log from the user's
-            // next run will show whether loadRepacked was reached and with what PDB size,
-            // diagnosing case (d) of the silent-repack bug without a device-attached build.
-            // TODO: remove or downgrade to #if DEBUG once the root cause is confirmed.
+            #if DEBUG
             NSLog("[Design] loadRepacked: starting, pdb=%d chars into '%@'", pdb.count, w)
+            #endif
             loadRepacked(w, pdb)
+            #if DEBUG
             NSLog("[Design] loadRepacked: done")
+            #endif
             repackDirty = false
             // Full topology replace (load_repacked deletes+renames the object) clears
             // PyMOL's per-atom colors and representations.  Re-apply confidence
