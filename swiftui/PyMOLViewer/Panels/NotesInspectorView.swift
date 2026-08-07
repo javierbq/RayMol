@@ -664,6 +664,66 @@ private enum AnalysisNotesExporter {
     }
 }
 
+enum AnalysisNotePreviewBlock: Equatable {
+    case markdown(String)
+    case image(UUID)
+}
+
+enum AnalysisNotePreviewParser {
+    private static let imagePattern = #"!\[[^\]]*\]\(raymol-asset://([0-9A-Fa-f-]{36})\)"#
+
+    /// Split the note into display blocks while preserving the position of each
+    /// linked RayMol image. A single structural newline around a standalone image
+    /// marker is consumed because the VStack supplies that block separation.
+    static func blocks(in markdown: String) -> [AnalysisNotePreviewBlock] {
+        guard !markdown.isEmpty,
+              let expression = try? NSRegularExpression(pattern: imagePattern) else {
+            return markdown.isEmpty ? [] : [.markdown(markdown)]
+        }
+
+        let matches = expression.matches(
+            in: markdown,
+            range: NSRange(markdown.startIndex..<markdown.endIndex, in: markdown)
+        )
+        guard !matches.isEmpty else { return [.markdown(markdown)] }
+
+        var blocks: [AnalysisNotePreviewBlock] = []
+        var cursor = markdown.startIndex
+
+        for match in matches {
+            guard let markerRange = Range(match.range, in: markdown),
+                  let idRange = Range(match.range(at: 1), in: markdown),
+                  let id = UUID(uuidString: String(markdown[idRange])) else { continue }
+
+            let startsLine = markerRange.lowerBound == markdown.startIndex
+                || markdown[markdown.index(before: markerRange.lowerBound)] == "\n"
+            let endsLine = markerRange.upperBound == markdown.endIndex
+                || markdown[markerRange.upperBound] == "\n"
+            let standalone = startsLine && endsLine
+
+            var textEnd = markerRange.lowerBound
+            if standalone, textEnd > cursor,
+               markdown[markdown.index(before: textEnd)] == "\n" {
+                textEnd = markdown.index(before: textEnd)
+            }
+            if cursor < textEnd {
+                blocks.append(.markdown(String(markdown[cursor..<textEnd])))
+            }
+
+            blocks.append(.image(id))
+            cursor = markerRange.upperBound
+            if standalone, cursor < markdown.endIndex, markdown[cursor] == "\n" {
+                cursor = markdown.index(after: cursor)
+            }
+        }
+
+        if cursor < markdown.endIndex {
+            blocks.append(.markdown(String(markdown[cursor...])))
+        }
+        return blocks
+    }
+}
+
 struct NotesInspectorView: View {
     @EnvironmentObject private var notes: AnalysisNotesStore
     @EnvironmentObject private var engine: PyMOLEngine
@@ -680,7 +740,6 @@ struct NotesInspectorView: View {
     @State private var exportFilename = "RayMol Notes"
     @State private var showingNewPagePrompt = false
     @State private var showingRenamePagePrompt = false
-    @State private var showingDictationHelp = false
     @State private var insertionNotice: String?
     @State private var pageName = ""
     #if os(iOS)
@@ -839,11 +898,6 @@ struct NotesInspectorView: View {
                 .disabled(!engine.isReady)
                 .help("Insert structured scientific data")
 
-                Button { useSystemDictation() } label: {
-                    Image(systemName: "keyboard")
-                }
-                .help(dictationHelpText)
-
                 Menu {
                     Button("Export Clean Markdown…") { beginExport(.plainText) }
                     Button("Export HTML with Images…") { beginExport(.html) }
@@ -894,11 +948,6 @@ struct NotesInspectorView: View {
             Button("Rename") { notes.renameActivePage(pageName) }
             Button("Cancel", role: .cancel) { }
         }
-        .alert("Use System Dictation", isPresented: $showingDictationHelp) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(dictationHelpText)
-        }
         .fileExporter(isPresented: $showingExporter,
                       document: AnalysisExportDocument(data: exportData),
                       contentType: exportContentType,
@@ -918,8 +967,6 @@ struct NotesInspectorView: View {
         #if os(iOS)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
-                Label("Tap the Apple keyboard microphone to dictate", systemImage: "mic")
-                    .font(.caption)
                 Spacer()
                 Button("Done") { noteEditorFocused = false }
             }
@@ -951,39 +998,32 @@ struct NotesInspectorView: View {
     private var preview: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-            if notes.text.isEmpty {
-                Text("Nothing to preview yet.")
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text(renderedNotes)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if !notes.viewBookmarks.isEmpty {
-                Divider()
-                Text("VIEW LINKS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                ForEach(notes.viewBookmarks) { bookmark in
-                    Button { restore(bookmark) } label: {
-                        HStack {
-                            Image(systemName: bookmark.resolvedKind == .camera ? "camera.viewfinder" : "rectangle.on.rectangle")
-                            Text(bookmark.title).lineLimit(1)
-                            Spacer()
-                            Text(bookmark.resolvedKind.label)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(Color.accentColor.opacity(0.14), in: Capsule())
-                        }
-                    }.buttonStyle(.plain)
+                if notes.text.isEmpty {
+                    Text("Nothing to preview yet.")
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(Array(previewBlocks.enumerated()), id: \.offset) { _, block in
+                        previewBlock(block)
+                    }
                 }
-            }
-            if !notes.screenshots.isEmpty {
-                Divider()
-                Text("LINKED IMAGES").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                ForEach(notes.screenshots) { asset in
-                    screenshotView(asset)
+                if !notes.viewBookmarks.isEmpty {
+                    Divider()
+                    Text("VIEW LINKS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(notes.viewBookmarks) { bookmark in
+                        Button { restore(bookmark) } label: {
+                            HStack {
+                                Image(systemName: bookmark.resolvedKind == .camera ? "camera.viewfinder" : "rectangle.on.rectangle")
+                                Text(bookmark.title).lineLimit(1)
+                                Spacer()
+                                Text(bookmark.resolvedKind.label)
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 7).padding(.vertical, 3)
+                                    .background(Color.accentColor.opacity(0.14), in: Capsule())
+                            }
+                        }.buttonStyle(.plain)
+                    }
                 }
-            }
             }
         }
         .font(.system(size: fontSize))
@@ -998,11 +1038,32 @@ struct NotesInspectorView: View {
         })
     }
 
-    private var renderedNotes: AttributedString {
+    private var previewBlocks: [AnalysisNotePreviewBlock] {
+        AnalysisNotePreviewParser.blocks(in: filteredNoteText)
+    }
+
+    @ViewBuilder private func previewBlock(_ block: AnalysisNotePreviewBlock) -> some View {
+        switch block {
+        case .markdown(let markdown):
+            Text(renderMarkdown(markdown))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .image(let id):
+            if let asset = notes.screenshots.first(where: { $0.id == id }) {
+                screenshotView(asset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Label("Linked image unavailable", systemImage: "photo.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func renderMarkdown(_ source: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        let source = filteredNoteText
         return (try? AttributedString(markdown: source, options: options))
             ?? AttributedString(source)
     }
@@ -1174,22 +1235,6 @@ struct NotesInspectorView: View {
         return horizontalSizeClass == .compact || width < 430
         #else
         return width < 430
-        #endif
-    }
-
-    private func useSystemDictation() {
-        #if os(iOS)
-        noteEditorFocused = true
-        #else
-        showingDictationHelp = true
-        #endif
-    }
-
-    private var dictationHelpText: String {
-        #if os(iOS)
-        return "RayMol will open the Apple keyboard. Tap the microphone on that keyboard to start Dictation. If it is missing, enable Dictation in Settings → General → Keyboard."
-        #else
-        return "Place the cursor in the note, then use the Dictation shortcut configured in System Settings → Keyboard → Dictation. RayMol cannot start macOS system Dictation itself."
         #endif
     }
 

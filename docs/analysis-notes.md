@@ -9,7 +9,6 @@ Each session can contain multiple named note documents. Use the document menu at
 - Write plain text or Markdown. Use `#` headings for the outline and inline tags such as `#interface` for organization.
 - Use the search field to filter matching lines. The outline and tag menus provide quick navigation.
 - Adjust the reading size with **A−** and **A+**, then switch between **Edit** and **Preview**.
-- On iPhone or iPad, tap the keyboard button, then tap the microphone on Apple's keyboard to dictate into the note. Dictation uses the system keyboard and does not require separate RayMol microphone access.
 - Export the note as clean Markdown from the share menu.
 
 ## Scientific inserts

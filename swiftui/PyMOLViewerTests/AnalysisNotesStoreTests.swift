@@ -152,6 +152,32 @@ final class AnalysisNotesStoreTests: XCTestCase {
         XCTAssertEqual(store.cleanMarkdown, "**Figure:** Metal view")
     }
 
+    func testPreviewParserKeepsLinkedImagesInMarkdownOrder() {
+        let first = UUID()
+        let second = UUID()
+        let markdown = """
+        Before the first image.
+        ![First](raymol-asset://\(first.uuidString))
+        Between the images.
+        ![Second](raymol-asset://\(second.uuidString))
+        After the second image.
+        """
+
+        XCTAssertEqual(AnalysisNotePreviewParser.blocks(in: markdown), [
+            .markdown("Before the first image."),
+            .image(first),
+            .markdown("Between the images."),
+            .image(second),
+            .markdown("After the second image.")
+        ])
+    }
+
+    func testPreviewParserLeavesOtherMarkdownLinksUntouched() {
+        let markdown = "[View](raymol-view://1234) and [site](https://raymol.io/)"
+
+        XCTAssertEqual(AnalysisNotePreviewParser.blocks(in: markdown), [.markdown(markdown)])
+    }
+
     @MainActor
     func testMultipleNamedNotesPersistIndependently() throws {
         let root = FileManager.default.temporaryDirectory
