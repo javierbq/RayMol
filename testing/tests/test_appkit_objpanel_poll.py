@@ -55,7 +55,8 @@ def capture_console():
 # old inline payload overflowed.
 ORTHO_LINE_LENGTH = 1024
 
-PANEL_JSON = os.path.join(tempfile.gettempdir(), 'pymol_objpanel.json')
+PANEL_JSON = os.path.join(
+    tempfile.gettempdir(), 'pymol_objpanel_%d.json' % os.getpid())
 
 
 class TestObjPanelPoll(testing.PyMOLTestCase):
