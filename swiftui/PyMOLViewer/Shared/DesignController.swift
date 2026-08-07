@@ -3,6 +3,27 @@ import Foundation
 import MPNNKit
 import Combine
 
+/// Thread-safe mirror of a @MainActor job token so the inference closure — which
+/// runs on the serial background queue — can tell whether it has already been
+/// superseded BEFORE spending an inference on a result nobody will read.
+private final class TokenMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func set(_ v: Int) { lock.lock(); value = v; lock.unlock() }
+    func get() -> Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// Sentinel thrown inside an inference closure when the job token has already been
+/// superseded by the time the closure starts. Using a typed error lets catch sites
+/// distinguish "superseded" from "failed":
+///   - rescoreWorkingObject uses `try?` → nil → existing guard returns early, no errorText.
+///   - repackNowAwait uses do/catch → the `guard token == repackToken` check exits early.
+///   - focusAwait uses do/catch → the `guard token == rescoreToken` check exits early.
+///   - redesignSelectionAwait uses `try?` → nil → existing guard exits early, no errorText.
+/// None of these paths reaches an `errorText = …` assignment, so supersession is never
+/// reported as a failure to the user.
+private struct SupersededJobError: Error {}
+
 /// Orchestrates the Design mode lifecycle: scores residues off the main thread on a serial queue
 /// with a job token (superseded focuses are discarded), caches results, and applies per-residue
 /// coloring. Model lifecycle is managed by the injected `score` closure (wired in Task 10).
@@ -83,6 +104,9 @@ final class DesignController: ObservableObject {
     typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
     /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
     typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
+    /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
+    /// never on the main thread — the model is owned by that queue.
+    typealias ReleaseModelFn = () -> Void
 
     // MARK: – Injected dependencies
 
@@ -111,6 +135,7 @@ final class DesignController: ObservableObject {
     private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
     private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
     private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
+    private var releaseModelFn: ReleaseModelFn = { }
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -119,6 +144,10 @@ final class DesignController: ObservableObject {
     @Published private(set) var repackDirty = false
     @Published var autoRepack = true
     @Published private(set) var isRepacking = false
+    /// True while `rescoreWorkingObject` has a score in flight on the inference queue.
+    /// Follows the same token-guarded `defer` pattern as `isRepacking` and `isRedesigning`
+    /// so a stranded flag can never permanently lock the toolbar.
+    @Published private(set) var isRescoring = false
     /// True while the compare toggle is on (original structure shown alongside the working copy).
     @Published private(set) var compareEnabled = false
     /// True while the Side-by-side grid layout is selected (only meaningful when compareEnabled).
@@ -151,13 +180,54 @@ final class DesignController: ObservableObject {
     /// Sampling temperature for region design (0 = greedy, higher = more diverse). The
     /// engine pairs this with a nil seed so each Redesign is non-deterministic.
     @Published var designTemperature: Float = 0.2
+
+    /// Pending oversize confirmation, or nil. Set when a redesign lands in the
+    /// guard's warn band; the UI presents it and calls confirm/cancel.
+    @Published private(set) var pendingSizeWarning: SizeWarning?
+
+    /// A run large enough to be worth confirming. `residueCount` is the total
+    /// object length, not the selection size — MPNN's cost tracks the whole
+    /// object regardless of how few positions are free.
+    struct SizeWarning: Equatable {
+        let residueCount: Int
+        let estimatedBytes: Int
+        let availableBytes: Int
+    }
+
+    /// Size decision for a run over `residueCount` residues. Injectable so the
+    /// controller's warn/confirm/refuse wiring can be tested without depending on
+    /// the guard's constants — which are retuned from device measurements later in
+    /// this phase, and must not be able to silently invalidate these tests.
+    /// The default routes through `evaluate`, which enforces macOS inertness:
+    /// `evaluate` returns `.ok` unconditionally on non-iOS regardless of arguments.
+    var sizeDecisionProvider: (Int) -> DesignSizeGuard.Decision = { count in
+        DesignSizeGuard.evaluate(residueCount: count,
+                                 availableBytes: DesignSizeGuard.availableBytesNow)
+    }
+
+    /// Write a session autosave before a confirmed large run, so a jetsam kill
+    /// costs no user work. Wired to the engine in PyMOLEngine; no-op in tests.
+    var autosaveBeforeLargeRun: () -> Void = { }
+
+    /// Set for exactly one call by `confirmPendingWarning()` so the confirmed run
+    /// is not re-gated into an infinite warn loop. Cleared on read.
+    private var suppressSizeGuardOnce = false
+
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
 
+    /// True while the user is building an ad-hoc region by tapping positions.
+    /// Replaces shift-click, which does not exist on touch (and whose SwiftUI
+    /// modifier is unavailable on iOS). Ships on macOS too — the explicit toggle
+    /// is the discoverable path; shift-click remains as a power-user shortcut.
+    @Published var regionEditMode = false
+
     /// Label for the blocking "Calculating…" overlay while a long design inference
-    /// runs (nil = not busy). Covers the two edit-triggered heavy ops — a region
-    /// redesign (which holds through its follow-up rescore + repack) and a manual
-    /// repack. The initial focus scoring keeps its lightweight inline spinner
+    /// runs (nil = not busy). Covers exactly two edit-triggered heavy ops — a region
+    /// redesign and a manual repack. The redesign clears `isRedesigning` BEFORE the
+    /// follow-up rescore + repack (see `redesignSelectionAwait` line ~841), so this
+    /// label does NOT span the follow-up phases; repack raises its own label while
+    /// it runs. The initial focus scoring keeps its lightweight inline spinner
     /// (`isScoring`) rather than a full-screen block — it's quick on real hardware
     /// and shouldn't gate the whole UI on every object focus.
     var designBusyLabel: String? {
@@ -165,6 +235,13 @@ final class DesignController: ObservableObject {
         if isRepacking { return "Repacking sidechains…" }
         return nil
     }
+
+    /// True while ANY MLX inference is in flight (focus scoring, working-object
+    /// rescore, region redesign, or sidechain repack). This is the mode-lock
+    /// predicate — distinct from `designBusyLabel`, which covers only the two
+    /// long blocking operations and deliberately does NOT cover focus scoring or
+    /// the post-redesign rescore.
+    var isCalculating: Bool { isScoring || isRescoring || isRedesigning || isRepacking }
 
     struct RedesignSnapshot { let seq: [Int]; let editCount: Int }
 
@@ -180,6 +257,13 @@ final class DesignController: ObservableObject {
     private var repackToken: Int = 0
     /// Incremented on each region redesign; a superseded design() checks this before applying.
     private var designToken: Int = 0
+    /// Thread-safe mirrors of the main-actor job tokens for use inside inference
+    /// closures (which run on the serial background queue).  Updated on the main
+    /// actor immediately after each token increment; read by the closure at the top
+    /// of each dispatch to bail before running inference when already superseded.
+    private let rescoreMirror = TokenMirror()
+    private let repackMirror  = TokenMirror()
+    private let designMirror  = TokenMirror()
     /// Most-recently enumerated residue set per object (for recolor without re-enumerating).
     private var lastSet: [String: DesignResidueSet] = [:]
     /// Published residue list for the focus object. Updated whenever `focusObject` or
@@ -215,7 +299,8 @@ final class DesignController: ObservableObject {
                      pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in },
                      designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
-                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] }) {
+                     selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] },
+                     releaseModel: @escaping ReleaseModelFn = { }) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -237,6 +322,7 @@ final class DesignController: ObservableObject {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
+        self.releaseModelFn = releaseModel
     }
 
     // MARK: – Public interface
@@ -269,6 +355,43 @@ final class DesignController: ObservableObject {
         pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
         clearRegionState()
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
+        rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
+        // Free the model's resident weights. Dispatched to the inference queue
+        // rather than run inline: `_mpnnModel` is unsynchronized and owned by that
+        // serial queue, so a main-thread nil-out would race a running job. Queueing
+        // it also orders the release behind any inference already dispatched.
+        let release = releaseModelFn
+        inferenceQueue.async { release() }
+    }
+
+    /// Dismiss the current error message. The Design overlay's error banner calls
+    /// this on tap and on its auto-dismiss timer; `errorText` is otherwise only
+    /// cleared implicitly by the next successful operation.
+    func clearError() { errorText = nil }
+
+    /// Unified viewport-hit routing shared between iOS (`designPickResidue`) and
+    /// macOS (`onChange(of: engine.longPressHit)`).
+    ///
+    /// Three-way rule:
+    ///   - `object` empty → no-op (tap on empty space or non-object background)
+    ///   - `object != focusObject` → `focus(object)` (retarget design to new structure)
+    ///   - `object == focusObject && hasResidue` → `tapResidue(residueIndex:)` for the residue;
+    ///     no-op if the residue doesn't resolve (e.g. missing backbone)
+    ///   - `object == focusObject && !hasResidue` → no-op (tap on backbone/solvent patch)
+    ///
+    /// Using `tapResidue` (not `setPinned` directly) for the same-object case means
+    /// region-edit mode works on both platforms: a tap in region-edit mode toggles
+    /// region membership rather than pinning.  The previous macOS `onChange` block
+    /// called `setPinned` directly and therefore ignored region-edit mode; routing
+    /// through this shared method fixes that uniformly.
+    func handleViewportHit(object: String, chain: String, resi: String, hasResidue: Bool) {
+        guard !object.isEmpty else { return }
+        if object != focusObject {
+            focus(object)
+        } else if hasResidue, let idx = residueIndex(chain: chain, resi: resi) {
+            tapResidue(residueIndex: idx)
+        }
+        // object == focusObject && !hasResidue → no-op
     }
 
     // MARK: – Propensity hover/pin
@@ -373,6 +496,11 @@ final class DesignController: ObservableObject {
         // Hoist token capture so both the success continuation and the catch can guard against it.
         rescoreToken += 1
         let token = rescoreToken
+        rescoreMirror.set(token)   // update before dispatch so in-queue closures see the new value
+        // New job owns the flag: wipe any stale `true` left by a superseded job.
+        // This covers the cache-hit path too — a cache hit returns early without
+        // ever reaching the `isScoring = true` below, so the flag stays false.
+        isScoring = false
         do {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
@@ -389,6 +517,10 @@ final class DesignController: ObservableObject {
             // Cache miss: score off main.
             isScoring = true
             errorText = nil
+            // Cleared on EVERY exit from the do-block (normal, guard, thrown) so a stranded
+            // true can never permanently lock the toolbar. Token-guarded so a superseded job's
+            // defer does not clear the flag out from under the winner.
+            defer { if token == rescoreToken { isScoring = false } }
 
             // Capture what we need before leaving the main actor.
             let residues = set.validResidues
@@ -396,8 +528,15 @@ final class DesignController: ObservableObject {
             let validMask = set.residues.map { $0.valid }
             let scoreFn = score     // capture @MainActor-isolated property on main, then hand off
 
+            let mirror = rescoreMirror   // capture class reference (not current value)
             let scores: DesignScores = try await withCheckedThrowingContinuation { cont in
                 inferenceQueue.async {
+                    // Early-exit BEFORE calling the model if this job was already superseded
+                    // while waiting in the serial queue.  SupersededJobError is caught by the
+                    // outer do/catch; the `guard token == rescoreToken` there exits cleanly.
+                    guard mirror.get() == token else {
+                        cont.resume(throwing: SupersededJobError()); return
+                    }
                     do {
                         let result = try scoreFn(residues, native)
                         cont.resume(returning: DesignColor.scores(from: result, validMask: validMask))
@@ -412,14 +551,15 @@ final class DesignController: ObservableObject {
 
             errorText = nil
             cache.set(key, scores)
-            isScoring = false
+            // isScoring cleared by the defer above on any exit from the do-block.
             updateSequenceScore(from: scores)
             recolor(object)
 
         } catch {
             // A superseded or post-exit() throw must not clobber state owned by the current job.
+            // The defer in the do-block already ran by this point (Swift defers before catch),
+            // so isScoring is already false for the winning token; no bare assignment needed.
             guard token == rescoreToken else { return }
-            isScoring = false
             errorText = "\(error)"
         }
     }
@@ -553,6 +693,7 @@ final class DesignController: ObservableObject {
             if let src { enableOriginalFn(src) }
         }
         rescoreToken += 1; repackToken += 1
+        rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
         editing = false
         editCount = 0
         repackDirty = false
@@ -598,6 +739,20 @@ final class DesignController: ObservableObject {
         selectedSelectionName = selectedResidueIndices.isEmpty ? nil : "custom"
     }
 
+    /// Route a plain tap on residue `i` (full-length index). In region-edit mode a
+    /// tap toggles region membership; otherwise it pins the residue for inspection,
+    /// which is the pre-existing behaviour.
+    func tapResidue(residueIndex i: Int) {
+        if regionEditMode {
+            toggleRegionResidue(residueIndex: i)
+            return
+        }
+        guard let obj = focusObject, let set = lastSet[obj],
+              i >= 0, i < set.residues.count else { return }
+        let r = set.residues[i]
+        setPinned(chain: r.chain, resi: r.resi)
+    }
+
     /// Clear the region → return to single-residue (Phase-2b) mode.
     func clearSelection() {
         selectedResidueIndices = []
@@ -620,7 +775,11 @@ final class DesignController: ObservableObject {
         redesignSnapshot = nil
         isRedesigning = false
         availableSelections = []
+        pendingSizeWarning = nil
+        suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
+        regionEditMode = false
         designToken += 1   // cancel any in-flight region design
+        designMirror.set(designToken)
     }
 
     // MARK: – Region redesign: the design() action + revert (Task 3)
@@ -632,10 +791,48 @@ final class DesignController: ObservableObject {
     /// scatter the result into editedSequence, then rescore + (auto)repack.
     /// Snapshots editedSequence first for a one-level revert.
     func redesignSelectionAwait() async {
+        // Consume the one-shot guard suppression at entry, before any early return.
+        // Any path out of this function must leave the flag cleared — a stale `true`
+        // would silently skip the memory check on a LATER, unrelated redesign, which
+        // is the exact failure this guard exists to prevent (the guard is read below,
+        // after beginEditIfNeeded() and the `set` lookup, where it has always lived).
+        let skipGuard = suppressSizeGuardOnce
+        suppressSizeGuardOnce = false
+
         guard !selectedResidueIndices.isEmpty else { return }
         guard paletteAllowed.contains(where: { $0 >= 0 && $0 < 20 }) else { return }  // ≥1 allowed AA
         beginEditIfNeeded()
         guard editing, let focus = focusObject, let set = lastSet[focus] else { return }
+
+        // Memory gate. Consulted here only: repack and rescore run over the same
+        // residue set, so clearing this gate clears them too, and three prompts for
+        // one user action would be hostile. Focus scoring is deliberately ungated —
+        // it is what populates the sequence strip, and refusing it would make an
+        // object unopenable rather than merely un-redesignable.
+        //
+        // `suppressSizeGuardOnce` is set by `confirmPendingWarning()` so the
+        // confirmed re-entry is not re-gated into an infinite warn loop. It is
+        // consumed at function entry (above) so no early return can leave it stale.
+        // Binding the decision to a `let` keeps the `switch` subject a plain value.
+        let residueCount = set.residues.count
+        let sizeDecision: DesignSizeGuard.Decision = skipGuard
+            ? .ok
+            : sizeDecisionProvider(residueCount)
+        switch sizeDecision {
+        case .ok:
+            break
+        case .warn(let estimate, let available):
+            pendingSizeWarning = SizeWarning(residueCount: residueCount,
+                                             estimatedBytes: estimate,
+                                             availableBytes: available)
+            return
+        case .refuse(let maxFitting):
+            pendingSizeWarning = nil
+            errorText = maxFitting > 0
+                ? "This structure is too large to design on this device (\(residueCount) residues; about \(maxFitting) would fit). Free memory or use a smaller structure."
+                : "Not enough free memory to run Design. Close other apps and try again."
+            return
+        }
 
         // One-level revert snapshot (captures earlier manual edits + editCount).
         redesignSnapshot = RedesignSnapshot(seq: editedSequence, editCount: editCount)
@@ -657,6 +854,7 @@ final class DesignController: ObservableObject {
 
         designToken += 1
         let token = designToken
+        designMirror.set(token)   // update before dispatch so queued closures see the new value
         isRedesigning = true
         // The busy flag drives an INPUT-BLOCKING overlay, so it must never be left
         // set — `defer` clears it on every exit (early return, error, cancellation),
@@ -664,8 +862,14 @@ final class DesignController: ObservableObject {
         // so a superseded call doesn't clear the flag out from under the winner.
         defer { if token == designToken { isRedesigning = false } }
 
+        let dMirror = designMirror   // capture class reference (not current value)
         let result: [Int]? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
+                // Early-exit BEFORE calling the model if this job was already superseded.
+                // SupersededJobError + try? → nil result; existing guard exits cleanly.
+                guard dMirror.get() == token else {
+                    cont.resume(throwing: SupersededJobError()); return
+                }
                 do { cont.resume(returning: try designFn(residues, fixed, nativeValid, omit, temp)) }
                 catch { cont.resume(throwing: error) }
             }
@@ -707,6 +911,20 @@ final class DesignController: ObservableObject {
         await rescoreWorkingObject()
         if autoRepack { await repackNowAwait() }
     }
+
+    /// Proceed with a redesign the user confirmed after a size warning. Writes an
+    /// autosave first so a jetsam kill during the run costs no work, then re-enters
+    /// the normal path with the guard suppressed for this one call.
+    func confirmPendingWarning() async {
+        guard pendingSizeWarning != nil else { return }
+        pendingSizeWarning = nil
+        autosaveBeforeLargeRun()
+        suppressSizeGuardOnce = true
+        await redesignSelectionAwait()
+    }
+
+    /// Dismiss a size warning without running anything.
+    func cancelPendingWarning() { pendingSizeWarning = nil }
 
     /// Undo the last region redesign: restore the pre-batch sequence + editCount.
     /// One level; earlier manual edits (captured in the snapshot) are preserved.
@@ -798,8 +1016,14 @@ final class DesignController: ObservableObject {
     /// path then fires `rescoreWorkingObject` in a background Task.
     func applyMutationAwait(residueIndex i: Int, aa: Int) async {
         guard applyMutationState(residueIndex: i, aa: aa) else { return }
-        await rescoreWorkingObject()
+        // Repack before rescore: the repack is what the user SEES (new sidechain
+        // geometry) and is several times cheaper than scoring; the rescore only
+        // drives confidence colouring. Running repack first makes the structural
+        // change visible on-screen ~5× sooner on a physical device. Total time on
+        // the serial inference queue is unchanged — only the order in which
+        // feedback arrives.
         if autoRepack { await repackNowAwait() }
+        await rescoreWorkingObject()
     }
 
     /// Place all sidechains for the current edited sequence off-main, then load the
@@ -812,6 +1036,7 @@ final class DesignController: ObservableObject {
         // Use a separate repackToken so repacks supersede each other but do NOT
         // cancel a concurrent in-flight rescore (which uses rescoreToken).
         repackToken += 1; let token = repackToken
+        repackMirror.set(token)   // update before dispatch so queued closures see the new value
         isRepacking = true
         // Same input-blocking overlay as the redesign: clear on EVERY exit via
         // `defer`, token-guarded so a superseded repack can't clear the winner's flag.
@@ -822,40 +1047,71 @@ final class DesignController: ObservableObject {
         let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
         let residues = set.validResidues
         let repackFn = repack     // capture @MainActor-isolated property before leaving
-        let pdb: String? = try? await withCheckedThrowingContinuation { cont in
-            inferenceQueue.async {
-                do { cont.resume(returning: try repackFn(residues, seq)) }
-                catch { cont.resume(throwing: error) }
+        // Use do/catch instead of try? so MLX / MPNNKit errors surface to the user
+        // via the error banner (Task 1) rather than being silently swallowed.
+        let pMirror = repackMirror   // capture class reference (not current value)
+        let pdb: String
+        do {
+            pdb = try await withCheckedThrowingContinuation { cont in
+                inferenceQueue.async {
+                    // Early-exit BEFORE calling the model if this job was already superseded.
+                    // SupersededJobError → catch below → guard token==repackToken exits clean
+                    // (token won't match since the mirror advanced when we were superseded).
+                    // This is NOT the same as an empty-PDB: that path reaches the
+                    // `guard !pdb.isEmpty` check after a SUCCESSFUL return from repackFn;
+                    // a superseded job never calls repackFn at all and never sets pdb.
+                    guard pMirror.get() == token else {
+                        cont.resume(throwing: SupersededJobError()); return
+                    }
+                    do { cont.resume(returning: try repackFn(residues, seq)) }
+                    catch { cont.resume(throwing: error) }
+                }
             }
+        } catch {
+            // Only report the error if this repack is still the winner; a superseded
+            // job must not stomp the errorText owned by the cancelling call.
+            // SupersededJobError lands here too, but its token will not match,
+            // so the guard below exits without setting errorText.
+            guard token == repackToken else { return }
+            errorText = "Repack failed: \(error)"
+            return   // isRepacking cleared by the `defer` above
         }
         guard token == repackToken else { return }
-        if let pdb, !pdb.isEmpty {
-            // I1: only load if the sequence has not changed since dispatch.
-            if capturedFullSeq == editedSequence {
-                loadRepacked(w, pdb)
-                repackDirty = false
-                // Full topology replace (load_repacked deletes+renames the object) clears
-                // PyMOL's per-atom colors and representations.  Re-apply confidence
-                // coloring from the cache — the sequence didn't change so no new score
-                // is needed; the last rescoreWorkingObject() result is still valid.
-                let colorSeq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
-                let colorKey = DesignCacheKey(object: w, state: set.state, sequenceHash: colorSeq.hashValue)
-                if let scores = cache.get(colorKey) {
-                    let scalar = DesignColor.scalar(scores, colorMeaning)
-                    let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
-                    let dom = DesignColor.domain(colorMeaning)
-                    applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
-                }
-                // Stale sidechain sticks are gone (object was replaced); clear tracking
-                // and re-add for the pinned/hovered residue on the fresh atoms.
-                teardownSticks(on: w)
-                reconcileSticks()
-                // Re-apply global sidechain display if the user had it turned on.
-                if showSidechains { showAllSidechainsFn(w, true) }
-            }
-            // else: mutation happened mid-repack; leave repackDirty = true so the
-            // next repack (triggered by the new mutation) loads the current coords.
+        guard !pdb.isEmpty else {
+            errorText = "Repack produced no structure."
+            return   // isRepacking cleared by the `defer` above
         }
+        // I1: only load if the sequence has not changed since dispatch.
+        if capturedFullSeq == editedSequence {
+            #if DEBUG
+            NSLog("[Design] loadRepacked: starting, pdb=%d chars into '%@'", pdb.count, w)
+            #endif
+            loadRepacked(w, pdb)
+            #if DEBUG
+            NSLog("[Design] loadRepacked: done")
+            #endif
+            repackDirty = false
+            // Full topology replace (load_repacked deletes+renames the object) clears
+            // PyMOL's per-atom colors and representations.  Re-apply confidence
+            // coloring from the cache — the sequence didn't change so no new score
+            // is needed; the last rescoreWorkingObject() result is still valid.
+            let colorSeq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
+            let colorKey = DesignCacheKey(object: w, state: set.state, sequenceHash: colorSeq.hashValue)
+            if let scores = cache.get(colorKey) {
+                let scalar = DesignColor.scalar(scores, colorMeaning)
+                let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
+                let dom = DesignColor.domain(colorMeaning)
+                applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+            }
+            // Stale sidechain sticks are gone (object was replaced); clear tracking
+            // and re-add for the pinned/hovered residue on the fresh atoms.
+            teardownSticks(on: w)
+            reconcileSticks()
+            // Re-apply global sidechain display if the user had it turned on.
+            if showSidechains { showAllSidechainsFn(w, true) }
+        }
+        // else: mutation happened mid-repack (case c); repackDirty stays true so the
+        // next repack (triggered by the new mutation) loads the current coords.
         // isRepacking cleared by the `defer` above (covers every exit path).
     }
 
@@ -902,20 +1158,34 @@ final class DesignController: ObservableObject {
               let set = lastSet[focus] else { return }
         rescoreToken += 1
         let token = rescoreToken
+        rescoreMirror.set(token)   // update before dispatch so queued closures see the new value
+        // New job takes ownership: wipe any stale `true` from a superseded rescore.
+        isRescoring = false
+        isRescoring = true
+        // Cleared on every exit via token-guarded defer — same pattern as isRepacking and
+        // isRedesigning — so a stranded flag cannot permanently lock the mode controls.
+        defer { if token == rescoreToken { isRescoring = false } }
         let residues = set.validResidues
         // C3: project editedSequence through the valid mask to align with validResidues.
         let seq = zip(set.residues, editedSequence).compactMap { $0.0.valid ? $0.1 : nil }
         let validMask = set.residues.map { $0.valid }
         let scoreFn = score               // capture @MainActor-isolated property before leaving
 
+        let rMirror = rescoreMirror   // capture class reference (not current value)
         let result: MPNNModel.ScoreResult? = try? await withCheckedThrowingContinuation { cont in
             inferenceQueue.async {
+                // Early-exit BEFORE calling the model if this job was already superseded.
+                // SupersededJobError + try? → nil result; existing guard exits cleanly.
+                guard rMirror.get() == token else {
+                    cont.resume(throwing: SupersededJobError()); return
+                }
                 do { cont.resume(returning: try scoreFn(residues, seq)) }
                 catch { cont.resume(throwing: error) }
             }
         }
 
         // Back on MainActor. Discard if a newer mutation superseded this one.
+        // isRescoring cleared by the defer above when control leaves this function.
         guard token == rescoreToken, let r = result else { return }
 
         let scores = DesignColor.scores(from: r, validMask: validMask)
@@ -995,6 +1265,11 @@ final class DesignController: ObservableObject {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
+    }
+
+    /// Override the model-release closure for testing (Phase 2d).
+    func injectReleaseModel(_ fn: @escaping ReleaseModelFn) {
+        self.releaseModelFn = fn
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async

@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 
 DEST="${1:-macOS}"
 EXTRA_SETTINGS=()
+EXTRA_FLAGS=()
 
 if [ "$DEST" = "macOS" ]; then
   # Mac App Store build: Sparkle has no place here — self-update is disallowed on
@@ -35,6 +36,10 @@ elif [ "$DEST" = "iOS" ]; then
   xcodegen generate
   SCHEME=PyMOLViewer_iOS
   DESTSPEC='generic/platform=iOS'
+  # mlx-swift's Cmlx target carries a CudaBuild buildTool plugin that stalls a
+  # headless archive without these flags (plugin validation tries to spawn a
+  # network request; macro validation also fails in a non-interactive shell).
+  EXTRA_FLAGS=(-skipPackagePluginValidation -skipMacroValidation)
 else
   echo "usage: $0 [macOS|iOS]" >&2; exit 2
 fi
@@ -42,7 +47,9 @@ fi
 ARCHIVE="build_archive/RayMol-$DEST.xcarchive"
 xcodebuild -project PyMOLViewer.xcodeproj -scheme "$SCHEME" -configuration Release \
   -destination "$DESTSPEC" -archivePath "$ARCHIVE" \
-  -allowProvisioningUpdates "${EXTRA_SETTINGS[@]+"${EXTRA_SETTINGS[@]}"}" archive
+  -allowProvisioningUpdates \
+  "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
+  "${EXTRA_SETTINGS[@]+"${EXTRA_SETTINGS[@]}"}" archive
 
 OPTS="/tmp/raymol-export-$DEST.plist"
 cat > "$OPTS" <<PLIST

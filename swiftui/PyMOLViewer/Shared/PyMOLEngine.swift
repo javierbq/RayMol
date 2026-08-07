@@ -1982,6 +1982,9 @@ final class PyMOLEngine: ObservableObject {
     // MARK: - Interactive measurement
 
     func setMeasureMode(_ k: MeasureKind?) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         measureMode = k
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
@@ -2078,6 +2081,9 @@ final class PyMOLEngine: ObservableObject {
     /// otherwise runs exactly the paths the "exit Move" / "exit Measure"
     /// buttons already use.
     func setDesignMode(_ on: Bool) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         if on {
             // Recursion-free: both setters only touch designMode in their
             // ENTERING branch, and the clearing block below is `if on`-guarded.
@@ -2107,28 +2113,46 @@ final class PyMOLEngine: ObservableObject {
     @discardableResult
     func exitActiveInteractionMode() -> Bool {
         var exited = false
-        if designMode { setDesignMode(false); exited = true }
-        if interactionMode == .move { setInteractionMode(.viewing); exited = true }
-        if measureMode != nil { setMeasureMode(nil); exited = true }
+        // Each setter may return early when isCalculating is true (Part 2 guard).
+        // Check the actual state AFTER the call so `exited` reflects whether an
+        // exit ACTUALLY happened — a blocked setter leaves the mode unchanged, so
+        // Esc must not be consumed as if the exit succeeded (Part 3 fix).
+        if designMode     { setDesignMode(false);       exited = exited || !designMode }
+        if interactionMode == .move { setInteractionMode(.viewing); exited = exited || interactionMode != .move }
+        if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         return exited
     }
 
 #if RAYMOL_MPNN
+    /// True while any MLX inference is in flight (DesignController.isCalculating).
+    /// Kept in sync via a Combine subscription so PyMOLEngine.objectWillChange fires
+    /// and ContentView (which observes engine via @EnvironmentObject) re-renders to
+    /// disable the mode controls during calculations. Read this from views; read
+    /// `designController.isCalculating` from engine-layer code that already holds a
+    /// reference to the controller.
+    @Published private(set) var isDesignCalculating: Bool = false
+    /// Retains the Combine subscription that keeps `isDesignCalculating` in sync.
+    private var _designCalcCancellable: AnyCancellable?
+
     // Cached MPNNModel: loaded once on first use (throws → returns nil + logs).
     private var _mpnnModel: MPNNModel?
     private func loadedMPNNModel() throws -> MPNNModel {
+        // Must precede any MLX allocation: sets the buffer-cache ceiling and, in a
+        // simulator, switches MLX to the CPU backend (GPU there aborts).
+        MPNNRuntime.configureOnce()
         if let m = _mpnnModel { return m }
         guard let url = MPNNGate.packURL else {
             throw NSError(domain: "raymol.design", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "MPNN model pack not found in bundle."])
         }
-        let m = try MPNNModel(packDirectory: url)
+        let m = try MPNNRuntime.withMLXErrorsAsThrows { try MPNNModel(packDirectory: url) }
         _mpnnModel = m
         return m
     }
 
     /// Real DesignController wired to this engine's Python helpers.
-    lazy var designController: DesignController = DesignController(
+    lazy var designController: DesignController = {
+        let dc = DesignController(
         enumerate: { [weak self] obj, state in
             guard let self else { throw NSError(domain: "raymol.design", code: 2,
                                                 userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
@@ -2144,7 +2168,9 @@ final class PyMOLEngine: ObservableObject {
             guard let self else { throw NSError(domain: "raymol.design", code: 2,
                                                 userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"]) }
             let model = try self.loadedMPNNModel()
-            return try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+            return try MPNNRuntime.withMLXErrorsAsThrows {
+                try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
+            }
         },
         applyColoring: { [weak self] obj, values, palette, lo, hi in
             guard let self else { return }
@@ -2260,7 +2286,7 @@ final class PyMOLEngine: ObservableObject {
                               userInfo: [NSLocalizedDescriptionKey: "Engine deallocated"])
             }
             let model = try self.loadedMPNNModel()
-            return try model.repack(residues, sequence: seq).pdb
+            return try MPNNRuntime.withMLXErrorsAsThrows { try model.repack(residues, sequence: seq).pdb }
         },
         loadRepacked: { [weak self] obj, pdb in
             // Write PDB to a temp file; Python reads it back to avoid multi-line
@@ -2302,7 +2328,7 @@ final class PyMOLEngine: ObservableObject {
             opts.fixedPositions = fixed
             opts.nativeSequence = native
             opts.omit = omit
-            return try model.design(residues, options: opts).indices
+            return try MPNNRuntime.withMLXErrorsAsThrows { try model.design(residues, options: opts).indices }
         },
         listSelections: { [weak self] obj, src, state in
             guard let self else { return [] }
@@ -2334,8 +2360,30 @@ final class PyMOLEngine: ObservableObject {
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let idx = root["indices"] as? [Int] else { return [] }
             return idx
+        },
+        releaseModel: { [weak self] in
+            // Called on DesignController's inference queue, which is the only
+            // context that touches _mpnnModel — see loadedMPNNModel().
+            self?._mpnnModel = nil
         }
-    )
+        )
+        // Propagate isCalculating into @Published isDesignCalculating so
+        // PyMOLEngine.objectWillChange fires and ContentView (which observes engine)
+        // re-renders to disable the mode controls during any MLX inference.
+        // CombineLatest4 fires with the NEW value — unlike objectWillChange which fires
+        // before the change — so no extra run-loop hop is required.
+        // `assumeIsolated` is safe here: designController is always first accessed from
+        // @MainActor code (UI callbacks, engine methods) and the pattern is already used
+        // throughout this file (clearHoverPreview, designPickResidue, etc.).
+        _designCalcCancellable = MainActor.assumeIsolated {
+            Publishers.CombineLatest4(
+                dc.$isScoring, dc.$isRescoring, dc.$isRedesigning, dc.$isRepacking)
+                .map { $0 || $1 || $2 || $3 }
+                .receive(on: RunLoop.main)
+                .sink { [weak self] in self?.isDesignCalculating = $0 }
+        }
+        return dc
+    }()
 #endif
 
     // MARK: - Move mode (rigid-body object gizmo)
@@ -2348,6 +2396,9 @@ final class PyMOLEngine: ObservableObject {
     }
 
     func setInteractionMode(_ mode: InteractionMode) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         interactionMode = mode
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
@@ -2669,6 +2720,34 @@ final class PyMOLEngine: ObservableObject {
             designHoverWork = work
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + (kHoverInterval - elapsed), execute: work)
+        }
+    }
+
+    /// Commit a Design-mode residue pick from a viewport tap (iOS). Calls the same
+    /// Python hover pick that the hover path uses (hover_design_at writes the hit
+    /// JSON synchronously), reads the result back, resolves a full-length residue
+    /// index, and hands it to DesignController.tapResidue, which pins or edits the
+    /// region per mode. Only acts when the hit lands on the current focus object.
+    /// Runs on the main thread (UIKit tap callback); uses MainActor.assumeIsolated
+    /// to satisfy Swift Concurrency's actor-isolation check (same pattern as
+    /// readDesignHoverHit).
+    func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
+        guard designMode, isReady else { return }
+        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_design.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hit = root["hit"] as? Bool, hit,
+              let chain = root["chain"] as? String,
+              let resi  = root["resi"]  as? String
+        else { return }
+        let focusObj = root["obj"] as? String ?? ""
+        MainActor.assumeIsolated {
+            designController.handleViewportHit(object: focusObj,
+                                               chain: chain,
+                                               resi: resi,
+                                               hasResidue: true)   // guard above ensures hit==true
         }
     }
 

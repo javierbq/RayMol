@@ -1,5 +1,30 @@
 [
   {
+    "version": "1.9.0",
+    "pages": [
+      {
+        "title": "Design mode",
+        "body": "Redesign protein sequences on your Mac, fully offline. ⌃D scores every residue with on-device ProteinMPNN and colors it by fit — hover any position for its full 20-amino-acid propensity.",
+        "imageName": "whatsnew-190-design"
+      },
+      {
+        "title": "Mutate and redesign",
+        "body": "On your Mac: click a propensity pill to mutate a residue, or pick a selection and redesign a whole region. RayMol re-scores and repacks side chains live, on a working copy you can keep or discard.",
+        "imageName": "whatsnew-190-redesign"
+      },
+      {
+        "title": "Scenes remember placement",
+        "body": "Scenes now store each object's Move-mode position and orientation alongside the camera, so recalling one rebuilds the whole arrangement. Movies glide between them.",
+        "videoName": "whatsnew-190-scenes"
+      },
+      {
+        "title": "Your own startup script",
+        "body": "RayMol now runs ~/.raymolrc at launch, after the theme defaults so your script can override them. Already have a ~/.pymolrc? RayMol offers, once, to import it.",
+        "imageName": "whatsnew-190-raymolrc"
+      }
+    ]
+  },
+  {
     "version": "1.7.0",
     "pages": [
       {

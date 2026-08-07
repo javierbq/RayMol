@@ -160,6 +160,24 @@ def _color_setting_rgb(setting, fallback=(0.0, 0.0, 0.0)):
     return [float(t[0]), float(t[1]), float(t[2])]
 
 
+def is_molecule(obj):
+    """True when `obj` is a molecular object — i.e. something an atom selection is
+    allowed to name.
+
+    Measurement objects (`dist01`/`ang01`/`dih01`), CGOs, maps and groups are not.
+    Handing one to `cmd.iterate` / `cmd.count_atoms` makes the C++ selector reject
+    it and write `Selector-Error: Invalid selection name "<obj>"` straight to the
+    feedback log. A Python-level try/except cannot suppress that: the selector has
+    already emitted the line by the time it raises. Since the object panel polls
+    ~2x/second, an unguarded probe floods the console for as long as the object
+    exists — issue #219.
+    """
+    try:
+        return cmd.get_type(obj) == 'object:molecule'
+    except Exception:
+        return False
+
+
 def transp_summary(obj):
     """One pass over `obj`'s atoms → {setting: (min, max, over)} for the atom-level
     transparency settings, where min/max are the EFFECTIVE per-atom transparency
@@ -170,7 +188,12 @@ def transp_summary(obj):
     Reading `s.<setting>` in iterate always resolves to the object-level value when
     no atom-level override exists (it never returns None here), so comparing the
     effective range to the object-level value is what detects a genuine override.
+
+    Non-molecular objects are rejected up front (see is_molecule): they cannot
+    carry per-atom transparency anyway, so probing them is both wrong and noisy.
     """
+    if not is_molecule(obj):
+        return {}
     objlv = {s: _num(s, obj) for s in TRANSP_SETTINGS}
     mn = {s: None for s in TRANSP_SETTINGS}
     mx = {s: None for s in TRANSP_SETTINGS}
@@ -219,6 +242,13 @@ def _build(objs):
     detail = {}
     for o in objs:
         reps = []
+        # Non-molecular objects (measurements, CGOs, maps, groups) have no reps to
+        # describe, and every probe below — transp_summary's iterate and the
+        # per-rep count_atoms — would make the selector log an error per poll tick
+        # (issue #219). Emit an empty rep list instead of interrogating them.
+        if not is_molecule(o):
+            detail[o] = reps
+            continue
         # Effective per-atom transparency range per setting, computed once per
         # object; attached to the rep whose transparency setting is overridden so
         # the expanded card can show "per-atom: min–max" and a Clear action.
@@ -353,22 +383,18 @@ def widen_clip_for_surface(buffer=12.0):
     front-clipped by the atom-fit slab that orient/reset/load set (which would
     slice the surface front and expose the interior).
 
-    Re-fit tight to the visible content first (zoom buffer 0 — idempotent, keeps
-    the molecule the same size), THEN push the near/far planes out by `buffer`.
-    The zoom reset makes repeated calls non-accumulating; the direct plane move
-    (not a camera dolly) clears the shell without shrinking the molecule, and
-    moving BOTH planes keeps the slab centered so depth precision stays good.
-    No-op when no such rep is shown."""
+    Use `clip atoms, buffer, visible`: it sets the near/far planes from the
+    visible atoms' extent about their CURRENT camera positions plus `buffer`,
+    touching only the clip planes -- never the camera position, rotation, or
+    center of rotation. That preserves the user's current view (previously a
+    `zoom visible` here recentered/rezoomed the camera every time dots/surface
+    was shown -- issue #195). It is absolute (recomputed from atom extents each
+    call), so repeated calls don't accumulate. No-op when no such rep is shown."""
     try:
         if (cmd.count_atoms('rep surface') + cmd.count_atoms('rep mesh')
                 + cmd.count_atoms('rep dots')) > 0:
-            cmd.zoom('visible', 0.0, complete=1)   # reset slab to tight visible fit
-            # `clip near, +d` moves the near plane TOWARD the viewer (front -= d);
-            # `clip far, -d` moves the far plane AWAY (back += d). Together they
-            # WIDEN the slab so the ~solvent_radius surface shell at both faces is
-            # inside it. (The opposite signs would narrow the slab and clip the
-            # surface — and the interior — away.)
-            cmd.clip('near', float(buffer))
-            cmd.clip('far', -float(buffer))
+            # Widen the slab to enclose the visible atoms +/- buffer WITHOUT
+            # moving the camera: clip atoms only calls SceneClipSet(front, back).
+            cmd.clip('atoms', float(buffer), 'visible')
     except Exception:
         pass
