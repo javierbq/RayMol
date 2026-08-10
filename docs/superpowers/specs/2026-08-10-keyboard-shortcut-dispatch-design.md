@@ -184,7 +184,7 @@ interact.
 ### 5. Shadow-warning audit
 
 New `modules/pymol/raymol_keys.py` holding the app's menu-shortcut table
-(`CTRL-D` → Design mode, `CTRL-M` → Measure mode, and the ⌘ entries for completeness) plus
+(`CTRL-M` → Move Objects, `CTRL-D` → Design mode, and the ⌘ entries for completeness) plus
 an `audit_shadowed(cmd)` function. Called once after `raymolrc.load()`. Prints one line per
 collision:
 
@@ -199,7 +199,7 @@ collision:
 |---|---|---|
 | Binding set | Full PyMOL parity: all 125 defaults live, user `set_key` overriding on top | Desktop fidelity for power users; the defaults are already loaded, only undelivered |
 | Arrows vs. command line | Command line wins **while it holds keyboard focus** | Preserves caret movement and history; approximates the core's own `OrthoArrowsGrabbed` rule |
-| Menu-shortcut conflicts | Explicit `set_key` wins; audit warns | PyMOL semantics — the user's rc file is the last word. Menu item stays reachable by click |
+| Menu-shortcut conflicts (`⌃M` Move, `⌃D` Design) | Explicit `set_key` wins; audit warns | PyMOL semantics — the user's rc file is the last word. Menu item stays reachable by click |
 | ⌘ | Always passes through | macOS menus own it; `set_key` has no CMD modifier |
 | Platform | macOS now, iOS follow-up | Engine-side routing is platform-neutral, so iOS is a second key *source*, not a second policy. Same split #235 used for Esc |
 
@@ -222,14 +222,69 @@ phrase the warning.
 
 ## Verification
 
+The monitor sits in front of **every** key event in the app, so the regression surface is
+everything that already responds to a keystroke. Non-regression carries equal weight with
+the fix itself.
+
+### Unit
+
 1. **Table-driven XCTest** over `KeyRouting.token`: arrows focused vs. unfocused, ctrl/alt
-   letters, ⌘ passthrough, F-keys, modified specials, bare printables, `SHFT-<letter>`.
+   letters, ⌘ passthrough, F-keys, modified specials, bare printables, `SHFT-<letter>`,
+   and the `charactersIgnoringModifiers` cases (`Ctrl-T` must not tokenize as `\u{14}`;
+   `Alt-A` must not tokenize as `å`).
 2. **Embedded-Python test** asserting `_invoke_key` fires a user binding, returns false for
    an unbound key, and that the 125-entry default dict loads.
-3. **Functional check in a disposable macOS VM** (per the `raymol-mac-vm` workflow) with
-   Gabriel's actual `obj_arrows.py` installed as `~/.raymolrc`: press `left`, `pgup`,
-   `pgdn`, `CTRL-T` and confirm each runs. Also confirm the command line still gets arrows
-   while focused, and that an unbound `Ctrl-D` still opens Design mode.
+
+### Regression — existing shortcuts must behave exactly as they do today
+
+Every item below is verified **twice**: once with no `~/.raymolrc`, and once with Gabriel's
+`obj_arrows.py` installed (which binds `CTRL-D`, so it exercises the shadow path).
+
+**A. Menu shortcuts carrying ⌘** — rule 1 passes these through untouched, so they should be
+structurally immune. Confirm anyway, since a mistake here breaks File-menu basics:
+
+| Shortcut | Command |
+|---|---|
+| ⌘O / ⇧⌘O | Open… / Fetch from PDB… |
+| ⌘S / ⇧⌘S | Save Session / Save Session As… |
+| ⇧⌘E | Export Image… |
+| ⌘C | Copy Image to Clipboard |
+| ⌥⌘M | Edit Timeline |
+| ⌃⌘M | Enable AI control (MCP) |
+
+**B. Menu shortcuts *without* ⌘ — the critical case.** `⌃M` (Move Objects) and `⌃D`
+(Design mode, `RAYMOL_MPNN`-gated) are not ⌘-modified, so they *do* reach the classifier and
+*do* produce tokens `CTRL-M` / `CTRL-D`. Neither appears in the 125 defaults, so
+`_invoke_key` returns 0 and the event must fall through to the menu.
+
+- With no user bindings: `⌃M` still toggles Move mode; `⌃D` still toggles Design mode.
+  **This is the single most important regression test in the plan** — it is the one place
+  where the consume-iff-fired rule carries the whole conflict policy.
+- With `set_key('CTRL-D', move_down)` loaded: `⌃D` runs the user's function instead, the
+  shadow warning is logged once, and the Design menu item still works by click.
+
+**C. Command panel field-editor paths** (`CommandPanel.swift`) — all while the field holds
+focus: Return submits, Tab completes, ↑/↓ recall history, ←/→ move the caret. Return and
+Tab produce no token; the arrows are covered by rule 2. A failure here means rule 2 is
+mis-ordered.
+
+**D. The Esc ladder** (#163 / #166 / #235) — Esc is keyCode 53 and must yield no token, so
+the existing Esc monitor still sees it: dismisses a sheet/panel/popover, else exits an
+active Move/Design/Measure mode, else two-stage clears the selection.
+
+**E. Sheets and modals** — the Timeline panel's `.cancelAction` / `.defaultAction` buttons
+(Esc / Return) and the What's New modal's `.defaultAction` (Return).
+
+**F. Newly-live defaults, which are a behavior change by design** — with no user rc,
+`left`/`right` now step movie frames, `pgup`/`pgdn` change scenes, `home` zooms all.
+Confirm they fire when the viewport has focus and do *not* fire while the command line is
+focused.
+
+### Functional
+
+Run B–F in a disposable macOS VM per the `raymol-mac-vm` workflow, then the fix itself:
+Gabriel's actual `obj_arrows.py` as `~/.raymolrc`, pressing `left`, `pgup`, `pgdn`, and
+`CTRL-T` and confirming each runs its bound function.
 
 ## Note for affected users
 
