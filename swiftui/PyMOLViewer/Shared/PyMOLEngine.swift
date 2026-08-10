@@ -2693,11 +2693,6 @@ final class PyMOLEngine: ObservableObject {
             + "_zc.move('z', _cur - \(target))")
     }
 
-    func key(_ k: UInt8, x: Int32, y: Int32, modifiers: Int32) {
-        guard let inst = instance else { return }
-        PyMOLBridge_Key(inst, k, x, y, modifiers)
-    }
-
     /// Fire a cmd.set_key binding by canonical PyMOL key token, returning
     /// whether one existed. The caller consumes the key event iff this is true,
     /// which is what lets an unbound ⌃D fall through to the Design menu item

@@ -50,7 +50,6 @@ void PyMOLBridge_UpdateScene(PyMOLHandle instance);
 // 0 = not supported, -1 = unknown (renderer not yet created). Lets the UI
 // gate the metal_raytrace toggle so it isn't offered where it does nothing.
 int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
-void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 // Fires a cmd.set_key binding by its canonical PyMOL key token ("left",
 // "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and was invoked
 // (including when the binding's callable raised — the key is still consumed so

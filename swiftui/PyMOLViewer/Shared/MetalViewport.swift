@@ -109,10 +109,10 @@ class PyMOLMTKView: MTKView {
     // focus from the command-line input (issue #73): the command line stays "hot"
     // for typing while the user rotates/picks, matching desktop PyMOL. Mouse events
     // are still delivered to this view via the mouse overrides below + acceptsFirstMouse
-    // (they don't require first-responder status). Trade-off: single-key PyMOL
-    // shortcuts routed through keyDown -> handleKeyDown no longer fire while the
-    // command line holds focus; RayMol is command-line/UI-driven, so keeping the
-    // prompt focused is the intended behavior.
+    // (they don't require first-responder status).
+    // Keyboard shortcuts do NOT depend on this view's responder status: cmd.set_key
+    // bindings are dispatched from an app-level NSEvent monitor in ContentView
+    // (installPyMOLKeyMonitor, #258), which sees keys regardless of focus.
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -172,9 +172,7 @@ class PyMOLMTKView: MTKView {
     override func scrollWheel(with event: NSEvent) {
         coordinator?.handleScrollWheel(event, in: self)
     }
-    override func keyDown(with event: NSEvent) {
-        coordinator?.handleKeyDown(event, in: self)
-    }
+
 }
 
 #elseif os(iOS)
@@ -1014,11 +1012,6 @@ extension MetalViewport {
             }
         }
 
-        func handleKeyDown(_ event: NSEvent, in view: MTKView) {
-            guard let chars = event.characters, let firstChar = chars.first else { return }
-            let mods = pymolModifiers(event.modifierFlags.rawValue)
-            engine?.key(UInt8(firstChar.asciiValue ?? 0), x: 0, y: 0, modifiers: mods)
-        }
         #endif
 
         // MARK: - iPadOS gesture handling

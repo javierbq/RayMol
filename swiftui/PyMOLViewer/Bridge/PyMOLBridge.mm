@@ -260,11 +260,6 @@ int PyMOLBridge_SupportsRayTracing(PyMOLHandle h)
     return r->rtSupported() ? 1 : 0;
 }
 
-void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
-{
-    if (h) PyMOL_Key(INST(h), k, x, y, modifiers);
-}
-
 int PyMOLBridge_InvokeKey(const char *key)
 {
     if (!key || !key[0]) return 0;
