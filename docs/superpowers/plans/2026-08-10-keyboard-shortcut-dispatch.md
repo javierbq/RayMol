@@ -120,10 +120,15 @@ final class KeyRoutingTests: XCTestCase {
         XCTAssertEqual(tok(116, nil, [.option]), "ALT-pgup")
     }
 
-    /// modifier_keys has no index 5, so ALT+SHFT is not representable as a
-    /// token. Degrade to plain ALT- rather than emit something unmatchable.
-    func testAltShiftSpecialDegradesToAlt() {
-        XCTAssertEqual(tok(116, nil, [.option, .shift]), "ALT-pgup")
+    /// modifier_keys has no token for ALT+SHFT or CTRL+ALT, so those pass
+    /// through rather than being guessed at. Option+Shift+arrow in particular is
+    /// a macOS text-selection gesture and must never fire an ALT- binding.
+    func testUnrepresentableModifierCombosPassThrough() {
+        XCTAssertNil(tok(116, nil, [.option, .shift]))     // ALT+SHFT special
+        XCTAssertNil(tok(116, nil, [.control, .option]))   // CTRL+ALT special
+        XCTAssertNil(tok(123, nil, [.option, .shift]))     // Option+Shift+left
+        XCTAssertNil(tok(17, "t", [.option, .shift]))      // ALT+SHFT letter
+        XCTAssertNil(tok(17, "t", [.control, .option]))    // CTRL+ALT letter
     }
 
     // MARK: - Focus policy (the command line owns unmodified arrows)
@@ -274,22 +279,28 @@ enum KeyRouting {
             return prefix.isEmpty ? name : prefix + "-" + name
         }
 
-        // 4. Letters and digits are only ours when carrying CTRL / ALT / CTSH.
-        //    set_key refuses bare letters and SHFT-<letter> outright.
+        // 4. Letters and digits are only ours when carrying CTRL or ALT.
+        //    set_key refuses bare letters and SHFT-<letter> outright, so the
+        //    ctrl-or-alt guard also rules those out. Same prefix helper as the
+        //    special-key path above, so both agree on what is representable.
         guard ctrl || alt else { return nil }
+        guard let prefix = modifierPrefix(ctrl: ctrl, alt: alt, shift: shift),
+              !prefix.isEmpty else { return nil }
         guard let ch = charactersIgnoringModifiers, ch.count == 1,
               let scalar = ch.unicodeScalars.first,
               CharacterSet.alphanumerics.contains(scalar) else { return nil }
-        let upper = ch.uppercased()
-        if ctrl && shift { return "CTSH-" + upper }
-        if ctrl { return "CTRL-" + upper }
-        return "ALT-" + upper
+        return prefix + "-" + ch.uppercased()
     }
 
-    /// PyMOL's modifier prefix for a special key. ALT+SHFT has no index in
-    /// modifier_keys (it would be 5, past the end), so it degrades to plain
-    /// ALT- rather than producing a token nothing can match.
+    /// PyMOL's modifier prefix for the held combination, or nil when it has no
+    /// token at all. modifier_keys is ['', 'SHFT', 'CTRL', 'CTSH', 'ALT'] — it
+    /// has no entry for ALT+SHFT or CTRL+ALT, so rather than guess a prefix we
+    /// pass those events through. That matters concretely: Option+Shift+arrow is
+    /// a macOS text-selection gesture, and degrading it to ALT-left would fire a
+    /// binding the user never asked for.
     private static func modifierPrefix(ctrl: Bool, alt: Bool, shift: Bool) -> String? {
+        if ctrl && alt { return nil }
+        if alt && shift { return nil }
         if alt { return "ALT" }
         if ctrl && shift { return "CTSH" }
         if ctrl { return "CTRL" }
@@ -652,26 +663,32 @@ def audit_shadowed(has_design=False, _self=None):
     result. Never raises: this runs on the launch path, and a broken audit must
     not take the app's startup with it.
     '''
-    if _self is None:
-        from pymol import cmd as _self
+    try:
+        if _self is None:
+            from pymol import cmd as _self
 
-    mappings = getattr(_self, 'key_mappings', None)
-    if not isinstance(mappings, dict):
+        mappings = getattr(_self, 'key_mappings', None)
+        if not isinstance(mappings, dict):
+            return []
+
+        lines = []
+        for key, label in sorted(APP_SHORTCUTS.items()):
+            if key in _DESIGN_ONLY and not has_design:
+                continue
+            # An empty mapping is how set_key(key, '') CLEARS a binding.
+            if not mappings.get(key):
+                continue
+            line = (" RayMol: %s is bound by your startup script; it now"
+                    " overrides the \"%s\" shortcut (the menu item still works"
+                    " by click)." % (key, label))
+            print(line)
+            lines.append(line)
+        return lines
+    except Exception as e:
+        # The docstring's promise, kept: this runs on the launch path, so a bug
+        # here must degrade to "no warning" rather than break startup.
+        print(' Warning: RayMol shortcut audit failed: %s' % (e,))
         return []
-
-    lines = []
-    for key, label in sorted(APP_SHORTCUTS.items()):
-        if key in _DESIGN_ONLY and not has_design:
-            continue
-        # An empty mapping is how set_key(key, '') CLEARS a binding.
-        if not mappings.get(key):
-            continue
-        line = (" RayMol: %s is bound by your startup script; it now overrides"
-                " the \"%s\" shortcut (the menu item still works by click)."
-                % (key, label))
-        print(line)
-        lines.append(line)
-    return lines
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
