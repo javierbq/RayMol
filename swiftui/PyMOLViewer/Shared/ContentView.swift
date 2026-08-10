@@ -615,17 +615,31 @@ struct ContentView: View {
     private func installPyMOLKeyMonitor() {
         guard pymolKeyMonitor == nil else { return }
         pymolKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Unmodified arrows belong to whatever text field is being edited
-            // (caret movement, command history). The window's shared field
-            // editor is an NSTextView, which is what a focused NSTextField
-            // actually uses — check both.
+            // Deliberately mirrors the Esc monitor's modal/sheet/panel guard
+            // (installEscKeyMonitor above): if a sheet, alert, or popover is
+            // the key window, keys belong to it — pgup/pgdn must not change
+            // scenes behind an open Fetch-from-PDB sheet, for example.
+            if NSApp.modalWindow != nil { return event }
+            if let keyWindow = NSApp.keyWindow {
+                if keyWindow.isSheet || keyWindow is NSPanel { return event }
+            }
+
+            // `textEditingActive` is true when a text field has focus AND is
+            // non-empty. An empty prompt dispatches everything (bindings remain
+            // reachable without clicking the viewport); once the user has typed
+            // something the field owns its editing keys. The window's shared
+            // field editor is an NSTextView — that is what a focused NSTextField
+            // actually delegates to, so checking both covers all cases.
             let responder = NSApp.keyWindow?.firstResponder
-            let focused = responder is NSTextView || responder is NSTextField
+            var textEditingActive = false
+            if let tv = responder as? NSTextView { textEditingActive = !tv.string.isEmpty }
+            else if let tf = responder as? NSTextField { textEditingActive = !tf.stringValue.isEmpty }
+
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                     modifiers: event.modifierFlags,
-                    textFieldFocused: focused) else { return event }
+                    textEditingActive: textEditingActive) else { return event }
             return engine.invokeKeyBinding(token) ? nil : event
         }
     }
@@ -3283,11 +3297,15 @@ struct ContentView: View {
         #else
         let hasDesign = "False"
         #endif
+        // Load first in its own call so a stale raymol_keys import can never
+        // abort the rc load (#258 review note).
         let migrate = migrateFirst ? "_raymolrc.migrate(); " : ""
         engine.runPython(
-            "from pymol import raymolrc as _raymolrc, raymol_keys as _raymol_keys; "
+            "from pymol import raymolrc as _raymolrc; "
             + migrate
-            + "_raymolrc.load(); "
+            + "_raymolrc.load()")
+        engine.runPython(
+            "from pymol import raymol_keys as _raymol_keys; "
             + "_raymol_keys.audit_shadowed(has_design=\(hasDesign))")
     }
 

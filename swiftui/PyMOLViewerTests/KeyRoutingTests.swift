@@ -10,15 +10,16 @@ import AppKit
 /// function and is pinned down here instead.
 final class KeyRoutingTests: XCTestCase {
 
-    // Convenience: classify with no modifiers and nothing focused.
+    // Convenience: classify with no modifiers and not editing.
+    // `editing: true` means a text field is focused AND non-empty.
     private func tok(_ keyCode: UInt16,
                      _ chars: String? = nil,
                      _ mods: NSEvent.ModifierFlags = [],
-                     focused: Bool = false) -> String? {
+                     editing: Bool = false) -> String? {
         KeyRouting.token(keyCode: keyCode,
                          charactersIgnoringModifiers: chars,
                          modifiers: mods,
-                         textFieldFocused: focused)
+                         textEditingActive: editing)
     }
 
     // MARK: - Special keys
@@ -68,28 +69,83 @@ final class KeyRoutingTests: XCTestCase {
         XCTAssertNil(tok(17, "t", [.control, .option]))    // CTRL+ALT letter
     }
 
-    // MARK: - Focus policy (the command line owns unmodified arrows)
+    // MARK: - Focus policy (textEditingActive: field focused AND non-empty)
 
-    func testUnmodifiedArrowsYieldToFocusedTextField() {
-        XCTAssertNil(tok(123, nil, [], focused: true))
-        XCTAssertNil(tok(124, nil, [], focused: true))
-        XCTAssertNil(tok(125, nil, [], focused: true))
-        XCTAssertNil(tok(126, nil, [], focused: true))
+    /// Unmodified arrows yield while editing — they are caret movement / history.
+    func testUnmodifiedArrowsYieldWhileEditing() {
+        XCTAssertNil(tok(123, nil, [], editing: true))
+        XCTAssertNil(tok(124, nil, [], editing: true))
+        XCTAssertNil(tok(125, nil, [], editing: true))
+        XCTAssertNil(tok(126, nil, [], editing: true))
     }
 
-    /// Only the ARROWS yield. pgup/pgdn/home/end/F-keys have no meaning in the
-    /// command line, so they dispatch even while it is focused.
-    func testNonArrowSpecialsDispatchWhileFocused() {
-        XCTAssertEqual(tok(116, nil, [], focused: true), "pgup")
-        XCTAssertEqual(tok(121, nil, [], focused: true), "pgdn")
-        XCTAssertEqual(tok(115, nil, [], focused: true), "home")
-        XCTAssertEqual(tok(122, nil, [], focused: true), "F1")
+    /// Unmodified Home and End yield while editing — caret-to-start / caret-to-end.
+    func testHomeEndYieldWhileEditing() {
+        XCTAssertNil(tok(115, nil, [], editing: true))   // home
+        XCTAssertNil(tok(119, nil, [], editing: true))   // end
     }
 
-    /// A MODIFIED arrow is not a caret movement, so it dispatches regardless.
-    func testModifiedArrowsDispatchWhileFocused() {
-        XCTAssertEqual(tok(123, nil, [.control], focused: true), "CTRL-left")
-        XCTAssertEqual(tok(123, nil, [.shift], focused: true), "SHFT-left")
+    /// Modified Home/End are not text-navigation gestures, so they still dispatch.
+    func testModifiedHomeEndDispatchWhileEditing() {
+        XCTAssertEqual(tok(115, nil, [.shift], editing: true), "SHFT-home")
+        XCTAssertEqual(tok(119, nil, [.control], editing: true), "CTRL-end")
+    }
+
+    /// The 14 macOS emacs-style CTRL-letter text-editing chords yield while editing.
+    func testTextEditingCtrlLettersYieldWhileEditing() {
+        // A, E = begin/end of line; H = delete-backward; T = transpose; D = delete-fwd
+        XCTAssertNil(tok(0,  "a", [.control], editing: true))   // CTRL-A
+        XCTAssertNil(tok(14, "e", [.control], editing: true))   // CTRL-E
+        XCTAssertNil(tok(4,  "h", [.control], editing: true))   // CTRL-H
+        XCTAssertNil(tok(17, "t", [.control], editing: true))   // CTRL-T
+        XCTAssertNil(tok(2,  "d", [.control], editing: true))   // CTRL-D
+        XCTAssertNil(tok(11, "b", [.control], editing: true))   // CTRL-B
+        XCTAssertNil(tok(3,  "f", [.control], editing: true))   // CTRL-F
+        XCTAssertNil(tok(40, "k", [.control], editing: true))   // CTRL-K
+        XCTAssertNil(tok(37, "l", [.control], editing: true))   // CTRL-L
+        XCTAssertNil(tok(45, "n", [.control], editing: true))   // CTRL-N
+        XCTAssertNil(tok(31, "o", [.control], editing: true))   // CTRL-O
+        XCTAssertNil(tok(35, "p", [.control], editing: true))   // CTRL-P
+        XCTAssertNil(tok(9,  "v", [.control], editing: true))   // CTRL-V
+        XCTAssertNil(tok(16, "y", [.control], editing: true))   // CTRL-Y
+    }
+
+    /// CTRL-W and CTRL-G are NOT text-editing chords and still dispatch while editing.
+    func testNonTextEditingCtrlLettersDispatchWhileEditing() {
+        XCTAssertEqual(tok(13, "w", [.control], editing: true), "CTRL-W")
+        XCTAssertEqual(tok(5,  "g", [.control], editing: true), "CTRL-G")
+    }
+
+    /// pgup, pgdn, and F-keys have no text-field meaning and dispatch while editing.
+    func testPageKeysAndFKeysDispatchWhileEditing() {
+        XCTAssertEqual(tok(116, nil, [], editing: true), "pgup")
+        XCTAssertEqual(tok(121, nil, [], editing: true), "pgdn")
+        XCTAssertEqual(tok(122, nil, [], editing: true), "F1")
+    }
+
+    /// When the field is empty (textEditingActive: false), arrows and home/end
+    /// dispatch normally — the empty command line does not steal keys.
+    func testArrowsAndHomeEndDispatchWhenNotEditing() {
+        XCTAssertEqual(tok(123, nil, [], editing: false), "left")
+        XCTAssertEqual(tok(124, nil, [], editing: false), "right")
+        XCTAssertEqual(tok(125, nil, [], editing: false), "down")
+        XCTAssertEqual(tok(126, nil, [], editing: false), "up")
+        XCTAssertEqual(tok(115, nil, [], editing: false), "home")
+        XCTAssertEqual(tok(119, nil, [], editing: false), "end")
+    }
+
+    /// When the field is empty, CTRL text-editing letters dispatch normally.
+    func testTextEditingCtrlLettersDispatchWhenNotEditing() {
+        XCTAssertEqual(tok(0,  "a", [.control], editing: false), "CTRL-A")
+        XCTAssertEqual(tok(17, "t", [.control], editing: false), "CTRL-T")
+        XCTAssertEqual(tok(4,  "h", [.control], editing: false), "CTRL-H")
+    }
+
+    /// A MODIFIED arrow is not a caret movement, so it dispatches regardless of
+    /// editing state.
+    func testModifiedArrowsDispatchWhileEditing() {
+        XCTAssertEqual(tok(123, nil, [.control], editing: true), "CTRL-left")
+        XCTAssertEqual(tok(123, nil, [.shift], editing: true), "SHFT-left")
     }
 
     // MARK: - Letters and digits

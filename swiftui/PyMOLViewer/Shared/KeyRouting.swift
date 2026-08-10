@@ -27,10 +27,20 @@ enum KeyRouting {
     /// The four keys the command line needs for caret movement and history.
     private static let arrowKeys: Set<UInt16> = [123, 124, 125, 126]
 
+    /// The 14 macOS emacs-style control-letter text-editing chords that must
+    /// yield to an active text field. CTRL-W and CTRL-G are not in this set.
+    /// Compared case-insensitively against charactersIgnoringModifiers.
+    private static let textEditingCtrlChars: Set<Character> =
+        ["a", "b", "d", "e", "f", "h", "k", "l", "n", "o", "p", "t", "v", "y"]
+
+    /// `textEditingActive` is true when a text field has focus AND is non-empty
+    /// (i.e. the user is actively composing a command). An empty command line
+    /// dispatches everything so bindings stay reachable without clicking the
+    /// viewport — this mirrors PyMOL's own OrthoArrowsGrabbed rule.
     static func token(keyCode: UInt16,
                       charactersIgnoringModifiers: String?,
                       modifiers: NSEvent.ModifierFlags,
-                      textFieldFocused: Bool) -> String? {
+                      textEditingActive: Bool) -> String? {
         // 1. ⌘ belongs to the macOS menus. set_key has no CMD modifier, so an
         //    event carrying ⌘ can never be ours.
         if modifiers.contains(.command) { return nil }
@@ -39,12 +49,25 @@ enum KeyRouting {
         let alt = modifiers.contains(.option)
         let shift = modifiers.contains(.shift)
 
-        // 2. An UNMODIFIED arrow is caret movement / history recall while the
-        //    command line holds focus, so it yields. Must precede the
-        //    special-key mapping below or it could never fire. Modified arrows
-        //    are not caret movements and dispatch regardless.
-        if textFieldFocused, arrowKeys.contains(keyCode), !ctrl, !alt, !shift {
-            return nil
+        // 2. When the user is actively editing text, yield the keys the field
+        //    uses for navigation and in-line editing. Modified variants of these
+        //    keys are not text-editing gestures, so they still dispatch.
+        if textEditingActive {
+            // 2a. Unmodified arrows — caret movement and command-line history.
+            if arrowKeys.contains(keyCode), !ctrl, !alt, !shift { return nil }
+            // 2b. Unmodified Home / End — caret-to-start / caret-to-end.
+            if (keyCode == 115 || keyCode == 119), !ctrl, !alt, !shift { return nil }
+            // 2c. Bare Control-letter text-editing chords (emacs-style, no Option,
+            //     no Shift): A(BOL) B(back) D(del-fwd) E(EOL) F(fwd) H(del-back)
+            //     K(kill) L(centre) N(next) O(open) P(prev) T(transpose) V(pgdn)
+            //     Y(yank). CTRL-W and CTRL-G are not text-editing keys and still
+            //     dispatch.
+            if ctrl, !alt, !shift,
+               let ch = charactersIgnoringModifiers, ch.count == 1,
+               let scalar = ch.unicodeScalars.first, scalar.isASCII,
+               textEditingCtrlChars.contains(Character(ch.lowercased())) {
+                return nil
+            }
         }
 
         // 3. Special keys carry an optional modifier prefix.
