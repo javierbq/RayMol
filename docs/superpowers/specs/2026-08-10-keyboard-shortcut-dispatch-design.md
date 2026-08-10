@@ -98,9 +98,13 @@ enum KeyRouting {
     static func token(keyCode: UInt16,
                       charactersIgnoringModifiers: String?,
                       modifiers: NSEvent.ModifierFlags,
-                      textFieldFocused: Bool) -> String?
+                      textFieldFocused: Bool,
+                      textEditingActive: Bool) -> String?
 }
 ```
+
+> **Amendment (2026-08-10):** The signature takes two booleans — see the amendment
+> section below for the distinction and why `textFieldFocused` alone is insufficient.
 
 The character parameter must be `NSEvent.charactersIgnoringModifiers`, **not**
 `.characters`: with Control held, `.characters` yields the ASCII control code
@@ -113,13 +117,17 @@ Token grammar follows `internal.modifier_keys == ['', 'SHFT', 'CTRL', 'CTSH', 'A
 valid prefixes are bare, `SHFT-`, `CTRL-`, `CTSH-`, `ALT-`. Special names are lowercase
 (`left`, `pgup`); function keys keep their case (`F1`).
 
-Classification rules, in order:
+Classification rules, in order (see amendment for the two-tier yield policy):
 
 1. `.command` present → `nil`. macOS menus own ⌘, and `set_key`'s grammar has no CMD
    modifier.
-2. **Unmodified arrow (`left`/`right`/`up`/`down`) while `textFieldFocused` → `nil`**
-   (command line wins; see policy). This guard must precede the special-key mapping
-   below, or it can never fire.
+2. **Tier A — while `textFieldFocused` (even empty field):** `ALT-<letter>`,
+   `ALT-<digit>`, and `CTSH-<letter>` → `nil`. Rationale: Option is the compose modifier
+   on non-US keyboards (German `@`=⌥L, `[`=⌥5); PyMOL's ALT defaults create objects.
+   ⌃⇧ combos are macOS extend-selection chords. See amendment for the complete rule.
+   **Tier B — while `textEditingActive` (focused AND non-empty):** ANY arrow (all
+   modifiers), ANY `home`/`end` (all modifiers), and `CTRL-<editing-letters>` → `nil`.
+   This guard must precede the special-key mapping below, or it can never fire.
 3. Special key by `keyCode` → `<prefix->` + name:
 
    | keyCode | name | | keyCode | name |
@@ -146,8 +154,17 @@ classifies as plain `ALT-` and never produces an unmatchable token.
 ### 2. Focus detection
 
 `NSApp.keyWindow?.firstResponder` is an `NSTextView` (the window's shared field editor,
-which is what a focused `NSTextField` actually uses) or an `NSTextField`. Computed at the
-monitor, passed into the classifier as a plain `Bool` so the classifier stays pure.
+which is what a focused `NSTextField` actually uses) or an `NSTextField`. Two `Bool`
+values are computed at the monitor and passed into the classifier:
+
+- `textFieldFocused` — the responder is an **editable** NSTextView or NSTextField (i.e.
+  `tv.isEditable || tv.isFieldEditor`, or `tf.isEditable`). Read-only/selectable text
+  views (e.g. the feedback log, which uses `.textSelection(.enabled)`) are excluded:
+  their `string` could be the entire log and would falsely disable all arrow dispatch.
+- `textEditingActive` — `textFieldFocused` AND the field is non-empty.
+
+> **Amendment (2026-08-10):** the original design passed only `textFieldFocused`; two
+> booleans are required — see the amendment section below for the two-tier yield rule.
 
 ### 3. `PyMOLBridge_InvokeKey` — synchronous dispatch that reports whether it fired
 
@@ -184,14 +201,23 @@ interact.
 ### 5. Shadow-warning audit
 
 New `modules/pymol/raymol_keys.py` holding the app's menu-shortcut table
-(`CTRL-M` → Move Objects, `CTRL-D` → Design mode, and the ⌘ entries for completeness) plus
-an `audit_shadowed(cmd)` function. Called once after `raymolrc.load()`. Prints one line per
-collision:
+(`CTRL-M` → Move Objects, `CTRL-D` → Design mode). Note: ⌘ shortcuts are deliberately
+**absent** from `APP_SHORTCUTS` — ⌘ never reaches the classifier (rule 1), so there is
+nothing to audit. A comment in the module explains this. The actual signature is:
+
+```python
+def audit_shadowed(has_design=False, _self=None) -> list[str]:
+```
+
+Called once after `raymolrc.load()` (as a separate `runPython` call so a broken audit
+cannot abort the startup script). Prints one line per collision:
 
 ```
- RayMol: CTRL-D is bound by your startup script; it now overrides the
- Design-mode shortcut (still available from the Mode menu).
+ RayMol: CTRL-D is bound by your startup script; it now overrides the "Enter/Exit Design Mode (Design menu)" shortcut (the menu item still works by click).
 ```
+
+The `has_design` parameter controls whether `CTRL-D` is included (it only exists in
+`RAYMOL_MPNN` builds).
 
 ## Policy decisions
 
@@ -242,6 +268,45 @@ modal/sheet/panel guard (otherwise `pgup` changed scenes behind an open sheet), 
 `~/.raymolrc` load and the shadow audit are separate `runPython` calls so a failure in the
 audit can never abort the user's startup script.
 
+### Two-tier yield rule (final policy, supersedes "focused vs. unfocused" framing)
+
+A second review found that even the content-aware rule was incomplete: on **non-US
+keyboards** Option is the compose modifier (German `@`=⌥L, `[`=⌥5, `]`=⌥6, `{`=⌥8,
+`}`=⌥9, `|`=⌥7; Spanish `|`=⌥1, `@`=⌥2, `#`=⌥3), so every `ALT-<letter>` and
+`ALT-<digit>` token that PyMOL's defaults bind to `editor.attach_amino_acid` or
+`attach_fragment` would fire while the user was literally typing those characters into
+the command line — even with an **empty** field (so the content-aware rule wouldn't
+catch it). `CTSH-<letter>` has the same problem: ⌃⇧A/E/F/B/N/P are macOS
+extend-selection chords, and PyMOL binds `CTSH-A` → `redo`, `CTSH-N` → `replace N,4,3`,
+etc. Upstream PyMOL patched one symptom of this (`layer1/Ortho.cpp:836`, `'@'` special
+case) but did not close the root cause.
+
+The fix splits the yield into **two tiers**:
+
+**Tier A — yield whenever `textFieldFocused`, content irrelevant:**
+- `ALT-<letter>` and `ALT-<digit>` → `nil` (compose modifier on non-US keyboards).
+- `CTSH-<letter>` → `nil` (extend-selection chords).
+These must not dispatch the moment an editable field is focused, regardless of whether
+it is empty.
+
+**Tier B — yield only when `textEditingActive` (focused AND non-empty):**
+- **Any** arrow key (all modifiers) → `nil`. ⌥←/⌥→ = word-movement; ⇧← = extend
+  selection. Every modified arrow is a text-navigation gesture mid-typing.
+- **Any** `home`/`end` (all modifiers) → `nil`. ⇧Home extends selection.
+- `CTRL-<A B D E F H K L N O P T V Y>` with no Option → `nil` (emacs editing chords).
+
+**Never yield (no text-field meaning at any time):**
+`pgup`, `pgdn`, `insert`, `F1`–`F12` — these dispatch even mid-typing.
+
+The classifier signature therefore takes two booleans:
+```swift
+static func token(…, textFieldFocused: Bool, textEditingActive: Bool) -> String?
+```
+
+`ContentView` computes them by requiring the first responder to be **editable**
+(`tv.isEditable || tv.isFieldEditor` for NSTextView; `tf.isEditable` for NSTextField),
+specifically excluding read-only/selectable views like the feedback log.
+
 ## Non-goals
 
 - **Wizard `do_key` / `do_special` hooks.** They live in C++ `WizardDoKey` /
@@ -262,9 +327,12 @@ the fix itself.
 
 ### Unit
 
-1. **Table-driven XCTest** over `KeyRouting.token`: arrows focused vs. unfocused, ctrl/alt
-   letters, ⌘ passthrough, F-keys, modified specials, bare printables, `SHFT-<letter>`,
-   and the `charactersIgnoringModifiers` cases (`Ctrl-T` must not tokenize as `\u{14}`;
+1. **Table-driven XCTest** over `KeyRouting.token` (see amendment for two-tier policy):
+   `ALT-<letter>`/`CTSH-<letter>` yield when `textFieldFocused` even with empty field
+   (Tier A); modified arrows and `home`/`end` yield when `textEditingActive` (Tier B);
+   `pgup`/`pgdn`/F-keys dispatch even when both flags are true; ctrl/alt letters,
+   ⌘ passthrough, modified specials, bare printables, `SHFT-<letter>`, and the
+   `charactersIgnoringModifiers` cases (`Ctrl-T` must not tokenize as `\u{14}`;
    `Alt-A` must not tokenize as `å`).
 2. **Embedded-Python test** asserting `_invoke_key` fires a user binding, returns false for
    an unbound key, and that the 125-entry default dict loads.
@@ -299,8 +367,10 @@ structurally immune. Confirm anyway, since a mistake here breaks File-menu basic
 
 **C. Command panel field-editor paths** (`CommandPanel.swift`) — all while the field holds
 focus: Return submits, Tab completes, ↑/↓ recall history, ←/→ move the caret. Return and
-Tab produce no token; the arrows are covered by rule 2. A failure here means rule 2 is
-mis-ordered.
+Tab produce no token; the arrows are covered by the Tier B yield (amendment). Also verify
+that Option-key composition (`⌥L` → `@` on German layout) passes through untouched when
+the field is focused — this is the Tier A guard. A failure here means rule 2 is
+mis-ordered or the Tier A/B split is wrong.
 
 **D. The Esc ladder** (#163 / #166 / #235) — Esc is keyCode 53 and must yield no token, so
 the existing Esc monitor still sees it: dismisses a sheet/panel/popover, else exits an
@@ -311,8 +381,9 @@ active Move/Design/Measure mode, else two-stage clears the selection.
 
 **F. Newly-live defaults, which are a behavior change by design** — with no user rc,
 `left`/`right` now step movie frames, `pgup`/`pgdn` change scenes, `home` zooms all.
-Confirm they fire when the viewport has focus and do *not* fire while the command line is
-focused.
+Confirm they fire when the field is empty AND do *not* fire while the command line holds
+text (Tier B). `pgup`/`pgdn` must still fire even while the field holds text (they are
+never text-navigation gestures — see amendment).
 
 ### Functional
 

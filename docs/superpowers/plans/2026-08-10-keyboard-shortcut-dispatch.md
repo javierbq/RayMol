@@ -1,3 +1,5 @@
+> **NOTE (2026-08-10):** Task 1 code and tests in this plan are pre-amendment and superseded by the spec's "Two-tier yield rule" amendment plus the fix wave applied in the same session.
+
 # Keyboard Shortcut Dispatch (`cmd.set_key`) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
