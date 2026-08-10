@@ -198,7 +198,7 @@ collision:
 | Decision | Choice | Rationale |
 |---|---|---|
 | Binding set | Full PyMOL parity: all 125 defaults live, user `set_key` overriding on top | Desktop fidelity for power users; the defaults are already loaded, only undelivered |
-| Arrows vs. command line | Command line wins **while it holds keyboard focus** | Preserves caret movement and history; approximates the core's own `OrthoArrowsGrabbed` rule |
+| Text editing vs. bindings | The focused field wins **only while it actually has text** (amended — see below) | Preserves caret movement, history and the emacs editing keys mid-typing, while leaving every binding reachable from the resting state. This *is* the core's `OrthoArrowsGrabbed` rule |
 | Menu-shortcut conflicts (`⌃M` Move, `⌃D` Design) | Explicit `set_key` wins; audit warns | PyMOL semantics — the user's rc file is the last word. Menu item stays reachable by click |
 | ⌘ | Always passes through | macOS menus own it; `set_key` has no CMD modifier |
 | Platform | macOS now, iOS follow-up | Engine-side routing is platform-neutral, so iOS is a second key *source*, not a second policy. Same split #235 used for Esc |
@@ -207,6 +207,40 @@ The conflict policy needs **no reserved-key table in Swift**: the monitor consum
 event *iff* a binding fired, so an unbound `CTRL-D` falls through to the Design menu item
 naturally, while a user-bound `CTRL-D` shadows it. The Python-side table exists only to
 phrase the warning.
+
+### Amendment (2026-08-10): the focus exemption is content-aware, not focus-only
+
+The original rule — "the command line wins while it holds keyboard focus", exempting
+unmodified arrows — was found during implementation review to be wrong in both directions.
+
+Because `acceptsFirstResponder` is `false` (#73), the command line holds focus by *default*,
+so the monitor sits in front of a focused text field essentially all the time. Exempting
+only arrows meant PyMOL's built-in `home` → `zoom animate=-1` and `end` → `mtoggle`, plus
+`CTRL-A/F/H/I/L/T/V/X`, fired *while the user was typing a command*: End toggled movie
+playback instead of moving the caret, `⌃A` selected all atoms, `⌃H` opened help instead of
+deleting a character. Exempting all of those unconditionally would have been just as wrong
+— it makes `CTRL-T`, `CTRL-D`, `CTRL-P` and `CTRL-B` unreachable in the default focused
+state, which is most of a real user's rc file.
+
+**The rule is therefore content-aware.** The focused field wins only while it is
+**non-empty**:
+
+- **Empty prompt** (the resting state) — everything dispatches. Bindings are reachable
+  without clicking the viewport first.
+- **Non-empty prompt** — the field owns unmodified arrows, unmodified `home`/`end`, and the
+  macOS text-editing control letters **A B D E F H K L N O P T V Y**. Everything else still
+  dispatches: `pgup`/`pgdn` and F-keys are never text-editing keys, and neither are ⌃
+  combinations outside that set (`CTRL-W`, `CTRL-G`, …).
+
+This is not a new invention — it is precisely the core's own `OrthoArrowsGrabbed` test
+(`I->CurChar > I->PromptChar`, `layer1/Ortho.cpp:414`), which the approaches section had
+already identified as "closest to desktop PyMOL". The classifier's parameter is named
+`textEditingActive` rather than `textFieldFocused` to keep the distinction honest.
+
+Two smaller corrections landed with it: the monitor now mirrors the Esc handler's
+modal/sheet/panel guard (otherwise `pgup` changed scenes behind an open sheet), and the
+`~/.raymolrc` load and the shadow audit are separate `runPython` calls so a failure in the
+audit can never abort the user's startup script.
 
 ## Non-goals
 
