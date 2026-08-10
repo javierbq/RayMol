@@ -20,10 +20,44 @@ struct DesignScores: Equatable {
 }
 struct DesignCacheKey: Hashable { let object: String; let state: Int; let sequenceHash: Int }
 
+/// Bounded score cache with insertion-order (FIFO) eviction.
+///
+/// The key includes the sequence hash, so every edit inserts a fresh entry and an
+/// unbounded dict grows for the whole session. Each entry holds three per-residue
+/// arrays — including a 20-wide propensity row per residue — so a 2000-residue
+/// object costs on the order of a megabyte.
+///
+/// FIFO rather than LRU is deliberate: the access pattern is "latest sequence
+/// wins", so recency of *insertion* already tracks usefulness, and FIFO avoids
+/// touching bookkeeping on every read.
 final class DesignScoreCache {
+    /// Retained entries. Roughly a session's worth of edits on one object.
+    static let defaultCapacity = 24
+
+    private let capacity: Int
     private var store: [DesignCacheKey: DesignScores] = [:]
+    private var order: [DesignCacheKey] = []   // oldest first
+
+    init(capacity: Int = DesignScoreCache.defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
+
+    var count: Int { store.count }
+
     func get(_ key: DesignCacheKey) -> DesignScores? { store[key] }
-    func set(_ key: DesignCacheKey, _ scores: DesignScores) { store[key] = scores }
-    func invalidate(object: String) { store = store.filter { $0.key.object != object } }
+
+    func set(_ key: DesignCacheKey, _ scores: DesignScores) {
+        if store[key] == nil { order.append(key) }   // overwrite keeps its slot
+        store[key] = scores
+        while order.count > capacity {
+            let oldest = order.removeFirst()
+            store[oldest] = nil
+        }
+    }
+
+    func invalidate(object: String) {
+        store = store.filter { $0.key.object != object }
+        order = order.filter { store[$0] != nil }
+    }
 }
 #endif

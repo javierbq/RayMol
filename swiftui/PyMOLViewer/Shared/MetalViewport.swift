@@ -1039,6 +1039,15 @@ extension MetalViewport {
                 engine.moveSetActiveAt(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
                 return
             }
+            #if RAYMOL_MPNN
+            if engine.designMode {
+                // In Design mode a viewport tap targets a residue, mirroring the
+                // macOS long-press path. Region-edit mode makes it toggle region
+                // membership instead of pinning — see DesignController.tapResidue.
+                engine.designPickResidue(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
+                return
+            }
+            #endif
             if engine.measureMode != nil {
                 engine.measurePick(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
             } else {
@@ -1085,7 +1094,15 @@ extension MetalViewport {
                 guard w > 0, h > 0 else { return }
                 let ndcX = Float(p.x / w) * 2 - 1
                 let ndcY = 1 - Float(p.y / h) * 2
+                #if RAYMOL_MPNN
+                if engine.designMode {
+                    engine.hoverDesignPreview(ndcX, ndcY, Float(w / h))
+                } else {
+                    engine.hoverPreview(ndcX, ndcY, Float(w / h))
+                }
+                #else
                 engine.hoverPreview(ndcX, ndcY, Float(w / h))
+                #endif
             case .ended, .cancelled:
                 lastHoverLoc = .zero
                 engine.clearHoverPreview()

@@ -2,7 +2,18 @@
 import Foundation
 import MPNNKit
 
-enum DesignColorMeaning: String, CaseIterable { case nativeFit, certainty }
+enum DesignColorMeaning: String, CaseIterable {
+    case nativeFit, certainty
+
+    /// Human-readable label used in pickers and tooltips.
+    /// Single source of truth — DesignCompactPanel and meaningPicker both reference this.
+    var label: String {
+        switch self {
+        case .nativeFit: return "Native fit"
+        case .certainty: return "Certainty"
+        }
+    }
+}
 
 enum DesignColor {
     static let nativeFitDomain: ClosedRange<Float> = (-6.0)...0.0

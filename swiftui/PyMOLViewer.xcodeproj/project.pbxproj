@@ -15,13 +15,17 @@
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		142D8657C5BC7DCD8648D407 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
+		1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
+		1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
+		2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
 		2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		33C46A7EB6127A6A99D7048D /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
@@ -39,10 +43,13 @@
 		484D9DFA048A6444660199CB /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 791C3459ADD4745BE10E27AA /* MPNNKit */; };
 		4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
 		48E340346AD8FF81AF09F501 /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7A0C20547CE6C050BA30EDA0 /* MPNNKit */; };
+		4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */; };
 		4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
+		4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		52B5620BEF26DEB8E3A700C1 /* DesignResiduesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */; };
 		5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
+		54D986046911571938A3CF13 /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 80B2210B207942EBB65BAF59 /* MPNNKit */; };
 		54F313461574BD8EEE414E3E /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
 		55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		56CC6A9A8A95D5B1B8D92688 /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
@@ -57,15 +64,19 @@
 		5E0DDAA214299444AB084E74 /* KeyboardDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */; };
 		600E5AC8003783270FBBB117 /* whatsnew-190-raymolrc.png in Resources */ = {isa = PBXBuildFile; fileRef = 7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */; };
 		64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */; };
+		65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
 		667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		6E6BAB43588CEBE88230F5C5 /* WhatsNewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */; };
-		6E945630A8B9A6195B98A958 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
+		6E945630A8B9A6195B98A958 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FBA4CCD670BAF318F243E692 /* MLX */; };
 		6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
+		7406A4027A2BE46708BA6282 /* DesignIOSPortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */; };
+		768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
 		77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
+		78893185798035F798A26A9B /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
 		7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		8471766417221874246F5252 /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
@@ -79,6 +90,7 @@
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
 		90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1304C662D9011F7C4505FC /* MCPStatusView.swift */; };
+		917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */; };
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
@@ -90,12 +102,17 @@
 		B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		B39D2F9676F6394CD354209A /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
+		B6FBF55DD1FA97A86C678618 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
+		B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		BE397E89274A3180A2E649BF /* DesignColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		C2FCBB63D8533AF61056C0C2 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
 		C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */; };
+		C97C087311C3D159E74FA96A /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 69935BE3EFD2F08B88D4AEE9 /* MLX */; };
+		CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
 		CCC5944AB82CA9D946A60F10 /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
 		CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
@@ -116,6 +133,8 @@
 		EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
 		EC4EF850FC58B240AD02346F /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		EE156FFB12BEFB4FC132D610 /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
+		EF9A088B19E39220CC72469D /* KeyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */; };
+		F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
@@ -126,10 +145,6 @@
 		FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
-		5F3A932F055E421EA9BAFF22 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F13D4F3B4FF4B16A7E2F045 /* KeyRouting.swift */; };
-		8D7CA591ACC840D799770E17 /* KeyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */; };
-		AEE49BFF023B4C71B102545B /* KeyBindingDispatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */; };
-		B2F3A7D1C9E04F5E8A2B1D6C /* MetalViewportResponderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C90D1E2F3A4B5C /* MetalViewportResponderTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -153,6 +168,7 @@
 		05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditingTests.swift; sourceTree = "<group>"; };
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
+		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraOverlayUITests.swift; sourceTree = "<group>"; };
 		10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -161,13 +177,17 @@
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
 		1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColorTests.swift; sourceTree = "<group>"; };
+		1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBindingDispatchTests.swift; sourceTree = "<group>"; };
 		221117550FAD97CF81924E05 /* MousePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MousePanel.swift; sourceTree = "<group>"; };
+		2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailabilityTests.swift; sourceTree = "<group>"; };
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
 		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
+		3697F74BD2283492B5A7790C /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
 		3F5377EE69A856479317FD61 /* WhatsNewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModel.swift; sourceTree = "<group>"; };
+		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
 		4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenFilesTests.swift; sourceTree = "<group>"; };
@@ -183,6 +203,7 @@
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
 		6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */ = {isa = PBXFileReference; path = "whatsnew-190-scenes.mp4"; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
+		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
 		7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-raymolrc.png"; sourceTree = "<group>"; };
@@ -193,6 +214,7 @@
 		9371B6FFB30D6166234C678B /* RayMolMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolMain.swift; sourceTree = "<group>"; };
 		99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PyMOLViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignRegionTests.swift; sourceTree = "<group>"; };
+		9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSizeGuard.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
@@ -210,24 +232,24 @@
 		CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConnectSheet.swift; sourceTree = "<group>"; };
 		CFE9998F68625C92B8BCD710 /* DesignResidues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResidues.swift; sourceTree = "<group>"; };
 		D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignScoreCacheTests.swift; sourceTree = "<group>"; };
+		D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignCompactPanel.swift; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
+		E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNRuntime.swift; sourceTree = "<group>"; };
 		E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignModeStateTests.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
 		E9D0FEF5D42BDC6E514B7BB9 /* PyMOLViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PyMOLViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
+		EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSizeGuardTests.swift; sourceTree = "<group>"; };
 		EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignScoreCache.swift; sourceTree = "<group>"; };
 		F16058D96E2773BE9A24C323 /* RayMol.svg */ = {isa = PBXFileReference; path = RayMol.svg; sourceTree = "<group>"; };
 		F2078076B68D28457409F7A5 /* RayMol.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMol.entitlements; sourceTree = "<group>"; };
 		F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionModeExitTests.swift; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
+		F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRoutingTests.swift; sourceTree = "<group>"; };
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_E962A5DE-C768-4BF8-AD00-38766FC056BC" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
-		1F13D4F3B4FF4B16A7E2F045 /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
-		3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRoutingTests.swift; sourceTree = "<group>"; };
-		A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBindingDispatchTests.swift; sourceTree = "<group>"; };
-		D4E5F6A7B8C90D1E2F3A4B5C /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
+		"TEMP_7E38C272-94B4-41B9-A004-CB298BAA46BD" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -244,7 +266,17 @@
 			buildActionMask = 2147483647;
 			files = (
 				48E340346AD8FF81AF09F501 /* MPNNKit in Frameworks */,
-				6E945630A8B9A6195B98A958 /* Sparkle in Frameworks */,
+				6E945630A8B9A6195B98A958 /* MLX in Frameworks */,
+				B6FBF55DD1FA97A86C678618 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FB23646F44642041FD58D674 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				54D986046911571938A3CF13 /* MPNNKit in Frameworks */,
+				C97C087311C3D159E74FA96A /* MLX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -332,17 +364,21 @@
 			isa = PBXGroup;
 			children = (
 				75F059BB95517CE91BD3E26E /* ContentView.swift */,
-				1F13D4F3B4FF4B16A7E2F045 /* KeyRouting.swift */,
+				4300265954DF2B8309EDAA6C /* DesignAvailability.swift */,
 				C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */,
+				D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */,
 				FF4FB7F151982A2927D612F0 /* DesignController.swift */,
 				CFE9998F68625C92B8BCD710 /* DesignResidues.swift */,
 				EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */,
+				9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */,
 				AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */,
+				3697F74BD2283492B5A7790C /* KeyRouting.swift */,
 				1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */,
 				786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */,
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
+				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				D965CB609C447033E5DB0046 /* PyMOLApp.swift */,
 				33D6A753E4525628B96C259C /* PyMOLEngine.swift */,
 				9371B6FFB30D6166234C678B /* RayMolMain.swift */,
@@ -359,19 +395,22 @@
 		7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */ = {
 			isa = PBXGroup;
 			children = (
+				2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
-				3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */,
-				A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */,
-				D4E5F6A7B8C90D1E2F3A4B5C /* MetalViewportResponderTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
 				4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */,
 				05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */,
 				B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */,
+				6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */,
 				E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */,
 				9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */,
 				48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */,
 				D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */,
+				EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
+				1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */,
+				F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */,
+				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
 				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
 			);
@@ -398,10 +437,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_8300199F-E037-475B-93D1-51E02DE32CB2" /* swiftui */ = {
+		"TEMP_E4E0BE92-597B-4721-8A72-70A947CF66F8" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_E962A5DE-C768-4BF8-AD00-38766FC056BC" /* PyMOLBridge.xcconfig */,
+				"TEMP_7E38C272-94B4-41B9-A004-CB298BAA46BD" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -426,7 +465,7 @@
 				CD8CDE496B92B386AFFAF903 /* macOS: Bundle Python + modules + data */,
 				9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */,
 				B650AF53FA2F4FEAA543F840 /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
-				87DC253C5CE9B7B08ABD716E /* macOS: Bundle MPNN.mpnnpack */,
+				8BEF1B8DF38196521747DA4E /* Bundle MPNN.mpnnpack */,
 			);
 			buildRules = (
 			);
@@ -435,6 +474,7 @@
 			name = PyMOLViewer_macOS;
 			packageProductDependencies = (
 				7A0C20547CE6C050BA30EDA0 /* MPNNKit */,
+				FBA4CCD670BAF318F243E692 /* MLX */,
 				98AC6A7391B7E7A564A30A61 /* Sparkle */,
 			);
 			productName = PyMOLViewer_macOS;
@@ -447,6 +487,7 @@
 			buildPhases = (
 				CA0704A170D844CE72B9AB3E /* Sources */,
 				61D7B61F4D5ACB99F6B7EA8D /* Resources */,
+				FB23646F44642041FD58D674 /* Frameworks */,
 				2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */,
 				2AC63EBF7745B988799768CA /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				20F6E2447B7743E74607108B /* Brand: register molecular document types */,
@@ -457,7 +498,7 @@
 				D4BACCBE2A1F237569400BDF /* macOS: Bundle Python + modules + data */,
 				BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */,
 				383CF53EC37C88EB8111EAAB /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
-				6568FD77AAC0A7CA2FA0E4AF /* macOS: Bundle MPNN.mpnnpack */,
+				A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */,
 			);
 			buildRules = (
 			);
@@ -465,6 +506,8 @@
 			);
 			name = PyMOLViewer_iOS;
 			packageProductDependencies = (
+				80B2210B207942EBB65BAF59 /* MPNNKit */,
+				69935BE3EFD2F08B88D4AEE9 /* MLX */,
 			);
 			productName = PyMOLViewer_iOS;
 			productReference = C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */;
@@ -533,6 +576,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -717,25 +761,6 @@
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi\nmkdir -p \"$CODESIGNING_FOLDER_PATH/python/lib\"\nrsync -au --delete \"$SRCROOT/../deps_ios/Python.xcframework/$SLICE/lib/\" \"$CODESIGNING_FOLDER_PATH/python/lib/\"\n# App Review compliance (mirrors the macOS prune; mostly defensive on iOS\n# since BeeWare ships no Tk binaries and its stdlib already omits the\n# itms-services token):\n#  (2.5.1) Drop any Tcl/Tk binaries + the dead pure-Python tkinter package\n#  so the bundle carries zero Tk references. The native Metal/SwiftUI app\n#  never launches the legacy pmg_tk Tkinter GUI.\nPYLIB=\"$CODESIGNING_FOLDER_PATH/python/lib\"\nrm -rf \"$PYLIB\"/libtcl*.dylib \"$PYLIB\"/libtk*.dylib \\\n       \"$PYLIB\"/tcl* \"$PYLIB\"/tk* \"$PYLIB\"/itcl* \"$PYLIB\"/thread* \\\n       \"$PYLIB\"/python*/tkinter\nrm -f  \"$PYLIB\"/python*/lib-dynload/_tkinter*.so\n#  (2.5.2) Strip 'itms-services' from urllib/parse.py's uses_netloc. No-op\n#  on the current BeeWare build, but guarantees parity if a future stdlib\n#  bump reintroduces the literal Apple's static scanner flags.\n/usr/bin/sed -i '' \"s/, 'itms-services'//g\" \"$PYLIB\"/python*/urllib/parse.py\n";
 		};
-		6568FD77AAC0A7CA2FA0E4AF /* macOS: Bundle MPNN.mpnnpack */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Bundle MPNN.mpnnpack";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_macos/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
-		};
 		674165941FEA5412EAD0F21B /* iOS: Embed Python.framework */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -775,25 +800,6 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
-		87DC253C5CE9B7B08ABD716E /* macOS: Bundle MPNN.mpnnpack */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Bundle MPNN.mpnnpack";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_macos/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
-		};
 		888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -832,6 +838,25 @@
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n    # \"commonly used third-party SDK\" list requires to carry a privacy\n    # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n    # signed with the framework in the codesign pass below.\n    case \"$FULL_MODULE_NAME\" in\n      _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n    esac\n  fi\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
 		};
+		8BEF1B8DF38196521747DA4E /* Bundle MPNN.mpnnpack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle MPNN.mpnnpack";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
+		};
 		9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -850,6 +875,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\n/usr/bin/python3 \"$SRCROOT/../scripts/compile_metal_shaders.py\" --sdk macosx --output \"/tmp/pymol_macos.metallib\" || true\n[ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib \"$RES/pymol.metallib\" || echo \"metallib skipped (runtime-compile fallback)\"\n";
+		};
+		A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle MPNN.mpnnpack";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
 		};
 		AAD907DBCD08F79F40554C45 /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1042,19 +1086,22 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
-				8D7CA591ACC840D799770E17 /* KeyRoutingTests.swift in Sources */,
-				AEE49BFF023B4C71B102545B /* KeyBindingDispatchTests.swift in Sources */,
-				B2F3A7D1C9E04F5E8A2B1D6C /* MetalViewportResponderTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
 				FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */,
 				0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */,
+				7406A4027A2BE46708BA6282 /* DesignIOSPortTests.swift in Sources */,
 				174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */,
 				2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */,
 				B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */,
 				52B5620BEF26DEB8E3A700C1 /* DesignResiduesTests.swift in Sources */,
 				6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */,
+				917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,
+				CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */,
+				EF9A088B19E39220CC72469D /* KeyRoutingTests.swift in Sources */,
+				4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,
 				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
 			);
@@ -1066,11 +1113,15 @@
 			files = (
 				DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */,
 				4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */,
+				78893185798035F798A26A9B /* DesignAvailability.swift in Sources */,
 				BE397E89274A3180A2E649BF /* DesignColor.swift in Sources */,
+				142D8657C5BC7DCD8648D407 /* DesignCompactPanel.swift in Sources */,
 				E7A7CA409C1DB4D1A78AD5B9 /* DesignController.swift in Sources */,
 				D3F658C89098D8D9A4022C9A /* DesignResidues.swift in Sources */,
 				2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */,
+				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
+				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
 				B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */,
 				55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */,
 				4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */,
@@ -1078,6 +1129,7 @@
 				64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */,
 				90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */,
 				CE1CC588AA02F7FE11A0048B /* MPNNGate.swift in Sources */,
+				1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
@@ -1105,13 +1157,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */,
-				5F3A932F055E421EA9BAFF22 /* KeyRouting.swift in Sources */,
 				3F96563B0EA8F919B068A421 /* ContentView.swift in Sources */,
+				4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */,
 				D48D80E395852871CAC65FCA /* DesignColor.swift in Sources */,
+				C2FCBB63D8533AF61056C0C2 /* DesignCompactPanel.swift in Sources */,
 				983BCF8F1E0F251E82C1CF0E /* DesignController.swift in Sources */,
 				848682B247E00ECDD720FF73 /* DesignResidues.swift in Sources */,
 				6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */,
+				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
+				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,
 				42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */,
 				E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */,
 				F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */,
@@ -1119,6 +1174,7 @@
 				3ECB633FC33E73F4767D3AF5 /* MCPServerManager.swift in Sources */,
 				DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */,
 				1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */,
+				F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
@@ -1182,6 +1238,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1213,6 +1271,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -1247,6 +1307,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = macosx;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
@@ -1301,6 +1363,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
 				SDKROOT = iphoneos;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]" = "$(inherited) RAYMOL_MPNN";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1309,7 +1373,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E962A5DE-C768-4BF8-AD00-38766FC056BC" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_7E38C272-94B4-41B9-A004-CB298BAA46BD" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1359,7 +1423,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -1416,7 +1480,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E962A5DE-C768-4BF8-AD00-38766FC056BC" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_7E38C272-94B4-41B9-A004-CB298BAA46BD" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1460,7 +1524,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -1553,6 +1617,14 @@
 				minimumVersion = 2.6.0;
 			};
 		};
+		59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.31.6;
+			};
+		};
 		B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/javierbq/proteinmpnn-mlx.git";
@@ -1564,6 +1636,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		69935BE3EFD2F08B88D4AEE9 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
 		791C3459ADD4745BE10E27AA /* MPNNKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
@@ -1574,10 +1651,20 @@
 			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
 			productName = MPNNKit;
 		};
+		80B2210B207942EBB65BAF59 /* MPNNKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */;
+			productName = MPNNKit;
+		};
 		98AC6A7391B7E7A564A30A61 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		FBA4CCD670BAF318F243E692 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
