@@ -15,8 +15,11 @@ final class KeyBindingDispatchTests: XCTestCase {
         // Release anything a case bound, so the shared singleton stays clean.
         engine.runPython(
             "from pymol import cmd as _c\n"
+            + "import pymol as _pm\n"
             + "for _k in ('F7', 'F8', 'F9'):\n"
-            + "    _c.key_mappings.pop(_k, None)")
+            + "    _c.key_mappings.pop(_k, None)\n"
+            + "if hasattr(_pm, '_t258'): del _pm._t258\n"
+            + "_c.set('sphere_scale', 1.0)")
         super.tearDown()
     }
 
@@ -49,7 +52,9 @@ final class KeyBindingDispatchTests: XCTestCase {
         engine.runPython("from pymol import cmd as _c; _c.set_key('F8', 'set sphere_scale, 0.37')")
         XCTAssertTrue(engine.invokeKeyBinding("F8"))
         XCTAssertEqual(pythonFloat("cmd.get_setting_float('sphere_scale')"), 0.37, accuracy: 0.001)
-        engine.runCommand("set sphere_scale, 1.0")
+        // sphere_scale is restored to 1.0 in tearDown — do not reset mid-test
+        // so an early failure or timeout doesn't leave a non-default value to
+        // leak into sibling tests sharing the PyMOLEngine.shared singleton.
     }
 
     func testUnknownTokenIsHarmless() {

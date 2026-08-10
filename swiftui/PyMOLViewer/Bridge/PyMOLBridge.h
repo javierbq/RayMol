@@ -52,10 +52,12 @@ void PyMOLBridge_UpdateScene(PyMOLHandle instance);
 int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
 // Fires a cmd.set_key binding by its canonical PyMOL key token ("left",
-// "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and ran, 0 if the
-// key is unbound (or on error). The caller uses that answer to decide whether
-// to consume the key event: an unbound key must fall through to the macOS menus
-// so RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
+// "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and was invoked
+// (including when the binding's callable raised — the key is still consumed so
+// it isn't ALSO dispatched to a menu). Returns 0 when the key is unbound, and
+// also 0 when pymol.internal cannot be imported (shutdown / corrupted state) —
+// in that case no binding could have run, so the key falls through to macOS
+// menus and RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
 int PyMOLBridge_InvokeKey(const char *key);
 
 // --- Context management ---

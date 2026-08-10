@@ -283,14 +283,19 @@ int PyMOLBridge_InvokeKey(const char *key)
             fired = PyObject_IsTrue(res) == 1 ? 1 : 0;
             Py_DECREF(res);
         }
+        if (PyErr_Occurred()) {
+            // The user's bound callable raised. A binding DID exist, so
+            // consume the key (fired = 1) — same policy as any other PyMOL
+            // script error. Print so the user sees the traceback.
+            PyErr_Print();
+            fired = 1;
+        }
         Py_DECREF(mod);
-    }
-    if (PyErr_Occurred()) {
-        // A user's bound function raising must not swallow the keystroke
-        // silently; print it like any other PyMOL script error, and report
-        // "fired" so the key isn't ALSO handed to a menu.
+    } else {
+        // pymol.internal could not be imported (shutdown, corrupted state).
+        // No binding could have fired, so leave fired = 0 so the key falls
+        // through to the macOS menus. Print the error and clear it.
         PyErr_Print();
-        fired = 1;
     }
     PAutoUnblock(G, blk);
     return fired;
