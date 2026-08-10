@@ -183,6 +183,11 @@ struct ContentView: View {
     // .onDisappear. NSEvent.addLocalMonitorForEvents (not .onKeyPress, which is
     // macOS 14+) keeps us on the macOS 13 deployment target.
     @State private var escKeyMonitor: Any?
+    // Local key-down monitor token for cmd.set_key dispatch (#258). Same
+    // rationale as escKeyMonitor above: MetalViewport declines first-responder
+    // status (#73), so the viewport never receives keyDown and a monitor is the
+    // only way to see keys at all. Installed/removed alongside it.
+    @State private var pymolKeyMonitor: Any?
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -538,11 +543,16 @@ struct ContentView: View {
                     }
                 }
                 installEscKeyMonitor()
+                installPyMOLKeyMonitor()
             }
             .onDisappear {
                 if let token = escKeyMonitor {
                     NSEvent.removeMonitor(token)
                     escKeyMonitor = nil
+                }
+                if let token = pymolKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    pymolKeyMonitor = nil
                 }
             }
     }
@@ -588,6 +598,35 @@ struct ContentView: View {
             // (c) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
+        }
+    }
+
+    // cmd.set_key dispatch (#258). A local key-down monitor for the same reason
+    // the Esc handler is one: MetalViewport deliberately declines
+    // first-responder status (#73), so keyDown never reaches the viewport and
+    // the app would otherwise never see a key at all.
+    //
+    // The consume rule is the whole conflict policy: KeyRouting decides whether
+    // an event is even a candidate, then we consume it ONLY if a binding
+    // actually fired. So an unbound ⌃D falls through to the Design menu item
+    // naturally, while a user-bound ⌃D shadows it — no reserved-key table
+    // needed. Esc (keyCode 53) never yields a token, so this monitor and the Esc
+    // one never contend.
+    private func installPyMOLKeyMonitor() {
+        guard pymolKeyMonitor == nil else { return }
+        pymolKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Unmodified arrows belong to whatever text field is being edited
+            // (caret movement, command history). The window's shared field
+            // editor is an NSTextView, which is what a focused NSTextField
+            // actually uses — check both.
+            let responder = NSApp.keyWindow?.firstResponder
+            let focused = responder is NSTextView || responder is NSTextField
+            guard let token = KeyRouting.token(
+                    keyCode: event.keyCode,
+                    charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                    modifiers: event.modifierFlags,
+                    textFieldFocused: focused) else { return event }
+            return engine.invokeKeyBinding(token) ? nil : event
         }
     }
 
@@ -3227,11 +3266,29 @@ struct ContentView: View {
             showRaymolrcMigrationPrompt = true
             return
         }
-        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.load()")
+        loadRaymolrcAndAudit()
     }
 
     private func confirmRaymolrcMigration() {
-        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.migrate(); _raymolrc.load()")
+        loadRaymolrcAndAudit(migrateFirst: true)
+    }
+
+    // ~/.raymolrc may bind a key RayMol also uses as a menu shortcut; the audit
+    // says so once, right after the script runs (#258). ⌃D only exists in
+    // RAYMOL_MPNN builds, so tell the audit whether the Design menu is present
+    // rather than making Python guess.
+    private func loadRaymolrcAndAudit(migrateFirst: Bool = false) {
+        #if RAYMOL_MPNN
+        let hasDesign = "True"
+        #else
+        let hasDesign = "False"
+        #endif
+        let migrate = migrateFirst ? "_raymolrc.migrate(); " : ""
+        engine.runPython(
+            "from pymol import raymolrc as _raymolrc, raymol_keys as _raymol_keys; "
+            + migrate
+            + "_raymolrc.load(); "
+            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign))")
     }
 
     private func declineRaymolrcMigration() {
