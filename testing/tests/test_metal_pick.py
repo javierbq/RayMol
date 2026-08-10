@@ -148,6 +148,30 @@ class TestNDCToWorldMath(unittest.TestCase):
 class TestPickAtIntegration(unittest.TestCase):
     """Test pick_at() with a fully mocked cmd module."""
 
+    def setUp(self):
+        # Swapping pymol.cmd for a MagicMock is process-global: it outlives this
+        # file and breaks any later test that builds a real pymol2.PyMOL() (its
+        # Cmd ctor walks pymol.completing, which needs the genuine submodules).
+        # Snapshot every name we clobber and restore it, present or absent.
+        _pymol_mod = sys.modules["pymol"]
+        _sentinel = object()
+        _saved = [(_pymol_mod, "cmd", getattr(_pymol_mod, "cmd", _sentinel))]
+        _saved += [(sys.modules, k, sys.modules.get(k, _sentinel))
+                   for k in ("pymol.cmd", "pymol.metal_pick")]
+
+        def _restore():
+            for holder, key, val in _saved:
+                if holder is sys.modules:
+                    sys.modules.pop(key, None)
+                    if val is not _sentinel:
+                        sys.modules[key] = val
+                elif val is _sentinel:
+                    delattr(holder, key)
+                else:
+                    setattr(holder, key, val)
+
+        self.addCleanup(_restore)
+
     def test_pick_at_creates_selection(self):
         mock_cmd = MagicMock()
         mock_cmd.get_view.return_value = (
