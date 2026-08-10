@@ -128,6 +128,7 @@
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
 		5F3A932F055E421EA9BAFF22 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F13D4F3B4FF4B16A7E2F045 /* KeyRouting.swift */; };
 		8D7CA591ACC840D799770E17 /* KeyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */; };
+		AEE49BFF023B4C71B102545B /* KeyBindingDispatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -224,6 +225,7 @@
 		"TEMP_E962A5DE-C768-4BF8-AD00-38766FC056BC" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 		1F13D4F3B4FF4B16A7E2F045 /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
 		3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRoutingTests.swift; sourceTree = "<group>"; };
+		A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBindingDispatchTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -357,6 +359,7 @@
 			children = (
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				3C2F645BF7224D2EB5AB6796 /* KeyRoutingTests.swift */,
+				A0EF0B327F3C4095B2BC6C89 /* KeyBindingDispatchTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
 				4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */,
 				05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */,
@@ -1038,6 +1041,7 @@
 			files = (
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				8D7CA591ACC840D799770E17 /* KeyRoutingTests.swift in Sources */,
+				AEE49BFF023B4C71B102545B /* KeyBindingDispatchTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
 				FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */,
 				0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */,

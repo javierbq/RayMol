@@ -265,6 +265,37 @@ void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers
     if (h) PyMOL_Key(INST(h), k, x, y, modifiers);
 }
 
+int PyMOLBridge_InvokeKey(const char *key)
+{
+    if (!key || !key[0]) return 0;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return 0;
+    int blk = PAutoBlock(G);
+    int fired = 0;
+    // pymol.internal._invoke_key(key, quiet=1) — the same routine cmd._special
+    // and cmd._ctrl funnel through. Reached via pymol.internal because cmd
+    // re-exports only _special/_ctrl/_alt, not _invoke_key. quiet=1 suppresses
+    // the "No key mapping" print for the (very common) unbound case.
+    PyObject *mod = PyImport_ImportModule("pymol.internal");
+    if (mod) {
+        PyObject *res = PyObject_CallMethod(mod, "_invoke_key", "si", key, 1);
+        if (res) {
+            fired = PyObject_IsTrue(res) == 1 ? 1 : 0;
+            Py_DECREF(res);
+        }
+        Py_DECREF(mod);
+    }
+    if (PyErr_Occurred()) {
+        // A user's bound function raising must not swallow the keystroke
+        // silently; print it like any other PyMOL script error, and report
+        // "fired" so the key isn't ALSO handed to a menu.
+        PyErr_Print();
+        fired = 1;
+    }
+    PAutoUnblock(G, blk);
+    return fired;
+}
+
 // --- Context management ---
 
 void PyMOLBridge_PushValidContext(PyMOLHandle h)

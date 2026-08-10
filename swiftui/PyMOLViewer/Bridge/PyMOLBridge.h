@@ -51,6 +51,12 @@ void PyMOLBridge_UpdateScene(PyMOLHandle instance);
 // gate the metal_raytrace toggle so it isn't offered where it does nothing.
 int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 void PyMOLBridge_Key(PyMOLHandle instance, unsigned char k, int x, int y, int modifiers);
+// Fires a cmd.set_key binding by its canonical PyMOL key token ("left",
+// "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and ran, 0 if the
+// key is unbound (or on error). The caller uses that answer to decide whether
+// to consume the key event: an unbound key must fall through to the macOS menus
+// so RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
+int PyMOLBridge_InvokeKey(const char *key);
 
 // --- Context management ---
 void PyMOLBridge_PushValidContext(PyMOLHandle instance);
