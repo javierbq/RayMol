@@ -8,6 +8,7 @@ Only ⌃M and ⌃D can collide: every other RayMol menu shortcut carries ⌘, an
 classifier passes ⌘ events straight through to the menus.
 """
 
+import contextlib
 import os
 import sys
 import types
@@ -30,6 +31,20 @@ class FakeCmd:
 
     def __init__(self, mappings=None):
         self.key_mappings = dict(mappings or {})
+
+
+class ExplodingMappings(dict):
+    """A dict that passes isinstance checks but raises on .get()."""
+    def get(self, key, default=None):
+        raise RuntimeError("boom")
+
+
+class ExplodingStdout:
+    """A stdout stand-in whose write() raises, to test the handler's inner guard."""
+    def write(self, *a, **k):
+        raise OSError("stdout closed")
+    def flush(self, *a, **k):
+        pass
 
 
 class AuditShadowedTests(unittest.TestCase):
@@ -69,6 +84,21 @@ class AuditShadowedTests(unittest.TestCase):
 
     def test_missing_key_mappings_is_harmless(self):
         self.assertEqual(raymol_keys.audit_shadowed(_self=object()), [])
+
+    def test_internal_failure_degrades_to_no_warning(self):
+        # A mapping that passes isinstance() but raises on .get() exercises the
+        # outer except handler: the function must return [] without raising.
+        fake = FakeCmd()
+        fake.key_mappings = ExplodingMappings({"CTRL-M": "zoom"})
+        self.assertEqual(raymol_keys.audit_shadowed(_self=fake), [])
+
+    def test_reporting_print_failure_does_not_propagate(self):
+        # Same explosion path, but stdout is also broken — exercises the nested
+        # try/except inside the handler that guards the diagnostic print itself.
+        fake = FakeCmd()
+        fake.key_mappings = ExplodingMappings({"CTRL-M": "zoom"})
+        with contextlib.redirect_stdout(ExplodingStdout()):
+            self.assertEqual(raymol_keys.audit_shadowed(_self=fake), [])
 
 
 if __name__ == "__main__":
