@@ -172,7 +172,6 @@ class PyMOLMTKView: MTKView {
     override func scrollWheel(with event: NSEvent) {
         coordinator?.handleScrollWheel(event, in: self)
     }
-
 }
 
 #elseif os(iOS)

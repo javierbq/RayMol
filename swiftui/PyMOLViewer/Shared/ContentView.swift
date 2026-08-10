@@ -624,21 +624,32 @@ struct ContentView: View {
                 if keyWindow.isSheet || keyWindow is NSPanel { return event }
             }
 
-            // `textEditingActive` is true when a text field has focus AND is
-            // non-empty. An empty prompt dispatches everything (bindings remain
-            // reachable without clicking the viewport); once the user has typed
-            // something the field owns its editing keys. The window's shared
-            // field editor is an NSTextView — that is what a focused NSTextField
-            // actually delegates to, so checking both covers all cases.
+            // Compute two focus flags passed into KeyRouting.token:
+            //   textFieldFocused — an editable field is first responder (drives
+            //     the Tier A non-US-keyboard yield for ALT/CTSH combos).
+            //   textEditingActive — focused AND non-empty (drives Tier B, the
+            //     arrows/home/end/ctrl-letter yield while the user is composing).
+            // We require the text view to be editable or a field editor: the
+            // feedback log uses .textSelection(.enabled), and if SwiftUI's
+            // selectable-but-not-editable NSTextView ever becomes first
+            // responder its `string` is the entire log, which would silently
+            // disable arrows/home/end until focus moved.
             let responder = NSApp.keyWindow?.firstResponder
+            var textFieldFocused = false
             var textEditingActive = false
-            if let tv = responder as? NSTextView { textEditingActive = !tv.string.isEmpty }
-            else if let tf = responder as? NSTextField { textEditingActive = !tf.stringValue.isEmpty }
+            if let tv = responder as? NSTextView, tv.isEditable || tv.isFieldEditor {
+                textFieldFocused = true
+                textEditingActive = !tv.string.isEmpty
+            } else if let tf = responder as? NSTextField, tf.isEditable {
+                textFieldFocused = true
+                textEditingActive = !tf.stringValue.isEmpty
+            }
 
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                     modifiers: event.modifierFlags,
+                    textFieldFocused: textFieldFocused,
                     textEditingActive: textEditingActive) else { return event }
             return engine.invokeKeyBinding(token) ? nil : event
         }
