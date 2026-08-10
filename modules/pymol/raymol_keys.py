@@ -53,6 +53,10 @@ def audit_shadowed(has_design=False, _self=None):
         return lines
     except Exception as e:
         # The docstring's promise, kept: this runs on the launch path, so a bug
-        # here must degrade to "no warning" rather than break startup.
-        print(' Warning: RayMol shortcut audit failed: %s' % (e,))
+        # here must degrade to "no warning" rather than break startup — including
+        # when the reporting print is itself what fails (closed or custom stdout).
+        try:
+            print(' Warning: RayMol shortcut audit failed: %s' % (e,))
+        except Exception:
+            pass
         return []
