@@ -70,12 +70,24 @@ class TestHttpAuth(unittest.TestCase):
     def tearDown(self):
         server.stop()
 
-    def _post(self, body, token):
+    def _post(self, body, token, session=None):
         data = json.dumps(body).encode()
+        headers = {"Content-Type": "application/json",
+                   "Authorization": "Bearer %s" % token}
+        if session:
+            headers["Mcp-Session-Id"] = session
         req = rq.Request("http://127.0.0.1:%d/mcp" % self.port, data=data,
-                         headers={"Content-Type": "application/json",
-                                  "Authorization": "Bearer %s" % token})
+                         headers=headers)
         return rq.urlopen(req, timeout=5)
+
+    def _initialize(self):
+        """Complete a handshake and return the issued session id."""
+        resp = self._post({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": "2025-06-18"}},
+                          "secret-token")
+        sid = resp.headers.get("Mcp-Session-Id")
+        resp.close()
+        return sid
 
     def test_missing_token_is_401(self):
         with self.assertRaises(rq.HTTPError) as ctx:
@@ -92,6 +104,24 @@ class TestHttpAuth(unittest.TestCase):
         resp.close()
         self.assertEqual(payload["result"]["serverInfo"]["name"], "raymol")
         self.assertEqual(server.status()["clients"], 1)
+
+    def test_request_refreshes_known_session_last_seen(self):
+        # do_POST's atomic check-and-touch used to live in a server._touch()
+        # helper; it is now inlined, so drive it through HTTP where it lives.
+        sid = self._initialize()
+        server._sessions[sid] = 0.0                 # age it well past the TTL
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"},
+                   "secret-token", session=sid).close()
+        self.assertGreater(server._sessions[sid], 0.0)
+        self.assertEqual(server._prune_idle(now=server._sessions[sid] + 1.0), [])
+
+    def test_request_does_not_resurrect_unknown_session(self):
+        # The touch is deliberately check-THEN-set under one lock: an id the
+        # server never issued (or a sweep already pruned) must not be re-added,
+        # which would defeat idle expiry entirely.
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"},
+                   "secret-token", session="never-issued").close()
+        self.assertNotIn("never-issued", server._sessions)
 
 
 class TestSessionExpiry(unittest.TestCase):
@@ -116,11 +146,13 @@ class TestSessionExpiry(unittest.TestCase):
         self.assertEqual(dead, [])
         self.assertEqual(set(server._sessions), {"a", "b"})
 
-    def test_touch_refreshes_last_seen(self):
-        server._sessions = {"a": 0.0}
-        server._touch("a")
-        dead = server._prune_idle(now=server._sessions["a"] + 1.0)
-        self.assertEqual(dead, [])
+    def test_prune_at_exactly_ttl_keeps_session(self):
+        # Boundary: expiry is `now - t > TTL`, so a session idle for exactly
+        # the TTL survives. Guards the off-by-one if that ever becomes >=.
+        now = 10000.0
+        server._sessions = {"edge": now - server.SESSION_TTL}
+        self.assertEqual(server._prune_idle(now=now), [])
+        self.assertIn("edge", server._sessions)
 
 
 if __name__ == "__main__":

@@ -62,6 +62,8 @@ jobs:
               testing/tests/test_inspector_transparency.py \
               testing/tests/test_raymolrc.py \
               testing/tests/test_mcp_events.py \
+              testing/tests/test_mcp_server.py \
+              testing/tests/test_mcp_tools.py \
               testing/tests/test_raymol_scene_anim.py \
               testing/tests/test_raymol_scene_ttt.py \
               testing/tests/raymol/design_color.py \
