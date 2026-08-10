@@ -143,13 +143,16 @@ Classification rules, in order (see amendment for the two-tier yield policy):
 5. Anything else (bare printables, `SHFT-<letter>`) → `nil`. `set_key` rejects these
    anyway.
 
-`up`/`down` are dispatchable when the command line is *not* focused, so
-`set_key('up', …)` works. Upstream's Qt shortcut editor lists them in
-`shortcut_manager.reserved_keys` because it reserves them for command history, but that
-editor is not shipped here and rule 2 already protects history where it matters.
+`up`/`down` are dispatchable whenever Tier B is not in force — that is, when the command
+line is unfocused *or* focused but empty — so `set_key('up', …)` works. Upstream's Qt
+shortcut editor lists them in `shortcut_manager.reserved_keys` because it reserves them for
+command history, but that editor is not shipped here, and Tier B protects history whenever
+there is text to navigate.
 
-`ALT`+`SHFT` on a special key is not representable — `modifier_keys` has no index 5 — so it
-classifies as plain `ALT-` and never produces an unmatchable token.
+`ALT`+`SHFT` and `CTRL`+`ALT` are not representable — `modifier_keys` has no index for
+either — so they return `nil` and the event passes through untouched, rather than being
+degraded to a guessed prefix. Option+Shift+arrow in particular is a macOS text-selection
+gesture and must never fire an `ALT-` binding.
 
 ### 2. Focus detection
 
@@ -223,7 +226,7 @@ The `has_design` parameter controls whether `CTRL-D` is included (it only exists
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Binding set | Full PyMOL parity: all 125 defaults live, user `set_key` overriding on top | Desktop fidelity for power users; the defaults are already loaded, only undelivered |
+| Binding set | Full PyMOL parity: all 125 defaults live, user `set_key` overriding on top — **but see the ALT/CTSH reach cost below** | Desktop fidelity for power users; the defaults are already loaded, only undelivered |
 | Text editing vs. bindings | The focused field wins **only while it actually has text** (amended — see below) | Preserves caret movement, history and the emacs editing keys mid-typing, while leaving every binding reachable from the resting state. This *is* the core's `OrthoArrowsGrabbed` rule |
 | Menu-shortcut conflicts (`⌃M` Move, `⌃D` Design) | Explicit `set_key` wins; audit warns | PyMOL semantics — the user's rc file is the last word. Menu item stays reachable by click |
 | ⌘ | Always passes through | macOS menus own it; `set_key` has no CMD modifier |
@@ -306,6 +309,30 @@ static func token(…, textFieldFocused: Bool, textEditingActive: Bool) -> Strin
 `ContentView` computes them by requiring the first responder to be **editable**
 (`tv.isEditable || tv.isFieldEditor` for NSTextView; `tf.isEditable` for NSTextField),
 specifically excluding read-only/selectable views like the feedback log.
+
+#### The ALT/CTSH reach cost — a forced trade, not a preference
+
+Tier A has a consequence worth stating plainly, because it qualifies the "all 125 defaults
+live" row in the policy table: **81 of the 125 defaults are `ALT-*` (40 builder keys) or
+`CTSH-*` (41 editing keys), and none of them can fire while the command line holds keyboard
+focus** — which, because of #73, is the resting state. They become reachable by moving focus
+off the field (clicking the viewport).
+
+This is not a design preference we could trade away. On macOS, Option **is** the compose
+modifier, and not only on non-US layouts: even on US English, ⌥A produces "å", ⌥U begins a
+dead-key umlaut, and so on. There is therefore no test — including comparing
+`characters` against `charactersIgnoringModifiers` — that can distinguish "the user wants
+`ALT-A`" from "the user is composing a character". Since the ALT defaults *create objects and
+enter edit mode* (`editor.attach_amino_acid` with no `pk1`), dispatching them into a focused
+text field is strictly worse than not reaching them: a German user typing `@script.pml`
+(`@` = ⌥L) would spawn a `leu` object and lose the keystroke.
+
+Upstream PyMOL met the same wall and papered over one symptom of it — `OrthoKeyAlt` in
+`layer1/Ortho.cpp:836` special-cases `'@'` with the comment *"option G produces '@' on some
+non-US keyboards, so simply ignore the modifier"*. Tier A is the general form of that patch.
+
+Whether to offer an explicit escape hatch (a modifier-passthrough toggle, or a "keyboard goes
+to the viewport" mode) is deliberately left as a follow-up rather than guessed at here.
 
 ## Non-goals
 
