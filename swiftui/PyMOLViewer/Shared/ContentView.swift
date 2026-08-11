@@ -2434,6 +2434,12 @@ struct ContentView: View {
         var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
         if name.isEmpty { name = "mol" }
         engine.loadStructure(path: safe.path, name: name)
+        // Track an opened .pse as the current document, so the Analysis Notes
+        // store rebinds and surfaces the notes embedded in THAT session; a
+        // non-.pse structure clears it. Without this the panel keeps the
+        // previous note and stages it back over the opened session's payload.
+        // Published after loadStructure, like macOpenFile / loadOpenedFile.
+        engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
     }
 
     // iPad export/share menu (the macOS Export menu lives in the window toolbar;

@@ -709,9 +709,14 @@ final class PyMOLEngine: ObservableObject {
     /// embedded core's GIL model is not safe off-main (see runHeavy), and is
     /// wrapped in a background-task assertion so a large session finishes
     /// writing within iOS's background grace window.
-    func autosaveSession() {
+    /// - Parameter keepingNotes: pass true when the Analysis Notes store holds
+    ///   content. An object-less scene is normally cleared, but notes live only
+    ///   inside the .pse on iOS (the store's own recovery file is per-process),
+    ///   so clearing here would silently destroy a note written before any
+    ///   structure was loaded.
+    func autosaveSession(keepingNotes: Bool = false) {
         guard isReady, let url = autosaveURL else { return }
-        guard !objects.isEmpty else { clearAutosave(); return }
+        guard !objects.isEmpty || keepingNotes else { clearAutosave(); return }
 
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
         defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }

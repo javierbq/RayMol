@@ -75,6 +75,21 @@ final class AnalysisNotesStore: ObservableObject {
     @Published private(set) var notePages: [NotePage] = []
     @Published private(set) var activePageID: UUID?
 
+    /// True when the note holds anything worth carrying into the session file:
+    /// text on any page, a linked image, or a view link. Checks the live active
+    /// page as well as the committed pages, so it is correct even if called
+    /// before commitActivePage(). Used to decide whether an object-less scene is
+    /// still worth autosaving on iOS — the .pse is the only durable home a note
+    /// has there.
+    var hasContent: Bool {
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        if !screenshots.isEmpty || !viewBookmarks.isEmpty { return true }
+        return notePages.contains {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !$0.screenshots.isEmpty || !$0.viewBookmarks.isEmpty
+        }
+    }
+
     enum SaveState: Equatable {
         case saved
         case pending
@@ -759,11 +774,13 @@ struct NotesInspectorView: View {
     private func content(compactLayout: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(sessionLabel, systemImage: notes.sessionURL == nil ? "doc" : "doc.text")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if showsSessionLabel {
+                    Label(sessionLabel, systemImage: notes.sessionURL == nil ? "doc" : "doc.text")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 Spacer(minLength: 8)
                 Menu {
                     ForEach(notes.notePages) { page in
@@ -1202,6 +1219,20 @@ struct NotesInspectorView: View {
 
     private var sessionLabel: String {
         notes.sessionURL?.lastPathComponent ?? "Unsaved session"
+    }
+
+    /// iOS has no document model: Save and Share both export a *copy* through the
+    /// document picker / activity sheet, so the app never holds a writable URL and
+    /// a note is bound to a file only when one was opened. Showing "Unsaved
+    /// session" the rest of the time reads as "your work is at risk", which is
+    /// wrong — notes ride inside the iOS autosave .pse. Show the label only when
+    /// it can name a real document. macOS keeps it always (⌘S binds a document).
+    private var showsSessionLabel: Bool {
+        #if os(iOS)
+        return notes.sessionURL != nil
+        #else
+        return true
+        #endif
     }
 
     private func beginExport(_ contentType: UTType) {

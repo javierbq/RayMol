@@ -153,7 +153,7 @@ struct PyMOLApp: App {
                     if phase == .inactive { engine.captureRestoreSnapshot() }
                     if phase == .background {
                         notes.flush()
-                        engine.autosaveSession()
+                        engine.autosaveSession(keepingNotes: notes.hasContent)
                     }
                 }
             #endif
