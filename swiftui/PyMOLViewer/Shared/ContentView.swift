@@ -183,6 +183,11 @@ struct ContentView: View {
     // .onDisappear. NSEvent.addLocalMonitorForEvents (not .onKeyPress, which is
     // macOS 14+) keeps us on the macOS 13 deployment target.
     @State private var escKeyMonitor: Any?
+    // Local key-down monitor token for cmd.set_key dispatch (#258). Same
+    // rationale as escKeyMonitor above: MetalViewport declines first-responder
+    // status (#73), so the viewport never receives keyDown and a monitor is the
+    // only way to see keys at all. Installed/removed alongside it.
+    @State private var pymolKeyMonitor: Any?
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -540,11 +545,16 @@ struct ContentView: View {
                     }
                 }
                 installEscKeyMonitor()
+                installPyMOLKeyMonitor()
             }
             .onDisappear {
                 if let token = escKeyMonitor {
                     NSEvent.removeMonitor(token)
                     escKeyMonitor = nil
+                }
+                if let token = pymolKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    pymolKeyMonitor = nil
                 }
             }
     }
@@ -590,6 +600,60 @@ struct ContentView: View {
             // (c) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
+        }
+    }
+
+    // cmd.set_key dispatch (#258). A local key-down monitor for the same reason
+    // the Esc handler is one: MetalViewport deliberately declines
+    // first-responder status (#73), so keyDown never reaches the viewport and
+    // the app would otherwise never see a key at all.
+    //
+    // The consume rule is the whole conflict policy: KeyRouting decides whether
+    // an event is even a candidate, then we consume it ONLY if a binding
+    // actually fired. So an unbound ⌃D falls through to the Design menu item
+    // naturally, while a user-bound ⌃D shadows it — no reserved-key table
+    // needed. Esc (keyCode 53) never yields a token, so this monitor and the Esc
+    // one never contend.
+    private func installPyMOLKeyMonitor() {
+        guard pymolKeyMonitor == nil else { return }
+        pymolKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Deliberately mirrors the Esc monitor's modal/sheet/panel guard
+            // (installEscKeyMonitor above): if a sheet, alert, or popover is
+            // the key window, keys belong to it — pgup/pgdn must not change
+            // scenes behind an open Fetch-from-PDB sheet, for example.
+            if NSApp.modalWindow != nil { return event }
+            if let keyWindow = NSApp.keyWindow {
+                if keyWindow.isSheet || keyWindow is NSPanel { return event }
+            }
+
+            // Compute two focus flags passed into KeyRouting.token:
+            //   textFieldFocused — an editable field is first responder (drives
+            //     the Tier A non-US-keyboard yield for ALT/CTSH combos).
+            //   textEditingActive — focused AND non-empty (drives Tier B, the
+            //     arrows/home/end/ctrl-letter yield while the user is composing).
+            // We require the text view to be editable or a field editor: the
+            // feedback log uses .textSelection(.enabled), and if SwiftUI's
+            // selectable-but-not-editable NSTextView ever becomes first
+            // responder its `string` is the entire log, which would silently
+            // disable arrows/home/end until focus moved.
+            let responder = NSApp.keyWindow?.firstResponder
+            var textFieldFocused = false
+            var textEditingActive = false
+            if let tv = responder as? NSTextView, tv.isEditable || tv.isFieldEditor {
+                textFieldFocused = true
+                textEditingActive = !tv.string.isEmpty
+            } else if let tf = responder as? NSTextField, tf.isEditable {
+                textFieldFocused = true
+                textEditingActive = !tf.stringValue.isEmpty
+            }
+
+            guard let token = KeyRouting.token(
+                    keyCode: event.keyCode,
+                    charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                    modifiers: event.modifierFlags,
+                    textFieldFocused: textFieldFocused,
+                    textEditingActive: textEditingActive) else { return event }
+            return engine.invokeKeyBinding(token) ? nil : event
         }
     }
 
@@ -3340,11 +3404,33 @@ struct ContentView: View {
             showRaymolrcMigrationPrompt = true
             return
         }
-        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.load()")
+        loadRaymolrcAndAudit()
     }
 
     private func confirmRaymolrcMigration() {
-        engine.runPython("from pymol import raymolrc as _raymolrc; _raymolrc.migrate(); _raymolrc.load()")
+        loadRaymolrcAndAudit(migrateFirst: true)
+    }
+
+    // ~/.raymolrc may bind a key RayMol also uses as a menu shortcut; the audit
+    // says so once, right after the script runs (#258). ⌃D only exists in
+    // RAYMOL_MPNN builds, so tell the audit whether the Design menu is present
+    // rather than making Python guess.
+    private func loadRaymolrcAndAudit(migrateFirst: Bool = false) {
+        #if RAYMOL_MPNN
+        let hasDesign = "True"
+        #else
+        let hasDesign = "False"
+        #endif
+        // Load first in its own call so a stale raymol_keys import can never
+        // abort the rc load (#258 review note).
+        let migrate = migrateFirst ? "_raymolrc.migrate(); " : ""
+        engine.runPython(
+            "from pymol import raymolrc as _raymolrc; "
+            + migrate
+            + "_raymolrc.load()")
+        engine.runPython(
+            "from pymol import raymol_keys as _raymol_keys; "
+            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign))")
     }
 
     private func declineRaymolrcMigration() {

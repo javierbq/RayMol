@@ -260,9 +260,40 @@ int PyMOLBridge_SupportsRayTracing(PyMOLHandle h)
     return r->rtSupported() ? 1 : 0;
 }
 
-void PyMOLBridge_Key(PyMOLHandle h, unsigned char k, int x, int y, int modifiers)
+int PyMOLBridge_InvokeKey(const char *key)
 {
-    if (h) PyMOL_Key(INST(h), k, x, y, modifiers);
+    if (!key || !key[0]) return 0;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return 0;
+    int blk = PAutoBlock(G);
+    int fired = 0;
+    // pymol.internal._invoke_key(key, quiet=1) — the same routine cmd._special
+    // and cmd._ctrl funnel through. Reached via pymol.internal because cmd
+    // re-exports only _special/_ctrl/_alt, not _invoke_key. quiet=1 suppresses
+    // the "No key mapping" print for the (very common) unbound case.
+    PyObject *mod = PyImport_ImportModule("pymol.internal");
+    if (mod) {
+        PyObject *res = PyObject_CallMethod(mod, "_invoke_key", "si", key, 1);
+        if (res) {
+            fired = PyObject_IsTrue(res) == 1 ? 1 : 0;
+            Py_DECREF(res);
+        }
+        if (PyErr_Occurred()) {
+            // The user's bound callable raised. A binding DID exist, so
+            // consume the key (fired = 1) — same policy as any other PyMOL
+            // script error. Print so the user sees the traceback.
+            PyErr_Print();
+            fired = 1;
+        }
+        Py_DECREF(mod);
+    } else {
+        // pymol.internal could not be imported (shutdown, corrupted state).
+        // No binding could have fired, so leave fired = 0 so the key falls
+        // through to the macOS menus. Print the error and clear it.
+        PyErr_Print();
+    }
+    PAutoUnblock(G, blk);
+    return fired;
 }
 
 // --- Context management ---
