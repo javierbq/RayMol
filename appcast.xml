@@ -6,74 +6,51 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.9.0</title>
+      <title>RayMol 1.9.1</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.9.0
+## RayMol 1.9.1
 
-A feature release: **Design mode** brings on-device protein sequence design to
-RayMol, scenes now remember where you put things, and RayMol gets a startup
-script of its own.
+A fix release, led by one long-standing gap: **keyboard shortcuts now work**.
 
-### Design mode
+### Keyboard shortcuts
 
-- **Redesign sequences on your Mac — offline.** A new Design mode (**⌃D**),
-  peer to Move and Measure, runs ProteinMPNN entirely on-device. Nothing is
-  uploaded and no server is involved; the model ships inside the app.
-- **Per-residue confidence coloring.** Color a structure by how well the model
-  thinks each position fits the residue that's actually there (*Native-fit*) or
-  by how sure it is of its own pick (*Certainty*), with a legend and inline
-  help.
-- **Propensity inspector.** Hover or pin any residue to see its full
-  20-amino-acid propensity distribution, with element-colored side-chain sticks
-  previewed on hover — nothing is modified.
-- **Point mutations with live rescore and repack.** Mutate a position and
-  RayMol immediately re-scores the sequence and repacks the side chain in
-  place. Auto-repack is a toggle, and every edit lands in a working copy you
-  can keep or discard.
-- **Region redesign.** Pick a selection and redesign that whole region with the
-  rest of the structure held fixed — with one-level revert, and a pill row for
-  restricting which amino acids the model may use.
+- **`set_key` remapping works again.** Bindings in your startup script — or typed
+  at the command line — now actually fire. If you have carried a `~/.pymolrc`
+  full of `cmd.set_key` bindings from desktop PyMOL for years, copy it to
+  `~/.raymolrc.py` and it will do what it always did. Function keys, arrows,
+  Page Up/Down, Home/End, and `⌃`/`⌥` combinations are all delivered.
+- **PyMOL's own built-in shortcuts are live too.** All 125 of them, for the
+  first time in RayMol: `←`/`→` step movie frames, `Page Up`/`Page Down` change
+  scenes, `Home` zooms to fit.
+- **Typing still wins.** While you are editing a command, the command line keeps
+  the arrows, Home/End and the usual `⌃A`/`⌃E`/`⌃H` text-editing keys — they
+  only trigger PyMOL bindings once the prompt is empty. Page Up/Down and the
+  function keys always work, so a binding is never out of reach.
+- **Your bindings beat the app's.** If your script binds a key RayMol also uses
+  as a menu shortcut (`⌃M`, `⌃D`), yours wins and RayMol tells you so at
+  startup. The menu item still works by click.
 
-Design mode is macOS-only for now.
-
-### Scenes
-
-- **Scenes remember object placement.** A scene now stores each object's
-  Move-mode position and orientation alongside the camera, so recalling it
-  restores the arrangement you built — not just the viewpoint. Movies built
-  from scenes interpolate that object motion between keyframes.
-
-### Startup
-
-- **`~/.raymolrc` startup script.** RayMol now runs `~/.raymolrc` (or
-  `~/.raymolrc.py`) at launch, after the theme defaults so your script can
-  override them. Bare `cmd.…` calls work as they do in the command-line PyMOL.
-  If you have a `~/.pymolrc` and no `~/.raymolrc`, RayMol offers — once — to
-  import it; declining is remembered.
+Two notes. **`⌥`-key bindings only fire when the command line does not have
+focus** — click the viewport first. On macOS, Option is the character-composition
+key (`⌥L` types `@` on a German layout), so RayMol cannot safely treat it as a
+shortcut while you are typing. And keyboard shortcuts are macOS-only for now.
 
 ### Fixes
 
-- **Escape exits Move, Design, and Measure mode.** Entering a mode by keyboard
-  (**⌃M** / **⌃D**) no longer means hunting for a mouse target to leave it. Esc
-  dismisses an open sheet or popover first, then leaves the active mode, then
-  falls through to clearing the selection.
-- **Entering Design mode no longer strands the move gizmo.** Switching modes
-  now runs each mode's real teardown, so the on-screen gizmo can't be left
-  behind in the scene.
-- **A multi-file open loads every file.** `open a.pdb b.pdb c.pdb`, Finder's
-  "Open With" on a multi-selection, and dropping several files on the Dock icon
-  now load all of them as separate structures instead of just the first.
-- Also included for anyone coming from 1.8.0: the 1.8.1 fix for the object
-  panel freezing and spamming the log in sessions with many objects or
-  selections.
+- **Fixed: the camera jumped when showing dots, surface or mesh.** Turning on
+  one of these representations could re-frame the scene; your view is now
+  preserved.
+- **Fixed: console spam from the object panel.** The panel probed non-molecular
+  objects — maps, groups, CGOs — and filled the log with warnings.
+- **The sequence toggles are labeled "Seq"**, which is what they actually do.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Tue, 04 Aug 2026 20:54:44 +0000</pubDate>
-      <sparkle:version>25</sparkle:version>
-      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+      <pubDate>Tue, 11 Aug 2026 04:33:36 +0000</pubDate>
+      <sparkle:version>26</sparkle:version>
+      <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.9.0/RayMol-1.9.0.dmg" type="application/octet-stream" sparkle:edSignature="Frz1uWNQDPGvZ8MV+Ea19esIuUONnspjXFRM51rP+m3kKYIlLWWiwiPPNFIRhbeNpEyBQhbNFHSNgcd6HnAKAA==" length="88073312" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.9.1/RayMol-1.9.1.dmg" type="application/octet-stream" sparkle:edSignature="iDcpgrsgZKBjqJVAjJaiTKIply0NEtJIfgZPULuMamWtbWAhC2QQmzZDJzv5cvzp6JnpuICln+tKKtNp6FlMCw==" length="88097324" />
     </item>
   </channel>
 </rss>
