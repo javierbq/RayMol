@@ -11,12 +11,20 @@
 # fails to apply, every build after the first uploads a duplicate pair and is
 # rejected — so the substitution is verified below and a no-op is fatal.
 #
-# Usage: apply_ci_versions.sh <project.yml> <marketing-version> <build-number>
+# The optional 4th argument is the human-readable beta label from
+# scripts/beta_label.sh (e.g. "1.9.1-beta27"). It is stamped into
+# RAYMOL_BETA_LABEL, which a postBuildScript copies to the built Info.plist's
+# RayMolBetaLabel key for the app's Settings pane to display. Omit it and the
+# committed empty value stands, which is what marks a build as NOT a beta —
+# so release builds must keep omitting it.
+#
+# Usage: apply_ci_versions.sh <project.yml> <marketing-version> <build-number> [beta-label]
 set -euo pipefail
 
-YML="${1:?usage: apply_ci_versions.sh <project.yml> <marketing-version> <build-number>}"
+YML="${1:?usage: apply_ci_versions.sh <project.yml> <marketing-version> <build-number> [beta-label]}"
 MKT="${2:-}"
 BUILD="${3:-}"
+LABEL="${4:-}"
 
 [ -f "$YML" ] || { echo "ERROR: not found: $YML" >&2; exit 1; }
 [[ "$MKT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
@@ -56,4 +64,31 @@ grep -qE "^[[:space:]]*MARKETING_VERSION: \"$MKT\"$" "$YML" || {
 grep -qE "^[[:space:]]*CURRENT_PROJECT_VERSION: $BUILD$" "$YML" || {
   echo "ERROR: CURRENT_PROJECT_VERSION edit did not apply to $YML" >&2; exit 1; }
 
-echo "project.yml -> $MKT ($BUILD)"
+# The beta label is optional, but a MALFORMED one is not tolerated: it is what a
+# tester reads off the Settings pane to report a bug against, so "1.9.1-beta" or
+# a stray newline is worse than no label at all.
+if [ -n "$LABEL" ]; then
+  [[ "$LABEL" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta[0-9]+$ ]] || {
+    echo "ERROR: beta label must be X.Y.Z-betaN, got '$LABEL'" >&2
+    echo "       Build it with scripts/beta_label.sh, not by hand." >&2
+    exit 1; }
+  # Same exactly-once discipline as the two version keys above: we rewrite the
+  # committed placeholder and never append, so an absent line is a hard failure
+  # rather than a beta that silently ships with no label.
+  LBL_COUNT="$(grep -cE '^[[:space:]]*RAYMOL_BETA_LABEL:' "$YML" || true)"
+  case "$LBL_COUNT" in
+    0) echo "ERROR: no RAYMOL_BETA_LABEL line in $YML — add the placeholder to project.yml" >&2; exit 1 ;;
+    1) ;;
+    *) echo "ERROR: $LBL_COUNT RAYMOL_BETA_LABEL lines in $YML — ambiguous; refusing to rewrite all" >&2; exit 1 ;;
+  esac
+
+  /usr/bin/sed -i '' -E \
+    -e "s/^([[:space:]]*)RAYMOL_BETA_LABEL:.*/\1RAYMOL_BETA_LABEL: \"$LABEL\"/" \
+    "$YML"
+
+  grep -qE "^[[:space:]]*RAYMOL_BETA_LABEL: \"$LABEL\"$" "$YML" || {
+    echo "ERROR: RAYMOL_BETA_LABEL edit did not apply to $YML" >&2; exit 1; }
+  echo "project.yml -> $MKT ($BUILD), label $LABEL"
+else
+  echo "project.yml -> $MKT ($BUILD)"
+fi
