@@ -119,6 +119,15 @@ targets:
         INFOPLIST_GENERATION_MODE: GeneratedFile
         MARKETING_VERSION: "1.9.1"
         CURRENT_PROJECT_VERSION: 26
+        # Human-readable beta label, e.g. "1.9.1-beta27". EMPTY on purpose in the
+        # committed file: empty means "this is not a beta", and the postBuildScript
+        # below then leaves RayMolBetaLabel out of the Info.plist entirely. Only
+        # ci_post_clone.sh fills it in, in the ephemeral Xcode Cloud checkout, via
+        # apply_ci_versions.sh's 4th argument. Never commit a non-empty value —
+        # every DMG and App Store build would then claim to be a beta.
+        # Apple only ever sees MARKETING_VERSION + CURRENT_PROJECT_VERSION;
+        # CFBundleShortVersionString may not carry a "-betaN" suffix.
+        RAYMOL_BETA_LABEL: ""
         GENERATE_INFOPLIST_FILE: YES
         # Generate a launch screen so iOS renders at the device's NATIVE
         # resolution. Without it the app is letterboxed at a legacy size on
@@ -184,6 +193,29 @@ targets:
           [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
           /usr/bin/plutil -replace CFBundleName -string "RayMol" "$PLIST"
           echo "CFBundleName -> RayMol ($PLIST)"
+      # Beta label for testers, e.g. "1.9.1-beta27" -> Info.plist RayMolBetaLabel,
+      # which AppBuildInfo reads and the Settings pane shows under the version.
+      # Apple's own CFBundleShortVersionString cannot carry the "-betaN" suffix
+      # (at most three numeric components), so this is the only place testers can
+      # see which beta they are on. Runs on BOTH platforms; a no-op unless
+      # ci_post_clone.sh stamped RAYMOL_BETA_LABEL for this build.
+      - name: "Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL"
+        basedOnDependencyAnalysis: false
+        # Same Info.plist input edge as above — without it this races plist
+        # generation and the key is silently dropped.
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
+        script: |
+          set -e
+          LABEL="${RAYMOL_BETA_LABEL:-}"
+          # Empty is the normal case: every local, DMG and App Store build. Leave
+          # the key ABSENT rather than writing "" so the app can treat presence of
+          # the key as "this is a beta" without also testing for emptiness.
+          [ -n "$LABEL" ] || { echo "RayMolBetaLabel skipped (not a beta build)"; exit 0; }
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
+          /usr/bin/plutil -replace RayMolBetaLabel -string "$LABEL" "$PLIST"
+          echo "RayMolBetaLabel -> $LABEL ($PLIST)"
       # Sparkle auto-update keys. macOS only (Sparkle is not linked on iOS), and
       # skipped for the Mac App Store fallback (RAYMOL_MAS_RESTRICTED) since that
       # build updates through Apple. The public EdDSA key pairs with the private

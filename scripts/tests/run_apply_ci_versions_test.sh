@@ -16,6 +16,7 @@ fixture () {
     echo "        PRODUCT_NAME: RayMol"
     echo "        MARKETING_VERSION: \"1.8.0\""
     echo "        CURRENT_PROJECT_VERSION: 23"
+    echo "        RAYMOL_BETA_LABEL: \"\""
     echo "        GENERATE_INFOPLIST_FILE: YES"
   } > "$f"
   echo "$f"
@@ -122,6 +123,74 @@ DUP_CPV="$TMP/dup_cpv.yml"
 if bash "$SCRIPT" "$DUP_CPV" "1.9.0" "47" >/dev/null 2>&1; then
   echo "  FAIL: succeeded with duplicate CURRENT_PROJECT_VERSION lines"; FAILED=1
 else echo "  ok: fails when CURRENT_PROJECT_VERSION appears more than once"; fi
+
+# ---------------------------------------------------------------------------
+# Beta label (optional 4th argument)
+# ---------------------------------------------------------------------------
+# The label is what a TestFlight tester reads off the Settings pane to report a
+# bug against, since betas share their marketing version with the release they
+# were cut from. A wrong or missing label is therefore a real defect, not cosmetic.
+
+L="$(fixture)"
+if bash "$SCRIPT" "$L" "1.9.0" "47" "1.9.0-beta47" >/dev/null 2>&1; then
+  echo "  ok: valid beta label accepted"
+else echo "  FAIL: valid beta label rejected"; FAILED=1; fi
+
+if grep -qE '^        RAYMOL_BETA_LABEL: "1\.9\.0-beta47"$' "$L"; then
+  echo "  ok: RAYMOL_BETA_LABEL rewritten with indentation preserved"
+else echo "  FAIL: RAYMOL_BETA_LABEL not rewritten"; FAILED=1; fi
+
+[ "$(grep -c 'RAYMOL_BETA_LABEL:' "$L")" = 1 ] \
+  && echo "  ok: single RAYMOL_BETA_LABEL line" \
+  || { echo "  FAIL: duplicate RAYMOL_BETA_LABEL lines"; FAILED=1; }
+
+# OMITTING the label must leave the committed empty value alone. That empty value
+# is what marks a build as NOT a beta, so a release build that accidentally
+# inherited a label would tell every user they are running a beta.
+O="$(fixture)"
+bash "$SCRIPT" "$O" "1.9.0" "47" >/dev/null 2>&1
+if grep -qE '^        RAYMOL_BETA_LABEL: ""$' "$O"; then
+  echo "  ok: omitted label leaves the placeholder empty"
+else echo "  FAIL: omitted label did not leave RAYMOL_BETA_LABEL empty"; FAILED=1; fi
+
+# Malformed labels. "1.9.0-beta" (no ordinal) and a bare version are the two a
+# human would plausibly hand-write; both are ambiguous between builds.
+for bad in "1.9.0-beta" "1.9.0" "beta47" "1.9-beta47" "1.9.0-beta47-extra" "1.9.0 beta47"; do
+  if bash "$SCRIPT" "$(fixture)" "1.9.0" "47" "$bad" >/dev/null 2>&1; then
+    echo "  FAIL: accepted bad beta label '$bad'"; FAILED=1
+  else echo "  ok: rejects beta label '$bad'"; fi
+done
+
+# A label with nowhere to go must fail loudly rather than be dropped: the build
+# would otherwise ship as a beta with no way for a tester to identify it.
+NO_LBL="$TMP/no_lbl.yml"
+printf 'settings:\n  base:\n        MARKETING_VERSION: "1.8.0"\n        CURRENT_PROJECT_VERSION: 23\n' > "$NO_LBL"
+if bash "$SCRIPT" "$NO_LBL" "1.9.0" "47" "1.9.0-beta47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with RAYMOL_BETA_LABEL absent"; FAILED=1
+else echo "  ok: fails when RAYMOL_BETA_LABEL is absent and a label was given"; fi
+
+# ...but with NO label the absent line is fine — that is the pre-existing
+# three-argument contract, which release tooling still uses.
+NO_LBL2="$TMP/no_lbl2.yml"
+printf 'settings:\n  base:\n        MARKETING_VERSION: "1.8.0"\n        CURRENT_PROJECT_VERSION: 23\n' > "$NO_LBL2"
+if bash "$SCRIPT" "$NO_LBL2" "1.9.0" "47" >/dev/null 2>&1; then
+  echo "  ok: 3-argument form still works without a RAYMOL_BETA_LABEL line"
+else echo "  FAIL: 3-argument form broke when RAYMOL_BETA_LABEL is absent"; FAILED=1; fi
+
+DUP_LBL="$TMP/dup_lbl.yml"
+{
+  echo "settings:"
+  echo "  base:"
+  echo "        MARKETING_VERSION: \"1.8.0\""
+  echo "        CURRENT_PROJECT_VERSION: 23"
+  echo "        RAYMOL_BETA_LABEL: \"\""
+  echo "  targets:"
+  echo "    RayMol:"
+  echo "        RAYMOL_BETA_LABEL: \"\""
+} > "$DUP_LBL"
+if bash "$SCRIPT" "$DUP_LBL" "1.9.0" "47" "1.9.0-beta47" >/dev/null 2>&1; then
+  echo "  FAIL: succeeded with duplicate RAYMOL_BETA_LABEL lines"; FAILED=1
+else echo "  ok: fails when RAYMOL_BETA_LABEL appears more than once"; fi
 
 rm -rf "$TMP"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }

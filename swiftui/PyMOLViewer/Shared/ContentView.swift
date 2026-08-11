@@ -2797,6 +2797,12 @@ struct ContentView: View {
                         .controlSize(.large)
                         #endif
                         SceneCard()
+                        // Version footer. The only place a TestFlight tester can
+                        // see WHICH beta they are on: betas share their marketing
+                        // version with the release they were cut from (App Store
+                        // Connect rejects a "-betaN" suffix in the version), so
+                        // "1.9.1" alone is ambiguous and "1.9.1-beta27" is not.
+                        AppVersionFooter()
                     }
                     .padding(12)
                 }

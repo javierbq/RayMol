@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
+		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
+		124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
 		142D8657C5BC7DCD8648D407 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
@@ -39,6 +41,7 @@
 		42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */; };
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
+		45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
 		484D9DFA048A6444660199CB /* MPNNKit in Frameworks */ = {isa = PBXBuildFile; productRef = 791C3459ADD4745BE10E27AA /* MPNNKit */; };
 		4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
@@ -96,11 +99,13 @@
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		983BCF8F1E0F251E82C1CF0E /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
 		9FE703EF6FD7C97884C299DF /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
+		AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		B2697EF48D85EF14D4A19163 /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
 		B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		B39D2F9676F6394CD354209A /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
+		B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
 		B6FBF55DD1FA97A86C678618 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
@@ -193,6 +198,7 @@
 		4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenFilesTests.swift; sourceTree = "<group>"; };
 		4C570F9CAC877E201F237016 /* whatsnew-170-move.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-move.png"; sourceTree = "<group>"; };
 		4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditInferenceTests.swift; sourceTree = "<group>"; };
+		525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildInfo.swift; sourceTree = "<group>"; };
 		55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-152-timeline.png"; sourceTree = "<group>"; };
 		55F4F52D951CF1F96606F41C /* SmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
 		56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNGate.swift; sourceTree = "<group>"; };
@@ -202,6 +208,7 @@
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
 		6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */ = {isa = PBXFileReference; path = "whatsnew-190-scenes.mp4"; sourceTree = "<group>"; };
+		6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildInfoTests.swift; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -225,6 +232,7 @@
 		B820FE9080BF73526A54CD66 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDrivingBanner.swift; sourceTree = "<group>"; };
 		BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = RayMol.icon; sourceTree = "<group>"; };
+		C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVersionFooter.swift; sourceTree = "<group>"; };
 		C562306A5AD1EEDDBA931B98 /* TransportBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBar.swift; sourceTree = "<group>"; };
 		C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColor.swift; sourceTree = "<group>"; };
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -249,7 +257,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_C91CA554-3146-4D90-8B65-349117B4020E" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_538CF3AC-3EAE-45D1-9968-D016092C39D4" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -363,6 +371,8 @@
 		64BF1D08B3C4F59EA8DE2FE1 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */,
+				C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */,
 				75F059BB95517CE91BD3E26E /* ContentView.swift */,
 				4300265954DF2B8309EDAA6C /* DesignAvailability.swift */,
 				C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */,
@@ -395,6 +405,7 @@
 		7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */ = {
 			isa = PBXGroup;
 			children = (
+				6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */,
 				2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
@@ -437,10 +448,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_3EF596E2-09DB-414E-83E1-5043487CDDEA" /* swiftui */ = {
+		"TEMP_40BB0994-A55D-4A53-B88A-8A2FF99FC7B4" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_C91CA554-3146-4D90-8B65-349117B4020E" /* PyMOLBridge.xcconfig */,
+				"TEMP_538CF3AC-3EAE-45D1-9968-D016092C39D4" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -456,6 +467,7 @@
 				D61D47B2F441B27E03C9023B /* Resources */,
 				4E6246238783B0F1F0B91508 /* Frameworks */,
 				E9A5181B8D4750082E0C0F2C /* Brand: set CFBundleName = RayMol */,
+				7227265B2801BD14276EC727 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
 				B07CD62C5BBE02F19894A460 /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				7AD50FCE7EA1A86486FE1AA6 /* Brand: register molecular document types */,
 				D6E180B4CFF12A0215D1E81F /* iOS: Embed Python.framework */,
@@ -489,6 +501,7 @@
 				61D7B61F4D5ACB99F6B7EA8D /* Resources */,
 				FB23646F44642041FD58D674 /* Frameworks */,
 				2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */,
+				2A47BF2FE69ED02355B5F8B5 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
 				2AC63EBF7745B988799768CA /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				20F6E2447B7743E74607108B /* Brand: register molecular document types */,
 				674165941FEA5412EAD0F21B /* iOS: Embed Python.framework */,
@@ -683,6 +696,26 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
+		2A47BF2FE69ED02355B5F8B5 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"${RAYMOL_BETA_LABEL:-}\"\n# Empty is the normal case: every local, DMG and App Store build. Leave\n# the key ABSENT rather than writing \"\" so the app can treat presence of\n# the key as \"this is a beta\" without also testing for emptiness.\n[ -n \"$LABEL\" ] || { echo \"RayMolBetaLabel skipped (not a beta build)\"; exit 0; }\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace RayMolBetaLabel -string \"$LABEL\" \"$PLIST\"\necho \"RayMolBetaLabel -> $LABEL ($PLIST)\"\n";
+		};
 		2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -779,6 +812,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) echo \"skip (non-iOS)\"; exit 0 ;; esac\nset -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then SLICE=ios-arm64_x86_64-simulator; else SLICE=ios-arm64; fi\nSRC=\"$SRCROOT/../deps_ios/Python.xcframework/$SLICE/Python.framework\"\nmkdir -p \"$CODESIGNING_FOLDER_PATH/Frameworks\"\nditto \"$SRC\" \"$CODESIGNING_FOLDER_PATH/Frameworks/Python.framework\"\n";
+		};
+		7227265B2801BD14276EC727 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"${RAYMOL_BETA_LABEL:-}\"\n# Empty is the normal case: every local, DMG and App Store build. Leave\n# the key ABSENT rather than writing \"\" so the app can treat presence of\n# the key as \"this is a beta\" without also testing for emptiness.\n[ -n \"$LABEL\" ] || { echo \"RayMolBetaLabel skipped (not a beta build)\"; exit 0; }\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace RayMolBetaLabel -string \"$LABEL\" \"$PLIST\"\necho \"RayMolBetaLabel -> $LABEL ($PLIST)\"\n";
 		};
 		7AD50FCE7EA1A86486FE1AA6 /* Brand: register molecular document types */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1086,6 +1139,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */,
 				B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
@@ -1111,6 +1165,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */,
+				124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */,
 				DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */,
 				4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */,
 				78893185798035F798A26A9B /* DesignAvailability.swift in Sources */,
@@ -1156,6 +1212,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */,
+				45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */,
 				042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */,
 				3F96563B0EA8F919B068A421 /* ContentView.swift in Sources */,
 				4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */,
@@ -1237,6 +1295,7 @@
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
+				RAYMOL_BETA_LABEL = "";
 				SDKROOT = iphoneos;
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
@@ -1270,6 +1329,7 @@
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
+				RAYMOL_BETA_LABEL = "";
 				SDKROOT = macosx;
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
@@ -1306,6 +1366,7 @@
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
+				RAYMOL_BETA_LABEL = "";
 				SDKROOT = macosx;
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
@@ -1362,6 +1423,7 @@
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
+				RAYMOL_BETA_LABEL = "";
 				SDKROOT = iphoneos;
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]" = "$(inherited) RAYMOL_MPNN";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]" = "$(inherited) RAYMOL_MPNN";
@@ -1373,7 +1435,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_C91CA554-3146-4D90-8B65-349117B4020E" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_538CF3AC-3EAE-45D1-9968-D016092C39D4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1480,7 +1542,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_C91CA554-3146-4D90-8B65-349117B4020E" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_538CF3AC-3EAE-45D1-9968-D016092C39D4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
