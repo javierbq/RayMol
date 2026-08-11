@@ -2141,13 +2141,15 @@ private struct ObjectCard: View {
                 // Sharing one glyph read as a single behaviour that sometimes
                 // produced a subtree and sometimes a settings card. The group's own
                 // rep card is reached from the A menu ("Inspect Group…").
-                // Deliberately NOT the .square variants: the tri-state checkbox
-                // immediately to the right is already minus.square.fill.
+                // CIRCLE variants, not square and not bare: the tri-state checkbox
+                // immediately to the right is minus.square.fill, and an expanded
+                // group would otherwise put a bare "-" right beside a boxed "[-]".
+                // The enclosing shape is what separates them at a glance.
                 Button(action: { entry.isGroup ? (onToggleGroup?() ?? ()) : toggleExpand() }) {
                     Image(systemName: entry.isGroup
-                          ? (isOpen ? "minus" : "plus")
+                          ? (isOpen ? "minus.circle" : "plus.circle")
                           : (expanded ? "chevron.down" : "chevron.right"))
-                        .font(.system(size: 9, weight: entry.isGroup ? .bold : .regular))
+                        .font(.system(size: entry.isGroup ? 10 : 9))
                         .foregroundColor(PanelTheme.headerColor)
                         .frame(width: 13)
                 }
