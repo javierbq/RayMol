@@ -123,6 +123,9 @@ final class PyMOLEngine: ObservableObject {
     // name (PyMOL's `wizard renaming` has no UI on the Metal/SwiftUI app). The
     // ObjectPanel observes this and presents a name-entry alert.
     @Published var pendingRename: String? = nil
+    // Request channel for "New Group…" (#255): the object to put in a new group.
+    // ObjectPanel presents the name-entry alert, mirroring pendingRename.
+    @Published var pendingGroupFor: String? = nil
     // Pick-debug instrumentation (active when PYMOL_PICKDEBUG is set): the last
     // click point in viewport (top-down, SwiftUI) points, drawn as a crosshair so
     // a screenshot shows click-vs-selection alignment. Set by MetalViewport.
@@ -794,17 +797,35 @@ final class PyMOLEngine: ObservableObject {
     func setObjectEnabled(_ name: String, _ enabled: Bool) {
         // UI mutation must happen on the main thread (drives @Published).
         if Thread.isMainThread {
-            if let idx = objects.firstIndex(where: { $0.name == name }) {
-                objects[idx].isEnabled = enabled
-            }
+            applyEnabledOptimistically(name, enabled)
         } else {
-            DispatchQueue.main.async {
-                if let idx = self.objects.firstIndex(where: { $0.name == name }) {
-                    self.objects[idx].isEnabled = enabled
-                }
-            }
+            DispatchQueue.main.async { self.applyEnabledOptimistically(name, enabled) }
         }
         runCommand(enabled ? "enable \(name)" : "disable \(name)")
+    }
+
+    /// Flip `name` and, when it is a group, its whole subtree.
+    ///
+    /// PyMOL cascades enable/disable down a group already, but the panel would not
+    /// see that for up to a poll interval (~500ms), so a group tap would leave its
+    /// members' checkboxes visibly stale and any tri-state parent wrong. Mirroring
+    /// the cascade locally keeps the tree self-consistent until the poll confirms.
+    private func applyEnabledOptimistically(_ name: String, _ enabled: Bool) {
+        var targets: Set<String> = [name]
+        // Walk down by parent links; cheap (the list is tens of entries) and the
+        // seen-set makes a corrupt parent map terminate rather than spin.
+        var frontier: Set<String> = [name]
+        while !frontier.isEmpty {
+            let children = objects.filter { $0.parent.map { frontier.contains($0) } ?? false }
+                                  .map { $0.name }
+                                  .filter { !targets.contains($0) }
+            if children.isEmpty { break }
+            targets.formUnion(children)
+            frontier = Set(children)
+        }
+        for idx in objects.indices where targets.contains(objects[idx].name) {
+            objects[idx].isEnabled = enabled
+        }
     }
 
     func runCommand(_ command: String) {
@@ -2885,9 +2906,16 @@ final class PyMOLEngine: ObservableObject {
             + "_zc.move('z', _cur - \(target))")
     }
 
-    func key(_ k: UInt8, x: Int32, y: Int32, modifiers: Int32) {
-        guard let inst = instance else { return }
-        PyMOLBridge_Key(inst, k, x, y, modifiers)
+    /// Fire a cmd.set_key binding by canonical PyMOL key token, returning
+    /// whether one existed. The caller consumes the key event iff this is true,
+    /// which is what lets an unbound ⌃D fall through to the Design menu item
+    /// while a user-bound ⌃D shadows it (#258).
+    ///
+    /// Synchronous and in-process (same model as `complete(_:)`), so the answer
+    /// is available while the NSEvent monitor still has to decide.
+    func invokeKeyBinding(_ token: String) -> Bool {
+        guard isReady, !token.isEmpty else { return false }
+        return PyMOLBridge_InvokeKey(token) == 1
     }
 
     func renderMetal() {

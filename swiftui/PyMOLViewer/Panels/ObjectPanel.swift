@@ -29,6 +29,14 @@ private let kRowH: CGFloat = 34
 private let kGutterW: CGFloat = 26
 #endif
 
+// Per-level indent for nested group members (#255), and the depth at which
+// indenting stops. Same width as the disclosure column every row already leads
+// with, so a member's chevron lines up under its parent's name. Capped because
+// the panel is ~300pt on macOS and narrower on a compact iPhone — past three
+// levels the name column would be crushed, so deeper nesting stops moving right.
+private let kIndentW: CGFloat = 13
+private let kMaxIndentDepth: Int = 3
+
 // MARK: - Representation inspector: polled state models
 // (Inlined here rather than a separate file so they're in both app targets
 // without editing the Xcode project's explicit file references.)
@@ -366,6 +374,11 @@ struct ObjectEntry: Identifiable, Equatable {
     // discoverability badge, since the object-level transparency slider then
     // doesn't reflect what's rendered. See appkit_inspector.object_has_atom_transp.
     var hasAtomTransp: Bool = false
+    // Group tree (#255). `isGroup` marks an `object:group`; `parent` is the name
+    // of the group this row lives in (nil = top level). Both default so the
+    // existing memberwise initializers keep compiling.
+    var isGroup: Bool = false
+    var parent: String? = nil
 
     var displayName: String {
         if isSelection, let count = atomCount {
@@ -373,6 +386,104 @@ struct ObjectEntry: Identifiable, Equatable {
         }
         return name
     }
+}
+
+// MARK: - Group tree (#255)
+
+/// One drawn row of the flattened object tree.
+private struct TreeRow: Identifiable {
+    let entry: ObjectEntry
+    let depth: Int
+    var id: String { entry.id }
+}
+
+/// Three-way visibility state. A group summarises its descendants, so it can be
+/// partially on in a way a single object never is.
+private enum CheckState { case on, off, mixed }
+
+/// Flatten the object list into the rows the panel draws, parents before children.
+///
+/// `engine.objects` mirrors PyMOL's own ordering and must NOT be reordered in
+/// place — `parseObjectPanelFeedback`'s equality guard and `setObjectEnabled`'s
+/// index lookup both assume it does. So nesting is derived here, at render time.
+///
+/// Children of a *collapsed* group are omitted entirely, which is what makes the
+/// disclosure a real collapse rather than a styling choice. Two robustness rules:
+/// an entry whose parent is not in the list is drawn at top level, and anything
+/// left unreachable (a cycle from a corrupt parent map) is drawn at top level too
+/// — an object must never silently disappear from the panel.
+private func flattenObjectTree(_ objects: [ObjectEntry],
+                               openGroups: Set<String>) -> [TreeRow] {
+    let known = Set(objects.map { $0.name })
+    let byParent = Dictionary(grouping: objects.filter {
+        if let p = $0.parent { return known.contains(p) } else { return false }
+    }, by: { $0.parent! })
+
+    let roots = objects.filter { $0.parent == nil || !known.contains($0.parent!) }
+
+    // Reachability ignores open/closed, so a collapsed child is not mistaken for
+    // an orphan and re-emitted at top level.
+    var reachable = Set<String>()
+    func mark(_ name: String) {
+        guard !reachable.contains(name) else { return }
+        reachable.insert(name)
+        for c in byParent[name] ?? [] { mark(c.name) }
+    }
+    for r in roots { mark(r.name) }
+
+    var rows: [TreeRow] = []
+    func emit(_ entry: ObjectEntry, _ depth: Int) {
+        rows.append(TreeRow(entry: entry, depth: depth))
+        guard entry.isGroup, openGroups.contains(entry.name) else { return }
+        for child in byParent[entry.name] ?? [] { emit(child, depth + 1) }
+    }
+    for r in roots { emit(r, 0) }
+    for entry in objects where !reachable.contains(entry.name) { emit(entry, 0) }
+    return rows
+}
+
+/// True when every ancestor of `entry` is enabled.
+///
+/// A member keeps reporting `enabled` while it is hidden by a disabled parent —
+/// `disable grp` leaves `get_names('public_objects', enabled_only=1)` returning
+/// the members — so a row must not take `isEnabled` at face value or it will show
+/// a checked box for something invisible.
+private func ancestorsEnabled(_ entry: ObjectEntry, byName: [String: ObjectEntry]) -> Bool {
+    var seen = Set<String>()
+    var next = entry.parent
+    while let name = next, !seen.contains(name), let anc = byName[name] {
+        if !anc.isEnabled { return false }
+        seen.insert(name)
+        next = anc.parent
+    }
+    return true
+}
+
+/// Checkbox state for a row; groups fold in their whole subtree.
+private func checkState(for entry: ObjectEntry,
+                        byParent: [String: [ObjectEntry]]) -> CheckState {
+    guard entry.isGroup else { return entry.isEnabled ? .on : .off }
+    if !entry.isEnabled { return .off }
+    var anyOn = false, anyOff = false
+    var seen = Set<String>()
+    var stack = byParent[entry.name] ?? []
+    while let c = stack.popLast() {
+        guard !seen.contains(c.name) else { continue }
+        seen.insert(c.name)
+        if c.isEnabled { anyOn = true } else { anyOff = true }
+        stack.append(contentsOf: byParent[c.name] ?? [])
+    }
+    return (anyOn && anyOff) ? .mixed : (anyOff ? .off : .on)
+}
+
+/// The shared visibility checkbox. Factored out because the same control is drawn
+/// by the object row, the selection row and the pinned "all" row.
+@ViewBuilder
+private func checkboxImage(_ state: CheckState) -> some View {
+    Image(systemName: state == .on ? "checkmark.square.fill"
+                    : state == .mixed ? "minus.square.fill" : "square")
+        .font(.system(size: 12))
+        .foregroundColor(state == .off ? PanelTheme.disabledColor : PanelTheme.textColor)
 }
 
 // MARK: - Menu Option Definitions
@@ -454,6 +565,10 @@ private indirect enum ActionMenuItem {
     // align entries.
     case alignToMolecule(label: String)
     case alignToSelection(label: String)
+    /// Dynamic submenu listing existing groups plus "New Group…" (#255). Built at
+    /// render time from engine.objects, like the align cases, because the set of
+    /// groups changes with every poll.
+    case moveToGroup(label: String)
 }
 
 private let baseActionMenuItems: [ActionMenuItem] = [
@@ -565,6 +680,8 @@ private let baseActionMenuItems: [ActionMenuItem] = [
         .action(label: "mol. weight (with H)",    key: "compute_mass_implicit"),
     ]),
     .separator,
+    .moveToGroup(label: "Move to Group"),
+    .separator,
     .action(label: "Rename",     key: "rename"),
     .action(label: "Duplicate",  key: "copy"),
     .action(label: "Delete",     key: "delete"),
@@ -579,7 +696,34 @@ private let baseActionMenuItems: [ActionMenuItem] = [
 /// unwanted chain, trim to a binding site) — distinct from "Delete", which only
 /// removes the selection marker and leaves every atom in place. Objects don't
 /// get it (they keep Delete + Remove Waters), matching desktop PyMOL.
-private func actionMenuItems(isSelection: Bool) -> [ActionMenuItem] {
+/// Action menu for a GROUP row (#255).
+///
+/// Deliberately much shorter than `baseActionMenuItems`: most of that menu is
+/// atom-level (Preset, Find, Compute, dss) and would be wrong or slow applied to
+/// a whole subtree. What remains is camera framing, the visibility verbs, and
+/// group lifecycle.
+///
+/// The two destructive entries are kept apart on purpose. "Ungroup" dissolves the
+/// group and leaves every object at top level; "Delete Group + Contents" removes
+/// the members too, because `delete <group>` in PyMOL takes the whole subtree with
+/// it. Labelling them identically would make an irreversible action look routine.
+private let groupActionMenuItems: [ActionMenuItem] = [
+    .action(label: "Zoom", key: "zoom"),
+    .action(label: "Orient", key: "orient"),
+    .action(label: "Center", key: "center"),
+    .separator,
+    .action(label: "Inspect Group…", key: "group_inspect"),
+    .separator,
+    .action(label: "Enable All Members", key: "group_enable_members"),
+    .action(label: "Disable All Members", key: "group_disable_members"),
+    .separator,
+    .action(label: "Rename…", key: "rename"),
+    .action(label: "Ungroup (keep objects)", key: "group_ungroup"),
+    .action(label: "Delete Group + Contents", key: "group_delete"),
+]
+
+private func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [ActionMenuItem] {
+    if isGroup { return groupActionMenuItems }
     guard isSelection else { return baseActionMenuItems }
     var items = baseActionMenuItems
     // Place "Remove Atoms" in the cleanup section right after "Remove Waters" —
@@ -688,6 +832,24 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
         return
     case "copy":               cmd = "copy \(n)_copy, \(n)"
     case "delete":             cmd = "delete \(n)"
+    // Group lifecycle (#255). `action=excise` dissolves the group and leaves its
+    // members at top level; plain `delete <group>` removes the members too, which
+    // is why the two are separate menu entries with explicit labels.
+    case "group_ungroup":      cmd = "group \(n), , action=excise"
+    case "group_delete":       cmd = "delete \(n)"
+    case "group_enable_members":  cmd = "enable \(n)"
+    case "group_disable_members": cmd = "disable \(n)"
+    case "group_inspect":
+        // A group's rep card is the union of its members' reps (see #256). The
+        // chevron on a group row is spoken for by child expansion, so this is how
+        // the card is opened.
+        engine.expandedDetail = n
+        return
+    case "group_new":
+        // Create a group holding just this object; PyMOL creates the group on
+        // first reference, so no separate create step is needed.
+        engine.pendingGroupFor = n
+        return
     // Strip the selection's atoms out of their parent object(s), then drop the
     // now-empty selection (PyMOL's selection-menu "remove atoms"). Shown only on
     // selection rows — see actionMenuItems(isSelection:).
@@ -791,9 +953,19 @@ struct ObjectPanel: View {
     #endif
     @State private var showSelectionBuilder = false
     @State private var renameText = ""
+    @State private var groupNameText = ""
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
     @State private var openSections: Set<String> = ["objects", "selections"]
+    // Which group rows are expanded. Deliberately NOT engine.expandedDetail: that
+    // is a single-slot accordion for the rep inspector whose didSet re-polls and
+    // which ContentView reads to resize the panel, so reusing it would make
+    // opening a group collapse the inspector and resize the pane. Held here rather
+    // than as @State on the row because rows live in a LazyVStack, which discards
+    // offscreen state. PyMOL's own open/closed flag (SpecRec OpenOrClosed) has no
+    // Python accessor, so this is the source of truth and we push it down with
+    // `group ..., action=open|close` — see the note in toggleGroupOpen.
+    @State private var openGroups: Set<String> = []
 
     var body: some View {
         panelBody
@@ -813,6 +985,28 @@ struct ObjectPanel: View {
             } message: { Text("Enter a new name for this object.") }
             .onChange(of: engine.pendingRename) { newValue in
                 if let n = newValue { renameText = n }   // prefill with current name
+            }
+            // "New Group…" (#255) — same request-channel shape as the rename alert.
+            .alert("New group for “\(engine.pendingGroupFor ?? "")”",
+                   isPresented: Binding(get: { engine.pendingGroupFor != nil },
+                                        set: { if !$0 { engine.pendingGroupFor = nil } })) {
+                TextField("Group name", text: $groupNameText)
+                Button("Create") {
+                    if let member = engine.pendingGroupFor {
+                        let g = groupNameText.trimmingCharacters(in: .whitespaces)
+                        if !g.isEmpty && g != member {
+                            // PyMOL creates the group on first reference, so this
+                            // both creates it and moves the object in.
+                            engine.runCommand("group \(g), \(member)")
+                            openGroups.insert(g)   // show the result immediately
+                        }
+                    }
+                    engine.pendingGroupFor = nil
+                }
+                Button("Cancel", role: .cancel) { engine.pendingGroupFor = nil }
+            } message: { Text("Enter a name for the new group.") }
+            .onChange(of: engine.pendingGroupFor) { newValue in
+                if newValue != nil { groupNameText = "" }
             }
     }
 
@@ -843,8 +1037,29 @@ struct ObjectPanel: View {
                             emptyHint("No objects loaded")
                         } else {
                             AllControlsRow()
-                            ForEach(Array(objects.enumerated()), id: \.element.id) { index, obj in
-                                ObjectCard(entry: obj, isAlt: index % 2 == 1)
+                            // Nested rows come from a flattened tree walk, and the
+                            // alternating stripe is indexed over THAT order — striping
+                            // the unflattened array desynchronises as groups collapse.
+                            let rows = flattenObjectTree(objects, openGroups: openGroups)
+                            let byName = Dictionary(objects.map { ($0.name, $0) },
+                                                    uniquingKeysWith: { a, _ in a })
+                            let byParent = Dictionary(grouping: objects.filter { $0.parent != nil },
+                                                      by: { $0.parent! })
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                                ObjectCard(
+                                    entry: row.entry,
+                                    isAlt: index % 2 == 1,
+                                    depth: row.depth,
+                                    check: checkState(for: row.entry, byParent: byParent),
+                                    dimmed: !ancestorsEnabled(row.entry, byName: byName),
+                                    isOpen: openGroups.contains(row.entry.name),
+                                    onToggleGroup: { toggleGroupOpen(row.entry.name) }
+                                )
+                                if row.entry.isGroup, openGroups.contains(row.entry.name),
+                                   (byParent[row.entry.name] ?? []).isEmpty {
+                                    emptyHint("Empty group")
+                                        .padding(.leading, kIndentW * CGFloat(min(row.depth + 1, kMaxIndentDepth)))
+                                }
                             }
                         }
                     }
@@ -914,6 +1129,16 @@ struct ObjectPanel: View {
         .padding(.horizontal, 8)
         .frame(height: 22)
         .background(PanelTheme.background)
+    }
+
+    /// Expand/collapse a group row, mirroring the state into PyMOL so the two
+    /// agree — `action=open|close` is what a `.pse` records, so a session saved
+    /// from here reopens with the same groups expanded.
+    private func toggleGroupOpen(_ name: String) {
+        let opening = !openGroups.contains(name)
+        if opening { openGroups.insert(name) } else { openGroups.remove(name) }
+        let escaped = name.replacingOccurrences(of: "'", with: "")
+        engine.runCommand("group \(escaped), , action=\(opening ? "open" : "close")")
     }
 
     private func emptyHint(_ text: String) -> some View {
@@ -1038,7 +1263,7 @@ private struct ObjectRowView: View {
             Spacer(minLength: 4)
 
             // Action buttons: A S H L C
-            ActionMenuButton(name: entry.name, isSelection: entry.isSelection)
+            ActionMenuButton(name: entry.name, isSelection: entry.isSelection, isGroup: entry.isGroup)
             ShowButton(name: entry.name)
             HideButton(name: entry.name)
             LabelMenuButton(name: entry.name)
@@ -1173,6 +1398,24 @@ private func actionMenuContent(_ items: [ActionMenuItem], name: String, engine: 
             Menu(label) {
                 AnyView(actionMenuContent(children, name: name, engine: engine))  // AnyView breaks recursive opaque-type inference
             }
+        case .moveToGroup(let label):
+            // Per-object grouping (#255). The panel has no multi-select — its only
+            // per-row state is visibility — so grouping is driven one object at a
+            // time from here rather than from a checked set.
+            Menu(label) {
+                let groups = engine.objects.filter { $0.isGroup && $0.name != name }
+                ForEach(groups) { g in
+                    Button(g.name) {
+                        engine.runCommand("group \(g.name), \(name), action=add")
+                    }
+                }
+                if !groups.isEmpty { Divider() }
+                Button("New Group…") { engine.pendingGroupFor = name }
+                if engine.objects.first(where: { $0.name == name })?.parent != nil {
+                    Divider()
+                    Button("Remove from Group") { engine.runCommand("ungroup \(name)") }
+                }
+            }
         case .alignToMolecule(let label):
             // Candidate targets: every OTHER loaded molecule object (mirrors
             // desktop PyMOL's align_to_object). Empty when nothing else is loaded.
@@ -1220,11 +1463,12 @@ private func runAlignCommand(mobile: String, target: String, engine: PyMOLEngine
 private struct ActionMenuButton: View {
     let name: String
     var isSelection: Bool = false
+    var isGroup: Bool = false
     @EnvironmentObject var engine: PyMOLEngine
 
     var body: some View {
         Menu {
-            actionMenuContent(actionMenuItems(isSelection: isSelection), name: name, engine: engine)
+            actionMenuContent(actionMenuItems(isSelection: isSelection, isGroup: isGroup), name: name, engine: engine)
         } label: {
             Text("A")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -1792,19 +2036,21 @@ private struct ObjectColorRow: View {
 
 private struct ObjectRowContent: View {
     let entry: ObjectEntry
+    // Tri-state for group rows (some descendants on). Defaults keep the plain
+    // object/selection behaviour for callers that don't compute it.
+    var check: CheckState? = nil
     @EnvironmentObject var engine: PyMOLEngine
 
     var body: some View {
         Button(action: { toggleEnabled() }) {
-            Image(systemName: entry.isEnabled ? "checkmark.square.fill" : "square")
-                .font(.system(size: 12))
-                .foregroundColor(entry.isEnabled ? PanelTheme.textColor : PanelTheme.disabledColor)
+            checkboxImage(check ?? (entry.isEnabled ? .on : .off))
         }
         .buttonStyle(.plain)
         .frame(width: kGutterW)
 
         Text(entry.displayName)
             .font(.system(size: 11))
+            .fontWeight(entry.isGroup ? .semibold : .regular)
             .foregroundColor(entry.isSelection ? PanelTheme.selectionTextColor : PanelTheme.textColor)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -1851,6 +2097,13 @@ private struct ObjectRowContent: View {
 private struct ObjectCard: View {
     let entry: ObjectEntry
     let isAlt: Bool
+    // Group-tree presentation (#255). All defaulted so the preview/memberwise
+    // call sites that predate the tree keep compiling.
+    var depth: Int = 0
+    var check: CheckState = .on
+    var dimmed: Bool = false
+    var isOpen: Bool = false
+    var onToggleGroup: (() -> Void)? = nil
     @EnvironmentObject var engine: PyMOLEngine
     @State private var selectedRep: String?
     // Live state-slider value while dragging (nil = follow the object poll). Keeps
@@ -1875,19 +2128,46 @@ private struct ObjectCard: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
-                Button(action: toggleExpand) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9))
+                // Indent nested members. Applied in THIS HStack, before the
+                // chevron — ObjectRowContent is a bare column tuple spliced into
+                // this stack, so wrapping it to indent would break its alignment
+                // with the selection and "all" rows.
+                if depth > 0 {
+                    Spacer().frame(width: kIndentW * CGFloat(min(depth, kMaxIndentDepth)))
+                }
+                // Groups get +/-, plain objects keep the chevron, because the two
+                // disclosures do genuinely DIFFERENT things: +/- expands the
+                // group's children, the chevron opens that object's rep inspector.
+                // Sharing one glyph read as a single behaviour that sometimes
+                // produced a subtree and sometimes a settings card. The group's own
+                // rep card is reached from the A menu ("Inspect Group…").
+                // CIRCLE variants, not square and not bare: the tri-state checkbox
+                // immediately to the right is minus.square.fill, and an expanded
+                // group would otherwise put a bare "-" right beside a boxed "[-]".
+                // The enclosing shape is what separates them at a glance.
+                Button(action: { entry.isGroup ? (onToggleGroup?() ?? ()) : toggleExpand() }) {
+                    Image(systemName: entry.isGroup
+                          ? (isOpen ? "minus.circle" : "plus.circle")
+                          : (expanded ? "chevron.down" : "chevron.right"))
+                        .font(.system(size: entry.isGroup ? 10 : 9))
                         .foregroundColor(PanelTheme.headerColor)
                         .frame(width: 13)
                 }
                 .buttonStyle(.plain)
-                ObjectRowContent(entry: entry)
+                .accessibilityLabel(entry.isGroup
+                    ? "\(isOpen ? "Collapse" : "Expand") group \(entry.name)"
+                    : "\(expanded ? "Collapse" : "Expand") \(entry.name)")
+                ObjectRowContent(entry: entry, check: check)
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .frame(height: kRowH)
             .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+            // A member hidden by a disabled ancestor is dimmed: it still reports
+            // enabled, so without this the box reads as checked while nothing is
+            // on screen. Opacity rather than a new colour, because the A/S/H/L/C
+            // cells compute their own.
+            .opacity(dimmed ? 0.45 : 1.0)
             // Whole HEADER-row tap toggles enable. Applied to the header HStack
             // only (NOT the outer VStack) so the expanded rep-detail below stays
             // interactive. The disclosure chevron Button and the trailing
@@ -1896,7 +2176,7 @@ private struct ObjectCard: View {
             .contentShape(Rectangle())
             .onTapGesture { engine.setObjectEnabled(entry.name, !entry.isEnabled) }
             // Long-press (iOS) / right-click (macOS) opens the action menu.
-            .contextMenu { actionMenuContent(actionMenuItems(isSelection: entry.isSelection), name: entry.name, engine: engine) }
+            .contextMenu { actionMenuContent(actionMenuItems(isSelection: entry.isSelection, isGroup: entry.isGroup), name: entry.name, engine: engine) }
 
             if expanded {
                 VStack(spacing: 3) {
@@ -3401,6 +3681,12 @@ extension PyMOLEngine {
             let sel_counts: [String: Int]
             let nstate: [String: Int]?
             let has_transp: [String: Bool]?
+            // Group tree (#255). OPTIONAL on purpose: a non-optional field makes
+            // the whole decode fail against an older bundled appkit_inspector.py,
+            // which would freeze the panel on its last list rather than degrade
+            // to a flat one.
+            let groups: [String]?
+            let parent: [String: String]?
         }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
@@ -3408,6 +3694,8 @@ extension PyMOLEngine {
         }
 
         let enabledSet = Set(payload.enabled)
+        let groupSet = Set(payload.groups ?? [])
+        let parentMap = payload.parent ?? [:]
         var entries: [ObjectEntry] = []
 
         for name in payload.objects {
@@ -3418,7 +3706,9 @@ extension PyMOLEngine {
                 isSelection: false,
                 atomCount: nil,
                 stateCount: max(payload.nstate?[name] ?? 1, 1),
-                hasAtomTransp: payload.has_transp?[name] ?? false
+                hasAtomTransp: payload.has_transp?[name] ?? false,
+                isGroup: groupSet.contains(name),
+                parent: parentMap[name]
             ))
         }
 

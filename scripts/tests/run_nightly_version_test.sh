@@ -35,15 +35,28 @@ expect_fail () {  # $1=label $2=version-literal (may be empty)
 
 echo "== nightly_version =="
 
-# Core behaviour: bump the MINOR, zero the PATCH.
-expect_ok "1.8.0 -> 1.9.0"   '"1.8.0"'  "1.9.0"
-expect_ok "1.9.9 -> 1.10.0"  '"1.9.9"'  "1.10.0"
-expect_ok "0.1.0 -> 0.2.0"   '"0.1.0"'  "0.2.0"
-expect_ok "2.0.3 -> 2.1.0"   '"2.0.3"'  "2.1.0"
-# Double-digit minors must not be mangled by string comparison.
-expect_ok "1.10.0 -> 1.11.0" '"1.10.0"' "1.11.0"
+# Core behaviour: emit project.yml's version VERBATIM — no bump.
+#
+# This is the assertion that matters, and it is the inverse of what this suite
+# asserted before 2026-08-10. Bumping to the next minor pre-claimed a version in
+# App Store Connect that could never be released or reclaimed (the iOS app ended
+# up with a TestFlight 1.10.0 above a live 1.8.0). Betas are now told apart by
+# build number, so a bump reintroduced here is a regression, not a refinement.
+expect_ok "1.8.0 stays 1.8.0"   '"1.8.0"'  "1.8.0"
+expect_ok "1.9.1 stays 1.9.1"   '"1.9.1"'  "1.9.1"
+expect_ok "1.9.9 stays 1.9.9"   '"1.9.9"'  "1.9.9"
+expect_ok "0.1.0 stays 0.1.0"   '"0.1.0"'  "0.1.0"
+# Double-digit minors must survive verbatim (no numeric round-trip mangling).
+expect_ok "1.10.0 stays 1.10.0" '"1.10.0"' "1.10.0"
 # Unquoted YAML scalar is still valid YAML and must parse.
-expect_ok "unquoted 1.8.0"   '1.8.0'    "1.9.0"
+expect_ok "unquoted 1.8.0"      '1.8.0'    "1.8.0"
+
+# Explicitly pin the anti-regression: the output must NEVER exceed the input.
+for v in "1.8.0" "1.9.1" "1.10.0" "2.0.3"; do
+  got="$(bash "$SCRIPT" "$(fixture "\"$v\"")" 2>/dev/null)"
+  if [ "$got" = "$v" ]; then echo "  ok: $v not bumped"
+  else echo "  FAIL: $v was rewritten to '$got' — betas must not claim a new version"; FAILED=1; fi
+done
 
 # Hard failures — guessing a version is unrecoverable in App Store Connect.
 expect_fail "missing MARKETING_VERSION" ""
@@ -57,16 +70,21 @@ if bash "$SCRIPT" "$TMP/does-not-exist.yml" >/dev/null 2>&1; then
 else echo "  ok: missing file exits non-zero"; fi
 
 # Smoke-test the real repo file: with no argument the script must default to
-# swiftui/project.yml, exit 0, and emit a valid release-version string.
-# We do NOT assert a literal value here (e.g. "1.9.0") because that would
-# make CI fail on every release once project.yml is bumped — the arithmetic
-# is already exhaustively proven by the fixture cases above.  Deriving the
-# expectation from the script itself (expected="$(bash "$SCRIPT")") would be
-# circular and would pass even if the script were completely broken.
-# Asserting the structural contract — exit 0 + X.Y.0 form — is release-proof.
-if REAL="$(bash "$SCRIPT" 2>/dev/null)" && [[ "$REAL" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
-  echo "  ok: real repo → $REAL"
-else echo "  FAIL: real repo gave '$REAL' (expected X.Y.0 and exit 0)"; FAILED=1; fi
+# swiftui/project.yml and exit 0.
+#
+# This now asserts the value directly, which the old bump-based version could
+# not: the answer is "whatever project.yml declares" rather than arithmetic on
+# it, and that equality IS the contract. Reading the expectation out of the file
+# with an independent sed (not by calling the script) keeps it non-circular, and
+# it stays correct across every future release bump.
+REAL_YML="$ROOT/swiftui/project.yml"
+DECLARED="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' \
+             "$REAL_YML" | head -1)"
+if REAL="$(bash "$SCRIPT" 2>/dev/null)" && [ -n "$DECLARED" ] && [ "$REAL" = "$DECLARED" ]; then
+  echo "  ok: real repo → $REAL (matches project.yml verbatim)"
+else
+  echo "  FAIL: real repo gave '$REAL', project.yml declares '$DECLARED'"; FAILED=1
+fi
 
 rm -rf "$TMP"
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAILURES"; exit 1; }

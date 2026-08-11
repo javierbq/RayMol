@@ -160,20 +160,30 @@ def _color_setting_rgb(setting, fallback=(0.0, 0.0, 0.0)):
     return [float(t[0]), float(t[1]), float(t[2])]
 
 
-def is_molecule(obj):
-    """True when `obj` is a molecular object — i.e. something an atom selection is
-    allowed to name.
+# Object types the C++ selector accepts as an atom selection. A GROUP belongs
+# here even though it is not itself a molecule: it resolves to its members'
+# atoms, so `iterate`/`count_atoms` on a group name succeed and describe the
+# union of the members (issue #256). Measurements, CGOs and maps do not.
+SELECTABLE_TYPES = ('object:molecule', 'object:group')
 
-    Measurement objects (`dist01`/`ang01`/`dih01`), CGOs, maps and groups are not.
-    Handing one to `cmd.iterate` / `cmd.count_atoms` makes the C++ selector reject
-    it and write `Selector-Error: Invalid selection name "<obj>"` straight to the
-    feedback log. A Python-level try/except cannot suppress that: the selector has
-    already emitted the line by the time it raises. Since the object panel polls
+
+def takes_atom_selection(obj):
+    """True when `obj` may be handed to `cmd.iterate` / `cmd.count_atoms`.
+
+    Measurement objects (`dist01`/`ang01`/`dih01`), CGOs and maps may not.
+    Handing one to the selector makes it reject the name and write
+    `Selector-Error: Invalid selection name "<obj>"` straight to the feedback log.
+    A Python-level try/except cannot suppress that: the selector has already
+    emitted the line by the time it raises. Since the object panel polls
     ~2x/second, an unguarded probe floods the console for as long as the object
     exists — issue #219.
+
+    Groups were originally caught by this guard too, which silently blanked their
+    rep list and per-atom transparency badge even though probing them is both safe
+    and meaningful — issue #256.
     """
     try:
-        return cmd.get_type(obj) == 'object:molecule'
+        return cmd.get_type(obj) in SELECTABLE_TYPES
     except Exception:
         return False
 
@@ -189,10 +199,11 @@ def transp_summary(obj):
     no atom-level override exists (it never returns None here), so comparing the
     effective range to the object-level value is what detects a genuine override.
 
-    Non-molecular objects are rejected up front (see is_molecule): they cannot
-    carry per-atom transparency anyway, so probing them is both wrong and noisy.
+    Objects the selector won't take are rejected up front (see
+    takes_atom_selection): they cannot carry per-atom transparency anyway, so
+    probing them is both wrong and noisy.
     """
-    if not is_molecule(obj):
+    if not takes_atom_selection(obj):
         return {}
     objlv = {s: _num(s, obj) for s in TRANSP_SETTINGS}
     mn = {s: None for s in TRANSP_SETTINGS}
@@ -242,11 +253,12 @@ def _build(objs):
     detail = {}
     for o in objs:
         reps = []
-        # Non-molecular objects (measurements, CGOs, maps, groups) have no reps to
-        # describe, and every probe below — transp_summary's iterate and the
-        # per-rep count_atoms — would make the selector log an error per poll tick
-        # (issue #219). Emit an empty rep list instead of interrogating them.
-        if not is_molecule(o):
+        # Measurements, CGOs and maps have no reps to describe, and every probe
+        # below — transp_summary's iterate and the per-rep count_atoms — would make
+        # the selector log an error per poll tick (issue #219). Emit an empty rep
+        # list instead of interrogating them. Groups DO describe their members'
+        # reps and are deliberately not excluded here (issue #256).
+        if not takes_atom_selection(o):
             detail[o] = reps
             continue
         # Effective per-atom transparency range per setting, computed once per
@@ -339,6 +351,65 @@ def poll(objs):
         print('OBJDETAIL_ERR:' + str(e))
 
 
+# Cache backing group_parents(): the cheap shape fingerprint of the last build,
+# and the {child: parent} map it produced.
+_GROUP_FP = None
+_GROUP_PARENTS = {}
+
+
+def _group_fingerprint(objs, groups):
+    """Cheap (~0.1 ms) signature of the object tree's SHAPE.
+
+    Every call here is a name walk with no serialization: `get_object_list`
+    resolves a group to its molecular leaves. Any create, delete, rename,
+    group/ungroup, or re-parent that involves a molecule changes this tuple.
+    """
+    return (tuple(objs), tuple(groups),
+            tuple((g, tuple(cmd.get_object_list(g) or [])) for g in groups))
+
+
+def group_parents(objs, groups):
+    """{child: parent} for every object that lives inside a group.
+
+    The only COMPLETE source is the session's per-object record — entry[6] is the
+    parent name. Nothing cheaper covers the whole tree: `get_object_list` reports a
+    group's MOLECULAR leaves only, so a measurement, CGO or map inside a group is
+    invisible to it (and to every other selection-based API), and no API at all
+    reports group-in-group nesting.
+
+    But `get_session` serializes every object — measured at ~8 ms and ~2.5 MB for a
+    single 10k-atom molecule, scaling with atom count — which is far too expensive
+    to run at the ~2x/second poll cadence. So it runs only when the cheap
+    fingerprint above changes, and the result is cached.
+
+    The residue: a re-parent that does NOT move the fingerprint (moving a
+    non-molecular object between groups, or re-nesting a group whose molecular
+    leaves are unchanged) is not picked up until the next structural edit. Both are
+    rare and self-heal. Replacing this whole function with a C++ accessor over
+    SpecRec.group_name would make it exact and free — see #255.
+    """
+    global _GROUP_FP, _GROUP_PARENTS
+    if not groups:
+        _GROUP_FP, _GROUP_PARENTS = None, {}
+        return {}
+    try:
+        fp = _group_fingerprint(objs, groups)
+    except Exception:
+        return dict(_GROUP_PARENTS)
+    if fp == _GROUP_FP:
+        return dict(_GROUP_PARENTS)
+    parents = {}
+    try:
+        for ent in (cmd.get_session(partial=1).get('names') or []):
+            # entry = [name, ..., parent_group_name]; '' means top level.
+            if ent and len(ent) > 6 and ent[6]:
+                parents[ent[0]] = ent[6]
+    except Exception:
+        return dict(_GROUP_PARENTS)      # keep the last good map on failure
+    _GROUP_FP, _GROUP_PARENTS = fp, parents
+    return dict(parents)
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -356,6 +427,15 @@ def poll_panel():
         sels = list(cmd.get_names('public_selections') or [])
         enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])
         enabled |= set(cmd.get_names('public_selections', enabled_only=1) or [])
+        # Group tree (#255). Kept in its own try so a failure here degrades to a
+        # flat list rather than aborting the whole poll — the single except below
+        # writes NO file, and Swift only routes lines prefixed 'OBJPANEL:', so an
+        # OBJPANEL_ERR would silently freeze the panel on its stale list.
+        try:
+            groups = list(cmd.get_names('public_group_objects') or [])
+            parents = group_parents(objs, groups)
+        except Exception:
+            groups, parents = [], {}
         payload = {
             'objects': objs,
             'selections': sels,
@@ -363,6 +443,8 @@ def poll_panel():
             'sel_counts': {s: cmd.count_atoms(s) for s in sels},
             'nstate': {o: cmd.count_states('?' + o) for o in objs},
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
+            'groups': groups,
+            'parent': parents,
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's
