@@ -1010,9 +1010,6 @@ struct ContentView: View {
     // Currently always off — the explicit toggle was removed; collapse the rail +
     // inspector instead for an immersive view.
     @State private var iosFullScreen = false
-    // Notes needs an editor-sized canvas on iPhone. Selecting its inspector tab
-    // opens a dedicated workspace instead of squeezing it into the bottom/side pane.
-    @State private var showPhoneNotes = false
     // Settings tab: in-panel drill into the display-settings card.
     @State private var settingsSceneOpen = false
     // Panel fraction to restore after the Theme Studio closes (it temporarily
@@ -1466,20 +1463,6 @@ struct ContentView: View {
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: url, to: dst)
             NSLog("EXPORTTEST_DONE: \(dst.path)")
-        }
-        .fullScreenCover(isPresented: $showPhoneNotes) {
-            NavigationStack {
-                NotesInspectorView()
-                    .environmentObject(notes)
-                    .environmentObject(engine)
-                    .navigationTitle("Analysis Notes")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showPhoneNotes = false }
-                        }
-                    }
-            }
         }
     }
 
@@ -2701,7 +2684,7 @@ struct ContentView: View {
                 .padding(.top, 8)
             }
             #endif
-            Picker("", selection: inspectorTabBinding) {
+            Picker("", selection: $inspectorTab) {
                 ForEach(InspectorTab.allCases) { tab in
                     #if os(iOS)
                     if hSize == .compact {
@@ -2827,21 +2810,6 @@ struct ContentView: View {
         .onChange(of: engine.timelineMode) { on in
             if on { engine.pause(); engine.stopAllObjectStates() }
         }
-    }
-
-    private var inspectorTabBinding: Binding<InspectorTab> {
-        Binding(
-            get: { inspectorTab },
-            set: { tab in
-                #if os(iOS)
-                if hSize == .compact && tab == .notes {
-                    showPhoneNotes = true
-                    return
-                }
-                #endif
-                inspectorTab = tab
-            }
-        )
     }
 
     // MARK: - Toolbar
