@@ -66,6 +66,7 @@ jobs:
               testing/tests/test_mcp_tools.py \
               testing/tests/test_raymol_scene_anim.py \
               testing/tests/test_raymol_scene_ttt.py \
+              testing/tests/test_raymol_keys.py \
               testing/tests/raymol/design_color.py \
               testing/tests/raymol/design_editing.py \
               testing/tests/raymol/design_enumerate.py \
