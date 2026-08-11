@@ -342,7 +342,8 @@ def poll(objs):
     the sequence panel."""
     import json, os, tempfile
     try:
-        p = os.path.join(tempfile.gettempdir(), 'pymol_objdetail.json')
+        p = os.path.join(tempfile.gettempdir(),
+                         'pymol_objdetail_%d.json' % os.getpid())
         with open(p, 'w') as _f:
             _f.write(json.dumps(_build(objs)))
         print('OBJDETAIL:ready')
@@ -445,7 +446,12 @@ def poll_panel():
             'groups': groups,
             'parent': parents,
         }
-        p = os.path.join(tempfile.gettempdir(), 'pymol_objpanel.json')
+        # Multiple RayMol windows may run as separate processes. A process-local
+        # filename prevents an empty instance from replacing another instance's
+        # populated object list and briefly showing the empty-state overlay over
+        # a rendered molecule.
+        p = os.path.join(tempfile.gettempdir(),
+                         'pymol_objpanel_%d.json' % os.getpid())
         with open(p, 'w') as _f:
             _f.write(json.dumps(payload))
         print('OBJPANEL:ready')

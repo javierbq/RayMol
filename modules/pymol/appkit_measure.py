@@ -13,6 +13,7 @@ _kind = 'distance'        # distance | angle | dihedral
 _NEED = {'distance': 2, 'angle': 3, 'dihedral': 4}
 _picks = []               # accumulated atom-expr strings
 _counter = 0
+_history = []            # committed measurements for Analysis Notes export
 
 
 def set_mode(kind):
@@ -77,20 +78,35 @@ def _commit(picks):
     try:
         if _kind == 'distance':
             v = cmd.distance('dist%02d' % _counter, picks[0], picks[1])
+            _record('dist%02d' % _counter, picks, v)
             return None if v is None else round(float(v), 2)
         if _kind == 'angle':
             v = cmd.angle('ang%02d' % _counter, picks[0], picks[1], picks[2])
+            _record('ang%02d' % _counter, picks, v)
             return None if v is None else round(float(v), 1)
         if _kind == 'dihedral':
             v = cmd.dihedral('dih%02d' % _counter, picks[0], picks[1], picks[2], picks[3])
+            _record('dih%02d' % _counter, picks, v)
             return None if v is None else round(float(v), 1)
     except Exception as e:
         print('MEASURE_ERR:' + str(e))
     return None
 
 
+def _record(name, picks, value):
+    if value is not None:
+        _history.append({'name': name, 'kind': _kind,
+                         'value': round(float(value), 2), 'picks': list(picks)})
+
+
+def history():
+    """Return committed measurements for the Analysis Notes structured insert."""
+    return list(_history)
+
+
 def clear_all():
     """Delete every measurement object (ObjectDist/angle/dihedral)."""
+    global _history
     try:
         for o in (cmd.get_names('objects') or []):
             try:
@@ -100,4 +116,5 @@ def clear_all():
                 pass
     except Exception as e:
         print('MEASURE_ERR:' + str(e))
+    _history = []
     reset()

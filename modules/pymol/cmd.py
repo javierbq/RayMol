@@ -77,6 +77,17 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _ra_e:
         print("raymol_scene_anim registration failed: %s" % _ra_e)
 
+    # RayMol Analysis Notes: a backward-compatible extra key in the .pse session
+    # dictionary. Linked images are stored as base64 data keyed by MD5 digest.
+    try:
+        from pymol import raymol_notes
+        if raymol_notes.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(raymol_notes.session_restore)
+        if raymol_notes.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(raymol_notes.session_save)
+    except Exception as _rn_e:
+        print("raymol_notes registration failed: %s" % _rn_e)
+
     # take care of some deferred initialization
 
     _pymol._view_dict_sc = Shortcut()

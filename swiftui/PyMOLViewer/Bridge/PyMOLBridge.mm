@@ -9,6 +9,7 @@
 #include "PyMOLOptions.h"
 #include "P.h"
 #include "Setting.h"        // SettingGet/SetGlobal_b, cSetting_metal_raytrace
+#include "Scene.h"
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
@@ -333,6 +334,26 @@ void PyMOLBridge_RunCommand(const char *command)
     }
     if (PyErr_Occurred()) PyErr_Print();
     PAutoUnblock(G, blk);
+}
+
+int PyMOLBridge_GetView(PyMOLHandle h, float *view, int count)
+{
+    if (!h || !view || count != static_cast<int>(cSceneViewSize)) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    SceneGetView(G, view);
+    return 1;
+}
+
+int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float animate)
+{
+    if (!h || !view || count != static_cast<int>(cSceneViewSize)) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    SceneViewType captured;
+    for (std::size_t i = 0; i < cSceneViewSize; ++i) captured[i] = view[i];
+    SceneSetView(G, captured, 1, animate, 1);
+    return 1;
 }
 
 char *PyMOLBridge_Complete(const char *text)

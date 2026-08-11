@@ -712,9 +712,14 @@ final class PyMOLEngine: ObservableObject {
     /// embedded core's GIL model is not safe off-main (see runHeavy), and is
     /// wrapped in a background-task assertion so a large session finishes
     /// writing within iOS's background grace window.
-    func autosaveSession() {
+    /// - Parameter keepingNotes: pass true when the Analysis Notes store holds
+    ///   content. An object-less scene is normally cleared, but notes live only
+    ///   inside the .pse on iOS (the store's own recovery file is per-process),
+    ///   so clearing here would silently destroy a note written before any
+    ///   structure was loaded.
+    func autosaveSession(keepingNotes: Bool = false) {
         guard isReady, let url = autosaveURL else { return }
-        guard !objects.isEmpty else { clearAutosave(); return }
+        guard !objects.isEmpty || keepingNotes else { clearAutosave(); return }
 
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
         defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
@@ -840,6 +845,25 @@ final class PyMOLEngine: ObservableObject {
         } else {
             runCommandCore(command)
         }
+    }
+
+    /// Snapshot the complete PyMOL camera state for a note bookmark.
+    func captureView() -> [Float]? {
+        guard isReady, let instance else { return nil }
+        var view = [Float](repeating: 0, count: 25)
+        let captured = view.withUnsafeMutableBufferPointer { buffer in
+            PyMOLBridge_GetView(instance, buffer.baseAddress, Int32(buffer.count))
+        }
+        return captured == 1 ? view : nil
+    }
+
+    /// Fly back to a camera state previously captured by `captureView()`.
+    func restoreView(_ view: [Float], animate: Float = 0.45) {
+        guard isReady, let instance, view.count == 25 else { return }
+        let restored = view.withUnsafeBufferPointer { buffer in
+            PyMOLBridge_SetView(instance, buffer.baseAddress, Int32(buffer.count), animate)
+        }
+        if restored == 1 { requestViewportRedraw() }
     }
 
     // Synchronous command body. Safe on the main thread (light commands) or on
@@ -1144,6 +1168,36 @@ final class PyMOLEngine: ObservableObject {
     func saveSession(to url: URL) {
         runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
         currentSessionURL = url
+    }
+
+    /// Stage/export Analysis Notes through the Python session extension. Paths
+    /// are base64 encoded so quotes and non-ASCII filenames never become Python.
+    func stageAnalysisNotes(documentURL: URL, assetsDirectory: URL) -> Bool {
+        guard isReady, FileManager.default.fileExists(atPath: documentURL.path) else { return false }
+        let document = Data(documentURL.path.utf8).base64EncodedString()
+        let assets = Data(assetsDirectory.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol import raymol_notes as _rn
+        _rn.stage(_b64.b64decode('\(document)').decode('utf-8'),
+                  _b64.b64decode('\(assets)').decode('utf-8'))
+        """)
+        return true
+    }
+
+    func exportAnalysisNotes(documentURL: URL, assetsDirectory: URL) -> Bool {
+        guard isReady else { return false }
+        try? FileManager.default.removeItem(at: documentURL)
+        try? FileManager.default.removeItem(at: assetsDirectory)
+        let document = Data(documentURL.path.utf8).base64EncodedString()
+        let assets = Data(assetsDirectory.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol import raymol_notes as _rn
+        _rn.export(_b64.b64decode('\(document)').decode('utf-8'),
+                   _b64.b64decode('\(assets)').decode('utf-8'))
+        """)
+        return FileManager.default.fileExists(atPath: documentURL.path)
     }
 
     // MARK: - Theme
@@ -1974,6 +2028,65 @@ final class PyMOLEngine: ObservableObject {
 
     func clearMeasurements() {
         runPython("from pymol import appkit_measure as _am\n_am.clear_all()")
+    }
+
+    /// Structured residue rows for Analysis Notes. `contacts` returns residues
+    /// outside the current `sele` selection with an atom within the cutoff.
+    func noteResidues(contacts: Bool, cutoff: Double = 4.0) -> [[String: String]] {
+        guard isReady else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-residues-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        let selection = contacts
+            ? "byres (((sele) around \(cutoff)) and not (sele))"
+            : "sele"
+        runPython("""
+        import base64 as _b64, json as _json
+        from pymol import cmd as _c
+        _rows, _seen = [], set()
+        if 'sele' in (_c.get_names('selections') or []):
+            for _a in _c.get_model(r'''\(selection)''').atom:
+                _key = (_a.model, _a.chain, _a.resi, _a.resn)
+                if _key not in _seen:
+                    _seen.add(_key)
+                    _rows.append({'object': _a.model, 'chain': _a.chain,
+                                  'resi': _a.resi, 'resn': _a.resn})
+        with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
+            _json.dump(_rows, _f)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return [] }
+        return rows
+    }
+
+    func noteMeasurements() -> [[String: Any]] {
+        guard isReady else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-measurements-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64, json as _json
+        from pymol import appkit_measure as _am
+        with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
+            _json.dump(_am.history(), _f)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return rows
+    }
+
+    /// Safe residue selection used by raymol-residue links in note Preview.
+    func selectNoteResidue(object: String, chain: String, resi: String) {
+        let values = [object, chain, resi].map { Data($0.utf8).base64EncodedString() }
+        runPython("""
+        import base64 as _b64
+        from pymol import cmd as _c
+        _o, _ch, _ri = [_b64.b64decode(_v).decode('utf-8') for _v in \(values)]
+        _expr = '(model %s and chain %s and resi %s)' % (_o, _ch, _ri)
+        _c.select('sele', _expr); _c.enable('sele'); _c.zoom('sele', buffer=4.0, animate=0.45)
+        """)
     }
 
     // MARK: - Design mode (protein-design overlay)
@@ -2977,7 +3090,8 @@ final class PyMOLEngine: ObservableObject {
     // sceneState. File-based to avoid the ~1KB feedback-line cap splitting the
     // payload and leaking continuation lines into the terminal log.
     func parseObjectDetailFeedback(_ line: String) {
-        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_objdetail.json")
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_objdetail_\(ProcessInfo.processInfo.processIdentifier).json")
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
@@ -3038,7 +3152,11 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        let scenes = (root["scenes"] as? [String]) ?? []
+        // Note-linked full-scene bookmarks are implementation details. Keep them
+        // inside the .pse for reliable restoration without cluttering the user's
+        // Scenes panel, timeline composer, or viewport scene chips.
+        let scenes = ((root["scenes"] as? [String]) ?? [])
+            .filter { !$0.hasPrefix("__raymol_note_") }
         let curScene = (root["cur_scene"] as? String) ?? ""
 
         DispatchQueue.main.async {

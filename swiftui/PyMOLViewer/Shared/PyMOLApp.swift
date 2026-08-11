@@ -38,6 +38,7 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
+    @StateObject private var notes = AnalysisNotesStore.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @StateObject private var mcp = MCPServerManager.shared
     @StateObject private var updater = RayMolUpdater()
@@ -75,6 +76,14 @@ struct PyMOLApp: App {
             .windowStyle(.titleBar)
             .defaultSize(width: 1200, height: 800)
             .commands { macCommands }
+        Window("Analysis Notes", id: "analysis-notes") {
+            NotesInspectorView()
+                .environmentObject(engine)
+                .environmentObject(notes)
+                .frame(minWidth: 440, minHeight: 520)
+                .onDisappear { notes.flush() }
+        }
+        .defaultSize(width: 560, height: 720)
         #else
         WindowGroup { rootView }
         #endif
@@ -88,6 +97,8 @@ struct PyMOLApp: App {
                 .environmentObject(engine)
                 .environmentObject(engine.playback)
                 .environmentObject(ThemeManager.shared)
+                .environmentObject(notes)
+                .onDisappear { notes.flush() }
             #if os(macOS)
                 // Bring the app/window to the front on launch (a GUI app should
                 // foreground itself; also lets it be launched from a terminal).
@@ -140,7 +151,10 @@ struct PyMOLApp: App {
                     // it during transient .inactive (Control Center, switcher peek)
                     // is harmless.
                     if phase == .inactive { engine.captureRestoreSnapshot() }
-                    if phase == .background { engine.autosaveSession() }
+                    if phase == .background {
+                        notes.flush()
+                        engine.autosaveSession(keepingNotes: notes.hasContent)
+                    }
                 }
             #endif
         }
@@ -241,6 +255,21 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolToggleTimeline, object: nil)
                 }.keyboardShortcut("m", modifiers: [.command, .option])
             }
+            CommandMenu("Notes") {
+                Button("Insert Camera View Link") {
+                    NotificationCenter.default.post(name: .raymolInsertNoteView, object: nil)
+                }.keyboardShortcut("l", modifiers: [.command, .option])
+                Button("Toggle Edit / Preview") {
+                    NotificationCenter.default.post(name: .raymolToggleNotePreview, object: nil)
+                }.keyboardShortcut("p", modifiers: [.command, .option])
+                Divider()
+                Button("Increase Note Font Size") {
+                    NotificationCenter.default.post(name: .raymolNotesFontIncrease, object: nil)
+                }.keyboardShortcut("+", modifiers: [.command, .option])
+                Button("Decrease Note Font Size") {
+                    NotificationCenter.default.post(name: .raymolNotesFontDecrease, object: nil)
+                }.keyboardShortcut("-", modifiers: [.command, .option])
+            }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             CommandMenu("Connect") {
                 Toggle("Enable AI control", isOn: Binding(
@@ -335,10 +364,6 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
     let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
-    // Track an opened .pse as the current document (so ⌘S overwrites it). Capture
-    // the ORIGINAL url, never the temp copy loaded below. Covers Finder open +
-    // drag-drop, which both funnel here. A non-.pse structure clears the document.
-    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
     let temp = FileManager.default.temporaryDirectory
         .appendingPathComponent("open_\(UUID().uuidString.prefix(8)).\(ext)")
     try? FileManager.default.removeItem(at: temp)
@@ -352,6 +377,9 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
     if name.isEmpty { name = "mol" }
     engine.loadStructure(path: path, name: name)
+    // Publish the original document URL only after PyMOL has restored the PSE,
+    // so observers read the newly restored embedded Analysis Notes payload.
+    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
 }
 
 // Load EVERY URL the OS handed us in one open (multi-file Terminal `open`, Finder
