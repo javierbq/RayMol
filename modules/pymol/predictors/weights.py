@@ -15,6 +15,7 @@ import hashlib
 import os
 import shutil
 import sys
+import time
 import zipfile
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -87,6 +88,11 @@ class WeightCache:
     the user waited for half a gigabyte.
     """
 
+    #: How long ensure() waits for another process's download before giving up.
+    LOCK_TIMEOUT = 900.0
+    #: A lock file older than this is assumed abandoned by a dead process.
+    LOCK_STALE_SECONDS = 1800.0
+
     def __init__(self, root=None):
         self.root = root or os.environ.get('RAYMOL_WEIGHTS_DIR') \
             or self.default_root()
@@ -126,6 +132,45 @@ class WeightCache:
             raise WeightCacheUnwritable(
                 'cannot create %s: %s' % (path, exc))
 
+    def _lock_path(self, bundle):
+        return os.path.join(self._incoming(),
+                            '%s-%s.lock' % (bundle.id, bundle.version))
+
+    def _acquire_lock(self, bundle):
+        """Return True when this caller owns the download.
+
+        Returns False when another caller completed it while we waited -- the
+        cache is then valid and there is nothing left to do.
+        """
+        lock = self._lock_path(bundle)
+        deadline = time.monotonic() + self.LOCK_TIMEOUT
+        while True:
+            try:
+                handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(handle, str(os.getpid()).encode())
+                os.close(handle)
+                return True
+            except FileExistsError:
+                if self.is_cached(bundle):
+                    return False
+                try:
+                    age = time.time() - os.path.getmtime(lock)
+                except OSError:
+                    continue                      # vanished; retry immediately
+                if age > self.LOCK_STALE_SECONDS:
+                    _unlink(lock)                 # owner is gone
+                    continue
+                if time.monotonic() > deadline:
+                    raise WeightDownloadFailed(
+                        'timed out waiting for another download of %r' % bundle.id)
+                time.sleep(0.05)
+            except OSError as exc:
+                raise WeightCacheUnwritable(
+                    'cannot create lock %s: %s' % (lock, exc))
+
+    def _release_lock(self, bundle):
+        _unlink(self._lock_path(bundle))
+
     def ensure(self, bundle, progress=None):
         """Return a local directory holding `bundle`, downloading it if needed.
 
@@ -138,17 +183,24 @@ class WeightCache:
 
         incoming = self._incoming()
         self._makedirs(incoming)
+        if not self._acquire_lock(bundle):
+            return self.path_for(bundle)         # someone else finished it
+
         part = os.path.join(incoming, bundle.sha256 + '.part')
         staging = os.path.join(incoming, bundle.sha256 + '.d')
         target = self.path_for(bundle)
-
         try:
+            # Re-check under the lock: the winner may have published while we
+            # were blocked, in which case re-downloading is pure waste.
+            if self.is_cached(bundle):
+                return target
             self._download(bundle, part, progress)
             self._extract(bundle, part, staging, progress)
             self._publish(bundle, staging, target)
         finally:
             _rmtree(staging)
             _unlink(part)
+            self._release_lock(bundle)
         return target
 
     def _download(self, bundle, part, progress):
