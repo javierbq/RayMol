@@ -16,8 +16,10 @@ Every task's requirements implicitly include this section.
 
 - **`requests` is NOT available at runtime.** Dev-only extra. Shipped `site-packages` holds only `Bio`, `numpy`, `pip`. Use `urllib.request`. `hashlib`, `zipfile`, `ssl` are in the bundled stdlib.
 - **Never buffer the artifact in memory.** It is ~533 MiB. Stream in chunks. Do **not** use `cmd.file_read` — it buffers the whole body and silently gunzips by magic number.
-- **Every public function in `predicting.py` must end its signature with `_self=cmd`.** `pymol2/cmd2.py:93-118` binds `_self=<instance>` only if `_self` is in the argspec; otherwise it copies the function verbatim and it silently talks to the global instance, with no error.
+- **Every function in `predicting.py` that is exported onto `cmd` must end its signature with `_self=cmd`.** (Module-level helpers never bound onto `cmd`, like `weight_cache()`, are exempt.) `pymol2/cmd2.py:93-118` binds `_self=<instance>` only if `_self` is in the argspec; otherwise it copies the function verbatim and it silently talks to the global instance, with no error.
 - **No `**kwargs` on command functions.** `parsing.py:352-353` forces `mode = NO_CHECK` when `co_flags & 0xC` is set, silently disabling the declared `STRICT` checking.
+- **`quiet=0` is the DEFAULT command-line path, so it must be tested.** `parsing.py:417-420` sets `quiet=0` for any command-line invocation whose argspec contains `quiet`, while the Python API defaults to `quiet=1`. A suite that only exercises `quiet=1` never takes a single message-emitting branch — the first cut of Task 6 was 48/48 green while every one of those branches raised `AttributeError`. Test both.
+- **`colorprinting` exposes `error`, `warning`, `suggest`, `parrot` — there is no `info`.** All four are `= print` (`modules/pymol/colorprinting.py:28-31`). Use `parrot` for informational output, and never assume a helper exists.
 - **Multimer chain separator is `/`, never `,`.** Commas are what `parsing.parse_arg` splits on.
 - **Chain ids: a single uppercase character.** Anything longer breaks PDB column alignment.
 - **Inference defaults are upstream Boltz's:** `recycling_steps=3`, `diffusion_steps=200`, `seed=0`. The port's own defaults (0/20) **fail its own quality gate** (3.19 Å / 0.685 lDDT vs a ≤2.0 Å / ≥0.90 bar).
@@ -426,9 +428,13 @@ from pymol import testing
 def make_stub(predictor_id, name='Stub'):
     from pymol.predictors.base import Predictor, PredictionSpec, parse_chains
 
+    stub_name = name          # NOT `name = name` below: a class body binds `name`,
+                              # so the bare read compiles to LOAD_NAME, skips the
+                              # enclosing function scope, and raises NameError.
+
     class Stub(Predictor):
         id = predictor_id
-        name = name
+        name = stub_name
 
         def check_available(self):
             return None
@@ -1328,9 +1334,19 @@ class TestConcurrency(testing.PyMOLTestCase):
             self.assertFalse(os.path.exists(cache._lock_path(bundle)))
 ```
 
-> The `from predict_weights_download import ...` line works because the runner imports
-> test files by path and `PyMOLTestCase.setUp` chdirs to the test file's own directory,
-> which is therefore on `sys.path` for a sibling import.
+> **The sibling import needs an explicit `sys.path` shim.** The runner imports test files
+> by path (`testing.py:36-49`) and never adds their directory to `sys.path`, and `setUp`'s
+> chdir does not affect module resolution. So any file doing
+> `from predict_weights_download import ...` must first do, at module scope:
+>
+> ```python
+> import os, sys
+> _HERE = os.path.dirname(os.path.abspath(__file__))
+> if _HERE not in sys.path:
+>     sys.path.insert(0, _HERE)
+> ```
+>
+> This applies to `predict_weights_concurrency.py` and `predict_api.py`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1661,7 +1677,7 @@ def weight_cache():
 
 
 def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
-            seed=0, quiet=1, _self=cmd):
+            seed=0, diffusion_samples=None, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -1718,7 +1734,7 @@ SEE ALSO
     if predictor_obj.weight_bundle is not None:
         def report(phase, fraction):
             if not int(quiet):
-                colorprinting.info(' predict: %s %d%%'
+                colorprinting.parrot(' predict: %s %d%%'
                                    % (phase, int(fraction * 100)))
         weights_path = weight_cache().ensure(predictor_obj.weight_bundle,
                                             progress=report)
@@ -1726,7 +1742,7 @@ SEE ALSO
     job = predictor_obj.submit(spec, options, weights_path)
     _JOBS[job.job_id] = job
     if not int(quiet):
-        colorprinting.info(' predict: job %s submitted' % job.job_id)
+        colorprinting.parrot(' predict: job %s submitted' % job.job_id)
     return job
 
 
@@ -1752,7 +1768,7 @@ SEE ALSO
     for key, job in jobs.items():
         out[key] = job.status()
         if not int(quiet):
-            colorprinting.info(' predict: %s %s %s' % (
+            colorprinting.parrot(' predict: %s %s %s' % (
                 key, out[key].get('state'), out[key].get('phase')))
     return out
 
@@ -1773,7 +1789,7 @@ SEE ALSO
     """
     _job(job_id).cancel()
     if not int(quiet):
-        colorprinting.info(' predict: cancel requested for %s' % job_id)
+        colorprinting.parrot(' predict: cancel requested for %s' % job_id)
 
 
 def predict_result(job_id, name='', quiet=1, _self=cmd):
@@ -1802,7 +1818,7 @@ SEE ALSO
     object_name = name or getattr(job.spec, 'name', None) or job_id
     _self.load(path, object_name)
     if not int(quiet):
-        colorprinting.info(' predict: loaded %s' % object_name)
+        colorprinting.parrot(' predict: loaded %s' % object_name)
     return object_name
 
 
@@ -1835,7 +1851,7 @@ SEE ALSO
                     'path': cache.path_for(bundle),
                     'bundle': bundle.id}
         if not int(quiet):
-            colorprinting.info(' predict: %s weights cached=%s at %s' % (
+            colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))
     return out
 

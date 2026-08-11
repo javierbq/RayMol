@@ -159,3 +159,51 @@ class PredictAPITest(testing.PyMOLTestCase):
         self.assertIn('predict', cmd.keyword)
         self.assertIn('predict_status', cmd.keyword)
         self.assertIn('predict_cancel', cmd.keyword)
+
+    # -- quiet=0 is the DEFAULT command-line path -------------------------------
+    #
+    # parsing.py:417-420 sets quiet=0 for any command-line invocation whose
+    # argspec contains `quiet`. So every message-emitting branch below is what a
+    # user typing `predict ...` at the prompt actually takes, while the Python
+    # API defaults to quiet=1 and skips all of it. A first cut of this suite
+    # tested only quiet=1 and was fully green while every one of these branches
+    # raised AttributeError on a colorprinting function that does not exist.
+
+    def testPredictIsVerboseWithoutRaising(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.predict('stub', 'AA', quiet=0)
+        self.assertEqual(job.status()['state'], 'done')
+
+    def testProgressReportingPathIsExercised(self):
+        """quiet=0 routes WeightCache progress through the reporting callback."""
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data, chunk=4)):
+            cmd.predict('stub', 'AA', quiet=0)
+
+    def testStatusCancelResultAndWeightsAreVerboseWithoutRaising(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.predict('stub', 'AA', name='verbose', quiet=0)
+        cmd.predict_status(job.job_id, quiet=0)
+        cmd.predict_status(quiet=0)
+        cmd.predict_cancel(job.job_id, quiet=0)
+        cmd.predict_weights('stub', quiet=0)
+        cmd.predict_result(job.job_id, 'verbose', quiet=0)
+        self.assertIn('verbose', cmd.get_names('objects'))
+
+    def testEveryMessageHelperUsedByPredictingExists(self):
+        """Guards the whole class of bug: a message helper that is not there.
+
+        colorprinting exposes error/warning/suggest/parrot -- there is no info().
+        Every name predicting.py reaches for must resolve, or a branch no test
+        happens to take will crash in front of a user.
+        """
+        import re
+        from pymol import colorprinting, predicting
+        with open(predicting.__file__) as handle:
+            used = set(re.findall(r'colorprinting\.(\w+)', handle.read()))
+        self.assertTrue(used, 'expected predicting.py to emit messages')
+        for helper in sorted(used):
+            self.assertTrue(hasattr(colorprinting, helper),
+                            'colorprinting has no %r' % helper)

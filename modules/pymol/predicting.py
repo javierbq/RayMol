@@ -100,7 +100,7 @@ SEE ALSO
     if predictor_obj.weight_bundle is not None:
         def report(phase, fraction):
             if not int(quiet):
-                colorprinting.info(' predict: %s %d%%'
+                colorprinting.parrot(' predict: %s %d%%'
                                    % (phase, int(fraction * 100)))
         weights_path = weight_cache().ensure(predictor_obj.weight_bundle,
                                             progress=report)
@@ -108,7 +108,7 @@ SEE ALSO
     job = predictor_obj.submit(spec, options, weights_path)
     _JOBS[job.job_id] = job
     if not int(quiet):
-        colorprinting.info(' predict: job %s submitted' % job.job_id)
+        colorprinting.parrot(' predict: job %s submitted' % job.job_id)
     return job
 
 
@@ -134,7 +134,7 @@ SEE ALSO
     for key, job in jobs.items():
         out[key] = job.status()
         if not int(quiet):
-            colorprinting.info(' predict: %s %s %s' % (
+            colorprinting.parrot(' predict: %s %s %s' % (
                 key, out[key].get('state'), out[key].get('phase')))
     return out
 
@@ -155,7 +155,7 @@ SEE ALSO
     """
     _job(job_id).cancel()
     if not int(quiet):
-        colorprinting.info(' predict: cancel requested for %s' % job_id)
+        colorprinting.parrot(' predict: cancel requested for %s' % job_id)
 
 
 def predict_result(job_id, name='', quiet=1, _self=cmd):
@@ -184,7 +184,7 @@ SEE ALSO
     object_name = name or getattr(job.spec, 'name', None) or job_id
     _self.load(path, object_name)
     if not int(quiet):
-        colorprinting.info(' predict: loaded %s' % object_name)
+        colorprinting.parrot(' predict: loaded %s' % object_name)
     return object_name
 
 
@@ -217,7 +217,7 @@ SEE ALSO
                     'path': cache.path_for(bundle),
                     'bundle': bundle.id}
         if not int(quiet):
-            colorprinting.info(' predict: %s weights cached=%s at %s' % (
+            colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))
     return out
 
