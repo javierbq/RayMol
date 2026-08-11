@@ -28,6 +28,19 @@ packages:
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
     from: 0.31.6
+  # boltz-mlx: on-device Boltz-2 structure prediction (#224). macOS only -- MLX
+  # cannot run in the iOS Simulator at all, and no boltz run above ~115 tokens has
+  # ever completed on a physical device because iOS suspends the app mid-run.
+  #
+  # TEMPORARY local path so the Swift can be compiled and tested before the
+  # upstream tag exists. REPLACE with the remote + tag before merging:
+  #   BoltzMLX:
+  #     url: https://github.com/javierbq/boltz-mlx.git
+  #     from: 0.1.0
+  # boltz-mlx pins mlx-swift exact 0.31.6, identical to MPNNKit's pin, so
+  # resolution is unaffected.
+  BoltzMLX:
+    path: ../../../../../boltz-test
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -501,6 +514,13 @@ targets:
         product: MPNNKit
       - package: mlx-swift
         product: MLX
+      # boltz-mlx: structure prediction. macOS only, so the platform filter keeps
+      # BoltzMLX out of the iOS link entirely. No compilation condition: prediction
+      # ships in every macOS build, so there is no flag to forget. Must stay OUTSIDE
+      # the RAYMOL_SPARKLE_BEGIN/END markers or archive_appstore.sh strips it.
+      - package: BoltzMLX
+        product: BoltzMLX
+        platforms: [macOS]
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
@@ -533,6 +553,11 @@ targets:
       # compile search path.
       - package: proteinmpnn-mlx
         product: MPNNKit
+      # BoltzMLX: required so BoltzJobManager.swift (which does `import BoltzMLX`)
+      # is visible to @testable import RayMol. The test target is macOS-only by its
+      # own `platform: macOS`, so no platformFilter is needed.
+      - package: BoltzMLX
+        product: BoltzMLX
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests

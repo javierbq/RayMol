@@ -2994,6 +2994,15 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("SETVAL:") {
                     parseSetValFeedback(line)
+                } else if line.hasPrefix("PREDICT:") {
+                    // Structure prediction (#224). cmd.predict writes a request JSON to
+                    // the temp dir and prints this marker; there is no Python->Swift call
+                    // path, so this poll IS the invocation. Deliberately NOT inside the
+                    // MAS-restricted #if used for MCP: below -- prediction ships in every
+                    // macOS build. os(macOS) only because MLX cannot run on iOS yet.
+                    #if os(macOS)
+                    BoltzJobManager.shared.handle(marker: line)
+                    #endif
                 } else if line.hasPrefix("MCP:") {
                     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
                     let body = String(line.dropFirst("MCP:".count))
