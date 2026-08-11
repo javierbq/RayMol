@@ -8,7 +8,15 @@ cd "$(dirname "$0")"
 
 DEST="${1:-macOS}"
 EXTRA_SETTINGS=()
-EXTRA_FLAGS=()
+# mlx-swift's Cmlx target carries a CudaBuild buildTool plugin that stalls a
+# headless archive without these flags (plugin validation tries to spawn a
+# network request; macro validation also fails in a non-interactive shell).
+# BOTH platforms need them: Design mode enables RAYMOL_MPNN — and therefore the
+# MPNNKit/mlx-swift dependency — for macosx* as well as iphoneos* (project.yml).
+# This was iOS-only until 1.9.0 shipped Design mode on macOS, which silently
+# broke the Mac App Store archive ("Validate plug-in CudaBuild ... ARCHIVE
+# FAILED") — the DMG/Sparkle path never archives, so nothing caught it.
+EXTRA_FLAGS=(-skipPackagePluginValidation -skipMacroValidation)
 
 if [ "$DEST" = "macOS" ]; then
   # Mac App Store build: Sparkle has no place here — self-update is disallowed on
@@ -36,10 +44,6 @@ elif [ "$DEST" = "iOS" ]; then
   xcodegen generate
   SCHEME=PyMOLViewer_iOS
   DESTSPEC='generic/platform=iOS'
-  # mlx-swift's Cmlx target carries a CudaBuild buildTool plugin that stalls a
-  # headless archive without these flags (plugin validation tries to spawn a
-  # network request; macro validation also fails in a non-interactive shell).
-  EXTRA_FLAGS=(-skipPackagePluginValidation -skipMacroValidation)
 else
   echo "usage: $0 [macOS|iOS]" >&2; exit 2
 fi
