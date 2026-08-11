@@ -224,12 +224,27 @@ class TestNonMolecularObjectsAreNotProbed(testing.PyMOLTestCase):
         self.assertEqual(cmd.get_type('dist01'), 'object:measurement')
         return list(cmd.get_names('public_objects'))
 
-    def testIsMoleculeRejectsMeasurements(self):
+    def testTakesAtomSelectionRejectsMeasurements(self):
         self._measured_session()
-        self.assertTrue(ai.is_molecule('mol'))
-        self.assertFalse(ai.is_molecule('dist01'))
-        self.assertFalse(ai.is_molecule('ang01'))
-        self.assertFalse(ai.is_molecule('no_such_object'))
+        self.assertTrue(ai.takes_atom_selection('mol'))
+        self.assertFalse(ai.takes_atom_selection('dist01'))
+        self.assertFalse(ai.takes_atom_selection('ang01'))
+        self.assertFalse(ai.takes_atom_selection('no_such_object'))
+
+    def testTakesAtomSelectionAcceptsGroups(self):
+        # A group IS a valid atom selection — it resolves to its members' atoms —
+        # so the #219 guard must not reject it or the group's rep list and
+        # transparency badge go blank (issue #256).
+        self._measured_session()
+        cmd.group('grp', 'mol')
+        self.assertEqual(cmd.get_type('grp'), 'object:group')
+        self.assertTrue(ai.takes_atom_selection('grp'))
+        self.assertGreater(cmd.count_atoms('grp'), 0,
+                           'a group must expand to its members atoms, else this '
+                           'test would pass for the wrong reason')
+        cmd.show('cartoon', 'mol')
+        self.assertTrue(ai._build(['grp'])['detail']['grp'],
+                        'the group card must describe its members reps')
 
     def testPollPanelEmitsNoSelectorErrorForMeasurements(self):
         objs = self._measured_session()
@@ -280,3 +295,98 @@ class TestNonMolecularObjectsAreNotProbed(testing.PyMOLTestCase):
         detail = ai._build(['mol', 'dist01'])['detail']
         self.assertEqual(detail['dist01'], [])
         self.assertTrue(detail['mol'], 'the molecule must still describe its reps')
+
+
+class TestGroupTreePayload(testing.PyMOLTestCase):
+    """Coverage for the object-group tree in the panel payload (issue #255).
+
+    The panel renders groups as a tree, so poll_panel() has to report parentage.
+    The subtle part is that `cmd.get_object_list()` — the obvious source — reports
+    a group's MOLECULAR members only: a measurement, CGO or map inside a group is
+    invisible to it and to every other selection-based API, and nothing reports
+    group-in-group nesting at all. So these tests deliberately build a group whose
+    members span all four kinds plus a nested group.
+    """
+
+    def _mixed_group_session(self):
+        cmd.delete('all')
+        cmd.fragment('gly', 'molA')
+        cmd.fragment('ala', 'molB')
+        cmd.distance('dist01', 'molA and index 1', 'molA and index 2')
+        cmd.load_cgo([cgo.STOP], 'cgo01')
+        cmd.map_new('map01', 'gaussian', 1.0, 'molA')
+        cmd.group('grp', 'molA dist01 cgo01 map01')
+        cmd.group('outer', 'grp molB')
+
+    def testParentMapCoversNonMolecularMembers(self):
+        self._mixed_group_session()
+        _, payload = self._poll()
+        parent = payload['parent']
+        # The whole point: get_object_list() would report only molA here.
+        self.assertEqual(cmd.get_object_list('grp'), ['molA'],
+                         'if this changes, the expensive session lookup may no '
+                         'longer be needed')
+        for name in ('molA', 'dist01', 'cgo01', 'map01'):
+            self.assertEqual(parent.get(name), 'grp',
+                             '%s must be reported inside grp' % name)
+
+    def testParentMapCoversNesting(self):
+        self._mixed_group_session()
+        _, payload = self._poll()
+        self.assertEqual(payload['parent'].get('grp'), 'outer')
+        self.assertEqual(payload['parent'].get('molB'), 'outer')
+        self.assertNotIn('outer', payload['parent'],
+                         'a top-level group must have no parent entry')
+        self.assertEqual(sorted(payload['groups']), ['grp', 'outer'])
+
+    def testFlatSessionCarriesEmptyGroupTree(self):
+        cmd.delete('all')
+        cmd.fragment('gly', 'mol')
+        _, payload = self._poll()
+        self.assertEqual(payload['groups'], [])
+        self.assertEqual(payload['parent'], {})
+
+    def testEmptyGroupIsReported(self):
+        cmd.delete('all')
+        cmd.fragment('gly', 'mol')
+        cmd.group('empty_grp')
+        _, payload = self._poll()
+        self.assertIn('empty_grp', payload['groups'])
+        self.assertNotIn('empty_grp', payload['parent'])
+
+    def testParentMapTracksRegrouping(self):
+        # The parent map is cached behind a cheap fingerprint; ungrouping must
+        # invalidate it, or the panel would keep drawing a stale tree.
+        self._mixed_group_session()
+        _, before = self._poll()
+        self.assertEqual(before['parent'].get('molB'), 'outer')
+        cmd.ungroup('molB')
+        _, after = self._poll()
+        self.assertIsNone(after['parent'].get('molB'),
+                          'ungroup must invalidate the cached parent map')
+
+    def testGroupPollStaysOffTheFeedbackLine(self):
+        # #231 invariant: the payload must never ride the feedback line, however
+        # much the group tree adds to it.
+        self._mixed_group_session()
+        lines, _ = self._poll()
+        self.assertEqual(lines, ['OBJPANEL:ready'])
+        for ln in lines:
+            self.assertLess(len(ln), ORTHO_LINE_LENGTH)
+
+    def testGroupPollEmitsNoSelectorError(self):
+        # Groups sit alongside the measurement/CGO/map kinds from #219; building
+        # the tree must not hand any of them to the selector.
+        self._mixed_group_session()
+        with capture_console() as out:
+            for _ in range(5):
+                ai.poll_panel()
+        console = out.read()
+        self.assertNotIn(b'Invalid selection name', console,
+                         'group tree probe leaked a selector error: %r' % console)
+
+
+# _poll lives on TestObjPanelPoll; reuse it rather than duplicating the tempfile
+# dance, and pull in cgo for the CGO member above.
+TestGroupTreePayload._poll = TestObjPanelPoll._poll
+from pymol import cgo  # noqa: E402  (kept next to its only use for clarity)
