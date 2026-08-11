@@ -6,6 +6,7 @@ show_ray_image() (no AppKit, png export failure, missing output file).
 AppKit/objc/Foundation stubbed permissively before import.
 """
 
+import importlib
 import os
 import sys
 import tempfile
@@ -52,7 +53,16 @@ if "pymol" not in sys.modules or not hasattr(sys.modules["pymol"], "__path__"):
     _pymol_stub.__package__ = "pymol"
     sys.modules["pymol"] = _pymol_stub
 
-from pymol import appkit_ray_overlay as ro
+# cmd.ray()/cmd.draw() lazily do `from pymol import appkit_ray_overlay`, so any
+# earlier test in this process that rendered has already imported this module
+# WITHOUT the stubs installed above. On a host with no pyobjc (every CI runner)
+# that bakes in _HAS_APPKIT=False, show_ray_image() then returns at its first
+# guard, and the tests below fail for a reason that has nothing to do with the
+# code under test. Drop any cached copy so the stubs govern this import.
+# Popping sys.modules alone is not enough: `from pymol import ...` would still
+# find the stale module as an attribute of the package.
+sys.modules.pop("pymol.appkit_ray_overlay", None)
+ro = importlib.import_module("pymol.appkit_ray_overlay")
 
 
 class FakeImageView:
