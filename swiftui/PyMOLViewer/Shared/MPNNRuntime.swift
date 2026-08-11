@@ -3,8 +3,8 @@ import Foundation
 
 /// Design mode's MLX policy. The process-wide MLX configuration itself lives in
 /// ``MLXRuntime`` — this type contributes only the numbers Design mode requires and
-/// forwards everything else, so that a second MLX consumer (structure prediction, under
-/// RAYMOL_BOLTZ) cannot silently clobber them by call order.
+/// forwards everything else, so that a second MLX consumer (structure prediction, which
+/// ships in every macOS build) cannot silently clobber them by call order.
 ///
 /// The cache-limit value below was established by the proteinmpnn-ios bench harness
 /// (app/MPNNBench/MPNNBenchApp.swift) and is a prerequisite for running inference on iOS

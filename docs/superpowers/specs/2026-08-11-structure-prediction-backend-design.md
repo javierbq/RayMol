@@ -29,8 +29,9 @@ be **predictor-agnostic** rather than coupled to the registry.
 | API shape | Job handle: submit → poll status → `result()`, with cancel |
 | Cache dir config | Python module global + `RAYMOL_WEIGHTS_DIR` env override (no new C++ setting) |
 | Inference isolation | In-process, with a *preventive* size guard |
-| mmCIF/PDB writer | Upstreamed into boltz-mlx |
-| Platform | macOS first; iOS gated off via `RAYMOL_BOLTZ` per-SDK conditions |
+| Structure writer | PDB for v1, by **promoting boltz-mlx's existing test-only writer** into its `Sources/`. Not new code, and not MPNNKit's. mmCIF is the upgrade path |
+| Platform gating | `#if os(macOS)` — **no dedicated compilation condition.** Prediction ships in every macOS build; iOS is simply not compiled |
+| Inference options | Upstream Boltz's own defaults, overridable per call from the command line |
 
 ### Resolved while designing
 
@@ -229,6 +230,43 @@ available() -> list[str]
 Swappability is the point: call sites depend only on `Predictor`, so the test suite
 registers a stub and exercises the whole flow with no Swift and no network.
 
+### Public API
+
+```python
+cmd.predict(predictor, sequence, name='', *,
+            recycling_steps=3, diffusion_steps=200, seed=0,
+            quiet=1, _self=cmd)          -> PredictionJob   (prints the job id)
+
+cmd.predict_status(job_id='', *, quiet=1, _self=cmd)  -> dict   (all jobs if omitted)
+cmd.predict_cancel(job_id, *, quiet=1, _self=cmd)
+cmd.predict_result(job_id, name='', *, quiet=1, _self=cmd)     -> object name
+cmd.predict_weights(predictor='', *, download=0, quiet=1, _self=cmd)  -> dict
+```
+
+So the command line reads exactly as requested:
+
+```
+predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ, diffusion_steps=300
+```
+
+Per-predictor options are passed through as explicit keyword arguments rather than
+`**kwargs`. That is deliberate: `prepare_call` (`parsing.py:352-353`) forces
+`mode = NO_CHECK` when `co_flags & 0xC` is set, so a `**kwargs` signature silently disables
+the declared `STRICT` type checking — which is exactly why `fetch`'s declared STRICT checks
+nothing. Explicit keywords keep the checking, and `parse_arg` already handles `name=value`
+on the command line.
+
+A predictor rejects options it does not implement rather than ignoring them, so
+`diffusion_samples=4` raises `PredictionOptionError` instead of quietly producing one
+sample. Silent acceptance of an ignored quality knob is the worst available behaviour.
+
+**Multimer input uses `/` as the chain separator**, not a comma: `'MKTAY/GSHMA'` → chains
+`A`, `B`. Commas are the argument separator that `parsing.parse_arg` splits on, so a
+comma-separated chain list would be shredded into extra positionals before the function ever
+sees it. `/` also matches PyMOL's existing chain-ish selector idiom. Chain ids are assigned
+`A`, `B`, `C`… and constrained to a single uppercase character, which is what keeps PDB
+column alignment safe.
+
 ## Component 2 — `WeightCache`
 
 Predictor-agnostic by design, so #249 consumes it rather than growing a second downloader.
@@ -298,40 +336,64 @@ paths out of sessions.
 
 ## Component 3 — the Swift job runner
 
-New, under `#if RAYMOL_BOLTZ`. `project.yml` edits, following the MPNNKit precedent:
+New, under `#if os(macOS)`. `project.yml` edits, following the MPNNKit precedent:
 
 - `packages:` — add `boltz-mlx` with `from: 0.1.0`, after the `mlx-swift` entry at `:28-30`.
   Keep `from:` not `exact:`, for the reason recorded at `:23-27`. **That tag does not exist
   yet** — Phase 2 must create it, or this entry needs an explicit `revision:` pin instead.
-- target `dependencies:` — `- package: boltz-mlx` / `product: BoltzMLX`, appended after
-  `:471` and **outside** the `RAYMOL_SPARKLE_BEGIN` markers at `:472`, or
+- target `dependencies:` — `- package: boltz-mlx` / `product: BoltzMLX` with
+  `platforms: [macOS]` (the platform-filter template is Sparkle at `:476-477`), appended
+  after `:471` and **outside** the `RAYMOL_SPARKLE_BEGIN` markers at `:472`, or
   `archive_appstore.sh`'s sed-strip removes it from the MAS build.
-- three `SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=…]` keys mirroring `RAYMOL_MPNN` at
-  `:101-103`, so either slice can be disabled independently. **Only `macosx*` initially.**
+- **No new `SWIFT_ACTIVE_COMPILATION_CONDITIONS` key.** Unlike Design mode, prediction is
+  not opt-in: it ships in every macOS build, so there is no flag to set and no way to
+  forget to set it. Gate the Swift with `#if os(macOS)`, and let the `platforms: [macOS]`
+  dependency filter keep `BoltzMLX` out of the iOS link entirely.
 - `-skipPackagePluginValidation` is already passed by `make_dmg.sh:123-127` and
   `archive_appstore.sh:39`; any mlx-swift consumer requires it.
 - No source-list edit: `sources: - path: PyMOLViewer` is a directory glob.
 - Do **not** copy the `postBuildScripts` copy phase at `:447-461`. That exists because
   `MPNN.mpnnpack` is bundled; these weights are downloaded into a writable directory.
 
+`MLXRuntime` is correspondingly gated `#if RAYMOL_MPNN || os(macOS)`: always present on
+macOS for prediction, and still present on iOS for Design mode. The trade-off accepted by
+dropping the flag is that prediction code cannot be compiled out of a macOS build for
+bisection or binary-size reasons — acceptable, because the alternative is a flag that
+must be remembered in three per-SDK keys and whose absence fails silently.
+
 ### Two things that would ship a broken feature
 
-**boltz-mlx's defaults fail its own quality gate.** `BoltzPredictionOptions()` defaults to
-`recyclingSteps: 0, diffusionSteps: 20`, and at 20 steps the matched-noise release gate
-scores **3.19 Å RMSD / 0.685 lDDT — FAIL** against a ≤2.0 Å / ≥0.90 bar. At 50 steps:
-**0.64 Å / 0.977 — PASS**. RayMol must pass recycling 3 / 50 steps. Cost on an M3 Pro:
+**boltz-mlx's own defaults fail its own quality gate, so RayMol adopts upstream Boltz's.**
+`BoltzPredictionOptions()` defaults to `recyclingSteps: 0, diffusionSteps: 20`, and at 20
+steps the matched-noise release gate scores **3.19 Å RMSD / 0.685 lDDT — FAIL** against a
+≤2.0 Å / ≥0.90 bar. At 50 steps it passes (0.64 Å / 0.977). Rather than pick a number off
+that curve, take upstream's, which is both higher quality and the figure users will expect:
 
-| Tokens | Wall | MLX peak |
-|---:|---:|---:|
-| 20 | 3.90 s | 0.61 GB |
-| 117 | 8.90 s | 2.24 GB |
-| 225 | 32.16 s | 3.47 GB |
+| Knob | Upstream default | RayMol default | Notes |
+|---|---|---|---|
+| `recycling_steps` | 3 | **3** | `src/boltz/main.py:852` |
+| `sampling_steps` → `diffusion_steps` | 200 | **200** | `main.py:858` |
+| `step_scale` | 1.5 for Boltz-2 | **1.5** | `main.py:876`. **Already correct and not a per-call knob** — the Swift sampler reads it from the artifact's `config.json` (`BoltzModelConfiguration.swift:130`, key `step_scale`), and the exported pack carries exactly `1.5`. |
+| `diffusion_samples` | 1 | **n/a** | Not plumbed in the port, and only diffusion sample 0 escapes `BoltzPredictor` anyway. Document as unsupported rather than silently accept-and-ignore. |
+| `seed` | `None` (unseeded) | **0** | Deliberate divergence: a viewer benefits from a reproducible default. Documented in the command help. |
 
-Runtime is ~linear in diffusion steps and super-linear (~N²) in tokens. Also pass
-`MemoryPlanner(limits: .desktop)` (1024 tokens) or the phone default of 256 refuses anything
-real. Keep the `BoltzPredictor` **alive across predictions** — construction does the full
-~533 MiB safetensors load and graph build (~10 s), and `init` is synchronous and
-`nonisolated`, so it must be constructed off the main thread.
+The port's `BoltzPredictionOptions` carries **only** `recyclingSteps`, `diffusionSteps`, and
+`seed` (`BoltzTypes.swift:4-14`), so those three are exactly the exposable surface. Note
+also that `config.json`'s `num_sampling_steps: 5` is an inert training hparam — the sampler
+takes its step count from the options, not the config.
+
+**Cost must be re-measured before shipping.** Every published figure is at 50 steps
+(8.90 s / 2.24 GB at 117 tokens; 32.16 s / 3.47 GB at 225, on an M3 Pro). Runtime is ~linear
+in diffusion steps and super-linear (~N²) in tokens, so 200 steps multiplies the diffusion
+component roughly fourfold — on the order of 30 s at ~117 tokens and minutes at ~225. Those
+are extrapolations, not measurements: **do not quote the 50-step numbers as if they applied
+at 200**, and confirm the latency is acceptable before wiring any UI. This is also the
+strongest argument for the progress channel, since none exists in boltz-mlx.
+
+Also pass `MemoryPlanner(limits: .desktop)` (1024 tokens) or the phone default of 256
+refuses anything real. Keep the `BoltzPredictor` **alive across predictions** —
+construction does the full ~533 MiB safetensors load and graph build (~10 s), and `init` is
+synchronous and `nonisolated`, so it must be constructed off the main thread.
 
 **`MemoryPlanner.apply()` clobbers Design mode.** It writes process-global
 `MLX.Memory.cacheLimit` on *every* predict; `MPNNRuntime.cacheLimitBytes = 96 MB` exists to
@@ -370,9 +432,11 @@ boltz and MPNNKit.
 
 `MPNNRuntime` could not be reused by a second MLX consumer, for three reasons:
 
-1. The entire file was wrapped `#if RAYMOL_MPNN`, lines 1–108. Calling into it from Boltz
-   code would make `RAYMOL_BOLTZ` silently require `RAYMOL_MPNN` — welding together the two
-   features #249 needs gated independently per SDK.
+1. The entire file was wrapped `#if RAYMOL_MPNN`, lines 1–108, so it does not exist unless
+   Design mode is compiled in. Prediction ships in every macOS build and must not acquire a
+   dependency on Design mode's opt-in flag — that would weld together two features #249
+   needs gated independently per SDK, and it would fail as a wall of compile errors the
+   first time anyone turned `RAYMOL_MPNN` off.
 2. The part worth sharing had no MPNN content: `withMLXErrorsAsThrows` was
    `try withError { try body() }`, pure mlx-swift. Wrong home.
 3. The part that *is* MPNN-specific is exactly what conflicts. `cacheLimitBytes = 96 MB` is
@@ -380,7 +444,7 @@ boltz and MPNNKit.
    overwrites the same process-global on every predict. Reusing `MPNNRuntime` would not
    resolve that collision, only obscure it into last-writer-wins by call order.
 
-New `swiftui/PyMOLViewer/Shared/MLXRuntime.swift`, gated `#if RAYMOL_MPNN || RAYMOL_BOLTZ`,
+New `swiftui/PyMOLViewer/Shared/MLXRuntime.swift`, gated `#if RAYMOL_MPNN || os(macOS)`,
 owns:
 
 - `withMLXErrorsAsThrows` — moved verbatim, semantics unchanged.
@@ -405,52 +469,104 @@ invariant, now held by `MLXRuntime`.
 
 ## Structure hand-off
 
-**No mmCIF or PDB writer exists in boltz-mlx.** `grep -rn "ATOM  "` over that repo returns
-exactly one hit, in a test. `BoltzStructure` is the entire returned type:
+An earlier draft of this design claimed no writer existed and one had to be written from
+scratch. **That was wrong**, and the corrected picture materially reduces the work.
 
-```swift
-public struct BoltzStructure: Sendable, Equatable {
-  public let coordinates: [SIMD3<Float>]
-  public let atomMask: [Bool]
-}
-```
+### What actually exists
 
-Ångströms, flat and unpadded, one entry per real atom. `atomMask` is vestigial and always
-`true`. **No atom names, elements, residue names or numbers, chain ids, or token map.**
+| | PDB | mmCIF |
+|---|---|---|
+| MPNNKit (already linked by RayMol) | **`PDBWriter.swift:14`** — production, MIT, 72 lines, column-correct, already regression-tested upstream (`fix/pdbwriter-unknown-restype`). `internal`, not `public`. | none |
+| boltz-mlx | **`tests/BoltzMLXTests/MSAEndToEndTests.swift:239-272`** — ~40 lines, `private`, written against boltz's own public types and its actual coordinate order | none |
+| boltz-mlx `Sources/` | none (emits SafeTensors only) | none |
+| RayMol `swiftui/` | none | none |
 
-Identity is never carried but is strictly *recoverable*: the atom axis is the concatenation,
-over `canonicalStructure.orderedResidues`, of `AAResidueTemplates.template(threeLetter:)!.atoms`
-in template order — and `orderedResidues` is documented as "the ONLY ordering any downstream
-index should be derived from". Every field a writer needs is already `public`
-(`AAAtomTemplate.name`/`.atomicNumber`/`.formalCharge`, `CanonicalResidue.threeLetter`/
-`.hostChain`/`.hostResSeq`/`.hostInsCode`).
+So: **no mmCIF writer exists anywhere** — that clause of the original claim survives. A PDB
+writer is not new work; there are two, and one is already written against exactly the right
+types.
 
-So the writer goes upstream as `Sources/BoltzMLX/Write/StructureWriter.swift`, taking
-`(BoltzStructure, CanonicalStructure)`, together with the companion fix making
-`ScoredStructure` retain the full `BoltzFeaturizer.Layout` rather than only
-`chainTokenRanges` — otherwise every caller must separately hold the `CanonicalStructure` to
-interpret coordinates it was just handed.
+### The premise that was wrong
 
-Gaps the writer must close, beyond the test helper's one:
+`BoltzStructure` carries no atom identity, but the *caller* does. `CanonicalStructure`
+(`CanonicalStructure.swift:87`) and its `orderedResidues` (`:100`) are **public**, exposing
+`threeLetter`, `hostChain`, `hostResSeq`, `hostInsCode` (`:32-38`); `AAResidueTemplates`
+(`AAResidueTemplates.swift:69`) is public and gives ordered heavy-atom `name` +
+`atomicNumber`. And `featurize` *takes* a `CanonicalStructure` (`BoltzFeaturizer.swift:206`),
+so whoever ran the prediction is already holding the identity. Coordinates come back in
+exactly that order, already unpadded (`BoltzPredictor.swift:193-206`).
 
-1. **Renumber residues 1-based per chain.** `hostResSeq` is **0-based** for sequence-derived
-   structures; emitting it verbatim offsets every model by one residue against a crystal.
-2. Emit insertion codes (column 27); the helper drops them, which collides antibody numbering.
-3. Multi-character chain ids break PDB columns — emit mmCIF, or guarantee single-character
-   chain names on the way in (RayMol controls them).
-4. Emit `TER`; without it multi-chain output reads as fused in some viewers.
-5. **No `OXT`, ever** — the featurizer drops the trailing `OXT` on every residue including
-   chain termini. That is what the checkpoint was trained on; do not "fix" it.
-6. Heavy atoms only, no hydrogens.
-7. **There is no pLDDT** — `ConfidenceModule` is documented "SCOPE: PAE ONLY", so the
-   B-factor column cannot carry per-residue confidence, which is the usual way a viewer
-   colors a prediction. Pick a policy and document it; a PAE row-reduction is a different
-   quantity and must be labelled as such if used.
-8. Only diffusion sample 0 escapes; no multi-model output.
+Consequence: the adapter is a single sequential walk —
+`for residue in orderedResidues { for atom in template.atoms { coordinates[i] } }` — and it
+is the walk the test helper already implements. This also **removes the need for the
+`ScoredStructure`-retains-`Layout` change** an earlier draft proposed; that was a workaround
+for a problem that does not exist.
 
-Hand-off itself: Swift writes to a temp path chosen by Python and returns the path; Python
-calls `cmd.load`. File **contents** must not cross the feedback channel — that is the ~1 KB
-cap failure already documented at `appkit_inspector.py:344-351`.
+### Decision
+
+**Promote `MSAEndToEndTests.writePDB` into `Sources/BoltzMLX/Write/StructureWriter.swift`**
+as a public writer taking `(BoltzStructure, CanonicalStructure)`. Emit **PDB for v1**.
+
+Gaps to close while promoting — the helper is a test helper, not a viewer-grade writer:
+
+1. It emits no `TER` (`:271` goes straight to `END`); add it at chain breaks or multi-chain
+   output reads as fused.
+2. Residues must be renumbered **1-based per chain**; `hostResSeq` is **0-based** for
+   sequence-derived structures, and the helper already documents why writing it verbatim
+   "silently defeats residue-wise comparison in a viewer" (`:245-253`).
+3. It drops insertion codes; emit column 27, or antibody numbering collides.
+4. Constrain chain ids to a single uppercase character on the way in (RayMol controls them),
+   since `hostChain` is a `String` interpolated into a 1-column field.
+5. Widen the element map beyond `[6,7,8,16]` (`:241`) only if non-protein components ever land.
+6. **B-factor stays `0.00`.** It is tempting to write confidence there, and two independent
+   reviews of this design suggested doing so — **there is no pLDDT to write.**
+   `ConfidenceModule.swift:7` is explicit: *"SCOPE: PAE ONLY. pLDDT, PDE, pTM/ipTM and
+   resolved-ness are deliberately not computed."* A per-token PAE row-reduction is a
+   different quantity; if it is ever used there it must be labelled as such, never as pLDDT.
+7. No `OXT`, ever — the featurizer drops the trailing `OXT` on every residue including chain
+   termini. That is what the checkpoint was trained on; do not "fix" it.
+8. Heavy atoms only, single model. `diffusion_samples` is unplumbed, so there is no
+   multi-model output to serialize and no multi-state ambiguity to resolve.
+
+### Alternatives, and why not
+
+- **Adapt MPNNKit's `PDBWriter`.** Three transforms to reuse 72 lines of `String(format:)`:
+  a `public` shim (it and `AtomNames` are internal), binning flat atoms into its
+  `[1,L,14,3]` AF2 grid, and permuting names because **boltz's atom order is its own
+  template order, not AF2 atom14 order**. Strictly more work than promoting the writer that
+  already matches.
+- **Port boltz's Python `to_pdb`/`to_mmcif`.** **Not implementable.** Verified against
+  RayMol's actual bundled interpreter (`deps_macos/python-standalone/python/bin/python3.13`):
+  `rdkit`, `torch`, `mashumaro`, `ihm`, `modelcif`, and `gemmi` are all
+  `ModuleNotFoundError` — site-packages holds only `Bio`, `numpy`, `pip`. They also consume
+  a `Structure` npz table the MLX path never builds.
+- **Biopython `PDBIO`/`MMCIFIO`.** Genuinely available and importable in that interpreter —
+  worth recording, since it is the only battle-tested mmCIF emitter on hand. But it still
+  needs the same identity walk to populate `StructureBuilder`, so it saves formatting only
+  while adding a heavy object graph. Reach for it only if strict mmCIF validity matters.
+- **`cmd.fab` + `cmd.load_coordset`, no serializer at all.** Reconciling `fab`'s atom order
+  and hydrogens against boltz's heavy-atom template order is a silent-mismatch generator.
+
+**mmCIF is the upgrade path**, not the v1 target: for a flat all-atom list an `_atom_site`
+`loop_` is arguably easier to get right than fixed-column PDB, and it dodges PDB's 4-char
+atom-name and 26-chain ceilings. Take it first only if multi-chain designs or non-protein
+components are on the near roadmap.
+
+### Getting it into the session
+
+The job is asynchronous, so Swift cannot return a value and the result must land in a file
+regardless — Swift writes `<tmp>/raymol_predict_result_<job>.pdb` and `job.result()` calls
+`cmd.load(path, name)`. File **contents** must never cross the feedback-marker line, which
+caps at ~1 KB (`appkit_inspector.py:344-351`).
+
+Recorded for the synchronous case, because it is the established RayMol precedent and worth
+matching if a blocking path is ever added: `raymol_design.py:608 load_repacked(obj, pdb_str)`
+loads MPNNKit's PDB **string** via `cmd.read_pdbstr` (`importing.py:1008`), bracketed by
+`get_view`/`set_view` with a `matrix_copy` → `delete` → `set_name` dance. The
+`NSTemporaryDirectory()/raymol_repack.pdb` tempfile at `PyMOLEngine.swift:2183-2194` is
+**unnecessary** for that path — its stated reason (avoiding multi-line escaping in the
+`runPython` string) is already solved by base64 elsewhere in the same file (`:2345-2347`),
+and it uses a fixed filename, swallows write errors with `try?`, and never cleans up. For
+mmCIF there is no `read_cifstr`; the in-memory route is `cmd.load_raw(text, 'cif', name)`.
 
 ## Input contract
 
@@ -604,13 +720,157 @@ Any new third-party import must also be added to `:38`, which installs only
 between macOS and iOS in both directions before (#174, #226/#238), so every Swift change
 here must be hand-compiled for **both** slices before merge.
 
+## Folder structure
+
+```
+modules/pymol/
+  predicting.py              cmd-facing API only — thin, no logic
+  predictors/
+    __init__.py              registers the built-ins; the only place that does
+    base.py                  Predictor ABC, PredictionSpec, PredictionJob, PredictionOptions
+    errors.py                the six error types
+    weights.py               WeightBundle, BundledSource, WeightCache
+    host.py                  marker+tempfile transport to the Swift host; availability probe
+    boltz2.py                first real predictor
+    _template.py             copy-me skeleton (see below)
+docs/predictors.md           the how-to below, as shipped documentation
+testing/tests/predict/
+  predict_registry.py        register / retrieve / unknown / swap
+  predict_weights.py         download-once, checksum, partial, extraction, re-validation
+  predict_errors.py          one test per failure mode in §Error taxonomy
+  predict_stub.py            the stub predictor, full flow, no Swift and no network
+  data/stub_bundle.zip       3-entry fixture with a known sha256
+```
+
+`setup.py:849-863 get_packages()` walks `modules/` directories, so `pymol/predictors/`
+is packaged with no `setup.py` edit. Test fixtures resolve relatively because
+`PyMOLTestCase.setUp` chdirs to the defining file's directory (`testing.py:405-418`).
+
+Why a subpackage rather than one module: `predicting.py` stays the `cmd.*` surface and
+nothing else, so adding a predictor never touches the file that `api.py` and `keywords.py`
+depend on. Each predictor is then one self-contained file that can be read, tested, and
+deleted independently.
+
+## Predictor template
+
+`modules/pymol/predictors/_template.py` — copy, rename, fill in. The leading underscore
+keeps `__init__.py` from registering it.
+
+```python
+"""Skeleton for a new RayMol structure predictor.
+
+Copy to modules/pymol/predictors/<your_id>.py, then follow docs/predictors.md.
+Everything below is required unless marked optional.
+"""
+from .base import Predictor, PredictionSpec, PredictionOptions
+from .errors import PredictionInputError, PredictionOptionError, PredictorUnavailable
+from .weights import WeightBundle
+
+
+class TemplatePredictor(Predictor):
+    # -- Identity -----------------------------------------------------------
+    id = 'template'                  # stable selector; never change it once shipped
+    name = 'Template predictor'      # human-readable, for listings
+
+    # -- Weights ------------------------------------------------------------
+    # None if the method needs no weights. Hash and size are of the ZIP's bytes,
+    # and `members` is the exact expected set of archive entries at the root:
+    # WeightCache asserts it after extraction, because a predictor that loads a
+    # partially-extracted bundle usually misbehaves instead of failing.
+    weight_bundle = WeightBundle(
+        id='template-v1',
+        version='v1',
+        url='https://github.com/<owner>/<repo>/releases/download/<tag>/bundle.zip',
+        sha256='0' * 64,
+        size=0,
+        members=('config.json', 'model.safetensors'),
+    )
+
+    # -- Options ------------------------------------------------------------
+    # Only what the backend genuinely honours. Anything omitted is REJECTED by
+    # validate_options(), never silently ignored.
+    option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
+
+    # -- Capability ---------------------------------------------------------
+    def check_available(self):
+        """Raise PredictorUnavailable if this cannot run here and now.
+
+        Check the things that are true before any work: platform, OS version,
+        whether a host capable of running the backend is present. Do NOT check
+        whether weights are cached — that is the weight manager's job and it is
+        allowed to fix it by downloading.
+        """
+        raise PredictorUnavailable(f'{self.id}: not implemented')
+
+    # -- Input validation ---------------------------------------------------
+    def parse_spec(self, sequence, *, name=''):
+        """Turn user input into a PredictionSpec, or raise PredictionInputError.
+
+        Reject here, loudly, rather than letting the backend silently drop
+        residues it does not understand. Chain ids must be single uppercase
+        characters so PDB columns stay aligned.
+        """
+        raise PredictionInputError('template: not implemented')
+
+    def validate_options(self, options):
+        unknown = set(options) - set(self.option_defaults)
+        if unknown:
+            raise PredictionOptionError(
+                f'{self.id} does not support: {", ".join(sorted(unknown))}')
+        merged = dict(self.option_defaults)
+        merged.update(options)
+        return PredictionOptions(**merged)
+
+    # -- Run ----------------------------------------------------------------
+    def submit(self, spec, options, weights_path):
+        """Start the run and return a PredictionJob immediately.
+
+        MUST NOT BLOCK. cmd.predict is reachable from the console, which runs on
+        the main thread; blocking here stalls the render loop for the whole
+        inference. Return a handle whose status() is a cheap poll.
+        """
+        raise NotImplementedError
+
+
+PREDICTOR = TemplatePredictor()
+```
+
+## Adding a predictor — `docs/predictors.md`
+
+1. **Copy the template** to `modules/pymol/predictors/<your_id>.py` and pick a permanent
+   `id`. The id appears in user scripts and saved sessions, so treat it as API.
+2. **Write the tests first.** Add `testing/tests/predict/predict_<your_id>.py` subclassing
+   `pymol.testing.PyMOLTestCase`. Do not name it `test_*.py` unless you want the pytest lane
+   — `testing.py:692-697` routes on that prefix. Mock the network by patching your module's
+   `urlopen`; never reach a real server.
+3. **Declare the weight bundle.** Publish the zip, then record the sha256 **of the bytes you
+   uploaded** — re-exporting is not guaranteed to reproduce them bitwise. `members` must be
+   the exact archive-root entry set.
+4. **Implement `check_available`** so the predictor disappears cleanly where it cannot run,
+   instead of failing mid-run. Platform, OS floor, host presence — not weight state.
+5. **Implement `parse_spec` to reject, not repair.** If the backend silently ignores input it
+   does not support, that is your problem to catch: verify what it does with a ligand, a
+   nucleic acid, an `X`, and an empty chain, and raise for each. boltz-mlx's `fromResidues`
+   is the cautionary case — it *excludes* non-canonical residues with a diagnostic and
+   returns success.
+6. **Implement `validate_options` to reject unknown options.** Accepting and ignoring a
+   quality knob produces results the user believes are something they are not.
+7. **`submit` must not block.** See the template's note.
+8. **Register it** in `predictors/__init__.py` — the only file that changes outside your own.
+9. **Add the test file** to the `--run` list in `.github/workflows/raymol-embedded-tests.yml`
+   if you did not add the whole `testing/tests/predict` directory, and **rebase onto master
+   first** — that list is hand-maintained and has silently dropped files before.
+10. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+    merging. No CI job compiles Swift, and the shared target has broken each platform from
+    the other before.
+
 ## Phasing
 
 | Phase | Deliverable | Blocked on |
 |---|---|---|
 | 0 | `MLXRuntime` extraction + tests | — (done in this branch) |
 | 1 | Python framework: registry, `WeightCache`, errors, `testing/tests/predict/` | — |
-| 2 | Upstream `StructureWriter` + `ScoredStructure.layout`; tag boltz-mlx `v0.1.0` | — |
+| 2 | Promote boltz-mlx's test writer to `Sources/BoltzMLX/Write/StructureWriter.swift`; tag `v0.1.0` | — |
 | 3 | Mint the artifact zip, hash it, publish as a GitHub Release asset | Phase 2 tag |
 | 4 | SwiftPM dep, `BoltzJobManager`, `PREDICT:` marker, `PredictSizeGuard` | 2, 3 |
 | 5 | End-to-end verification on macOS hardware | 1–4 |

@@ -1,4 +1,4 @@
-#if RAYMOL_MPNN || RAYMOL_BOLTZ
+#if RAYMOL_MPNN || os(macOS)
 import XCTest
 @testable import RayMol   // module name = PRODUCT_NAME "RayMol"
 

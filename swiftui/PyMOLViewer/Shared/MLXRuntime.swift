@@ -1,18 +1,23 @@
-#if RAYMOL_MPNN || RAYMOL_BOLTZ
+#if RAYMOL_MPNN || os(macOS)
 import Foundation
 import MLX
 
 /// Process-wide MLX configuration, shared by every RayMol feature that runs MLX
 /// inference. This is the ONLY file in RayMol that imports MLX; feature-specific
-/// runtimes (`MPNNRuntime`, and the Boltz prediction runtime) sit on top of it and
-/// contribute their own policy rather than writing MLX directly.
+/// runtimes (`MPNNRuntime`, `BoltzRuntime`) sit on top of it and contribute their own
+/// policy rather than writing MLX directly.
 ///
 /// It exists because MLX's relevant knobs are **process-global**, and RayMol now has
 /// more than one MLX consumer:
 ///
 /// - Design mode (`MPNNRuntime`, RAYMOL_MPNN) needs `Memory.cacheLimit` at 96 MB.
-/// - Structure prediction (RAYMOL_BOLTZ) drives boltz-mlx, whose own `MemoryPlanner.apply()`
-///   assigns `Memory.cacheLimit`/`memoryLimit` on **every** predict call.
+/// - Structure prediction (macOS, unconditional) drives boltz-mlx, whose own
+///   `MemoryPlanner.apply()` assigns `Memory.cacheLimit`/`memoryLimit` on **every**
+///   predict call.
+///
+/// The gate is `RAYMOL_MPNN || os(macOS)` rather than a dedicated compilation condition:
+/// structure prediction ships in every macOS build, so there is no flag to set, while the
+/// `RAYMOL_MPNN` arm keeps this type available to Design mode on iOS.
 ///
 /// With both linked, whoever wrote last used to win — silently, by call order, with no
 /// way to observe or test the outcome. `MLXRuntime` arbitrates instead (see
