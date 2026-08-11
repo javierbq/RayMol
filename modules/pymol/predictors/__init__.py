@@ -10,4 +10,8 @@ from .registry import register, get, available, unregister  # noqa: F401
 
 def _register_builtins():
     """Register the shipped predictors. The only function that changes per predictor."""
-    return
+    from .boltz2 import Boltz2Predictor
+    register(Boltz2Predictor(), replace=True)
+
+
+_register_builtins()
