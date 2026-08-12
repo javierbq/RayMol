@@ -382,7 +382,20 @@ The port's `BoltzPredictionOptions` carries **only** `recyclingSteps`, `diffusio
 also that `config.json`'s `num_sampling_steps: 5` is an inert training hparam — the sampler
 takes its step count from the options, not the config.
 
-**Cost must be re-measured before shipping.** Every published figure is at 50 steps
+**Measured end to end, 2026-08-11 (the first measurement at the shipped operating point).**
+On an M3 Pro, a 33-residue monomer at recycling 3 / 200 diffusion steps: **~95 s cold**
+(including the ~10 s model load) and **73.5 s warm**. ⚠️ Both are **Debug** builds
+(`SWIFT_OPTIMIZATION_LEVEL: -Onone`), so they are an upper bound and are **not comparable**
+to boltz-mlx's Release benchmark numbers — re-measure against Release before quoting
+anything to a user or sizing a UI.
+
+Even allowing for Debug, this is materially worse than the extrapolation below predicted:
+73.5 s at **33** tokens versus an extrapolated ~30 s at 117. For small inputs the cost is
+dominated by the fixed per-step work of 200 diffusion steps, not by the ~N² term, so
+scaling the 50-step figures understates the 200-step cost at low token counts. Treat 200
+steps as expensive regardless of sequence length, and surface progress accordingly.
+
+**The original extrapolation, retained for contrast.** Every published figure is at 50 steps
 (8.90 s / 2.24 GB at 117 tokens; 32.16 s / 3.47 GB at 225, on an M3 Pro). Runtime is ~linear
 in diffusion steps and super-linear (~N²) in tokens, so 200 steps multiplies the diffusion
 component roughly fourfold — on the order of 30 s at ~117 tokens and minutes at ~225. Those
@@ -557,6 +570,14 @@ The job is asynchronous, so Swift cannot return a value and the result must land
 regardless — Swift writes `<tmp>/raymol_predict_result_<job>.pdb` and `job.result()` calls
 `cmd.load(path, name)`. File **contents** must never cross the feedback-marker line, which
 caps at ~1 KB (`appkit_inspector.py:344-351`).
+
+**Do not run the download on a background Python thread inside the app.** Measured: an
+extraction that should take seconds ran at ~364 KB/s — roughly 1000× too slow — because the
+embedded app's main thread holds the GIL persistently (the same reason `PAutoBlock` is a
+no-op under `_PYMOL_EMBEDDED`), starving any other Python thread. `cmd.predict` calls
+`WeightCache.ensure()` synchronously on the caller's thread and is unaffected; this matters
+only if someone later adds a "download in the background" affordance, which must be done on
+a Swift queue rather than a Python thread.
 
 Recorded for the synchronous case, because it is the established RayMol precedent and worth
 matching if a blocking path is ever added: `raymol_design.py:608 load_repacked(obj, pdb_str)`

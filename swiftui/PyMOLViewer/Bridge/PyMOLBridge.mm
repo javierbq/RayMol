@@ -97,6 +97,21 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     PyConfig_SetBytesString(&config, &config.program_name, "PyMOL");
     PyConfig_SetBytesString(&config, &config.home, [pythonHome UTF8String]);
 
+#if TARGET_OS_OSX
+    // Tells modules/pymol/predictors/host.py that a host is listening for PREDICT:
+    // markers on the feedback line. There is no Python->Swift call path, so this
+    // variable IS how Python knows inference is reachable; absent under headless
+    // `pymol -c`, the predictor correctly reports itself unavailable instead of
+    // submitting a job nothing would pick up.
+    //
+    // MUST be set BEFORE Py_InitializeFromConfig. Python builds os.environ once, at
+    // interpreter startup, so a later C setenv is invisible to os.environ even
+    // though C getenv still sees it. (The PYMOL_PATH/PYMOL_DATA setenv calls below
+    // are after init and get away with it only because PyMOL's own Python layer
+    // assigns those into os.environ itself.)
+    setenv("RAYMOL_PREDICT_HOST", "1", 1);
+#endif
+
     PyStatus status = Py_InitializeFromConfig(&config);
     PyConfig_Clear(&config);
     if (PyStatus_Exception(status)) {
@@ -115,14 +130,6 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
 
     setenv("PYMOL_PATH", [resPath UTF8String], 1);
     setenv("PYMOL_DATA", [dataPath UTF8String], 1);
-#if TARGET_OS_OSX
-    // Tells modules/pymol/predictors/host.py that a host is listening for PREDICT:
-    // markers on the feedback line. There is no Python->Swift call path, so this
-    // variable IS how Python knows inference is reachable. Absent under headless
-    // `pymol -c`, where the predictor then correctly reports itself unavailable
-    // instead of submitting a job that would never be picked up.
-    setenv("RAYMOL_PREDICT_HOST", "1", 1);
-#endif
 
     // _champ is a TOP-LEVEL builtin (inittab), but chempy/champ/__init__.py does
     // `from . import _champ` (i.e. imports chempy.champ._champ). Pre-seed
