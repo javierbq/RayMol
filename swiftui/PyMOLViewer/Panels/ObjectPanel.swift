@@ -2641,6 +2641,10 @@ private struct ShowButton: View {
                     }
                 }
             }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon selection=\(name)")
+            }
         } label: {
             Text("S")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -2685,6 +2689,10 @@ private struct HideButton: View {
                         engine.runCommand("hide \(rep), \(name)", naming: name)
                     }
                 }
+            }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon_hide selection=\(name)")
             }
         } label: {
             Text("H")
@@ -2806,6 +2814,10 @@ private struct ColorMenuButton: View {
                         swatchLabel(row.title, swatch: row.swatch)
                     }
                 }
+            }
+            Divider()
+            Button("SNFG glycan palette") {
+                engine.runCommand("glycocolor selection=\(name)")
             }
             Divider()
             // A ColorPicker can't live inside a Menu (it renders disabled), so
