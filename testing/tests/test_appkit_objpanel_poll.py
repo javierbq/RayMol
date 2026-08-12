@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import tempfile
+import unittest.mock as mock
 
 from pymol import cmd, testing
 from pymol import appkit_inspector as ai
@@ -387,7 +388,199 @@ class TestGroupTreePayload(testing.PyMOLTestCase):
                          'group tree probe leaked a selector error: %r' % console)
 
 
+@contextlib.contextmanager
+def count_atom_work():
+    """Count the atom-touching cmd calls poll_panel makes, by name.
+
+    These three are the whole of the poll's cost: `iterate` drives the per-atom
+    transparency scan, `count_atoms` the per-selection counts and the rep probe,
+    `count_states` the per-object state counts. Each is O(atoms) in the C++
+    selector, so counting CALLS (rather than timing) gives a machine-independent
+    assertion that survives a fast CI box.
+    """
+    names = ('iterate', 'count_atoms', 'count_states')
+    counts = dict.fromkeys(names, 0)
+    patches = []
+
+    def wrap(name, real):
+        def wrapper(*args, **kwargs):
+            counts[name] += 1
+            return real(*args, **kwargs)
+        return wrapper
+
+    for name in names:
+        p = mock.patch.object(cmd, name, wrap(name, getattr(cmd, name)))
+        p.start()
+        patches.append(p)
+    try:
+        yield counts
+    finally:
+        for p in patches:
+            p.stop()
+
+
+class TestPollPanelSkipsUnchangedSessions(testing.PyMOLTestCase):
+    """Regression coverage for the 1.9.1 "opens but won't rotate" report.
+
+    poll_panel() runs on a 500 ms MAIN-THREAD timer (PyMOLEngine.pollObjects).
+    It rebuilt the whole payload every tick: a per-atom `cmd.iterate` for EVERY
+    object (has_transp), a `count_atoms` for every selection (sel_counts) and a
+    `count_states` per object. On the reported session — 12 objects, 79,568
+    atoms, 48 chain selections, the same shape as the 1.8.1 hotfix session above
+    — one poll measured 713 ms against a 500 ms budget, so the main thread never
+    came free and mouse drags were never serviced: the viewport rendered but
+    could not be rotated.
+
+    The panel's data only changes when the user acts, so a session that has not
+    changed since the last poll must cost NO atom work at all. Structural change
+    and explicit invalidation must still refresh it.
+    """
+
+    def _poll_counting(self):
+        with count_atom_work() as counts:
+            ai.poll_panel()
+        return counts
+
+    def testFirstPollOfASessionScansAtoms(self):
+        # Control for the test below: if the poll never scanned atoms even when
+        # cold, "no scan on the second poll" would prove nothing.
+        self._design_session()
+        ai.invalidate()
+
+        counts = self._poll_counting()
+
+        self.assertGreater(counts['iterate'], 0,
+                           'a cold poll must still run the per-atom scan')
+        self.assertGreater(counts['count_atoms'], 0,
+                           'a cold poll must still count the selections')
+
+    def testSecondPollOfUnchangedSessionScansNoAtoms(self):
+        # The bug: every tick redid all of it. Nothing changed between these two
+        # polls, so the second must be pure cache.
+        self._design_session()
+        ai.poll_panel()
+
+        counts = self._poll_counting()
+
+        self.assertEqual(counts, {'iterate': 0, 'count_atoms': 0,
+                                  'count_states': 0},
+                         'an unchanged session must cost no atom work')
+
+    def testRepeatedPollsStayFree(self):
+        # The panel polls ~2x/second for as long as the session is open, so the
+        # cache has to hold, not just skip one tick.
+        self._design_session()
+        ai.poll_panel()
+
+        with count_atom_work() as counts:
+            for _ in range(10):
+                ai.poll_panel()
+
+        self.assertEqual(counts['iterate'], 0)
+        self.assertEqual(counts['count_atoms'], 0)
+
+    def testEnablingAnObjectDoesNotRescanAtoms(self):
+        # Toggling visibility is the most common panel interaction and changes
+        # nothing the atom scan measures, so it must not trigger a rescan.
+        objs, _ = self._design_session()
+        ai.poll_panel()
+
+        cmd.disable(objs[0])
+        counts = self._poll_counting()
+
+        self.assertEqual(counts['iterate'], 0,
+                         'enable/disable must not invalidate the atom scan')
+
+    def testDisabledObjectStillReportsEnabledState(self):
+        # ...but the cheap part of the payload must still track the toggle.
+        objs, _ = self._design_session()
+        ai.poll_panel()
+
+        cmd.disable(objs[0])
+        _, payload = self._poll()
+
+        self.assertNotIn(objs[0], payload['enabled'])
+        self.assertIn(objs[1], payload['enabled'])
+
+    def testNewSelectionIsCountedWithoutRecountingTheOthers(self):
+        # A new selection must appear, and the 48 unchanged ones must not be
+        # recounted -- that per-selection recount was 174 ms of the 713 ms.
+        objs, sels = self._design_session()
+        ai.poll_panel()
+
+        cmd.select('brand_new', '%s and name CA' % objs[0], quiet=1)
+        with count_atom_work() as counts:
+            _, payload = self._poll()
+
+        self.assertEqual(payload['sel_counts']['brand_new'],
+                         cmd.count_atoms('brand_new'))
+        self.assertLessEqual(counts['count_atoms'], 2,
+                             'only the new selection needed counting, not all '
+                             '%d of them' % (len(sels) + 1))
+
+    def testNewObjectIsScannedWithoutRescanningTheOthers(self):
+        objs, _ = self._design_session()
+        ai.poll_panel()
+
+        cmd.fab('ACDEFG', 'late_arrival')
+        with count_atom_work() as counts:
+            _, payload = self._poll()
+
+        self.assertIn('late_arrival', payload['objects'])
+        self.assertIn('late_arrival', payload['has_transp'])
+        self.assertLessEqual(counts['iterate'], 1,
+                             'only the new object needed scanning, not all '
+                             '%d of them' % (len(objs) + 1))
+
+    def testDeletedObjectLeavesThePayload(self):
+        objs, _ = self._design_session()
+        ai.poll_panel()
+
+        cmd.delete(objs[0])
+        _, payload = self._poll()
+
+        self.assertNotIn(objs[0], payload['objects'])
+        self.assertNotIn(objs[0], payload['has_transp'])
+        self.assertNotIn(objs[0], payload['nstate'])
+
+    def testInvalidateRefreshesTheTransparencyBadge(self):
+        # A bare `alter` changes no name, so the cheap fingerprint cannot see it.
+        # Every RayMol command path calls invalidate() for exactly this reason;
+        # without it the badge would stay stale until the next structural edit.
+        cmd.delete('all')
+        cmd.fab('ACDEFG', 'mol')
+        cmd.show('cartoon', 'mol')
+        _, payload = self._poll()
+        self.assertFalse(payload['has_transp']['mol'],
+                         'fixture must start clean, else this proves nothing')
+
+        cmd.alter('mol and resi 1-2', 's.cartoon_transparency = 0.5')
+        ai.invalidate()
+        _, payload = self._poll()
+
+        self.assertTrue(payload['has_transp']['mol'],
+                        'invalidate() must force the per-atom scan to re-run')
+
+    def testCachedPollStillWritesTheFullPayload(self):
+        # The Swift side re-reads the temp file on every OBJPANEL:ready marker,
+        # so a cache HIT must still leave a complete, valid file behind -- only
+        # the recomputation is skipped, never the write.
+        objs, sels = self._design_session()
+        _, first = self._poll()
+
+        _, second = self._poll()
+
+        self.assertEqual(first, second)
+        self.assertEqual(sorted(second['objects']), sorted(objs))
+        self.assertEqual(sorted(second['selections']), sorted(sels))
+        for sel in sels:
+            self.assertEqual(second['sel_counts'][sel], cmd.count_atoms(sel))
+
+
 # _poll lives on TestObjPanelPoll; reuse it rather than duplicating the tempfile
 # dance, and pull in cgo for the CGO member above.
 TestGroupTreePayload._poll = TestObjPanelPoll._poll
+TestPollPanelSkipsUnchangedSessions._poll = TestObjPanelPoll._poll
+TestPollPanelSkipsUnchangedSessions._design_session = TestObjPanelPoll._design_session
+TestPollPanelSkipsUnchangedSessions.DESIGN_CHAINS = TestObjPanelPoll.DESIGN_CHAINS
 from pymol import cgo  # noqa: E402  (kept next to its only use for clarity)

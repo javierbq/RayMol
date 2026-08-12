@@ -60,6 +60,21 @@ def _error(s):
 
 # --- Tool implementations -------------------------------------------------
 
+def _invalidate_panel_caches():
+    """Drop the object panel's poll caches after an MCP-driven mutation.
+
+    The Swift command funnel (PyMOLEngine.runCommandCore) does this for anything
+    the user types or clicks, but MCP tools reach the core directly and bypass
+    it, so a `set cartoon_transparency` or `alter` arriving over MCP would leave
+    the panel showing stale counts and a stale transparency badge.
+    """
+    try:
+        from pymol import appkit_inspector
+        appkit_inspector.invalidate()
+    except Exception:
+        pass      # the panel is a macOS-only nicety; never fail a tool call for it
+
+
 def _run_pymol_command(args):
     cmd_str = args.get("command", "")
     if not cmd_str:
@@ -69,6 +84,7 @@ def _run_pymol_command(args):
         from pymol import cmd
         cmd.do(cmd_str)
         cmd.sync()
+        _invalidate_panel_caches()
         return _text("ok")
 
     try:
@@ -90,6 +106,7 @@ def _run_python(args):
                 exec(code, ns)
             from pymol import cmd
             cmd.sync()
+            _invalidate_panel_caches()
             out = buf.getvalue()
             return _text(out if out else "ok")
         except Exception:
