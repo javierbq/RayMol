@@ -115,6 +115,14 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
 
     setenv("PYMOL_PATH", [resPath UTF8String], 1);
     setenv("PYMOL_DATA", [dataPath UTF8String], 1);
+#if TARGET_OS_OSX
+    // Tells modules/pymol/predictors/host.py that a host is listening for PREDICT:
+    // markers on the feedback line. There is no Python->Swift call path, so this
+    // variable IS how Python knows inference is reachable. Absent under headless
+    // `pymol -c`, where the predictor then correctly reports itself unavailable
+    // instead of submitting a job that would never be picked up.
+    setenv("RAYMOL_PREDICT_HOST", "1", 1);
+#endif
 
     // _champ is a TOP-LEVEL builtin (inittab), but chempy/champ/__init__.py does
     // `from . import _champ` (i.e. imports chempy.champ._champ). Pre-seed

@@ -244,7 +244,6 @@
 		99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PyMOLViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignRegionTests.swift; sourceTree = "<group>"; };
 		9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSizeGuard.swift; sourceTree = "<group>"; };
-		A0E7E4586376297495D86580 /* boltz-test */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "boltz-test"; path = "../../../../../boltz-test"; sourceTree = SOURCE_ROOT; };
 		A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzRuntime.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
@@ -283,7 +282,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_DAC98B74-63AE-4EB7-BFD9-C87B36FE2709" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_40D9FF77-032E-49DF-A8C9-7005A6C3FDCA" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -376,7 +375,6 @@
 		3EBD6226DB025AF86B7A30A2 = {
 			isa = PBXGroup;
 			children = (
-				6E1AC28EECBEFD70CBFE17AB /* Packages */,
 				52FC8256B867D42D45933E18 /* PyMOLViewer */,
 				7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */,
 				22F2EFCF4CDD52CF747B834A /* PyMOLViewerUITests */,
@@ -436,14 +434,6 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
-		6E1AC28EECBEFD70CBFE17AB /* Packages */ = {
-			isa = PBXGroup;
-			children = (
-				A0E7E4586376297495D86580 /* boltz-test */,
-			);
-			name = Packages;
-			sourceTree = "<group>";
-		};
 		7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -494,10 +484,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_70064A94-44D3-4C15-9C42-C35D95B20C25" /* swiftui */ = {
+		"TEMP_57123398-A963-45B2-8DA6-8BC50A0D5EFB" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_DAC98B74-63AE-4EB7-BFD9-C87B36FE2709" /* PyMOLBridge.xcconfig */,
+				"TEMP_40D9FF77-032E-49DF-A8C9-7005A6C3FDCA" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -636,10 +626,10 @@
 			mainGroup = 3EBD6226DB025AF86B7A30A2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */,
 				58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				B72CB82F75F09314D45355C3 /* XCRemoteSwiftPackageReference "proteinmpnn-mlx" */,
-				5AF78566CC0AF7FE6B05EDB2 /* XCLocalSwiftPackageReference "../../../../../boltz-test" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9CB24941D41B87B6FB69845B /* Products */;
@@ -1498,7 +1488,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_DAC98B74-63AE-4EB7-BFD9-C87B36FE2709" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_40D9FF77-032E-49DF-A8C9-7005A6C3FDCA" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1605,7 +1595,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_DAC98B74-63AE-4EB7-BFD9-C87B36FE2709" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_40D9FF77-032E-49DF-A8C9-7005A6C3FDCA" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1733,13 +1723,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		5AF78566CC0AF7FE6B05EDB2 /* XCLocalSwiftPackageReference "../../../../../boltz-test" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "../../../../../boltz-test";
-		};
-/* End XCLocalSwiftPackageReference section */
-
 /* Begin XCRemoteSwiftPackageReference section */
 		58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1763,6 +1746,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.1.2;
+			};
+		};
+		C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/javierbq/boltz-mlx.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1790,6 +1781,7 @@
 		};
 		8426817F16C801044FDCCB94 /* BoltzMLX */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */;
 			productName = BoltzMLX;
 		};
 		98AC6A7391B7E7A564A30A61 /* Sparkle */ = {
@@ -1799,6 +1791,7 @@
 		};
 		B20D95BF3CA7BA300F0AF09F /* BoltzMLX */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */;
 			productName = BoltzMLX;
 		};
 		FBA4CCD670BAF318F243E692 /* MLX */ = {

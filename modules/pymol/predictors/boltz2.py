@@ -30,8 +30,8 @@ class Boltz2Predictor(Predictor):
         version='v1',
         url='https://github.com/javierbq/boltz-mlx/releases/download/weights-v1/'
             'boltz2-mlx-int8-v1.zip',
-        sha256='REPLACE_WITH_PUBLISHED_DIGEST',
-        size=0,
+        sha256='ce9637f65f169cf98989d6b068469cf446fef49b9b90859d26f65f9853ea0cbd',
+        size=529_338_573,
         members=('config.json', 'manifest.json', 'model.safetensors'),
     )
 

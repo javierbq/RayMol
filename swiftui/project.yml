@@ -32,15 +32,11 @@ packages:
   # cannot run in the iOS Simulator at all, and no boltz run above ~115 tokens has
   # ever completed on a physical device because iOS suspends the app mid-run.
   #
-  # TEMPORARY local path so the Swift can be compiled and tested before the
-  # upstream tag exists. REPLACE with the remote + tag before merging:
-  #   BoltzMLX:
-  #     url: https://github.com/javierbq/boltz-mlx.git
-  #     from: 0.1.0
   # boltz-mlx pins mlx-swift exact 0.31.6, identical to MPNNKit's pin, so
-  # resolution is unaffected.
+  # resolution is unaffected and this entry never needs bumping in lockstep.
   BoltzMLX:
-    path: ../../../../../boltz-test
+    url: https://github.com/javierbq/boltz-mlx.git
+    from: 0.1.0
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
