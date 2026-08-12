@@ -77,7 +77,8 @@ final class BoltzJobManagerTests: XCTestCase {
         let path = dir.appendingPathComponent("raymol_predict_status_j2.json")
         try BoltzJobManager.writeStatus(
             .init(state: "running", phase: "inference", fraction: 0.5,
-                  error: nil, resultPath: "/tmp/x.pdb"), to: path)
+                  error: nil, resultPath: "/tmp/x.pdb", peakBytes: nil,
+                  elapsedSeconds: nil), to: path)
         // Assert the on-disk KEY SPELLING, because Python reads these by name.
         let raw = try JSONSerialization.jsonObject(
             with: try Data(contentsOf: path)) as? [String: Any]
@@ -88,11 +89,39 @@ final class BoltzJobManagerTests: XCTestCase {
         XCTAssertEqual(decoded.fraction, 0.5)
     }
 
+    func testStatusCarriesPeakMemoryAndElapsedWithSnakeCaseKeys() throws {
+        let path = dir.appendingPathComponent("raymol_predict_status_j6.json")
+        try BoltzJobManager.writeStatus(
+            .init(state: "done", phase: "done", fraction: 1.0, error: nil,
+                  resultPath: "/tmp/x.pdb", peakBytes: 4_294_967_296,
+                  elapsedSeconds: 65.3), to: path)
+        let raw = try JSONSerialization.jsonObject(
+            with: try Data(contentsOf: path)) as? [String: Any]
+        XCTAssertEqual(raw?["peak_bytes"] as? Int, 4_294_967_296)
+        XCTAssertEqual(raw?["elapsed_s"] as? Double, 65.3)
+        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+                                               from: try Data(contentsOf: path))
+        XCTAssertEqual(decoded.peakBytes, 4_294_967_296)
+    }
+
+    /// Absent while a job is still running -- Python's queued fallback mirrors that.
+    func testPeakMemoryIsNilBeforeCompletion() throws {
+        let path = dir.appendingPathComponent("raymol_predict_status_j7.json")
+        try BoltzJobManager.writeStatus(
+            .init(state: "running", phase: "inference", fraction: 0.2, error: nil,
+                  resultPath: nil, peakBytes: nil, elapsedSeconds: nil), to: path)
+        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+                                               from: try Data(contentsOf: path))
+        XCTAssertNil(decoded.peakBytes)
+        XCTAssertNil(decoded.elapsedSeconds)
+    }
+
     func testStatusWriteIsAtomicLeavingNoTempBehind() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j5.json")
         try BoltzJobManager.writeStatus(
             .init(state: "done", phase: "done", fraction: 1.0,
-                  error: nil, resultPath: nil), to: path)
+                  error: nil, resultPath: nil, peakBytes: nil,
+                  elapsedSeconds: nil), to: path)
         let leftovers = try FileManager.default
             .contentsOfDirectory(atPath: dir.path)
             .filter { $0.hasSuffix(".tmp") }

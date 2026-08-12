@@ -406,12 +406,41 @@ allocator or cache effect sets in around there. Do not extrapolate past 250 from
 ⚠️ **Add the model load for a cold first run** (~10 s, a ~505 MiB safetensors load plus graph
 build), and the one-time weight download before that.
 
-⚠️ **No validated peak-memory figure exists.** Sampling process RSS during a 250-aa run
-showed 808 MB against a 799 MB baseline — i.e. RSS does not attribute MLX's Metal
-allocations, consistent with the warning below that the two measures must not be subtracted.
-`PredictSizeGuard`'s estimate for 250 aa is 4.42 GB, and it remains fitted to boltz-mlx's
-published MLX-peak numbers rather than to anything measured here. Getting a real figure needs
-`BoltzPredictor.memorySnapshot()` plumbed through the bridge.
+### Measured memory + time curve, 60→600 residues
+
+`BoltzJobManager` now reports MLX's own peak-memory high-water mark and inference wall time
+in the job status (`peak_bytes`, `elapsed_s`), resetting the mark per run so each size is
+independent. Release, M3 Pro / 36 GiB, recycling 3 / 200 steps, single chain, no MSA:
+
+| Residues | MLX peak | Inference | MB/residue | s/residue |
+|---:|---:|---:|---:|---:|
+| 60 | 0.78 GB | 6.5 s | 13.0 | 0.11 |
+| 100 | 1.76 GB | 20.6 s | 17.6 | 0.21 |
+| 150 | 2.90 GB | 28.0 s | 19.3 | 0.19 |
+| 200 | 3.48 GB | 41.3 s | 17.4 | 0.21 |
+| 250 | 3.85 GB | 69.6 s | 15.4 | 0.28 |
+| 300 | 4.64 GB | 92.2 s | 15.5 | 0.31 |
+| 350 | 5.96 GB | 128.8 s | 17.0 | 0.37 |
+| 400 | 7.38 GB | 168.6 s | 18.5 | 0.42 |
+| 450 | 7.90 GB | 261.1 s | 17.6 | 0.58 |
+| 550 | 10.86 GB | 557.9 s | 19.7 | 1.01 |
+| 600 | **13.11 GB** | **675.2 s** | 21.9 | 1.13 |
+
+**Memory is roughly linear at ~13–22 MB/residue; time is not.** Local log-log slopes put
+time near ^3.7 in the 450→600 range, so 600 residues costs 11¼ minutes of inference while
+using only ~36% of a 36 GiB machine. **Time, not memory, is the practical ceiling on this
+hardware** — the opposite of the on-device iOS situation, where memory binds first.
+
+⚠️ **RSS is useless here and must never be used.** During the 600-residue run the app's
+process RSS read **0.1 GB** while MLX's peak was **13.11 GB** — a 130× understatement,
+because MLX allocates Metal buffers that RSS does not attribute. Use
+`BoltzPredictor.memorySnapshot().peakMemory`.
+
+**This sweep corrected `PredictSizeGuard`.** Fitted only against boltz-mlx's published 117-
+and 225-token figures, the guard under-predicted from 350 residues upward and was **27%
+optimistic at 600** — the direction that licenses a run which then gets jetsam-killed. The
+quadratic coefficient is now 7× larger (`2_000` → `14_000`), and the test pins the whole
+sweep rather than two points, which is what let the shortfall survive.
 
 **Superseded Debug measurement, kept because it shows the size of the trap:** the same run on
 a Debug build (`-Onone`) took **73.5 s at 33 residues** — roughly an order of magnitude worse

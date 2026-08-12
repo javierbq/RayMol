@@ -71,9 +71,18 @@ final class BoltzJobManager {
         let fraction: Double
         let error: String?
         let resultPath: String?
+        /// MLX's peak-memory high-water mark for THIS prediction, in bytes. Nil until the
+        /// run finishes. Reported because process RSS does not attribute MLX's Metal
+        /// allocations at all -- sampling RSS during a 250-residue run showed ~9 MB of
+        /// growth against a multi-GB actual -- so this is the only honest instrument, and
+        /// it is what `PredictSizeGuard`'s constants must be fitted against.
+        let peakBytes: Int?
+        /// Wall time for the inference itself, excluding the one-time model load.
+        let elapsedSeconds: Double?
 
         enum CodingKeys: String, CodingKey {
             case state, phase, fraction, error, resultPath = "result_path"
+            case peakBytes = "peak_bytes", elapsedSeconds = "elapsed_s"
         }
     }
 
@@ -119,7 +128,7 @@ final class BoltzJobManager {
             return Status(state: "failed", phase: "preflight", fraction: 0,
                           error: "input of \(tokens) residues is too large for this "
                                + "machine; at most about \(maxFittingTokens) fit",
-                          resultPath: nil)
+                          resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
         }
     }
 
@@ -127,10 +136,14 @@ final class BoltzJobManager {
 
     private func run(_ request: Request) {
         let statusURL = URL(fileURLWithPath: request.statusPath)
+        // Captured by report() below; filled in once inference completes.
+        var peak: Int? = nil
+        var elapsed: Double? = nil
         func report(_ state: String, _ phase: String, _ fraction: Double,
                     error: String? = nil, result: String? = nil) {
             try? Self.writeStatus(Status(state: state, phase: phase, fraction: fraction,
-                                         error: error, resultPath: result),
+                                         error: error, resultPath: result,
+                                         peakBytes: peak, elapsedSeconds: elapsed),
                                   to: statusURL)
         }
         func isCancelled() -> Bool {
@@ -164,10 +177,16 @@ final class BoltzJobManager {
             options.diffusionSteps = request.diffusionSteps
             options.seed = request.seed
 
+            // Reset the high-water mark so each prediction is measured independently --
+            // the same reset-then-snapshot pattern boltz-mlx's own benchmark harness uses.
+            Self.awaitSyncVoid { await predictor.resetPeakMemory() }
+            let started = Date()
             let structure = try BoltzRuntime.withMLXErrorsAsThrows {
                 try Self.awaitSync { try await predictor.predict(featurized: features,
                                                                 options: options) }
             }
+            elapsed = Date().timeIntervalSince(started)
+            peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
 
             // MemoryPlanner.apply() runs inside the actor on EVERY predict and assigns
             // MLX.Memory.cacheLimit unconditionally, so it has just overwritten whatever
@@ -203,6 +222,21 @@ final class BoltzJobManager {
         }
         done.wait()
         return try outcome.get()
+    }
+
+    /// Non-throwing variants of ``awaitSync(_:)`` for the actor's measurement calls.
+    private static func awaitSyncVoid(_ body: @escaping () async -> Void) {
+        let done = DispatchSemaphore(value: 0)
+        Task { await body(); done.signal() }
+        done.wait()
+    }
+
+    private static func awaitSyncValue<T>(_ body: @escaping () async -> T) -> T {
+        let done = DispatchSemaphore(value: 0)
+        var out: T!
+        Task { out = await body(); done.signal() }
+        done.wait()
+        return out
     }
 
     /// Reuses the loaded predictor when the weights directory is unchanged.

@@ -16,36 +16,41 @@ import Foundation
 /// but a jetsam SIGKILL is an asynchronous OS kill that no Swift handler can intercept —
 /// and on macOS that takes the user's unsaved session with it, not just the job.
 ///
-/// Constants are fitted to boltz-mlx's measured M3 Pro peaks at recycling 3 / 50 steps:
-/// 20 tokens → 0.61 GB, 117 → 2.24 GB, 225 → 3.47 GB.
+/// Constants are fitted to RayMol's own measured MLX peak memory on an M3 Pro / 36 GiB at
+/// the shipped operating point (recycling 3 / 200 steps, Release, single chain, no MSA),
+/// swept 60→600 residues:
 ///
-/// **The fit is dominated by a large constant, not by curvature, and that is
-/// counter-intuitive.** Runtime is super-linear in tokens (the pairwise tensors are ~N²),
-/// so the obvious move is a quadratic-heavy memory fit — but solving for a quadratic
-/// coefficient against the 117- and 225-token points yields a *negative* one: going from
-/// 117 to 225 tokens nearly doubles the input while peak memory rises only ~55%, because
-/// the ~505 MiB weight pack plus allocator overhead dominates this range. So the model is
-/// a large intercept plus a linear term, with only a small quadratic term to keep
-/// extrapolation beyond the measured range (where the pairwise tensors should reassert)
-/// from being optimistic.
+///     60 → 0.78 GB   200 → 3.48 GB   400 → 7.38 GB
+///    100 → 1.76 GB   250 → 3.85 GB   450 → 7.90 GB
+///    150 → 2.90 GB   300 → 4.64 GB   550 → 10.86 GB
+///                    350 → 5.96 GB   600 → 13.11 GB
 ///
-/// Retune all four constants together from new device data, and **never let the fit sit
-/// below measurement** — a guard that under-predicts licenses a run that dies. That is
-/// what `PredictSizeGuardTests.testEstimateTracksTheMeasuredCurve` exists to catch, and
-/// it caught exactly this on the first attempt.
+/// **The quadratic term is real, and the first version of this guard got that wrong.**
+/// Fitted only against boltz-mlx's published 117- and 225-token figures, memory looks
+/// *sub*-linear — solving for a quadratic coefficient there even yields a negative one,
+/// because the ~505 MiB weight pack dominates that range. Extending the sweep to 600
+/// residues shows the pairwise ~N² term reasserting hard: the earlier constants
+/// (`B = 2_000`) under-predicted from 350 residues upward and were **27% optimistic at
+/// 600** — precisely the direction that licenses a run which then gets jetsam-killed.
+/// `B` is now 7× larger.
+///
+/// Retune all four together from new device data, and **never let the fit sit below
+/// measurement**. `PredictSizeGuardTests.testEstimateNeverSitsBelowMeasurement` pins the
+/// whole sweep for exactly this reason — the earlier test only pinned two points, which is
+/// why the shortfall above 350 survived.
 enum PredictSizeGuard {
 
     // MARK: - Tunable constants
 
-    /// Model-resident floor: the ~505 MiB int8 pack plus graph and allocator overhead,
-    /// with margin. Most of a small prediction's footprint is here, not in the input.
-    static let fixedOverheadBytes = 1000 * 1024 * 1024
-    /// Linear term, bytes per token. Endpoint-to-endpoint slope of the measured curve
-    /// between 117 and 225 tokens, rounded up.
+    /// Model-resident floor: the ~505 MiB int8 pack plus graph and allocator overhead.
+    /// Lower than the previous 1000 MiB because the quadratic term now carries the large
+    /// end honestly rather than the intercept papering over it.
+    static let fixedOverheadBytes = 700 * 1024 * 1024
+    /// Linear term, bytes per token.
     static let bytesPerToken = 13_000_000
-    /// Small quadratic term, bytes per token². Deliberately modest: it does not fit the
-    /// measured range (see above) and exists to keep extrapolation conservative.
-    static let bytesPerTokenSquared = 2_000
+    /// Quadratic term, bytes per token² — the pairwise tensors. 7× the previous value:
+    /// see the type doc for why the old figure under-predicted above 350 residues.
+    static let bytesPerTokenSquared = 14_000
     /// At or below this fraction of available memory, proceed silently.
     static let okFraction = 0.50
     /// Above this fraction, refuse.

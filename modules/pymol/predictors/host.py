@@ -63,7 +63,8 @@ class HostJob:
                 return json.load(handle)
         except (IOError, OSError, ValueError):
             return {'state': 'queued', 'phase': 'queued', 'fraction': 0.0,
-                    'error': None, 'result_path': None}
+                    'error': None, 'result_path': None,
+                    'peak_bytes': None, 'elapsed_s': None}
 
     def cancel(self):
         """Ask the host to stop. Cancellation is cooperative and coarse: it lands

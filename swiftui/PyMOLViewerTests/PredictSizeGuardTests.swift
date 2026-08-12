@@ -20,12 +20,45 @@ final class PredictSizeGuardTests: XCTestCase {
         else { return XCTFail("expected refuse") }
     }
 
+    /// RayMol's own measured MLX peak memory, M3 Pro / 36 GiB, Release, recycling 3 /
+    /// 200 steps, single chain, no MSA. GB here is 10^9, matching how MLX reports.
+    private static let measured: [(tokens: Int, peakGB: Double)] = [
+        (60, 0.78), (100, 1.76), (150, 2.90), (200, 3.48), (250, 3.85), (300, 4.64),
+        (350, 5.96), (400, 7.38), (450, 7.90), (550, 10.86), (600, 13.11),
+    ]
+
     /// The fit must never sit BELOW measurement, or the guard licenses a run that dies.
-    func testEstimateTracksTheMeasuredCurve() {
-        XCTAssertGreaterThanOrEqual(PredictSizeGuard.estimatedBytes(tokens: 117),
-                                    Int(2.24 * Double(gib)))
-        XCTAssertGreaterThanOrEqual(PredictSizeGuard.estimatedBytes(tokens: 225),
-                                    Int(3.47 * Double(gib)))
+    ///
+    /// This pins the WHOLE sweep, not a couple of points. An earlier version asserted only
+    /// 117 and 225 tokens and was therefore green while the estimate ran 27% optimistic at
+    /// 600 residues.
+    func testEstimateNeverSitsBelowMeasurement() {
+        for point in Self.measured {
+            let estimate = PredictSizeGuard.estimatedBytes(tokens: point.tokens)
+            XCTAssertGreaterThanOrEqual(
+                Double(estimate), point.peakGB * 1e9,
+                "estimate is optimistic at \(point.tokens) residues: "
+                + "\(Double(estimate) / 1e9) GB vs measured \(point.peakGB) GB")
+        }
+    }
+
+    /// ...but not so conservative that it refuses work that would comfortably fit. Keeps
+    /// the fit honest in both directions rather than passing by inflating the intercept.
+    func testEstimateStaysWithinTwiceMeasurement() {
+        for point in Self.measured where point.tokens >= 100 {
+            let estimate = Double(PredictSizeGuard.estimatedBytes(tokens: point.tokens))
+            XCTAssertLessThan(
+                estimate, 2.0 * point.peakGB * 1e9,
+                "estimate is wildly conservative at \(point.tokens) residues")
+        }
+    }
+
+    /// A 600-residue run really does need ~13 GB, so it must NOT be refused on a 36 GiB
+    /// machine — that is the largest size actually measured end to end.
+    func testLargestMeasuredSizeIsAllowedOn36GiB() {
+        let decision = PredictSizeGuard.decide(tokens: 600, availableBytes: 36 * gib)
+        XCTAssertNotEqual(decision, .refuse(maxFittingTokens: 0))
+        if case .refuse = decision { XCTFail("600 residues must fit on a 36 GiB Mac") }
     }
 
     func testEstimateIsSuperLinearInTokens() {
