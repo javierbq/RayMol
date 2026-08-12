@@ -406,7 +406,12 @@ allocator or cache effect sets in around there. Do not extrapolate past 250 from
 ⚠️ **Add the model load for a cold first run** (~10 s, a ~505 MiB safetensors load plus graph
 build), and the one-time weight download before that.
 
-### Measured memory + time curve, 60→600 residues
+### Measured memory + time curve, 60→900 residues
+
+![Boltz-2 inference time and MLX peak memory versus sequence length](../../predict-benchmark-boltz2-m3pro.svg)
+
+Raw data with full hardware, build, weight and method provenance:
+[`docs/predict-benchmark-boltz2-m3pro.csv`](../../predict-benchmark-boltz2-m3pro.csv)
 
 `BoltzJobManager` now reports MLX's own peak-memory high-water mark and inference wall time
 in the job status (`peak_bytes`, `elapsed_s`), resetting the mark per run so each size is
