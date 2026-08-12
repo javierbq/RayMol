@@ -337,14 +337,19 @@ targets:
               # support the minimum OS Version"). Pin it to the app's deployment
               # target; every embedded binary supports that.
               plutil -replace MinimumOSVersion -string "${IPHONEOS_DEPLOYMENT_TARGET:-16.0}" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist"
-              # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's
-              # "commonly used third-party SDK" list requires to carry a privacy
-              # manifest (ITMS-91061). Drop one into those two frameworks; it gets
-              # signed with the framework in the codesign pass below.
-              case "$FULL_MODULE_NAME" in
-                _ssl|_hashlib) cp "$OSSL_PRIVACY" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy" ;;
-              esac
             fi
+            # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's
+            # "commonly used third-party SDK" list requires to carry a privacy
+            # manifest (ITMS-91061). Drop one into those two frameworks; it gets
+            # signed with the framework in the codesign pass below.
+            # Deliberately OUTSIDE the `! -d` guard above: that guard only fires
+            # when the framework folder is created, so on an incremental build
+            # over build products predating this fix the manifest would never be
+            # copied and the app would ship without it. Copying every time is
+            # idempotent and cheap.
+            case "$FULL_MODULE_NAME" in
+              _ssl|_hashlib) cp "$OSSL_PRIVACY" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy" ;;
+            esac
             mv "$FULL_EXT" "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME"
             echo "$FRAMEWORK_FOLDER/$FULL_MODULE_NAME" > "${FULL_EXT%.so}.fwork"
             echo "${RELATIVE_EXT%.so}.fwork" > "$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin"
@@ -376,6 +381,20 @@ targets:
           find "$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload" -name "*.so" | while read FULL_EXT; do
             install_dylib "python/lib/$PYTHON_VER/lib-dynload/" "$FULL_EXT"
           done
+
+          # Fail the build rather than ship a binary App Review will reject.
+          # iOS 1.8.1 (build 24) was cut from the v1.8.0 tag, which predates the
+          # privacy-manifest fix by 15 minutes — the manifests were silently
+          # absent and Apple returned ITMS-91061, leaving the version stuck in
+          # "Invalid Binary". A missing manifest must break the build loudly.
+          for OSSL_MOD in _ssl _hashlib; do
+            OSSL_FW="$CODESIGNING_FOLDER_PATH/Frameworks/$OSSL_MOD.framework"
+            if [ -d "$OSSL_FW" ] && [ ! -f "$OSSL_FW/PrivacyInfo.xcprivacy" ]; then
+              echo "error: $OSSL_MOD.framework is missing PrivacyInfo.xcprivacy — App Review rejects this with ITMS-91061 (OpenSSL/BoringSSL is a 'commonly used third-party SDK'). Expected source: $OSSL_PRIVACY" >&2
+              exit 1
+            fi
+          done
+
           if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ]; then
             find "$CODESIGNING_FOLDER_PATH/Frameworks" -name "*.framework" -exec /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" \; || true
           fi
