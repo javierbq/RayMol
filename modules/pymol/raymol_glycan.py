@@ -228,17 +228,15 @@ def _build_glycocartoon_cgo(model, size=2.5, draw_linkers=1):
             if pair in linked_residues or any(key not in centroids for key in pair):
                 continue
             first_center, second_center = (centroids[key] for key in pair)
+            first_color = SNFG_CATALOG[pair[0][4]]["color"]
+            second_color = SNFG_CATALOG[pair[1][4]]["color"]
             cgo_data.extend([
                 cgo.CYLINDER,
                 *first_center,
                 *second_center,
                 0.35,
-                0.7,
-                0.7,
-                0.7,
-                0.7,
-                0.7,
-                0.7,
+                *first_color,
+                *second_color,
             ])
             linked_residues.add(pair)
 

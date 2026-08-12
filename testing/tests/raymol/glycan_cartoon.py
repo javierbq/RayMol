@@ -80,6 +80,13 @@ class TestRayMolGlycan(testing.PyMOLTestCase):
         )
         bonded, _ = raymol_glycan._build_glycocartoon_cgo(cmd.get_model(object_name))
         self.assertIn(cgo.CYLINDER, bonded)
+        cylinder_index = bonded.index(cgo.CYLINDER)
+        linker_colors = bonded[cylinder_index + 8:cylinder_index + 14]
+        self.assertArrayEqual(
+            linker_colors,
+            [*raymol_glycan.GREEN, *raymol_glycan.YELLOW],
+            delta=1e-6,
+        )
 
     def testIncompleteAndUnsupportedResiduesAreSkipped(self):
         cmd.pseudoatom("partial", resn="NAG", name="C1", pos=[0.0, 0.0, 0.0])
