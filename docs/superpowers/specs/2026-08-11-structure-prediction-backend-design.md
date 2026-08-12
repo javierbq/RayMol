@@ -382,18 +382,40 @@ The port's `BoltzPredictionOptions` carries **only** `recyclingSteps`, `diffusio
 also that `config.json`'s `num_sampling_steps: 5` is an inert training hparam — the sampler
 takes its step count from the options, not the config.
 
-**Measured end to end, 2026-08-11 (the first measurement at the shipped operating point).**
-On an M3 Pro, a 33-residue monomer at recycling 3 / 200 diffusion steps: **~95 s cold**
-(including the ~10 s model load) and **73.5 s warm**. ⚠️ Both are **Debug** builds
-(`SWIFT_OPTIMIZATION_LEVEL: -Onone`), so they are an upper bound and are **not comparable**
-to boltz-mlx's Release benchmark numbers — re-measure against Release before quoting
-anything to a user or sizing a UI.
+**Measured, Release, M3 Pro / 36 GiB, 2026-08-12.** Warm (model already loaded), single
+chain, recycling 3 / 200 diffusion steps, no MSA. Sequences are N-terminal prefixes of one
+real 384-aa protein, so only length varies. Every output is a properly folded globular
+domain — radius of gyration tracks 2.2·N^0.38 within ~1 Å at all five lengths.
 
-Even allowing for Debug, this is materially worse than the extrapolation below predicted:
-73.5 s at **33** tokens versus an extrapolated ~30 s at 117. For small inputs the cost is
-dominated by the fixed per-step work of 200 diffusion steps, not by the ~N² term, so
-scaling the 50-step figures understates the 200-step cost at low token counts. Treat 200
-steps as expensive regardless of sequence length, and surface progress accordingly.
+| Residues | Wall | s/residue | Rg measured | Rg expected |
+|---:|---:|---:|---:|---:|
+| 60 | 11.8 s | 0.20 | 11.0 Å | 10.4 Å |
+| 100 | 12.1 s | 0.12 | 14.1 Å | 12.7 Å |
+| 150 | 19.9 s | 0.13 | 14.5 Å | 14.8 Å |
+| 200 | 31.0 s | 0.15 | 16.2 Å | 16.5 Å |
+| 250 | 65.3 s | 0.26 | 17.8 Å | 17.9 Å |
+
+Reproducible: a repeat 250-aa run gave 65.5 s.
+
+Two shapes matter for a UI. **Below ~100 residues the cost is a floor, not a function of
+length** — 60 and 100 aa cost the same, because 200 diffusion steps of fixed per-step work
+dominate. **Past ~200 residues it turns sharply super-linear**: 200→250 more than doubles
+(31.0→65.3 s), steeper than the ~N² pairwise term alone predicts (1.56×), which suggests an
+allocator or cache effect sets in around there. Do not extrapolate past 250 from this table.
+
+⚠️ **Add the model load for a cold first run** (~10 s, a ~505 MiB safetensors load plus graph
+build), and the one-time weight download before that.
+
+⚠️ **No validated peak-memory figure exists.** Sampling process RSS during a 250-aa run
+showed 808 MB against a 799 MB baseline — i.e. RSS does not attribute MLX's Metal
+allocations, consistent with the warning below that the two measures must not be subtracted.
+`PredictSizeGuard`'s estimate for 250 aa is 4.42 GB, and it remains fitted to boltz-mlx's
+published MLX-peak numbers rather than to anything measured here. Getting a real figure needs
+`BoltzPredictor.memorySnapshot()` plumbed through the bridge.
+
+**Superseded Debug measurement, kept because it shows the size of the trap:** the same run on
+a Debug build (`-Onone`) took **73.5 s at 33 residues** — roughly an order of magnitude worse
+than Release at nearly twice the length. Never quote a Debug timing.
 
 **The original extrapolation, retained for contrast.** Every published figure is at 50 steps
 (8.90 s / 2.24 GB at 117 tokens; 32.16 s / 3.47 GB at 225, on an M3 Pro). Runtime is ~linear
