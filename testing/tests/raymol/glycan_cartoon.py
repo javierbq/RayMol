@@ -4,7 +4,7 @@ Runs via the repository test runner:
     pymol -ckqy testing/testing.py --run tests/raymol/glycan_cartoon.py
 """
 
-from pymol import cgo, cmd, raymol_glycan, testing
+from pymol import cgo, cmd, metal_pick, raymol_glycan, testing
 
 
 def _add_ring(object_name, residue_name, residue_number, offset=0.0, chain="A"):
@@ -107,9 +107,19 @@ class TestRayMolGlycan(testing.PyMOLTestCase):
         generated = [name for name in cmd.get_names("objects") if name.startswith("cgo_glyco_")]
         self.assertEqual(set(generated), {object_a, object_b})
 
+        targets = raymol_glycan.get_pick_targets()
+        target_a = next(target for target in targets if target["cgo_object"] == object_a)
+        self.assertEqual(target_a["object"], "objA")
+        self.assertEqual(target_a["resn"], "MAN")
+        self.assertEqual(target_a["resi"], "1")
+        self.assertEqual(target_a["name"], "C1")
+
         raymol_glycan.glycocartoon_hide("objA")
         self.assertNotIn(object_a, cmd.get_names("objects"))
         self.assertIn(object_b, cmd.get_names("objects"))
+        self.assertNotIn(object_a, {
+            target["cgo_object"] for target in raymol_glycan.get_pick_targets()
+        })
 
     def testExistingRepresentationsRemainVisible(self):
         _add_ring("visible_nag", "NAG", 1)
@@ -122,3 +132,20 @@ class TestRayMolGlycan(testing.PyMOLTestCase):
         after = []
         cmd.iterate("visible_nag", "after.append(reps)", space={"after": after})
         self.assertEqual(after, before)
+
+    def testCartoonSymbolPicksUnderlyingResidue(self):
+        _add_ring("pickable_man", "MAN", 7, chain="G")
+        cmd.hide("everything", "pickable_man")
+        self.assertEqual(raymol_glycan.glycocartoon("pickable_man"), 1)
+        cmd.set_view((
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, -50.0,
+            1.0, 1.0, 0.0,
+            40.0, 100.0, -20.0,
+        ))
+
+        hit = metal_pick._pick_atom(0.0, 0.0, 1.0)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit[1:7], ("pickable_man", "G", "7", "MAN", "G", "C1"))
