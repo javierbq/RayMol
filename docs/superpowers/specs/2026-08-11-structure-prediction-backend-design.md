@@ -425,22 +425,47 @@ independent. Release, M3 Pro / 36 GiB, recycling 3 / 200 steps, single chain, no
 | 450 | 7.90 GB | 261.1 s | 17.6 | 0.58 |
 | 550 | 10.86 GB | 557.9 s | 19.7 | 1.01 |
 | 600 | **13.11 GB** | **675.2 s** | 21.9 | 1.13 |
+| 650 | 15.32 GB | 924.4 s | 23.6 | 1.42 |
+| 700 | 18.43 GB | 1110.2 s | 26.3 | 1.59 |
+| 750 | 21.53 GB | 1303.4 s | 28.7 | 1.74 |
+| 800 | 24.93 GB | 1624.7 s | 31.2 | 2.03 |
+| 850 | 28.65 GB | 2009.3 s | 33.7 | 2.36 |
+| 900 | **32.71 GB** | **2539.7 s** | 36.3 | 2.82 |
 
-**Memory is roughly linear at ~13–22 MB/residue; time is not.** Local log-log slopes put
-time near ^3.7 in the 450→600 range, so 600 residues costs 11¼ minutes of inference while
-using only ~36% of a 36 GiB machine. **Time, not memory, is the practical ceiling on this
-hardware** — the opposite of the on-device iOS situation, where memory binds first.
+**Neither axis is linear, and they cross over.** Time steepens monotonically —
+^1.54 over 60→200 residues, ^2.27 over 200→450, then ^3.3 from 450 all the way to 900.
+Memory is gentler but also super-linear, ^2.25 over 600→900, rising from 13 MB/residue at
+the small end to 36 MB/residue at 900.
+
+The crossover matters for a UI. Up to ~600 residues **time is the binding constraint**:
+11¼ minutes of inference for only ~36% of a 36 GiB machine. From ~850 upward **memory
+binds**: 900 residues needs 32.71 GB, which is **85% of physical RAM** on this machine and
+completed only because swap absorbed the overflow (swap grew from 5 GB to 12 GB during the
+sweep, and free disk fell from 25.9 GB to 21.2 GB). At 42 minutes and 85% of RAM, 900
+residues is past the point of being a reasonable thing to offer.
 
 ⚠️ **RSS is useless here and must never be used.** During the 600-residue run the app's
 process RSS read **0.1 GB** while MLX's peak was **13.11 GB** — a 130× understatement,
 because MLX allocates Metal buffers that RSS does not attribute. Use
 `BoltzPredictor.memorySnapshot().peakMemory`.
 
-**This sweep corrected `PredictSizeGuard`.** Fitted only against boltz-mlx's published 117-
-and 225-token figures, the guard under-predicted from 350 residues upward and was **27%
-optimistic at 600** — the direction that licenses a run which then gets jetsam-killed. The
-quadratic coefficient is now 7× larger (`2_000` → `14_000`), and the test pins the whole
-sweep rather than two points, which is what let the shortfall survive.
+**This sweep corrected `PredictSizeGuard` twice, the same way.** Fitted against boltz-mlx's
+published 117- and 225-token figures, it was **27% optimistic at 600 residues**. Refitted to
+600, it was **27% optimistic again at 900** — identically wrong, one level up, because the
+pairwise term keeps steepening. Both times the fit was extrapolating past its data, which is
+the failure mode rather than a one-off. Final constants cover all 17 measured points with no
+shortfall and ≤1.50× conservatism (`bytesPerTokenSquared` ended at `25_000`, 12.5× the
+original), and the test pins the whole table.
+
+**`maximumTokens` is now 900, not 1024** — the largest size actually measured. The estimate
+at 1024 is ~41 GB, beyond any machine this ships on, so the old ceiling was a number nobody
+had validated.
+
+**One deliberate capability reduction:** with an accurate estimate, 900 residues is now
+*refused* on a 36 GiB Mac, because 32.71 GB is 85% of RAM and the guard compares against
+total physical memory. That run did succeed here — on an otherwise idle machine, with swap
+absorbing the overflow. On a machine with a browser open it is a jetsam kill, and the guard
+exists precisely because that failure is uncatchable and costs the user their session.
 
 **Superseded Debug measurement, kept because it shows the size of the trap:** the same run on
 a Debug build (`-Onone`) took **73.5 s at 33 residues** — roughly an order of magnitude worse

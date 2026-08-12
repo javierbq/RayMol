@@ -18,46 +18,51 @@ import Foundation
 ///
 /// Constants are fitted to RayMol's own measured MLX peak memory on an M3 Pro / 36 GiB at
 /// the shipped operating point (recycling 3 / 200 steps, Release, single chain, no MSA),
-/// swept 60→600 residues:
+/// swept 60→900 residues — see `PredictSizeGuardTests.measured` for the full table.
 ///
-///     60 → 0.78 GB   200 → 3.48 GB   400 → 7.38 GB
-///    100 → 1.76 GB   250 → 3.85 GB   450 → 7.90 GB
-///    150 → 2.90 GB   300 → 4.64 GB   550 → 10.86 GB
-///                    350 → 5.96 GB   600 → 13.11 GB
+/// **This guard has been wrong in the optimistic direction twice, both times for the same
+/// reason: the fit was extrapolating past its data.** That history is the point, not
+/// trivia — it is the failure mode to design against:
 ///
-/// **The quadratic term is real, and the first version of this guard got that wrong.**
-/// Fitted only against boltz-mlx's published 117- and 225-token figures, memory looks
-/// *sub*-linear — solving for a quadratic coefficient there even yields a negative one,
-/// because the ~505 MiB weight pack dominates that range. Extending the sweep to 600
-/// residues shows the pairwise ~N² term reasserting hard: the earlier constants
-/// (`B = 2_000`) under-predicted from 350 residues upward and were **27% optimistic at
-/// 600** — precisely the direction that licenses a run which then gets jetsam-killed.
-/// `B` is now 7× larger.
+/// 1. Fitted against boltz-mlx's published 117- and 225-token figures, memory looks
+///    *sub*-linear — solving for a quadratic coefficient there even yields a negative one,
+///    because the weight pack dominates that range. That fit ran **27% optimistic at 600
+///    residues**.
+/// 2. Refitted to 600, it ran **27% optimistic again at 900** — identically wrong, one
+///    level up, because the pairwise ~N² term keeps steepening.
+///
+/// The current constants cover every measured point from 60 to 900 with no shortfall and at
+/// most 1.50× conservatism. **Do not extrapolate past 900 either.** If a larger input must
+/// be supported, measure it first; the honest ceiling is ``maximumTokens``, set to what has
+/// actually been measured.
 ///
 /// Retune all four together from new device data, and **never let the fit sit below
-/// measurement**. `PredictSizeGuardTests.testEstimateNeverSitsBelowMeasurement` pins the
-/// whole sweep for exactly this reason — the earlier test only pinned two points, which is
-/// why the shortfall above 350 survived.
+/// measurement** — that is what licenses a run which then gets jetsam-killed.
+/// `testEstimateNeverSitsBelowMeasurement` pins the whole table for exactly this reason; an
+/// earlier version pinned only two points, which is how shortfall #1 survived.
 enum PredictSizeGuard {
 
     // MARK: - Tunable constants
 
-    /// Model-resident floor: the ~505 MiB int8 pack plus graph and allocator overhead.
-    /// Lower than the previous 1000 MiB because the quadratic term now carries the large
-    /// end honestly rather than the intercept papering over it.
-    static let fixedOverheadBytes = 700 * 1024 * 1024
+    /// Model-resident floor. Small, because the linear and quadratic terms now carry the
+    /// curve across the whole measured range instead of the intercept papering over the
+    /// small end.
+    static let fixedOverheadBytes = 200 * 1024 * 1024
     /// Linear term, bytes per token.
-    static let bytesPerToken = 13_000_000
-    /// Quadratic term, bytes per token² — the pairwise tensors. 7× the previous value:
-    /// see the type doc for why the old figure under-predicted above 350 residues.
-    static let bytesPerTokenSquared = 14_000
+    static let bytesPerToken = 14_500_000
+    /// Quadratic term, bytes per token² — the pairwise tensors. 12.5× the original value;
+    /// see the type doc for the two successive under-predictions that produced it.
+    static let bytesPerTokenSquared = 25_000
     /// At or below this fraction of available memory, proceed silently.
     static let okFraction = 0.50
     /// Above this fraction, refuse.
     static let warnFraction = 0.75
-    /// Hard ceiling regardless of memory. `BoltzInputLimits.desktop` stops at 1024
-    /// tokens, and nothing above ~384 has ever been validated for quality.
-    static let maximumTokens = 1024
+    /// Hard ceiling regardless of memory: the largest input actually MEASURED end to end
+    /// (900 residues → 32.71 GB peak, 42 min of inference). `BoltzInputLimits.desktop`
+    /// would allow 1024, but the estimate there is ~41 GB — beyond a 36 GiB machine — and
+    /// nothing above ~384 has ever been validated for structural quality. Raise this only
+    /// alongside a measurement, never alongside an extrapolation.
+    static let maximumTokens = 900
 
     enum Decision: Equatable {
         case ok

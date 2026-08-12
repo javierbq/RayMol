@@ -24,7 +24,8 @@ final class PredictSizeGuardTests: XCTestCase {
     /// 200 steps, single chain, no MSA. GB here is 10^9, matching how MLX reports.
     private static let measured: [(tokens: Int, peakGB: Double)] = [
         (60, 0.78), (100, 1.76), (150, 2.90), (200, 3.48), (250, 3.85), (300, 4.64),
-        (350, 5.96), (400, 7.38), (450, 7.90), (550, 10.86), (600, 13.11),
+        (350, 5.96), (400, 7.38), (450, 7.90), (550, 10.86), (600, 13.11), (650, 15.32),
+        (700, 18.43), (750, 21.53), (800, 24.93), (850, 28.65), (900, 32.71),
     ]
 
     /// The fit must never sit BELOW measurement, or the guard licenses a run that dies.
@@ -53,12 +54,26 @@ final class PredictSizeGuardTests: XCTestCase {
         }
     }
 
-    /// A 600-residue run really does need ~13 GB, so it must NOT be refused on a 36 GiB
-    /// machine — that is the largest size actually measured end to end.
-    func testLargestMeasuredSizeIsAllowedOn36GiB() {
-        let decision = PredictSizeGuard.decide(tokens: 600, availableBytes: 36 * gib)
-        XCTAssertNotEqual(decision, .refuse(maxFittingTokens: 0))
-        if case .refuse = decision { XCTFail("600 residues must fit on a 36 GiB Mac") }
+    /// A 600-residue run needs ~13 GB and must NOT be refused on a 36 GiB machine.
+    func testMidSizeIsAllowedOn36GiB() {
+        if case .refuse = PredictSizeGuard.decide(tokens: 600, availableBytes: 36 * gib) {
+            XCTFail("600 residues must fit on a 36 GiB Mac")
+        }
+    }
+
+    /// 900 residues measured 32.71 GB — 85% of a 36 GiB machine's RAM, and it completed only
+    /// because swap absorbed the overflow. A PREVENTIVE guard should refuse that: with
+    /// anything else open it is a jetsam kill, and the guard compares against TOTAL physical
+    /// memory. A deliberate capability reduction, not an oversight.
+    func testLargestMeasuredSizeIsRefusedOn36GiBBecauseItNeeds85Percent() {
+        guard case .refuse = PredictSizeGuard.decide(tokens: 900, availableBytes: 36 * gib)
+        else { return XCTFail("900 residues needs 32.7 GB and must be refused on 36 GiB") }
+    }
+
+    /// The ceiling tracks what was MEASURED, not what BoltzInputLimits.desktop allows — the
+    /// estimate at 1024 is ~41 GB, beyond any machine this ships on.
+    func testCeilingIsTheLargestMeasuredSize() {
+        XCTAssertEqual(PredictSizeGuard.maximumTokens, 900)
     }
 
     func testEstimateIsSuperLinearInTokens() {
