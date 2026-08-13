@@ -35,27 +35,43 @@ expect_fail () {  # $1=label $2=version-literal (may be empty)
 
 echo "== nightly_version =="
 
-# Core behaviour: emit project.yml's version VERBATIM — no bump.
+# Core behaviour: emit the next PATCH after project.yml's version.
 #
-# This is the assertion that matters, and it is the inverse of what this suite
-# asserted before 2026-08-10. Bumping to the next minor pre-claimed a version in
-# App Store Connect that could never be released or reclaimed (the iOS app ended
-# up with a TestFlight 1.10.0 above a live 1.8.0). Betas are now told apart by
-# build number, so a bump reintroduced here is a regression, not a refinement.
-expect_ok "1.8.0 stays 1.8.0"   '"1.8.0"'  "1.8.0"
-expect_ok "1.9.1 stays 1.9.1"   '"1.9.1"'  "1.9.1"
-expect_ok "1.9.9 stays 1.9.9"   '"1.9.9"'  "1.9.9"
-expect_ok "0.1.0 stays 0.1.0"   '"0.1.0"'  "0.1.0"
-# Double-digit minors must survive verbatim (no numeric round-trip mangling).
-expect_ok "1.10.0 stays 1.10.0" '"1.10.0"' "1.10.0"
+# READ THIS BEFORE "FIXING" IT BACK. This suite has now asserted three different
+# things, and the history matters because two of them were wrong:
+#   1. next MINOR (1.9.1 -> 1.10.0). Over-claimed: stranded a TestFlight 1.10.0
+#      above a live 1.8.0 for a release nobody had decided on.
+#   2. VERBATIM (1.9.1 -> 1.9.1), to claim nothing at all. Apple rejects this
+#      outright once the version ships — iOS 1.9.1 went READY_FOR_SALE and the
+#      next upload came back ITMS-90186 "the train version '1.9.1' is closed for
+#      new build submissions" plus ITMS-90062 "must contain a higher version
+#      than the previously approved version".
+#   3. next PATCH (1.9.1 -> 1.9.2), below. The smallest claim Apple permits.
+# So "do not bump" is not a safer choice here; it is a rejected upload. A beta
+# MUST sit on a version that has never been approved.
+expect_ok "1.8.0 -> 1.8.1"   '"1.8.0"'  "1.8.1"
+expect_ok "1.9.1 -> 1.9.2"   '"1.9.1"'  "1.9.2"
+expect_ok "0.1.0 -> 0.1.1"   '"0.1.0"'  "0.1.1"
+# Integer arithmetic, not string: the patch must roll 9 -> 10, never "1.9.91".
+expect_ok "1.9.9 -> 1.9.10"  '"1.9.9"'  "1.9.10"
+# Double-digit minors must survive untouched while only the patch moves.
+expect_ok "1.10.0 -> 1.10.1" '"1.10.0"' "1.10.1"
 # Unquoted YAML scalar is still valid YAML and must parse.
-expect_ok "unquoted 1.8.0"      '1.8.0'    "1.8.0"
+expect_ok "unquoted 1.8.0"   '1.8.0'    "1.8.1"
 
-# Explicitly pin the anti-regression: the output must NEVER exceed the input.
+# Pin both halves of the contract: the output must differ from the input (or the
+# upload is rejected), and it must exceed it by exactly ONE patch (or we are
+# over-claiming versions again, which is how scheme 1 stranded 1.10.0).
 for v in "1.8.0" "1.9.1" "1.10.0" "2.0.3"; do
   got="$(bash "$SCRIPT" "$(fixture "\"$v\"")" 2>/dev/null)"
-  if [ "$got" = "$v" ]; then echo "  ok: $v not bumped"
-  else echo "  FAIL: $v was rewritten to '$got' — betas must not claim a new version"; FAILED=1; fi
+  want="${v%.*}.$(( ${v##*.} + 1 ))"     # computed here, independently of the script
+  if [ "$got" = "$v" ]; then
+    echo "  FAIL: $v unchanged — an approved version's train is closed (ITMS-90186)"; FAILED=1
+  elif [ "$got" != "$want" ]; then
+    echo "  FAIL: $v -> '$got', expected exactly one patch up ('$want')"; FAILED=1
+  else
+    echo "  ok: $v -> $got (exactly one patch)"
+  fi
 done
 
 # Hard failures — guessing a version is unrecoverable in App Store Connect.
@@ -72,18 +88,18 @@ else echo "  ok: missing file exits non-zero"; fi
 # Smoke-test the real repo file: with no argument the script must default to
 # swiftui/project.yml and exit 0.
 #
-# This now asserts the value directly, which the old bump-based version could
-# not: the answer is "whatever project.yml declares" rather than arithmetic on
-# it, and that equality IS the contract. Reading the expectation out of the file
-# with an independent sed (not by calling the script) keeps it non-circular, and
-# it stays correct across every future release bump.
+# The expectation is read out of the file with an independent sed and bumped
+# with independent arithmetic — never by calling the script — so this stays
+# non-circular, and it stays correct across every future release bump rather
+# than pinning a literal that goes stale the next time a version ships.
 REAL_YML="$ROOT/swiftui/project.yml"
 DECLARED="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' \
              "$REAL_YML" | head -1)"
-if REAL="$(bash "$SCRIPT" 2>/dev/null)" && [ -n "$DECLARED" ] && [ "$REAL" = "$DECLARED" ]; then
-  echo "  ok: real repo → $REAL (matches project.yml verbatim)"
+WANT="${DECLARED%.*}.$(( ${DECLARED##*.} + 1 ))"
+if REAL="$(bash "$SCRIPT" 2>/dev/null)" && [ -n "$DECLARED" ] && [ "$REAL" = "$WANT" ]; then
+  echo "  ok: real repo → $REAL (one patch above project.yml's $DECLARED)"
 else
-  echo "  FAIL: real repo gave '$REAL', project.yml declares '$DECLARED'"; FAILED=1
+  echo "  FAIL: real repo gave '$REAL', expected '$WANT' (project.yml declares '$DECLARED')"; FAILED=1
 fi
 
 rm -rf "$TMP"

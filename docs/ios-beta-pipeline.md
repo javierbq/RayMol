@@ -224,22 +224,54 @@ If it approaches them, expire the oldest builds in App Store Connect.
 
 ## Versions and build numbers
 
-- **Marketing version** is derived by `scripts/nightly_version.sh` as the next
-  minor after `swiftui/project.yml`'s `MARKETING_VERSION` (e.g., `1.8.0` →
-  betas are `1.9.0`).
+- **Marketing version** is the next **patch** after `swiftui/project.yml`'s
+  `MARKETING_VERSION`, from `scripts/nightly_version.sh` (`1.9.1` → betas are
+  `1.9.2`). It is **stable across betas** — every beta rides `1.9.2` until a
+  release claims it; only the build number moves.
 - **Build number** is Xcode Cloud's `CI_BUILD_NUMBER`.
+- **Tester-visible label** is `scripts/beta_label.sh`'s `1.9.2-beta29`, written
+  to the `RayMolBetaLabel` Info.plist key and shown in the app's Settings pane.
 - App Store Connect requires the `(version, build)` pair to be unique. iOS does
   not require build numbers to increase across versions; only macOS does.
 
-**Convention when cutting a release:** bump `MARKETING_VERSION` in
-`swiftui/project.yml` **to** the released version — never in advance.
-Pre-bumping makes betas leapfrog the version being prepared.
+### Why betas cannot ride the current version
 
-`scripts/tests/run_nightly_version_test.sh`'s real-repo check asserts only a
-format (`^[0-9]+\.[0-9]+\.0$`), deliberately not a literal value, so it
-survives releases without needing an update. But failing to bump
-`MARKETING_VERSION` at release time means betas will carry a version number
-higher than the release until you do.
+A beta **must** sit on a version that has never been approved. Once a version
+ships, App Store Connect closes its pre-release train permanently. On
+2026-08-10, with iOS `1.9.1` live (`READY_FOR_SALE`), an upload under `1.9.1`
+was rejected with:
+
+```
+ITMS-90186: Invalid Pre-Release Train — the train version '1.9.1' is closed
+            for new build submissions
+ITMS-90062: CFBundleShortVersionString [1.9.1] must contain a higher version
+            than the previously approved version [1.9.1]
+```
+
+So "don't bump, claim nothing" is not the conservative option — it is a rejected
+upload. The **next patch** is the smallest claim Apple permits: one version
+ahead, and the one most likely to ship next anyway, so in the usual case nothing
+is stranded. (An earlier scheme bumped the next *minor* and did strand a
+TestFlight `1.10.0` above a live `1.8.0` for a release nobody had planned.)
+
+### Why the label is not the version
+
+`CFBundleShortVersionString` must be one to three period-separated integers, so
+`1.9.2-beta29` is rejected at upload. Apple only ever sees `1.9.2 (29)`. The
+readable label carries the same identity through the one channel we control —
+the Info.plist key — and is display text, never something Apple validates or
+sorts on.
+
+**Convention when cutting a release:** bump `MARKETING_VERSION` in
+`swiftui/project.yml` **to** the released version — never in advance. This
+script reads that field as "the last version that shipped", so the beta train
+advances by itself the moment a release lands. Pre-bumping makes betas skip a
+version.
+
+`scripts/tests/run_nightly_version_test.sh`'s real-repo check derives its
+expectation from `project.yml` with an independent `sed` plus independent
+arithmetic — never by calling the script — so it stays non-circular and stays
+correct across every future release bump.
 
 Never derive the version from git tags: this repo carries the inherited PyMOL
 version line, so the newest tag by version sort is `v3.2.0` while RayMol's own

@@ -124,11 +124,16 @@ tar -xzf "$TARBALL"
 rm -f "$TARBALL" "$TARBALL.sha256"
 
 echo "== 4/7  Stamp marketing version + build number =="
-# nightly_version.sh emits project.yml's CURRENT version verbatim — betas ride
-# the released version and are told apart by CI_BUILD_NUMBER, so no unreleased
-# version number is claimed in App Store Connect (where it could never be
-# reclaimed). BETA_LABEL is the human-readable half of the same identity, for the
-# Settings pane; Apple only sees the numeric pair.
+# nightly_version.sh emits the next PATCH after project.yml's version, so betas
+# ride a version that has never been approved. They must: App Store Connect
+# closes a version's pre-release train permanently once it ships, and uploading
+# under the live 1.9.1 came back ITMS-90186 "train version '1.9.1' is closed" and
+# ITMS-90062 "must contain a higher version than the previously approved".
+# The marketing version is still STABLE across betas — every one rides the same
+# 1.9.2 until a release claims it; only CI_BUILD_NUMBER moves. BETA_LABEL is the
+# human-readable half of the same identity ("1.9.2-beta29") for the Settings
+# pane; Apple only ever sees the numeric pair, which is why the label cannot be
+# the marketing version.
 MKT="$(bash scripts/nightly_version.sh)"
 BETA_LABEL="$(bash scripts/beta_label.sh "$MKT" "$CI_BUILD_NUMBER")"
 echo "  version=$MKT build=$CI_BUILD_NUMBER label=$BETA_LABEL"
