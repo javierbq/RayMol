@@ -33,6 +33,19 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
         // (@MainActor), mirroring ContentView's drag-drop handler.
         Task { @MainActor in handleOpenedURLs(urls, into: PyMOLEngine.shared) }
     }
+
+    /// Drop any pending structure-prediction placeholders on the way out.
+    ///
+    /// Inference is in-process, so quitting kills the job — the empty object it was
+    /// waiting for is meaningless from here on. The session-save task already keeps
+    /// placeholders out of an explicitly saved .pse; this covers whatever else reads
+    /// object state during teardown, and leaves the last session PyMOL sees clean.
+    /// `discard_pending` only deletes objects that are still empty, so a prediction that
+    /// finished moments before the quit is never destroyed.
+    func applicationWillTerminate(_ notification: Notification) {
+        PyMOLEngine.shared.runPython(
+            "from pymol import predicting as _p; _p.clear_pending()")
+    }
 }
 #endif
 

@@ -46,7 +46,12 @@ final class BoltzJobManager {
     /// Registers a live task exactly as `run()` does, so a test can prove that a cancel
     /// marker cancels it rather than merely recording a flag.
     func registerTaskForTesting(_ task: Task<Void, Never>, jobID: String) {
-        stateQueue.sync { runningTasks[jobID] = task }
+        stateQueue.sync {
+            runningTasks[jobID] = task
+            // Mirrors run()'s registration exactly, including the already-cancelled
+            // check — a seam that skipped it would make the race test vacuous.
+            if cancelled.contains(jobID) { task.cancel() }
+        }
     }
 
     func resetForTesting() {
@@ -81,11 +86,22 @@ final class BoltzJobManager {
         let seed: UInt64
         let outPath: String
         let statusPath: String
+        /// Object the finished structure is loaded into. Python creates an empty
+        /// placeholder under this name at submit time; loading into it lands at state 1,
+        /// and a repeat prediction of the same sequence appends model 2, 3, ...
+        ///
+        /// OPTIONAL on purpose. Absent means "do not auto-load" — a legitimate state, and
+        /// it keeps the wire backward compatible: a non-optional field would turn any
+        /// Python/Swift skew into a hard "malformed request" failure instead of simply
+        /// falling back to the explicit `predict_result` flow. Same reasoning as the
+        /// object panel's optional `groups`/`pending` fields.
+        let objectName: String?
 
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
+            case objectName = "object_name"
         }
     }
 
@@ -160,6 +176,9 @@ final class BoltzJobManager {
                 return
             }
             if let failure = Self.preflight(request) {
+                // Refused before any work: the placeholder Python just created will never
+                // be filled, so drop it rather than leaving an empty stub behind.
+                Self.discardPlaceholder(request)
                 try? Self.writeStatus(failure, to: URL(fileURLWithPath: request.statusPath))
                 return
             }
@@ -204,6 +223,45 @@ final class BoltzJobManager {
         }
     }
 
+    // MARK: - Handing the result back to Python
+
+    /// Hands the finished structure to Python, which loads it into the placeholder and
+    /// retires the pending mark in one step.
+    ///
+    /// One Python entry point rather than a load plus a bookkeeping call: a name left
+    /// marked pending after a successful load would be stripped from every subsequent
+    /// session save. `deliver_result` also pins `zoom=0` -- a prediction can land many
+    /// minutes after submit, and moving the camera then would interrupt the user.
+    private static func loadResult(_ request: Request) {
+        guard let objectName = request.objectName, !objectName.isEmpty else { return }
+        let path = pythonLiteral(request.outPath)
+        let name = pythonLiteral(objectName)
+        DispatchQueue.main.async {
+            PyMOLEngine.shared.runPython(
+                "from pymol import predicting as _p; _p.deliver_result(\(path), \(name))")
+        }
+    }
+
+    /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
+    /// but building source text without quoting is how injection bugs start.
+    private static func pythonLiteral(_ value: String) -> String {
+        "'" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "") + "'"
+    }
+
+    /// Drops the placeholder when a job will never produce a structure. Python only
+    /// deletes it if it is still empty, so this cannot destroy a completed result.
+    private static func discardPlaceholder(_ request: Request) {
+        guard let objectName = request.objectName, !objectName.isEmpty else { return }
+        DispatchQueue.main.async {
+            PyMOLEngine.shared.runPython(
+                "from pymol import predicting as _p; "
+                + "_p.discard_pending(\(pythonLiteral(objectName)))")
+        }
+    }
+
     // MARK: - Inference
 
     private func run(_ request: Request) {
@@ -233,13 +291,17 @@ final class BoltzJobManager {
             // noTemplateAtoms. So anything reported at all is refused here, instead of
             // returning a structure that quietly is not what was asked for.
             guard canonical.diagnostics.isEmpty else {
+                Self.discardPlaceholder(request)
                 report("failed", "featurize", 0,
                        error: "unsupported input: \(canonical.diagnostics)")
                 return
             }
             let features = try BoltzFeaturizer().featurize(canonical, alignments: [:])
 
-            if isCancelled() { report("cancelled", "featurize", 0); return }
+            if isCancelled() {
+                Self.discardPlaceholder(request)
+                report("cancelled", "featurize", 0); return
+            }
             report("running", "load", 0.1)
             let predictor = try loadedPredictor(directory: request.weightsDir)
 
@@ -264,22 +326,40 @@ final class BoltzJobManager {
             let structure = try BoltzRuntime.withMLXErrorsAsThrows {
                 try Self.awaitSyncCancellable(
                     register: { task in
-                        self.stateQueue.sync { self.runningTasks[request.jobID] = task }
+                        self.stateQueue.sync {
+                            self.runningTasks[request.jobID] = task
+                            // Close the registration race. A cancel arriving between the
+                            // post-featurize check and this point found no task to cancel
+                            // and only set the flag, so nothing ever stopped the compute:
+                            // observed live, a job cancelled at ~12 s ran the full 49 s to
+                            // "done". Re-checking under the same lock that publishes the
+                            // task makes the two atomic, so the cancel cannot be dropped.
+                            if self.cancelled.contains(request.jobID) { task.cancel() }
+                        }
                     },
                     { try await predictor.predict(featurized: features, options: options) })
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
 
-            if isCancelled() { report("cancelled", "inference", 0); return }
+            if isCancelled() {
+                Self.discardPlaceholder(request)
+                report("cancelled", "inference", 0); return
+            }
             report("running", "write", 0.95)
             let text = try StructureWriter.pdb(structure: structure, canonical: canonical)
             try text.write(to: URL(fileURLWithPath: request.outPath),
                            atomically: true, encoding: .utf8)
+            // Load BEFORE reporting done: predict_status returning done should already
+            // imply the object is populated, or a script that polls then reads the object
+            // races the load.
+            Self.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch is CancellationError {
+            Self.discardPlaceholder(request)
             report("cancelled", "inference", 0)
         } catch {
+            Self.discardPlaceholder(request)
             report("failed", "inference", 0, error: error.localizedDescription)
         }
         stateQueue.sync {
