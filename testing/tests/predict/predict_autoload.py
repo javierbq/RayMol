@@ -16,6 +16,56 @@ from predict_weights_download import FakeResponse, make_zip
 from predict_api import install_stub
 
 
+class TestRandomSeed(testing.PyMOLTestCase):
+    """Random per run, so repeats are real ensemble members rather than duplicates."""
+
+    def setUp(self):
+        testing.PyMOLTestCase.setUp(self)
+        from pymol.predictors import registry
+        self._saved = dict(registry._REGISTRY)
+        self._tmp = testing.mkdtemp()
+        self.root = self._tmp.__enter__()
+        os.environ['RAYMOL_WEIGHTS_DIR'] = self.root
+        self.data, self.digest = make_zip()
+        install_stub(self.root, self.digest, len(self.data))
+
+    def tearDown(self):
+        from pymol import predicting
+        from pymol.predictors import registry
+        predicting.clear_pending()
+        registry._REGISTRY.clear(); registry._REGISTRY.update(self._saved)
+        os.environ.pop('RAYMOL_WEIGHTS_DIR', None)
+        self._tmp.__exit__(None, None, None)
+        testing.PyMOLTestCase.tearDown(self)
+
+    def _seeds(self, n, **kw):
+        out = []
+        for i in range(n):
+            with patch('pymol.predictors.weights._urlopen',
+                       return_value=FakeResponse(self.data)):
+                out.append(cmd.predict('stub', 'AG', name='s%d' % i, **kw).options.seed)
+        return out
+
+    def testRepeatRunsGetDifferentSeeds(self):
+        seeds = self._seeds(6)
+        self.assertGreater(len(set(seeds)), 1,
+                           'a fixed seed makes repeat predictions bit-identical')
+
+    def testAnExplicitSeedIsHonouredExactly(self):
+        self.assertEqual(self._seeds(2, seed=99), [99, 99])
+
+    def testSeedZeroIsHonouredNotTreatedAsUnset(self):
+        """0 is falsy; treating it as 'no seed given' would silently randomise it."""
+        self.assertEqual(self._seeds(1, seed=0), [0])
+
+    def testRandomSeedsStayInsideTheJSONSafeRange(self):
+        """Above 2**53 an integer cannot survive a JSON round-trip through a Double."""
+        from pymol.predicting import RANDOM_SEED_BOUND
+        self.assertLessEqual(RANDOM_SEED_BOUND, 2 ** 53)
+        for value in self._seeds(8):
+            self.assertTrue(0 <= value < RANDOM_SEED_BOUND, value)
+
+
 class TestDefaultName(testing.PyMOLTestCase):
 
     def testNameIsDerivedFromTheSequence(self):
@@ -200,6 +250,24 @@ class TestDelivery(testing.PyMOLTestCase):
         cmd.iterate('p5 and name CA', 'kinds.add(ss)', space={'kinds': kinds})
         self.assertTrue(kinds - {''},
                         'no secondary structure assigned: %r' % (kinds,))
+
+    def testStateTitleRecordsTheSeed(self):
+        """A random default is only acceptable because the seed is recoverable: the state
+        title says which seed produced each model, and it survives into a saved .pse."""
+        from pymol import predicting
+        predicting.register_pending('p6', 'job6')
+        predicting.deliver_result(self.pdb, 'p6', seed=4242)
+        self.assertEqual(cmd.get_title('p6', 1), 'seed=4242')
+
+    def testEachAppendedModelRecordsItsOwnSeed(self):
+        from pymol import predicting
+        predicting.register_pending('p7', 'job7')
+        predicting.deliver_result(self.pdb, 'p7', seed=11)
+        predicting.register_pending('p7', 'job7b')
+        predicting.deliver_result(self.pdb, 'p7', seed=22)
+        self.assertEqual(cmd.count_states('p7'), 2)
+        self.assertEqual(cmd.get_title('p7', 1), 'seed=11')
+        self.assertEqual(cmd.get_title('p7', 2), 'seed=22')
 
     def testDeliveryRetiresThePendingMark(self):
         """Left pending, the object would be stripped from every later session save."""

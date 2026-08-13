@@ -238,7 +238,8 @@ final class BoltzJobManager {
         let name = pythonLiteral(objectName)
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(
-                "from pymol import predicting as _p; _p.deliver_result(\(path), \(name))")
+                "from pymol import predicting as _p; "
+                + "_p.deliver_result(\(path), \(name), seed=\(request.seed))")
         }
     }
 

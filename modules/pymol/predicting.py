@@ -42,6 +42,10 @@ def weight_cache():
 # at state 1 rather than appending after a phantom empty state, so re-running the same
 # sequence yields models 1..N in one object with no gaps.
 
+#: Upper bound for a randomly chosen seed. Below 2**53 so the value survives a JSON
+#: round-trip through a Double on the Swift side; still 4 billion distinct samples.
+RANDOM_SEED_BOUND = 2 ** 32
+
 #: Hex digits of the sequence digest used in a derived object name. Eight, not six:
 #: six is 24 bits, and two DIFFERENT sequences colliding would silently merge into one
 #: object, which is worse than a visible name clash. Widen, never narrow.
@@ -127,7 +131,7 @@ def clear_pending(_self=cmd):
         discard_pending(name, _self=_self)
 
 
-def deliver_result(path, name, _self=cmd):
+def deliver_result(path, name, seed=None, _self=cmd):
     """Load a finished prediction into its placeholder and retire the pending mark.
 
     One entry point rather than two calls from the host, so the load and the bookkeeping
@@ -140,6 +144,14 @@ def deliver_result(path, name, _self=cmd):
     """
     try:
         _self.load(path, name, zoom=0)
+        # Record which seed produced THIS model, in its state title, so a multi-model
+        # object says what each model is. It survives into a saved .pse, which is what
+        # makes a randomly seeded run reproducible after the fact.
+        if seed is not None:
+            try:
+                _self.set_title(name, _self.count_states(name), 'seed=%d' % int(seed))
+            except Exception:
+                pass
         # Assign secondary structure explicitly. `auto_dss` does NOT fire when loading
         # into a PRE-EXISTING object, which is exactly what the placeholder makes this --
         # measured: this path leaves ss='' on every residue, while the same file loaded
@@ -193,7 +205,7 @@ def session_save(session, _self=cmd):
 
 
 def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
-            seed=0, diffusion_samples=None, quiet=1, _self=cmd):
+            seed=None, diffusion_samples=None, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -255,6 +267,22 @@ SEE ALSO
     predictor_obj.check_available()
 
     spec = predictor_obj.parse_spec(sequence, name=name or (predictor + '_pred'))
+
+    # A fresh seed per run unless one is given, so repeat predictions of the same sequence
+    # are genuinely different models rather than bit-identical duplicates -- measured, two
+    # runs at the fixed seed 0 gave RMSD 0.0000 and appending the second was pointless.
+    #
+    # The seed used is RECORDED -- printed, carried on the job's options, and written into
+    # the per-state title -- because a random seed you cannot recover makes every result
+    # unreproducible. `seed=N` reproduces one exactly.
+    #
+    # Bounded to 2**32 rather than the full UInt64 range: the value crosses a JSON wire
+    # into Swift, and an integer above 2**53 cannot survive a round-trip through a Double,
+    # which is what Foundation's JSON layer may use for large numbers.
+    if seed is None:
+        import random
+        seed = random.randrange(RANDOM_SEED_BOUND)
+
     requested = dict(
         recycling_steps=int(recycling_steps),
         diffusion_steps=int(diffusion_steps),
@@ -299,8 +327,8 @@ SEE ALSO
     _JOBS[job.job_id] = job
     register_pending(object_name, job.job_id, _self=_self)
     if not int(quiet):
-        colorprinting.parrot(' predict: job %s submitted, will load as %s'
-                           % (job.job_id, object_name))
+        colorprinting.parrot(' predict: job %s submitted, will load as %s (seed %d)'
+                           % (job.job_id, object_name, options.seed))
     return job
 
 
