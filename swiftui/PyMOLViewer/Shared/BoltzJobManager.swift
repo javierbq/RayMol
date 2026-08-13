@@ -323,7 +323,11 @@ final class BoltzJobManager {
             // NOTE apply() also pins Memory.memoryLimit to boltz's 6 GB default, which
             // RayMol does not arbitrate and accepts for the life of the process.
             defer { BoltzRuntime.configureOnce() }
-            let structure = try BoltzRuntime.withMLXErrorsAsThrows {
+            // predictScored, not predict: pLDDT only exists on the scored path, because
+            // it is a head on the confidence module. That module is real extra work — see
+            // the cost note below — but a prediction with no per-residue confidence is
+            // much less useful, since confidence is what a viewer colours by.
+            let scored = try BoltzRuntime.withMLXErrorsAsThrows {
                 try Self.awaitSyncCancellable(
                     register: { task in
                         self.stateQueue.sync {
@@ -337,7 +341,8 @@ final class BoltzJobManager {
                             if self.cancelled.contains(request.jobID) { task.cancel() }
                         }
                     },
-                    { try await predictor.predict(featurized: features, options: options) })
+                    { try await predictor.predictScored(featurized: features,
+                                                        options: options) })
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
@@ -347,7 +352,10 @@ final class BoltzJobManager {
                 report("cancelled", "inference", 0); return
             }
             report("running", "write", 0.95)
-            let text = try StructureWriter.pdb(structure: structure, canonical: canonical)
+            // pLDDT into the B-factor column, which is what `spectrum b` colours by.
+            let text = try StructureWriter.pdb(structure: scored.structure,
+                                              canonical: canonical,
+                                              plddt: scored.plddt)
             try text.write(to: URL(fileURLWithPath: request.outPath),
                            atomically: true, encoding: .utf8)
             // Load BEFORE reporting done: predict_status returning done should already

@@ -36,7 +36,7 @@ packages:
   # resolution is unaffected and this entry never needs bumping in lockstep.
   BoltzMLX:
     url: https://github.com/javierbq/boltz-mlx.git
-    from: 0.1.0
+    from: 0.1.1
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
