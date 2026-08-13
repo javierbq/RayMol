@@ -356,61 +356,6 @@ def poll(objs):
 _GROUP_FP = None
 _GROUP_PARENTS = {}
 
-# Caches backing poll_panel()'s three O(atoms) fields.
-#
-# poll_panel() runs on a 500 ms MAIN-THREAD timer (PyMOLEngine.pollObjects), so
-# anything proportional to atom count inside it is paid twice a second for as
-# long as the session is open. Uncached, on a 12-object / 79,568-atom /
-# 48-selection binder-design session, one poll measured 713 ms -- longer than
-# its own period. The main thread never came free, so the viewport rendered but
-# never saw a mouse drag: the session opened and could not be rotated.
-#
-# None of the three can change without a command running, so each is cached per
-# NAME and recomputed only for names that are new since the last poll; names
-# that have gone away are pruned. Adding an object to the session above costs
-# one atom scan instead of twelve.
-#
-# invalidate() drops all of it and is called from RayMol's command paths, which
-# is what catches an edit that moves no name at all -- `alter ... s.cartoon_
-# transparency = 0.5`, `unset transparency, (obj)`, or loading states into an
-# existing object. The residue: a change made by a script that bypasses those
-# paths AND adds/removes no object or selection is not reflected until the next
-# one that does. That is the same trade group_parents() makes below, for the
-# same reason.
-_TRANSP_CACHE = {}      # object name -> bool (has a per-atom transparency override)
-_NSTATE_CACHE = {}      # object name -> int  (state count)
-_SELCOUNT_CACHE = {}    # selection name -> int (atom count)
-_SELCOUNT_OBJS = None   # object tuple the cached selection counts were measured against
-
-
-def invalidate():
-    """Drop the poll caches so the next poll_panel() rebuilds from scratch.
-
-    Cheap and idempotent -- call it liberally from anywhere that runs a user
-    command. It only costs the next poll, not this one.
-    """
-    global _SELCOUNT_OBJS, _GROUP_FP
-    _TRANSP_CACHE.clear()
-    _NSTATE_CACHE.clear()
-    _SELCOUNT_CACHE.clear()
-    _SELCOUNT_OBJS = None
-    _GROUP_FP = None
-
-
-def _cached(cache, names, compute):
-    """{name: value} for `names`, calling `compute` only for cache misses.
-
-    Prunes departed names first so a deleted object can neither keep its entry
-    alive nor leak back into the payload.
-    """
-    live = set(names)
-    for stale in [k for k in cache if k not in live]:
-        del cache[stale]
-    for name in names:
-        if name not in cache:
-            cache[name] = compute(name)
-    return {name: cache[name] for name in names}
-
 
 def _group_fingerprint(objs, groups):
     """Cheap (~0.1 ms) signature of the object tree's SHAPE.
@@ -477,22 +422,11 @@ def poll_panel():
     prefix-less continuation leaked into the console on every poll tick. Keep the
     payload off the feedback line entirely and emit only `OBJPANEL:ready`."""
     import json, os, tempfile
-    global _SELCOUNT_OBJS
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])
         enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])
         enabled |= set(cmd.get_names('public_selections', enabled_only=1) or [])
-        # Enabled state is re-read every poll (a name walk, no atom access), so
-        # toggling an object's visibility -- the most common panel interaction --
-        # stays instant and does NOT invalidate the atom scans below.
-        #
-        # Deleting an object changes the count of every selection that referenced
-        # it, so the selection counts are only valid for the object set they were
-        # measured against.
-        if _SELCOUNT_OBJS != tuple(objs):
-            _SELCOUNT_CACHE.clear()
-            _SELCOUNT_OBJS = tuple(objs)
         # Group tree (#255). Kept in its own try so a failure here degrades to a
         # flat list rather than aborting the whole poll — the single except below
         # writes NO file, and Swift only routes lines prefixed 'OBJPANEL:', so an
@@ -506,10 +440,9 @@ def poll_panel():
             'objects': objs,
             'selections': sels,
             'enabled': list(enabled),
-            'sel_counts': _cached(_SELCOUNT_CACHE, sels, cmd.count_atoms),
-            'nstate': _cached(_NSTATE_CACHE, objs,
-                              lambda o: cmd.count_states('?' + o)),
-            'has_transp': _cached(_TRANSP_CACHE, objs, object_has_atom_transp),
+            'sel_counts': {s: cmd.count_atoms(s) for s in sels},
+            'nstate': {o: cmd.count_states('?' + o) for o in objs},
+            'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
         }

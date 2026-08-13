@@ -871,7 +871,6 @@ final class PyMOLEngine: ObservableObject {
     // never runCommand, so it can't re-enter the heavy-dispatch path.
     private func runCommandCore(_ command: String) {
         PyMOLBridge_RunCommand(command)
-        invalidatePanelCaches()
         handleSessionViewport(for: command)
         maybeWidenClipForSurface(for: command)
         // A per-object `set state, N, obj` (and the related all_states / unset
@@ -885,23 +884,6 @@ final class PyMOLEngine: ObservableObject {
             || l.hasPrefix("unset all_states") {
             requestViewportRedraw()
         }
-    }
-
-    // The object panel caches its three O(atoms) fields (per-atom transparency
-    // badge, selection counts, per-object state counts) between polls, because
-    // recomputing them on the 500ms main-thread timer cost 713ms/poll on a
-    // 12-object / 79.5k-atom / 48-selection session — the main thread never came
-    // free and the viewport could not be rotated.
-    //
-    // The cache keys off object/selection NAMES, which is blind to a command that
-    // changes what those fields measure without adding or removing a name:
-    // `alter … s.cartoon_transparency = 0.5`, `unset transparency, (obj)`, or
-    // loading extra states into an existing object. So every command drops the
-    // caches. Clearing three dicts is free, and the recompute lands on the next
-    // poll only if something really did change — never on the idle path, which is
-    // the one the user is trying to rotate through.
-    private func invalidatePanelCaches() {
-        runPython("from pymol import appkit_inspector as _ai\n_ai.invalidate()")
     }
 
     // Classify a command as a known long (>~2s) operation that deserves the
