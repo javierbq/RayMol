@@ -24,10 +24,34 @@ final class BoltzJobManager {
     /// Serializes access to `predictor`, which is expensive to build, and to `cancelled`.
     private let stateQueue = DispatchQueue(label: "io.raymol.predict.state")
     private var cancelled = Set<String>()
+    /// Live inference tasks by job id. Cancelling the TASK is what actually interrupts
+    /// compute: boltz-mlx guards each diffusion step with `Task.checkCancellation()`, which
+    /// reads the running task's flag — so a cancel that only sets a side-channel flag never
+    /// stops the work. Held under `stateQueue`.
+    private var runningTasks: [String: Task<Void, Never>] = [:]
     /// Construction loads ~505 MiB and builds the graph (~10 s), so it is kept alive
     /// across predictions rather than rebuilt per job.
     private var predictor: BoltzPredictor?
     private var predictorDirectory: String?
+
+    // MARK: - Test seam
+
+    /// Observability for the cancel path, which is otherwise unassertable: a regression
+    /// could turn cancel back into a no-op with every test still green. Mirrors
+    /// `DesignController`'s `inject*` seams and is likewise ungated, so the test bundle
+    /// can be built against a Release host.
+    var cancelRequestedForTesting: Set<String> { stateQueue.sync { cancelled } }
+    var runningJobIDsForTesting: Set<String> { stateQueue.sync { Set(runningTasks.keys) } }
+
+    /// Registers a live task exactly as `run()` does, so a test can prove that a cancel
+    /// marker cancels it rather than merely recording a flag.
+    func registerTaskForTesting(_ task: Task<Void, Never>, jobID: String) {
+        stateQueue.sync { runningTasks[jobID] = task }
+    }
+
+    func resetForTesting() {
+        stateQueue.sync { cancelled.removeAll(); runningTasks.removeAll() }
+    }
 
     // MARK: - Marker parsing
 
@@ -104,11 +128,37 @@ final class BoltzJobManager {
         guard let marker = Self.parseMarker(line) else { return }
         switch marker.verb {
         case .cancel:
-            stateQueue.sync { cancelled.insert(marker.jobID) }
+            // Cancel the live task so compute actually stops, and record the request for
+            // the coarse phase checks (a cancel can arrive before the task is registered).
+            // Ignore cancels for jobs already in a terminal state, so `cancelled` cannot
+            // grow without bound from stray or post-completion markers.
+            stateQueue.sync {
+                if let task = runningTasks[marker.jobID] {
+                    cancelled.insert(marker.jobID)
+                    task.cancel()
+                } else if !Self.hasTerminalStatus(jobID: marker.jobID) {
+                    cancelled.insert(marker.jobID)
+                }
+            }
         case .submit:
             let url = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
-            guard let request = try? Self.parseRequest(at: url) else { return }
+            let request: Request
+            do {
+                request = try Self.parseRequest(at: url)
+            } catch {
+                // Without this, an unparseable request returns silently and Python polls
+                // `queued` forever — asymmetric with preflight, which does write `failed`.
+                // The status path follows host.py's naming convention, so it is derivable
+                // even when the payload is not.
+                try? Self.writeStatus(
+                    Status(state: "failed", phase: "request", fraction: 0,
+                           error: "malformed prediction request: "
+                                + error.localizedDescription,
+                           resultPath: nil, peakBytes: nil, elapsedSeconds: nil),
+                    to: Self.statusURL(jobID: marker.jobID))
+                return
+            }
             if let failure = Self.preflight(request) {
                 try? Self.writeStatus(failure, to: URL(fileURLWithPath: request.statusPath))
                 return
@@ -117,12 +167,34 @@ final class BoltzJobManager {
         }
     }
 
+    /// host.py's naming convention, so a status can be reported even for a request that
+    /// could not be decoded.
+    static func statusURL(jobID: String) -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("raymol_predict_status_\(jobID).json")
+    }
+
+    /// True when a status file already records a terminal state, i.e. cancelling is moot.
+    static func hasTerminalStatus(jobID: String) -> Bool {
+        guard let data = try? Data(contentsOf: statusURL(jobID: jobID)),
+              let status = try? JSONDecoder().decode(Status.self, from: data)
+        else { return false }
+        return ["done", "failed", "cancelled"].contains(status.state)
+    }
+
     /// Refuse before allocating anything. Returns nil when the run may proceed.
     static func preflight(_ request: Request) -> Status? {
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         switch PredictSizeGuard.decide(tokens: tokens,
                                        availableBytes: PredictSizeGuard.availableBytes) {
         case .ok, .warn:
+            // `.warn` deliberately proceeds, so `okFraction` has no effect on this path
+            // today — the tier is not yet surfaced anywhere. It is kept rather than
+            // collapsed because the shape is shared with `DesignSizeGuard`, whose
+            // controller DOES show a caution, and because #217's deferred "Predict" menu
+            // item is where a caution belongs. Adding a caution field to the wire format
+            // for a feature with no UI would be speculative; when that UI lands, surface
+            // `.warn` there rather than reviving it here.
             return nil
         case let .refuse(maxFittingTokens):
             return Status(state: "failed", phase: "preflight", fraction: 0,
@@ -181,19 +253,23 @@ final class BoltzJobManager {
             // the same reset-then-snapshot pattern boltz-mlx's own benchmark harness uses.
             Self.awaitSyncVoid { await predictor.resetPeakMemory() }
             let started = Date()
+            // MemoryPlanner.apply() runs inside the actor on EVERY predict and assigns
+            // MLX.Memory.cacheLimit unconditionally, overwriting whatever MLXRuntime
+            // arbitrated. Re-assert on EVERY exit including a throw -- otherwise a failed
+            // prediction leaves prediction's larger ceiling installed and a subsequent
+            // Design-mode inference inherits it and can be jetsam-killed.
+            // NOTE apply() also pins Memory.memoryLimit to boltz's 6 GB default, which
+            // RayMol does not arbitrate and accepts for the life of the process.
+            defer { BoltzRuntime.configureOnce() }
             let structure = try BoltzRuntime.withMLXErrorsAsThrows {
-                try Self.awaitSync { try await predictor.predict(featurized: features,
-                                                                options: options) }
+                try Self.awaitSyncCancellable(
+                    register: { task in
+                        self.stateQueue.sync { self.runningTasks[request.jobID] = task }
+                    },
+                    { try await predictor.predict(featurized: features, options: options) })
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
-
-            // MemoryPlanner.apply() runs inside the actor on EVERY predict and assigns
-            // MLX.Memory.cacheLimit unconditionally, so it has just overwritten whatever
-            // MLXRuntime arbitrated. Re-assert the arbitrated minimum, or a subsequent
-            // Design-mode inference inherits prediction's larger ceiling and can be
-            // jetsam-killed.
-            BoltzRuntime.configureOnce()
 
             if isCancelled() { report("cancelled", "inference", 0); return }
             report("running", "write", 0.95)
@@ -206,20 +282,36 @@ final class BoltzJobManager {
         } catch {
             report("failed", "inference", 0, error: error.localizedDescription)
         }
-        stateQueue.sync { cancelled.remove(request.jobID) }
+        stateQueue.sync {
+            cancelled.remove(request.jobID)
+            runningTasks.removeValue(forKey: request.jobID)
+        }
     }
 
     /// Bridge the actor's async API onto this synchronous queue. Blocking a thread is
     /// acceptable here precisely because the queue is dedicated to one inference at a
     /// time; it must never be done on the main thread.
     private static func awaitSync<T>(_ body: @escaping () async throws -> T) throws -> T {
+        try awaitSyncCancellable(register: { _ in }, body)
+    }
+
+    /// As ``awaitSync(_:)``, but hands the task to `register` so a cancel marker can
+    /// `.cancel()` it. That is the only thing that interrupts compute — boltz-mlx's
+    /// per-diffusion-step `Task.checkCancellation()` reads the RUNNING task's flag, so
+    /// discarding the handle (as this did originally) makes cancel a silent no-op that
+    /// merely throws away a completed result.
+    private static func awaitSyncCancellable<T>(
+        register: (Task<Void, Never>) -> Void,
+        _ body: @escaping () async throws -> T
+    ) throws -> T {
         let done = DispatchSemaphore(value: 0)
         var outcome: Result<T, Error>!
-        Task {
+        let task = Task {
             do { outcome = .success(try await body()) }
             catch { outcome = .failure(error) }
             done.signal()
         }
+        register(task)
         done.wait()
         return try outcome.get()
     }

@@ -147,6 +147,25 @@ class TestEnsure(testing.PyMOLTestCase):
                 self.assertEqual(opener.call_count, 1)
             self.assertTrue(cache.is_cached(bundle))
 
+    def testDiskFullDuringDownloadIsClassifiedAsUnwritable(self):
+        """ENOSPC is not a network failure and must not be reported as one."""
+        import errno
+        from pymol.predictors.weights import WeightCache
+        from pymol.predictors.errors import WeightCacheUnwritable
+        data, digest = make_zip()
+        bundle = bundle_for(data, digest)
+
+        class OutOfSpace(FakeResponse):
+            def read(self, size=-1):
+                raise OSError(errno.ENOSPC, 'No space left on device')
+
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            with patch('pymol.predictors.weights._urlopen',
+                       return_value=OutOfSpace(data)):
+                self.assertRaises(WeightCacheUnwritable, cache.ensure, bundle)
+            self.assertFalse(cache.is_cached(bundle))
+
     def testNetworkErrorRaisesWeightDownloadFailed(self):
         from pymol.predictors.weights import WeightCache
         from pymol.predictors.errors import WeightDownloadFailed

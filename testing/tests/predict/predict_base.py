@@ -56,6 +56,23 @@ class TestPredictionOptions(testing.PyMOLTestCase):
         self.assertEqual(opts.diffusion_steps, 200)
         self.assertEqual(opts.seed, 0)
 
+    def testAbsurdlyLargeValuesRejected(self):
+        """Bounded at the top because these cross a JSON wire into Swift, which decodes
+        steps as Int and seed as UInt64. A value that overflows there produces a request
+        that cannot be decoded, and an undecodable request used to hang a job forever."""
+        from pymol.predictors.base import PredictionOptions
+        from pymol.predictors.errors import PredictionOptionError
+        self.assertRaises(PredictionOptionError, PredictionOptions,
+                          diffusion_steps=10 ** 30)
+        self.assertRaises(PredictionOptionError, PredictionOptions, seed=2 ** 64)
+        self.assertRaises(PredictionOptionError, PredictionOptions,
+                          recycling_steps=10 ** 9)
+
+    def testUpstreamDefaultsAreWithinBounds(self):
+        from pymol.predictors.base import PredictionOptions
+        self.assertEqual(PredictionOptions(recycling_steps=3, diffusion_steps=200,
+                                           seed=2 ** 64 - 1).seed, 2 ** 64 - 1)
+
     def testNonPositiveStepsRejected(self):
         from pymol.predictors.base import PredictionOptions
         from pymol.predictors.errors import PredictionOptionError

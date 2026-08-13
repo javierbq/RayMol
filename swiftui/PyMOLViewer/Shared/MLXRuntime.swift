@@ -92,10 +92,14 @@ enum MLXRuntime {
     static func requireCacheLimit(_ bytes: Int, owner: String) {
         configureDeviceOnce()
         lock.lock()
+        defer { lock.unlock() }
         requirements[owner] = bytes
         let effective = requirements.values.min() ?? bytes
-        lock.unlock()
-
+        // The INSTALL must happen under the same lock as the min computation. Computing
+        // `effective` under the lock and assigning outside it is a lost update: two owners
+        // racing can leave the LARGER ceiling installed while the registry min is smaller —
+        // exactly the "a later larger request raised a ceiling someone needs low"
+        // regression this type exists to forbid. Serial tests cannot catch it.
         #if targetEnvironment(simulator)
         // Deliberately NOT assigning Memory.cacheLimit: doing so constructs MLX's
         // MetalAllocator directly. Skipping it does not avoid the Simulator abort

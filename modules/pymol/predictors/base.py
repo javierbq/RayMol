@@ -6,6 +6,12 @@ from .errors import PredictionInputError, PredictionOptionError
 #: PDB single-character chain ids, in assignment order.
 CHAIN_IDS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
+#: Upper bounds for the inference knobs. Generous -- they exist to keep a value from
+#: overflowing the Swift side's Int/UInt64 decode, not to express a useful range.
+MAX_RECYCLING_STEPS = 100
+MAX_DIFFUSION_STEPS = 10_000
+MAX_SEED = 2 ** 64 - 1
+
 
 def parse_chains(sequence):
     """'MKTAY/GSHMA' -> (('A', 'MKTAY'), ('B', 'GSHMA')).
@@ -44,12 +50,19 @@ class PredictionOptions:
                             ('seed', seed)):
             if not isinstance(value, int) or isinstance(value, bool):
                 raise PredictionOptionError('%s must be an integer' % name)
-        if recycling_steps < 0:
-            raise PredictionOptionError('recycling_steps must be >= 0')
-        if diffusion_steps < 1:
-            raise PredictionOptionError('diffusion_steps must be >= 1')
-        if seed < 0:
-            raise PredictionOptionError('seed must be >= 0')
+        # Bounded at BOTH ends. The lower bounds are semantic; the upper bounds exist
+        # because these cross a JSON wire into Swift, which decodes the steps as Int and
+        # the seed as UInt64. A value that overflows there fails to decode, and an
+        # undecodable request is a job that reports nothing -- so reject it here, where
+        # the caller still gets a real error naming the option.
+        if not 0 <= recycling_steps <= MAX_RECYCLING_STEPS:
+            raise PredictionOptionError(
+                'recycling_steps must be between 0 and %d' % MAX_RECYCLING_STEPS)
+        if not 1 <= diffusion_steps <= MAX_DIFFUSION_STEPS:
+            raise PredictionOptionError(
+                'diffusion_steps must be between 1 and %d' % MAX_DIFFUSION_STEPS)
+        if not 0 <= seed <= MAX_SEED:
+            raise PredictionOptionError('seed must be between 0 and %d' % MAX_SEED)
         self.recycling_steps = recycling_steps
         self.diffusion_steps = diffusion_steps
         self.seed = seed

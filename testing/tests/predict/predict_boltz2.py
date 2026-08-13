@@ -132,6 +132,37 @@ class TestHostTransport(testing.PyMOLTestCase):
         os.unlink(job.request_path)
         os.unlink(job.status_path)
 
+    def testHalfWrittenStatusFallsBackToQueued(self):
+        """The 100 ms poll can read a status mid-write. That must degrade to `queued`,
+        not leak a JSONDecodeError out of the caller."""
+        from pymol.predictors import host
+        from pymol.predictors.base import PredictionOptions, PredictionSpec
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            job = host.submit(PredictionSpec((('A', 'AG'),), 'p'),
+                              PredictionOptions(), '/tmp/w')
+        with open(job.status_path, 'w') as handle:
+            handle.write('{"state":"run')          # truncated mid-write
+        status = job.status()
+        self.assertEqual(status['state'], 'queued')
+        self.assertIsNone(status['result_path'])
+        os.unlink(job.request_path)
+        os.unlink(job.status_path)
+
+    def testEmptyStatusFileFallsBackToQueued(self):
+        from pymol.predictors import host
+        from pymol.predictors.base import PredictionOptions, PredictionSpec
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            job = host.submit(PredictionSpec((('A', 'AG'),), 'p'),
+                              PredictionOptions(), '/tmp/w')
+        open(job.status_path, 'w').close()
+        self.assertEqual(job.status()['state'], 'queued')
+        os.unlink(job.request_path)
+        os.unlink(job.status_path)
+
     def testCancelPrintsAMarker(self):
         import io
         from contextlib import redirect_stdout

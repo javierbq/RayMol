@@ -149,6 +149,19 @@ class PredictAPITest(testing.PyMOLTestCase):
             cmd.predict('stub', 'AA')
         self.assertTrue(cmd.predict_weights('stub')['stub']['cached'])
 
+    def testPredictWeightsPrefetchesOnDemand(self):
+        """The documented way to avoid the blocking first predict."""
+        self.assertFalse(cmd.predict_weights('stub')['stub']['cached'])
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)) as opener:
+            info = cmd.predict_weights('stub', download=1)
+            self.assertEqual(opener.call_count, 1)
+        self.assertTrue(info['stub']['cached'])
+        # And a subsequent predict must not re-download.
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            cmd.predict('stub', 'AA')
+
     def testMultimerUsesSlashSeparator(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):

@@ -15,12 +15,14 @@ final class BoltzJobManagerTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        BoltzJobManager.shared.resetForTesting()
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
     override func tearDown() {
+        BoltzJobManager.shared.resetForTesting()
         try? FileManager.default.removeItem(at: dir)
         super.tearDown()
     }
@@ -171,6 +173,97 @@ final class BoltzJobManagerTests: XCTestCase {
         let request = try BoltzJobManager.parseRequest(at: url)
         XCTAssertNil(BoltzJobManager.preflight(request),
                      "a 40-residue chain must not be refused on any supported Mac")
+    }
+    // MARK: - Cancellation actually interrupts
+
+    /// The whole point of the cancel path. boltz-mlx guards each diffusion step with
+    /// `Task.checkCancellation()`, which reads the RUNNING task's flag — so a cancel that
+    /// only records a side-channel flag lets compute run to completion and merely discards
+    /// the result. This asserts the live task is genuinely cancelled.
+    func testCancelMarkerCancelsTheLiveInferenceTask() {
+        let started = expectation(description: "task started")
+        let observed = expectation(description: "task observed cancellation")
+        let task = Task {
+            started.fulfill()
+            while !Task.isCancelled { try? await Task.sleep(nanoseconds: 2_000_000) }
+            observed.fulfill()
+        }
+        BoltzJobManager.shared.registerTaskForTesting(task, jobID: "cx1")
+        wait(for: [started], timeout: 5)
+
+        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:cx1")
+
+        wait(for: [observed], timeout: 5)
+        XCTAssertTrue(task.isCancelled)
+        XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains("cx1"))
+    }
+
+    /// A cancel can legitimately arrive before the task is registered, so the flag must
+    /// still be recorded for the coarse phase checks in run().
+    func testCancelBeforeRegistrationIsStillRecorded() {
+        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:cx2")
+        XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains("cx2"))
+    }
+
+    /// ...but a cancel for a job that already finished is moot and must NOT accumulate.
+    func testCancelForATerminalJobIsIgnoredSoTheSetStaysBounded() throws {
+        let jobID = "cx3"
+        try BoltzJobManager.writeStatus(
+            .init(state: "done", phase: "done", fraction: 1.0, error: nil,
+                  resultPath: "/tmp/x.pdb", peakBytes: 1, elapsedSeconds: 1),
+            to: BoltzJobManager.statusURL(jobID: jobID))
+        defer { try? FileManager.default.removeItem(at: BoltzJobManager.statusURL(jobID: jobID)) }
+
+        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:\(jobID)")
+        XCTAssertFalse(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))
+    }
+
+    // MARK: - An unparseable request must fail loudly, not vanish
+
+    /// Without this, `handle()` returned silently and Python polled `queued` forever —
+    /// asymmetric with preflight, which does write `failed`.
+    func testUnparseableRequestWritesAFailedStatus() throws {
+        let jobID = "bad-\(UUID().uuidString.prefix(8))"
+        let req = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("raymol_predict_req_\(jobID).json")
+        try Data("{ not json at all".utf8).write(to: req)
+        let statusPath = BoltzJobManager.statusURL(jobID: jobID)
+        defer {
+            try? FileManager.default.removeItem(at: req)
+            try? FileManager.default.removeItem(at: statusPath)
+        }
+
+        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+
+        let decoded = try JSONDecoder().decode(
+            BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
+        XCTAssertEqual(decoded.state, "failed")
+        XCTAssertEqual(decoded.phase, "request")
+        XCTAssertNotNil(decoded.error)
+    }
+
+    /// The same guard covers a well-formed request whose numbers overflow the Swift decode
+    /// (Int steps / UInt64 seed) — the concrete case that used to hang a job forever.
+    func testRequestWithOverflowingSeedFailsRatherThanHangs() throws {
+        let jobID = "ovf-\(UUID().uuidString.prefix(8))"
+        let req = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("raymol_predict_req_\(jobID).json")
+        try Data("""
+        {"job_id":"\(jobID)","weights_dir":"/tmp","chains":[{"chain":"A","sequence":"AG"}],
+         "recycling_steps":3,"diffusion_steps":1000000000000000000000000000000,"seed":0,
+         "out_path":"/tmp/o.pdb","status_path":"\(BoltzJobManager.statusURL(jobID: jobID).path)"}
+        """.utf8).write(to: req)
+        let statusPath = BoltzJobManager.statusURL(jobID: jobID)
+        defer {
+            try? FileManager.default.removeItem(at: req)
+            try? FileManager.default.removeItem(at: statusPath)
+        }
+
+        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+
+        let decoded = try JSONDecoder().decode(
+            BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
+        XCTAssertEqual(decoded.state, "failed")
     }
 }
 #endif

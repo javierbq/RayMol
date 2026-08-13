@@ -4,7 +4,7 @@ Deliberately knows nothing about predictors: #249 needs it for Design mode's
 bundled MPNN.mpnnpack, which has no predictor at all.
 
 Why none of pymol.importing's fetch machinery is reused:
-  * cmd.file_read buffers the whole body in memory (this bundle is ~533 MiB) and
+  * cmd.file_read buffers the whole body in memory (bundles here are ~505 MiB) and
     silently gunzips by magic number;
   * nothing there hashes anything, and cache validity is a bare os.path.exists,
     which accepts a truncated file as a valid cache;
@@ -30,7 +30,8 @@ SENTINEL = '.ok'
 #: Patch point for tests. Never call urllib.request.urlopen directly below.
 _urlopen = urlopen
 
-#: Stream in 1 MiB chunks: the bundle is ~533 MiB and must never be buffered whole.
+#: Stream in 1 MiB chunks: bundles are hundreds of MiB (see WeightBundle.size)
+#: and must never be buffered whole.
 CHUNK_BYTES = 1 << 20
 
 DEFAULT_TIMEOUT = 30.0
@@ -82,16 +83,24 @@ class BundledSource:
 class WeightCache:
     """On-disk cache of weight bundles.
 
-    Location resolution order: explicit root, then RAYMOL_WEIGHTS_DIR (published by
-    the Swift host so a sandboxed build gets its container path), then a per-platform
-    default. Application Support rather than Caches, because Caches is purgeable and
+    Location resolution order: explicit root, then RAYMOL_WEIGHTS_DIR, then a
+    per-platform default.
+
+    RAYMOL_WEIGHTS_DIR is an override seam for tests and for a future host that needs
+    to dictate the path; NOTHING SETS IT TODAY. In the app the default_root() branch is
+    what runs, and it lands inside the container on a sandboxed build because
+    expanduser('~') is already container-relative there — no host cooperation needed. Application Support rather than Caches, because Caches is purgeable and
     the user waited for half a gigabyte.
     """
 
     #: How long ensure() waits for another process's download before giving up.
     LOCK_TIMEOUT = 900.0
-    #: A lock file older than this is assumed abandoned by a dead process.
-    LOCK_STALE_SECONDS = 1800.0
+    #: A lock file older than this is assumed abandoned. MUST stay <= LOCK_TIMEOUT: if it
+    #: were larger, a caller arriving after a downloader crashed would spin for the whole
+    #: timeout and then fail with a misleading "another download in progress" instead of
+    #: reclaiming the lock. Liveness is checked first anyway (see _acquire_lock), so this
+    #: is only the fallback for a pid that has been recycled.
+    LOCK_STALE_SECONDS = 600.0
 
     def __init__(self, root=None):
         self.root = root or os.environ.get('RAYMOL_WEIGHTS_DIR') \
@@ -153,12 +162,18 @@ class WeightCache:
             except FileExistsError:
                 if self.is_cached(bundle):
                     return False
+                # Liveness first: a crashed downloader's lock should be reclaimed at once,
+                # not after the full timeout. The pid is written into the lock precisely so
+                # it can be read back.
+                if not _pid_alive(_read_pid(lock)):
+                    _unlink(lock)
+                    continue
                 try:
                     age = time.time() - os.path.getmtime(lock)
                 except OSError:
                     continue                      # vanished; retry immediately
                 if age > self.LOCK_STALE_SECONDS:
-                    _unlink(lock)                 # owner is gone
+                    _unlink(lock)                 # owner is gone, or its pid was recycled
                     continue
                 if time.monotonic() > deadline:
                     raise WeightDownloadFailed(
@@ -186,8 +201,14 @@ class WeightCache:
         if not self._acquire_lock(bundle):
             return self.path_for(bundle)         # someone else finished it
 
-        part = os.path.join(incoming, bundle.sha256 + '.part')
-        staging = os.path.join(incoming, bundle.sha256 + '.d')
+        # Keyed on the pid as well as the digest: two processes that both believe they
+        # hold the lock (a recycled pid, a wrongly-reclaimed stale lock) must not share
+        # scratch paths, or each one's `finally` deletes the other's work. Integrity was
+        # never at risk -- each hashes its own stream -- but the cross-deletion turns a
+        # rare race into a spurious failure and a wasted re-download.
+        token = '%s-%d' % (bundle.sha256, os.getpid())
+        part = os.path.join(incoming, token + '.part')
+        staging = os.path.join(incoming, token + '.d')
         target = self.path_for(bundle)
         try:
             # Re-check under the lock: the winner may have published while we
@@ -275,6 +296,31 @@ class WeightCache:
             _rmtree(target)
             raise WeightCacheUnwritable(
                 'cannot publish %s: %s' % (target, exc))
+
+
+def _read_pid(path):
+    """The pid recorded in a lock file, or None if unreadable/malformed."""
+    try:
+        with open(path) as handle:
+            return int(handle.read().strip())
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid):
+    """True when `pid` is a live process. An unknown pid counts as ALIVE, so an
+    unreadable lock is never reclaimed on a guess."""
+    if pid is None:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else
+    except OSError:
+        return True
+    return True
 
 
 def _unlink(path):

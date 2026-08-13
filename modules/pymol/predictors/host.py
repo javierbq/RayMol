@@ -67,8 +67,14 @@ class HostJob:
                     'peak_bytes': None, 'elapsed_s': None}
 
     def cancel(self):
-        """Ask the host to stop. Cancellation is cooperative and coarse: it lands
-        on the per-diffusion-step checkCancellation, so worst case is one step."""
+        """Ask the host to stop.
+
+        Cancellation is cooperative. The host cancels the Swift Task running inference,
+        which boltz-mlx observes at each diffusion step -- so during the diffusion phase
+        the worst case is roughly one step. It is coarser elsewhere: the trunk has no
+        cancellation points at all, so a cancel arriving during featurization or the
+        trunk pass is not observed until that phase completes.
+        """
         print('PREDICT:cancel:%s' % self.job_id)
 
 

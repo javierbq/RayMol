@@ -36,8 +36,8 @@ def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200
 DESCRIPTION
 
     "predict" folds one or more sequences with a registered structure predictor.
-    It returns immediately with a job handle; poll it with "predict_status" and
-    load the result with "predict_result".
+    It returns a job handle; poll it with "predict_status" and load the result with
+    "predict_result".
 
 USAGE
 
@@ -75,6 +75,16 @@ NOTES
     Defaults follow upstream Boltz. Options a predictor does not implement are
     rejected rather than ignored, so a typo cannot silently degrade a result.
 
+    THE FIRST CALL BLOCKS. Inference itself is asynchronous, but a predictor whose
+    weights are not yet cached downloads them synchronously first -- for boltz2 that
+    is a ~505 MiB download plus extraction, minutes on a slow link, and it runs on
+    the calling thread. From the command line that is the main thread, so the window
+    will not redraw until it finishes. Pre-warm the cache instead:
+
+        predict_weights boltz2, download=1
+
+    Subsequent calls hit the cache and return promptly.
+
 SEE ALSO
 
     predict_status, predict_result, predict_cancel, predict_weights
@@ -97,13 +107,23 @@ SEE ALSO
     options = predictor_obj.validate_options(requested)
 
     weights_path = None
-    if predictor_obj.weight_bundle is not None:
+    bundle = predictor_obj.weight_bundle
+    if bundle is not None:
+        cache = weight_cache()
+        # Warn regardless of `quiet`: this is the one blocking step in an otherwise
+        # asynchronous API, and staying silent while the main thread stalls on a
+        # half-gigabyte download looks like a hang rather than progress.
+        if not cache.is_cached(bundle):
+            colorprinting.warning(
+                ' predict: fetching %s weights (%.0f MB) before the first run; this'
+                ' blocks until complete. Pre-warm with "predict_weights %s, download=1".'
+                % (predictor_obj.id, (bundle.size or 0) / 1e6, predictor_obj.id))
+
         def report(phase, fraction):
             if not int(quiet):
                 colorprinting.parrot(' predict: %s %d%%'
                                    % (phase, int(fraction * 100)))
-        weights_path = weight_cache().ensure(predictor_obj.weight_bundle,
-                                            progress=report)
+        weights_path = cache.ensure(bundle, progress=report)
 
     job = predictor_obj.submit(spec, options, weights_path)
     _JOBS[job.job_id] = job
