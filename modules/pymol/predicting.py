@@ -140,6 +140,25 @@ def deliver_result(path, name, _self=cmd):
     """
     try:
         _self.load(path, name, zoom=0)
+        # Assign secondary structure explicitly. `auto_dss` does NOT fire when loading
+        # into a PRE-EXISTING object, which is exactly what the placeholder makes this --
+        # measured: this path leaves ss='' on every residue, while the same file loaded
+        # under a fresh name comes back H/S/L. Without this, cartoon renders every
+        # prediction as featureless loops, and boltz output carries no HELIX/SHEET
+        # records to fall back on.
+        #
+        # ss is a per-ATOM property in PyMOL, not per-state, so one call covers every
+        # appended model -- but it also means two models with genuinely different
+        # conformations share whichever assignment dss computed, which is a PyMOL
+        # limitation rather than a choice made here.
+        try:
+            _self.dss(name)
+        except Exception as exc:
+            # Not fatal: a structure without ss is still the thing the user asked for.
+            # Reported rather than swallowed, because a silently skipped step here looks
+            # exactly like a prediction that folded to nothing but loops.
+            colorprinting.warning(' predict: could not assign secondary structure to %s'
+                                  ' (%s)' % (name, exc))
     finally:
         _PENDING.pop(name, None)
 

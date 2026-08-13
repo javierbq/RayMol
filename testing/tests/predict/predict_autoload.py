@@ -150,6 +150,24 @@ class TestDelivery(testing.PyMOLTestCase):
         with open(self.pdb, 'w') as handle:
             handle.write('ATOM      1  N   ALA A   1       0.000   0.000   0.000'
                          '  1.00  0.00           N\nEND\n')
+        # An ideal alpha helix, so dss has real geometry to classify. Backbone only:
+        # dss works off N/CA/C/O.
+        import math
+        self.helix_pdb = os.path.join(self.root, 'helix.pdb')
+        with open(self.helix_pdb, 'w') as handle:
+            serial = 1
+            for i in range(12):
+                phase = i * 100.0 * math.pi / 180.0
+                z = i * 1.5
+                for atom, elem, dr, dz in (('N', 'N', 1.5, 0.0), ('CA', 'C', 2.3, 0.4),
+                                           ('C', 'C', 1.9, 0.9), ('O', 'O', 2.1, 1.2)):
+                    x = dr * math.cos(phase)
+                    y = dr * math.sin(phase)
+                    handle.write('ATOM  %5d  %-3s ALA A%4d    %8.3f%8.3f%8.3f'
+                                 '  1.00  0.00          %2s\n'
+                                 % (serial, atom, i + 1, x, y, z + dz, elem))
+                    serial += 1
+            handle.write('END\n')
 
     def tearDown(self):
         from pymol import predicting
@@ -171,6 +189,17 @@ class TestDelivery(testing.PyMOLTestCase):
         predicting.deliver_result(self.pdb, 'p2')
         predicting.deliver_result(self.pdb, 'p2')
         self.assertEqual(cmd.count_states('p2'), 2)
+
+    def testDeliveredModelGetsSecondaryStructure(self):
+        """auto_dss does NOT fire when loading into a pre-existing object, so without an
+        explicit dss every prediction renders as featureless cartoon loops."""
+        from pymol import predicting
+        predicting.register_pending('p5', 'job5')
+        predicting.deliver_result(self.helix_pdb, 'p5')
+        kinds = set()
+        cmd.iterate('p5 and name CA', 'kinds.add(ss)', space={'kinds': kinds})
+        self.assertTrue(kinds - {''},
+                        'no secondary structure assigned: %r' % (kinds,))
 
     def testDeliveryRetiresThePendingMark(self):
         """Left pending, the object would be stripped from every later session save."""
