@@ -1,6 +1,15 @@
 {
-  "originHash" : "a1dcc236ead4e06df891bf0d484b3f3af8ba381ddbda9dab840bf7c1018ef4c1",
+  "originHash" : "b91c31a349f929b1906f517fae13f04085d0506bd25dcecf3db1bb097004fe0d",
   "pins" : [
+    {
+      "identity" : "boltz-mlx",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/javierbq/boltz-mlx.git",
+      "state" : {
+        "revision" : "5aec62ed7723bd5b64be6ceb3d3f9ba46a2299c8",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "mlx-swift",
       "kind" : "remoteSourceControl",

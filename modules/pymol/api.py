@@ -29,6 +29,15 @@ from .importing import \
       space
 
 #--------------------------------------------------------------------
+from . import predicting
+from .predicting import \
+      predict,              \
+      predict_status,       \
+      predict_cancel,       \
+      predict_result,       \
+      predict_weights
+
+#--------------------------------------------------------------------
 from . import creating
 from .creating import \
       copy,               \

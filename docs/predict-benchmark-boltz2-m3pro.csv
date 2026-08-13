@@ -1,0 +1,68 @@
+# RayMol structure prediction — Boltz-2 (boltz-mlx) benchmark
+#
+# HARDWARE
+#   machine          Apple M3 Pro, 12 cores (6 performance + 6 efficiency)
+#   memory           36.0 GiB (38,654,705,664 bytes)
+#   os               macOS 26.5.2 (build 25F84)
+#   toolchain        Xcode 26.4 (17E192), Apple Swift 6.3
+#
+# BUILD
+#   configuration    Release (SWIFT_OPTIMIZATION_LEVEL: -O), ad-hoc signed, unsandboxed
+#                    NOTE a Debug (-Onone) build is ~10x slower and must never be quoted
+#   boltz-mlx        v0.1.0 (commit 5aec62e)
+#   mlx-swift        0.31.6
+#
+# WEIGHTS
+#   artifact         boltz2-mlx-int8 v1 (release weights-v1 on javierbq/boltz-mlx)
+#   zip sha256       ce9637f65f169cf98989d6b068469cf446fef49b9b90859d26f65f9853ea0cbd
+#   zip size         529,338,573 bytes
+#   quantization     int8, affine, group_size 64
+#   pack             CONFIDENCE pack (1,001 of 11,280 tensors are the confidence module).
+#                    It is resident but NEVER EXECUTED here — this code path calls
+#                    predict(featurized:), not predictScored(...) — so every memory figure
+#                    below is slightly pessimistic.
+#   provenance       upstream Boltz-2 v2.2.1 (cb04aecc), boltz2_conf.ckpt
+#                    sha256 090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1
+#
+# INFERENCE SETTINGS  (upstream Boltz defaults, not the MLX port's)
+#   recycling_steps  3
+#   diffusion_steps  200
+#   seed             0
+#   chains           1
+#   msa              none (single-sequence mode)
+#   memory_planner   BoltzInputLimits.desktop
+#
+# METHOD
+#   peak_memory_gb   MLX's own high-water mark via BoltzPredictor.memorySnapshot().peakMemory,
+#                    reset per run with resetPeakMemory() so each size is independent.
+#                    DO NOT use process RSS: during the 900-residue run the app's RSS read
+#                    0.1 GB against a 32.71 GB MLX peak, a 130x understatement, because MLX
+#                    allocates Metal buffers RSS does not attribute.
+#   inference_s      inference only. EXCLUDES the ~10 s one-time model load, featurization
+#                    (~ms), and PDB writing. Model kept warm across runs.
+#   sequences        N-terminal prefixes of one real 384-residue protein, so only length
+#                    varies. Above 384 the source is tiled to length: timing and memory are
+#                    unaffected by content, but the FOLDS above 384 are not meaningful.
+#   swap             grew 5 GB -> 12 GB across the sweep; free disk fell 25.9 -> 21.2 GB.
+#                    The 900-residue run needed 85% of physical RAM and completed only
+#                    because swap absorbed the overflow.
+#   date             2026-08-12
+#
+residues,peak_memory_gb,inference_s,mb_per_residue,s_per_residue
+60,0.78,6.5,13.0,0.11
+100,1.76,20.6,17.6,0.21
+150,2.90,28.0,19.3,0.19
+200,3.48,41.3,17.4,0.21
+250,3.85,69.6,15.4,0.28
+300,4.64,92.2,15.5,0.31
+350,5.96,128.8,17.0,0.37
+400,7.38,168.6,18.5,0.42
+450,7.90,261.1,17.6,0.58
+550,10.86,557.9,19.7,1.01
+600,13.11,675.2,21.9,1.13
+650,15.32,924.4,23.6,1.42
+700,18.43,1110.2,26.3,1.59
+750,21.53,1303.4,28.7,1.74
+800,24.93,1624.7,31.2,2.03
+850,28.65,2009.3,33.7,2.36
+900,32.71,2539.7,36.3,2.82
