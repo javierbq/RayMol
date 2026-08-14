@@ -12,6 +12,7 @@ import sys
 from . import colorprinting
 from .predictors import registry
 from .predictors.base import PredictionOptions  # noqa: F401  (re-export for callers)
+from .predictors.errors import PredictionOptionError
 from .predictors.weights import WeightCache
 
 cmd = sys.modules["pymol.cmd"]
@@ -30,8 +31,217 @@ def weight_cache():
     return _CACHE
 
 
+# -- Auto-load: content-derived names and pending placeholders -----------------
+#
+# A prediction takes seconds to tens of minutes, so `cmd.predict` returns a handle
+# rather than blocking. That left the result invisible until the user called
+# `predict_result` by hand. Instead an EMPTY object is created at submit time under a
+# name derived from the input, and the host loads the finished structure into it.
+#
+# The placeholder is deliberately a real, zero-atom object (`cmd.create(name, 'none')`):
+# it shows up in the object panel immediately, and -- verified -- loading into it lands
+# at state 1 rather than appending after a phantom empty state, so re-running the same
+# sequence yields models 1..N in one object with no gaps.
+
+#: Upper bound for a randomly chosen seed. Below 2**53 so the value survives a JSON
+#: round-trip through a Double on the Swift side; still 4 billion distinct samples.
+RANDOM_SEED_BOUND = 2 ** 32
+
+#: Ceiling on `n_models`. Each model is a FULL run -- see predict()'s docstring -- and a
+#: single 600-residue run already takes ~11 minutes, so an unbounded count is a foot-gun
+#: rather than a feature.
+MAX_MODELS = 20
+
+#: Hex digits of the sequence digest used in a derived object name. Eight, not six:
+#: six is 24 bits, and two DIFFERENT sequences colliding would silently merge into one
+#: object, which is worse than a visible name clash. Widen, never narrow.
+OBJECT_NAME_DIGEST_CHARS = 8
+
+#: name -> job_id for placeholders whose job has not finished. Read by the object panel
+#: (to disable the enable-toggle and show hover detail), by the session-save wrapper
+#: (to keep placeholders out of a .pse), and by cleanup on failure/cancel/quit.
+_PENDING = {}
+
+
+def default_object_name(sequence, predictor_id=''):
+    """The object name a prediction lands in when the caller does not pick one.
+
+    Shaped `<method>_prediction_<digest>`, e.g. `boltz2_prediction_f2b2e116`. The method
+    leads so that objects sort and read by predictor -- with several methods registered,
+    the same sequence folded two ways must be two objects, not two models of one, because
+    they are not samples of the same distribution.
+
+    The digest is of the sequence, so re-predicting the same target with the same method
+    appends another model to the same object instead of littering the session. Normalised
+    for case and whitespace -- otherwise 'mktay' and 'MKTAY ' would give two objects for
+    one protein -- but the '/' chain separator is significant, because A/B is a different
+    complex from the concatenation AB.
+    """
+    import hashlib
+    normalised = ''.join(str(sequence).split()).upper()
+    digest = hashlib.sha256(normalised.encode('utf-8')).hexdigest()
+    stem = 'prediction_%s' % digest[:OBJECT_NAME_DIGEST_CHARS]
+    method = ''.join(ch for ch in str(predictor_id) if ch.isalnum() or ch == '_')
+    return '%s_%s' % (method, stem) if method else stem
+
+
+def job_ids():
+    """Ids of every job submitted this session, newest last.
+
+    Public because the command-line completer offers them for predict_status /
+    predict_cancel / predict_result, and a completer must not reach into _JOBS.
+    """
+    return list(_JOBS)
+
+
+def pending_objects():
+    """Copy of the pending map: object name -> LIST of outstanding job ids.
+
+    A list because `n_models` submits several runs that all deliver into one object.
+    """
+    return {name: list(ids) for name, ids in _PENDING.items()}
+
+
+def pending_detail(name, _self=cmd):
+    """One-line description of the job a placeholder is waiting on, or None.
+
+    This is the string the object panel shows on hover, so it must stay short and must
+    never raise: it is rendered from a 500 ms poll on the main thread.
+    """
+    job_ids = _PENDING.get(name)
+    if not job_ids:
+        return None
+    job_id = job_ids[0]
+    job = _JOBS.get(job_id)
+    if job is None:
+        return 'pending'
+    try:
+        status = job.status()
+    except Exception:
+        return 'pending'
+    phase = status.get('phase') or status.get('state') or 'pending'
+    fraction = status.get('fraction') or 0.0
+    detail = 'pending: %s %d%%' % (phase, int(float(fraction) * 100))
+    outstanding = len(job_ids)
+    if outstanding > 1:
+        detail += ' (%d models queued)' % outstanding
+    return detail
+
+
+def register_pending(name, job_id, _self=cmd):
+    """Create the empty placeholder (if new) and remember what it is waiting for.
+
+    A LIST of job ids, not one: `n_models` submits several runs that all deliver into the
+    same object, and the placeholder has to stay pending until the last of them lands.
+    Recording only the newest would clear the pending mark on the first delivery while
+    later models were still running.
+    """
+    if name not in _self.get_names('objects'):
+        _self.create(name, 'none')
+    _PENDING.setdefault(name, []).append(job_id)
+
+
+def discard_pending(name, _self=cmd):
+    """Forget a placeholder, deleting the object only if it never received atoms.
+
+    The atom check is the important part: cleanup can race a job that just finished, and
+    deleting a completed structure would destroy the very thing the user asked for.
+    """
+    _PENDING.pop(name, None)
+    try:
+        if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
+            _self.delete(name)
+    except Exception:
+        pass
+
+
+def clear_pending(_self=cmd):
+    """Drop every placeholder. Used on quit and by tests."""
+    for name in list(_PENDING):
+        discard_pending(name, _self=_self)
+
+
+def deliver_result(path, name, seed=None, _self=cmd):
+    """Load a finished prediction into its placeholder and retire the pending mark.
+
+    One entry point rather than two calls from the host, so the load and the bookkeeping
+    cannot get out of step -- a name left in `_PENDING` after a successful load would be
+    filtered out of every subsequent session save.
+
+    `zoom=0` on purpose: a prediction can land many minutes after submit, and pulling the
+    camera onto it while the user is working elsewhere is hostile. The object is already
+    visible, because the placeholder appeared at submit time.
+    """
+    try:
+        _self.load(path, name, zoom=0)
+        # Record which seed produced THIS model, in its state title, so a multi-model
+        # object says what each model is. It survives into a saved .pse, which is what
+        # makes a randomly seeded run reproducible after the fact.
+        if seed is not None:
+            try:
+                _self.set_title(name, _self.count_states(name), 'seed=%d' % int(seed))
+            except Exception:
+                pass
+        # Assign secondary structure explicitly. `auto_dss` does NOT fire when loading
+        # into a PRE-EXISTING object, which is exactly what the placeholder makes this --
+        # measured: this path leaves ss='' on every residue, while the same file loaded
+        # under a fresh name comes back H/S/L. Without this, cartoon renders every
+        # prediction as featureless loops, and boltz output carries no HELIX/SHEET
+        # records to fall back on.
+        #
+        # ss is a per-ATOM property in PyMOL, not per-state, so one call covers every
+        # appended model -- but it also means two models with genuinely different
+        # conformations share whichever assignment dss computed, which is a PyMOL
+        # limitation rather than a choice made here.
+        try:
+            _self.dss(name)
+        except Exception as exc:
+            # Not fatal: a structure without ss is still the thing the user asked for.
+            # Reported rather than swallowed, because a silently skipped step here looks
+            # exactly like a prediction that folded to nothing but loops.
+            colorprinting.warning(' predict: could not assign secondary structure to %s'
+                                  ' (%s)' % (name, exc))
+    finally:
+        # Retire only THIS job. With n_models > 1 the object stays pending until the last
+        # model has landed, so the panel keeps showing progress for the rest.
+        remaining = _PENDING.get(name)
+        if remaining:
+            remaining.pop(0)
+            if not remaining:
+                _PENDING.pop(name, None)
+
+
+def session_save(session, _self=cmd):
+    """Session-save task: keep pending placeholders out of the .pse.
+
+    A placeholder is a real zero-atom object and DOES survive a session round-trip, so a
+    session saved mid-prediction would carry an object that can never fill -- the job is
+    gone on reload. This runs after `_cmd.get_session` has populated `session['names']`
+    (exporting.py:443), so the entry can simply be dropped from the copy being written.
+    The live session is untouched, which is why there is no delete/recreate and no race.
+
+    Only objects that are BOTH pending and still empty are dropped: a job that completed
+    between submit and save has real atoms and must be saved like anything else.
+    """
+    names = session.get('names')
+    if not names or not _PENDING:
+        return 1
+    keep = []
+    for entry in names:
+        # None entries are structural in PyMOL's names list -- preserve them.
+        if entry and entry[0] in _PENDING:
+            try:
+                if _self.count_atoms(entry[0]) == 0:
+                    continue
+            except Exception:
+                continue
+        keep.append(entry)
+    session['names'] = keep
+    return 1
+
+
 def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
-            seed=0, diffusion_samples=None, quiet=1, _self=cmd):
+            seed=None, n_models=1, diffusion_samples=None, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -59,7 +269,14 @@ ARGUMENTS
     diffusion_steps = int: reverse-diffusion steps; higher is slower and more
     accurate {default: 200}
 
-    seed = int: random seed {default: 0}
+    seed = int: random seed. Drawn FRESH PER RUN when omitted, so repeat
+    predictions of one sequence are different models rather than identical
+    duplicates. The value used is printed and recorded in each model's state
+    title, so any result can be reproduced exactly with seed=N.
+    {default: None, meaning "choose one"}
+
+    n_models = int: how many models to produce, appended as states 1..N of the
+    same object. Each gets its own seed. {default: 1, maximum: 20}
 
     diffusion_samples = int: accepted only so that a predictor which does not
     plumb it can REJECT it by name instead of ignoring it. No shipped predictor
@@ -69,11 +286,19 @@ EXAMPLES
 
     predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ
     predict boltz2, MKTAY/GSHMA, name=dimer, diffusion_steps=300
+    predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ, n_models=5
 
 NOTES
 
     Defaults follow upstream Boltz. Options a predictor does not implement are
     rejected rather than ignored, so a typo cannot silently degrade a result.
+
+    n_models COSTS N FULL RUNS. Each model repeats the whole prediction with a
+    different seed, including the trunk; it is not several samples drawn from one
+    diffusion run. boltz-mlx does not plumb diffusion_samples -- only sample 0
+    escapes its predictor -- so sharing the trunk across models is not available.
+    Budget accordingly: five models of a 600-residue target is roughly an hour.
+    The runs are sequential, so peak memory is that of ONE model, not N.
 
     THE FIRST CALL BLOCKS. Inference itself is asynchronous, but a predictor whose
     weights are not yet cached downloads them synchronously first -- for boltz2 that
@@ -93,6 +318,26 @@ SEE ALSO
     predictor_obj.check_available()
 
     spec = predictor_obj.parse_spec(sequence, name=name or (predictor + '_pred'))
+
+    # A fresh seed per run unless one is given, so repeat predictions of the same sequence
+    # are genuinely different models rather than bit-identical duplicates -- measured, two
+    # runs at the fixed seed 0 gave RMSD 0.0000 and appending the second was pointless.
+    #
+    # The seed used is RECORDED -- printed, carried on the job's options, and written into
+    # the per-state title -- because a random seed you cannot recover makes every result
+    # unreproducible. `seed=N` reproduces one exactly.
+    #
+    # Bounded to 2**32 rather than the full UInt64 range: the value crosses a JSON wire
+    # into Swift, and an integer above 2**53 cannot survive a round-trip through a Double,
+    # which is what Foundation's JSON layer may use for large numbers.
+    count = int(n_models)
+    if not 1 <= count <= MAX_MODELS:
+        raise PredictionOptionError('n_models must be between 1 and %d' % MAX_MODELS)
+
+    if seed is None:
+        import random
+        seed = random.randrange(RANDOM_SEED_BOUND)
+
     requested = dict(
         recycling_steps=int(recycling_steps),
         diffusion_steps=int(diffusion_steps),
@@ -125,11 +370,37 @@ SEE ALSO
                                    % (phase, int(fraction * 100)))
         weights_path = cache.ensure(bundle, progress=report)
 
-    job = predictor_obj.submit(spec, options, weights_path)
-    _JOBS[job.job_id] = job
-    if not int(quiet):
-        colorprinting.parrot(' predict: job %s submitted' % job.job_id)
-    return job
+    # Resolve the object name BEFORE submitting: the host needs it to load the result,
+    # and the placeholder has to exist by the time this call returns so the panel shows
+    # the job immediately rather than after the first poll.
+    object_name = (str(name) if name else
+                   default_object_name(sequence, predictor_obj.id))
+    # PredictionSpec is a __slots__ class, not a namedtuple: assign, don't _replace.
+    spec.name = object_name
+
+    jobs = []
+    for index in range(count):
+        # A distinct seed per model, or every model would be the same structure. The
+        # first uses the seed resolved above, so `predict ..., seed=N` still reproduces
+        # exactly and `n_models` extends that run rather than replacing it.
+        if index == 0:
+            model_options = options
+        else:
+            import random
+            model_options = predictor_obj.validate_options(
+                dict(requested, seed=random.randrange(RANDOM_SEED_BOUND)))
+        job = predictor_obj.submit(spec, model_options, weights_path)
+        _JOBS[job.job_id] = job
+        register_pending(object_name, job.job_id, _self=_self)
+        jobs.append(job)
+        if not int(quiet):
+            colorprinting.parrot(
+                ' predict: job %s submitted, will load as %s model %d (seed %d)'
+                % (job.job_id, object_name, index + 1, model_options.seed))
+
+    # A single job for the default, a list when several were asked for. Keeping the
+    # scalar for n_models=1 means existing callers and `job.job_id` keep working.
+    return jobs[0] if count == 1 else jobs
 
 
 def predict_status(job_id='', quiet=1, _self=cmd):

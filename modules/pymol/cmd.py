@@ -53,6 +53,13 @@ def _deferred_init_pymol_internals(_pymol):
     if wizarding.session_save_wizard not in _pymol._session_save_tasks:
         _pymol._session_save_tasks.append(wizarding.session_save_wizard)
 
+    # Structure prediction (#224): keeps pending placeholders out of a saved .pse.
+    # Imported here, not at module scope: predicting does `from pymol import cmd`, so a
+    # top-level import would be circular. This runs after module init, so it is safe.
+    from . import predicting
+    if predicting.session_save not in _pymol._session_save_tasks:
+        _pymol._session_save_tasks.append(predicting.session_save)
+
     # RayMol: per-scene render-settings snapshot (DOF/lighting/metal_* look).
     # Imported here (deferred) to avoid a circular import at cmd.py load time.
     # Wrapped so a fork-module problem can never break core PyMOL startup.

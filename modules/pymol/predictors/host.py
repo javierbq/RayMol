@@ -94,6 +94,10 @@ def submit(spec, options, weights_path):
         'seed': options.seed,
         'out_path': job.out_path,
         'status_path': job.status_path,
+        # The object the host loads the finished structure into. Resolved at submit time
+        # so an empty placeholder can exist in the session immediately, and so the host
+        # needs no second round-trip to find out where the result belongs.
+        'object_name': getattr(spec, 'name', '') or '',
     }
     # Write completely before announcing it: the host reads on the next 100 ms
     # tick and must never see a partial request.

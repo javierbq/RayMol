@@ -379,6 +379,12 @@ struct ObjectEntry: Identifiable, Equatable {
     // existing memberwise initializers keep compiling.
     var isGroup: Bool = false
     var parent: String? = nil
+    // Structure prediction (#224): an empty placeholder waiting on a running job.
+    // Its enable-toggle is disabled — there is nothing to show yet — and
+    // `pendingDetail` is the hover tooltip describing the job's progress. Defaults keep
+    // the existing memberwise initializers compiling.
+    var isPending: Bool = false
+    var pendingDetail: String? = nil
 
     var displayName: String {
         if isSelection, let count = atomCount {
@@ -2046,6 +2052,11 @@ private struct ObjectRowContent: View {
             checkboxImage(check ?? (entry.isEnabled ? .on : .off))
         }
         .buttonStyle(.plain)
+        // A pending prediction placeholder has no atoms, so showing/hiding it is
+        // meaningless. Disabled rather than hidden, so the row still reads as a real
+        // object that is on its way.
+        .disabled(entry.isPending)
+        .opacity(entry.isPending ? 0.35 : 1.0)
         .frame(width: kGutterW)
 
         Text(entry.displayName)
@@ -2174,7 +2185,15 @@ private struct ObjectCard: View {
             // A/S/H/L/C controls consume their own taps (expand-only for the
             // chevron); only the dead Spacer gap falls through to here.
             .contentShape(Rectangle())
-            .onTapGesture { engine.setObjectEnabled(entry.name, !entry.isEnabled) }
+            .onTapGesture {
+                // Same reason the checkbox is disabled: nothing to show until the job
+                // lands. Guarded here too, or the dead gap in the row would still toggle.
+                guard !entry.isPending else { return }
+                engine.setObjectEnabled(entry.name, !entry.isEnabled)
+            }
+            // Hover detail for a running prediction: phase and progress, refreshed by the
+            // 500 ms panel poll. `.help` is a tooltip on macOS and a no-op on iOS.
+            .help(entry.pendingDetail ?? "")
             // Long-press (iOS) / right-click (macOS) opens the action menu.
             .contextMenu { actionMenuContent(actionMenuItems(isSelection: entry.isSelection, isGroup: entry.isGroup), name: entry.name, engine: engine) }
 
@@ -3687,6 +3706,10 @@ extension PyMOLEngine {
             // to a flat one.
             let groups: [String]?
             let parent: [String: String]?
+            // Structure prediction (#224). Optional for the same reason as `groups`: a
+            // non-optional field would fail the whole decode against an older bundled
+            // appkit_inspector.py and freeze the panel on its last list.
+            let pending: [String: String]?
         }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
@@ -3708,7 +3731,9 @@ extension PyMOLEngine {
                 stateCount: max(payload.nstate?[name] ?? 1, 1),
                 hasAtomTransp: payload.has_transp?[name] ?? false,
                 isGroup: groupSet.contains(name),
-                parent: parentMap[name]
+                parent: parentMap[name],
+                isPending: payload.pending?[name] != nil,
+                pendingDetail: payload.pending?[name]
             ))
         }
 

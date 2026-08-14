@@ -71,6 +71,28 @@ def wizard_sc():
             for name in os.listdir(p) if name.endswith('.py')]
     return Shortcut(names_glob)
 
+def _predictor_shortcut():
+    """Registered structure predictors, for `predict`/`predict_weights` completion.
+
+    Never raises. A completer that throws takes Tab down for EVERY command, not just
+    this one, so an unavailable registry degrades to "no suggestions".
+    """
+    try:
+        from pymol.predictors import registry
+        return Shortcut(registry.available())
+    except Exception:
+        return Shortcut([])
+
+
+def _predict_job_shortcut():
+    """Job ids submitted this session, for predict_status/_cancel/_result. Never raises."""
+    try:
+        from pymol import predicting
+        return Shortcut(predicting.job_ids())
+    except Exception:
+        return Shortcut([])
+
+
 def get_auto_arg_list(self_cmd=cmd):
     self_cmd = self_cmd._weakrefproxy
 
@@ -81,11 +103,18 @@ def get_auto_arg_list(self_cmd=cmd):
             Shortcut(self_cmd.get_names_of_type('object:ramp')),
             'ramp', '' ]
     aa_scene_e = [lambda: Shortcut(cmd.get_scene_list()), 'scene', '']
+    aa_predictor_c = [_predictor_shortcut, 'predictor', ', ']
+    aa_predict_job_c = [_predict_job_shortcut, 'job id', ', ']
 
     return [
 # 1st
         {
         'align'          : aa_sel_c,
+        'predict'        : aa_predictor_c,
+        'predict_weights': aa_predictor_c,
+        'predict_status' : aa_predict_job_c,
+        'predict_cancel' : aa_predict_job_c,
+        'predict_result' : aa_predict_job_c,
         'alignto'        : aa_obj_c,
         'alter'          : aa_sel_e,
         'alphatoall'     : aa_sel_c,

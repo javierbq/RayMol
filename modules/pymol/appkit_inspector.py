@@ -181,7 +181,17 @@ def takes_atom_selection(obj):
     Groups were originally caught by this guard too, which silently blanked their
     rep list and per-atom transparency badge even though probing them is both safe
     and meaningful — issue #256.
+
+    A name that no longer EXISTS is the same trap by another route, and the one a
+    user actually hits: `cmd.get_type` runs the name through the selector, so it
+    emits the Selector-Error line before raising, and the `except` below catches an
+    exception that has already been logged. Deleting an inspected object -- or
+    `reinitialize`, which deletes everything while the panel still holds the name --
+    then floods the console once per poll tick. Check existence FIRST, via
+    `get_names`, which does not touch the selector.
     """
+    if obj not in cmd.get_names('all'):
+        return False
     try:
         return cmd.get_type(obj) in SELECTABLE_TYPES
     except Exception:
@@ -251,7 +261,18 @@ def object_has_atom_transp(obj):
 
 def _build(objs):
     detail = {}
+    # One lookup for the whole tick. takes_atom_selection() also guards, but calling
+    # get_names per object would make a hot main-thread poll quadratic.
+    try:
+        known = set(cmd.get_names('all') or [])
+    except Exception:
+        known = None
     for o in objs:
+        if known is not None and o not in known:
+            # Stale name from the panel: object deleted, or reinitialize ran. Emitting
+            # nothing is right -- probing it would log a Selector-Error per tick.
+            detail[o] = []
+            continue
         reps = []
         # Measurements, CGOs and maps have no reps to describe, and every probe
         # below — transp_summary's iterate and the per-rep count_atoms — would make
@@ -304,6 +325,12 @@ def _build(objs):
     # frame's state when not pinned) and whether all states are overlaid.
     objmeta = {}
     for o in objs:
+        # Same stale-name guard as the rep loop above. This second pass probes
+        # count_states/get_title, and count_states runs the name through the
+        # SELECTOR -- so a deleted or reinitialized object logs a Selector-Error
+        # here once per poll tick even though the rep loop already skipped it.
+        if known is not None and o not in known:
+            continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
         # Per-state titles (e.g. compound names from a multi-record SDF, which
@@ -410,6 +437,28 @@ def group_parents(objs, groups):
     return dict(parents)
 
 
+def _pending_map():
+    """name -> hover detail for prediction placeholders still waiting on a job.
+
+    Never raises: a failure here would freeze the whole object panel on a stale list,
+    because the caller's single `except` writes no file at all.
+    """
+    try:
+        from pymol import predicting
+        names = predicting.pending_objects()
+        if not names:
+            return {}
+        out = {}
+        for name in names:
+            try:
+                out[name] = predicting.pending_detail(name) or 'pending'
+            except Exception:
+                out[name] = 'pending'
+        return out
+    except Exception:
+        return {}
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -445,6 +494,15 @@ def poll_panel():
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
+            # Structure prediction (#224): objects that are empty placeholders waiting on
+            # a running job. The panel disables their enable-toggle (there is nothing to
+            # show) and puts the detail string in a hover tooltip.
+            #
+            # Cheap by construction: `pending` is normally empty, and only pending names
+            # read a status file. This poll runs on the MAIN thread every 500 ms and was
+            # already a measured hot spot (PR #270), so it must stay O(pending), never
+            # O(objects).
+            'pending': _pending_map(),
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's

@@ -61,6 +61,30 @@ final class BoltzJobManagerTests: XCTestCase {
         XCTAssertFalse(parsed.statusPath.isEmpty)
     }
 
+    /// #224 auto-load: the object name travels on the wire so the host knows where the
+    /// finished structure belongs, without a second round-trip to Python.
+    func testDecodesTheObjectNameForAutoLoad() throws {
+        let url = dir.appendingPathComponent("raymol_predict_req_named.json")
+        let payload: [String: Any] = [
+            "job_id": "named", "weights_dir": dir.path,
+            "chains": [["chain": "A", "sequence": "AG"]],
+            "recycling_steps": 3, "diffusion_steps": 200, "seed": 0,
+            "out_path": "/tmp/o.pdb", "status_path": "/tmp/s.json",
+            "object_name": "prediction_deadbeef",
+        ]
+        try JSONSerialization.data(withJSONObject: payload).write(to: url)
+        XCTAssertEqual(try BoltzJobManager.parseRequest(at: url).objectName,
+                       "prediction_deadbeef")
+    }
+
+    /// An absent object_name must NOT fail the decode — it means "do not auto-load", and
+    /// a strict field would turn Python/Swift skew into a hard failure.
+    func testRequestWithoutAnObjectNameStillDecodes() throws {
+        let url = try writeRequest(job: "noname", chains: [("A", "AG")])
+        let parsed = try BoltzJobManager.parseRequest(at: url)
+        XCTAssertNil(parsed.objectName)
+    }
+
     /// Positional pairs must NOT decode — that would mean the two sides had silently
     /// diverged on the format.
     func testPositionalChainPairsAreRejected() throws {
@@ -264,6 +288,29 @@ final class BoltzJobManagerTests: XCTestCase {
         let decoded = try JSONDecoder().decode(
             BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
         XCTAssertEqual(decoded.state, "failed")
+    }
+    /// The race live testing exposed. A cancel that arrives BEFORE the inference task is
+    /// registered previously found no task, set only the flag, and was then never acted
+    /// on: a job cancelled at ~12 s ran the full 49 s and reported "done". The unit test
+    /// for the happy path could not catch it, because it registers first and cancels
+    /// second. Registration must therefore observe an already-requested cancel.
+    func testCancelArrivingBeforeRegistrationStillCancelsTheTask() {
+        let jobID = "prereg"
+        // Cancel first — no task exists yet, so only the flag is recorded.
+        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:\(jobID)")
+        XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))
+
+        let observed = expectation(description: "task saw the cancellation")
+        let task = Task {
+            while !Task.isCancelled { try? await Task.sleep(nanoseconds: 2_000_000) }
+            observed.fulfill()
+        }
+        // Registering must notice the pending request and cancel immediately.
+        BoltzJobManager.shared.registerTaskForTesting(task, jobID: jobID)
+
+        wait(for: [observed], timeout: 5)
+        XCTAssertTrue(task.isCancelled,
+                      "a cancel requested before registration must not be dropped")
     }
 }
 #endif
