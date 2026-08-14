@@ -38,6 +38,15 @@ class TestRandomSeed(testing.PyMOLTestCase):
         self._tmp.__exit__(None, None, None)
         testing.PyMOLTestCase.tearDown(self)
 
+    @property
+    def helix_pdb(self):
+        path = os.path.join(self.root, 'h.pdb')
+        if not os.path.exists(path):
+            with open(path, 'w') as handle:
+                handle.write('ATOM      1  N   ALA A   1       0.000   0.000   0.000'
+                             '  1.00  0.00           N\nEND\n')
+        return path
+
     def _seeds(self, n, **kw):
         out = []
         for i in range(n):
@@ -45,6 +54,53 @@ class TestRandomSeed(testing.PyMOLTestCase):
                        return_value=FakeResponse(self.data)):
                 out.append(cmd.predict('stub', 'AG', name='s%d' % i, **kw).options.seed)
         return out
+
+    def testNModelsSubmitsThatManyJobsIntoOneObject(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.predict('stub', 'AG', name='multi', n_models=3)
+        self.assertEqual(len(jobs), 3)
+        from pymol.predicting import pending_objects
+        self.assertEqual(len(pending_objects()['multi']), 3)
+
+    def testNModelsGivesEachModelItsOwnSeed(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.predict('stub', 'AG', name='multi2', n_models=4)
+        seeds = [j.options.seed for j in jobs]
+        self.assertEqual(len(set(seeds)), 4, 'identical seeds give identical models')
+
+    def testAnExplicitSeedIsTheFirstModelsSeed(self):
+        """So `seed=N` still reproduces exactly, with n_models extending that run."""
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.predict('stub', 'AG', name='multi3', n_models=3, seed=77)
+        self.assertEqual(jobs[0].options.seed, 77)
+
+    def testDefaultStillReturnsASingleJobNotAList(self):
+        """n_models=1 must not change the existing return type."""
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.predict('stub', 'AG', name='single')
+        self.assertFalse(isinstance(job, list))
+        self.assertTrue(hasattr(job, 'job_id'))
+
+    def testOutOfRangeNModelsRejected(self):
+        from pymol.predictors.errors import PredictionOptionError
+        for bad in (0, -1, 21):
+            self.assertRaises(PredictionOptionError, cmd.predict,
+                              'stub', 'AG', n_models=bad)
+
+    def testPlaceholderStaysPendingUntilTheLastModelLands(self):
+        """Retiring on the FIRST delivery would clear the mark while models still ran."""
+        from pymol import predicting
+        predicting.register_pending('multi4', 'j1')
+        predicting.register_pending('multi4', 'j2')
+        predicting.deliver_result(self.helix_pdb, 'multi4', seed=1)
+        self.assertIn('multi4', predicting.pending_objects())
+        predicting.deliver_result(self.helix_pdb, 'multi4', seed=2)
+        self.assertNotIn('multi4', predicting.pending_objects())
+        self.assertEqual(cmd.count_states('multi4'), 2)
 
     def testRepeatRunsGetDifferentSeeds(self):
         seeds = self._seeds(6)
@@ -161,7 +217,7 @@ class TestPlaceholder(testing.PyMOLTestCase):
         job = self._submit(name='my_test')
         from pymol.predicting import pending_objects
         self.assertIn('my_test', pending_objects())
-        self.assertEqual(pending_objects()['my_test'], job.job_id)
+        self.assertEqual(pending_objects()['my_test'], [job.job_id])
 
     def testPendingDetailDescribesTheJob(self):
         """This string is what the object panel shows on hover."""
