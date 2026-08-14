@@ -298,6 +298,30 @@ class AsyncFetchTest(testing.PyMOLTestCase):
             self.assertRaises(WeightDownloadFailed,
                               cmd.predict_weights, 'stub', download=1)
 
+    # -- bundles that ship inside the app -------------------------------------
+
+    def testABundledSourceResolvesWithNoThreadAndNoAttributeError(self):
+        """`weight_bundle` may be a BundledSource, which has no `version` or `size`.
+
+        Routing a cold-cache check through cache.is_cached() -> path_for() would raise
+        AttributeError on one. Nothing ships a BundledSource today, but Predictor
+        documents it as valid and #275 plans to move MPNN.mpnnpack onto it, so the
+        deferral path must already tolerate it rather than wait there as a landmine.
+        """
+        import os as _os
+        from pymol.predictors import fetching
+        from pymol.predictors.weights import BundledSource, WeightCache
+        inside = _os.path.join(self.root, 'bundled')
+        _os.makedirs(inside, exist_ok=True)
+        bundle = BundledSource(id='bundled-stub', path=inside)
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not download a bundled source')):
+            fetch = fetching.start(bundle, WeightCache(self.root))
+        self.assertEqual(fetch.state, 'done')
+        self.assertIsNone(fetch.thread, 'no worker should be started')
+        self.assertEqual(fetch.path, inside)
+        self.assertEqual(fetch.snapshot()['total'], 0)
+
     # -- registration ---------------------------------------------------------
 
     def testCancelIsRegisteredAsACommandKeyword(self):

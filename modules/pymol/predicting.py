@@ -535,11 +535,15 @@ SEE ALSO
     fetch = None
     bundle = predictor_obj.weight_bundle
     if bundle is not None:
-        cache = weight_cache()
-        if cache.is_cached(bundle):
-            weights_path = cache.path_for(bundle)
+        # One entry point for all three cases -- already cached, bundled inside the app,
+        # or needs downloading -- so this cannot drift from what fetching.start() knows.
+        # In particular BundledSource has no `version`, so reaching for is_cached() here
+        # instead would raise AttributeError on it.
+        started = fetching.start(bundle, weight_cache())
+        if started.state == 'done':
+            weights_path = started.path
         else:
-            fetch = fetching.start(bundle, cache)
+            fetch = started
             # Warn regardless of `quiet`: nothing else tells a command-line user why
             # their prediction has not started, and the app's progress sheet is driven
             # by the marker rather than by this line.

@@ -24,6 +24,7 @@ import threading
 import time
 
 from .errors import WeightDownloadCancelled
+from .weights import BundledSource
 
 #: Marker the app scans for on the feedback line, alongside PREDICT: and OBJPANEL:.
 #: The payload is a fixed set of scalar keys -- unlike the object panel's list, it cannot
@@ -70,7 +71,8 @@ class Fetch:
     def snapshot(self):
         """Thread-safe copy of the fields anything outside this module may read."""
         with _LOCK:
-            total = self.bundle.size or 0
+            # getattr: BundledSource carries no size -- it is never downloaded.
+            total = getattr(self.bundle, 'size', 0) or 0
             return {
                 'id': self.bundle.id,
                 'state': self.state,
@@ -107,12 +109,17 @@ def start(bundle, cache, on_marker=None):
                 and existing.cache.root == cache.root):
             return existing
 
-    if cache.is_cached(bundle):
+    # Weights that ship inside the app, and weights already on disk, both resolve with no
+    # thread at all. BundledSource is checked FIRST and resolved by delegating to ensure():
+    # it has no `version`, so cache.is_cached() -> path_for() would raise AttributeError on
+    # one. Nothing ships a BundledSource today, but Predictor.weight_bundle documents it as
+    # valid and #275 plans to use it, so this must not sit here as a landmine.
+    if isinstance(bundle, BundledSource) or cache.is_cached(bundle):
         fetch = Fetch(bundle, cache)
         fetch.state = 'done'
         fetch.phase = 'cached'
         fetch.fraction = 1.0
-        fetch.path = cache.path_for(bundle)
+        fetch.path = cache.ensure(bundle)
         with _LOCK:
             _FETCHES[bundle.id] = fetch
         return fetch
