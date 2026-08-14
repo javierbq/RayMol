@@ -17,10 +17,38 @@ it is shaped this way.
 | `modules/pymol/predictors/host.py` | transport to the Swift inference host |
 | `modules/pymol/predictors/_template.py` | copy-me skeleton |
 
+## Shipped predictors
+
+| id | weights | notes |
+|---|---|---|
+| `boltz2` | affine-int8, 507 MB | the default |
+| `boltz2-bf16` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+
+`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`.
+That works because `host.submit` sends `weights_dir` per job and the Swift runtime
+picks its matmul path from the artifact manifest — a dense pack declares no
+quantization block — so one runtime serves both with no host change. It needs
+boltz-mlx >= 0.2.0.
+
+It is **not** an upgrade. On an M3 Pro at 117 tokens, recycling 3 / 200 steps, dense
+bfloat16 costs 2x the disk, +63% peak RSS (620 MiB -> 1012 MiB) and +22% wall clock
+(14.50 s -> 17.76 s), because MLX's `quantizedMM` beats a dense fp16 matmul on these
+memory-bound shapes. And it buys no *demonstrated* accuracy: the two packs differ by
+3.1 A at a fixed seed, while the model's own seed-to-seed spread within int8 alone is
+4.9-7.0 A. Ranking them needs ground truth and many samples per condition. It exists so
+that experiment is possible on-device.
+
+Note also that the Boltz-2 checkpoint is float32 throughout — there are no original
+bfloat16 weights to load. Both dense widths are a narrowing of that float32, and
+float16 is the closer one at identical size (`--precision float16` exports it).
+
 ## Steps
 
 1. **Copy the template** to `modules/pymol/predictors/<your_id>.py` and pick a permanent
-   `id`. It appears in user scripts and saved sessions: treat it as API.
+   `id`. It appears in user scripts and saved sessions: treat it as API. Avoid making it
+   an *extension* of an existing id if you can: `boltz2-bf16` shares a prefix with
+   `boltz2`, so `predict b<Tab>` now stops at `boltz2` with no `, ` separator instead of
+   completing to a runnable command.
 
 2. **Write the tests first.** Add `testing/tests/predict/predict_<your_id>.py` subclassing
    `pymol.testing.PyMOLTestCase`. Do **not** name it `test_*.py` unless you want the pytest

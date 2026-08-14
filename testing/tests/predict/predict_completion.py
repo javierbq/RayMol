@@ -15,8 +15,15 @@ class TestPredictCompletion(testing.PyMOLTestCase):
     def testPredictOffersRegisteredPredictors(self):
         self.assertEqual(cmd._parser.complete('predict '), 'predict boltz2')
 
-    def testPartialPredictorNameCompletes(self):
-        self.assertEqual(cmd._parser.complete('predict b'), 'predict boltz2, ')
+    def testPartialPredictorNameCompletesAsFarAsItIsUnambiguous(self):
+        """'boltz2' is a PREFIX of 'boltz2-bf16', so Tab stops there with no separator.
+
+        The trailing ', ' only appears once one predictor is uniquely identified --
+        which for the shorter id means the user has to type the comma themselves.
+        """
+        self.assertEqual(cmd._parser.complete('predict b'), 'predict boltz2')
+        self.assertEqual(cmd._parser.complete('predict boltz2-'),
+                         'predict boltz2-bf16, ')
 
     def testPredictWeightsAlsoOffersPredictors(self):
         self.assertEqual(cmd._parser.complete('predict_weights '),
