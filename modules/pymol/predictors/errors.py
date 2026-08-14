@@ -40,3 +40,12 @@ class WeightBundleLayoutError(PredictionError):
 
 class WeightCacheUnwritable(PredictionError):
     """The cache directory cannot be written: permissions, or out of space."""
+
+
+class WeightDownloadCancelled(PredictionError):
+    """The user asked for the fetch to stop.
+
+    Distinct from WeightDownloadFailed on purpose: a cancel is an outcome the user
+    chose, so the UI must report it as such rather than as an error, and nothing
+    should offer to retry it automatically.
+    """

@@ -69,6 +69,19 @@ it is shaped this way.
 7. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
    main thread, so blocking stalls the render loop for the whole inference.
 
+   Nothing on that thread may block for long, and the reason is sharper than "the UI stutters":
+   the app drains PyMOL's feedback buffer from a **main-run-loop timer**, so a blocked main
+   thread cannot deliver even the messages describing why it is blocked. That is exactly how
+   #284 happened — the weight download ran inline and its own `download NN%` lines were
+   invisible until it had finished.
+
+   You get the weight fetch handled for you. `predictors/fetching.py` runs it on a thread and
+   `predicting.pump()` submits your job once the bytes land, so `submit` is simply called
+   later — still on the main thread, so it may use the session normally. The **worker** is the
+   thread with the hard restriction: filesystem and `print` only, never the PyMOL session,
+   because RayMol's Metal renderer reads object state on the main thread without taking
+   PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
+
 8. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
    changes outside your own.
 

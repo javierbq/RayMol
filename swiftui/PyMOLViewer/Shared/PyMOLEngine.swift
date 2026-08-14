@@ -34,6 +34,33 @@ struct SettingItem: Identifiable, Equatable, Codable {
     var id: String { name }
 }
 
+/// Progress of a model-weight download, decoded from the Python fetcher's
+/// `WEIGHTS:` marker (#284).
+///
+/// The key set is a contract with `pymol/predictors/fetching.py`. It is deliberately a
+/// handful of scalars: unlike the object panel's list it cannot grow with the session,
+/// so it stays far under PyMOL's 1024-char feedback-line cap and can ride the line
+/// inline instead of needing the tempfile dance OBJPANEL: uses.
+struct WeightsFetchState: Codable, Equatable {
+    /// Bundle id, e.g. "boltz2-mlx-int8".
+    let id: String
+    /// running | done | error | cancelled
+    let state: String
+    /// download | extract | cached
+    let phase: String
+    let fraction: Double
+    /// Bytes so far, and the bundle's total. Both 0 outside the download phase:
+    /// during extraction the fraction counts archive members, and a byte count
+    /// derived from it would be a plausible-looking lie.
+    let received: Int
+    let total: Int
+    let error: String?
+
+    var isRunning: Bool { state == "running" }
+    var isError: Bool { state == "error" }
+    var isExtracting: Bool { phase == "extract" }
+}
+
 /// The atom/residue under a long-press, for the iOS context menu. `isEmpty`
 /// means the press landed on background (no atom) → scene-level actions.
 struct LongPressHit: Equatable, Identifiable {
@@ -65,6 +92,11 @@ final class PyMOLEngine: ObservableObject {
     // delay so quick ops never flash it; busyLabel describes the operation.
     @Published var isBusy = false
     @Published var busyLabel = ""
+    // Model-weight download in flight, mirrored from the Python fetcher's WEIGHTS:
+    // marker (#284). nil means nothing to show. A FAILED fetch is deliberately left
+    // here after it settles, so the sheet can say why nothing happened rather than
+    // just vanishing; success and cancellation clear it.
+    @Published var weightsFetch: WeightsFetchState?
     @Published var sequenceVisible = false {
         // Showing the strip must (re)fetch the sequence data — toggling the
         // panel on (menu/toolbar) only flipped this bool, so the strip rendered
@@ -2576,6 +2608,32 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    // WEIGHTS:<json> — progress of a model-weight download (#284).
+    //
+    // The fetch runs on a Python thread precisely so this poll can still fire while it
+    // is in flight; before that, the download ran on the main thread and starved the
+    // very timer that would have shown its progress.
+    private func parseWeightsFeedback(_ line: String) {
+        let body = String(line.dropFirst("WEIGHTS:".count))
+        guard let data = body.data(using: .utf8),
+              let state = try? JSONDecoder().decode(WeightsFetchState.self, from: data)
+        else { return }
+        DispatchQueue.main.async {
+            // Hold an error on screen (the sheet offers Dismiss); a completed or
+            // cancelled fetch just goes away, because the user already knows.
+            self.weightsFetch = (state.state == "running" || state.state == "error")
+                ? state : nil
+        }
+    }
+
+    /// Stop every in-flight weight download. Wired to the progress sheet's Cancel.
+    func cancelWeightsDownload() {
+        // Through the command layer rather than a direct bridge call, so it is echoed
+        // in the console like any other command and shares the same parsing.
+        runCommand("predict_weights_cancel")
+        weightsFetch = nil
+    }
+
     // Parse MEASURE:<json> {kind,count,need,value?} → measureStatus text.
     func parseMeasureFeedback(_ line: String) {
         let js = String(line.dropFirst("MEASURE:".count))
@@ -2994,6 +3052,12 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("SETVAL:") {
                     parseSetValFeedback(line)
+                } else if line.hasPrefix("WEIGHTS:") {
+                    // Model-weight download progress (#284). NOT inside an os(macOS)
+                    // guard like PREDICT: below — WeightCache is plain Python and the
+                    // sheet is platform-neutral, so gating it here would leave iOS
+                    // silently frozen the day a downloadable bundle ships there.
+                    parseWeightsFeedback(line)
                 } else if line.hasPrefix("PREDICT:") {
                     // Structure prediction (#224). cmd.predict writes a request JSON to
                     // the temp dir and prints this marker; there is no Python->Swift call

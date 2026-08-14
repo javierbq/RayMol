@@ -286,6 +286,15 @@ struct ContentView: View {
         if engine.isBusy {
             CalculatingOverlay(label: engine.busyLabel)
         }
+        // Model-weight download (#284). Above the busy overlay in the same stack, and
+        // deliberately NOT gated on isBusy: the fetch runs on its own thread, so the
+        // app is fully usable while it is on screen.
+        if let fetch = engine.weightsFetch {
+            WeightDownloadOverlay(
+                fetch: fetch,
+                onCancel: { engine.cancelWeightsDownload() },
+                onDismiss: { engine.weightsFetch = nil })
+        }
         #if RAYMOL_MPNN
         // Design inference blocks input like a long PyMOL op. Rendered by a dedicated
         // view that OBSERVES the controller — see DesignBusyOverlayView.
@@ -4401,6 +4410,92 @@ private struct DesignBusyOverlayView: View {
 // Dimmed scrim + centered card shown while a long PyMOL op runs. The scrim
 // captures hits so no conflicting command can be issued mid-operation (which
 // also keeps the selectively-backgrounded heavy ops correctly ordered).
+/// Progress card for a model-weight download (#284).
+///
+/// The card this replaces did not exist: the first `predict` on a cold cache downloaded
+/// half a gigabyte on the main thread, so the window simply froze — and the progress
+/// messages the Python side was dutifully writing could not be drained until the
+/// download they described had already finished.
+///
+/// Unlike `CalculatingOverlay` there is no blocking scrim. The fetch runs on its own
+/// thread and blocks nothing, so the card must not pretend otherwise: it sits in a
+/// corner, and the rest of the app stays live underneath it.
+struct WeightDownloadOverlay: View {
+    let fetch: WeightsFetchState
+    let onCancel: () -> Void
+    let onDismiss: () -> Void
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.allowedUnits = [.useMB, .useGB]
+        return f
+    }()
+
+    private var title: String {
+        fetch.isError ? "Model weights failed to download" : "Downloading model weights"
+    }
+
+    // Bytes are only meaningful while downloading — see WeightsFetchState.received.
+    private var detail: String {
+        if fetch.isError { return fetch.error ?? "Unknown error" }
+        if fetch.isExtracting { return "Unpacking \(fetch.id)…" }
+        guard fetch.total > 0 else { return fetch.id }
+        let done = Self.byteFormatter.string(fromByteCount: Int64(fetch.received))
+        let total = Self.byteFormatter.string(fromByteCount: Int64(fetch.total))
+        return "\(done) of \(total)"
+    }
+
+    var body: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                card.padding(20)
+            }
+        }
+        .allowsHitTesting(true)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: fetch.isError
+                      ? "exclamationmark.triangle.fill"
+                      : "arrow.down.circle")
+                    .foregroundStyle(fetch.isError ? .orange : .secondary)
+                Text(title).font(.headline)
+            }
+            if !fetch.isError {
+                // Determinate: the fetcher reports a real fraction for both phases,
+                // which is the entire difference between this and a spinner.
+                ProgressView(value: min(max(fetch.fraction, 0), 1))
+                    .progressViewStyle(.linear)
+                    .frame(width: 260)
+            }
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 260, alignment: .leading)
+            HStack {
+                Spacer()
+                if fetch.isError {
+                    Button("Dismiss", action: onDismiss)
+                } else {
+                    Button("Cancel", action: onCancel)
+                }
+            }
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(.secondary.opacity(0.25)))
+        .shadow(radius: 8)
+    }
+}
+
 struct CalculatingOverlay: View {
     let label: String
     var body: some View {

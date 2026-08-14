@@ -35,7 +35,8 @@ from .predicting import \
       predict_status,       \
       predict_cancel,       \
       predict_result,       \
-      predict_weights
+      predict_weights,      \
+      predict_weights_cancel
 
 #--------------------------------------------------------------------
 from . import creating
