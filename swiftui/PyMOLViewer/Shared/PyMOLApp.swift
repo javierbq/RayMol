@@ -235,8 +235,13 @@ struct PyMOLApp: App {
                 }.keyboardShortcut("e", modifiers: [.command, .shift])
                 // ⌘C as a real menu command (not a toolbar-Menu button) so the
                 // shortcut fires reliably; mirrors how Export Image works above.
+                // A menu key equivalent outranks the responder chain, so route
+                // through CopyRouting: a live text selection (console log, command
+                // line) copies as text and the image copy is the fallback (#287).
                 Button("Copy Image to Clipboard") {
-                    NotificationCenter.default.post(name: .raymolCopyImage, object: nil)
+                    CopyRouting.perform {
+                        NotificationCenter.default.post(name: .raymolCopyImage, object: nil)
+                    }
                 }.keyboardShortcut("c", modifiers: .command)
                 Divider()
                 Button("Clear Session") {
