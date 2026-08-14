@@ -85,6 +85,15 @@ def default_object_name(sequence, predictor_id=''):
     return '%s_%s' % (method, stem) if method else stem
 
 
+def job_ids():
+    """Ids of every job submitted this session, newest last.
+
+    Public because the command-line completer offers them for predict_status /
+    predict_cancel / predict_result, and a completer must not reach into _JOBS.
+    """
+    return list(_JOBS)
+
+
 def pending_objects():
     """Copy of the pending map: object name -> LIST of outstanding job ids.
 
