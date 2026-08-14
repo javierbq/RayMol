@@ -10,7 +10,7 @@ copies the function verbatim so it silently drives the GLOBAL instance.
 import sys
 
 from . import colorprinting
-from .predictors import registry
+from .predictors import fetching, registry
 from .predictors.base import PredictionOptions  # noqa: F401  (re-export for callers)
 from .predictors.errors import PredictionOptionError
 from .predictors.weights import WeightCache
@@ -156,9 +156,172 @@ def discard_pending(name, _self=cmd):
 
 
 def clear_pending(_self=cmd):
-    """Drop every placeholder. Used on quit and by tests."""
+    """Drop every placeholder, and anything that would create another.
+
+    Stopping the weight fetches is not optional here: a deferred job outlives its
+    placeholder, so clearing the placeholders alone would let the next pump() put them
+    straight back. Dropping the deferred jobs matters for the same reason.
+    """
+    fetching.shutdown()
+    for job_id, job in list(_JOBS.items()):
+        if isinstance(job, _DeferredJob):
+            _JOBS.pop(job_id, None)
     for name in list(_PENDING):
         discard_pending(name, _self=_self)
+
+
+# -- Deferred submit: jobs waiting on a weight download ------------------------
+#
+# The fetch runs on a thread (see predictors/fetching.py) and MAY NOT touch the session.
+# So a prediction whose weights are cold cannot be submitted where it was asked for --
+# it becomes a _DeferredJob, and pump() finishes the job of submitting it once the bytes
+# have landed. pump() is main-thread-only and is driven by the object panel's existing
+# 500 ms poll in the app, and by predict_status / predict_result elsewhere.
+
+
+class _DeferredJob:
+    """A prediction that is waiting for its weights.
+
+    Presents the same surface as a real job -- job_id, status(), cancel(), spec, options
+    -- so predict_status, predict_cancel, predict_result and the object panel need to
+    know nothing about deferral. Once submitted it forwards everything to the real job.
+
+    `job_id` is this handle's own id, NOT the host's: the host allocates its id inside
+    submit(), which has not run yet at the point the caller needs something to hold. The
+    two never need to agree, because every host-side path is keyed by the host's id
+    (status file, cancel marker) and every session-side path by the object name.
+    """
+
+    __slots__ = ('job_id', 'spec', 'options', 'object_name', '_predictor',
+                 '_bundle', '_real', '_error', '_cancelled', '_reaped')
+
+    def __init__(self, spec, options, predictor, bundle, object_name):
+        import uuid
+        self.job_id = 'pending-%s' % uuid.uuid4().hex[:12]
+        self.spec = spec
+        self.options = options
+        self.object_name = object_name
+        self._predictor = predictor
+        self._bundle = bundle
+        self._real = None
+        self._error = None
+        self._cancelled = False
+        self._reaped = False
+
+    @property
+    def submitted(self):
+        return self._real is not None
+
+    @property
+    def settled(self):
+        """True once the outcome is known -- submitted, failed or cancelled.
+
+        NOT the same as reaped: cancel() settles a job from whatever thread the command
+        came in on, but taking its placeholder back down is session work and has to wait
+        for pump(). A job can therefore be settled and still need one more pump.
+        """
+        return (self._real is not None or self._error is not None
+                or self._cancelled)
+
+    def status(self):
+        if self._real is not None:
+            return self._real.status()
+        base = {'state': 'running', 'phase': 'weights', 'fraction': 0.0,
+                'error': None, 'result_path': None,
+                'peak_bytes': None, 'elapsed_s': None}
+        if self._error is not None:
+            base.update(state='error', error=self._error)
+            return base
+        if self._cancelled:
+            base.update(state='cancelled')
+            return base
+        fetch = fetching.get(self._bundle.id)
+        if fetch is not None:
+            snap = fetch.snapshot()
+            # Report the fetch's phase (download/extract) rather than a flat "weights",
+            # so the panel's hover line and predict_status say which half is slow.
+            base.update(phase=snap['phase'], fraction=snap['fraction'])
+        return base
+
+    def cancel(self):
+        """Cancel the prediction, or -- if it has not started -- the download itself.
+
+        Cancelling the fetch cancels it for EVERY job waiting on the same bundle, which
+        is correct: there is one transfer, and no way to abandon it for one caller while
+        another still needs it. Each waiting job is then settled by pump().
+        """
+        if self._real is not None:
+            self._real.cancel()
+        else:
+            self._cancelled = True
+            fetching.cancel(self._bundle.id)
+
+    def advance(self, _self=cmd):
+        """Main-thread half of the job: submit once the weights are there, or clean up.
+
+        Returns True when this job is fully reaped and needs no further pumping. Every
+        line here touches the session, which is precisely why the fetch worker cannot
+        do any of it.
+        """
+        if self._reaped:
+            return True
+        # Cancelled through predict_cancel / predict_weights_cancel rather than by the
+        # worker noticing: the outcome is already decided, but the placeholder is still
+        # standing and only this thread may remove it.
+        if self._cancelled or self._error is not None:
+            self._reaped = True
+            discard_pending(self.object_name, _self=_self)
+            return True
+        fetch = fetching.get(self._bundle.id)
+        if fetch is None:
+            # The record was forgotten out from under us (only forget() does this, and
+            # only in tests). Nothing can complete this job, so fail it visibly rather
+            # than leave it running forever.
+            self._error = 'weight fetch for %s disappeared' % self._bundle.id
+            self._reaped = True
+            discard_pending(self.object_name, _self=_self)
+            return True
+        snap = fetch.snapshot()
+        if snap['state'] == 'running':
+            return False
+        self._reaped = True
+        if snap['state'] in ('cancelled', 'error'):
+            if snap['state'] == 'cancelled':
+                self._cancelled = True
+            else:
+                self._error = snap['error'] or 'weight fetch failed'
+            # Take the placeholder back down. It only goes if it is still empty, so a
+            # sibling model that landed first is never destroyed. One call clears the
+            # whole name -- with n_models every job waits on the SAME fetch, so they
+            # all fail together and the later calls are no-ops.
+            discard_pending(self.object_name, _self=_self)
+            return True
+        # register_pending already ran in predict(); the placeholder is up and this job
+        # is already recorded against it, so submitting is all that is left.
+        self._real = self._predictor.submit(self.spec, self.options, fetch.path)
+        return True
+
+
+def pump(_self=cmd):
+    """Advance every deferred job. MAIN THREAD ONLY -- it creates session objects.
+
+    Cheap and idempotent by design: it is called from the object panel's 500 ms poll, so
+    it must stay a few dict lookups when there is nothing to do. Never raises; a failure
+    here would break the poll that drives the whole panel.
+
+    Returns the number of jobs that were reaped by this call.
+    """
+    settled = 0
+    for job in list(_JOBS.values()):
+        if not isinstance(job, _DeferredJob) or job._reaped:
+            continue
+        try:
+            if job.advance(_self=_self):
+                settled += 1
+        except Exception as exc:
+            colorprinting.warning(' predict: could not start job %s (%s)'
+                                  % (job.job_id, exc))
+    return settled
 
 
 def deliver_result(path, name, seed=None, _self=cmd):
@@ -300,15 +463,18 @@ NOTES
     Budget accordingly: five models of a 600-residue target is roughly an hour.
     The runs are sequential, so peak memory is that of ONE model, not N.
 
-    THE FIRST CALL BLOCKS. Inference itself is asynchronous, but a predictor whose
-    weights are not yet cached downloads them synchronously first -- for boltz2 that
-    is a ~505 MiB download plus extraction, minutes on a slow link, and it runs on
-    the calling thread. From the command line that is the main thread, so the window
-    will not redraw until it finishes. Pre-warm the cache instead:
+    THE FIRST CALL DOWNLOADS WEIGHTS, in the background. A predictor whose weights
+    are not yet cached needs them fetched first -- for boltz2 a ~505 MiB download
+    plus extraction, minutes on a slow link. That runs on its own thread and this
+    command returns immediately; each job sits in phase "download"/"extract" and is
+    submitted automatically once the bundle lands. In the app a progress sheet
+    tracks it. Watch it from a script with predict_status, stop it with
+    predict_weights_cancel, or pre-warm the cache up front with:
 
         predict_weights boltz2, download=1
 
-    Subsequent calls hit the cache and return promptly.
+    Nothing is left behind if the fetch fails or is cancelled: the object is only
+    created at the moment the prediction is actually submitted.
 
 SEE ALSO
 
@@ -351,25 +517,6 @@ SEE ALSO
         requested['diffusion_samples'] = diffusion_samples
     options = predictor_obj.validate_options(requested)
 
-    weights_path = None
-    bundle = predictor_obj.weight_bundle
-    if bundle is not None:
-        cache = weight_cache()
-        # Warn regardless of `quiet`: this is the one blocking step in an otherwise
-        # asynchronous API, and staying silent while the main thread stalls on a
-        # half-gigabyte download looks like a hang rather than progress.
-        if not cache.is_cached(bundle):
-            colorprinting.warning(
-                ' predict: fetching %s weights (%.0f MB) before the first run; this'
-                ' blocks until complete. Pre-warm with "predict_weights %s, download=1".'
-                % (predictor_obj.id, (bundle.size or 0) / 1e6, predictor_obj.id))
-
-        def report(phase, fraction):
-            if not int(quiet):
-                colorprinting.parrot(' predict: %s %d%%'
-                                   % (phase, int(fraction * 100)))
-        weights_path = cache.ensure(bundle, progress=report)
-
     # Resolve the object name BEFORE submitting: the host needs it to load the result,
     # and the placeholder has to exist by the time this call returns so the panel shows
     # the job immediately rather than after the first poll.
@@ -377,6 +524,34 @@ SEE ALSO
                    default_object_name(sequence, predictor_obj.id))
     # PredictionSpec is a __slots__ class, not a namedtuple: assign, don't _replace.
     spec.name = object_name
+
+    # Weights, without blocking (#284). A cold cache used to be fetched inline, which
+    # froze the app for the whole half-gigabyte transfer AND made the progress messages
+    # describing it unrenderable -- the app drains feedback from a main-run-loop timer
+    # that a blocked main thread never lets fire. So a cold cache starts a background
+    # fetch and the jobs are deferred until it lands; a warm cache is unchanged and
+    # still submits immediately, which is every call after the first.
+    weights_path = None
+    fetch = None
+    bundle = predictor_obj.weight_bundle
+    if bundle is not None:
+        # One entry point for all three cases -- already cached, bundled inside the app,
+        # or needs downloading -- so this cannot drift from what fetching.start() knows.
+        # In particular BundledSource has no `version`, so reaching for is_cached() here
+        # instead would raise AttributeError on it.
+        started = fetching.start(bundle, weight_cache())
+        if started.state == 'done':
+            weights_path = started.path
+        else:
+            fetch = started
+            # Warn regardless of `quiet`: nothing else tells a command-line user why
+            # their prediction has not started, and the app's progress sheet is driven
+            # by the marker rather than by this line.
+            colorprinting.warning(
+                ' predict: fetching %s weights (%.0f MB) in the background; the'
+                ' prediction starts on its own when they land. Cancel with'
+                ' "predict_weights_cancel %s".'
+                % (predictor_obj.id, (bundle.size or 0) / 1e6, predictor_obj.id))
 
     jobs = []
     for index in range(count):
@@ -389,14 +564,23 @@ SEE ALSO
             import random
             model_options = predictor_obj.validate_options(
                 dict(requested, seed=random.randrange(RANDOM_SEED_BOUND)))
-        job = predictor_obj.submit(spec, model_options, weights_path)
+        if fetch is not None:
+            job = _DeferredJob(spec, model_options, predictor_obj, bundle, object_name)
+        else:
+            job = predictor_obj.submit(spec, model_options, weights_path)
         _JOBS[job.job_id] = job
+        # The placeholder goes up for a deferred job too, so the object panel shows the
+        # download the same way it shows inference -- pending_detail reads the phase off
+        # the job, which reports "download"/"extract" until the real one takes over. If
+        # the fetch fails or is cancelled, pump() takes the placeholder back down.
         register_pending(object_name, job.job_id, _self=_self)
         jobs.append(job)
         if not int(quiet):
             colorprinting.parrot(
-                ' predict: job %s submitted, will load as %s model %d (seed %d)'
-                % (job.job_id, object_name, index + 1, model_options.seed))
+                ' predict: job %s %s, will load as %s model %d (seed %d)'
+                % (job.job_id,
+                   'waiting on weights' if fetch is not None else 'submitted',
+                   object_name, index + 1, model_options.seed))
 
     # A single job for the default, a list when several were asked for. Keeping the
     # scalar for n_models=1 means existing callers and `job.job_id` keep working.
@@ -417,6 +601,10 @@ SEE ALSO
 
     predict
     """
+    # Polling predict_status is what a script does while it waits, so it doubles as the
+    # main-thread pump that submits jobs whose weights have arrived. The app also pumps
+    # from the object panel's 500 ms poll, so neither environment depends on the other.
+    pump(_self=_self)
     if job_id:
         jobs = {job_id: _job(job_id)}
     else:
@@ -445,6 +633,9 @@ SEE ALSO
     predict
     """
     _job(job_id).cancel()
+    # Reap now: a job cancelled before its weights arrived still has a placeholder
+    # standing, and only the main thread may take it down.
+    pump(_self=_self)
     if not int(quiet):
         colorprinting.parrot(' predict: cancel requested for %s' % job_id)
 
@@ -464,6 +655,7 @@ SEE ALSO
     predict, predict_status
     """
     from .predictors.errors import PredictionError
+    pump(_self=_self)
     job = _job(job_id)
     status = job.status()
     if status.get('state') != 'done':
@@ -479,7 +671,7 @@ SEE ALSO
     return object_name
 
 
-def predict_weights(predictor='', download=0, quiet=1, _self=cmd):
+def predict_weights(predictor='', download=0, async_=-1, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -488,14 +680,36 @@ DESCRIPTION
 
 USAGE
 
-    predict_weights [ predictor [, download ]]
+    predict_weights [ predictor [, download [, async_ ]]]
+
+ARGUMENTS
+
+    predictor = str: id of a registered predictor {default: '', meaning all}
+
+    download = 0/1: fetch any bundle that is not cached {default: 0}
+
+    async_ = 0/1/-1: whether to return before the download finishes. -1 chooses:
+    asynchronous inside the RayMol application, where blocking the calling thread
+    would freeze the window, and synchronous otherwise, which is what a script
+    pre-warming the cache wants. {default: -1}
+
+NOTES
+
+    Progress is reported either way -- as a percentage on the command line, and as
+    the application's progress sheet. Stop a running fetch with
+    "predict_weights_cancel".
 
 SEE ALSO
 
-    predict
+    predict, predict_weights_cancel
     """
+    from .predictors import host
     cache = weight_cache()
     ids = [predictor] if predictor else registry.available()
+    # -1 means "decide": a UI thread must never block on a half-gigabyte transfer,
+    # while a headless script calling this to pre-warm the cache is asking to wait.
+    # PyMOL's own `fetch` resolves its async_ default the same way.
+    wait = not host.available() if int(async_) < 0 else not int(async_)
     out = {}
     for pid in ids:
         bundle = registry.get(pid).weight_bundle
@@ -503,7 +717,9 @@ SEE ALSO
             out[pid] = {'cached': True, 'path': None, 'bundle': None}
             continue
         if int(download) and not cache.is_cached(bundle):
-            cache.ensure(bundle)
+            fetching.start(bundle, cache)
+            if wait:
+                _wait_for_fetch(bundle, quiet)
         out[pid] = {'cached': bool(cache.is_cached(bundle)),
                     'path': cache.path_for(bundle),
                     'bundle': bundle.id}
@@ -511,6 +727,90 @@ SEE ALSO
             colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))
     return out
+
+
+def _wait_for_fetch(bundle, quiet, _poll=0.1):
+    """Block until a fetch settles, printing progress as it goes.
+
+    Only ever called on a thread that is allowed to block -- see predict_weights's
+    async_ resolution. The progress lines are printed HERE, by the waiting thread,
+    rather than by the worker: on the command line they are the only progress the user
+    gets, and printing them from the waiting thread keeps them ordered with whatever
+    else that thread is writing.
+    """
+    fetch = fetching.get(bundle.id)
+    if fetch is None:
+        return
+    shown = -1
+    while True:
+        snap = fetch.snapshot()
+        if not int(quiet):
+            step = int(snap['fraction'] * 100) // 10 * 10
+            if step != shown and snap['state'] == 'running':
+                shown = step
+                colorprinting.parrot(' predict: %s %d%%' % (snap['phase'], step))
+        if snap['state'] != 'running':
+            break
+        if fetch.thread is None:
+            break
+        fetch.thread.join(_poll)
+    snap = fetch.snapshot()
+    if snap['state'] == 'error':
+        from .predictors.errors import WeightDownloadFailed
+        # Re-raised on the CALLING thread: the worker has no caller to propagate to, so
+        # without this a `predict_weights ..., download=1` that failed would return a
+        # cheerful cached=False and look like a no-op.
+        raise WeightDownloadFailed(snap['error'] or 'weight fetch failed')
+    if snap['state'] == 'cancelled' and not int(quiet):
+        colorprinting.warning(' predict: fetch of %s weights cancelled' % bundle.id)
+
+
+def predict_weights_cancel(predictor='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "predict_weights_cancel" stops an in-progress model-weight download.
+
+USAGE
+
+    predict_weights_cancel [ predictor ]
+
+NOTES
+
+    Cancellation is cooperative and observed between 1 MiB chunks, so it takes
+    effect almost immediately. Nothing partial is kept: the next attempt starts
+    over rather than resuming.
+
+    A bundle is fetched ONCE however many predictions are waiting on it, so
+    cancelling stops all of them. Each then settles as "cancelled" and no object
+    is created for it.
+
+SEE ALSO
+
+    predict, predict_weights
+    """
+    bundle_id = ''
+    if predictor:
+        bundle = registry.get(predictor).weight_bundle
+        if bundle is None:
+            if not int(quiet):
+                colorprinting.parrot(' predict: %s has no downloadable weights'
+                                     % predictor)
+            return 0
+        bundle_id = bundle.id
+    stopped = fetching.cancel(bundle_id)
+    # Settle the waiting jobs HERE rather than leaving it to the next pump. The worker
+    # only notices the flag at its next chunk boundary, so a job that waited for the
+    # fetch's own state to flip would keep reporting "running" for up to one 1 MiB read
+    # after the user pressed Cancel -- long enough to look like the button did nothing.
+    for job in list(_JOBS.values()):
+        if (isinstance(job, _DeferredJob) and not job.settled
+                and (not bundle_id or job._bundle.id == bundle_id)):
+            job.cancel()
+    pump(_self=_self)
+    if not int(quiet):
+        colorprinting.parrot(' predict: cancelled %d weight download(s)' % stopped)
+    return stopped
 
 
 def _job(job_id):
