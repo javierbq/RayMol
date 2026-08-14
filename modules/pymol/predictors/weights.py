@@ -21,7 +21,8 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .errors import (WeightBundleLayoutError, WeightCacheUnwritable,
-                     WeightChecksumMismatch, WeightDownloadFailed)
+                     WeightChecksumMismatch, WeightDownloadCancelled,
+                     WeightDownloadFailed)
 
 #: Written LAST, holds the verified digest. Its content -- not the directory's
 #: existence -- is what makes a cache valid.
@@ -186,10 +187,21 @@ class WeightCache:
     def _release_lock(self, bundle):
         _unlink(self._lock_path(bundle))
 
-    def ensure(self, bundle, progress=None):
+    def ensure(self, bundle, progress=None, should_cancel=None):
         """Return a local directory holding `bundle`, downloading it if needed.
 
         Bundles that ship inside the app resolve without any network access.
+
+        `should_cancel` is polled between chunks and between archive members; when it
+        returns true this raises WeightDownloadCancelled. Cancellation is checked at
+        those boundaries only, so the worst-case latency is one 1 MiB read -- there is
+        no way to interrupt a socket read already in flight, and the alternative
+        (closing the socket underneath urllib) surfaces as a misleading transport
+        error rather than as the cancel the user asked for.
+
+        Nothing partial survives either way: the `finally` below removes the scratch
+        file and staging directory, and the sentinel that makes a cache valid is only
+        written by _publish.
         """
         if isinstance(bundle, BundledSource):
             return bundle.resolve()
@@ -215,8 +227,8 @@ class WeightCache:
             # were blocked, in which case re-downloading is pure waste.
             if self.is_cached(bundle):
                 return target
-            self._download(bundle, part, progress)
-            self._extract(bundle, part, staging, progress)
+            self._download(bundle, part, progress, should_cancel)
+            self._extract(bundle, part, staging, progress, should_cancel)
             self._publish(bundle, staging, target)
         finally:
             _rmtree(staging)
@@ -224,11 +236,14 @@ class WeightCache:
             self._release_lock(bundle)
         return target
 
-    def _download(self, bundle, part, progress):
+    def _download(self, bundle, part, progress, should_cancel=None):
         """Stream to `part`, hashing as we go, and verify before anything is published."""
         digest = hashlib.sha256()
         received = 0
         expected = bundle.size or 0
+        # Before opening the socket at all: a cancel that arrives while this caller was
+        # queued on the lock should cost nothing.
+        _raise_if_cancelled(should_cancel, bundle)
         try:
             request = Request(bundle.url, headers={'User-Agent': 'RayMol'})
             with _urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
@@ -243,6 +258,9 @@ class WeightCache:
                         if progress and expected:
                             progress('download',
                                      min(1.0, float(received) / expected))
+                        # After the write, not before: a cancelled chunk is still
+                        # hashed and written, so `received` never overstates the file.
+                        _raise_if_cancelled(should_cancel, bundle)
         except URLError as exc:
             _unlink(part)
             raise WeightDownloadFailed(
@@ -262,7 +280,7 @@ class WeightCache:
                 'checksum mismatch for %s: expected %s, got %s'
                 % (bundle.id, bundle.sha256, actual))
 
-    def _extract(self, bundle, part, staging, progress):
+    def _extract(self, bundle, part, staging, progress, should_cancel=None):
         """Extract to staging, then assert the layout is exactly what was declared."""
         _rmtree(staging)
         try:
@@ -277,6 +295,7 @@ class WeightCache:
                     archive.extract(name, staging)
                     if progress:
                         progress('extract', float(index + 1) / len(names))
+                    _raise_if_cancelled(should_cancel, bundle)
         except zipfile.BadZipFile as exc:
             raise WeightBundleLayoutError(
                 'bundle %s is not a readable zip: %s' % (bundle.id, exc))
@@ -296,6 +315,18 @@ class WeightCache:
             _rmtree(target)
             raise WeightCacheUnwritable(
                 'cannot publish %s: %s' % (target, exc))
+
+
+def _raise_if_cancelled(should_cancel, bundle):
+    """Abort the fetch if the caller asked it to stop.
+
+    WeightDownloadCancelled is a pymol.CmdException, so it passes straight through the
+    URLError/OSError handlers around the transfer loops instead of being reclassified as
+    a download failure -- a cancel must never be reported to the user as an error.
+    """
+    if should_cancel is not None and should_cancel():
+        raise WeightDownloadCancelled(
+            'fetch of %s weights was cancelled' % bundle.id)
 
 
 def _read_pid(path):

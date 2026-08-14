@@ -471,6 +471,16 @@ def poll_panel():
     prefix-less continuation leaked into the console on every poll tick. Keep the
     payload off the feedback line entirely and emit only `OBJPANEL:ready`."""
     import json, os, tempfile
+    # Structure prediction's main-thread pump (#284). A prediction whose weights are
+    # still downloading is submitted from HERE, because the download runs on a thread
+    # that must not touch the session. Done before the object list is gathered, so a
+    # placeholder created by the pump shows up in this same tick rather than the next.
+    # Its own try: a failure must not cost the panel its update.
+    try:
+        from pymol import predicting
+        predicting.pump()
+    except Exception:
+        pass
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])

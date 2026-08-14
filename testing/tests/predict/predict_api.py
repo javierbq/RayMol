@@ -18,9 +18,34 @@ if _HERE not in sys.path:
 from predict_weights_download import FakeResponse, make_zip
 
 
+def settle(bundle_id='stub', timeout=10.0):
+    """Wait out the background weight fetch, then run the main-thread pump.
+
+    cmd.predict no longer downloads inline (#284): a cold cache starts a worker thread
+    and the job is submitted later, by pump(), on the main thread. Tests therefore have
+    to do explicitly what the app's 500 ms panel poll does for it.
+
+    CALL THIS INSIDE the `with patch(_urlopen)` block. The worker outlives the call that
+    started it, so a patch that has already exited leaves the thread reaching for the
+    real URL -- which is how these tests first failed, with a DNS error for
+    example.invalid raised from a completely unrelated test.
+    """
+    from pymol import predicting
+    from pymol.predictors import fetching
+    fetching.join(bundle_id, timeout=timeout)
+    predicting.pump()
+
+
 class StubJob:
+    _counter = 0
+
     def __init__(self, spec, options, weights_path):
-        self.job_id = 'stub-1'
+        # Unique per job, like every real predictor's. A constant id here used to make
+        # _JOBS a single overwritten slot, which silently hid the fact that jobs leak
+        # across tests -- predict_status() with no argument walks them all, and a job
+        # from an earlier test points at a temp root that tearDown has since deleted.
+        StubJob._counter += 1
+        self.job_id = 'stub-%d' % StubJob._counter
         self.spec = spec
         self.options = options
         self.weights_path = weights_path
@@ -83,7 +108,17 @@ class PredictAPITest(testing.PyMOLTestCase):
         install_stub(self.root, self.digest, len(self.data))
 
     def tearDown(self):
+        from pymol import predicting
         from pymol.predictors import registry
+        # Before anything else, and before the temp root is removed: a live worker is
+        # still writing into <root>/.incoming, which makes the rmtree below fail
+        # intermittently, and would carry this test's stub predictor into the next one.
+        predicting.clear_pending()
+        # _JOBS is process-global and deliberately never forgets a finished job -- a
+        # user must still be able to ask about one. Tests do not get that luxury: a job
+        # surviving into the next test holds a weights_path under the temp root about
+        # to be deleted, and predict_status() with no argument walks every job there is.
+        predicting._JOBS.clear()
         registry._REGISTRY.clear()
         registry._REGISTRY.update(self._saved)
         os.environ.pop('RAYMOL_WEIGHTS_DIR', None)
@@ -94,6 +129,7 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)) as opener:
             job = cmd.predict('stub', 'AA', name='pred')
+            settle()
             self.assertEqual(opener.call_count, 1, 'weights fetched lazily, once')
         self.assertEqual(job.status()['state'], 'done')
         name = cmd.predict_result(job.job_id, 'pred')
@@ -105,9 +141,11 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             cmd.predict('stub', 'AA')
+            settle()
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not re-download')):
             cmd.predict('stub', 'AA')
+            settle()
 
     def testUnknownPredictorRaises(self):
         from pymol.predictors.errors import PredictorNotFound
@@ -117,6 +155,7 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             job = cmd.predict('stub', 'AA', diffusion_steps=300, seed=7)
+            settle()
         self.assertEqual(job.options.diffusion_steps, 300)
         self.assertEqual(job.options.seed, 7)
         self.assertEqual(job.options.recycling_steps, 3)
@@ -147,6 +186,7 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             cmd.predict('stub', 'AA')
+            settle()
         self.assertTrue(cmd.predict_weights('stub')['stub']['cached'])
 
     def testPredictWeightsPrefetchesOnDemand(self):
@@ -166,6 +206,7 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             job = cmd.predict('stub', 'AA/GG')
+            settle()
         self.assertEqual(job.spec.chains, (('A', 'AA'), ('B', 'GG')))
 
     def testPredictIsRegisteredAsACommandKeyword(self):
@@ -186,18 +227,24 @@ class PredictAPITest(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             job = cmd.predict('stub', 'AA', quiet=0)
+            settle()
         self.assertEqual(job.status()['state'], 'done')
 
     def testProgressReportingPathIsExercised(self):
-        """quiet=0 routes WeightCache progress through the reporting callback."""
+        """A chunked body drives the worker's progress callback and its marker."""
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data, chunk=4)):
             cmd.predict('stub', 'AA', quiet=0)
+            settle()
 
     def testStatusCancelResultAndWeightsAreVerboseWithoutRaising(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             job = cmd.predict('stub', 'AA', name='verbose', quiet=0)
+            # Settle first: cancelling a job whose weights are still in flight now
+            # really does cancel it, and predict_result below would (correctly) refuse
+            # to load a cancelled job.
+            settle()
         cmd.predict_status(job.job_id, quiet=0)
         cmd.predict_status(quiet=0)
         cmd.predict_cancel(job.job_id, quiet=0)

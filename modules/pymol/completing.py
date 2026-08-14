@@ -112,6 +112,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'align'          : aa_sel_c,
         'predict'        : aa_predictor_c,
         'predict_weights': aa_predictor_c,
+        'predict_weights_cancel': aa_predictor_c,
         'predict_status' : aa_predict_job_c,
         'predict_cancel' : aa_predict_job_c,
         'predict_result' : aa_predict_job_c,
