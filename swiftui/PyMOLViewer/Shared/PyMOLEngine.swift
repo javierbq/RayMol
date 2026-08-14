@@ -54,11 +54,30 @@ struct WeightsFetchState: Codable, Equatable {
     /// derived from it would be a plausible-looking lie.
     let received: Int
     let total: Int
+    /// Seconds since the transfer began. Optional so a payload from an older Python
+    /// side still decodes — a missing ETA is a cosmetic loss, a failed decode would
+    /// take the whole progress sheet with it.
+    let elapsed: Double?
     let error: String?
 
     var isRunning: Bool { state == "running" }
     var isError: Bool { state == "error" }
     var isExtracting: Bool { phase == "extract" }
+
+    /// Seconds remaining, from the AVERAGE rate so far, or nil when it cannot be
+    /// estimated honestly (no elapsed, nothing received yet, or not downloading).
+    ///
+    /// Average rather than instantaneous on purpose: chunk-to-chunk timings jitter
+    /// enough that an instantaneous estimate swings between wildly different numbers.
+    /// Suppressed for the first second, where the divisor is small enough to produce
+    /// an absurd figure.
+    var secondsRemaining: Double? {
+        guard phase == "download", total > 0, received > 0,
+              let elapsed, elapsed > 1.0 else { return nil }
+        let rate = Double(received) / elapsed
+        guard rate > 0 else { return nil }
+        return Double(total - received) / rate
+    }
 }
 
 /// The atom/residue under a long-press, for the iOS context menu. `isEmpty`

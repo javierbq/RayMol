@@ -76,4 +76,54 @@ final class WeightsFetchStateTests: XCTestCase {
         let junk = Data("{\"id\":\"x\"}".utf8)
         XCTAssertNil(try? JSONDecoder().decode(WeightsFetchState.self, from: junk))
     }
+
+    /// `elapsed` was added after the first cut. A payload without it must still
+    /// decode: losing the ETA is cosmetic, a failed decode would take the whole
+    /// progress sheet with it and look exactly like the bug this all fixed.
+    func testAPayloadWithoutElapsedStillDecodes() throws {
+        let state = try decode("""
+        {"id":"stub","state":"running","phase":"download","fraction":0.5,\
+        "received":100,"total":200,"error":null}
+        """)
+        XCTAssertNil(state.elapsed)
+        XCTAssertNil(state.secondsRemaining)
+    }
+
+    // -- ETA ------------------------------------------------------------------
+
+    func testEstimatesTimeRemainingFromTheAverageRate() throws {
+        // 100 MB of 500 MB in 10 s => 10 MB/s => 400 MB left => 40 s.
+        let state = try decode("""
+        {"id":"b","state":"running","phase":"download","fraction":0.2,\
+        "received":104857600,"total":524288000,"elapsed":10.0,"error":null}
+        """)
+        let eta = try XCTUnwrap(state.secondsRemaining)
+        XCTAssertEqual(eta, 40.0, accuracy: 0.5)
+    }
+
+    func testNoEstimateBeforeThereIsEnoughHistoryToMakeOneHonestly() throws {
+        // A sub-second divisor produces an absurd figure; better to show nothing.
+        let early = try decode("""
+        {"id":"b","state":"running","phase":"download","fraction":0.001,\
+        "received":1024,"total":524288000,"elapsed":0.2,"error":null}
+        """)
+        XCTAssertNil(early.secondsRemaining)
+
+        // Extraction counts archive members, not bytes — a byte-derived ETA there
+        // would be meaningless.
+        let extracting = try decode("""
+        {"id":"b","state":"running","phase":"extract","fraction":0.5,\
+        "received":0,"total":524288000,"elapsed":60.0,"error":null}
+        """)
+        XCTAssertNil(extracting.secondsRemaining)
+    }
+
+    func testRemainingIsFormattedCoarsely() {
+        // Coarse on purpose: a to-the-second countdown invites trust in a number
+        // derived from an average rate.
+        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(4), "almost done")
+        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(45), "45 sec left")
+        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(240), "4 min left")
+        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(9000), "over an hour left")
+    }
 }

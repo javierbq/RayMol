@@ -57,6 +57,11 @@ class Fetch:
     def __init__(self, bundle, cache):
         self.bundle = bundle
         self.cache = cache
+        #: Monotonic start, so the UI can turn bytes-so-far into a rate and an ETA.
+        #: Computed HERE rather than Swift-side because only this object knows when the
+        #: transfer actually began -- the first marker can be several seconds late on a
+        #: slow connect, and an ETA measured from first-marker would read badly high.
+        self.started = time.monotonic()
         self.state = 'running'        # running | done | error | cancelled
         self.phase = 'download'       # download | extract
         self.fraction = 0.0
@@ -84,6 +89,11 @@ class Fetch:
                 'received': int(self.fraction * total) if (
                     self.phase == 'download' and total) else 0,
                 'total': total,
+                # Seconds since the transfer began. The UI divides `received` by this
+                # for an AVERAGE rate rather than an instantaneous one: chunk-to-chunk
+                # timings jitter enough that an instantaneous ETA flickers between
+                # wildly different numbers, which reads as broken.
+                'elapsed': round(time.monotonic() - self.started, 3),
                 'error': self.error,
             }
 
