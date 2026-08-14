@@ -181,7 +181,17 @@ def takes_atom_selection(obj):
     Groups were originally caught by this guard too, which silently blanked their
     rep list and per-atom transparency badge even though probing them is both safe
     and meaningful — issue #256.
+
+    A name that no longer EXISTS is the same trap by another route, and the one a
+    user actually hits: `cmd.get_type` runs the name through the selector, so it
+    emits the Selector-Error line before raising, and the `except` below catches an
+    exception that has already been logged. Deleting an inspected object -- or
+    `reinitialize`, which deletes everything while the panel still holds the name --
+    then floods the console once per poll tick. Check existence FIRST, via
+    `get_names`, which does not touch the selector.
     """
+    if obj not in cmd.get_names('all'):
+        return False
     try:
         return cmd.get_type(obj) in SELECTABLE_TYPES
     except Exception:
@@ -251,7 +261,18 @@ def object_has_atom_transp(obj):
 
 def _build(objs):
     detail = {}
+    # One lookup for the whole tick. takes_atom_selection() also guards, but calling
+    # get_names per object would make a hot main-thread poll quadratic.
+    try:
+        known = set(cmd.get_names('all') or [])
+    except Exception:
+        known = None
     for o in objs:
+        if known is not None and o not in known:
+            # Stale name from the panel: object deleted, or reinitialize ran. Emitting
+            # nothing is right -- probing it would log a Selector-Error per tick.
+            detail[o] = []
+            continue
         reps = []
         # Measurements, CGOs and maps have no reps to describe, and every probe
         # below — transp_summary's iterate and the per-rep count_atoms — would make
@@ -304,6 +325,12 @@ def _build(objs):
     # frame's state when not pinned) and whether all states are overlaid.
     objmeta = {}
     for o in objs:
+        # Same stale-name guard as the rep loop above. This second pass probes
+        # count_states/get_title, and count_states runs the name through the
+        # SELECTOR -- so a deleted or reinitialized object logs a Selector-Error
+        # here once per poll tick even though the rep loop already skipped it.
+        if known is not None and o not in known:
+            continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
         # Per-state titles (e.g. compound names from a multi-record SDF, which
