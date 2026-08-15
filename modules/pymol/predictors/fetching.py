@@ -206,7 +206,9 @@ def shutdown(timeout=5.0):
     Records are dropped even if a worker overran the timeout: it is a daemon writing
     only to scratch under .incoming, and the sentinel that makes a cache valid is
     written last, so the worst case is a stray temp file -- never a cache another run
-    could mistake for complete.
+    could mistake for complete. That temp file is not left forever either: it can be
+    half a gigabyte, and WeightCache.sweep_incoming reclaims it once the pid that
+    owned it is gone.
     """
     cancel()
     with _LOCK:

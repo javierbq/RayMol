@@ -2,6 +2,7 @@
 
     pymol -ckqy testing/testing.py --run testing/tests/predict/predict_weights_download.py
 """
+import contextlib
 import hashlib
 import io
 import os
@@ -9,6 +10,19 @@ import zipfile
 from unittest.mock import patch
 
 from pymol import testing
+
+
+@contextlib.contextmanager
+def no_backoff():
+    """Collapse the retry ladder's waits to nothing.
+
+    The delays are zeroed rather than the sleeping stubbed: _backoff waits on a
+    real monotonic deadline, so a no-op _sleep would only turn seconds of sleeping
+    into seconds of spinning. Every attempt still runs, in the same order.
+    """
+    with patch('pymol.predictors.weights.RETRY_BACKOFF_BASE', 0.0), \
+         patch('pymol.predictors.weights.RETRY_BACKOFF_MAX', 0.0):
+        yield
 
 
 def make_zip(members=(('config.json', '{}'), ('model.bin', 'weights'))):
@@ -39,6 +53,55 @@ class FakeResponse:
 
     def __exit__(self, *exc):
         return False
+
+
+class _Connection(FakeResponse):
+    """One RangeServer response; raises a socket timeout after `fail_after` bytes."""
+
+    def __init__(self, server, body, status, fail_after):
+        FakeResponse.__init__(self, body)
+        self._server = server
+        self._served = 0
+        self._fail_after = fail_after
+        self.status = status
+
+    def read(self, size=-1):
+        if self._fail_after is not None and self._served >= self._fail_after:
+            raise TimeoutError('The read operation timed out')
+        if size and size > 0 and self._fail_after is not None:
+            size = min(size, self._fail_after - self._served)
+        chunk = FakeResponse.read(self, size)
+        self._served += len(chunk)
+        self._server.served[-1] = self._served
+        return chunk
+
+
+class RangeServer:
+    """urlopen stand-in that honours (or pointedly ignores) Range and can stall.
+
+    `fail_after` is consumed one entry per connection: the Nth connection raises a
+    socket timeout once it has handed out that many bytes. With `honour_range`
+    false it answers every request with 200 and the whole body, which is what a
+    CDN edge that does not do partial content looks like.
+    """
+
+    def __init__(self, payload, fail_after=(), honour_range=True):
+        self.payload = payload
+        self.fail_after = list(fail_after)
+        self.honour_range = honour_range
+        self.connections = []       # (Range header or None, status) per connection
+        self.served = []            # bytes actually handed out per connection
+
+    def __call__(self, request, timeout=None):
+        header = request.get_header('Range')
+        offset = 0
+        if header and self.honour_range:
+            offset = int(header.split('=', 1)[1].split('-', 1)[0])
+        status = 206 if offset else 200
+        limit = self.fail_after.pop(0) if self.fail_after else None
+        self.connections.append((header, status))
+        self.served.append(0)
+        return _Connection(self, self.payload[offset:], status, limit)
 
 
 def bundle_for(data, digest, **kwargs):
@@ -108,8 +171,8 @@ class TestEnsure(testing.PyMOLTestCase):
 
         with testing.mkdtemp() as root:
             cache = WeightCache(root)
-            with patch('pymol.predictors.weights._urlopen',
-                       return_value=Dying(data)):
+            with no_backoff(), patch('pymol.predictors.weights._urlopen',
+                                     return_value=Dying(data)):
                 self.assertRaises(WeightDownloadFailed, cache.ensure, bundle)
             self.assertFalse(cache.is_cached(bundle))
             self.assertFalse(os.path.exists(cache.path_for(bundle)))
@@ -187,6 +250,120 @@ class TestEnsure(testing.PyMOLTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(data)):
             self.assertRaises(WeightCacheUnwritable, cache.ensure, bundle)
+
+    def testResumeContinuesWhereTheStreamDied(self):
+        """A mid-stream timeout must cost the stalled read, not the whole transfer."""
+        from pymol.predictors.weights import WeightCache
+        data, digest = make_zip(members=[('config.json', 'x' * 4000),
+                                         ('model.bin', 'y' * 4000)])
+        bundle = bundle_for(data, digest)
+        server = RangeServer(data, fail_after=[len(data) // 2])
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            with no_backoff(), patch('pymol.predictors.weights._urlopen', server):
+                path = cache.ensure(bundle)
+            self.assertTrue(cache.is_cached(bundle))
+            with open(os.path.join(path, 'model.bin')) as handle:
+                self.assertEqual(handle.read(), 'y' * 4000)
+        # Two connections: the second asked to resume and was told 206.
+        self.assertEqual([status for _, status in server.connections],
+                         [200, 206])
+        self.assertEqual(server.connections[1][0],
+                         'bytes=%d-' % (len(data) // 2))
+        # The point of the exercise: the bytes before the stall were not re-fetched.
+        self.assertEqual(sum(server.served), len(data))
+
+    def testResumeSurvivesRepeatedStalls(self):
+        """Several stalls are normal on a slow CDN; each one must only cost itself."""
+        from pymol.predictors.weights import WeightCache
+        data, digest = make_zip(members=[('config.json', 'x' * 4000),
+                                         ('model.bin', 'y' * 4000)])
+        bundle = bundle_for(data, digest)
+        stalls = [len(data) // 8] * 6           # more than MAX_STALLED_ATTEMPTS
+        server = RangeServer(data, fail_after=stalls)
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            with no_backoff(), patch('pymol.predictors.weights._urlopen', server):
+                cache.ensure(bundle)
+            self.assertTrue(cache.is_cached(bundle))
+        self.assertEqual(len(server.connections), len(stalls) + 1)
+        self.assertEqual(sum(server.served), len(data))
+
+    def testRangeIgnoringServerStillEndsWithACorrectDigest(self):
+        """A 200 answer to a Range request must restart, never append a duplicate."""
+        from pymol.predictors.weights import WeightCache
+        data, digest = make_zip(members=[('config.json', 'x' * 4000),
+                                         ('model.bin', 'y' * 4000)])
+        bundle = bundle_for(data, digest)
+        server = RangeServer(data, fail_after=[len(data) // 2],
+                             honour_range=False)
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            with no_backoff(), patch('pymol.predictors.weights._urlopen', server):
+                path = cache.ensure(bundle)
+            self.assertTrue(cache.is_cached(bundle))
+            with open(os.path.join(path, 'config.json')) as handle:
+                self.assertEqual(handle.read(), 'x' * 4000)
+        # It did ask to resume, was answered with the whole body, and started over --
+        # so the second connection served everything, not the tail.
+        self.assertEqual([status for _, status in server.connections],
+                         [200, 200])
+        self.assertIsNotNone(server.connections[1][0])
+        self.assertEqual(server.served[1], len(data))
+
+    def testRetriesAreBounded(self):
+        """A link that never advances must fail, not retry forever."""
+        from pymol.predictors import weights
+        from pymol.predictors.errors import WeightDownloadFailed
+        data, digest = make_zip()
+        bundle = bundle_for(data, digest)
+        server = RangeServer(data, fail_after=[0] * 100)
+        with testing.mkdtemp() as root:
+            with no_backoff(), patch('pymol.predictors.weights._urlopen', server):
+                self.assertRaises(WeightDownloadFailed,
+                                  weights.WeightCache(root).ensure, bundle)
+        self.assertEqual(len(server.connections), weights.MAX_STALLED_ATTEMPTS)
+
+    def testBadUrlIsNotRetried(self):
+        """404 is the answer, not a hiccup: retrying only delays it."""
+        from pymol.predictors.weights import WeightCache
+        from pymol.predictors.errors import WeightDownloadFailed
+        from urllib.error import HTTPError
+        data, digest = make_zip()
+        bundle = bundle_for(data, digest)
+        opener = patch('pymol.predictors.weights._urlopen',
+                       side_effect=HTTPError(bundle.url, 404, 'Not Found',
+                                             {}, None))
+        with testing.mkdtemp() as root:
+            with no_backoff(), opener as mock:
+                self.assertRaises(WeightDownloadFailed,
+                                  WeightCache(root).ensure, bundle)
+            self.assertEqual(mock.call_count, 1)
+
+    def testCancelDuringBackoffIsPrompt(self):
+        """Cancelling while waiting to retry must not wait out the backoff."""
+        from pymol.predictors.weights import WeightCache
+        from pymol.predictors.errors import WeightDownloadCancelled
+        data, digest = make_zip()
+        bundle = bundle_for(data, digest)
+        server = RangeServer(data, fail_after=[0] * 100)
+        # Cancel only once a transfer has actually failed, so the wait is what gets
+        # interrupted rather than the download never starting.
+        state = {'failed': False}
+
+        def should_cancel():
+            state['failed'] = bool(server.connections)
+            return state['failed']
+
+        slept = []
+        with testing.mkdtemp() as root:
+            with patch('pymol.predictors.weights._sleep', slept.append), \
+                 patch('pymol.predictors.weights._urlopen', server):
+                self.assertRaises(WeightDownloadCancelled,
+                                  WeightCache(root).ensure, bundle,
+                                  should_cancel=should_cancel)
+        self.assertEqual(len(server.connections), 1)
+        self.assertEqual(slept, [])         # cancelled before the first slice
 
     def testProgressIsReportedForDownloadAndExtract(self):
         from pymol.predictors.weights import WeightCache
