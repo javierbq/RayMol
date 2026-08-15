@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/javierbq/boltz-mlx.git",
       "state" : {
-        "revision" : "d5994771e1e10fe960541dd4c82ffc3adb8e7e1e",
-        "version" : "0.1.1"
+        "revision" : "c1856f22de567d200633c45b4786c97bca308282",
+        "version" : "0.2.0"
       }
     },
     {

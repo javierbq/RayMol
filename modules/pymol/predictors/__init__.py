@@ -11,7 +11,9 @@ from .registry import register, get, available, unregister  # noqa: F401
 def _register_builtins():
     """Register the shipped predictors. The only function that changes per predictor."""
     from .boltz2 import Boltz2Predictor
+    from .boltz2_bf16 import Boltz2BF16Predictor
     register(Boltz2Predictor(), replace=True)
+    register(Boltz2BF16Predictor(), replace=True)
 
 
 _register_builtins()

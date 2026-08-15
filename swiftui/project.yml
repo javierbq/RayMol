@@ -36,7 +36,10 @@ packages:
   # resolution is unaffected and this entry never needs bumping in lockstep.
   BoltzMLX:
     url: https://github.com/javierbq/boltz-mlx.git
-    from: 0.1.1
+    # 0.2.0 adds the dense fp16/bfloat16 weight path: BoltzWeightStore selects it when
+    # an artifact manifest declares no quantization block, which is what the
+    # boltz2-bf16 predictor's pack does.
+    from: 0.2.0
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
