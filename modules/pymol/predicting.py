@@ -403,6 +403,178 @@ def session_save(session, _self=cmd):
     return 1
 
 
+# -- Input resolution: a sequence, an object, or a selection -------------------
+#
+# `predict boltz2, MKTAY` and `predict boltz2, 1ubq` both have to work, and the two are
+# told apart by ASKING THE SESSION -- whatever selects atoms is a selection, anything
+# else that could be residues is a sequence. That order is the safe one: sniffing the
+# text first would fold `polymer` (seven perfectly good residue letters) as a peptide
+# while the structure the user meant sat loaded in the session.
+
+#: Alternative SPELLINGS of a canonical residue, missing from exporting._resn_to_aa:
+#: force-field names for a protonation or disulfide state (CHARMM HSD/HSE/HSP, AMBER
+#: HID/HIE/HIP/CYX/CYM/ASH/GLH/LYN). Same residue, different name, so these are
+#: substituted silently.
+_RESN_ALIASES = {
+    'HSD': 'H', 'HSE': 'H', 'HSP': 'H',
+    'HID': 'H', 'HIE': 'H', 'HIP': 'H',
+    'CYX': 'C', 'CYM': 'C',
+    'ASH': 'D', 'GLH': 'E', 'LYN': 'K',
+}
+
+#: Modified residues, mapped to the parent they are made from. Folding the parent is
+#: the only thing any predictor here can do -- none of them model the modification --
+#: and it is what every folding pipeline does with a PDB entry, so the alternative is
+#: not a better prediction but no prediction at all: MSE alone (selenomethionine, a
+#: phasing trick rather than biology) appears in a large share of crystal structures,
+#: and oxidised cysteines and phospho-residues are common enough that refusing them
+#: would make the object path fail on ordinary entries -- 1VJE, picked at random from
+#: an MSE search, carries two CSD.
+#:
+#: Unlike the aliases above this DOES drop chemistry -- a phosphate, an acetyl -- so
+#: every substitution is reported. Only unambiguous parents are listed: D-amino acids
+#: and selenocysteine are deliberately absent, because there the parent is a guess.
+_MODIFIED_TO_PARENT = {
+    'MSE': 'M', 'FME': 'M',                                       # methionine
+    'CSO': 'C', 'CSD': 'C', 'CSS': 'C', 'CSW': 'C', 'CSX': 'C',   # oxidised /
+    'CME': 'C', 'OCS': 'C', 'SMC': 'C', 'YCM': 'C',               # alkylated cys
+    'SEP': 'S', 'TPO': 'T', 'PTR': 'Y', 'TYS': 'Y',               # phospho / sulfo
+    'MLY': 'K', 'MLZ': 'K', 'M3L': 'K', 'ALY': 'K',               # modified lysine
+    'KCX': 'K', 'LLP': 'K',
+    'HYP': 'P', 'PCA': 'E', 'CGU': 'E',
+}
+
+
+def _is_sequence_shaped(text):
+    """True if `text` could be a bare one-letter sequence.
+
+    Residue letters, the '/' chain separator, and the line breaks of a pasted FASTA
+    block -- nothing else. A SPACE disqualifies it, deliberately: every multi-word
+    selection ('chain A', 'polymer and 1ubq') carries one, so a mistyped selection that
+    fails to resolve is reported as a bad selection instead of being quietly folded
+    letter by letter -- 'chian A' is not the pentapeptide CHIANA.
+    """
+    return bool(text) and all(ch.isalpha() or ch in '/\r\n' for ch in text)
+
+
+def sequence_from_selection(selection, _self=cmd):
+    """One-letter sequence of the protein chains in `selection`, '/'-joined.
+
+    One chain per (object, chain id) in the order PyMOL iterates them, so predicting
+    from a dimer folds A/B as a complex rather than as two independent monomers, and
+    predicting from `objA or objB` builds the complex of the two.
+
+    Only `polymer.protein` is read. Waters and ligands have no place in a protein-only
+    prediction, and nucleic acids are excluded for a sharper reason: A, G, C and T are
+    all valid residue letters, so a DNA chain would come back looking like a perfectly
+    good protein sequence and be folded as one.
+
+    Gaps are NOT filled: a chain with residues 1-10 and 21-30 yields the 20 OBSERVED
+    residues as one continuous run, because that is the sequence PyMOL actually has.
+    Pass the full sequence as a string to fold the missing loop.
+
+    Modified residues are folded as the residue they are made from (MSE as M, SEP as
+    S...) and reported; a residue with no unambiguous parent is refused.
+    """
+    import collections
+
+    from .exporting import _resn_to_aa
+    from .predictors.errors import PredictionInputError
+
+    chains = collections.OrderedDict()
+    # `guide & alt +A` is get_fastastr's reduction: one atom per residue (CA for
+    # protein), first altloc only, so a disordered side chain cannot duplicate a residue.
+    _self.iterate('(%s) & polymer.protein & guide & alt +A' % selection,
+                  'chains.setdefault((model, chain), []).append(resn)',
+                  space={'chains': chains})
+    if not chains:
+        raise PredictionInputError(
+            '"%s" contains no protein residues to fold' % selection)
+
+    sequences, unknown, substituted = [], [], {}
+    for resn_list in chains.values():
+        letters = []
+        for resn in resn_list:
+            aa = _resn_to_aa.get(resn) or _RESN_ALIASES.get(resn)
+            if aa is None:
+                aa = _MODIFIED_TO_PARENT.get(resn)
+                if aa is not None:
+                    substituted[resn] = substituted.get(resn, 0) + 1
+            if aa is None:
+                unknown.append(resn)
+            else:
+                letters.append(aa)
+        sequences.append(''.join(letters))
+    if unknown:
+        # Refused rather than skipped: dropping a residue would hand the predictor a
+        # sequence one residue shorter than the structure it came from, spliced across
+        # the hole, and nothing downstream could tell that had happened. For the same
+        # reason the advice is NOT "exclude it from the selection" -- that produces
+        # exactly the spliced sequence this is refusing to produce.
+        raise PredictionInputError(
+            '"%s" contains residues with no one-letter code: %s. Pass the sequence as'
+            ' a string, or rename them to the residue they are made from'
+            ' (alter <sel>, resn="CYS").'
+            % (selection, ', '.join(sorted(set(unknown)))))
+    if substituted:
+        # Warned regardless of `quiet`: the sequence being folded no longer matches the
+        # structure it came from, and a user comparing the two needs to know why.
+        colorprinting.warning(
+            ' predict: %s: %d modified residue(s) folded as the residue they are made'
+            ' from (%s); the modification itself is not modelled.'
+            % (selection, sum(substituted.values()),
+               ', '.join('%d %s->%s' % (count, resn, _MODIFIED_TO_PARENT[resn])
+                         for resn, count in sorted(substituted.items()))))
+    return '/'.join(sequences)
+
+
+def resolve_sequence(sequence, quiet=1, _self=cmd):
+    """Return the one-letter sequence to fold, given a sequence, object or selection.
+
+    Resolution order, and why:
+
+    1. Anything that selects atoms is read from the session. An object name wins over
+       a same-spelled sequence -- with an object called `AAA` loaded, `predict m, AAA`
+       folds the object. Rename it if you meant the tripeptide.
+    2. Otherwise, text that could be residues is taken literally, so a sequence still
+       works with an empty session or alongside unrelated objects.
+    3. Otherwise it was a selection that matched nothing, and that is an error -- NOT
+       a sequence. Silently folding the letters of a typo'd selection is the one
+       failure mode worth going out of the way to prevent.
+    """
+    from .predictors.errors import PredictionInputError
+
+    if not isinstance(sequence, str):
+        raise PredictionInputError('sequence must be a string')
+    text = sequence.strip()
+    if not text:
+        raise PredictionInputError('no sequence, object or selection given')
+
+    literal = _is_sequence_shaped(text)
+    try:
+        n_atoms = _self.count_atoms(text)
+    except Exception:
+        # Not parseable as a selection at all: a bare word that names no object comes
+        # back as 'Invalid selection name "MKTAY"', which is exactly what a sequence
+        # looks like to the selection parser. Fine if it could be residues; otherwise
+        # the caller wrote a broken selection and deserves to hear about it.
+        if literal:
+            return text
+        raise
+    if n_atoms > 0:
+        resolved = sequence_from_selection(text, _self=_self)
+        if not int(quiet):
+            parts = resolved.split('/')
+            colorprinting.parrot(
+                ' predict: %s -> %d residues in %d chain(s)'
+                % (text, sum(len(part) for part in parts), len(parts)))
+        return resolved
+    if literal:
+        return text
+    raise PredictionInputError(
+        '"%s" selects no atoms and is not a one-letter sequence' % text)
+
+
 def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
             seed=None, n_models=1, diffusion_samples=None, quiet=1, _self=cmd):
     """
@@ -421,9 +593,14 @@ ARGUMENTS
 
     predictor = str: id of a registered predictor, e.g. boltz2
 
-    sequence = str: one-letter sequence. Use "/" to separate chains of a
-    multimer -- NOT a comma, which the command parser treats as an argument
-    separator. Chains are assigned ids A, B, C...
+    sequence = str: one-letter sequence, or the name of a loaded object, or an
+    atom selection. Anything that selects atoms is read from the session -- one
+    chain per (object, chain id), in the order they appear -- and everything else
+    is taken as a literal sequence.
+
+    In a literal sequence, use "/" to separate chains of a multimer -- NOT a
+    comma, which the command parser treats as an argument separator. Chains are
+    assigned ids A, B, C...
 
     name = str: object name for the loaded result {default: <predictor>_pred}
 
@@ -451,10 +628,26 @@ EXAMPLES
     predict boltz2, MKTAY/GSHMA, name=dimer, diffusion_steps=300
     predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ, n_models=5
 
+    fetch 1ubq
+    predict boltz2, 1ubq                  # re-fold the whole object
+    predict boltz2, 1ubq and chain A      # one chain of it
+    predict boltz2, 1ubq and resi 1-40    # a fragment
+
 NOTES
 
     Defaults follow upstream Boltz. Options a predictor does not implement are
     rejected rather than ignored, so a typo cannot silently degrade a result.
+
+    Reading from the session takes only protein residues -- waters, ligands and
+    nucleic acids are skipped -- and does not fill gaps: unobserved residues are
+    absent from the object, so they are absent from the sequence too. Pass the
+    full sequence as a string to fold a missing loop.
+
+    A modified residue is folded as the residue it is made from (MSE as M, SEP as
+    S, ...), which is reported, because no predictor here models the modification.
+
+    An object name wins over a same-spelled sequence: with an object called AAA
+    loaded, "predict boltz2, AAA" folds the object, not the tripeptide.
 
     n_models COSTS N FULL RUNS. Each model repeats the whole prediction with a
     different seed, including the trunk; it is not several samples drawn from one
@@ -483,6 +676,11 @@ SEE ALSO
     predictor_obj = registry.get(predictor)
     predictor_obj.check_available()
 
+    # Resolved once, up front: everything downstream -- validation, the digest the
+    # object name is built from, the spec the predictor gets -- must see the same
+    # residues, and re-reading the session later could see a different one if the
+    # user deleted or edited the source object in between.
+    sequence = resolve_sequence(sequence, quiet=quiet, _self=_self)
     spec = predictor_obj.parse_spec(sequence, name=name or (predictor + '_pred'))
 
     # A fresh seed per run unless one is given, so repeat predictions of the same sequence
