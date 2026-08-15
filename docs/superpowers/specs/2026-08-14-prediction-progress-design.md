@@ -101,7 +101,7 @@ patch against the wrong code.
 
 ### 2.2 The honest fallback, and the one place fabrication would live
 
-Until v0.1.2 lands, inference gets a **zero-span band**: `('inference', 0.30, 0.30)`. `progress()`
+Until v0.1.2 lands, inference gets a **zero-span band**: `('inference', 0.10, 0.10)`. `progress()`
 returns `moving=False` and the card draws an **indeterminate** bar plus a live elapsed clock and the
 phase name.
 
@@ -158,64 +158,71 @@ established.
 
 ### 4.1 Module level, `base.py`
 
+`base.py` declares the **mechanism only**. It names no phases: phase names are a property of a
+backend's pipeline, not of the infrastructure. `trunk` and `diffusion` are Boltz/AlphaFold-family
+architecture terms — a single-forward-pass or server-backed predictor has neither — so they live in
+`boltz2.py` (§4.3), not here.
+
 ```python
-#: Ordered progress bands covering ONE model's whole life, weight fetch included.
-#: Each entry is (phase, start, end) on an overall 0..1 scale. `end == start` means
-#: the backend reports only that the phase BEGAN, not movement inside it -- the
-#: composer returns the floor and flags moving=False, and the UI draws an
-#: indeterminate bar rather than a determinate one frozen at a made-up number.
+#: A band is (phase, start, end) on an overall 0..1 scale, and a job's
+#: status()['fraction'] is completion WITHIN its phase, restarting at 0 on each
+#: phase change. The composition is
 #:
-#: 'inference' is the coarse phase boltz2's host writes today. 'trunk' and
-#: 'diffusion' are the phases it writes once boltz-mlx v0.1.2's per-step callbacks
-#: are wired up; both live here from the start so no rename is needed later.
-PROGRESS_PHASES = (
-    ('download',  0.00, 0.20),
-    ('extract',   0.20, 0.25),
-    ('cached',    0.25, 0.25),
-    ('request',   0.25, 0.25),
-    ('preflight', 0.25, 0.25),
-    ('featurize', 0.25, 0.27),
-    ('load',      0.27, 0.30),
-    ('inference', 0.30, 0.30),   # widened to (0.30, 0.95) only if a backend
-                                 # reports movement inside it
-    ('trunk',     0.30, 0.55),
-    ('diffusion', 0.55, 0.95),
-    ('write',     0.95, 0.98),
-    ('done',      1.00, 1.00),
-)
+#:     overall = start + local * (end - start)
+#:
+#: `end == start` -- a "zero-span" band -- means the backend reports only that
+#: the phase BEGAN, not movement inside it. The composer returns the floor and
+#: flags moving=False, and the UI draws an indeterminate bar plus a live elapsed
+#: clock rather than a determinate one frozen at a made-up number.
+#:
+#: BANDS ARE LAYOUT, NOT TIME. Widths cannot track wall clock and must not be
+#: read as an estimate of it: 'load' is ~10 s cold and ~0 s warm (the predictor
+#: is kept alive across predictions), and boltz2's inference is 6.5 s at 60
+#: residues and 675 s at 600. The bar is honest about WHICH PHASE and HOW FAR
+#: THROUGH IT, never about time remaining. That is why the card shows a measured
+#: elapsed clock beside it, and why an ETA (increment 4) must be derived from an
+#: observed per-step rate and never from these numbers.
 
 
-def compose_progress(status, phases=PROGRESS_PHASES):
+def compose_progress(status, phases):
     """Fold one status dict into overall progress: (fraction, moving).
 
-    fraction -- 0..1 across the WHOLE run, or None when nothing can be said: an
-                unrecognised `phase` (including 'queued', which carries no
+    fraction -- 0..1 across the whole run, or None when nothing can be said: a
+                phase absent from `phases` (including 'queued', which carries no
                 information at all), a missing key, or a fraction that is not a
-                number. A caller that has a previous value should hold it rather
-                than reset; None never means zero.
+                number. A caller holding a previous value should keep it; None
+                never means zero.
     moving   -- True when the phase's band has width, so a determinate bar is
                 honest. False when the backend only reports that the phase began.
 
-    Total by construction: this is called from a 500 ms poll on the main thread
-    and MUST NOT raise. A fraction outside [0, 1] is clamped before it is mapped
+    Total by construction: called from a 500 ms poll on the main thread, so it
+    MUST NOT raise. A fraction outside [0, 1] is clamped before it is mapped
     into its band.
     """
 ```
 
-Note there is deliberately **no `('queued', 0.0, 0.0)` entry**. `HostJob.status()`'s missing-file
-fallback reports `phase='queued'` (`host.py:59-67`), and mapping that to zero would slam the bar back
-to 0 % for every tick between submit and Swift's first status write. Unrecognised → `None` → hold the
-previous value.
+Two phase families are deliberately absent from every table:
+
+- **`queued`.** `HostJob.status()`'s missing-file fallback reports it (`host.py:59-67`); mapping it to
+  zero would slam the bar back to 0 % for every tick between submit and Swift's first status write.
+- **`download` / `extract`.** The weight fetch is not part of the prediction's bar. §7.3's dedup
+  filter already hides a prediction card while its bundle is downloading — the user sees the weights
+  card, which has its own genuinely measured bytes/total bar. Including the fetch here would leave a
+  warm-cache run (i.e. every run after the first) starting its bar at ~25 %, with a quarter of it
+  dead.
+
+Both fall through to unrecognised → `(None, False)` → hold the previous value, which is exactly right
+for a window in which this card either is not on screen or has nothing to say.
 
 ### 4.2 On `class Predictor`
 
 ```python
-    #: Progress bands for this predictor's jobs. Widening a zero-span entry is the
-    #: ONLY change needed the day a backend starts reporting movement inside a
-    #: phase. An empty tuple means "this predictor reports no meaningful
-    #: fraction": progress() then always returns (None, False) and the app shows an
-    #: indeterminate card, which is the correct rendering of no information.
-    progress_phases = PROGRESS_PHASES
+    #: This predictor's pipeline phases, ordered. EMPTY BY DEFAULT on purpose:
+    #: the base class makes no claim about anyone's pipeline. A predictor that
+    #: declares nothing gets an indeterminate card with a live elapsed clock --
+    #: the correct rendering of no information, and far better than a bar
+    #: derived from some other backend's phase names.
+    progress_phases = ()
 
     def progress(self, status):
         """Overall progress for one of this predictor's jobs: (fraction, moving).
@@ -232,6 +239,12 @@ previous value.
         """
         return compose_progress(status, self.progress_phases)
 ```
+
+Because `progress()` is concrete rather than abstract, it doubles as the **escape hatch**: a backend
+the band table genuinely cannot express — say, one whose phase set depends on whether an MSA was
+supplied — overrides `progress()` and returns its own `(fraction, moving)`. The class attribute is
+the easy path; overriding is the general one. This is the same property that forced it to be
+concrete in the first place.
 
 `submit`'s one-line docstring (`base.py:133-134`) is replaced, because it and `_template.py` are the
 only normative statements of the job contract:
@@ -252,27 +265,65 @@ only normative statements of the job contract:
         """
 ```
 
-### 4.3 `_template.py`
+### 4.3 boltz2's table, in `boltz2.py`
+
+```python
+class Boltz2Predictor(Predictor):
+    #: 'inference' is the coarse phase the host writes today, and it is zero-span
+    #: because boltz-mlx v0.1.1 reports nothing from inside predictScored. 'trunk'
+    #: and 'diffusion' replace it once v0.1.2's per-step callbacks land -- they are
+    #: declared from day one so that increment is a Swift-side change only, with no
+    #: rename and no Python edit here.
+    progress_phases = (
+        ('featurize', 0.00, 0.03),
+        ('load',      0.03, 0.10),
+        ('inference', 0.10, 0.10),
+        ('trunk',     0.10, 0.40),
+        ('diffusion', 0.40, 0.97),
+        ('write',     0.97, 1.00),
+        ('done',      1.00, 1.00),
+    )
+```
+
+`inference` overlapping `trunk`/`diffusion` is intentional and not a sequence: they are alternative
+names for the same span, and exactly one of the three is ever the current phase.
+
+The mechanism generalizes past diffusion. Three backends this repo does not have yet, expressed in
+the same vocabulary:
+
+| backend shape | table | what the user sees |
+|---|---|---|
+| single opaque forward pass (ESMFold-like) | `(('forward', 0.0, 0.0), ('write', 0.9, 1.0))` | spinner + elapsed for the whole run, then a brief finish — the accurate rendering, not a degraded one |
+| server-backed | `(('upload', 0.0, 0.10), ('queued', 0.10, 0.10), ('running', 0.10, 0.85), ('fetch', 0.85, 1.0))` | measured, then an honest park while in someone else's queue, then measured again |
+| sampler over N trajectories | `(('sample', 0.05, 0.95),)` with `fraction = completed / N` | a real bar; nothing diffusion-specific |
+
+### 4.4 `_template.py`
 
 The copy-me template (`predictors/_template.py:58-66`) is the highest-leverage edit in the change:
 without it, no third-party predictor will ever report progress. Its `submit` docstring gains the
-paragraph above, and the class gains a commented declaration:
+paragraph above, and the class gains a declaration — **not** commented out, because the base default
+is empty and a predictor that leaves this alone gets no bar:
 
 ```python
-    # Progress bands. Inherited from Predictor if you say nothing, which is right
-    # for a backend whose phases match boltz2's. Declare your own to describe a
-    # different pipeline; give a phase a non-empty band ONLY if your backend
-    # really reports movement inside it -- a zero-span band is how you say
-    # "started this phase, cannot say how far in", and the app draws a spinner and
-    # an elapsed clock instead of a bar that lies.
+    # Progress bands: YOUR pipeline's phases, not anyone else's. The base class
+    # declares none, so a predictor that leaves this empty shows an indeterminate
+    # spinner and an elapsed clock -- which is correct when you have nothing to
+    # report, and wrong if you do. Give a phase a non-empty band ONLY if your
+    # backend really reports movement inside it; a zero-span band is how you say
+    # "started this phase, cannot say how far in", and the app draws the spinner
+    # instead of a bar that lies.
     #
-    # progress_phases = (('setup', 0.0, 0.1), ('sample', 0.1, 0.95),
-    #                    ('write', 0.95, 1.0), ('done', 1.0, 1.0))
+    # Widths are LAYOUT, not a time estimate -- see compose_progress in base.py.
+    progress_phases = (('setup', 0.00, 0.10),
+                       ('sample', 0.10, 0.95),
+                       ('write', 0.95, 1.00),
+                       ('done', 1.00, 1.00))
 ```
 
-A predictor that changes nothing inherits sane behaviour: its phases are matched against
-`PROGRESS_PHASES`, unrecognised phases yield `(None, False)` (spinner + elapsed), and it never gets a
-wrong bar. `docs/predictors.md` gains a step between the current 7 and 8 describing this.
+A predictor that deletes the declaration rather than editing it still degrades safely: an empty table
+yields `(None, False)` for every phase, so the card is an indeterminate spinner with a live elapsed
+clock. It can never show a *wrong* bar — only no bar. `docs/predictors.md` gains a step between the
+current 7 and 8 saying, in one line, "declare your phases or your users get a spinner."
 
 ---
 
@@ -306,7 +357,7 @@ Everything downstream is identical.
    as today (`predicting.py:114`) — never per model. This is the invariant `n_models=20` would
    otherwise multiply by 20.
 9. job → its predictor → `progress(status)` → `compose_progress` maps e.g. `('diffusion', 0.42)`
-   through band `(0.55, 0.95)` → `(0.718, True)`; folded across models as `(done_models + p) / N`;
+   through band `(0.40, 0.97)` → `(0.639, True)`; folded across models as `(done_models + p) / N`;
    clamped to the object's monotone floor.
 10. Record lands in `payload['pending_jobs'][name]`; the formatted string still lands in
     `payload['pending'][name]`, whose `Dict[str, str]` type is **unchanged**.
@@ -409,7 +460,7 @@ makes it *guaranteed* against phase-table drift, the `queued` fallback, and canc
 panel on a stale list (`appkit_inspector.py:441-445`, `:528-529`).
 
 1. `compose_progress` is total: unknown phase, missing key, non-numeric fraction → `(None, False)`.
-   One scan of a 12-entry tuple, no I/O.
+   One scan of a short tuple (7 entries for boltz2), no I/O.
 2. `pending_info` wraps `status()`, the composition **and** the arithmetic in one `try`. This closes
    a live crash path: today's `pending_detail` guards only `job.status()` (`predicting.py:118-121`)
    and leaves `status.get(...)` / `int(float(fraction) * 100)` at `:122-124` unguarded. On failure it
@@ -624,7 +675,8 @@ can finally see a failure.
 
 ### Increment 1 — the smallest thing that puts a real bar on screen
 
-Python: `PROGRESS_PHASES` + `compose_progress` + `progress_phases`/`progress()` on `Predictor` +
+Python: `compose_progress` + the empty `progress_phases`/`progress()` on `Predictor` + boltz2's own
+table in `boltz2.py` +
 `submit`/`_template.py`/`docs/predictors.md` docs + `_TRACK` (total / done / started / floor per
 pending object) + `pending_info()` + `pending_detail()` rewritten as its formatter + `_pending_maps()`
 + the `pending_jobs` payload key + `predict_cancel` accepting an object name + `predict_status`
@@ -656,8 +708,9 @@ RayMol: `Status` gains Optional `step` / `total_steps`; `BoltzJobManager` gains 
 `report("running","inference",0.2)` becomes `trunk` then `diffusion`. Preserve
 `defer { BoltzRuntime.configureOnce() }` (`:326`) on every exit path.
 
-Python: **widen nothing but the existing table** — `trunk` and `diffusion` bands are already
-declared. The detail line gains "step 84 of 200". Zero other Python changes.
+Python: **nothing** — `boltz2.py`'s table already declares the `trunk` and `diffusion` bands, so the
+host simply starts writing those phase names instead of `inference`. The detail line gains
+"step 84 of 200". No edit to `base.py`, and no other predictor is touched.
 
 ### Increment 4 — optional polish
 
@@ -674,7 +727,7 @@ Carried into implementation; none blocks increments 0–2.
 1. **Tag `boltz-mlx` v0.1.2?** ~14 lines on a repo we own, pinned by range. But CI has hard-failed on
    package trust for an mlx-related dependency before (#267). Gate increment 3 on a verified Xcode
    Cloud resolve before a release, or is a local-only bump acceptable first?
-2. **Is the trunk/diffusion band split worth measuring first?** 0.30–0.55 / 0.55–0.95 is a judgement
+2. **Is the trunk/diffusion band split worth measuring first?** 0.10–0.40 / 0.40–0.97 is a judgement
    call; no instrumented per-phase profile exists in the repo, and derived splits swing from ~26/73
    at 117 tokens to ~47/52 at 225. One instrumented run at recycling 3 / 200 steps would fit it.
 3. **`predict_cancel` accepting an object name** as well as a job id is API widening on a shipped
