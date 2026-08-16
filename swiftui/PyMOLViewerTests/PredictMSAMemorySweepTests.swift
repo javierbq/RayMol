@@ -38,8 +38,14 @@ final class PredictMSAMemorySweepTests: XCTestCase {
 
     /// Alignment depths, INCLUDING 1 — the depth-1 row is the control that ties this
     /// sweep back to the existing no-MSA table. If it does not reproduce those numbers,
-    /// the harness is measuring something other than what the app runs.
-    private static let depths = [1, 64, 256, 1024]
+    /// the harness is measuring something other than what the app runs. (It does: 115
+    /// tokens at depth 1 measured 2.12 GB against that table's 1.76 at 100 and 2.90 at
+    /// 150, and 250 tokens measured 3.88 against its 3.85.)
+    ///
+    /// Up to upstream's own cap, because depth turned out to be nearly free in TIME —
+    /// 115 tokens ran 21 s at depth 1 and 21 s at depth 1024 — so the grid can reach
+    /// the ceiling instead of stopping short of it and refusing everything above.
+    private static let depths = [1, 64, 256, 1024, 4096, 16384]
 
     /// Where `WeightCache` extracts the shipped bundle: <root>/<id>/<version>.
     private static var weightsDirectory: URL {
@@ -68,27 +74,46 @@ final class PredictMSAMemorySweepTests: XCTestCase {
         })
     }
 
-    /// An a3m whose query is `query` and which has `depth` DISTINCT rows.
+    /// An a3m whose query is `query` and which has exactly `depth` DISTINCT rows.
     ///
-    /// Distinct matters: `MSAAlignment.a3m` deduplicates on the gap-stripped, uppercased
-    /// sequence before it counts, so rows that collided would silently measure a
-    /// shallower alignment than the one asked for. Every row therefore carries a
-    /// substitution pattern unique to its index, and the test asserts the depth it got.
+    /// Distinctness is the whole difficulty. `MSAAlignment.a3m` deduplicates on the
+    /// gap-stripped, uppercased sequence BEFORE it counts, so colliding rows do not
+    /// fail — they silently measure a shallower alignment than the one asked for. A
+    /// first version of this mutated positions `2r, 2r+1 (mod length)` with a shift
+    /// derived from `r / length`, which is injective at 115 residues and NOT at 250,
+    /// where rows r and r+125 land on the same positions with the same shift: depth
+    /// 1024 came back as 525 rows.
+    ///
+    /// So the row index is written into the sequence as a base-20 number over the
+    /// first `digits` positions, which is injective by construction. A row that
+    /// happens to reproduce the query is skipped rather than reasoned about, and the
+    /// caller asserts the depth it actually got — belt and braces, because a silent
+    /// shortfall here corrupts the measurement rather than failing it.
     static func a3m(query: String, depth: Int) -> String {
         let residues = Array(query)
         let alphabet = Array("ACDEFGHIKLMNPQRSTVWY")
+        let radix = alphabet.count
+        // Enough digits to encode every row index: 20^4 = 160,000 > any depth here.
+        var digits = 1
+        while pow(Double(radix), Double(digits)) < Double(depth) { digits += 1 }
+        precondition(residues.count >= digits, "query is too short to index the rows")
+
         var lines = [">query", query]
-        for row in 1 ..< max(depth, 1) {
+        var seen: Set<String> = [query]
+        var row = 1
+        while seen.count < depth {
             var mutated = residues
-            // Two positions per row, driven by the row index, so no two rows agree.
-            for offset in 0 ..< 2 {
-                let position = (row &* 2 &+ offset) % residues.count
-                let shift = 1 + ((row / residues.count) + offset) % (alphabet.count - 1)
-                let current = alphabet.firstIndex(of: mutated[position]) ?? 0
-                mutated[position] = alphabet[(current + shift) % alphabet.count]
+            var value = row
+            for position in 0 ..< digits {
+                mutated[position] = alphabet[value % radix]
+                value /= radix
             }
-            lines.append(">homolog_\(row)")
-            lines.append(String(mutated))
+            let sequence = String(mutated)
+            row += 1
+            // The one row whose encoding reproduces the query would collide.
+            guard seen.insert(sequence).inserted else { continue }
+            lines.append(">homolog_\(seen.count - 1)")
+            lines.append(sequence)
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -122,6 +147,23 @@ final class PredictMSAMemorySweepTests: XCTestCase {
         options.diffusionSteps = 200
         options.seed = 0
 
+        // Throw one prediction away first. Measured: the FIRST prediction in a process
+        // reports a peak 12% below what the identical input reports once the process is
+        // warm (115 tokens / depth 1 gave 2.12 GB in one run and 1.86 GB in another,
+        // both as the first cell), while every warm cell reproduces across runs to the
+        // second decimal — 2.27 and 2.37 GB, twice each. An optimistic first cell is the
+        // one direction this table must never be wrong in, so it is not measured cold.
+        _ = try BoltzRuntime.withMLXErrorsAsThrows {
+            try Self.awaitSyncThrowing {
+                try await predictor.predictScored(
+                    featurized: try BoltzFeaturizer().featurize(
+                        try CanonicalStructure.fromSequences(
+                            [("A", Self.sequence(length: 60))])),
+                    options: options)
+            }
+        }
+        BoltzRuntime.configureOnce()
+
         print("SWEEP,tokens,depth,peak_bytes,peak_gb,seconds")
         // Cheapest first, so a run that has to be cut short still leaves a usable table
         // and the point it died on is the expensive corner rather than a random cell.
@@ -131,10 +173,14 @@ final class PredictMSAMemorySweepTests: XCTestCase {
                 let alignment = try MSAAlignment.a3m(Self.a3m(query: query, depth: depth),
                                                      maximumSequences: depth,
                                                      taxonomy: nil)
-                XCTAssertEqual(alignment.depth, depth,
-                               "the fixture deduplicated: depth \(depth) at \(tokens) "
-                               + "tokens measured \(alignment.depth) rows")
-                XCTAssertEqual(alignment.queryLength, tokens)
+                // Fatal, not a soft assertion: a fixture that deduplicated measures a
+                // shallower alignment than the label says, and every line after it
+                // would be quietly mislabelled rather than missing.
+                guard alignment.depth == depth, alignment.queryLength == tokens else {
+                    return XCTFail("fixture is wrong at \(tokens) tokens / depth "
+                                   + "\(depth): got \(alignment.depth) rows x "
+                                   + "\(alignment.queryLength) columns")
+                }
 
                 let canonical = try CanonicalStructure.fromSequences([("A", query)])
                 let features = try BoltzFeaturizer().featurize(canonical,

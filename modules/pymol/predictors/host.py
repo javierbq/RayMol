@@ -130,6 +130,12 @@ def submit(spec, options, weights_path):
     # next 100 ms tick, so a request naming a half-written a3m is the one ordering bug
     # available here, and it would surface as a parse error on a file the user can see
     # is complete by the time they look.
+    #
+    # PER JOB, not per spec, so `n_models=N` writes the same alignment N times. That is
+    # deliberate: sharing one file across the N jobs would tie their lifetimes together
+    # and need reference counting to know when the last reader is done, to save temp
+    # space that is bounded at MAX_MODELS x the a3m -- tens of megabytes for a real
+    # alignment. Each job owning its inputs outright is the cheaper correctness.
     alignments = []
     for chain_id, msa in sorted(getattr(spec, 'alignments', {}).items()):
         path = _path('msa', '%s_%s' % (job_id, chain_id), 'a3m')
