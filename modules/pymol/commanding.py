@@ -386,6 +386,15 @@ USAGE
                 _msa_store.clear()
             except Exception:
                 pass
+            # Running searches go too (#298): one landing after this would put an
+            # alignment for a discarded session into the fresh one, minutes later and
+            # with nothing on screen to explain it.
+            try:
+                from pymol.msas import searching as _msa_searching
+                _msa_searching.cancel()
+                _msa_searching.forget()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

@@ -46,7 +46,11 @@ from .msa import \
       msa_delete,           \
       msa_rename,           \
       msa_attach,           \
-      msa_detach
+      msa_detach,           \
+      msa_search,           \
+      msa_server,           \
+      msa_status,           \
+      msa_cancel
 
 #--------------------------------------------------------------------
 from . import creating
