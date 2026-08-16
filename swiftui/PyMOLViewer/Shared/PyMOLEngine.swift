@@ -101,6 +101,10 @@ final class PyMOLEngine: ObservableObject {
     // Published state for UI binding
     @Published var feedbackLog: [String] = []
     @Published var objects: [MoleculeObject] = []
+    // Loaded multiple-sequence alignments (#296). Not objects: they carry no geometry
+    // and the Executive knows nothing about them, so they ride the same OBJPANEL:
+    // payload but live in their own list and their own panel section.
+    @Published var alignments: [AlignmentEntry] = []
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);
