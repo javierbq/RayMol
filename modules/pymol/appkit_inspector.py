@@ -476,6 +476,51 @@ def _alignment_map():
         return {}
 
 
+#: Seconds of granularity for a search row's age. The panel repaints when this payload
+#: changes, so sending the raw float would repaint it on every 500 ms tick for the
+#: several MINUTES a search runs. A bucket makes the row change 12 times a minute
+#: instead of 120, and it costs nothing that is visible: the row shows a coarse age
+#: because the server reports no progress fraction, and inventing one would be a
+#: plausible-looking lie (see Search.snapshot).
+SEARCH_ELAPSED_BUCKET = 5
+
+
+def _search_map():
+    """In-flight MSA searches (#298), oldest first, for the panel's progress rows.
+
+    An alignment takes MINUTES to build and does not exist until it lands, so without
+    this the object panel shows nothing at all while one is being searched for -- and
+    the ALIGNMENTS section hides itself when empty, so a user's first search gives no
+    sign anything is happening. `searching.active()` was written for this ("Drives the
+    app's progress row") and had no consumer until now.
+
+    Never raises, for the same reason _pending_map() and _alignment_map() do not: the
+    caller's single `except` writes no file at all, so a throw here freezes the panel
+    on a stale list.
+
+    Cheap by construction, and O(searches) rather than O(objects): `active()` is
+    normally EMPTY, and a snapshot is a handful of scalars copied under a short lock.
+    Nothing here reads the network or touches an a3m.
+    """
+    try:
+        from pymol.msas import searching
+        rows = []
+        for search in searching.active():
+            snapshot = search.snapshot()
+            elapsed = snapshot.get('elapsed') or 0
+            rows.append({
+                'id': snapshot['id'],
+                'name': snapshot['name'],
+                'phase': snapshot['phase'],
+                'server': snapshot['server'],
+                'elapsed': int(elapsed // SEARCH_ELAPSED_BUCKET
+                               * SEARCH_ELAPSED_BUCKET),
+            })
+        return rows
+    except Exception:
+        return []
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -543,6 +588,11 @@ def poll_panel():
             # the Executive knows about them -- so the panel draws them as their own
             # section rather than as rows in the object list.
             'alignments': _alignment_map(),
+            # Searches still running (#298). Gathered AFTER the pump above, so a search
+            # that just finished has already become an alignment and is counted once,
+            # in the section below it -- never as both a progress row and a result on
+            # the same tick.
+            'msa_searches': _search_map(),
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's

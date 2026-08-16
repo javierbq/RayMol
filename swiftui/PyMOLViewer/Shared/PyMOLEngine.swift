@@ -105,6 +105,10 @@ final class PyMOLEngine: ObservableObject {
     // and the Executive knows nothing about them, so they ride the same OBJPANEL:
     // payload but live in their own list and their own panel section.
     @Published var alignments: [AlignmentEntry] = []
+    // MSA searches still running (#298). Separate from `alignments` because a search is
+    // not an alignment yet — it has no depth, no columns and nothing to attach — and it
+    // stops existing the moment it becomes one.
+    @Published var msaSearches: [MSASearchEntry] = []
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);

@@ -426,6 +426,49 @@ struct AlignmentEntry: Identifiable, Equatable {
     }
 }
 
+/// One MSA search still running (#298).
+///
+/// A search takes MINUTES and produces nothing until it lands, so without a row for it
+/// the panel is silent for the whole time — and because the ALIGNMENTS section hides
+/// itself when empty, a user's first search shows no sign of anything happening at all.
+///
+/// Carries no progress fraction because the ColabFold server reports none. The phase
+/// and the age are what is actually known, and showing a bar derived from neither would
+/// be a plausible-looking lie.
+struct MSASearchEntry: Identifiable, Equatable {
+    let id: String
+    /// The name the alignment will land under, so the row and its result read the same.
+    let name: String
+    /// submit | queued | search | download | read | cached
+    let phase: String
+    let server: String
+    /// Seconds since the search began, quantised by the Python side — see
+    /// `appkit_inspector.SEARCH_ELAPSED_BUCKET` for why it is not the raw value.
+    let elapsed: Int
+
+    /// "searching" — what the phase means to someone who did not write it.
+    var phaseText: String {
+        switch phase {
+        case "submit": return "submitting"
+        case "queued": return "queued"
+        case "search": return "searching"
+        case "download": return "downloading"
+        case "read": return "reading"
+        case "cached": return "cached"
+        default: return phase
+        }
+    }
+
+    /// "searching · 2m 15s". Coarse on purpose; see the type comment.
+    var detail: String {
+        guard elapsed > 0 else { return phaseText }
+        let minutes = elapsed / 60, seconds = elapsed % 60
+        let age = minutes > 0 ? "\(minutes)m \(String(format: "%02d", seconds))s"
+                              : "\(seconds)s"
+        return "\(phaseText) · \(age)"
+    }
+}
+
 // MARK: - Group tree (#255)
 
 /// One drawn row of the flattened object tree.
@@ -1129,13 +1172,28 @@ struct ObjectPanel: View {
                     // Unlike OBJECTS and SELECTIONS, which are always meaningful, a
                     // permanently empty third section would be pure chrome for the
                     // many sessions that never load an alignment.
-                    if !engine.alignments.isEmpty {
-                        sectionHeader("ALIGNMENTS", id: "alignments",
-                                      tag: "\(engine.alignments.count)") { EmptyView() }
+                    //
+                    // A running search counts too (#298), or the section stays hidden
+                    // for the several minutes before the first alignment lands — which
+                    // is precisely when a user most needs to see that something is
+                    // happening.
+                    if !engine.alignments.isEmpty || !engine.msaSearches.isEmpty {
+                        sectionHeader(
+                            "ALIGNMENTS", id: "alignments",
+                            tag: "\(engine.alignments.count + engine.msaSearches.count)"
+                        ) { EmptyView() }
                         if openSections.contains("alignments") {
+                            // Searches first: they are what is changing, and each one
+                            // is replaced in place by its own result when it lands.
+                            ForEach(Array(engine.msaSearches.enumerated()),
+                                    id: \.element.id) { index, search in
+                                MSASearchRowView(entry: search, isAlt: index % 2 == 1)
+                            }
                             ForEach(Array(engine.alignments.enumerated()),
                                     id: \.element.id) { index, aln in
-                                AlignmentRowView(entry: aln, isAlt: index % 2 == 1)
+                                AlignmentRowView(
+                                    entry: aln,
+                                    isAlt: (index + engine.msaSearches.count) % 2 == 1)
                             }
                         }
                     }
@@ -1437,6 +1495,68 @@ private struct AlignmentRowView: View {
                                  : ", for \(attachment), which is not in this session"
         }
         return text
+    }
+}
+
+// MARK: - MSA search row (#298)
+
+/// One search in flight, in the place its result will appear.
+///
+/// Deliberately in the ALIGNMENTS section rather than a banner or a sheet: a search is
+/// a BACKGROUND operation — `msa_search` returns immediately and the user is expected to
+/// keep working — so a modal would be wrong, and the row turning into the alignment it
+/// produces is the clearest statement of what is going on.
+///
+/// An indeterminate spinner, not a bar. The ColabFold server reports queue position and
+/// nothing else; a percentage here would have to be invented.
+private struct MSASearchRowView: View {
+    let entry: MSASearchEntry
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Line up with the object rows' chevron + checkbox gutter, as the
+            // alignment rows do.
+            Spacer().frame(width: 13 + kGutterW)
+
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.mini)
+                .frame(width: 10, height: 10)
+
+            Text(entry.name)
+                .font(.system(size: 11))
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            Text(entry.detail)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        .help(tooltip)
+        .contextMenu {
+            // The one action there is. Cancelling by SEARCH ID rather than by name:
+            // the name is not unique until the alignment lands, and two searches for
+            // the same object would otherwise cancel whichever msa_cancel found first.
+            Button("Cancel search", role: .destructive) {
+                engine.runCommand("msa_cancel \(entry.id)")
+            }
+        }
+    }
+
+    private var tooltip: String {
+        "Building \(entry.name) on \(entry.server) — \(entry.detail)."
+            + " It runs in the background; the alignment appears here when it lands."
     }
 }
 
@@ -3860,6 +3980,15 @@ extension PyMOLEngine {
             // Alignments (#296), same reasoning again. Values are scalars only — no a3m
             // bytes travel through this payload.
             let alignments: [String: AlignmentSummary]?
+            // Searches still running (#298), oldest first. A LIST, unlike `alignments`:
+            // the order is the order they were started, and a JSON object would lose it
+            // the way the alignments decode has to sort to get it back.
+            //
+            // Optional for the same reason as every field above, and it matters more
+            // here than anywhere: this decode is a single `guard let`, so one missing
+            // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
+            // panel on its last list.
+            let msa_searches: [MSASearchSummary]?
 
             struct AlignmentSummary: Decodable {
                 let depth: Int
@@ -3867,6 +3996,14 @@ extension PyMOLEngine {
                 let residues: Int
                 let target: String
                 let chain: String
+            }
+
+            struct MSASearchSummary: Decodable {
+                let id: String
+                let name: String
+                let phase: String
+                let server: String
+                let elapsed: Int
             }
         }
 
@@ -3914,12 +4051,21 @@ extension PyMOLEngine {
                            target: $0.value.target, chain: $0.value.chain)
         }
 
+        // Already oldest-first, so no sort: see the payload comment.
+        let searches = (payload.msa_searches ?? []).map {
+            MSASearchEntry(id: $0.id, name: $0.name, phase: $0.phase,
+                           server: $0.server, elapsed: $0.elapsed)
+        }
+
         DispatchQueue.main.async {
             // Guard: the ~500ms poll usually returns the same object list;
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
             if self.alignments != alignments { self.alignments = alignments }
+            // Same guard, and it carries the weight here: with no search running this
+            // is empty every tick and must not repaint the panel twice a second.
+            if self.msaSearches != searches { self.msaSearches = searches }
         }
     }
 }
