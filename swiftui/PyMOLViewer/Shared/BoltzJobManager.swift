@@ -227,10 +227,19 @@ final class BoltzJobManager {
     }
 
     /// Refuse before allocating anything. Returns nil when the run may proceed.
+    ///
+    /// Sees only what the REQUEST says, because it runs on the main thread from
+    /// `pollFeedback`: the alignment's real depth costs a parse of the a3m, which
+    /// belongs on the inference queue. `alignmentPreflight` makes that second check.
     static func preflight(_ request: Request) -> Status? {
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         switch PredictSizeGuard.decide(tokens: tokens,
                                        availableBytes: PredictSizeGuard.availableBytes) {
+        case .refuseDepth:
+            // Unreachable: this call passes no depth, so it defaults to 1. Handled
+            // rather than defaulted away so that adding a depth here cannot silently
+            // become "proceed".
+            return refusal("the alignment is too large for this machine")
         case .ok, .warn:
             // `.warn` deliberately proceeds, so `okFraction` has no effect on this path
             // today — the tier is not yet surfaced anywhere. It is kept rather than
@@ -241,11 +250,45 @@ final class BoltzJobManager {
             // `.warn` there rather than reviving it here.
             return nil
         case let .refuse(maxFittingTokens):
-            return Status(state: "failed", phase: "preflight", fraction: 0,
-                          error: "input of \(tokens) residues is too large for this "
-                               + "machine; at most about \(maxFittingTokens) fit",
-                          resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
+            return refusal("input of \(tokens) residues is too large for this machine; "
+                         + "at most about \(maxFittingTokens) fit")
         }
+    }
+
+    /// Refuse a run whose ALIGNMENT is what will not fit. Returns nil to proceed.
+    ///
+    /// The deepest alignment is used against the total token count, rather than summing
+    /// per-chain products. It is the conservative reading of the two — a dimer with one
+    /// deep alignment is charged as though both chains carried it — and it is the one
+    /// that cannot license a run that then dies, which is the only direction that
+    /// matters here.
+    static func alignmentPreflight(_ request: Request,
+                                   alignments: [String: MSAAlignment]) -> Status? {
+        guard let deepest = alignments.values.map(\.depth).max(), deepest > 1 else {
+            return nil
+        }
+        let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
+        switch PredictSizeGuard.decide(tokens: tokens, msaDepth: deepest,
+                                       availableBytes: PredictSizeGuard.availableBytes) {
+        case .ok, .warn:
+            return nil
+        case let .refuseDepth(maxFittingDepth):
+            return refusal(
+                maxFittingDepth >= 1
+                    ? "an alignment \(deepest) rows deep is too large for this machine "
+                    + "at \(tokens) residues; retry with msa_depth=\(maxFittingDepth)"
+                    : "\(tokens) residues with an alignment is too large for this "
+                    + "machine")
+        case let .refuse(maxFittingTokens):
+            return refusal("input of \(tokens) residues is too large for this machine; "
+                         + "at most about \(maxFittingTokens) fit")
+        }
+    }
+
+    /// Both refusals read the same to a caller; only the advice differs.
+    private static func refusal(_ message: String) -> Status {
+        Status(state: "failed", phase: "preflight", fraction: 0, error: message,
+               resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
     }
 
     // MARK: - Handing the result back to Python
@@ -322,8 +365,22 @@ final class BoltzJobManager {
                        error: "unsupported input: \(canonical.diagnostics)")
                 return
             }
-            let features = try BoltzFeaturizer().featurize(
-                canonical, alignments: try Self.loadAlignments(request))
+            let alignments = try Self.loadAlignments(request)
+            // The SECOND size check, and the one that can see the alignment. `preflight`
+            // runs on the main thread from pollFeedback and may only look at the request,
+            // where the depth is a CAP (16384 by default) rather than what the a3m
+            // actually holds — deciding on the cap would refuse a 200-row alignment as
+            // though it were 16,384. The real depth is only known once the a3m is parsed,
+            // and parsing megabytes of it on the main thread is not an option. Here it is
+            // known, this is the inference queue, and nothing large has been allocated
+            // yet: featurize on the next line is where the tensors appear.
+            if let failure = Self.alignmentPreflight(request, alignments: alignments) {
+                Self.discardPlaceholder(request)
+                try? Self.writeStatus(failure, to: statusURL)
+                return
+            }
+            let features = try BoltzFeaturizer().featurize(canonical,
+                                                          alignments: alignments)
 
             if isCancelled() {
                 Self.discardPlaceholder(request)

@@ -178,7 +178,7 @@ class BindAlignmentsTest(MSAPredictTestCase):
 
     def setUp(self):
         MSAPredictTestCase.setUp(self)
-        self.predictor = _stub('msa', supports_msa=True)
+        self.predictor = _stub('withmsa', supports_msa=True)
 
     def testAMatchingQueryBinds(self):
         toy = self.load_toy('toy')
@@ -231,7 +231,7 @@ class BindAlignmentsTest(MSAPredictTestCase):
         """Nothing is created for a refused alignment -- no job, no placeholder."""
         self.load_toy('toy')
         with self.assertRaises(PredictionInputError):
-            cmd.predict('msa', 'W' + QUERY[1:], msa='toy')
+            cmd.predict('withmsa', 'W' + QUERY[1:], msa='toy')
         self.assertEqual(predicting._JOBS, {})
         self.assertEqual(predicting.pending_objects(), {})
 
@@ -249,13 +249,13 @@ class MSAArgumentTest(MSAPredictTestCase):
 
     def setUp(self):
         MSAPredictTestCase.setUp(self)
-        _stub('msa', supports_msa=True,
+        _stub('withmsa', supports_msa=True,
               options={'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
                        'msa_depth': MAX_MSA_DEPTH})
 
     def testOneSlotForOneChain(self):
         toy = self.load_toy('toy')
-        job, _ = self.quiet_predict('msa', QUERY, msa='toy')
+        job, _ = self.quiet_predict('withmsa', QUERY, msa='toy')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testSlotsAreAssignedByPosition(self):
@@ -263,24 +263,24 @@ class MSAArgumentTest(MSAPredictTestCase):
         second = self.load_toy('second')
         # Both chains are the same sequence here on purpose -- the assertion is about
         # WHICH alignment landed on which chain, not about the sequences.
-        job, _ = self.quiet_predict('msa', '%s/%s' % (QUERY, QUERY),
+        job, _ = self.quiet_predict('withmsa', '%s/%s' % (QUERY, QUERY),
                                     msa='first/second')
         self.assertEqual(job.spec.alignments, {'A': first, 'B': second})
 
     def testAnEmptySlotFoldsThatChainSingleSequence(self):
         toy = self.load_toy('toy')
-        job, _ = self.quiet_predict('msa', '%s/%s' % (OTHER, QUERY), msa='/toy')
+        job, _ = self.quiet_predict('withmsa', '%s/%s' % (OTHER, QUERY), msa='/toy')
         self.assertEqual(job.spec.alignments, {'B': toy})
 
     def testTrailingSlotsMayBeOmitted(self):
         toy = self.load_toy('toy')
-        job, _ = self.quiet_predict('msa', '%s/%s' % (QUERY, OTHER), msa='toy')
+        job, _ = self.quiet_predict('withmsa', '%s/%s' % (QUERY, OTHER), msa='toy')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testMoreSlotsThanChainsIsRefused(self):
         self.load_toy('toy')
         with self.assertRaises(PredictionInputError) as caught:
-            cmd.predict('msa', QUERY, msa='toy/toy')
+            cmd.predict('withmsa', QUERY, msa='toy/toy')
         message = str(caught.exception)
         self.assertIn('2', message)
         self.assertIn('1 chain', message)
@@ -290,14 +290,14 @@ class MSAArgumentTest(MSAPredictTestCase):
         of them was wrong."""
         self.load_toy('toy')
         with self.assertRaises(PredictionInputError) as caught:
-            cmd.predict('msa', '%s/%s' % (QUERY, OTHER), msa='toy/nope')
+            cmd.predict('withmsa', '%s/%s' % (QUERY, OTHER), msa='toy/nope')
         message = str(caught.exception)
         self.assertIn('chain B', message)
         self.assertIn('nope', message)
 
     def testWhitespaceAroundASlotIsIgnored(self):
         toy = self.load_toy('toy')
-        job, _ = self.quiet_predict('msa', '%s/%s' % (QUERY, OTHER), msa=' toy / ')
+        job, _ = self.quiet_predict('withmsa', '%s/%s' % (QUERY, OTHER), msa=' toy / ')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testAnExplicitArgumentOverridesWhatIsAttached(self):
@@ -305,7 +305,7 @@ class MSAArgumentTest(MSAPredictTestCase):
         cmd.fab(QUERY, 'target', chain='A')
         self.load_toy('attached', 'target', 'A')
         explicit = self.load_toy('explicit')
-        job, _ = self.quiet_predict('msa', 'target', msa='explicit')
+        job, _ = self.quiet_predict('withmsa', 'target', msa='explicit')
         self.assertEqual(job.spec.alignments, {'A': explicit})
 
     def testAllEmptySlotsMeanSingleSequenceEvenWithSomethingAttached(self):
@@ -315,7 +315,7 @@ class MSAArgumentTest(MSAPredictTestCase):
         cmd.fab(QUERY, 'target', chain='A')
         cmd.fab(OTHER, 'binder', chain='B')
         self.load_toy('attached', 'target', 'A')
-        job, _ = self.quiet_predict('msa', 'target or binder', msa='/')
+        job, _ = self.quiet_predict('withmsa', 'target or binder', msa='/')
         self.assertEqual(job.spec.alignments, {})
 
 
@@ -324,12 +324,12 @@ class AttachmentTest(MSAPredictTestCase):
 
     def setUp(self):
         MSAPredictTestCase.setUp(self)
-        _stub('msa', supports_msa=True)
+        _stub('withmsa', supports_msa=True)
 
     def testAnAttachedAlignmentIsUsedWithoutBeingNamed(self):
         cmd.fab(QUERY, 'target', chain='A')
         toy = self.load_toy('toy', 'target', 'A')
-        job, _ = self.quiet_predict('msa', 'target')
+        job, _ = self.quiet_predict('withmsa', 'target')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testASelectionOfTheAttachedChainStillFindsIt(self):
@@ -337,7 +337,7 @@ class AttachmentTest(MSAPredictTestCase):
         survives being reached through a selection rather than the object name."""
         cmd.fab(QUERY, 'target', chain='A')
         toy = self.load_toy('toy', 'target', 'A')
-        job, _ = self.quiet_predict('msa', 'target and polymer')
+        job, _ = self.quiet_predict('withmsa', 'target and polymer')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testALiteralSequenceNeverPicksUpAnAttachment(self):
@@ -345,20 +345,20 @@ class AttachmentTest(MSAPredictTestCase):
         text is a different, deliberately unadorned request."""
         cmd.fab(QUERY, 'target', chain='A')
         self.load_toy('toy', 'target', 'A')
-        job, _ = self.quiet_predict('msa', QUERY)
+        job, _ = self.quiet_predict('withmsa', QUERY)
         self.assertEqual(job.spec.alignments, {})
 
     def testAnAlignmentAttachedToAnotherObjectIsNotUsed(self):
         cmd.fab(QUERY, 'target', chain='A')
         cmd.fab(QUERY, 'other', chain='A')
         self.load_toy('toy', 'other', 'A')
-        job, _ = self.quiet_predict('msa', 'target')
+        job, _ = self.quiet_predict('withmsa', 'target')
         self.assertEqual(job.spec.alignments, {})
 
     def testAnUnattachedAlignmentIsNotUsed(self):
         cmd.fab(QUERY, 'target', chain='A')
         self.load_toy('toy')
-        job, _ = self.quiet_predict('msa', 'target')
+        job, _ = self.quiet_predict('withmsa', 'target')
         self.assertEqual(job.spec.alignments, {})
 
     def testADanglingAttachmentIsSimplyNotFound(self):
@@ -368,7 +368,7 @@ class AttachmentTest(MSAPredictTestCase):
         self.load_toy('toy', 'ghost', 'A')
         cmd.delete('ghost')
         cmd.fab(QUERY, 'target', chain='A')
-        job, _ = self.quiet_predict('msa', 'target')
+        job, _ = self.quiet_predict('withmsa', 'target')
         self.assertEqual(job.spec.alignments, {})
 
     def testTwoAlignmentsOnOneChainAreRefusedRatherThanPicked(self):
@@ -378,7 +378,7 @@ class AttachmentTest(MSAPredictTestCase):
         self.load_toy('first', 'target', 'A')
         self.load_toy('second', 'target', 'A')
         with self.assertRaises(PredictionInputError) as caught:
-            cmd.predict('msa', 'target')
+            cmd.predict('withmsa', 'target')
         message = str(caught.exception)
         self.assertIn('first', message)
         self.assertIn('second', message)
@@ -388,7 +388,7 @@ class AttachmentTest(MSAPredictTestCase):
         cmd.fab(QUERY, 'complex', chain='A')
         cmd.fab(OTHER, 'binder', chain='B')
         toy = self.load_toy('toy', 'complex', 'A')
-        job, _ = self.quiet_predict('msa', 'complex or binder')
+        job, _ = self.quiet_predict('withmsa', 'complex or binder')
         self.assertEqual(job.spec.alignments, {'A': toy})
 
     def testAnAttachmentIsCheckedAgainstTheSequenceBeingFolded(self):
@@ -397,7 +397,7 @@ class AttachmentTest(MSAPredictTestCase):
         cmd.fab(QUERY, 'target', chain='A')
         self.load_toy('toy', 'target', 'A')
         with self.assertRaises(PredictionInputError):
-            cmd.predict('msa', 'target and resi 1-10')
+            cmd.predict('withmsa', 'target and resi 1-10')
 
 
 class DepthOptionTest(MSAPredictTestCase):
@@ -405,29 +405,29 @@ class DepthOptionTest(MSAPredictTestCase):
 
     def setUp(self):
         MSAPredictTestCase.setUp(self)
-        _stub('msa', supports_msa=True,
+        _stub('withmsa', supports_msa=True,
               options={'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
                        'msa_depth': MAX_MSA_DEPTH})
 
     def testTheDefaultIsTheCeilingAndIsNotSilentlyClamped(self):
-        job, _ = self.quiet_predict('msa', QUERY)
+        job, _ = self.quiet_predict('withmsa', QUERY)
         self.assertEqual(job.options.msa_depth, MAX_MSA_DEPTH)
 
     def testAnExplicitDepthIsCarried(self):
-        job, _ = self.quiet_predict('msa', QUERY, msa_depth=64)
+        job, _ = self.quiet_predict('withmsa', QUERY, msa_depth=64)
         self.assertEqual(job.options.msa_depth, 64)
 
     def testZeroIsRejected(self):
         """Not "no limit". A depth of zero would be an alignment with no rows at all,
         which the parser cannot produce and which is never what was meant."""
-        self.assertRaises(PredictionOptionError, cmd.predict, 'msa', QUERY,
+        self.assertRaises(PredictionOptionError, cmd.predict, 'withmsa', QUERY,
                           msa_depth=0)
 
     def testAboveTheCeilingIsRejectedRatherThanClamped(self):
         """The parser on the other side would ignore it, so accepting it would report
         a run using more of the alignment than it actually did."""
         with self.assertRaises(PredictionOptionError) as caught:
-            cmd.predict('msa', QUERY, msa_depth=MAX_MSA_DEPTH + 1)
+            cmd.predict('withmsa', QUERY, msa_depth=MAX_MSA_DEPTH + 1)
         self.assertIn(str(MAX_MSA_DEPTH), str(caught.exception))
 
     def testTheCeilingIsBoltzMLXsOwnMaximum(self):
@@ -439,7 +439,7 @@ class DepthOptionTest(MSAPredictTestCase):
         """It is an option, not a consequence: setting it on a single-sequence run is
         pointless but not wrong, and rejecting it would make the option's validity
         depend on the input."""
-        job, _ = self.quiet_predict('msa', QUERY, msa_depth=32)
+        job, _ = self.quiet_predict('withmsa', QUERY, msa_depth=32)
         self.assertEqual(job.spec.alignments, {})
         self.assertEqual(job.options.msa_depth, 32)
 
@@ -449,7 +449,7 @@ class ReportingTest(MSAPredictTestCase):
 
     def setUp(self):
         MSAPredictTestCase.setUp(self)
-        _stub('msa', supports_msa=True,
+        _stub('withmsa', supports_msa=True,
               options={'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
                        'msa_depth': MAX_MSA_DEPTH})
 
@@ -458,37 +458,37 @@ class ReportingTest(MSAPredictTestCase):
         at all, so a run whose inputs cannot be recovered from its output is the
         default unless this is unconditional."""
         self.load_toy('toy')
-        _, printed = self.quiet_predict('msa', QUERY, msa='toy', quiet=1)
+        _, printed = self.quiet_predict('withmsa', QUERY, msa='toy', quiet=1)
         self.assertIn('toy', printed)
         self.assertIn(str(TOY_DEPTH), printed)
 
     def testItIsPrintedWhenNotQuietToo(self):
         self.load_toy('toy')
-        _, printed = self.quiet_predict('msa', QUERY, msa='toy', quiet=0)
+        _, printed = self.quiet_predict('withmsa', QUERY, msa='toy', quiet=0)
         self.assertIn('toy', printed)
 
     def testASingleSequenceRunSaysNothingAboutAlignments(self):
         """Every prediction was single-sequence before this existed; a line saying so
         on every run is noise."""
-        _, printed = self.quiet_predict('msa', QUERY, quiet=1)
+        _, printed = self.quiet_predict('withmsa', QUERY, quiet=1)
         self.assertNotIn('alignment', printed)
 
     def testAChainWithoutOneIsNamedAsSingleSequence(self):
         """In a mixed run the chain that did NOT get one is the interesting half."""
         self.load_toy('toy')
-        _, printed = self.quiet_predict('msa', '%s/%s' % (QUERY, OTHER), msa='toy')
+        _, printed = self.quiet_predict('withmsa', '%s/%s' % (QUERY, OTHER), msa='toy')
         self.assertIn('B single-sequence', printed)
 
     def testTruncationIsReportedRatherThanSilent(self):
         """Depth is the largest determinant of runtime and peak memory, so a run that
         used 4 of 8 rows must not report 8."""
         self.load_toy('toy')
-        _, printed = self.quiet_predict('msa', QUERY, msa='toy', msa_depth=4)
+        _, printed = self.quiet_predict('withmsa', QUERY, msa='toy', msa_depth=4)
         self.assertIn('4 of %d' % TOY_DEPTH, printed)
 
     def testAnUntruncatedAlignmentReportsItsWholeDepth(self):
         self.load_toy('toy')
-        _, printed = self.quiet_predict('msa', QUERY, msa='toy',
+        _, printed = self.quiet_predict('withmsa', QUERY, msa='toy',
                                         msa_depth=TOY_DEPTH)
         self.assertIn('%d sequences' % TOY_DEPTH, printed)
         self.assertNotIn(' of ', printed)
@@ -625,7 +625,7 @@ class EndToEndTest(MSAPredictTestCase):
     """From `load_msa` to a request on disk, the way a user would drive it."""
 
     def testFoldAnObjectWithItsAttachedAlignment(self):
-        _stub('msa', supports_msa=True,
+        _stub('withmsa', supports_msa=True,
               options={'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
                        'msa_depth': MAX_MSA_DEPTH})
         cmd.fab(QUERY, 'target', chain='A')
@@ -633,7 +633,7 @@ class EndToEndTest(MSAPredictTestCase):
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            job = cmd.predict('msa', 'target')
+            job = cmd.predict('withmsa', 'target')
         # The alignment was found without being named, and reported for being so.
         self.assertEqual(list(job.spec.alignments), ['A'])
         self.assertIn('toy', buf.getvalue())

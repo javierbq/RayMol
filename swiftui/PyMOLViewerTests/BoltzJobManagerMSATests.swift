@@ -201,5 +201,68 @@ final class BoltzJobManagerMSATests: XCTestCase {
                             userInfo: [NSLocalizedDescriptionKey: "no such file"])
         XCTAssertEqual(BoltzJobManager.message(for: error), "no such file")
     }
+
+    // MARK: - End to end
+
+    /// A mismatched alignment must land as a FAILED JOB carrying the featurizer's own
+    /// message — the acceptance criterion for #297's first non-negotiable, driven
+    /// through the real `handle(marker:)` entry point rather than asserted on a helper.
+    ///
+    /// No weights needed, and that is not a trick: `featurize` runs before the predictor
+    /// is loaded, so a mismatch is caught without a 505 MB bundle. That ordering is
+    /// itself worth pinning — it is what makes a wrong a3m cost seconds instead of a
+    /// download.
+    func testAMismatchedAlignmentFailsTheJobWithTheFeaturizersMessage() throws {
+        let job = "msa-e2e-\(UUID().uuidString.prefix(8))"
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+        let requestURL = temp.appendingPathComponent("raymol_predict_req_\(job).json")
+        let statusURL = temp.appendingPathComponent("raymol_predict_status_\(job).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: requestURL)
+            try? FileManager.default.removeItem(at: statusURL)
+        }
+
+        // Same length, one residue different: msaQueryMismatch rather than
+        // msaLengthMismatch, because it is the one whose message names a POSITION and
+        // therefore the one that loses the most to an NSError placeholder.
+        let a3m = try writeA3M("mismatch", query: "MKTAW", depth: 3)
+        let payload: [String: Any] = [
+            "job_id": job,
+            "weights_dir": temp.appendingPathComponent("no-such-weights").path,
+            "chains": [["chain": "A", "sequence": "MKTAY"]],
+            "recycling_steps": 3, "diffusion_steps": 200, "seed": 0,
+            "out_path": dir.appendingPathComponent("out.pdb").path,
+            "status_path": statusURL.path,
+            "alignments": [["chain": "A", "a3m_path": a3m]],
+            "msa_depth": 16_384,
+        ]
+        try JSONSerialization.data(withJSONObject: payload).write(to: requestURL)
+
+        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(job)")
+
+        let settled = expectation(description: "job settles")
+        let poll = DispatchQueue(label: "poll")
+        func check(_ attempt: Int) {
+            if let data = try? Data(contentsOf: statusURL),
+               let status = try? JSONDecoder().decode(BoltzJobManager.Status.self,
+                                                      from: data),
+               status.state != "queued" {
+                return settled.fulfill()
+            }
+            guard attempt < 300 else { return settled.fulfill() }
+            poll.asyncAfter(deadline: .now() + 0.1) { check(attempt + 1) }
+        }
+        poll.async { check(0) }
+        wait(for: [settled], timeout: 40)
+
+        let data = try Data(contentsOf: statusURL)
+        let status = try JSONDecoder().decode(BoltzJobManager.Status.self, from: data)
+        XCTAssertEqual(status.state, "failed")
+        let error = try XCTUnwrap(status.error)
+        XCTAssertTrue(error.contains("chain A"), error)
+        XCTAssertFalse(error.contains("The operation couldn"),
+                       "the featurizer's message was replaced by the NSError "
+                       + "placeholder: \(error)")
+    }
 }
 #endif

@@ -131,14 +131,14 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    because RayMol's Metal renderer reads object state on the main thread without taking
    PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
 
-8. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
+9. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
    changes outside your own.
 
-9. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
+10. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
    test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
    runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
    first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
 
-10. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+11. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
     merging. No CI job compiles Swift, and the shared target has broken each platform from the
     other before (#174, #226/#238).

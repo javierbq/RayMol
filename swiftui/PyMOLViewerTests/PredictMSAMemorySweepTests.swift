@@ -17,11 +17,20 @@ import XCTest
 /// shipped operating point (recycling 3 / 200 diffusion steps), so the grid is tens of
 /// minutes, and the normal suite must not block on it.
 ///
-///     cd swiftui && RAYMOL_PREDICT_MSA_SWEEP=1 xcodebuild test \
-///       -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
-///       -destination 'platform=macOS,arch=arm64' -configuration Release \
-///       -skipPackagePluginValidation -skipMacroValidation \
+///     xcodebuild test -project swiftui/PyMOLViewer.xcodeproj \
+///       -scheme UnitTests_macOS_Inference \
+///       -destination 'platform=macOS,arch=arm64' -configuration Debug \
+///       -derivedDataPath swiftui/build_mac_dd \
+///       -skipPackagePluginValidation -skipMacroValidation -test-timeouts-enabled NO \
 ///       -only-testing:PyMOLViewerTests/PredictMSAMemorySweepTests
+///
+/// Two things about that command are not incidental. The gate must come from the
+/// SCHEME (`UnitTests_macOS_Inference`) — a unit-test bundle hosted in the app reads
+/// the environment xcodebuild builds from the scheme, so `RAYMOL_PREDICT_MSA_SWEEP=1
+/// xcodebuild test` silently skips. And it is **Debug**, because the Release
+/// configuration is the App Store one: sandboxed, hardened, Distribution-signed, and
+/// therefore unable to read the weights out of Application Support. Debug does not
+/// distort the reading — see the depth-1 calibration in `PredictSizeGuardTests`.
 ///
 /// **The alignments are synthetic, and that is sound here.** Peak memory is decided by
 /// the SHAPES of the MSA tensors — depth × tokens — not by what the rows contain, so
