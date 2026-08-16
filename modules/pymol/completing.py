@@ -93,6 +93,15 @@ def _predict_job_shortcut():
         return Shortcut([])
 
 
+def _msa_shortcut():
+    """Names of the alignments loaded this session (#296). Never raises."""
+    try:
+        from pymol.msas import store
+        return Shortcut(store.names())
+    except Exception:
+        return Shortcut([])
+
+
 def get_auto_arg_list(self_cmd=cmd):
     self_cmd = self_cmd._weakrefproxy
 
@@ -105,6 +114,7 @@ def get_auto_arg_list(self_cmd=cmd):
     aa_scene_e = [lambda: Shortcut(cmd.get_scene_list()), 'scene', '']
     aa_predictor_c = [_predictor_shortcut, 'predictor', ', ']
     aa_predict_job_c = [_predict_job_shortcut, 'job id', ', ']
+    aa_msa_c = [_msa_shortcut, 'alignment', ', ']
 
     return [
 # 1st
@@ -180,6 +190,10 @@ def get_auto_arg_list(self_cmd=cmd):
         'map_trim'       : aa_map_c,
         'matrix_copy'    : aa_obj_c,
         'matrix_reset'   : aa_obj_c,
+        'msa_attach'     : aa_msa_c,
+        'msa_delete'     : aa_msa_c,
+        'msa_detach'     : aa_msa_c,
+        'msa_rename'     : aa_msa_c,
         'mse2met'        : aa_sel_e,
         'order'          : aa_nam_s,
         'orient'         : aa_sel_e,
@@ -272,6 +286,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'label'          : aa_exp_e,
         'load'           : aa_sel_c,
         'load_traj'      : aa_obj_c,
+        'msa_attach'     : aa_obj_c,
         'map_set'        : [ self_cmd.editing.map_op_sc      , 'operator'        , ', ' ],
         'map_new'        : [ self_cmd.creating.map_type_sc   , 'map type'        , ', ' ],
         'map_trim'       : aa_sel_c,

@@ -1,0 +1,20 @@
+# Toy alignment for testing/tests/msa. Query is 24 columns.
+# Row A0A006 repeats A0A003 on purpose: depth is reported after dedup.
+>query
+MKTAYIAKQRQISFVKSHFSRQLE
+>UniRef100_A0A001 an insertion: the lowercase run occupies no column
+MKTAYIAKQRQIsfvSFVKSHFSRQLE
+>UniRef100_A0A002 a deletion, written as gaps
+MKTAYIAKQRQ--FVKSHFSRQLE
+>UniRef100_A0A003 divergent
+MRTAYLAKQRQISFVKSHFSRQLD
+>UniRef100_A0A004 both at once
+MKTAYIkiAKQRQ--FVKSHFSRQLE
+>homolog_no_taxonomy_header carries no UniRef100 accession
+MKTAYIAKQRQISFVKAHFSRQLE
+>UniRef100_A0A005 a trailing insertion run, which upstream drops
+MKTAYIAKQRQISFVKSHFSRQLEkkk
+>UniRef100_A0A006 duplicate of A0A003, dropped on load
+MRTAYLAKQRQISFVKSHFSRQLD
+>UniRef100_A0A007 distinct again
+MKTAYIAKQRQISFVKSHFSRQLW

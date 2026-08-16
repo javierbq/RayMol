@@ -394,6 +394,38 @@ struct ObjectEntry: Identifiable, Equatable {
     }
 }
 
+// MARK: - Alignments (#296)
+
+/// One loaded multiple-sequence alignment.
+///
+/// Deliberately NOT an `ObjectEntry`. An alignment has no geometry, nothing in the
+/// Executive knows about it, and not one of A/S/H/L/C means anything for it — so it
+/// gets its own type and its own section rather than a row that looks actionable and
+/// is not. Everything here was computed once, at load time, on the Python side: the
+/// panel polls every 500 ms and must never make anyone re-read an a3m to draw a row.
+struct AlignmentEntry: Identifiable, Equatable {
+    let id: String
+    let name: String
+    /// Sequences, AFTER duplicate rows are dropped — what the featurizer will see.
+    let depth: Int
+    /// Aligned columns, which is the query's length with its gaps.
+    let columns: Int
+    /// The query's length without them.
+    let residues: Int
+    /// Object and chain this alignment was attached to, by NAME: renaming or deleting
+    /// the object does not update it, so this can outlive what it points at.
+    let target: String
+    let chain: String
+
+    /// "8 × 24" — sequences by columns.
+    var shape: String { "\(depth) × \(columns)" }
+
+    var attachment: String? {
+        guard !target.isEmpty else { return nil }
+        return chain.isEmpty ? target : "\(target)/\(chain)"
+    }
+}
+
 // MARK: - Group tree (#255)
 
 /// One drawn row of the flattened object tree.
@@ -962,7 +994,8 @@ struct ObjectPanel: View {
     @State private var groupNameText = ""
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
-    @State private var openSections: Set<String> = ["objects", "selections"]
+    @State private var openSections: Set<String> = ["objects", "selections",
+                                                    "alignments"]
     // Which group rows are expanded. Deliberately NOT engine.expandedDetail: that
     // is a single-slot accordion for the rep inspector whose didSet re-polls and
     // which ContentView reads to resize the panel, so reusing it would make
@@ -1088,6 +1121,21 @@ struct ObjectPanel: View {
                         } else {
                             ForEach(Array(selections.enumerated()), id: \.element.id) { index, obj in
                                 ObjectRowView(entry: obj, isAlt: index % 2 == 1)
+                            }
+                        }
+                    }
+
+                    // ALIGNMENTS (#296) — shown only when there is something in it.
+                    // Unlike OBJECTS and SELECTIONS, which are always meaningful, a
+                    // permanently empty third section would be pure chrome for the
+                    // many sessions that never load an alignment.
+                    if !engine.alignments.isEmpty {
+                        sectionHeader("ALIGNMENTS", id: "alignments",
+                                      tag: "\(engine.alignments.count)") { EmptyView() }
+                        if openSections.contains("alignments") {
+                            ForEach(Array(engine.alignments.enumerated()),
+                                    id: \.element.id) { index, aln in
+                                AlignmentRowView(entry: aln, isAlt: index % 2 == 1)
                             }
                         }
                     }
@@ -1290,6 +1338,64 @@ private struct ObjectRowView: View {
 
     private func toggleEnabled() {
         engine.setObjectEnabled(entry.name, !entry.isEnabled)
+    }
+}
+
+// MARK: - Alignment row (#296)
+
+/// One alignment: its name, its shape, and what it is attached to.
+///
+/// No visibility toggle and no A/S/H/L/C. There is nothing to enable, show, hide,
+/// label or color — an alignment is data the next prediction reads, not something
+/// drawn — and offering the controls anyway would make the row look actionable when
+/// every one of them is a no-op. Deleting and renaming are `msa_delete` / `msa_rename`
+/// on the command line, which the context menu offers here.
+private struct AlignmentRowView: View {
+    let entry: AlignmentEntry
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Line up with the object rows' chevron + checkbox gutter.
+            Spacer().frame(width: 13 + kGutterW)
+
+            Text(entry.name)
+                .font(.system(size: 11))
+                .foregroundColor(PanelTheme.textColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            if let attachment = entry.attachment {
+                Text(attachment)
+                    .font(.system(size: 9))
+                    .foregroundColor(PanelTheme.selectionTextColor)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+            Text(entry.shape)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        .help("\(entry.depth) sequences × \(entry.columns) columns"
+              + " (\(entry.residues) residues)"
+              + (entry.attachment.map { ", for \($0)" } ?? ""))
+        .contextMenu {
+            Button("Detach") { engine.runCommand("msa_detach \(entry.name)") }
+                .disabled(entry.attachment == nil)
+            Divider()
+            Button("Delete", role: .destructive) {
+                engine.runCommand("msa_delete \(entry.name)")
+            }
+        }
     }
 }
 
@@ -3710,6 +3816,17 @@ extension PyMOLEngine {
             // non-optional field would fail the whole decode against an older bundled
             // appkit_inspector.py and freeze the panel on its last list.
             let pending: [String: String]?
+            // Alignments (#296), same reasoning again. Values are scalars only — no a3m
+            // bytes travel through this payload.
+            let alignments: [String: AlignmentSummary]?
+
+            struct AlignmentSummary: Decodable {
+                let depth: Int
+                let columns: Int
+                let residues: Int
+                let target: String
+                let chain: String
+            }
         }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
@@ -3747,11 +3864,21 @@ extension PyMOLEngine {
             ))
         }
 
+        // Sorted by name so the order is stable: the payload is a JSON object, and
+        // Foundation's dictionary decode does not preserve the store's load order.
+        let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
+            AlignmentEntry(id: "aln_\($0.key)", name: $0.key,
+                           depth: $0.value.depth, columns: $0.value.columns,
+                           residues: $0.value.residues,
+                           target: $0.value.target, chain: $0.value.chain)
+        }
+
         DispatchQueue.main.async {
             // Guard: the ~500ms poll usually returns the same object list;
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            if self.alignments != alignments { self.alignments = alignments }
         }
     }
 }

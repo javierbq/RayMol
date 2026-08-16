@@ -708,7 +708,50 @@ def _build_row(name, is_selection, enabled, row_width=280):
     return row
 
 
-def _rebuild_rows(objects, selections, enabled_set):
+def _alignments():
+    """name -> summary for every loaded MSA (#296). Never raises.
+
+    An alignment is not an object -- it has no geometry and nothing in the Executive
+    knows about it -- so it gets its own section rather than a row in the object list.
+    """
+    try:
+        from pymol.msas import store
+        return store.panel_summary()
+    except Exception:
+        return {}
+
+
+def _build_alignment_row(name, entry, row_width=300):
+    """One alignment: its name, its shape, and what it is attached to.
+
+    Deliberately without the A/S/H/L/C buttons. There is nothing to show, hide,
+    label or color -- offering the controls anyway would be a row that looks
+    actionable and is not.
+    """
+    row = AppKit.NSView.alloc().initWithFrame_(
+        AppKit.NSMakeRect(0, 0, row_width, 26))
+
+    label = AppKit.NSTextField.labelWithString_(name)
+    label.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+    label.setTextColor_(_TEXT_COLOR)
+    label.setFrame_(AppKit.NSMakeRect(6, 5, max(row_width * 0.45, 60), 16))
+    row.addSubview_(label)
+
+    detail = '%d x %d' % (entry.get('depth', 0), entry.get('columns', 0))
+    if entry.get('target'):
+        detail += '  %s' % entry['target']
+        if entry.get('chain'):
+            detail += '/%s' % entry['chain']
+    shape = AppKit.NSTextField.labelWithString_(detail)
+    shape.setFont_(AppKit.NSFont.systemFontOfSize_(10))
+    shape.setTextColor_(_HEADER_COLOR)
+    shape.setFrame_(AppKit.NSMakeRect(
+        max(row_width * 0.45, 60) + 10, 5, max(row_width * 0.5, 80), 16))
+    row.addSubview_(shape)
+    return row
+
+
+def _rebuild_rows(objects, selections, enabled_set, alignments=None):
     """Rebuild all rows using manual top-down layout in the document view."""
     global _retained
 
@@ -757,6 +800,23 @@ def _rebuild_rows(objects, selections, enabled_set):
             doc.addSubview_(row)
             y += row_height + 1
 
+    # "Alignments" section (#296), only when there is something in it -- an empty
+    # header in a panel this narrow is pure noise.
+    if alignments:
+        y += 4
+        aln_header = AppKit.NSTextField.labelWithString_('Alignments')
+        aln_header.setFont_(AppKit.NSFont.boldSystemFontOfSize_(11))
+        aln_header.setTextColor_(_HEADER_COLOR)
+        aln_header.setFrame_(AppKit.NSMakeRect(6, y, w - 12, header_height))
+        doc.addSubview_(aln_header)
+        y += header_height + 2
+
+        for name, entry in alignments.items():
+            row = _build_alignment_row(name, entry, row_width=w)
+            row.setFrame_(AppKit.NSMakeRect(0, y, w, row_height))
+            doc.addSubview_(row)
+            y += row_height + 1
+
     # Resize document view to fit content
     doc.setFrameSize_(AppKit.NSMakeSize(w, max(y, doc.bounds().size.height)))
 
@@ -791,7 +851,15 @@ def _poll_objects():
         except:
             sel_counts.append(0)
 
-    current = objects + ['|'] + selections + ['#'] + [str(c) for c in sel_counts]
+    # Alignments (#296) join the comparison key, so loading or deleting one repaints
+    # the panel. Their shape is in the key too: msa_attach changes a row's text
+    # without changing any name.
+    alignments = _alignments()
+    aln_key = ['%s:%s:%s:%s' % (n, e.get('depth'), e.get('target'), e.get('chain'))
+               for n, e in alignments.items()]
+
+    current = (objects + ['|'] + selections + ['#'] + [str(c) for c in sel_counts]
+               + ['~'] + aln_key)
     if current == _prev_names:
         return
 
@@ -807,7 +875,7 @@ def _poll_objects():
         enabled_set = set(objects + selections)
 
     try:
-        _rebuild_rows(objects, selections, enabled_set)
+        _rebuild_rows(objects, selections, enabled_set, alignments)
     except Exception:
         pass
 

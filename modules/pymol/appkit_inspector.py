@@ -459,6 +459,23 @@ def _pending_map():
         return {}
 
 
+def _alignment_map():
+    """name -> {depth, columns, residues, target, chain} for every loaded MSA (#296).
+
+    Never raises, for the same reason _pending_map() does not: the caller's single
+    `except` writes no file at all, so a throw here freezes the panel on a stale list.
+
+    Cheap by construction -- every value was computed once at load time. This must
+    never re-read or re-parse an a3m: the poll runs on the MAIN thread every 500 ms
+    and is already a measured hot spot (PR #270), and an alignment is megabytes.
+    """
+    try:
+        from pymol.msas import store
+        return store.panel_summary()
+    except Exception:
+        return {}
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -513,6 +530,10 @@ def poll_panel():
             # already a measured hot spot (PR #270), so it must stay O(pending), never
             # O(objects).
             'pending': _pending_map(),
+            # Alignments (#296). Not objects -- they have no geometry and nothing in
+            # the Executive knows about them -- so the panel draws them as their own
+            # section rather than as rows in the object list.
+            'alignments': _alignment_map(),
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's

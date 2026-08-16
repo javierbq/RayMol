@@ -39,6 +39,16 @@ from .predicting import \
       predict_weights_cancel
 
 #--------------------------------------------------------------------
+from . import msa
+from .msa import \
+      load_msa,             \
+      msa_list,             \
+      msa_delete,           \
+      msa_rename,           \
+      msa_attach,           \
+      msa_detach
+
+#--------------------------------------------------------------------
 from . import creating
 from .creating import \
       copy,               \

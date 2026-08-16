@@ -376,6 +376,16 @@ USAGE
             r = _cmd.reinitialize(_self._COb,int(what),str(object))
         finally:
             _self.unlock(r,_self)
+        # RayMol alignments (#296) live in Python, so the C reinitialize cannot see
+        # them: without this they outlive the objects they are attached to and the
+        # panel keeps listing them. Only for 'everything' (code 0) with no object
+        # named -- every other code touches settings, not the session's contents.
+        if what == 0 and not object:
+            try:
+                from pymol.msas import store as _msa_store
+                _msa_store.clear()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 
