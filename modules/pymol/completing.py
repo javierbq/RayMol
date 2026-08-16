@@ -102,6 +102,15 @@ def _msa_shortcut():
         return Shortcut([])
 
 
+def _msa_search_shortcut():
+    """Ids of this session's MSA searches, for msa_status/msa_cancel. Never raises."""
+    try:
+        from pymol.msas import searching
+        return Shortcut([s.id for s in searching.all_searches()])
+    except Exception:
+        return Shortcut([])
+
+
 def get_auto_arg_list(self_cmd=cmd):
     self_cmd = self_cmd._weakrefproxy
 
@@ -115,6 +124,7 @@ def get_auto_arg_list(self_cmd=cmd):
     aa_predictor_c = [_predictor_shortcut, 'predictor', ', ']
     aa_predict_job_c = [_predict_job_shortcut, 'job id', ', ']
     aa_msa_c = [_msa_shortcut, 'alignment', ', ']
+    aa_msa_search_c = [_msa_search_shortcut, 'search id', ', ']
 
     return [
 # 1st
@@ -191,9 +201,12 @@ def get_auto_arg_list(self_cmd=cmd):
         'matrix_copy'    : aa_obj_c,
         'matrix_reset'   : aa_obj_c,
         'msa_attach'     : aa_msa_c,
+        'msa_cancel'     : aa_msa_search_c,
         'msa_delete'     : aa_msa_c,
         'msa_detach'     : aa_msa_c,
         'msa_rename'     : aa_msa_c,
+        'msa_search'     : aa_sel_e,
+        'msa_status'     : aa_msa_search_c,
         'mse2met'        : aa_sel_e,
         'order'          : aa_nam_s,
         'orient'         : aa_sel_e,

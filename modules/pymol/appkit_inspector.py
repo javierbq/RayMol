@@ -498,6 +498,15 @@ def poll_panel():
         predicting.pump()
     except Exception:
         pass
+    # The MSA search's pump (#298), for exactly the same reason: the search runs on a
+    # thread that may not touch the store the panel reads two lines below, so the
+    # finished alignment is put there HERE. Its own try, and before the list is
+    # gathered, so an alignment that lands shows up on this tick rather than the next.
+    try:
+        from pymol import msa as _msa
+        _msa.pump()
+    except Exception:
+        pass
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])
