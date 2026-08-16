@@ -711,9 +711,9 @@ def report_alignments(spec, options):
     colorprinting.parrot(' predict: alignments: %s' % ', '.join(parts))
 
 
-def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
-            seed=None, n_models=1, diffusion_samples=None, msa='', msa_depth=None,
-            quiet=1, _self=cmd):
+def predict(predictor, sequence, name='', recycling_steps=None,
+            diffusion_steps=None, seed=None, n_models=1, diffusion_samples=None,
+            msa='', msa_depth=None, num_steps=None, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -741,10 +741,18 @@ ARGUMENTS
 
     name = str: object name for the loaded result {default: <predictor>_pred}
 
-    recycling_steps = int: trunk recycling passes {default: 3}
+    recycling_steps = int: trunk recycling passes. Boltz-2 only; a method with no
+    trunk rejects it by name. {default: None, meaning the predictor's own -- 3 for
+    boltz2}
 
     diffusion_steps = int: reverse-diffusion steps; higher is slower and more
-    accurate {default: 200}
+    accurate. Boltz-2 only. {default: None, meaning the predictor's own -- 200 for
+    boltz2}
+
+    num_steps = int: flow-matching integration steps; higher is slower and more
+    accurate. SimpleFold only -- it has no trunk and no reverse diffusion, so this
+    is its one quality lever, and boltz2 rejects it by name. {default: None,
+    meaning the predictor's own -- 500 for simplefold}
 
     seed = int: random seed. Drawn FRESH PER RUN when omitted, so repeat
     predictions of one sequence are different models rather than identical
@@ -867,10 +875,19 @@ SEE ALSO
         import random
         seed = random.randrange(RANDOM_SEED_BOUND)
 
-    requested = dict(
-        recycling_steps=int(recycling_steps),
-        diffusion_steps=int(diffusion_steps),
-        seed=int(seed))
+    # Only what was actually ASKED for. Every knob but the seed is conditional, and
+    # that is load-bearing rather than tidiness: validate_options rejects any name a
+    # predictor did not declare, so passing recycling_steps unconditionally made a
+    # method without a trunk impossible to call at all -- it would be refused by name
+    # on every invocation, including one that named no knob. The defaults live in each
+    # predictor's option_defaults, which is the thing that knows them.
+    requested = dict(seed=int(seed))
+    if recycling_steps is not None:
+        requested['recycling_steps'] = int(recycling_steps)
+    if diffusion_steps is not None:
+        requested['diffusion_steps'] = int(diffusion_steps)
+    if num_steps is not None:
+        requested['num_steps'] = int(num_steps)
     if diffusion_samples is not None:
         # Forwarded unvalidated on purpose: validate_options rejects it by name.
         # A command function cannot take **kwargs (parsing.py forces NO_CHECK when

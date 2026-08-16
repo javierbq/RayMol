@@ -11,6 +11,10 @@ CHAIN_IDS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 MAX_RECYCLING_STEPS = 100
 MAX_DIFFUSION_STEPS = 10_000
 MAX_SEED = 2 ** 64 - 1
+#: Flow-matching integration steps, for a method that samples a path rather than
+#: denoising a diffusion. Bounded like the two above, and for the same reason:
+#: the value crosses a JSON wire into Swift, which decodes it as Int.
+MAX_NUM_STEPS = 10_000
 
 #: Most alignment rows a prediction may use. boltz-mlx's `BoltzInputLimits.desktop`
 #: `maximumSequences`, which is upstream's `const.max_msa_seqs`. Both ends must agree:
@@ -48,14 +52,16 @@ class PredictionOptions:
     config.json and is not a per-call knob.
     """
 
-    __slots__ = ('recycling_steps', 'diffusion_steps', 'seed', 'msa_depth')
+    __slots__ = ('recycling_steps', 'diffusion_steps', 'seed', 'msa_depth',
+                 'num_steps')
 
     def __init__(self, recycling_steps=3, diffusion_steps=200, seed=0,
-                 msa_depth=MAX_MSA_DEPTH):
+                 msa_depth=MAX_MSA_DEPTH, num_steps=500):
         for name, value in (('recycling_steps', recycling_steps),
                             ('diffusion_steps', diffusion_steps),
                             ('seed', seed),
-                            ('msa_depth', msa_depth)):
+                            ('msa_depth', msa_depth),
+                            ('num_steps', num_steps)):
             if not isinstance(value, int) or isinstance(value, bool):
                 raise PredictionOptionError('%s must be an integer' % name)
         # Bounded at BOTH ends. The lower bounds are semantic; the upper bounds exist
@@ -78,10 +84,14 @@ class PredictionOptions:
         if not 1 <= msa_depth <= MAX_MSA_DEPTH:
             raise PredictionOptionError(
                 'msa_depth must be between 1 and %d' % MAX_MSA_DEPTH)
+        if not 1 <= num_steps <= MAX_NUM_STEPS:
+            raise PredictionOptionError(
+                'num_steps must be between 1 and %d' % MAX_NUM_STEPS)
         self.recycling_steps = recycling_steps
         self.diffusion_steps = diffusion_steps
         self.seed = seed
         self.msa_depth = msa_depth
+        self.num_steps = num_steps
 
     def as_dict(self):
         return {name: getattr(self, name) for name in self.__slots__}

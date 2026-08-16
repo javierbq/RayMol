@@ -17,6 +17,13 @@ final class BoltzJobManager {
 
     static let shared = BoltzJobManager()
 
+    /// The one inference runtime this manager implements, as it appears on the wire.
+    /// Kept in step with `pymol.predictors.boltz2.RUNTIME`, and with the value
+    /// `PyMOLBridge` advertises in `RAYMOL_PREDICT_RUNTIMES` — that variable is what
+    /// lets a predictor whose backend is NOT linked here refuse in `check_available`
+    /// instead of submitting a job that only gets refused after a weight download.
+    static let boltzRuntime = "boltz"
+
     /// MLX must never run on the main thread. `cmd.predict` from the console arrives ON
     /// the main thread, which is exactly why submit is fire-and-forget.
     private let queue = DispatchQueue(label: "io.raymol.predict.inference",
@@ -95,8 +102,22 @@ final class BoltzJobManager {
         let jobID: String
         let weightsDir: String
         let chains: [Chain]
-        let recyclingSteps: Int
-        let diffusionSteps: Int
+        /// Which backend must run this job. OPTIONAL, absent meaning ``boltzRuntime`` —
+        /// every Python side that predates a second runtime wrote no such key, and the
+        /// only runtime that existed then was this one. A request naming a runtime this
+        /// build does not carry is REFUSED in `preflight`, never run here: the weights
+        /// and the featurizer are method-specific, so running one method's request on
+        /// another's backend would not fail, it would return a confident wrong answer.
+        let runtime: String?
+        /// Boltz's trunk and diffusion knobs. Optional because a request from a method
+        /// that has neither omits them entirely rather than sending a value it does not
+        /// honour — see `numSteps`. Defaulted at the use site to upstream Boltz's own.
+        let recyclingSteps: Int?
+        let diffusionSteps: Int?
+        /// SimpleFold's flow-matching integration count. Absent from a Boltz request for
+        /// the same reason `recyclingSteps` is absent from a SimpleFold one: each
+        /// predictor puts exactly the knobs it declared it honours on the wire.
+        let numSteps: Int?
         let seed: UInt64
         let outPath: String
         let statusPath: String
@@ -122,8 +143,9 @@ final class BoltzJobManager {
         let objectName: String?
 
         enum CodingKeys: String, CodingKey {
-            case jobID = "job_id", weightsDir = "weights_dir", chains
+            case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
+            case numSteps = "num_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
             case objectName = "object_name"
             case alignments, msaDepth = "msa_depth"
@@ -232,6 +254,13 @@ final class BoltzJobManager {
     /// `pollFeedback`: the alignment's real depth costs a parse of the a3m, which
     /// belongs on the inference queue. `alignmentPreflight` makes that second check.
     static func preflight(_ request: Request) -> Status? {
+        // Runtime first, before any sizing: the size model below is Boltz's, fitted to
+        // Boltz's measured peaks, so applying it to another method's request would be
+        // meaningless even as a refusal. Absent means Boltz, per `Request.runtime`.
+        if let runtime = request.runtime, runtime != boltzRuntime {
+            return refusal("this build of RayMol does not carry the '\(runtime)' "
+                         + "inference runtime")
+        }
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         switch PredictSizeGuard.decide(tokens: tokens,
                                        availableBytes: PredictSizeGuard.availableBytes) {
@@ -391,8 +420,12 @@ final class BoltzJobManager {
 
             report("running", "inference", 0.2)
             var options = BoltzPredictionOptions()
-            options.recyclingSteps = request.recyclingSteps
-            options.diffusionSteps = request.diffusionSteps
+            // Upstream Boltz's defaults, matching `PredictionOptions` on the Python
+            // side. Reached only if a request omits them, which a Boltz request never
+            // does -- but a default here is what keeps the optional decode honest
+            // rather than forcing an implicitly-unwrapped read.
+            options.recyclingSteps = request.recyclingSteps ?? 3
+            options.diffusionSteps = request.diffusionSteps ?? 200
             options.seed = request.seed
 
             // Reset the high-water mark so each prediction is measured independently --

@@ -30,18 +30,28 @@ final class BoltzJobManagerTests: XCTestCase {
     /// Mirrors exactly what host.py writes: `chains` is a list of OBJECTS, not pairs.
     private func writeRequest(job: String,
                               chains: [(String, String)],
-                              diffusionSteps: Int = 200) throws -> URL {
+                              diffusionSteps: Int = 200,
+                              runtime: String? = nil,
+                              extra: [String: Any] = [:],
+                              omittingBoltzKnobs: Bool = false) throws -> URL {
         let url = dir.appendingPathComponent("raymol_predict_req_\(job).json")
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "job_id": job,
             "weights_dir": dir.path,
             "chains": chains.map { ["chain": $0.0, "sequence": $0.1] },
-            "recycling_steps": 3,
-            "diffusion_steps": diffusionSteps,
             "seed": 0,
             "out_path": dir.appendingPathComponent("out_\(job).pdb").path,
             "status_path": dir.appendingPathComponent("raymol_predict_status_\(job).json").path,
         ]
+        // Omitted, not defaulted, when the caller is standing in for a predictor that
+        // has neither knob: host.py puts only the knobs a predictor DECLARED on the
+        // wire, so "absent" is a shape the decoder really has to handle.
+        if !omittingBoltzKnobs {
+            payload["recycling_steps"] = 3
+            payload["diffusion_steps"] = diffusionSteps
+        }
+        if let runtime { payload["runtime"] = runtime }
+        payload.merge(extra) { _, new in new }
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
         return url
     }
@@ -197,6 +207,54 @@ final class BoltzJobManagerTests: XCTestCase {
         let request = try BoltzJobManager.parseRequest(at: url)
         XCTAssertNil(BoltzJobManager.preflight(request),
                      "a 40-residue chain must not be refused on any supported Mac")
+    }
+
+    // MARK: - Runtime dispatch
+
+    /// The safety property of the whole seam. Weights and featurizer are method-
+    /// specific, so running another method's request on this backend would not fail —
+    /// it would return a confident wrong structure.
+    func testARequestNamingAnUnlinkedRuntimeIsRefused() throws {
+        let url = try writeRequest(job: "r1", chains: [("A", "AGCT")],
+                                   runtime: "simplefold")
+        let request = try BoltzJobManager.parseRequest(at: url)
+        let status = BoltzJobManager.preflight(request)
+        XCTAssertEqual(status?.state, "failed")
+        XCTAssertEqual(status?.phase, "preflight")
+        XCTAssertEqual(status?.error?.contains("simplefold"), true,
+                       "the refusal must name the runtime that is missing")
+    }
+
+    func testARequestNamingBoltzExplicitlyIsAccepted() throws {
+        let url = try writeRequest(job: "r2", chains: [("A", "AGCT")], runtime: "boltz")
+        let request = try BoltzJobManager.parseRequest(at: url)
+        XCTAssertEqual(request.runtime, "boltz")
+        XCTAssertNil(BoltzJobManager.preflight(request))
+    }
+
+    /// Absent means Boltz: every Python side predating a second runtime wrote no such
+    /// key, and this manager was the only backend that existed then.
+    func testARequestWithNoRuntimeIsTakenAsBoltz() throws {
+        let url = try writeRequest(job: "r3", chains: [("A", "AGCT")])
+        let request = try BoltzJobManager.parseRequest(at: url)
+        XCTAssertNil(request.runtime)
+        XCTAssertNil(BoltzJobManager.preflight(request))
+    }
+
+    /// A request carrying another method's knobs and none of Boltz's still DECODES, so
+    /// the runtime refusal above is what rejects it — with a message naming the
+    /// runtime, rather than a bare "malformed prediction request".
+    func testARequestWithForeignKnobsDecodesSoItCanBeRefusedByName() throws {
+        let url = try writeRequest(job: "r4", chains: [("A", "AGCT")],
+                                   runtime: "simplefold",
+                                   extra: ["num_steps": 500],
+                                   omittingBoltzKnobs: true)
+        let request = try BoltzJobManager.parseRequest(at: url)
+        XCTAssertEqual(request.numSteps, 500)
+        XCTAssertNil(request.recyclingSteps)
+        XCTAssertNil(request.diffusionSteps)
+        XCTAssertEqual(BoltzJobManager.preflight(request)?.error?.contains("simplefold"),
+                       true)
     }
     // MARK: - Cancellation actually interrupts
 

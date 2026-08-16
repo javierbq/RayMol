@@ -12,8 +12,16 @@ from pymol import cmd, testing
 
 class TestPredictCompletion(testing.PyMOLTestCase):
 
-    def testPredictOffersRegisteredPredictors(self):
-        self.assertEqual(cmd._parser.complete('predict '), 'predict boltz2')
+    def testPredictListsPredictorsWhenNothingIsUnambiguous(self):
+        """Nothing typed yet: the ids share no common prefix, so there is nothing to
+        INSERT and Tab prints the list instead. None means "listed", not "failed" --
+        the completer only returns a string when it has characters to add.
+
+        This changed when simplefold was registered. While boltz2 and boltz2-bf16
+        were the only ids, every id began with 'boltz2' and Tab silently filled that
+        in; an id from a different family is what makes the listing appear.
+        """
+        self.assertIsNone(cmd._parser.complete('predict '))
 
     def testPartialPredictorNameCompletesAsFarAsItIsUnambiguous(self):
         """'boltz2' is a PREFIX of 'boltz2-bf16', so Tab stops there with no separator.
@@ -25,9 +33,15 @@ class TestPredictCompletion(testing.PyMOLTestCase):
         self.assertEqual(cmd._parser.complete('predict boltz2-'),
                          'predict boltz2-bf16, ')
 
+    def testAnIdOutsideTheBoltzFamilyCompletesInOneKeystroke(self):
+        """The payoff for not making the id a prefix-extension of an existing one:
+        'simplefold' is unique from its first letter, separator and all."""
+        self.assertEqual(cmd._parser.complete('predict s'), 'predict simplefold, ')
+
     def testPredictWeightsAlsoOffersPredictors(self):
-        self.assertEqual(cmd._parser.complete('predict_weights '),
-                         'predict_weights boltz2')
+        self.assertIsNone(cmd._parser.complete('predict_weights '))
+        self.assertEqual(cmd._parser.complete('predict_weights s'),
+                         'predict_weights simplefold, ')
 
     def testCommandNameItselfStillCompletes(self):
         self.assertEqual(cmd._parser.complete('predic'), 'predict')

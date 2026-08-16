@@ -10,7 +10,7 @@ it is shaped this way.
 
 | File | Responsibility |
 |---|---|
-| `modules/pymol/predicting.py` | the `cmd.*` surface; you should not need to touch it |
+| `modules/pymol/predicting.py` | the `cmd.*` surface; touch it only to NAME a new knob (see step 6) |
 | `modules/pymol/predictors/base.py` | `Predictor` contract, `PredictionSpec`, `PredictionOptions` |
 | `modules/pymol/predictors/weights.py` | `WeightBundle`, `BundledSource`, `WeightCache` |
 | `modules/pymol/predictors/registry.py` | `register` / `get` / `available` / `unregister` |
@@ -19,10 +19,18 @@ it is shaped this way.
 
 ## Shipped predictors
 
-| id | weights | notes |
-|---|---|---|
-| `boltz2` | affine-int8, 507 MB | the default |
-| `boltz2-bf16` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| id | runtime | weights | notes |
+|---|---|---|---|
+| `boltz2` | `boltz` | affine-int8, 507 MB | the default |
+| `boltz2-bf16` | `boltz` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| `simplefold` | `simplefold` | int4, ~1.6 GB | single chain, single sequence. **Not runnable yet** — see #306 |
+
+A predictor's **runtime** is the Swift backend that runs it, named on the wire by
+`host.submit(..., runtime=)`. `BoltzJobManager` implements `boltz` and refuses any other in
+`preflight`, because weights and featurizer are method-specific — running one method's request
+on another's backend returns a confident wrong structure rather than failing. `PyMOLBridge`
+advertises what is linked in `RAYMOL_PREDICT_RUNTIMES`, which is what lets `check_available`
+refuse before a weight download rather than after.
 
 `boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`.
 That works because `host.submit` sends `weights_dir` per job and the Swift runtime
@@ -81,6 +89,11 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    rather than failing mid-run. Platform, OS floor, host presence — not weight state, which the
    weight manager is allowed to fix by downloading.
 
+   If your method needs a Swift backend of its own, call `host.require_runtime` after
+   `host.require_available`: the two failures have different remedies ("you are headless" versus
+   "this build does not carry that backend"), and checking here is what refuses BEFORE a
+   multi-hundred-megabyte download rather than after it.
+
 5. **Implement `parse_spec` to reject, not repair.** If the backend silently ignores input it
    does not support, catching that is your job: check what it does with a ligand, a nucleic
    acid, an `X`, and an empty chain, and raise for each. boltz-mlx is the cautionary case —
@@ -93,6 +106,17 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    user believes are something they are not. Note that a knob you want to *reject* must still
    appear as a named parameter on `cmd.predict`, or Python raises `TypeError` before your
    validation runs.
+
+   **A knob your method genuinely has is the one case that touches `predicting.py`**, in three
+   places: a named parameter on `cmd.predict` defaulting to `None`, a conditional line adding it
+   to `requested` only when it is not `None`, and a field on `PredictionOptions` with bounds.
+   `num_steps` is the worked example. The conditional matters more than it looks: a knob added
+   unconditionally is sent on EVERY call, so `validate_options` then rejects it by name for every
+   predictor that did not declare it — which is how `recycling_steps` once made a method with no
+   trunk impossible to call at all, even by a caller who named no knobs.
+
+   Put on the wire only what your method declared, by passing `knobs=self.option_defaults` to
+   `host.submit`. A knob absent from a request is one the runtime defaults for itself.
 
 7. **Declare `supports_msa` — and mean it.** It is `False` on the base class, so a method that
    says nothing REFUSES `predict ..., msa=...` by name. That is the point: a predictor that

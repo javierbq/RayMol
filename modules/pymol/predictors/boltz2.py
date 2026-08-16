@@ -22,6 +22,10 @@ CANONICAL = set('ACDEFGHIKLMNPQRSTVWY')
 #: BoltzInputLimits.desktop caps at 1024 tokens, and one token is one residue.
 MAX_RESIDUES = 1024
 
+#: The backend the Swift host dispatches to. Also what a request with no `runtime`
+#: at all is taken to mean, so an older Python side keeps working.
+RUNTIME = 'boltz'
+
 
 class Boltz2Predictor(Predictor):
 
@@ -77,4 +81,5 @@ class Boltz2Predictor(Predictor):
         return PredictionSpec(chains, name)
 
     def submit(self, spec, options, weights_path):
-        return host.submit(spec, options, weights_path)
+        return host.submit(spec, options, weights_path, runtime=RUNTIME,
+                           knobs=self.option_defaults)
