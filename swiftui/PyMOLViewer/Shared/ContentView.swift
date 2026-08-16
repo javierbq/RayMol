@@ -504,15 +504,13 @@ struct ContentView: View {
         .toolbar {
             // Leading — Open only.
             macOpenToolbar
-            // Trailing — interaction tools (Move · Measure), then view toggles,
-            // actions, and status. (Measure moved here from the leading edge; the
-            // Timeline/movie toggle was removed — it lives on the Movie menu / ⌥⌘M.
-            // Theme moved into the Display segment, mirroring iOS Settings → Themes.)
-            macMoveToolbar
-            macMeasureToolbar
-            #if RAYMOL_MPNN
-            macDesignToolbar
-            #endif
+            // Trailing — the interaction tools as one Tools menu (Move · Measure ·
+            // Design, mutually exclusive; #304), then view toggles, actions, and
+            // status. (Those three were separate toggle buttons until the trailing
+            // cluster ran out of room. The Timeline/movie toggle was removed — it
+            // lives on the Movie menu / ⌥⌘M. Theme moved into the Display segment,
+            // mirroring iOS Settings → Themes.)
+            macToolsMenu
             panelToggles
             exportMenu
             #if !RAYMOL_MAS_RESTRICTED
@@ -2088,33 +2086,13 @@ struct ContentView: View {
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
             // rendered as a literal "Abc", so the pill read "Abc Seq".
             railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible)
-            // Move / Measure / Design are mutually-exclusive interaction modes.
-            // When RAYMOL_MPNN is active they are disabled while any MLX inference
-            // runs so the user cannot silently discard an in-progress calculation.
-            // In non-MPNN builds there is no Design mode, so no lock is needed.
-            #if RAYMOL_MPNN
-            HStack(spacing: 8) {
-                railToggle(icon: "move.3d", label: "Move",
-                           isOn: engine.interactionMode == .move,
-                           action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
-                railToggle(icon: "ruler", label: "Measure",
-                           isOn: engine.measureMode != nil,
-                           action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
-                if DesignAvailability.isSupported {
-                    railToggle(icon: "wand.and.stars", label: "Design",
-                               isOn: engine.designMode,
-                               action: { engine.setDesignMode(!engine.designMode) })
-                }
-            }
-            .disabled(isDesignLocked)
-            #else
-            railToggle(icon: "move.3d", label: "Move",
-                       isOn: engine.interactionMode == .move,
-                       action: { engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move) })
-            railToggle(icon: "ruler", label: "Measure",
-                       isOn: engine.measureMode != nil,
-                       action: { engine.setMeasureMode(engine.measureMode == nil ? .distance : nil) })
-            #endif
+            // Move / Measure / Design are mutually-exclusive interaction modes, so
+            // they share ONE Tools pill that opens a menu (#304) instead of three
+            // toggles — the same consolidation as the Mac toolbar's macToolsMenu,
+            // and it buys back rail width that iPhone landscape was already short
+            // of (labels drop out there). The per-item inference lock lives in
+            // interactionToolItems.
+            railToolsMenu
         }
         .padding(.horizontal, floating ? 8 : 0)
         .padding(.vertical, floating ? 5 : 6)
@@ -2176,29 +2154,40 @@ struct ContentView: View {
         .accessibilityLabel("\(label) pane, \(on ? "shown" : "hidden")")
     }
 
-    // Same capsule as railTongue but chevron-less, driven by a Bool + action (for
-    // mode toggles like Move) rather than a pane show/hide Binding. iPad rail only.
-    private func railToggle(icon: String, label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    // The iOS peer of macToolsMenu (#304): the three exclusive interaction modes as
+    // one rail pill that opens a menu. Wears the same capsule as railTongue so it
+    // sits flush in the pill row, and lights up accent while any mode is active —
+    // showing THAT mode's icon and name, so the rail still reads at a glance
+    // without opening the menu. Labels drop out in iPhone landscape, as before.
+    private var railToolsMenu: some View {
+        let active = activeInteractionTool
+        let on = active != nil
+        return Menu {
+            interactionToolItems
+        } label: {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+                Image(systemName: active?.railIcon ?? "wrench.and.screwdriver")
+                    .font(.system(size: 10, weight: .semibold))
                 if !isPhoneLandscape {
-                    Text(label).font(.system(size: 11, weight: .medium))
+                    Text(active?.name ?? "Tools").font(.system(size: 11, weight: .medium))
                 }
             }
-            .foregroundColor(isOn ? .white : themeManager.active.panelText.color.opacity(0.82))
+            .foregroundColor(on ? .white : themeManager.active.panelText.color.opacity(0.82))
             .padding(.horizontal, 9)
             .frame(height: 16)
             .background(
                 Capsule()
-                    .fill(isOn ? TimelineTheme.accent : themeManager.active.panelText.color.opacity(0.14))
-                    .overlay(Capsule().strokeBorder(isOn ? Color.clear : themeManager.active.panelText.color.opacity(0.5), lineWidth: 1))
+                    .fill(on ? TimelineTheme.accent : themeManager.active.panelText.color.opacity(0.14))
+                    .overlay(Capsule().strokeBorder(on ? Color.clear : themeManager.active.panelText.color.opacity(0.5), lineWidth: 1))
             )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(label) mode, \(isOn ? "on" : "off")")
+        .accessibilityLabel(active.map { "Tools, \($0.name) mode on" } ?? "Tools")
     }
+
+    // (Removed: railToggle. Its only callers were the Move / Measure / Design pills,
+    // now folded into railToolsMenu — see #304.)
 
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
     @ViewBuilder
@@ -2221,37 +2210,9 @@ struct ContentView: View {
         )
     }
 
-    // Panel show/hide toggle — lets the viewport go full-bleed. In the toolbar
-    // (standard inspector-toggle spot) so it never conflicts with the resize
-    // divider's drag gesture.
-    private var iosMeasureToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            Button {
-                engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
-            } label: {
-                Image(systemName: engine.measureMode == nil ? "ruler" : "ruler.fill")
-            }
-            .tint(TimelineTheme.accent)
-            .accessibilityLabel("Measure")
-        }
-    }
-
-    // Move-mode toggle (iOS). Mirrors the measure ruler toggle.
-    private var iosMoveToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            // iPhone (compact) only — iPad has the Move pill in the top rail
-            // (topPaneRail); iPhone landscape floats its own Move control.
-            if hSize == .compact {
-                Button {
-                    engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
-                } label: {
-                    Image(systemName: "move.3d")
-                        .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
-                }
-                .accessibilityLabel("Move objects")
-            }
-        }
-    }
+    // (Removed: iosMeasureToolbar / iosMoveToolbar. Both were already DEAD before
+    // #304 — nothing referenced them, because the only `.toolbar` in this file is
+    // the macOS one. iOS enters these modes from the rail, now railToolsMenu.)
 
     // The 3D viewport — primary in every orientation. Carries the empty-state CTA
     // and a persistent "?" gesture-legend button.
@@ -2922,57 +2883,126 @@ struct ContentView: View {
     }
     #endif
 
-    private var macMeasureToolbar: some ToolbarContent {
-        // Trailing, grouped with Move as the interaction tools (.primaryAction so it
-        // sits in the trailing cluster on the right, not the leading edge).
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
-            } label: {
-                Label("Measure", systemImage: engine.measureMode == nil ? "ruler" : "ruler.fill")
-            }
-            .disabled(isDesignLocked)
-            .help("Measure distance / angle / dihedral by tapping atoms")
-        }
-    }
-
-    // Move-mode toggle (macOS). ⌃M also toggles it (see PyMOLApp commands).
-    // .primaryAction (trailing) — grouped with Measure as the interaction tools,
-    // and matching its neighbours' placement so SwiftUI doesn't insert a phantom
-    // empty slot at a default/primaryAction boundary.
-    private var macMoveToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
-            } label: {
-                Label("Move", systemImage: "move.3d")
-                    .foregroundColor(engine.interactionMode == .move ? themeManager.active.accent.color : nil)
-            }
-            .disabled(isDesignLocked)
-            .help("Move objects: drag the gizmo to translate / rotate the active object")
-        }
-    }
-
     // (Removed: macMovieToolbar. Timeline/movie mode is entered from the Movie
     // menu / ⌥⌘M. The toolbar button rendered as an unlabeled circle and toggled
     // movie mode unexpectedly, so it was removed.)
 
-    #if RAYMOL_MPNN
-    // Design-mode toggle (macOS). ⌃D also toggles it (see PyMOLApp commands).
-    // .primaryAction (trailing) — grouped with Move/Measure as the interaction tools.
-    private var macDesignToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+    /// The active exclusive interaction mode, if any. Drives each platform's Tools
+    /// control so the active mode stays legible without opening the menu — the
+    /// affordance the separate toggle buttons/pills used to provide.
+    /// At most one can be active: the engine's setters clear the other two.
+    ///
+    /// Two icons because the platforms already disagreed and consolidating is not a
+    /// licence to restyle: the Mac toolbar used filled variants and a `flask` for
+    /// Design, the iOS rail used outline variants and `wand.and.stars`.
+    private var activeInteractionTool: (name: String, macIcon: String, railIcon: String)? {
+        if engine.interactionMode == .move { return ("Move", "move.3d", "move.3d") }
+        if engine.measureMode != nil { return ("Measure", "ruler.fill", "ruler") }
+        #if RAYMOL_MPNN
+        if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
+        #endif
+        return nil
+    }
+
+    /// The Move / Measure / Design menu items, shared by the macOS toolbar menu and
+    /// the iOS rail menu so the two cannot drift. Each item toggles — choosing the
+    /// active mode leaves it, which is what the standalone buttons/pills did — and
+    /// marks itself with a `checkmark` Label when active, matching SelectionModeMenu.
+    ///
+    /// `isDesignLocked` sits on the ITEMS, not the enclosing menu, so the menu still
+    /// opens mid-inference and shows which mode is active.
+    @ViewBuilder
+    private var interactionToolItems: some View {
+        Button {
+            engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
+        } label: {
+            if engine.interactionMode == .move {
+                Label("Move", systemImage: "checkmark")
+            } else {
+                Text("Move")
+            }
+        }
+        .disabled(isDesignLocked)
+
+        Button {
+            engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
+        } label: {
+            if engine.measureMode != nil {
+                Label("Measure", systemImage: "checkmark")
+            } else {
+                Text("Measure")
+            }
+        }
+        .disabled(isDesignLocked)
+
+        #if RAYMOL_MPNN
+        // Also gated on DesignAvailability: Design needs a minimum iOS version, and
+        // the rail hid the pill outright when unsupported rather than showing a dead
+        // control. Keep that — an item you can never enable is worse in a menu.
+        if DesignAvailability.isSupported {
             Button {
                 engine.setDesignMode(!engine.designMode)
             } label: {
-                Label("Design", systemImage: engine.designMode ? "flask.fill" : "flask")
-                    .foregroundColor(engine.designMode ? themeManager.active.accent.color : nil)
+                if engine.designMode {
+                    Label("Design", systemImage: "checkmark")
+                } else {
+                    Text("Design")
+                }
             }
             .disabled(isDesignLocked)
-            .help("Design mode: score/color protein residues with MPNN")
+        }
+        #endif
+    }
+
+    /// Tooltip for the Tools menu. Names only the tools this build actually has —
+    /// Design is absent from non-MPNN builds, so it must not be advertised there.
+    private var toolsMenuHelp: String {
+        #if RAYMOL_MPNN
+        let tools = "Move objects · Measure distances · Design with MPNN"
+        #else
+        let tools = "Move objects · Measure distances"
+        #endif
+        guard let active = activeInteractionTool else { return "Tools: \(tools)" }
+        return "\(active.name) mode is active — Tools: \(tools)"
+    }
+
+    // The three exclusive interaction modes as ONE toolbar menu (#304). They are
+    // mutually exclusive — setInteractionMode / setMeasureMode / setDesignMode each
+    // clear the other two — so a radio-style menu models them better than three
+    // independent toggles, and it frees the two toolbar slots the trailing cluster
+    // had run out of. Marks the active mode with a `checkmark` Label, matching
+    // SelectionModeMenu (ObjectPanel). Sits where the Design button used to:
+    // .primaryAction (trailing), immediately before panelToggles.
+    //
+    // Declared UNCONDITIONALLY — only the Design ITEM is #if RAYMOL_MPNN. Wrapping
+    // the whole menu would take Move and Measure out of non-MPNN builds too.
+    //
+    // ⌃M (Move) and ⌃D (Design) still toggle these directly; they live on the
+    // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
+    private var macToolsMenu: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                interactionToolItems
+            } label: {
+                // Idle: a neutral "Tools" wrench. Active: that mode's own glyph — the
+                // toolbar's whole "a mode is on" signal.
+                //
+                // Deliberately NOT tinted. The macOS toolbar draws a Menu's glyph as a
+                // template in its own colour and swallows every attempt to recolour it
+                // — .foregroundColor on the Label, .symbolRenderingMode(.palette) +
+                // .foregroundStyle on the Image, and .tint on the Menu were each built
+                // and checked against macOS 26 in a VM, and all three stayed grey.
+                // NOTE the buttons this replaced carried exactly that dead
+                // .foregroundColor, so no tint was ever actually visible here. The
+                // glyph swap is real, and each mode also raises its own on-canvas bar
+                // (measureOverlay / designModeBar / the Move gizmo), which reads far
+                // louder than a toolbar tint would.
+                Label(activeInteractionTool?.name ?? "Tools",
+                      systemImage: activeInteractionTool?.macIcon ?? "wrench.and.screwdriver")
+            }
+            .help(toolsMenuHelp)
         }
     }
-    #endif
 
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
     // docked transport — there is no toolbar button for it (removed: its icon read
