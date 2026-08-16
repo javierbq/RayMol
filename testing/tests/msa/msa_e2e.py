@@ -17,6 +17,7 @@ import io
 import json
 import os
 import tarfile
+import threading
 
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -349,8 +350,6 @@ class SearchToFoldTest(MSAEndToEndTestCase):
         land into a session that was not open when it started. It must not bind to an
         object that merely inherited the name: the check is re-run at landing, and a
         mismatch stores the alignment unattached rather than silently folding with it."""
-        import threading
-
         stub_predictor('e2e')
         server = FakeServer()
         release = threading.Event()
@@ -645,6 +644,37 @@ class PanelPollTest(MSAEndToEndTestCase):
         MSAEndToEndTestCase.setUp(self)
         install_appkit_stubs()
 
+    def poll_payload(self):
+        """Run one panel tick and return the JSON the Swift panel reads."""
+        import tempfile
+        from pymol import appkit_inspector
+
+        with redirect_stdout(io.StringIO()):
+            appkit_inspector.poll_panel()
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_objpanel_%d.json' % os.getpid())
+        with open(path) as handle:
+            return json.load(handle)
+
+    def swift_search_fields(self):
+        """Field names of ObjectPanel.swift's `MSASearchSummary`.
+
+        Its fields are plain `let`s rather than CodingKeys, so the JSON names ARE the
+        property names -- which is exactly why a rename on either side is silent.
+        """
+        import re
+
+        root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+        path = os.path.normpath(os.path.join(
+            root, 'swiftui', 'PyMOLViewer', 'Panels', 'ObjectPanel.swift'))
+        if not os.path.isfile(path):
+            self.skipTest('ObjectPanel.swift not present; not a repo checkout')
+        with open(path) as handle:
+            source = handle.read()
+        block = source[source.index('struct MSASearchSummary'):]
+        block = block[:block.index('}')]
+        return set(re.findall(r'let\s+(\w+)\s*:', block))
+
     def testThePollLandsAFinishedSearchAndShowsItInTheSameTick(self):
         """poll_panel pumps before it gathers, so a search that finished between ticks
         appears on this tick rather than the next."""
@@ -688,6 +718,92 @@ class PanelPollTest(MSAEndToEndTestCase):
             self.assertIsInstance(summary[field], kind, field)
         self.assertEqual(summary['depth'], MERGED_DEPTH)
         self.assertEqual(summary['target'], 'prot')
+
+    def testASearchInFlightGetsAProgressRowBeforeItHasAnAlignment(self):
+        """The gap this closes: a search takes minutes and produces nothing until it
+        lands, so with only the ALIGNMENTS list -- which is landed alignments only --
+        the panel is silent for the whole time, and hides the section while it is."""
+        from pymol import appkit_inspector
+
+        server = FakeServer()
+        release = threading.Event()
+        polling = threading.Event()
+
+        def hold(request, timeout=None):
+            url = request.full_url
+            if '/ticket/' in url and not url.endswith('/ticket/msa'):
+                polling.set()
+                if not release.is_set():
+                    return FakeServer._json({'id': 'ticket-1', 'status': 'RUNNING'})
+            return server(request, timeout)
+
+        with patch('pymol.msas.colabfold._urlopen', hold):
+            search_id = cmd.msa_search(QUERY, name='aln')
+            self.assertTrue(polling.wait(10))
+
+            payload = self.poll_payload()
+            self.assertEqual(payload['alignments'], {}, 'landed before it finished')
+            rows = payload['msa_searches']
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['id'], search_id)
+            self.assertEqual(rows[0]['name'], 'aln')
+            self.assertEqual(rows[0]['server'], PRIVATE)
+            self.assertIn(rows[0]['phase'],
+                          ('submit', 'queued', 'search', 'download', 'read'))
+
+            release.set()
+            searching.join(search_id, timeout=10)
+            after = self.poll_payload()
+
+        # The row is replaced by its result in ONE tick, never shown as both: the poll
+        # pumps before it gathers.
+        self.assertEqual(after['msa_searches'], [])
+        self.assertEqual(list(after['alignments']), ['aln'])
+
+    def testTheProgressRowCarriesEverySwiftFieldItRequires(self):
+        """MSASearchSummary's five fields are non-optional, and the payload decode is
+        one `guard let` -- so a missing field here freezes the whole object panel."""
+        server = FakeServer()
+        polling = threading.Event()
+
+        def hold(request, timeout=None):
+            url = request.full_url
+            if '/ticket/' in url and not url.endswith('/ticket/msa'):
+                polling.set()
+                return FakeServer._json({'id': 'ticket-1', 'status': 'RUNNING'})
+            return server(request, timeout)
+
+        with patch('pymol.msas.colabfold._urlopen', hold):
+            search_id = cmd.msa_search(QUERY, name='aln')
+            self.assertTrue(polling.wait(10))
+            row = self.poll_payload()['msa_searches'][0]
+            cmd.msa_cancel(search_id)
+            searching.join(search_id, timeout=10)
+
+        swift = self.swift_search_fields()
+        self.assertEqual(set(row), swift)
+        for field, kind in (('id', str), ('name', str), ('phase', str),
+                            ('server', str), ('elapsed', int)):
+            self.assertIsInstance(row[field], kind, field)
+
+    def testTheAgeIsQuantisedSoTheSectionDoesNotRepaintEveryTick(self):
+        """The panel repaints when this payload changes and the poll runs at 2 Hz for
+        the several minutes a search lasts, so the raw float would repaint it 120 times
+        a minute for a row whose text is coarse anyway."""
+        from pymol import appkit_inspector
+
+        self.assertEqual(appkit_inspector.SEARCH_ELAPSED_BUCKET, 5)
+        for raw, expected in ((0.0, 0), (4.9, 0), (5.1, 5), (12.4, 10), (61.0, 60)):
+            self.assertEqual(
+                int(raw // appkit_inspector.SEARCH_ELAPSED_BUCKET
+                    * appkit_inspector.SEARCH_ELAPSED_BUCKET),
+                expected)
+
+    def testNoSearchMeansAnEmptyListRatherThanAMissingKey(self):
+        """Present and empty, so Swift's decode has one shape to handle -- and so the
+        common case (no search ever) cannot be confused with an older Python."""
+        payload = self.poll_payload()
+        self.assertEqual(payload['msa_searches'], [])
 
     def testAFoldableAlignmentShowsTheChainItIsAttachedTo(self):
         """The panel row is how a user checks, before spending minutes folding, that

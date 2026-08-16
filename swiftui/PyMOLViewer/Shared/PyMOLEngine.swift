@@ -105,6 +105,10 @@ final class PyMOLEngine: ObservableObject {
     // and the Executive knows nothing about them, so they ride the same OBJPANEL:
     // payload but live in their own list and their own panel section.
     @Published var alignments: [AlignmentEntry] = []
+    // MSA searches still running (#298). Separate from `alignments` because a search is
+    // not an alignment yet — it has no depth, no columns and nothing to attach — and it
+    // stops existing the moment it becomes one.
+    @Published var msaSearches: [MSASearchEntry] = []
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);
@@ -3081,6 +3085,18 @@ final class PyMOLEngine: ObservableObject {
                     // sheet is platform-neutral, so gating it here would leave iOS
                     // silently frozen the day a downloadable bundle ships there.
                     parseWeightsFeedback(line)
+                } else if line.hasPrefix("MSA:") {
+                    // Swallowed, now that the object panel's ALIGNMENTS section shows a
+                    // search while it runs (#298). Until it did, this marker had no
+                    // branch at all and fell through to the console below, where each
+                    // search printed several lines of raw JSON — the only indication a
+                    // search was happening, and not a deliberate one.
+                    //
+                    // Nothing is parsed here on purpose: the marker fires exactly twice
+                    // (worker start, worker settle), so it cannot drive a row that shows
+                    // the phase advancing. The panel's 500 ms poll reads the live state
+                    // instead. The human-readable account of what landed or failed is
+                    // printed separately, by msa.pump(), and is not this.
                 } else if line.hasPrefix("PREDICT:") {
                     // Structure prediction (#224). cmd.predict writes a request JSON to
                     // the temp dir and prints this marker; there is no Python->Swift call
