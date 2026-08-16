@@ -1350,10 +1350,22 @@ private struct ObjectRowView: View {
 /// drawn — and offering the controls anyway would make the row look actionable when
 /// every one of them is a no-op. Deleting and renaming are `msa_delete` / `msa_rename`
 /// on the command line, which the context menu offers here.
+///
+/// Clicking REVEALS the target instead: the one relationship the row already shows is
+/// which chain this alignment is for, so that is what a tap acts on.
 private struct AlignmentRowView: View {
     let entry: AlignmentEntry
     let isAlt: Bool
     @EnvironmentObject var engine: PyMOLEngine
+
+    /// True when the object this alignment names is still here. The attachment is by
+    /// NAME and does not follow a rename or a delete, so a row pointing at nothing is
+    /// a normal state rather than an error — but clicking one must not fire
+    /// `Invalid selection name` into the console, and the row should look different.
+    private var targetExists: Bool {
+        !entry.target.isEmpty
+            && engine.objects.contains { !$0.isSelection && $0.name == entry.target }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1371,7 +1383,10 @@ private struct AlignmentRowView: View {
             if let attachment = entry.attachment {
                 Text(attachment)
                     .font(.system(size: 9))
-                    .foregroundColor(PanelTheme.selectionTextColor)
+                    // Dimmed when the object is gone: the panel is ~300pt wide, so
+                    // there is no room to spell it out on the row. The tooltip does.
+                    .foregroundColor(targetExists ? PanelTheme.selectionTextColor
+                                                  : PanelTheme.disabledColor)
                     .lineLimit(1)
                     .truncationMode(.head)
             }
@@ -1385,10 +1400,11 @@ private struct AlignmentRowView: View {
         .frame(height: kRowH)
         .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
         .contentShape(Rectangle())
-        .help("\(entry.depth) sequences × \(entry.columns) columns"
-              + " (\(entry.residues) residues)"
-              + (entry.attachment.map { ", for \($0)" } ?? ""))
+        .onTapGesture { reveal() }
+        .help(tooltip)
         .contextMenu {
+            Button("Reveal target") { reveal() }
+                .disabled(!targetExists)
             Button("Detach") { engine.runCommand("msa_detach \(entry.name)") }
                 .disabled(entry.attachment == nil)
             Divider()
@@ -1396,6 +1412,31 @@ private struct AlignmentRowView: View {
                 engine.runCommand("msa_delete \(entry.name)")
             }
         }
+    }
+
+    /// Take the camera to what this alignment describes: enable the object, zoom the
+    /// chain. No named selection is made — one per click would litter the session with
+    /// selections the user never asked for.
+    ///
+    /// `animate=-1` defers to the `animation` setting, matching the panel's own Zoom
+    /// action rather than hard-coding a duration.
+    private func reveal() {
+        guard targetExists else { return }
+        let selection = entry.chain.isEmpty
+            ? entry.target
+            : "(\(entry.target)) and chain \(entry.chain)"
+        engine.setObjectEnabled(entry.target, true)
+        engine.runCommand("zoom \(selection), animate=-1")
+    }
+
+    private var tooltip: String {
+        var text = "\(entry.depth) sequences × \(entry.columns) columns"
+            + " (\(entry.residues) residues)"
+        if let attachment = entry.attachment {
+            text += targetExists ? ", for \(attachment) — click to reveal"
+                                 : ", for \(attachment), which is not in this session"
+        }
+        return text
     }
 }
 
