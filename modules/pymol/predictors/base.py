@@ -12,6 +12,12 @@ MAX_RECYCLING_STEPS = 100
 MAX_DIFFUSION_STEPS = 10_000
 MAX_SEED = 2 ** 64 - 1
 
+#: Most alignment rows a prediction may use. boltz-mlx's `BoltzInputLimits.desktop`
+#: `maximumSequences`, which is upstream's `const.max_msa_seqs`. Both ends must agree:
+#: the Swift side passes this to `MSAAlignment.a3m(maximumSequences:)`, so a value
+#: above it would be silently ignored there rather than honoured.
+MAX_MSA_DEPTH = 16384
+
 
 def parse_chains(sequence):
     """'MKTAY/GSHMA' -> (('A', 'MKTAY'), ('B', 'GSHMA')).
@@ -42,12 +48,14 @@ class PredictionOptions:
     config.json and is not a per-call knob.
     """
 
-    __slots__ = ('recycling_steps', 'diffusion_steps', 'seed')
+    __slots__ = ('recycling_steps', 'diffusion_steps', 'seed', 'msa_depth')
 
-    def __init__(self, recycling_steps=3, diffusion_steps=200, seed=0):
+    def __init__(self, recycling_steps=3, diffusion_steps=200, seed=0,
+                 msa_depth=MAX_MSA_DEPTH):
         for name, value in (('recycling_steps', recycling_steps),
                             ('diffusion_steps', diffusion_steps),
-                            ('seed', seed)):
+                            ('seed', seed),
+                            ('msa_depth', msa_depth)):
             if not isinstance(value, int) or isinstance(value, bool):
                 raise PredictionOptionError('%s must be an integer' % name)
         # Bounded at BOTH ends. The lower bounds are semantic; the upper bounds exist
@@ -63,9 +71,17 @@ class PredictionOptions:
                 'diffusion_steps must be between 1 and %d' % MAX_DIFFUSION_STEPS)
         if not 0 <= seed <= MAX_SEED:
             raise PredictionOptionError('seed must be between 0 and %d' % MAX_SEED)
+        # Not clamped. A depth above the ceiling is silently ignored by the parser that
+        # eventually reads it, so accepting one would report a run using more of the
+        # alignment than it actually did -- and depth is the single largest determinant
+        # of both runtime and peak memory, so that is not a harmless overstatement.
+        if not 1 <= msa_depth <= MAX_MSA_DEPTH:
+            raise PredictionOptionError(
+                'msa_depth must be between 1 and %d' % MAX_MSA_DEPTH)
         self.recycling_steps = recycling_steps
         self.diffusion_steps = diffusion_steps
         self.seed = seed
+        self.msa_depth = msa_depth
 
     def as_dict(self):
         return {name: getattr(self, name) for name in self.__slots__}
@@ -82,18 +98,24 @@ class PredictionOptions:
 class PredictionSpec:
     """Validated, predictor-agnostic description of what to fold."""
 
-    __slots__ = ('chains', 'name')
+    __slots__ = ('chains', 'name', 'alignments')
 
-    def __init__(self, chains, name=''):
+    def __init__(self, chains, name='', alignments=None):
         self.chains = tuple(chains)
         self.name = name
+        # chain id -> pymol.msas.store.MSA, for the chains that have one. PARTIAL BY
+        # DESIGN: a chain with no entry is folded single-sequence, which is exactly the
+        # designed-binder case -- a real alignment for the target, none for the binder.
+        # Empty rather than None so every caller can iterate it without a guard.
+        self.alignments = dict(alignments or {})
 
     @property
     def total_residues(self):
         return sum(len(seq) for _, seq in self.chains)
 
     def __repr__(self):
-        return 'PredictionSpec(chains=%r, name=%r)' % (self.chains, self.name)
+        return 'PredictionSpec(chains=%r, name=%r, alignments=%r)' % (
+            self.chains, self.name, sorted(self.alignments))
 
 
 class Predictor(abc.ABC):
@@ -112,6 +134,15 @@ class Predictor(abc.ABC):
     #: Option names this predictor honours, mapped to defaults. Anything else is
     #: REJECTED by validate_options rather than silently ignored.
     option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
+    #: True only if this method can GENUINELY use a multiple-sequence alignment.
+    #:
+    #: Default False, so a predictor that cannot is rejected BY NAME. Accepting an
+    #: alignment and folding single-sequence anyway produces a worse structure with
+    #: nothing in the output saying so -- the same failure mode validate_options()
+    #: already exists to prevent for the inference knobs. A method that supports MSAs
+    #: also wants `msa_depth` in its option_defaults; without it the depth lever is
+    #: rejected by name, which is correct for a method that has no depth to lever.
+    supports_msa = False
 
     @abc.abstractmethod
     def check_available(self):
@@ -142,3 +173,68 @@ class Predictor(abc.ABC):
         merged = dict(self.option_defaults)
         merged.update(options)
         return PredictionOptions(**merged)
+
+    def bind_alignments(self, spec, alignments):
+        """Attach {chain_id: MSA} to `spec` and return it, or raise.
+
+        `alignments` is keyed by the spec's own chain ids ('A', 'B', ...) and may cover
+        only some of them; the rest are folded single-sequence. Each value is a
+        pymol.msas.store.MSA -- anything with `name`, `query` and `depth` will do.
+
+        The base implementation enforces the two things that are true of every method:
+        it refuses outright unless `supports_msa`, and it refuses an alignment whose
+        query is not exactly the sequence of the chain it is bound to. Both are checked
+        HERE, before submit, because the alternative is a half-gigabyte weight download
+        and minutes of featurization before the backend says the same thing.
+
+        Override to add a method's own constraints, then call super().
+        """
+        alignments = dict(alignments or {})
+        if not alignments:
+            spec.alignments = {}
+            return spec
+        if not self.supports_msa:
+            raise PredictionInputError(
+                '%s cannot use a multiple-sequence alignment, so %s %s refused rather'
+                ' than ignored: this method would fold single-sequence and nothing in'
+                ' the result would say the alignment had been dropped.'
+                % (self.id,
+                   ', '.join(repr(alignments[c].name) for c in sorted(alignments)),
+                   'is' if len(alignments) == 1 else 'are'))
+        sequences = dict(spec.chains)
+        for chain_id in sorted(alignments):
+            msa = alignments[chain_id]
+            if chain_id not in sequences:
+                raise PredictionInputError(
+                    'alignment %r is for chain %s, but this prediction has %s'
+                    % (msa.name, chain_id,
+                       'chain(s) ' + ', '.join(sorted(sequences)) if sequences
+                       else 'no chains'))
+            _check_alignment_query(chain_id, sequences[chain_id], msa)
+        spec.alignments = alignments
+        return spec
+
+
+def _check_alignment_query(chain_id, sequence, msa):
+    """Refuse an alignment whose query is not the sequence it would be folded against.
+
+    Length first: the overwhelmingly common cause is not a wrong file but a structure
+    with unobserved residues, whose sequence is legitimately shorter than the
+    full-construct alignment built from it. Saying which of the two it is saves the
+    user diffing two sequences by eye.
+    """
+    query = msa.query
+    if query == sequence:
+        return
+    if len(query) != len(sequence):
+        raise PredictionInputError(
+            'alignment %r has a %d-residue query but chain %s is %d residues.'
+            ' An alignment must be the alignment OF the sequence being folded --'
+            ' unobserved residues are absent from a structure, so an alignment built'
+            ' from the full construct will not match one read out of a crystal'
+            ' structure.' % (msa.name, len(query), chain_id, len(sequence)))
+    first = next(i for i, (a, b) in enumerate(zip(sequence, query)) if a != b)
+    raise PredictionInputError(
+        'alignment %r does not match chain %s: they differ at residue %d (%s in the'
+        ' sequence being folded, %s in the alignment).'
+        % (msa.name, chain_id, first + 1, sequence[first], query[first]))

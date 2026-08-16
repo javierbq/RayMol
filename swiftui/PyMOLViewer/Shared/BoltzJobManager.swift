@@ -77,6 +77,20 @@ final class BoltzJobManager {
 
     struct Chain: Codable { let chain: String; let sequence: String }
 
+    /// One chain's multiple-sequence alignment, as a PATH to an a3m.
+    ///
+    /// A path rather than inline text because an alignment is megabytes — the barnase
+    /// one boltz-mlx tests against is ~1.3 MB — and base64 inside a JSON this decodes in
+    /// one gulp buys nothing over a file that is read once and dropped. Python writes
+    /// each file BEFORE the request that names it, so a request that decodes has its
+    /// alignments already complete on disk.
+    struct Alignment: Codable {
+        let chain: String
+        let a3mPath: String
+
+        enum CodingKeys: String, CodingKey { case chain, a3mPath = "a3m_path" }
+    }
+
     struct Request: Codable {
         let jobID: String
         let weightsDir: String
@@ -86,6 +100,16 @@ final class BoltzJobManager {
         let seed: UInt64
         let outPath: String
         let statusPath: String
+        /// Per-chain alignments. OPTIONAL, so a request written by a Python side that
+        /// predates #297 still decodes — the same reasoning as `objectName` below.
+        ///
+        /// PARTIAL by design: a chain that is absent gets upstream's depth-1 dummy MSA
+        /// (`BoltzFeaturizer` falls back to `MSAAlignment.singleSequence`), which is
+        /// exactly the designed-binder case — a real alignment for the target, none for
+        /// the binder, because a designed binder has no homologs to align.
+        let alignments: [Alignment]?
+        /// Rows to read from each a3m, from the top. Optional for the same reason.
+        let msaDepth: Int?
         /// Object the finished structure is loaded into. Python creates an empty
         /// placeholder under this name at submit time; loading into it lands at state 1,
         /// and a repeat prediction of the same sequence appends model 2, 3, ...
@@ -102,6 +126,7 @@ final class BoltzJobManager {
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
             case objectName = "object_name"
+            case alignments, msaDepth = "msa_depth"
         }
     }
 
@@ -297,7 +322,8 @@ final class BoltzJobManager {
                        error: "unsupported input: \(canonical.diagnostics)")
                 return
             }
-            let features = try BoltzFeaturizer().featurize(canonical, alignments: [:])
+            let features = try BoltzFeaturizer().featurize(
+                canonical, alignments: try Self.loadAlignments(request))
 
             if isCancelled() {
                 Self.discardPlaceholder(request)
@@ -368,12 +394,75 @@ final class BoltzJobManager {
             Self.discardPlaceholder(request)
             report("cancelled", "inference", 0)
         } catch {
+            // Failed, carrying the message — and NOT retried without the alignment.
+            // Upstream Boltz silently substitutes a dummy MSA when an a3m does not match
+            // its chain, so every score it then reports describes the wrong complex with
+            // nothing saying so. boltz-mlx throws instead, on purpose; retrying here
+            // would undo that and reintroduce the exact failure it was written to
+            // prevent.
             Self.discardPlaceholder(request)
-            report("failed", "inference", 0, error: error.localizedDescription)
+            report("failed", "inference", 0, error: Self.message(for: error))
         }
         stateQueue.sync {
             cancelled.remove(request.jobID)
             runningTasks.removeValue(forKey: request.jobID)
+        }
+    }
+
+    // MARK: - Alignments
+
+    /// Reads each chain's a3m into the parser that will consume it.
+    ///
+    /// The truncation is the PARSER's own (`maximumSequences`), not a slice taken here:
+    /// it counts rows after deduplication and after the query, which is a different
+    /// count from the file's line numbers, and applying a second, cruder cut first
+    /// would silently mean something else.
+    ///
+    /// `taxonomy: nil` is deliberate and not a gap. Cross-chain pairing reads taxonomy
+    /// only from `>UniRef100_*` headers and only when a database is supplied, so it is
+    /// inert for locally generated files. Marking a multimer's rows as paired without
+    /// one would assert co-evolution across the very interface an interface score
+    /// measures — and that fails by reading HIGH rather than by crashing.
+    static func loadAlignments(_ request: Request) throws -> [String: MSAAlignment] {
+        guard let entries = request.alignments, !entries.isEmpty else { return [:] }
+        // Nil only for a request written before #297, which also carries no alignments —
+        // so this fallback is for a hand-written request, and it is upstream's own cap.
+        let depth = request.msaDepth ?? BoltzInputLimits.desktop.maximumMSADepth
+        var loaded: [String: MSAAlignment] = [:]
+        for entry in entries {
+            let text = try String(contentsOfFile: entry.a3mPath, encoding: .utf8)
+            loaded[entry.chain] = try MSAAlignment.a3m(text, maximumSequences: depth,
+                                                      taxonomy: nil)
+        }
+        return loaded
+    }
+
+    /// The message an error actually carries.
+    ///
+    /// `localizedDescription` bridges a plain Swift error through `NSError` and returns a
+    /// placeholder naming only the case NUMBER — "The operation couldn't be completed.
+    /// (BoltzMLX.BoltzFeaturizerError error 5.)". For most failures that is merely poor.
+    /// For `msaQueryMismatch` it is destructive: that error's entire job is to say which
+    /// chain and which position disagree, and it is the only thing standing between the
+    /// user and a confident score for the wrong complex — upstream Boltz does not throw
+    /// at all there, it substitutes a dummy MSA and reports numbers.
+    static func message(for error: Error) -> String {
+        switch error {
+        case let error as BoltzFeaturizerError:
+            return error.description
+        case let error as MSAParseError:
+            // Reachable only if the two parsers disagree: Python checks every row's
+            // column count at `load_msa`, before any of this. Worth saying plainly
+            // rather than as a raw enum case, because "they disagree" is the news.
+            switch error {
+            case .empty:
+                return "the alignment file contains no sequences"
+            case let .rowLengthMismatch(row, expected, found):
+                return "row \(row + 1) of the alignment has \(found) aligned columns "
+                     + "but the query has \(expected)"
+            }
+        default:
+            return error.localizedDescription
         }
     }
 

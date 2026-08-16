@@ -457,10 +457,14 @@ def _is_sequence_shaped(text):
     return bool(text) and all(ch.isalpha() or ch in '/\r\n' for ch in text)
 
 
-def sequence_from_selection(selection, _self=cmd):
-    """One-letter sequence of the protein chains in `selection`, '/'-joined.
+def chains_from_selection(selection, _self=cmd):
+    """[(object, chain_id, sequence), ...] for the protein chains in `selection`.
 
-    One chain per (object, chain id) in the order PyMOL iterates them, so predicting
+    The provenance-carrying form of ``sequence_from_selection``, which is a join of
+    the sequences. WHERE each chain came from is what lets `predict` find the
+    alignments attached to it, and it cannot be recovered from the joined string.
+
+    One entry per (object, chain id) in the order PyMOL iterates them, so predicting
     from a dimer folds A/B as a complex rather than as two independent monomers, and
     predicting from `objA or objB` builds the complex of the two.
 
@@ -492,7 +496,7 @@ def sequence_from_selection(selection, _self=cmd):
             '"%s" contains no protein residues to fold' % selection)
 
     sequences, unknown, substituted = [], [], {}
-    for resn_list in chains.values():
+    for (model, chain_id), resn_list in chains.items():
         letters = []
         for resn in resn_list:
             aa = _resn_to_aa.get(resn) or _RESN_ALIASES.get(resn)
@@ -504,7 +508,7 @@ def sequence_from_selection(selection, _self=cmd):
                 unknown.append(resn)
             else:
                 letters.append(aa)
-        sequences.append(''.join(letters))
+        sequences.append((model, chain_id, ''.join(letters)))
     if unknown:
         # Refused rather than skipped: dropping a residue would hand the predictor a
         # sequence one residue shorter than the structure it came from, spliced across
@@ -525,11 +529,34 @@ def sequence_from_selection(selection, _self=cmd):
             % (selection, sum(substituted.values()),
                ', '.join('%d %s->%s' % (count, resn, _MODIFIED_TO_PARENT[resn])
                          for resn, count in sorted(substituted.items()))))
-    return '/'.join(sequences)
+    return sequences
+
+
+def sequence_from_selection(selection, _self=cmd):
+    """One-letter sequence of the protein chains in `selection`, '/'-joined.
+
+    See ``chains_from_selection`` for what is read and what is deliberately not.
+    """
+    return '/'.join(seq for _, _, seq in
+                    chains_from_selection(selection, _self=_self))
 
 
 def resolve_sequence(sequence, quiet=1, _self=cmd):
-    """Return the one-letter sequence to fold, given a sequence, object or selection.
+    """The one-letter sequence to fold, given a sequence, object or selection.
+
+    ``resolve_input`` without the provenance. This is the whole of what most callers
+    need, and it is what the tests pin.
+    """
+    return resolve_input(sequence, quiet=quiet, _self=_self)[0]
+
+
+def resolve_input(sequence, quiet=1, _self=cmd):
+    """(sequence, sources) for a sequence, object or selection.
+
+    `sources` is one (object, chain id) per '/'-separated chain of the returned
+    sequence, in the same order -- or an EMPTY list when the input was a literal
+    sequence, which has no provenance to speak of. It is what lets `predict` find the
+    alignments attached to the chains it is about to fold.
 
     Resolution order, and why:
 
@@ -559,24 +586,134 @@ def resolve_sequence(sequence, quiet=1, _self=cmd):
         # looks like to the selection parser. Fine if it could be residues; otherwise
         # the caller wrote a broken selection and deserves to hear about it.
         if literal:
-            return text
+            return text, []
         raise
     if n_atoms > 0:
-        resolved = sequence_from_selection(text, _self=_self)
+        found = chains_from_selection(text, _self=_self)
+        resolved = '/'.join(seq for _, _, seq in found)
         if not int(quiet):
-            parts = resolved.split('/')
             colorprinting.parrot(
                 ' predict: %s -> %d residues in %d chain(s)'
-                % (text, sum(len(part) for part in parts), len(parts)))
-        return resolved
+                % (text, sum(len(seq) for _, _, seq in found), len(found)))
+        return resolved, [(model, chain) for model, chain, _ in found]
     if literal:
-        return text
+        return text, []
     raise PredictionInputError(
         '"%s" selects no atoms and is not a one-letter sequence' % text)
 
 
+# -- Alignments: from the command line, or from what is attached ---------------
+#
+# Two ways in, and they are not equivalent. `msa=` is positional per chain and says
+# exactly which alignment goes where. Omitting it uses whatever is ATTACHED to the
+# object each chain was read from -- which is not implicit magic, because attaching is
+# a deliberate act (`load_msa ..., target=` or `msa_attach`), but it does mean the
+# inputs of a run are not all visible in the command that started it. That is why
+# `predict` reports what it used regardless of `quiet`.
+
+
+def alignments_from_argument(msa, chains):
+    """{chain id: MSA} from a `msa=` argument. One '/'-separated slot per chain.
+
+    '/' rather than ',' for the same reason the sequence uses it: parsing.parse_arg
+    splits the command line on commas, so a comma-separated list never arrives whole.
+
+    An EMPTY slot means "no alignment for this chain", which is what makes the mixed
+    case writable -- `msa=/barstar_aln` folds chain A single-sequence and chain B with
+    an alignment. Trailing slots may simply be omitted.
+    """
+    from .msas import store
+    from .msas.errors import MSAError
+    from .predictors.errors import PredictionInputError
+
+    slots = [part.strip() for part in str(msa).split('/')]
+    if len(slots) > len(chains):
+        raise PredictionInputError(
+            'msa= has %d "/"-separated slots but there %s %d chain(s) to fold. Slots'
+            ' are positional, one per chain; leave one empty to fold that chain'
+            ' single-sequence.'
+            % (len(slots), 'is' if len(chains) == 1 else 'are', len(chains)))
+    out = {}
+    for (chain_id, _sequence), stored_name in zip(chains, slots):
+        if not stored_name:
+            continue
+        try:
+            out[chain_id] = store.get(stored_name)
+        except MSAError as exc:
+            # Re-raised in predict's own taxonomy, naming the chain: with several slots
+            # "no alignment named 'x'" does not say which one of them was wrong.
+            raise PredictionInputError('msa= for chain %s: %s' % (chain_id, exc))
+    return out
+
+
+def alignments_from_attachments(sources, chains):
+    """{chain id: MSA} for the chains whose source object/chain has one attached.
+
+    `sources` is what resolve_input returns: empty for a literal sequence, which
+    therefore never picks up an attachment -- there is no object to have attached one
+    to. Matching is on the object NAME and chain id exactly as `msa_attach` recorded
+    them, so an alignment attached through a multi-word selection does not match; pass
+    it with `msa=` instead.
+    """
+    from .msas import store
+    from .predictors.errors import PredictionInputError
+
+    if not sources:
+        return {}
+    attached = {}
+    for stored_name in store.names():
+        msa = store.get(stored_name)
+        if msa.target:
+            attached.setdefault((msa.target, msa.chain), []).append(msa)
+    out = {}
+    for (chain_id, _sequence), source in zip(chains, sources):
+        found = attached.get(source)
+        if not found:
+            continue
+        if len(found) > 1:
+            # Not resolved by picking one. Two alignments of the same chain are two
+            # different searches, and silently folding with whichever loaded first
+            # would make the result depend on load order rather than on the input.
+            raise PredictionInputError(
+                '%d alignments are attached to "%s" chain %s (%s); say which one to'
+                ' use with msa='
+                % (len(found), source[0], source[1] or '(blank)',
+                   ', '.join(m.name for m in found)))
+        out[chain_id] = found[0]
+    return out
+
+
+def report_alignments(spec, options):
+    """Say what alignment each chain was folded with. NOT gated on `quiet`.
+
+    Depth is the single largest determinant of both runtime and peak memory, and with
+    the attachment path the alignment used need not appear in the command at all -- so
+    a run whose inputs cannot be recovered from its own output is the default unless
+    this is unconditional. The modified-residue substitution warning is unconditional
+    for the same reason.
+
+    Silent when nothing was folded with an alignment: every prediction was
+    single-sequence before this existed, and a line saying so on every run is noise.
+    """
+    if not spec.alignments:
+        return
+    limit = getattr(options, 'msa_depth', None) or 0
+    parts = []
+    for chain_id, _sequence in spec.chains:
+        msa = spec.alignments.get(chain_id)
+        if msa is None:
+            parts.append('%s single-sequence' % chain_id)
+        elif limit and msa.depth > limit:
+            parts.append('%s %s (%d of %d sequences, msa_depth)'
+                         % (chain_id, msa.name, limit, msa.depth))
+        else:
+            parts.append('%s %s (%d sequences)' % (chain_id, msa.name, msa.depth))
+    colorprinting.parrot(' predict: alignments: %s' % ', '.join(parts))
+
+
 def predict(predictor, sequence, name='', recycling_steps=3, diffusion_steps=200,
-            seed=None, n_models=1, diffusion_samples=None, quiet=1, _self=cmd):
+            seed=None, n_models=1, diffusion_samples=None, msa='', msa_depth=None,
+            quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -622,6 +759,16 @@ ARGUMENTS
     plumb it can REJECT it by name instead of ignoring it. No shipped predictor
     supports it. {default: None, meaning "not requested"}
 
+    msa = str: alignments to fold with, one "/"-separated slot per chain in the
+    same order as the sequence. Each names an alignment loaded with "load_msa".
+    An empty slot folds that chain single-sequence, which is how a designed
+    binder is folded against an aligned target. {default: '', meaning "use
+    whatever is attached"}
+
+    msa_depth = int: use at most this many alignment rows, taken from the top --
+    an a3m is in search-rank order, so this is "the best N", not a sample. It is
+    the memory lever: MSA tensors are depth x residues. {default: 16384}
+
 EXAMPLES
 
     predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ
@@ -632,6 +779,11 @@ EXAMPLES
     predict boltz2, 1ubq                  # re-fold the whole object
     predict boltz2, 1ubq and chain A      # one chain of it
     predict boltz2, 1ubq and resi 1-40    # a fragment
+
+    load_msa barnase.a3m, barnase_aln, 1brs, A
+    predict boltz2, 1brs and chain A      # uses barnase_aln, because it is attached
+    predict boltz2, MKTAY/GSHMA, msa=binder_aln/target_aln
+    predict boltz2, MKTAY/GSHMA, msa=/target_aln     # chain A single-sequence
 
 NOTES
 
@@ -648,6 +800,12 @@ NOTES
 
     An object name wins over a same-spelled sequence: with an object called AAA
     loaded, "predict boltz2, AAA" folds the object, not the tripeptide.
+
+    ALIGNMENTS ARE USED WITHOUT BEING NAMED HERE. With no "msa" argument, each
+    chain read from the session is folded with whatever alignment is attached to
+    that object and chain. Which alignment each chain used is therefore printed
+    on every run, whatever "quiet" says. A method that cannot use an alignment
+    refuses one by name rather than folding single-sequence and not saying so.
 
     n_models COSTS N FULL RUNS. Each model repeats the whole prediction with a
     different seed, including the trunk; it is not several samples drawn from one
@@ -680,8 +838,15 @@ SEE ALSO
     # object name is built from, the spec the predictor gets -- must see the same
     # residues, and re-reading the session later could see a different one if the
     # user deleted or edited the source object in between.
-    sequence = resolve_sequence(sequence, quiet=quiet, _self=_self)
+    sequence, sources = resolve_input(sequence, quiet=quiet, _self=_self)
     spec = predictor_obj.parse_spec(sequence, name=name or (predictor + '_pred'))
+
+    # Bound BEFORE the seed is drawn and before anything is submitted: a refused
+    # alignment must cost nothing, and every one of these checks is one the backend
+    # would otherwise make after a 505 MB weight download and minutes of featurization.
+    alignments = (alignments_from_argument(msa, spec.chains) if msa
+                  else alignments_from_attachments(sources, spec.chains))
+    predictor_obj.bind_alignments(spec, alignments)
 
     # A fresh seed per run unless one is given, so repeat predictions of the same sequence
     # are genuinely different models rather than bit-identical duplicates -- measured, two
@@ -713,7 +878,13 @@ SEE ALSO
         # has to be named here to be rejected with the taxonomy's error instead of
         # a bare TypeError.
         requested['diffusion_samples'] = diffusion_samples
+    if msa_depth is not None:
+        # Only when asked for, so a predictor that cannot use an alignment rejects it
+        # BY NAME rather than being handed a depth it has no use for. Passing it
+        # unconditionally would make every predictor look as though it honoured one.
+        requested['msa_depth'] = int(msa_depth)
     options = predictor_obj.validate_options(requested)
+    report_alignments(spec, options)
 
     # Resolve the object name BEFORE submitting: the host needs it to load the result,
     # and the placeholder has to exist by the time this call returns so the panel shows

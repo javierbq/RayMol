@@ -94,7 +94,28 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    appear as a named parameter on `cmd.predict`, or Python raises `TypeError` before your
    validation runs.
 
-7. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
+7. **Declare `supports_msa` — and mean it.** It is `False` on the base class, so a method that
+   says nothing REFUSES `predict ..., msa=...` by name. That is the point: a predictor that
+   accepted an alignment and folded single-sequence anyway would return a worse structure with
+   nothing in the result saying the alignment had been dropped. Upstream Boltz is the
+   cautionary case here — it silently substitutes a depth-1 dummy MSA when an a3m does not
+   match its chain, so every score it then reports describes the wrong complex.
+
+   Setting it `True` means three things:
+
+   - read `spec.alignments` in `submit`. It is `{chain id: MSA}` and it is **partial**: a chain
+     with no entry is folded single-sequence. Mixed is the design case, not an edge case — a
+     real alignment for the target and none for a designed binder, which has no homologs.
+   - add `'msa_depth': MAX_MSA_DEPTH` to `option_defaults`, or the depth lever is rejected by
+     name. That is correct for a method with no depth to lever, and wrong for one that has.
+   - keep the alignment's bytes intact. `MSA.a3m` is the file VERBATIM because the parser at
+     the far end reproduces upstream's bugs deliberately; re-serializing it from a parse makes
+     any parity claim a statement about a file that no longer exists.
+
+   The base `bind_alignments` already refuses an alignment whose query is not exactly the
+   chain's sequence. Override it only to add a constraint of your own, then call `super()`.
+
+8. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
    main thread, so blocking stalls the render loop for the whole inference.
 
    Nothing on that thread may block for long, and the reason is sharper than "the UI stutters":

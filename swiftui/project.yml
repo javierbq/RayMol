@@ -78,9 +78,18 @@ schemes:
         - PyMOLViewerTests
       gatherCoverageData: false
 
-  # Inference-enabled variant: sets MPNN_INFERENCE=1 so DesignInferenceSmokeTests
-  # runs the real on-host MLX inference path instead of skipping. Used for
-  # MUST-HAVE 1 verification (loads 24 MB weights; expected runtime ~30–120 s).
+  # Inference-enabled variant: the tests that run REAL on-host MLX inference, which
+  # every other scheme skips so the fast suite never blocks on weight loading. The
+  # gates have to live here rather than in the shell environment — a unit-test bundle
+  # hosted in the app reads the environment xcodebuild builds from the SCHEME, so
+  # `FOO=1 xcodebuild test` never reaches the test process.
+  #
+  #   MPNN_INFERENCE            DesignInferenceSmokeTests (24 MB weights, ~30–120 s)
+  #   RAYMOL_PREDICT_MSA_SWEEP  PredictMSAMemorySweepTests (505 MB weights, TENS OF
+  #                             MINUTES — it is a measurement, not a check)
+  #
+  # Always pair with -only-testing: running the whole bundle under this scheme starts
+  # the sweep by accident.
   UnitTests_macOS_Inference:
     build:
       targets:
@@ -92,6 +101,9 @@ schemes:
       gatherCoverageData: false
       environmentVariables:
         - variable: MPNN_INFERENCE
+          value: "1"
+          isEnabled: true
+        - variable: RAYMOL_PREDICT_MSA_SWEEP
           value: "1"
           isEnabled: true
 
