@@ -45,6 +45,10 @@ def _path(kind, job_id, suffix='json'):
                         'raymol_predict_%s_%s.%s' % (kind, job_id, suffix))
 
 
+#: A job's outcome is decided once and never revisited.
+TERMINAL_STATES = ('done', 'failed', 'cancelled')
+
+
 class HostJob:
     """Handle on a job owned by the Swift side. Every method is a cheap poll."""
 
@@ -55,16 +59,40 @@ class HostJob:
         self.request_path = _path('req', job_id)
         self.status_path = _path('status', job_id)
         self.out_path = _path('result', job_id, 'pdb')
+        #: Chain id -> a3m written for this job. Cleaned up when the job settles.
+        self.a3m_paths = {}
 
     def status(self):
         """The host's last written status, or 'queued' if it has not started."""
         try:
             with open(self.status_path) as handle:
-                return json.load(handle)
+                state = json.load(handle)
         except (IOError, OSError, ValueError):
             return {'state': 'queued', 'phase': 'queued', 'fraction': 0.0,
                     'error': None, 'result_path': None,
                     'peak_bytes': None, 'elapsed_s': None}
+        if state.get('state') in TERMINAL_STATES:
+            self._discard_inputs()
+        return state
+
+    def _discard_inputs(self):
+        """Delete what only the host needed to READ, once it can no longer need it.
+
+        An alignment is megabytes and a session can submit many jobs, so leaving them
+        in the temp dir for the OS to reap eventually is not good enough. Driven off a
+        TERMINAL status rather than a timer: the host reads the a3m during featurize,
+        which is reported as `running`, so this cannot race the reader.
+
+        Deliberately not the RESULT: `predict_result` loads it by path, and a user may
+        do so long after the job finished. The status file stays too -- predict_status
+        must keep answering for a job that has already settled.
+        """
+        for path in list(self.a3m_paths.values()) + [self.request_path]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self.a3m_paths = {}
 
     def cancel(self):
         """Ask the host to stop.
@@ -78,10 +106,43 @@ class HostJob:
         print('PREDICT:cancel:%s' % self.job_id)
 
 
+def _write(path, text):
+    """Write `text` where a poller may be watching: complete, or not there at all."""
+    temp = path + '.tmp'
+    with open(temp, 'w') as handle:
+        handle.write(text)
+    os.replace(temp, path)
+
+
 def submit(spec, options, weights_path):
     """Write the request, print the marker, return the handle. Never blocks."""
     job_id = uuid.uuid4().hex[:12]
     job = HostJob(job_id, spec, options)
+
+    # Alignments go as PATHS, and the files are written BEFORE the request that names
+    # them. Two decisions worth keeping:
+    #
+    # Paths, not inline text, because an a3m is megabytes -- the barnase alignment is
+    # ~1.3 MB -- and base64 inside a JSON the host reads in one gulp buys nothing over
+    # a file it streams.
+    #
+    # Written first, because the request is what ANNOUNCES them: the host reads on its
+    # next 100 ms tick, so a request naming a half-written a3m is the one ordering bug
+    # available here, and it would surface as a parse error on a file the user can see
+    # is complete by the time they look.
+    #
+    # PER JOB, not per spec, so `n_models=N` writes the same alignment N times. That is
+    # deliberate: sharing one file across the N jobs would tie their lifetimes together
+    # and need reference counting to know when the last reader is done, to save temp
+    # space that is bounded at MAX_MODELS x the a3m -- tens of megabytes for a real
+    # alignment. Each job owning its inputs outright is the cheaper correctness.
+    alignments = []
+    for chain_id, msa in sorted(getattr(spec, 'alignments', {}).items()):
+        path = _path('msa', '%s_%s' % (job_id, chain_id), 'a3m')
+        _write(path, msa.a3m)
+        job.a3m_paths[chain_id] = path
+        alignments.append({'chain': chain_id, 'a3m_path': path})
+
     request = {
         'job_id': job_id,
         'weights_dir': weights_path or '',
@@ -89,9 +150,17 @@ def submit(spec, options, weights_path):
         # keys, so a positional array would fail to decode.
         'chains': [{'chain': chain, 'sequence': sequence}
                    for chain, sequence in spec.chains],
+        # Per-chain alignments, absent when there are none. The host applies its own
+        # dummy depth-1 alignment to any chain not listed, which is the designed-binder
+        # case: an alignment for the target, none for the binder.
+        'alignments': alignments,
         'recycling_steps': options.recycling_steps,
         'diffusion_steps': options.diffusion_steps,
         'seed': options.seed,
+        # How many rows of each a3m to read. Applied on the HOST side, by the same
+        # parser that reads the file, so the truncation is the parser's own -- the a3m
+        # written above is always the whole alignment.
+        'msa_depth': options.msa_depth,
         'out_path': job.out_path,
         'status_path': job.status_path,
         # The object the host loads the finished structure into. Resolved at submit time
@@ -101,9 +170,6 @@ def submit(spec, options, weights_path):
     }
     # Write completely before announcing it: the host reads on the next 100 ms
     # tick and must never see a partial request.
-    temp = job.request_path + '.tmp'
-    with open(temp, 'w') as handle:
-        json.dump(request, handle)
-    os.replace(temp, job.request_path)
+    _write(job.request_path, json.dumps(request))
     print('PREDICT:submit:%s' % job_id)
     return job

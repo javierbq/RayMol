@@ -33,6 +33,19 @@ class TemplatePredictor(Predictor):
     # validate_options(), never silently ignored.
     option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
 
+    # -- Multiple-sequence alignments --------------------------------------
+    # True ONLY if this method can genuinely use one. Left False here, which is
+    # what makes `predict ..., msa=x` refuse by name: a method that accepted an
+    # alignment and folded single-sequence anyway would return a worse structure
+    # with nothing in the result saying the alignment had been dropped.
+    #
+    # Setting this True means implementing two things: reading spec.alignments in
+    # submit() (a chain id -> MSA map, PARTIAL -- chains without one fold
+    # single-sequence), and adding 'msa_depth': MAX_MSA_DEPTH to option_defaults
+    # above so the depth lever is accepted rather than rejected by name. Override
+    # bind_alignments() for any constraint beyond "the query must be the sequence".
+    supports_msa = False
+
     # -- Capability --------------------------------------------------------
     def check_available(self):
         """Raise PredictorUnavailable if this cannot run here and now.

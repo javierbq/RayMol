@@ -1,11 +1,17 @@
 """Boltz-2 via boltz-mlx: a Swift/MLX int8 port running on-device.
 
-Protein-only, canonical-20, single-sequence (no MSA). Ligands, nucleic acids,
-modified residues, cyclic peptides and structural templates are unsupported by the
-featurizer and are rejected here rather than silently dropped.
+Protein-only, canonical-20. Ligands, nucleic acids, modified residues, cyclic
+peptides and structural templates are unsupported by the featurizer and are rejected
+here rather than silently dropped.
+
+Multiple-sequence alignments ARE supported (#297): the featurizer takes a per-chain
+map and falls back to upstream's depth-1 dummy alignment for any chain without one.
+Cross-chain PAIRING is inert for locally generated a3m files -- taxonomy is read only
+from `>UniRef100_*` headers and only when a taxonomy database is supplied, which
+nothing here supplies -- so a multimer gets per-chain alignments, not a paired one.
 """
 from . import host
-from .base import Predictor, PredictionSpec, parse_chains
+from .base import MAX_MSA_DEPTH, Predictor, PredictionSpec, parse_chains
 from .errors import PredictionInputError
 from .weights import WeightBundle
 
@@ -40,7 +46,16 @@ class Boltz2Predictor(Predictor):
     # the artifact's config.json (already 1.5) and is not a per-call knob.
     # diffusion_samples is absent because the port does not plumb it and only
     # diffusion sample 0 escapes BoltzPredictor.
-    option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
+    #
+    # msa_depth is the memory lever: MSA tensors are depth x tokens, so it is the one
+    # knob that changes peak memory without changing what is being folded. Defaulted to
+    # the ceiling, so an alignment is used in full unless the user says otherwise.
+    option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
+                       'msa_depth': MAX_MSA_DEPTH}
+
+    # The featurizer takes `alignments:` and throws msaLengthMismatch / msaQueryMismatch
+    # on a mismatch rather than falling back to a dummy MSA the way upstream does.
+    supports_msa = True
 
     def check_available(self):
         host.require_available(self.id)

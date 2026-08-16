@@ -171,9 +171,13 @@ NOTES
     Depth is reported AFTER duplicate rows are dropped, because that is what
     the featurizer will see.
 
+    An alignment attached to an object is used automatically by "predict" when
+    that object's chain is folded, and "predict" reports which alignment each
+    chain used. Pass "msa=" there to override it.
+
 SEE ALSO
 
-    msa_list, msa_delete, msa_rename, msa_attach
+    msa_list, msa_delete, msa_rename, msa_attach, predict
     """
     text = parse.read(filename)
     summary = parse.summarize(text)

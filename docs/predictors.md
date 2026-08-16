@@ -94,7 +94,28 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    appear as a named parameter on `cmd.predict`, or Python raises `TypeError` before your
    validation runs.
 
-7. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
+7. **Declare `supports_msa` — and mean it.** It is `False` on the base class, so a method that
+   says nothing REFUSES `predict ..., msa=...` by name. That is the point: a predictor that
+   accepted an alignment and folded single-sequence anyway would return a worse structure with
+   nothing in the result saying the alignment had been dropped. Upstream Boltz is the
+   cautionary case here — it silently substitutes a depth-1 dummy MSA when an a3m does not
+   match its chain, so every score it then reports describes the wrong complex.
+
+   Setting it `True` means three things:
+
+   - read `spec.alignments` in `submit`. It is `{chain id: MSA}` and it is **partial**: a chain
+     with no entry is folded single-sequence. Mixed is the design case, not an edge case — a
+     real alignment for the target and none for a designed binder, which has no homologs.
+   - add `'msa_depth': MAX_MSA_DEPTH` to `option_defaults`, or the depth lever is rejected by
+     name. That is correct for a method with no depth to lever, and wrong for one that has.
+   - keep the alignment's bytes intact. `MSA.a3m` is the file VERBATIM because the parser at
+     the far end reproduces upstream's bugs deliberately; re-serializing it from a parse makes
+     any parity claim a statement about a file that no longer exists.
+
+   The base `bind_alignments` already refuses an alignment whose query is not exactly the
+   chain's sequence. Override it only to add a constraint of your own, then call `super()`.
+
+8. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
    main thread, so blocking stalls the render loop for the whole inference.
 
    Nothing on that thread may block for long, and the reason is sharper than "the UI stutters":
@@ -110,14 +131,14 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    because RayMol's Metal renderer reads object state on the main thread without taking
    PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
 
-8. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
+9. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
    changes outside your own.
 
-9. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
+10. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
    test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
    runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
    first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
 
-10. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+11. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
     merging. No CI job compiles Swift, and the shared target has broken each platform from the
     other before (#174, #226/#238).
