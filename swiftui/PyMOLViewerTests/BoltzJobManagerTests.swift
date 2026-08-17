@@ -12,10 +12,15 @@ import XCTest
 final class BoltzJobManagerTests: XCTestCase {
 
     private var dir: URL!
+    /// Job IDs written by writeRequest() into NSTemporaryDirectory() root. tearDown()
+    /// removes both derived paths (request + status) for each one so they do not
+    /// accumulate across runs.
+    private var writtenJobIDs: [String] = []
 
     override func setUp() {
         super.setUp()
         BoltzJobManager.shared.resetForTesting()
+        writtenJobIDs = []
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -23,6 +28,13 @@ final class BoltzJobManagerTests: XCTestCase {
 
     override func tearDown() {
         BoltzJobManager.shared.resetForTesting()
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        for jobID in writtenJobIDs {
+            try? FileManager.default.removeItem(
+                at: tmpDir.appendingPathComponent("raymol_predict_req_\(jobID).json"))
+            try? FileManager.default.removeItem(
+                at: tmpDir.appendingPathComponent("raymol_predict_status_\(jobID).json"))
+        }
         try? FileManager.default.removeItem(at: dir)
         super.tearDown()
     }
@@ -48,6 +60,7 @@ final class BoltzJobManagerTests: XCTestCase {
             "status_path": tmpDir.appendingPathComponent("raymol_predict_status_\(job).json").path,
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
+        writtenJobIDs.append(job)
         return url
     }
 
