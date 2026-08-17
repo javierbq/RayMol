@@ -136,8 +136,12 @@ SEE ALSO
                                  % (run_obj.id, run_obj.tool, run_obj.object))
             for name, value in out['scalars'].items():
                 colorprinting.parrot('   %-24s %s' % (name, _fmt(value)))
+            # A chain-scope scalar is listed as `key/chain`, so the base key has to be
+            # recovered before deciding what is left -- otherwise every per-chain metric
+            # prints twice, once with its value and once as an "(array)" it is not.
+            shown = {name.split('/', 1)[0] for name in out['scalars']}
             for name in out['keys']:
-                if name not in out['scalars']:
+                if name not in shown:
                     colorprinting.parrot('   %-24s (array)' % name)
         return out
 

@@ -67,6 +67,21 @@ class ListAndGetTest(MetricCommandTestCase):
         self.assertEqual(got['scalars']['recovery'], 42.0)
         self.assertIn('conf', got['keys'])
 
+    def testGetPrintsEachKeyOnce(self):
+        # A chain-scope scalar is listed as `key/chain`, so a naive difference against
+        # the scalar names prints every per-chain metric twice -- once with its value,
+        # once as an "(array)" it is not.
+        schema.register(TOOL, list(schema.specs(TOOL))
+                        + [schema.MetricSpec('depth', schema.CHAIN, dtype='int')],
+                        replace=True)
+        name, index, run = self.scored()
+        run.values.append(store.value(TOOL, 'depth', value=1000, chain='A'))
+        got = cmd.metrics_get(run.id)
+        self.assertIn('depth/A', got['scalars'])
+        shown = {key.split('/', 1)[0] for key in got['scalars']}
+        self.assertIn('depth', shown)
+        self.assertEqual(len([k for k in got['keys'] if k not in shown]), 1)
+
     def testGetOneScalar(self):
         name, index, run = self.scored()
         self.assertEqual(cmd.metrics_get(run.id, 'recovery')['value'], 42.0)
