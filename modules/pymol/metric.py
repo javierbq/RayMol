@@ -30,18 +30,38 @@ def _warn_if_stale(run, _self=cmd):
     return reason
 
 
-def _resolve(run='', object='', key='', tool='', _self=cmd):
+def _run_states(run, key=''):
+    """Which states a run describes, as far as this lookup is concerned.
+
+    For a key, the states of the entries carrying it -- `{None}` for an object-scope
+    metric, which is about the object rather than any model. Without a key, the run's
+    own state list.
+    """
+    if not key:
+        return frozenset(run.states)
+    return frozenset(entry.state for entry in run.values if entry.key == key)
+
+
+def _resolve(run='', object='', key='', tool='', state=0, _self=cmd):
     """The run a command should act on.
 
     An explicit run id wins. Otherwise the NEWEST matching run on `object` -- newest
     because re-running a tool is how a user supersedes a result, and reaching for the
     older one by default would make the second run look as though it had not happened.
 
-    That ordering only means something WITHIN one tool. An object routinely carries runs
-    from several -- fold it, then design it -- and if more than one of them matches, the
-    newest is an arbitrary choice between different measurements rather than the latest
-    version of one. So that case is refused and names the tools, instead of colouring by
-    whichever tool happened to run last.
+    That ordering only means something between runs that describe THE SAME THING. Two
+    cases where they do not, and where "newest" would be an arbitrary pick between
+    different measurements rather than the latest version of one:
+
+    - several TOOLS have measured the object -- fold it, then design it;
+    - several STATES have been measured, which is exactly what `n_models=N` produces:
+      N independent runs landing as N states of one object, each with its own
+      confidence. Silently answering with the last model's numbers for a question
+      about the object is the single most likely way to misreport an ensemble.
+
+    Both are refused, naming the tools or the states. `state=` and `tool=` resolve
+    them; so does `run=`. A single candidate is never ambiguous -- one run that
+    measured several states hands them all back, narrowed by `state` downstream.
     """
     if run:
         if store.have(run):
@@ -65,13 +85,40 @@ def _resolve(run='', object='', key='', tool='', _self=cmd):
                ' from %r' % tool if tool else '',
                ' carrying %r' % key if key else '',
                ', '.join(store.objects()) or '(none)'))
-    tools = sorted({r.tool for r in candidates})
-    if len(tools) > 1:
-        raise MetricAmbiguous(
-            '%s have all measured %son %r. Name one with tool=, or a run with run= --'
-            ' taking the newest would pick between different measurements rather than'
-            ' between versions of one.'
-            % (', '.join(tools), '%r ' % key if key else '', object))
+
+    if state:
+        # Narrowed HERE, not after a run has been picked. Filtering inside an
+        # already-chosen run is what made `state=2` fail on a three-model object: the
+        # newest run was model 3's, and it has nothing for state 2.
+        state = int(state)
+        wanted = [r for r in candidates
+                  if state in _run_states(r, key) or _run_states(r, key) == {None}]
+        if not wanted:
+            available = sorted(
+                s for r in candidates for s in _run_states(r, key) if s is not None)
+            raise MetricNotFound(
+                'nothing on %r describes state %d%s; measured on state(s): %s'
+                % (object, state, ' for %r' % key if key else '',
+                   ', '.join(str(s) for s in available) or 'none'))
+        candidates = wanted
+
+    if len(candidates) > 1:
+        tools = sorted({r.tool for r in candidates})
+        if len(tools) > 1:
+            raise MetricAmbiguous(
+                '%s have all measured %son %r. Name one with tool=, or a run with'
+                ' run= -- taking the newest would pick between different measurements'
+                ' rather than between versions of one.'
+                % (', '.join(tools), '%r ' % key if key else '', object))
+        described = {_run_states(r, key) for r in candidates}
+        if len(described) > 1:
+            states = sorted(s for group in described for s in group if s is not None)
+            raise MetricAmbiguous(
+                '%r carries %sfor state(s) %s -- separate models, not revisions of one.'
+                ' Name one with state=, a run with run=, or list them all with'
+                ' "metrics_list %s".'
+                % (object, '%r ' % key if key else 'measurements ',
+                   ', '.join(str(s) for s in states), object))
     return candidates[-1]
 
 
@@ -109,9 +156,15 @@ SEE ALSO
             scalars = run.scalars()
             shown = ', '.join('%s=%s' % (key, _fmt(value))
                               for key, value in list(scalars.items())[:4])
+            # The state is on the line, not just in the payload: with `n_models=N` this
+            # listing is N rows on ONE object, and without it they are indistinguishable
+            # apart from an opaque run id.
+            where = run.object
+            if run.states:
+                where += '/' + '+'.join(str(s) for s in run.states)
             colorprinting.parrot(
                 ' %-22s %-12s %-18s %s'
-                % (run.id, run.tool, run.object, shown or '(arrays only)'))
+                % (run.id, run.tool, where, shown or '(arrays only)'))
             _warn_if_stale(run, _self=_self)
     return [run.summary() for run in runs]
 
@@ -152,9 +205,10 @@ SEE ALSO
 
     metrics_list, metrics_color, metrics_export
     """
-    run_obj = _resolve(run=str(run or ''), object=str(object or ''),
-                       key=str(key or ''), tool=str(tool or ''), _self=_self)
     state = int(state or 0)
+    run_obj = _resolve(run=str(run or ''), object=str(object or ''),
+                       key=str(key or ''), tool=str(tool or ''), state=state,
+                       _self=_self)
     _warn_if_stale(run_obj, _self=_self)
 
     if not key:
@@ -279,7 +333,8 @@ SEE ALSO
     metrics_get, spectrum
     """
     run_obj = _resolve(run=str(run or ''), object=str(object or ''),
-                       key=str(key), tool=str(tool or ''), _self=_self)
+                       key=str(key), tool=str(tool or ''), state=int(state or 0),
+                       _self=_self)
     _warn_if_stale(run_obj, _self=_self)
     count = binding.color(
         run_obj, str(key), palette=str(palette),

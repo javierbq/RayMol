@@ -48,6 +48,44 @@ metrics_delete name                                  a run id, an object, or "al
 metrics_schema [tool]                                what a tool measures, at what scope
 ```
 
+## Several models in one object
+
+`predict ..., n_models=5` is five independent runs landing as five states of **one**
+object. Each writes its own `state`-scope numbers -- `mean_plddt`, `elapsed_s`, its
+`plddt` array -- while the sequence it folded and the alignment depth it used are
+`object`- and `chain`-scope and are recorded once per run with no state at all.
+
+`metrics_list` shows one row per model, `object/state` in the second column:
+
+```
+PyMOL> metrics_list pred
+ boltz2_1a2b3c4d  boltz2  pred/1  n_residues=117, mean_plddt=71, elapsed_s=14.5 s
+ boltz2_5e6f7a8b  boltz2  pred/2  n_residues=117, mean_plddt=84, elapsed_s=14.9 s
+ boltz2_9c0d1e2f  boltz2  pred/3  n_residues=117, mean_plddt=62, elapsed_s=14.2 s
+```
+
+Pick a model with `state=`:
+
+```
+metrics_get pred, mean_plddt, state=2
+metrics_color plddt, pred, state=2
+```
+
+Asking **without** one is refused, because the models are not revisions of each other
+and answering with the last is how an ensemble gets misreported:
+
+```
+PyMOL> metrics_get pred, mean_plddt
+ Error: 'pred' carries 'mean_plddt' for state(s) 1, 2, 3 -- separate models, not
+ revisions of one. Name one with state=, a run with run=, or list them all with
+ "metrics_list pred".
+```
+
+An `object`-scope key is never ambiguous this way -- every model's run carries the same
+value and none of them names a state -- and neither is a single run that measured several
+states at once (a tool that scores a whole ensemble in one pass): there, `metrics_get
+<run>, <key>` hands back one entry per state.
+
 ## Several tools on one object
 
 They do not collide. The unit of storage is the **run**, so folding an object, re-folding
