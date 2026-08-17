@@ -50,6 +50,7 @@ C++ uses `.clang-format` (Linux brace style, 2-space indent, 80-column limit). N
 
 - **Git flow:** Do not commit or push directly to `master`. Create a feature branch, push it, and open a pull request into `master` for review before merging.
 - **macOS app testing:** When functionally testing the native macOS SwiftUI/Metal app, use the `mac-vm-test` skill whenever it is available. It builds on the host and drives the app inside an isolated, disposable macOS VM (leased from the `javierbq/mac-vm-pool` golden image) rather than touching the host's own UI.
+- **Local dev/test build naming:** Never build a local dev/test app as plain `RayMol.app`. Append a distinguishing suffix — an issue #, PR #, or short tag (e.g. `RayMol-287`, `RayMol-PR290`, `RayMol-master`) — via `PRODUCT_NAME=RayMol-<suffix>` on the `xcodebuild` invocation, and use a fresh/unique `-derivedDataPath` for that suffix rather than reusing another build's derived-data dir. Multiple branches/worktrees are often under test at the same time; an unsuffixed build can overwrite or shadow another one in progress, causing verification against the wrong binary. Release builds keep the plain `RayMol` name — this rule is dev-only.
 
 ## Architecture
 
