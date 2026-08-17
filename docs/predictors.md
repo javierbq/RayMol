@@ -19,16 +19,39 @@ it is shaped this way.
 
 ## Shipped predictors
 
-| id | weights | notes |
-|---|---|---|
-| `boltz2` | affine-int8, 507 MB | the default |
-| `boltz2-bf16` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| id | runtime | weights | notes |
+|---|---|---|---|
+| `boltz2` | `boltz` | affine-int8, 507 MB | the default |
+| `boltz2-bf16` | `boltz` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| `protenix-base` | `protenix` | affine-int8, 214 MB | complexes, single sequence. **Not runnable yet** — no build carries the `protenix` runtime, see #309 |
 
-`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`.
-That works because `host.submit` sends `weights_dir` per job and the Swift runtime
-picks its matmul path from the artifact manifest — a dense pack declares no
-quantization block — so one runtime serves both with no host change. It needs
-boltz-mlx >= 0.2.0.
+## Runtimes
+
+A predictor's **runtime** is the Swift backend that runs it, named on the wire by
+`host.submit(..., runtime=)`. It is a separate axis from the predictor id: `boltz2` and
+`boltz2-bf16` are two predictors and one runtime, because `host.submit` sends `weights_dir`
+per job and the Swift side picks its matmul path from the artifact manifest — a dense pack
+declares no quantization block — so one runtime serves both.
+
+The distinction has to be on the wire because weights and featurizer are method-specific.
+Running one method's request on another's backend does not fail; it tokenizes with the
+wrong featurizer and returns a confident wrong structure. So:
+
+- `BoltzJobManager` implements `boltz` and **refuses** any other in `preflight`, before it
+  applies its size model — which is fitted to Boltz's measured peaks and would be
+  meaningless applied to another method's request even as a refusal.
+- `PyMOLBridge` advertises what is actually linked in `RAYMOL_PREDICT_RUNTIMES`, which is
+  what lets `check_available` refuse **before** a weight download rather than after.
+- `Request.runtime` is **optional** on the Swift side, absent meaning `boltz`. A
+  non-optional field would turn any Python/Swift version skew into "malformed prediction
+  request" instead of a refusal that names the missing runtime. The same reasoning applies
+  to `object_name` and `alignments`.
+
+That default is also the trap: a new predictor that forgets to pass `runtime=` is silently
+dispatched to Boltz. `predict_runtime.py` asserts every registered predictor names one.
+
+`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`, which
+is what "two predictors, one runtime" looks like in practice. It needs boltz-mlx >= 0.2.0.
 
 It is **not** an upgrade. On an M3 Pro at 117 tokens, recycling 3 / 200 steps, dense
 bfloat16 costs 2x the disk, +63% peak RSS (620 MiB -> 1012 MiB) and +22% wall clock
@@ -80,6 +103,13 @@ float16 is the closer one at identical size (`--precision float16` exports it).
 4. **Implement `check_available`** so the predictor disappears cleanly where it cannot run
    rather than failing mid-run. Platform, OS floor, host presence — not weight state, which the
    weight manager is allowed to fix by downloading.
+
+   If your method needs a Swift backend of its own, call `host.require_runtime` after
+   `host.require_available`: the two failures have different remedies ("you are headless"
+   versus "this build does not carry that backend"), and checking here is what refuses
+   BEFORE a multi-hundred-megabyte download rather than after it. A bulk
+   `predict_weights download=1` also consults this, so a predictor that cannot run is
+   reported but not fetched.
 
 5. **Implement `parse_spec` to reject, not repair.** If the backend silently ignores input it
    does not support, catching that is your job: check what it does with a ligand, a nucleic

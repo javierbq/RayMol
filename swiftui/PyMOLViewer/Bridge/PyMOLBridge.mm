@@ -110,6 +110,13 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // are after init and get away with it only because PyMOL's own Python layer
     // assigns those into os.environ itself.)
     setenv("RAYMOL_PREDICT_HOST", "1", 1);
+    // Which inference runtimes are actually LINKED into this build. A host is not one
+    // capability but several: BoltzJobManager implements "boltz" and nothing else, so a
+    // predictor whose backend is missing refuses in check_available rather than
+    // submitting a job that BoltzJobManager.preflight would refuse -- after the user had
+    // waited out a weight download. Keep in step with BoltzJobManager.boltzRuntime; add
+    // a name here only when its runtime actually ships.
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
 #endif
 
     PyStatus status = Py_InitializeFromConfig(&config);

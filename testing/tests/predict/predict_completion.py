@@ -12,8 +12,16 @@ from pymol import cmd, testing
 
 class TestPredictCompletion(testing.PyMOLTestCase):
 
-    def testPredictOffersRegisteredPredictors(self):
-        self.assertEqual(cmd._parser.complete('predict '), 'predict boltz2')
+    def testPredictCompletesNothingWhenTheIdsShareNoPrefix(self):
+        """Tab extends the line to the LONGEST COMMON PREFIX, or not at all.
+
+        With `boltz2`, `boltz2-bf16` and `protenix-base` registered there is no common
+        prefix, so an empty argument completes to nothing and the parser returns None.
+        The candidate list is still shown -- that is `complete`'s side effect, not its
+        return value. This assertion is about the registry's contents, so it moves every
+        time a predictor whose id starts with a new letter is added.
+        """
+        self.assertIsNone(cmd._parser.complete('predict '))
 
     def testPartialPredictorNameCompletesAsFarAsItIsUnambiguous(self):
         """'boltz2' is a PREFIX of 'boltz2-bf16', so Tab stops there with no separator.
@@ -25,9 +33,19 @@ class TestPredictCompletion(testing.PyMOLTestCase):
         self.assertEqual(cmd._parser.complete('predict boltz2-'),
                          'predict boltz2-bf16, ')
 
+    def testAnIdSharingNoPrefixCompletesInOneStep(self):
+        """The payoff for NOT naming it `protenix`: 'p' identifies it uniquely.
+
+        Had a second Protenix pack shipped as `protenix`, this would stop at the bare
+        `protenix` with no separator -- the dead end `boltz2` already creates above.
+        """
+        self.assertEqual(cmd._parser.complete('predict p'),
+                         'predict protenix-base, ')
+
     def testPredictWeightsAlsoOffersPredictors(self):
-        self.assertEqual(cmd._parser.complete('predict_weights '),
+        self.assertEqual(cmd._parser.complete('predict_weights b'),
                          'predict_weights boltz2')
+        self.assertIsNone(cmd._parser.complete('predict_weights '))
 
     def testCommandNameItselfStillCompletes(self):
         self.assertEqual(cmd._parser.complete('predic'), 'predict')
