@@ -286,14 +286,15 @@ struct ContentView: View {
         if engine.isBusy {
             CalculatingOverlay(label: engine.busyLabel)
         }
-        // Model-weight download (#284). Above the busy overlay in the same stack, and
-        // deliberately NOT gated on isBusy: the fetch runs on its own thread, so the
-        // app is fully usable while it is on screen.
-        if let fetch = engine.weightsFetch {
-            WeightDownloadOverlay(
-                fetch: fetch,
-                onCancel: { engine.cancelWeightsDownload() },
-                onDismiss: { engine.weightsFetch = nil })
+        // #284 + #291. One tray for every non-blocking background job, deliberately
+        // NOT gated on isBusy: these run on their own threads, so the app is fully
+        // usable while they are on screen. Declared after busyOverlay so the tray
+        // stays ABOVE the busy scrim -- `predict` is not in heavyLabel, so a fetch
+        // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
+        ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
+                                              predictions: engine.predictionJobs)) { item in
+            guard let command = item.cancelCommand else { return }
+            engine.runCommand(command)
         }
         #if RAYMOL_MPNN
         // Design inference blocks input like a long PyMOL op. Rendered by a dedicated
@@ -4410,123 +4411,6 @@ private struct DesignBusyOverlayView: View {
 // Dimmed scrim + centered card shown while a long PyMOL op runs. The scrim
 // captures hits so no conflicting command can be issued mid-operation (which
 // also keeps the selectively-backgrounded heavy ops correctly ordered).
-/// Progress card for a model-weight download (#284).
-///
-/// The card this replaces did not exist: the first `predict` on a cold cache downloaded
-/// half a gigabyte on the main thread, so the window simply froze — and the progress
-/// messages the Python side was dutifully writing could not be drained until the
-/// download they described had already finished.
-///
-/// Unlike `CalculatingOverlay` there is no blocking scrim. The fetch runs on its own
-/// thread and blocks nothing, so the card must not pretend otherwise: it sits in a
-/// corner, and the rest of the app stays live underneath it.
-struct WeightDownloadOverlay: View {
-    let fetch: WeightsFetchState
-    let onCancel: () -> Void
-    let onDismiss: () -> Void
-
-    private static let byteFormatter: ByteCountFormatter = {
-        let f = ByteCountFormatter()
-        f.countStyle = .file
-        f.allowedUnits = [.useMB, .useGB]
-        return f
-    }()
-
-    /// Card width. Fixed on purpose: the Cancel row uses a `Spacer` to push the button
-    /// to the trailing edge, and an unbounded VStack lets that Spacer grow to the full
-    /// width of the viewport — which is exactly what the first cut of this card did.
-    private static let width: CGFloat = 340
-
-    private var title: String {
-        fetch.isError ? "Model weights failed to download" : "Downloading model weights"
-    }
-
-    /// "29% · 154.1 MB of 529.3 MB · 4 min left" — one compact line.
-    ///
-    /// Each clause is dropped rather than faked when it cannot be known: bytes are
-    /// meaningless outside the download phase (see `WeightsFetchState.received`), and
-    /// the ETA is absent until there is enough history to estimate one honestly.
-    private var detail: String {
-        if fetch.isError { return fetch.error ?? "Unknown error" }
-        let percent = "\(Int((min(max(fetch.fraction, 0), 1) * 100).rounded()))%"
-        if fetch.isExtracting { return "Unpacking… \(percent)" }
-        var parts = [percent]
-        if fetch.total > 0 {
-            let done = Self.byteFormatter.string(fromByteCount: Int64(fetch.received))
-            let total = Self.byteFormatter.string(fromByteCount: Int64(fetch.total))
-            parts.append("\(done) of \(total)")
-        }
-        if let left = fetch.secondsRemaining.map(Self.formatRemaining) {
-            parts.append(left)
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    /// Deliberately coarse. A to-the-second countdown on a multi-minute download
-    /// invites the reader to trust a number derived from an average rate.
-    static func formatRemaining(_ seconds: Double) -> String {
-        switch seconds {
-        case ..<10:   return "almost done"
-        case ..<90:   return "\(Int(seconds.rounded())) sec left"
-        case ..<3600: return "\(Int((seconds / 60).rounded())) min left"
-        default:      return "over an hour left"
-        }
-    }
-
-    var body: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                card.padding(16)
-            }
-        }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    private var card: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: fetch.isError
-                      ? "exclamationmark.triangle.fill"
-                      : "arrow.down.circle")
-                    .font(.caption)
-                    .foregroundStyle(fetch.isError ? .orange : .secondary)
-                Text(title)
-                    .font(.subheadline).fontWeight(.medium)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                // On the title row rather than its own: one less line, and it sits
-                // where the eye already is.
-                Button(fetch.isError ? "Dismiss" : "Cancel",
-                       action: fetch.isError ? onDismiss : onCancel)
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.tint)
-            }
-            if !fetch.isError {
-                // Determinate: the fetcher reports a real fraction for both phases,
-                // which is the entire difference between this and a spinner.
-                ProgressView(value: min(max(fetch.fraction, 0), 1))
-                    .progressViewStyle(.linear)
-            }
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(width: Self.width)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10)
-            .strokeBorder(.secondary.opacity(0.25)))
-        .shadow(radius: 6)
-    }
-}
-
 struct CalculatingOverlay: View {
     let label: String
     var body: some View {
