@@ -443,17 +443,30 @@ def _pending_maps():
     Two maps from ONE pass, so the hover tooltip and the progress card are the
     same computation and cannot disagree.
 
+    The two maps do NOT cover the same names, and that asymmetry is the point:
+
+      details -- ONLY genuinely pending objects. Its sole consumer is `isPending`
+                 in ObjectPanel, which greys the enable checkbox and blocks the
+                 row's tap-to-toggle. A RETAINED terminal record belongs to a real
+                 object that may already carry a landed model (n_models=2, model 1
+                 lands, model 2 fails), so listing it here would dim and disable a
+                 live structure -- and label it "pending: inference" -- until the
+                 user found Dismiss.
+      records -- pending AND retained. This is what the progress tray renders, and
+                 saying WHY an eleven-minute run produced nothing is the whole
+                 reason retention exists.
+
     Never raises: a failure here would freeze the whole object panel on a stale
     list, because the caller's single `except` writes no file at all.
     """
     try:
         from pymol import predicting
-        names = list(predicting.pending_objects())
-        names += [n for n in predicting.recent_objects() if n not in names]
-        if not names:
+        pending = list(predicting.pending_objects())
+        retained = [n for n in predicting.recent_objects() if n not in pending]
+        if not pending and not retained:
             return {}, {}
         details, records = {}, {}
-        for name in names:
+        for name in pending:
             try:
                 info = predicting.pending_info(name)
             except Exception:
@@ -463,6 +476,13 @@ def _pending_maps():
                 continue
             details[name] = info.get('detail') or 'pending'
             records[name] = info
+        for name in retained:
+            try:
+                info = predicting.pending_info(name)
+            except Exception:
+                info = None
+            if info is not None:
+                records[name] = info
         return details, records
     except Exception:
         return {}, {}
@@ -507,8 +527,10 @@ def poll_panel():
         # Structure prediction (#224, #291): objects that are empty placeholders
         # waiting on a running job. `pending` is the hover tooltip (a plain string
         # map -- Swift decodes it as [String: String] and widening it would fail
-        # the whole payload decode). `pending_jobs` is the structured record the
-        # progress tray renders.
+        # the whole payload decode), and it carries ONLY still-running jobs because
+        # its consumer disables the object's enable-toggle. `pending_jobs` is the
+        # structured record the progress tray renders, and it additionally carries
+        # RETAINED terminal records so a failed run can say why it produced nothing.
         #
         # Cheap by construction: normally empty, and only pending names read a
         # status file -- one read per pending OBJECT, never per model. This poll
@@ -527,6 +549,11 @@ def poll_panel():
             'pending': pending_details,
             'pending_jobs': pending_records,
         }
+        # Serialise BEFORE opening the file. open(..., 'w') truncates immediately, so
+        # doing the dumps inside the `with` leaves a ZERO-BYTE file behind when a value
+        # turns out not to be JSON-serialisable -- worse than a stale one, and it takes
+        # every other reader of this path down with the panel.
+        blob = json.dumps(payload)
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's
         # populated object list and briefly showing the empty-state overlay over
@@ -534,7 +561,7 @@ def poll_panel():
         p = os.path.join(tempfile.gettempdir(),
                          'pymol_objpanel_%d.json' % os.getpid())
         with open(p, 'w') as _f:
-            _f.write(json.dumps(payload))
+            _f.write(blob)
         print('OBJPANEL:ready')
     except Exception as e:
         print('OBJPANEL_ERR:' + str(e))

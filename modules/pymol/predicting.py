@@ -78,8 +78,10 @@ _RECENT = {}
 #: How many terminal records to hold.
 MAX_RECENT = 16
 
-#: name -> the most recent pending_info() result, so discard_pending can retain a
-#: terminal one without re-reading a status file that may already be gone.
+#: name -> the most recent pending_info() result. A FALLBACK only: discard_pending
+#: re-reads the status fresh, because the cached copy is one poll old and the
+#: failure it needs to retain is written milliseconds before the discard runs.
+#: This still covers a name that left _PENDING before the discard reached it.
 _LAST_INFO = {}
 
 
@@ -164,16 +166,23 @@ def pending_info(name, _self=cmd):
             if bundle is not None and getattr(job, '_real', None) is None:
                 info['bundle'] = getattr(bundle, 'id', None)
             status = job.status()
-            info['state'] = status.get('state') or 'running'
-            info['phase'] = status.get('phase') or 'pending'
-            info['error'] = status.get('error')
+            # Coerced, not trusted. status() is a THIRD-PARTY surface (any registered
+            # predictor supplies it) and every value here crosses json.dumps into a
+            # strongly-typed Swift decoder that does no coercion of its own. A
+            # ValueError in 'error' is not JSON-serialisable and truncates the panel
+            # file to zero bytes; an int in 'phase' decodes as a non-String and fails
+            # the WHOLE PanelPayload, taking the object list down with it.
+            info['state'] = str(status.get('state') or 'running')
+            info['phase'] = str(status.get('phase') or 'pending')
+            error = status.get('error')
+            info['error'] = None if error is None else str(error)
             fraction, moving = _job_progress(job, status)
             if fraction is not None:
                 whole = (track['done'] + fraction) / info['models_total']
                 whole = max(whole, track.get('floor', 0.0))
                 track['floor'] = whole
                 info['fraction'] = whole
-                info['moving'] = moving
+                info['moving'] = bool(moving)
             elif track.get('floor'):
                 info['fraction'] = track['floor']
         info['detail'] = _format_detail(info)
@@ -200,7 +209,18 @@ def _job_progress(job, status):
             predictor = getattr(job, '_predictor', None)
         if predictor is None:
             return None, False
-        return predictor.progress(status)
+        fraction, moving = predictor.progress(status)
+        # progress() is overridable, so the finiteness guard cannot live only in
+        # compose_progress. A NaN reaching pending_info poisons track['floor']
+        # permanently -- every later max() against it is NaN too -- and writes an
+        # invalid JSON literal that no decoder accepts.
+        if fraction is not None:
+            import math
+            if (not isinstance(fraction, (int, float))
+                    or isinstance(fraction, bool)
+                    or not math.isfinite(float(fraction))):
+                return None, False
+        return fraction, bool(moving)
     except Exception:
         return None, False
 
@@ -253,10 +273,26 @@ def discard_pending(name, _self=cmd):
     deleting a completed structure would destroy the very thing the user asked for.
     """
     # Capture BEFORE the pop: this is the only moment the record still exists and
-    # we already know the outcome. Uses the last observed record rather than
-    # re-reading status(), because Swift's cleanup may already have removed the
-    # status file by the time the poll gets here.
-    last = _LAST_INFO.pop(name, None)
+    # we already know the outcome.
+    #
+    # Read it FRESH. _LAST_INFO holds whatever the last 500 ms poll saw, and the
+    # real ordering in the app is: poll observes 'running' -> inference fails on a
+    # background queue -> settle() writes the terminal status file -> the discard is
+    # hopped to the main queue and runs within milliseconds, LONG before the next
+    # poll. Trusting the cache therefore retains nothing on the only path that
+    # matters. Nothing deletes the status file (BoltzJobManager has no removeItem
+    # on statusPath), so re-reading it here is what actually sees the failure;
+    # _LAST_INFO stays as the fallback for a job that vanished from _PENDING first.
+    #
+    # NOT on the poll path: discard_pending runs once per placeholder teardown, so
+    # this does not add a per-tick status read.
+    fresh = None
+    try:
+        fresh = pending_info(name, _self=_self)
+    except Exception:
+        pass
+    last = fresh or _LAST_INFO.get(name)
+    _LAST_INFO.pop(name, None)
     if last is not None and last.get('state') in ('error', 'failed', 'cancelled'):
         while len(_RECENT) >= MAX_RECENT:
             _RECENT.pop(next(iter(_RECENT)))

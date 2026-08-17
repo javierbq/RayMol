@@ -1,5 +1,6 @@
 """Predictor contract and input types. No I/O, no network, no PyMOL session access."""
 import abc
+import math
 
 from .errors import PredictionInputError, PredictionOptionError
 
@@ -78,7 +79,14 @@ def compose_progress(status, phases):
             fraction_raw = status.get('fraction')
             if not isinstance(fraction_raw, (int, float)) or isinstance(fraction_raw, bool):
                 return None, False
-            local = min(max(float(fraction_raw), 0.0), 1.0)
+            local = float(fraction_raw)
+            # BEFORE the clamp, never by it: min(max(nan, 0.0), 1.0) is still nan,
+            # because every comparison with NaN is False. A NaN reaching the caller
+            # poisons the monotone floor forever and writes `NaN` into the panel
+            # JSON, which is not valid JSON and fails the whole payload decode.
+            if not math.isfinite(local):
+                return None, False
+            local = min(max(local, 0.0), 1.0)
             return start + local * (end - start), True
     except Exception:
         return None, False

@@ -42,6 +42,12 @@ class TestComposeProgress(testing.PyMOLTestCase):
         self.assertAlmostEqual(self.compose('diffusion', 2.0)[0], 0.97)
         self.assertAlmostEqual(self.compose('diffusion', -1.0)[0], 0.40)
 
+    def testANonFiniteFractionIsRejectedNotClamped(self):
+        """The clamp does NOT catch these: min(max(nan, 0.0), 1.0) is nan, because
+        every comparison with NaN is False. NaN also serialises as invalid JSON."""
+        for bad in (float('nan'), float('inf'), float('-inf')):
+            self.assertEqual(self.compose('diffusion', bad), (None, False), bad)
+
     def testMalformedStatusNeverRaises(self):
         """It runs on a 500 ms main-thread poll; a throw freezes the object panel."""
         from pymol.predictors.base import compose_progress
@@ -302,6 +308,91 @@ class TestPendingInfo(testing.PyMOLTestCase):
             self.assertIsInstance(value, (str, int, float, bool, type(None)),
                                   'pending_jobs.%s is not a scalar' % key)
 
+    def panel_payload(self):
+        """poll_panel() once, then the JSON it wrote. Fails loudly if it wrote none."""
+        import json
+        import os
+        import tempfile
+        from pymol import appkit_inspector
+
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_objpanel_%d.json' % (os.getpid(),))
+        if os.path.exists(path):
+            os.remove(path)
+        appkit_inspector.poll_panel()
+        self.assertTrue(os.path.exists(path), 'poll_panel wrote no file at all')
+        self.assertGreater(os.path.getsize(path), 0,
+                           'poll_panel truncated the file to zero bytes')
+        with open(path) as handle:
+            return json.load(handle)
+
+    def testARetainedRecordIsNotListedAsPending(self):
+        """`pending` disables the enable-toggle and greys the row. A retained
+        terminal record belongs to a real object that may already carry a landed
+        model, so listing it there kills a live structure's checkbox."""
+        self.register('kept', [[{'state': 'failed', 'phase': 'inference',
+                                 'fraction': 0.0, 'error': 'model 2 failed'}]])
+        self.predicting.discard_pending('kept', _self=self.cmd)
+        self.assertIn('kept', self.predicting._RECENT, 'pre-condition: retained')
+        # Give the name real atoms, exactly as model 1 landing would.
+        self.cmd.fragment('ala', 'kept')
+
+        payload = self.panel_payload()
+        self.assertNotIn('kept', payload['pending'],
+                         'a retained record must not grey out a real object')
+        self.assertIn('kept', payload['pending_jobs'],
+                      'the tray still needs the record to say why it failed')
+        self.assertEqual(payload['pending_jobs']['kept']['error'], 'model 2 failed')
+
+    def testARunningJobIsStillListedAsPending(self):
+        """The other half of the same invariant: a live job MUST be in both."""
+        self.register('live', [[{'phase': 'diffusion', 'fraction': 0.5}]])
+        payload = self.panel_payload()
+        self.assertIn('live', payload['pending'])
+        self.assertIn('live', payload['pending_jobs'])
+
+    # -- Unsanitised third-party status values (spec 6.6) ----------------------
+
+    def testANonSerialisableErrorStillWritesTheWholePayload(self):
+        """A predictor may put an EXCEPTION in status()['error']. Uncoerced, that
+        is not JSON-serialisable: json.dumps raises after open('w') has already
+        truncated the file, so the panel gets zero bytes and freezes."""
+        self.register('weird', [[{'state': 'failed', 'phase': 'inference',
+                                  'fraction': 0.0, 'error': ValueError('boom')}]])
+        payload = self.panel_payload()
+        self.assertIsInstance(payload['pending_jobs']['weird']['error'], str)
+        self.assertIn('boom', payload['pending_jobs']['weird']['error'])
+
+    def testANonStringPhaseIsCoercedRatherThanFailingTheDecode(self):
+        """Swift does `try c.decode(String.self, forKey: .phase)` with no coercion,
+        so a bare int fails the WHOLE PanelPayload and takes the object list down."""
+        self.register('numeric', [[{'state': 'running', 'phase': 5,
+                                    'fraction': 0.5}]])
+        payload = self.panel_payload()
+        record = payload['pending_jobs']['numeric']
+        self.assertIsInstance(record['phase'], str)
+        self.assertIsInstance(record['state'], str)
+        self.assertEqual(record['phase'], '5')
+
+    def testANonFiniteFractionIsRejectedAndDoesNotPoisonTheFloor(self):
+        """min(max(nan, 0.0), 1.0) is STILL nan -- every comparison with NaN is
+        False -- so the clamp does not catch it. NaN is invalid JSON, and once it
+        reaches track['floor'] every later tick repeats it forever."""
+        self.register('nanjob', [[{'phase': 'diffusion', 'fraction': float('nan')},
+                                  {'phase': 'diffusion', 'fraction': 0.5}]])
+        info = self.predicting.pending_info('nanjob', _self=self.cmd)
+        self.assertIsNone(info['fraction'], 'NaN says nothing; it is not a number')
+        self.assertEqual(self.predicting._TRACK['nanjob']['floor'], 0.0)
+        # The next tick, with a real fraction, must recover.
+        info = self.predicting.pending_info('nanjob', _self=self.cmd)
+        self.assertIsNotNone(info['fraction'])
+        self.assertGreater(info['fraction'], 0.0)
+
+    def testAnInfiniteFractionIsRejectedToo(self):
+        self.register('infjob', [[{'phase': 'diffusion', 'fraction': float('inf')}]])
+        self.assertIsNone(
+            self.predicting.pending_info('infjob', _self=self.cmd)['fraction'])
+
     def testPollPanelStillWritesAFileWhenAJobExplodes(self):
         import os
         import tempfile
@@ -355,6 +446,56 @@ class TestPendingInfo(testing.PyMOLTestCase):
         self.assertIsNotNone(info, 'a failed job must survive its placeholder')
         self.assertEqual(info['state'], 'failed')
         self.assertEqual(info['error'], 'out of memory')
+
+    def testAFailureIsRetainedWITHOUTAPollHavingObservedItFirst(self):
+        """The real ordering in the app, and the one no other test covered.
+
+        The app never polls between the failure and the discard: settle() writes the
+        terminal status on a background queue and hops discardPlaceholder to the main
+        queue, which runs within milliseconds -- long before the next 500 ms tick. So
+        every other retention test here calls pending_info() first ('observe it once')
+        and would keep passing against a discard_pending that only read the cache.
+        This one does NOT, which is exactly the failing case in the shipped build.
+        """
+        self.register('unseen', [[{'state': 'failed', 'phase': 'inference',
+                                   'fraction': 0.0, 'error': 'out of memory'}]])
+        self.assertIsNone(self.predicting._LAST_INFO.get('unseen'),
+                          'pre-condition: no poll has observed this job')
+        self.predicting.discard_pending('unseen', _self=self.cmd)
+        info = self.predicting.pending_info('unseen', _self=self.cmd)
+        self.assertIsNotNone(
+            info, 'the terminal status is on disk; discard must read it fresh')
+        self.assertEqual(info['state'], 'failed')
+        self.assertEqual(info['error'], 'out of memory')
+
+    def testAnUnobservedCancellationIsRetainedToo(self):
+        """settle('cancelled') writes error=None; the card still has to appear."""
+        self.register('stopped', [[{'state': 'cancelled', 'phase': 'inference',
+                                    'fraction': 0.0, 'error': None}]])
+        self.predicting.discard_pending('stopped', _self=self.cmd)
+        info = self.predicting.pending_info('stopped', _self=self.cmd)
+        self.assertIsNotNone(info)
+        self.assertEqual(info['state'], 'cancelled')
+        self.assertIsNone(info['error'])
+
+    def testAnUnobservedSuccessIsStillNotRetained(self):
+        """The fresh read must not turn every teardown into a card."""
+        self.register('fine', [[{'state': 'done', 'phase': 'done',
+                                 'fraction': 1.0}]])
+        self.predicting.discard_pending('fine', _self=self.cmd)
+        self.assertIsNone(self.predicting.pending_info('fine', _self=self.cmd))
+
+    def testDiscardStillFallsBackToTheCachedRecord(self):
+        """A name popped from _PENDING before the discard has no status to re-read;
+        the last observed record is what keeps its card."""
+        self.register('gone', [[{'state': 'failed', 'phase': 'inference',
+                                 'fraction': 0.0, 'error': 'vanished'}]])
+        self.predicting.pending_info('gone', _self=self.cmd)
+        self.predicting._PENDING.pop('gone', None)     # nothing left to read
+        self.predicting.discard_pending('gone', _self=self.cmd)
+        info = self.predicting.pending_info('gone', _self=self.cmd)
+        self.assertIsNotNone(info, 'the cached record is the fallback')
+        self.assertEqual(info['error'], 'vanished')
 
     def testASuccessfulJobIsNotRetained(self):
         self.register('ok', [[{'state': 'done', 'phase': 'done', 'fraction': 1.0}]])
