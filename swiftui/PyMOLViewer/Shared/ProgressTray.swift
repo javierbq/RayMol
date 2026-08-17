@@ -126,7 +126,11 @@ struct ProgressCard: View {
         switch seconds {
         case ..<10:   return "almost done"
         case ..<90:   return "\(Int(seconds.rounded())) sec left"
-        case ..<3600: return "\(Int((seconds / 60).rounded())) min left"
+        case ..<3600:
+            let mins = Int((seconds / 60).rounded())
+            // Rounding can carry 59.5 min → 60; route those to the next bucket.
+            if mins >= 60 { return "over an hour left" }
+            return "\(mins) min left"
         default:      return "over an hour left"
         }
     }
@@ -134,11 +138,17 @@ struct ProgressCard: View {
     /// Coarse for the same reason, and never counts down -- this one is measured.
     static func formatElapsed(_ seconds: Double) -> String {
         switch seconds {
-        case ..<60:   return "\(Int(seconds.rounded())) sec"
+        case ..<60:
+            let s = Int(seconds.rounded())
+            // Rounding can carry 59.5 s → 60; bump to "1 min" rather than "60 sec".
+            if s >= 60 { return "1 min" }
+            return "\(s) sec"
         case ..<3600: return "\(Int((seconds / 60).rounded())) min"
         default:
-            let hours = Int(seconds / 3600)
-            let minutes = Int(((seconds - Double(hours) * 3600) / 60).rounded())
+            var hours = Int(seconds / 3600)
+            var minutes = Int(((seconds - Double(hours) * 3600) / 60).rounded())
+            // Rounding can carry e.g. 7199 s → 1 hr 60 min; propagate the carry.
+            if minutes == 60 { hours += 1; minutes = 0 }
             return "\(hours) hr \(minutes) min"
         }
     }

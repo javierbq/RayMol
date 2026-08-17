@@ -102,6 +102,22 @@ extension PendingJobTests {
         XCTAssertEqual(ProgressCard.formatElapsed(4000), "1 hr 7 min")
     }
 
+    /// Rounding carry: each boundary that .rounded() would push across a unit
+    /// boundary must be caught and propagated, not printed as "60 sec" / "60 min".
+    func testElapsedCarriesAtUnitBoundaries() {
+        // 59.5 s rounds to 60 s — must not print "60 sec"
+        XCTAssertEqual(ProgressCard.formatElapsed(59.5), "1 min")
+        // 7199 s = 1 hr 59.983 min — must not print "1 hr 60 min"
+        XCTAssertEqual(ProgressCard.formatElapsed(7199), "2 hr 0 min")
+        // Regression for the original fix (4000 s = 1 hr 6.67 min → rounds to 7)
+        XCTAssertEqual(ProgressCard.formatElapsed(4000), "1 hr 7 min")
+    }
+
+    func testRemainingDoesNotPrint60MinLeft() {
+        // 3594 s / 60 = 59.9 min, rounds to 60 — must route to "over an hour left"
+        XCTAssertEqual(ProgressCard.formatRemaining(3594), "over an hour left")
+    }
+
     private func job(_ id: String, state: String = "running",
                      bundle: String? = nil) -> PredictionJobState {
         PredictionJobState(id: id, state: state, phase: "inference", fraction: nil,
