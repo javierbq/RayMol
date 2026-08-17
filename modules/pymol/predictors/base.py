@@ -33,6 +33,58 @@ def parse_chains(sequence):
     return tuple(zip(CHAIN_IDS, parts))
 
 
+#: A band is (phase, start, end) on an overall 0..1 scale, and a job's
+#: status()['fraction'] is completion WITHIN its phase, restarting at 0 on each
+#: phase change. The composition is
+#:
+#:     overall = start + local * (end - start)
+#:
+#: `end == start` -- a "zero-span" band -- means the backend reports only that
+#: the phase BEGAN, not movement inside it. The composer returns the floor and
+#: flags moving=False, and the UI draws an indeterminate bar plus a live elapsed
+#: clock rather than a determinate one frozen at a made-up number.
+#:
+#: BANDS ARE LAYOUT, NOT TIME. Widths cannot track wall clock and must not be
+#: read as an estimate of it: 'load' is ~10 s cold and ~0 s warm (the predictor
+#: is kept alive across predictions), and boltz2's inference is 6.5 s at 60
+#: residues and 675 s at 600. The bar is honest about WHICH PHASE and HOW FAR
+#: THROUGH IT, never about time remaining.
+#:
+#: base.py names no phases on purpose: phase names belong to a backend's
+#: pipeline, not to the infrastructure. See Boltz2Predictor.progress_phases.
+
+
+def compose_progress(status, phases):
+    """Fold one status dict into overall progress: (fraction, moving).
+
+    fraction -- 0..1 across the whole run, or None when nothing can be said: a
+                phase absent from `phases` (including 'queued', which carries no
+                information at all), a missing key, or a fraction that is not a
+                number. A caller holding a previous value should keep it; None
+                never means zero.
+    moving   -- True when the phase's band has width, so a determinate bar is
+                honest. False when the backend only reports that the phase began.
+
+    Total by construction: called from a 500 ms poll on the main thread, so it
+    MUST NOT raise.
+    """
+    try:
+        phase = status.get('phase')
+        for name, start, end in phases:
+            if name != phase:
+                continue
+            if end <= start:
+                return start, False
+            fraction_raw = status.get('fraction')
+            if not isinstance(fraction_raw, (int, float)) or isinstance(fraction_raw, bool):
+                return None, False
+            local = min(max(float(fraction_raw), 0.0), 1.0)
+            return start + local * (end - start), True
+    except Exception:
+        return None, False
+    return None, False
+
+
 class PredictionOptions:
     """Inference knobs. Defaults are upstream Boltz's, not the MLX port's.
 
