@@ -448,7 +448,8 @@ def _pending_maps():
     """
     try:
         from pymol import predicting
-        names = predicting.pending_objects()
+        names = list(predicting.pending_objects())
+        names += [n for n in predicting.recent_objects() if n not in names]
         if not names:
             return {}, {}
         details, records = {}, {}

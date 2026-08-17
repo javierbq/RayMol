@@ -345,3 +345,37 @@ class TestPendingInfo(testing.PyMOLTestCase):
         self.assertIsNotNone(info['fraction'])
         self.assertTrue(info['moving'])
         self.assertIn('%', info['detail'])
+
+    def testAFailedJobIsRetainedWithItsErrorAfterThePlaceholderGoes(self):
+        self.register('boom', [[{'state': 'failed', 'phase': 'inference',
+                                 'fraction': 0.0, 'error': 'out of memory'}]])
+        self.predicting.pending_info('boom', _self=self.cmd)   # observe it once
+        self.predicting.discard_pending('boom', _self=self.cmd)
+        info = self.predicting.pending_info('boom', _self=self.cmd)
+        self.assertIsNotNone(info, 'a failed job must survive its placeholder')
+        self.assertEqual(info['state'], 'failed')
+        self.assertEqual(info['error'], 'out of memory')
+
+    def testASuccessfulJobIsNotRetained(self):
+        self.register('ok', [[{'state': 'done', 'phase': 'done', 'fraction': 1.0}]])
+        self.predicting.pending_info('ok', _self=self.cmd)
+        self.predicting.discard_pending('ok', _self=self.cmd)
+        self.assertIsNone(self.predicting.pending_info('ok', _self=self.cmd))
+
+    def testRetentionIsCapped(self):
+        for index in range(20):
+            name = 'boom%d' % index
+            self.register(name, [[{'state': 'failed', 'phase': 'inference',
+                                   'fraction': 0.0, 'error': 'x'}]])
+            self.predicting.pending_info(name, _self=self.cmd)
+            self.predicting.discard_pending(name, _self=self.cmd)
+        self.assertLessEqual(len(self.predicting._RECENT), 16)
+
+    def testClearPendingDropsRetainedRecords(self):
+        self.register('boom', [[{'state': 'failed', 'phase': 'inference',
+                                 'fraction': 0.0, 'error': 'x'}]])
+        self.predicting.pending_info('boom', _self=self.cmd)
+        self.predicting.discard_pending('boom', _self=self.cmd)
+        self.predicting.clear_pending()
+        self.assertEqual(self.predicting._RECENT, {})
+

@@ -69,6 +69,19 @@ _PENDING = {}
 #: and the fraction reset every terminal path in Swift writes.
 _TRACK = {}
 
+#: name -> the last record of a job that ended badly, held so the card can say
+#: WHY an eleven-minute run produced nothing. Success is not retained: the loaded
+#: object is its own confirmation. Capped, oldest-first, so a scripted loop of
+#: failures cannot grow it without bound.
+_RECENT = {}
+
+#: How many terminal records to hold.
+MAX_RECENT = 16
+
+#: name -> the most recent pending_info() result, so discard_pending can retain a
+#: terminal one without re-reading a status file that may already be gone.
+_LAST_INFO = {}
+
 
 def default_object_name(sequence, predictor_id=''):
     """The object name a prediction lands in when the caller does not pick one.
@@ -109,6 +122,11 @@ def pending_objects():
     return {name: list(ids) for name, ids in _PENDING.items()}
 
 
+def recent_objects():
+    """Names whose job ended badly and whose card is still waiting to be seen."""
+    return list(_RECENT)
+
+
 def pending_info(name, _self=cmd):
     """Structured progress for a placeholder, or None if it is not pending.
 
@@ -126,7 +144,7 @@ def pending_info(name, _self=cmd):
     import time
     job_ids = _PENDING.get(name)
     if not job_ids:
-        return None
+        return _RECENT.get(name)
     track = _TRACK.setdefault(name, {'total': len(job_ids), 'done': 0,
                                      'started': time.monotonic(), 'floor': 0.0})
     info = {'state': 'running', 'phase': 'pending', 'fraction': None,
@@ -161,6 +179,7 @@ def pending_info(name, _self=cmd):
         info['detail'] = _format_detail(info)
     except Exception:
         pass
+    _LAST_INFO[name] = info
     return info
 
 
@@ -233,6 +252,15 @@ def discard_pending(name, _self=cmd):
     The atom check is the important part: cleanup can race a job that just finished, and
     deleting a completed structure would destroy the very thing the user asked for.
     """
+    # Capture BEFORE the pop: this is the only moment the record still exists and
+    # we already know the outcome. Uses the last observed record rather than
+    # re-reading status(), because Swift's cleanup may already have removed the
+    # status file by the time the poll gets here.
+    last = _LAST_INFO.pop(name, None)
+    if last is not None and last.get('state') in ('error', 'failed', 'cancelled'):
+        while len(_RECENT) >= MAX_RECENT:
+            _RECENT.pop(next(iter(_RECENT)))
+        _RECENT[name] = last
     _PENDING.pop(name, None)
     _TRACK.pop(name, None)
     try:
@@ -256,6 +284,8 @@ def clear_pending(_self=cmd):
     for name in list(_PENDING):
         discard_pending(name, _self=_self)
     _TRACK.clear()
+    _RECENT.clear()
+    _LAST_INFO.clear()
 
 
 # -- Deferred submit: jobs waiting on a weight download ------------------------
