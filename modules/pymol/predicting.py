@@ -127,14 +127,15 @@ def pending_info(name, _self=cmd):
     job_ids = _PENDING.get(name)
     if not job_ids:
         return None
-    track = _TRACK.get(name) or {'total': len(job_ids), 'done': 0,
-                                 'started': time.monotonic(), 'floor': 0.0}
+    track = _TRACK.setdefault(name, {'total': len(job_ids), 'done': 0,
+                                     'started': time.monotonic(), 'floor': 0.0})
     info = {'state': 'running', 'phase': 'pending', 'fraction': None,
-            'moving': False, 'models_done': track['done'],
-            'models_total': max(track['total'], 1),
-            'elapsed': max(time.monotonic() - track['started'], 0.0),
-            'error': None, 'detail': 'pending', 'bundle': None}
+            'moving': False, 'models_done': 0, 'models_total': 1,
+            'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None}
     try:
+        info['models_done'] = track['done']
+        info['models_total'] = max(track['total'], 1)
+        info['elapsed'] = max(time.monotonic() - track['started'], 0.0)
         job = _JOBS.get(job_ids[0])
         if job is not None:
             # The weight bundle this job is still waiting on, or None once it has
@@ -164,10 +165,22 @@ def pending_info(name, _self=cmd):
 
 
 def _job_progress(job, status):
-    """(fraction, moving) from the job's own predictor, or (None, False)."""
+    """(fraction, moving) from the job's own predictor, or (None, False).
+
+    Tries predictor_id via the registry first (set on regular jobs in predict()),
+    then falls back to _predictor (the raw object stored on _DeferredJob before
+    its real job is submitted). _DeferredJob.__slots__ blocks the predictor_id
+    assignment, so without the fallback all deferred-phase fractions are dropped.
+    """
     try:
         from .predictors import registry
-        predictor = registry.get(getattr(job, 'predictor_id', '') or '')
+        predictor_id = getattr(job, 'predictor_id', '') or ''
+        if predictor_id:
+            predictor = registry.get(predictor_id)
+        else:
+            predictor = getattr(job, '_predictor', None)
+        if predictor is None:
+            return None, False
         return predictor.progress(status)
     except Exception:
         return None, False
@@ -175,7 +188,7 @@ def _job_progress(job, status):
 
 def _format_detail(info):
     """'pending: diffusion 64% (model 1 of 3)'. Short -- it is a tooltip."""
-    parts = ['pending: %s' % info['phase']]
+    parts = ['pending: %s' % (info['phase'],)]
     if info['fraction'] is not None and info['moving']:
         parts.append('%d%%' % int(info['fraction'] * 100))
     detail = ' '.join(parts)

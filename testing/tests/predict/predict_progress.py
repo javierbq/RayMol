@@ -161,6 +161,7 @@ class TestPendingInfo(testing.PyMOLTestCase):
     def tearDown(self):
         from pymol.predictors import registry
         self.predicting.clear_pending()
+        self.predicting._JOBS.clear()
         registry.unregister('progress_stub')
         self.cmd.delete('all')
         super(TestPendingInfo, self).tearDown()
@@ -226,10 +227,67 @@ class TestPendingInfo(testing.PyMOLTestCase):
     def testPendingDetailIsNoneForAnUnknownName(self):
         self.assertIsNone(self.predicting.pending_detail('nope', _self=self.cmd))
 
-    def testTheMonotoneFloorIsRetiredOnSuccessSoAReRunCountsFromOne(self):
+    def testFloorIsRetiredOnDiscardSoReRunCountsFromOne(self):
+        """discard_pending (the failure / cancel path) must retire the floor."""
         self.register('again', [[{'phase': 'done', 'fraction': 1.0}]])
         self.predicting.discard_pending('again', _self=self.cmd)
         self.register('again', [[{'phase': 'featurize', 'fraction': 0.0}]] * 2)
         info = self.predicting.pending_info('again', _self=self.cmd)
         self.assertEqual(info['models_total'], 2)
         self.assertIn('model 1 of 2', info['detail'])
+
+    def testDeliverResultBumpsModelsDoneAndFloorIsRetiredOnCompletion(self):
+        """deliver_result's track['done'] += 1 path and its _TRACK.pop on last model."""
+        import os, tempfile
+        pdb = ('ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00'
+               '           N\nATOM      2  CA  ALA A   1       1.458   0.000   0.000'
+               '  1.00  0.00           C\nEND\n')
+        fd, path = tempfile.mkstemp(suffix='.pdb')
+        try:
+            os.write(fd, pdb.encode())
+            os.close(fd)
+            self.register('twomodel', [[{'phase': 'done', 'fraction': 1.0}]] * 2)
+            # Deliver first model.
+            self.predicting.deliver_result(path, 'twomodel', _self=self.cmd)
+            info = self.predicting.pending_info('twomodel', _self=self.cmd)
+            # (a) models_done advances and the object is still pending.
+            self.assertEqual(info['models_done'], 1)
+            self.assertEqual(info['models_total'], 2)
+            self.assertIn('model 2 of 2', info['detail'])
+            # Deliver second model -- clears _PENDING and _TRACK.
+            self.predicting.deliver_result(path, 'twomodel', _self=self.cmd)
+            self.assertIsNone(self.predicting.pending_info('twomodel', _self=self.cmd))
+            # (b) Re-run: should report model 1 of 2, not model 1 of 4.
+            self.register('twomodel', [[{'phase': 'featurize', 'fraction': 0.0}]] * 2)
+            info2 = self.predicting.pending_info('twomodel', _self=self.cmd)
+            self.assertEqual(info2['models_total'], 2)
+            self.assertIn('model 1 of 2', info2['detail'])
+        finally:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+
+    def testDeferredJobCarriesPercentageViaPredicatorFallback(self):
+        """_DeferredJob.__slots__ blocks predictor_id; _job_progress must fall back
+        to _predictor so fractions for in-flight phases are not silently dropped."""
+        from pymol.predictors import registry
+
+        class FakeDeferred:
+            """Simulates _DeferredJob: has _predictor but predictor_id is absent."""
+            def __init__(self, predictor):
+                self.job_id = 'fake-deferred-fallback'
+                self._predictor = predictor
+            def status(self):
+                # 'diffusion' is in ProgressStub.progress_phases with a wide band.
+                return {'state': 'running', 'phase': 'diffusion', 'fraction': 0.5}
+
+        stub_predictor = registry.get('progress_stub')
+        job = FakeDeferred(stub_predictor)
+        # Deliberately do NOT set job.predictor_id -- simulates __slots__ blocking it.
+        self.predicting._JOBS[job.job_id] = job
+        self.predicting.register_pending('deferred', job.job_id, _self=self.cmd)
+        info = self.predicting.pending_info('deferred', _self=self.cmd)
+        self.assertIsNotNone(info['fraction'])
+        self.assertTrue(info['moving'])
+        self.assertIn('%', info['detail'])
