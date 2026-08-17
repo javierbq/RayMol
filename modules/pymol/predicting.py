@@ -62,6 +62,13 @@ OBJECT_NAME_DIGEST_CHARS = 8
 #: (to keep placeholders out of a .pse), and by cleanup on failure/cancel/quit.
 _PENDING = {}
 
+#: name -> per-object progress bookkeeping the job handles cannot supply:
+#: {'total': N, 'done': k, 'started': monotonic_seconds, 'floor': fraction}.
+#: `floor` is a monotone clamp -- bands make monotonicity meaningful, this makes
+#: it guaranteed against a phase table that drifts, HostJob's 'queued' fallback,
+#: and the fraction reset every terminal path in Swift writes.
+_TRACK = {}
+
 
 def default_object_name(sequence, predictor_id=''):
     """The object name a prediction lands in when the caller does not pick one.
@@ -102,30 +109,92 @@ def pending_objects():
     return {name: list(ids) for name, ids in _PENDING.items()}
 
 
-def pending_detail(name, _self=cmd):
-    """One-line description of the job a placeholder is waiting on, or None.
+def pending_info(name, _self=cmd):
+    """Structured progress for a placeholder, or None if it is not pending.
 
-    This is the string the object panel shows on hover, so it must stay short and must
-    never raise: it is rendered from a 500 ms poll on the main thread.
+    Keys: state, phase, fraction (0..1 or None), moving, detail, models_done,
+    models_total, elapsed, error.
+
+    ONE status read per pending OBJECT, never per model: this runs on the main
+    thread every 500 ms and n_models can be 20. The first outstanding job is the
+    one in flight; the rest are queued behind it.
+
+    Never raises. The whole body -- status(), the composition AND the arithmetic
+    -- is inside one try, because appkit_inspector's caller writes no file at all
+    if this throws, which freezes the object panel on a stale list.
     """
+    import time
     job_ids = _PENDING.get(name)
     if not job_ids:
         return None
-    job_id = job_ids[0]
-    job = _JOBS.get(job_id)
-    if job is None:
-        return 'pending'
+    track = _TRACK.get(name) or {'total': len(job_ids), 'done': 0,
+                                 'started': time.monotonic(), 'floor': 0.0}
+    info = {'state': 'running', 'phase': 'pending', 'fraction': None,
+            'moving': False, 'models_done': track['done'],
+            'models_total': max(track['total'], 1),
+            'elapsed': max(time.monotonic() - track['started'], 0.0),
+            'error': None, 'detail': 'pending', 'bundle': None}
     try:
-        status = job.status()
+        job = _JOBS.get(job_ids[0])
+        if job is not None:
+            # The weight bundle this job is still waiting on, or None once it has
+            # been submitted. The tray hides a prediction card while its bundle's
+            # own download card is up, so a cold-cache run shows ONE card and not
+            # two describing the same transfer at two different percentages.
+            bundle = getattr(job, '_bundle', None)
+            if bundle is not None and getattr(job, '_real', None) is None:
+                info['bundle'] = getattr(bundle, 'id', None)
+            status = job.status()
+            info['state'] = status.get('state') or 'running'
+            info['phase'] = status.get('phase') or 'pending'
+            info['error'] = status.get('error')
+            fraction, moving = _job_progress(job, status)
+            if fraction is not None:
+                whole = (track['done'] + fraction) / info['models_total']
+                whole = max(whole, track.get('floor', 0.0))
+                track['floor'] = whole
+                info['fraction'] = whole
+                info['moving'] = moving
+            elif track.get('floor'):
+                info['fraction'] = track['floor']
+        info['detail'] = _format_detail(info)
     except Exception:
-        return 'pending'
-    phase = status.get('phase') or status.get('state') or 'pending'
-    fraction = status.get('fraction') or 0.0
-    detail = 'pending: %s %d%%' % (phase, int(float(fraction) * 100))
-    outstanding = len(job_ids)
-    if outstanding > 1:
-        detail += ' (%d models queued)' % outstanding
+        pass
+    return info
+
+
+def _job_progress(job, status):
+    """(fraction, moving) from the job's own predictor, or (None, False)."""
+    try:
+        from .predictors import registry
+        predictor = registry.get(getattr(job, 'predictor_id', '') or '')
+        return predictor.progress(status)
+    except Exception:
+        return None, False
+
+
+def _format_detail(info):
+    """'pending: diffusion 64% (model 1 of 3)'. Short -- it is a tooltip."""
+    parts = ['pending: %s' % info['phase']]
+    if info['fraction'] is not None and info['moving']:
+        parts.append('%d%%' % int(info['fraction'] * 100))
+    detail = ' '.join(parts)
+    if info['models_total'] > 1:
+        detail += ' (model %d of %d)' % (
+            min(info['models_done'] + 1, info['models_total']), info['models_total'])
     return detail
+
+
+def pending_detail(name, _self=cmd):
+    """One-line description of the job a placeholder is waiting on, or None.
+
+    This is the string the object panel shows on hover, so it must stay short and
+    must never raise: it is rendered from a 500 ms poll on the main thread. It is
+    now a thin formatter over pending_info, so the tooltip and the progress card
+    can never disagree.
+    """
+    info = pending_info(name, _self=_self)
+    return None if info is None else info['detail']
 
 
 def register_pending(name, job_id, _self=cmd):
@@ -139,6 +208,10 @@ def register_pending(name, job_id, _self=cmd):
     if name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
+    import time
+    track = _TRACK.setdefault(
+        name, {'total': 0, 'done': 0, 'started': time.monotonic(), 'floor': 0.0})
+    track['total'] += 1
 
 
 def discard_pending(name, _self=cmd):
@@ -148,6 +221,7 @@ def discard_pending(name, _self=cmd):
     deleting a completed structure would destroy the very thing the user asked for.
     """
     _PENDING.pop(name, None)
+    _TRACK.pop(name, None)
     try:
         if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
             _self.delete(name)
@@ -168,6 +242,7 @@ def clear_pending(_self=cmd):
             _JOBS.pop(job_id, None)
     for name in list(_PENDING):
         discard_pending(name, _self=_self)
+    _TRACK.clear()
 
 
 # -- Deferred submit: jobs waiting on a weight download ------------------------
@@ -370,8 +445,12 @@ def deliver_result(path, name, seed=None, _self=cmd):
         remaining = _PENDING.get(name)
         if remaining:
             remaining.pop(0)
+            track = _TRACK.get(name)
+            if track is not None:
+                track['done'] += 1
             if not remaining:
                 _PENDING.pop(name, None)
+                _TRACK.pop(name, None)
 
 
 def session_save(session, _self=cmd):
@@ -569,6 +648,12 @@ SEE ALSO
         else:
             job = predictor_obj.submit(spec, model_options, weights_path)
         _JOBS[job.job_id] = job
+        # Which predictor to ask for progress bands. Set here rather than required
+        # of every job class, so a third-party handle needs no new attribute.
+        try:
+            job.predictor_id = predictor_obj.id
+        except AttributeError:
+            pass          # __slots__ handle: it simply gets the spinner
         # The placeholder goes up for a deferred job too, so the object panel shows the
         # download the same way it shows inference -- pending_detail reads the phase off
         # the job, which reports "download"/"extract" until the real one takes over. If

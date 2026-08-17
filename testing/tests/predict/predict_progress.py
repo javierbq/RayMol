@@ -103,3 +103,133 @@ class TestPredictorProgress(testing.PyMOLTestCase):
     def testTheTemplateDeclaresPhasesSoACopyInheritsABar(self):
         from pymol.predictors import _template
         self.assertTrue(_template.TemplatePredictor.progress_phases)
+
+
+class ProgressStubJob:
+    """A job whose status is scripted, and which counts how often it is read.
+
+    predict_api.StubJob returns a fixed terminal status that ~15 existing tests
+    assert on, so it must not be modified -- this is its progress-aware sibling.
+    """
+
+    _counter = 0
+
+    def __init__(self, statuses):
+        ProgressStubJob._counter += 1
+        self.job_id = 'progress-%d' % ProgressStubJob._counter
+        self.statuses = list(statuses)
+        self.status_calls = 0
+
+    def status(self):
+        self.status_calls += 1
+        return self.statuses[min(self.status_calls - 1, len(self.statuses) - 1)]
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class TestPendingInfo(testing.PyMOLTestCase):
+
+    def setUp(self):
+        super(TestPendingInfo, self).setUp()
+        from pymol import cmd, predicting
+        from pymol.predictors import registry
+        from pymol.predictors.base import Predictor, PredictionSpec, parse_chains
+        self.cmd = cmd
+
+        class ProgressStub(Predictor):
+            id = 'progress_stub'
+            name = 'Progress stub'
+            progress_phases = (('featurize', 0.00, 0.03),
+                               ('load', 0.03, 0.10),
+                               ('inference', 0.10, 0.10),
+                               ('diffusion', 0.40, 0.97),
+                               ('done', 1.00, 1.00))
+
+            def check_available(self):
+                return None
+
+            def parse_spec(self, sequence, name=''):
+                return PredictionSpec(parse_chains(sequence), name)
+
+            def submit(self, spec, options, weights_path):
+                raise AssertionError('tests register jobs directly')
+
+        registry.register(ProgressStub(), replace=True)
+        self.predicting = predicting
+
+    def tearDown(self):
+        from pymol.predictors import registry
+        self.predicting.clear_pending()
+        registry.unregister('progress_stub')
+        self.cmd.delete('all')
+        super(TestPendingInfo, self).tearDown()
+
+    def register(self, name, statuses_per_job):
+        jobs = []
+        for statuses in statuses_per_job:
+            job = ProgressStubJob(statuses)
+            job.predictor_id = 'progress_stub'
+            self.predicting._JOBS[job.job_id] = job
+            self.predicting.register_pending(name, job.job_id, _self=self.cmd)
+            jobs.append(job)
+        return jobs
+
+    def testOnlyOneStatusIsReadPerPendingObjectPerPoll(self):
+        """n_models can be 20; the poll runs on the main thread every 500 ms."""
+        jobs = self.register('multi', [[{'phase': 'diffusion', 'fraction': 0.5}]] * 5)
+        self.predicting.pending_info('multi', _self=self.cmd)
+        self.assertEqual(sum(j.status_calls for j in jobs), 1)
+
+    def testProgressIsFoldedAcrossModels(self):
+        self.register('multi', [[{'phase': 'diffusion', 'fraction': 0.0}]] * 3)
+        info = self.predicting.pending_info('multi', _self=self.cmd)
+        self.assertEqual(info['models_total'], 3)
+        self.assertEqual(info['models_done'], 0)
+        # first model at band floor 0.40, folded over 3 -> ~0.133
+        self.assertAlmostEqual(info['fraction'], 0.40 / 3, places=3)
+        self.assertIn('model 1 of 3', info['detail'])
+
+    def testTheComposedFractionNeverDecreases(self):
+        """The real cold sequence dips at 'queued' and again on cancel."""
+        self.register('mono', [[{'phase': 'featurize', 'fraction': 1.0},
+                                {'phase': 'load', 'fraction': 1.0},
+                                {'phase': 'diffusion', 'fraction': 0.5},
+                                {'phase': 'queued', 'fraction': 0.0},
+                                {'phase': 'diffusion', 'fraction': 0.0}]])
+        seen = []
+        for _ in range(5):
+            seen.append(self.predicting.pending_info('mono', _self=self.cmd)['fraction'])
+        for earlier, later in zip(seen, seen[1:]):
+            self.assertGreaterEqual(later, earlier, seen)
+
+    def testAJobWhoseStatusRaisesStillProducesARecord(self):
+        class Exploding(ProgressStubJob):
+            def status(self):
+                raise RuntimeError('boom')
+
+        job = Exploding([])
+        job.predictor_id = 'progress_stub'
+        self.predicting._JOBS[job.job_id] = job
+        self.predicting.register_pending('boom', job.job_id, _self=self.cmd)
+        info = self.predicting.pending_info('boom', _self=self.cmd)
+        self.assertEqual(info['state'], 'running')
+        self.assertIsNone(info['fraction'])
+        self.assertFalse(info['moving'])
+
+    def testPendingDetailKeepsItsDocumentedPrefix(self):
+        """predict_weights_async and predict_autoload assert on this string."""
+        self.register('mono', [[{'phase': 'diffusion', 'fraction': 0.5}]])
+        self.assertTrue(
+            self.predicting.pending_detail('mono', _self=self.cmd).startswith('pending'))
+
+    def testPendingDetailIsNoneForAnUnknownName(self):
+        self.assertIsNone(self.predicting.pending_detail('nope', _self=self.cmd))
+
+    def testTheMonotoneFloorIsRetiredOnSuccessSoAReRunCountsFromOne(self):
+        self.register('again', [[{'phase': 'done', 'fraction': 1.0}]])
+        self.predicting.discard_pending('again', _self=self.cmd)
+        self.register('again', [[{'phase': 'featurize', 'fraction': 0.0}]] * 2)
+        info = self.predicting.pending_info('again', _self=self.cmd)
+        self.assertEqual(info['models_total'], 2)
+        self.assertIn('model 1 of 2', info['detail'])
