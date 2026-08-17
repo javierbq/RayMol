@@ -76,11 +76,19 @@ struct ProgressItem: Identifiable, Equatable {
 
     static func prediction(_ job: PredictionJobState) -> ProgressItem {
         var parts: [String] = []
+        // The exact position within the phase, which the bar cannot say: the bar
+        // is the WHOLE job across every model, this is diffusion step 84 of 200.
+        if let step = job.step, let total = job.totalSteps, total > 0 {
+            parts.append("step \(step) of \(total)")
+        }
         if job.modelsTotal > 1 {
             parts.append("model \(min(job.modelsDone + 1, job.modelsTotal)) of \(job.modelsTotal)")
         }
         let elapsed = "\(ProgressCard.formatElapsed(job.elapsed)) elapsed"
-        parts.append(elapsed)
+        // An estimate when there is a measured rate to derive one from, and the
+        // measured clock otherwise. Never both: the card's detail line is two
+        // lines at most, and a countdown is what the reader came for.
+        parts.append(job.remaining.map(ProgressCard.formatRemaining) ?? elapsed)
 
         // Three states, not two. A cancellation is terminal like a failure — same
         // Dismiss button, same sort position, no progress bar — but it is the user's
@@ -102,7 +110,15 @@ struct ProgressItem: Identifiable, Equatable {
         } else {
             icon = "atom"
             title = "Predicting \(job.id)"
-            detail = ([job.phase.capitalized] + parts).joined(separator: " · ")
+            // The percentage is the COMPOSED whole-job fraction -- the very number
+            // the bar below it draws -- so the text and the bar can never disagree.
+            // Omitted when the bar is indeterminate, since there is then no number
+            // to agree with. `step k of N` says where in the phase we are.
+            var head = job.phase.capitalized
+            if job.moving, let fraction = job.fraction {
+                head += " \(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+            }
+            detail = ([head] + parts).joined(separator: " · ")
         }
 
         return ProgressItem(

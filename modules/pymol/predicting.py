@@ -63,11 +63,27 @@ OBJECT_NAME_DIGEST_CHARS = 8
 _PENDING = {}
 
 #: name -> per-object progress bookkeeping the job handles cannot supply:
-#: {'total': N, 'done': k, 'started': monotonic_seconds, 'floor': fraction}.
+#: {'total': N, 'done': k, 'started': monotonic_seconds, 'floor': fraction,
+#:  'phase': str, 'phase_started': monotonic_seconds}.
 #: `floor` is a monotone clamp -- bands make monotonicity meaningful, this makes
 #: it guaranteed against a phase table that drifts, HostJob's 'queued' fallback,
 #: and the fraction reset every terminal path in Swift writes.
+#: `phase` / `phase_started` are the ETA's clock: it is measured per PHASE, so
+#: entering a new one must restart it rather than inherit the previous phase's.
 _TRACK = {}
+
+#: Below this stage-local fraction the ETA is suppressed. `remaining` divides by
+#: f, so at f = 0.005 a phase two seconds old projects a six-minute wait that the
+#: next step revises away -- a confidently wrong countdown, which is worse than no
+#: countdown. WeightsFetchState.secondsRemaining (PyMOLEngine.swift) refuses on
+#: the same grounds, there with `received > 0`.
+ETA_MIN_FRACTION = 0.02
+
+#: ...and for the same reason, nothing is projected from a phase this young.
+#: WeightsFetchState uses one second over a download that reports ~500 times;
+#: a phase here can report as few as four times (recycling 3 = 4 trunk passes),
+#: so its first sample is far coarser and deserves a wider window.
+ETA_MIN_PHASE_SECONDS = 2.0
 
 #: name -> the last record of a job that ended badly, held so the card can say
 #: WHY an eleven-minute run produced nothing. Success is not retained: the loaded
@@ -133,7 +149,7 @@ def pending_info(name, _self=cmd):
     """Structured progress for a placeholder, or None if it is not pending.
 
     Keys: state, phase, fraction (0..1 or None), moving, detail, models_done,
-    models_total, elapsed, error.
+    models_total, elapsed, error, step, total_steps, remaining.
 
     ONE status read per pending OBJECT, never per model: this runs on the main
     thread every 500 ms and n_models can be 20. The first outstanding job is the
@@ -151,7 +167,8 @@ def pending_info(name, _self=cmd):
                                      'started': time.monotonic(), 'floor': 0.0})
     info = {'state': 'running', 'phase': 'pending', 'fraction': None,
             'moving': False, 'models_done': 0, 'models_total': 1,
-            'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None}
+            'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None,
+            'step': None, 'total_steps': None, 'remaining': None}
     try:
         info['models_done'] = track['done']
         info['models_total'] = max(track['total'], 1)
@@ -176,6 +193,33 @@ def pending_info(name, _self=cmd):
             info['phase'] = str(status.get('phase') or 'pending')
             error = status.get('error')
             info['error'] = None if error is None else str(error)
+            info['step'] = _as_int(status.get('step'))
+            info['total_steps'] = _as_int(status.get('total_steps'))
+            # The ETA's clock. A new phase restarts it: rates are per phase (the
+            # trunk's four passes and diffusion's two hundred steps are nothing
+            # alike), so inheriting the previous phase's start would project
+            # diffusion's first step from the trunk's whole duration.
+            #
+            # A fraction that went BACKWARDS restarts it too. With n_models the
+            # next job enters the SAME phase name at step 1, so the phase test
+            # alone would keep model 1's start time and quietly inflate every
+            # estimate for model 2 by the whole of model 1.
+            local = _as_float(status.get('fraction'))
+            if (track.get('phase') != info['phase']
+                    or local is None
+                    or local < track.get('phase_fraction', 0.0)):
+                track['phase'] = info['phase']
+                track['phase_started'] = time.monotonic()
+            track['phase_fraction'] = 0.0 if local is None else local
+            phase_elapsed = max(
+                time.monotonic() - track.get('phase_started', time.monotonic()), 0.0)
+            # STAGE-LOCAL, from the raw status -- never the composed value below.
+            # compose_progress's own docstring says the bands are LAYOUT, NOT TIME
+            # ('load' is ~10 s cold and ~0 s warm; inference is 6.5 s at 60
+            # residues and 675 s at 600), so a countdown extrapolated from the
+            # composed fraction would be confidently wrong.
+            if info['state'] == 'running':
+                info['remaining'] = _phase_remaining(local, phase_elapsed)
             fraction, moving = _job_progress(job, status)
             if fraction is not None:
                 whole = (track['done'] + fraction) / info['models_total']
@@ -225,15 +269,111 @@ def _job_progress(job, status):
         return None, False
 
 
+def _as_int(value):
+    """A non-negative int, or None. Coerced, because status() is third-party.
+
+    Every value in this record crosses json.dumps into a strongly-typed Swift
+    decoder that does no coercion of its own, so a float or a numeric string here
+    would fail the WHOLE payload decode and take the object list with it.
+    """
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        number = int(value)
+    except Exception:
+        return None
+    return number if number >= 0 else None
+
+
+def _as_float(value):
+    """A finite float, or None. status() is third-party; nothing here is trusted."""
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        import math
+        number = float(value)
+    except Exception:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _phase_remaining(local_fraction, phase_elapsed):
+    """Seconds left IN THE CURRENT PHASE, from its own measured rate, or None.
+
+        remaining = phase_elapsed * (1 - f) / f
+
+    `local_fraction` is status()['fraction'] RAW -- completion within the phase.
+    Never the composed whole-job value: the band table compose_progress folds
+    that through is layout, not time, so a countdown derived from it would be a
+    guess wearing a number's clothes.
+
+    Suppressed for a young phase and for a tiny f, where the divisor makes the
+    estimate wild. Follows WeightsFetchState.secondsRemaining's policy
+    (PyMOLEngine.swift), which likewise refuses rather than reporting an absurd
+    figure, and which extrapolates from an AVERAGE rate rather than an
+    instantaneous one -- phase_elapsed / f is exactly that average.
+
+    Never raises: it is on the 500 ms main-thread poll.
+    """
+    try:
+        import math
+        if phase_elapsed < ETA_MIN_PHASE_SECONDS:
+            return None
+        if local_fraction is None or isinstance(local_fraction, bool):
+            return None
+        f = float(local_fraction)
+        if not math.isfinite(f) or f < ETA_MIN_FRACTION or f >= 1.0:
+            return None
+        return phase_elapsed * (1.0 - f) / f
+    except Exception:
+        return None
+
+
+def format_remaining(seconds):
+    """'4 min left'. Deliberately coarse, and deliberately identical to
+    ProgressCard.formatRemaining (ProgressTray.swift), so the hover tooltip and
+    the progress card never word the same estimate two different ways.
+
+    Coarse because a to-the-second countdown derived from an average rate invites
+    a trust it has not earned.
+    """
+    if seconds < 10:
+        return 'almost done'
+    if seconds < 90:
+        # int(x + 0.5), not round(): Swift's .rounded() is half-away-from-zero
+        # while Python's round() is half-to-even, and the two would disagree on
+        # exactly the .5 cases this formatter is built to round.
+        return '%d sec left' % (int(seconds + 0.5),)
+    if seconds < 3600:
+        minutes = int(seconds / 60.0 + 0.5)
+        # Rounding can carry 59.5 min -> 60; route those to the next bucket.
+        if minutes >= 60:
+            return 'over an hour left'
+        return '%d min left' % (minutes,)
+    return 'over an hour left'
+
+
 def _format_detail(info):
-    """'pending: diffusion 64% (model 1 of 3)'. Short -- it is a tooltip."""
+    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), 4 min left'.
+
+    Short -- it is a tooltip. The percentage is the COMPOSED whole-job value, the
+    same number the progress bar draws, so the two can never disagree; the
+    stage-local position is said precisely by 'step 84 of 200' instead. The
+    estimate is the current phase's, which is what was actually measured.
+    """
     parts = ['pending: %s' % (info['phase'],)]
     if info['fraction'] is not None and info['moving']:
-        parts.append('%d%%' % int(info['fraction'] * 100))
+        parts.append('%d%%' % (int(info['fraction'] * 100),))
+    step, total_steps = info.get('step'), info.get('total_steps')
+    if step is not None and total_steps:
+        parts.append('step %d of %d' % (step, total_steps))
     detail = ' '.join(parts)
     if info['models_total'] > 1:
         detail += ' (model %d of %d)' % (
             min(info['models_done'] + 1, info['models_total']), info['models_total'])
+    remaining = info.get('remaining')
+    if remaining is not None:
+        detail += ', %s' % (format_remaining(remaining),)
     return detail
 
 

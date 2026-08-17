@@ -149,6 +149,7 @@ class TestPendingInfo(testing.PyMOLTestCase):
             progress_phases = (('featurize', 0.00, 0.03),
                                ('load', 0.03, 0.10),
                                ('inference', 0.10, 0.10),
+                               ('trunk', 0.10, 0.40),
                                ('diffusion', 0.40, 0.97),
                                ('done', 1.00, 1.00))
 
@@ -617,3 +618,158 @@ class TestPendingInfo(testing.PyMOLTestCase):
         # Assert the actual behaviour so a future Swift fix is caught immediately.
         self.assertIsNotNone(self.predicting._RECENT.get('my pred'),
                              'cmd.do with quoted arg does NOT strip quotes in STRICT mode')
+
+    # -- Measured diffusion progress and the phase-local ETA (increment 3) -----
+
+    def age_phase(self, name, seconds):
+        """Backdate the current phase's clock, so an ETA can be asserted without
+        sleeping. _TRACK[name]['phase_started'] IS the state under test."""
+        self.predicting._TRACK[name]['phase_started'] -= seconds
+
+    def testDiffusionWithARealFractionIsDeterminateInsideItsBand(self):
+        """The point of the increment: boltz-mlx v0.2.1 reports a real
+        stage-local fraction, so the bar stops being a spinner."""
+        self.register('det', [[{'phase': 'diffusion', 'fraction': 0.42,
+                                'step': 84, 'total_steps': 200}]])
+        info = self.predicting.pending_info('det', _self=self.cmd)
+        self.assertTrue(info['moving'], 'a wide band must draw a determinate bar')
+        # 0.40 + 0.42 * (0.97 - 0.40)
+        self.assertAlmostEqual(info['fraction'], 0.6394, places=4)
+        self.assertGreater(info['fraction'], 0.40)
+        self.assertLess(info['fraction'], 0.97)
+        self.assertEqual(info['step'], 84)
+        self.assertEqual(info['total_steps'], 200)
+        self.assertIn('step 84 of 200', info['detail'])
+
+    def testStepCountsAreAbsentRatherThanZeroWhenThePhaseHasNone(self):
+        """featurize and load report no steps; the card must not read 'step 0 of 0'."""
+        self.register('nosteps', [[{'phase': 'load', 'fraction': 0.5}]])
+        info = self.predicting.pending_info('nosteps', _self=self.cmd)
+        self.assertIsNone(info['step'])
+        self.assertIsNone(info['total_steps'])
+        self.assertNotIn('step', info['detail'])
+
+    def testTheEtaIsSuppressedForTheFirstSecondsOfAPhase(self):
+        """remaining = elapsed * (1 - f) / f is wild while elapsed is tiny."""
+        self.register('eta', [[{'phase': 'diffusion', 'fraction': 0.5,
+                                'step': 100, 'total_steps': 200}]])
+        info = self.predicting.pending_info('eta', _self=self.cmd)
+        self.assertIsNone(info['remaining'],
+                          'a phase milliseconds old has no measured rate')
+        self.assertNotIn('left', info['detail'])
+
+        # Half done after 100 s of diffusion -> about 100 s to go.
+        self.age_phase('eta', 100.0)
+        info = self.predicting.pending_info('eta', _self=self.cmd)
+        self.assertAlmostEqual(info['remaining'], 100.0, delta=2.0)
+        self.assertIn('2 min left', info['detail'])
+        self.assertTrue(info['detail'].startswith('pending'),
+                        'predict_weights_async and predict_autoload assert on this')
+
+    def testTheEtaIsAbsentWhileTheFractionIsStillTiny(self):
+        """f in the divisor: at 0.1% done, a ten-minute phase projects a week."""
+        self.register('tiny', [[{'phase': 'diffusion', 'fraction': 0.001,
+                                 'step': 1, 'total_steps': 1000}]])
+        self.predicting.pending_info('tiny', _self=self.cmd)
+        self.age_phase('tiny', 600.0)
+        info = self.predicting.pending_info('tiny', _self=self.cmd)
+        self.assertIsNone(info['remaining'])
+        self.assertNotIn('left', info['detail'])
+
+    def testAPhaseChangeRestartsTheEtaClock(self):
+        """The trunk's four passes and diffusion's two hundred steps are nothing
+        alike, so a new phase must not inherit the previous phase's clock."""
+        import time
+        self.register('phases', [[{'phase': 'trunk', 'fraction': 0.5},
+                                  {'phase': 'trunk', 'fraction': 0.5},
+                                  {'phase': 'diffusion', 'fraction': 0.5}]])
+        self.predicting.pending_info('phases', _self=self.cmd)
+        self.age_phase('phases', 600.0)             # ten minutes of trunk
+        info = self.predicting.pending_info('phases', _self=self.cmd)
+        self.assertEqual(info['phase'], 'trunk')
+        self.assertIsNotNone(info['remaining'], 'pre-condition: trunk has an ETA')
+
+        info = self.predicting.pending_info('phases', _self=self.cmd)
+        self.assertEqual(info['phase'], 'diffusion')
+        self.assertIsNone(
+            info['remaining'],
+            'diffusion must not project from the trunk 10-minute clock')
+        self.assertAlmostEqual(
+            self.predicting._TRACK['phases']['phase_started'],
+            time.monotonic(), delta=2.0)
+
+    def testTheNextModelDoesNotInheritThePreviousModelsClock(self):
+        """n_models re-enters the SAME phase name at step 1, so the phase test
+        alone would keep model 1's start and inflate model 2's whole estimate."""
+        import time
+        self.register('models', [[{'phase': 'diffusion', 'fraction': 0.9},
+                                  {'phase': 'diffusion', 'fraction': 0.9},
+                                  {'phase': 'diffusion', 'fraction': 0.02}]])
+        self.predicting.pending_info('models', _self=self.cmd)
+        self.age_phase('models', 600.0)             # ten minutes of model 1
+        info = self.predicting.pending_info('models', _self=self.cmd)
+        self.assertLess(info['remaining'], 120.0, 'pre-condition: model 1 is nearly done')
+        # Model 2 restarts diffusion: the fraction goes backwards.
+        info = self.predicting.pending_info('models', _self=self.cmd)
+        self.assertIsNone(info['remaining'],
+                          'a fraction that went backwards must restart the clock')
+        self.assertAlmostEqual(self.predicting._TRACK['models']['phase_started'],
+                               time.monotonic(), delta=2.0)
+
+    def testTheEtaIsMeasuredPerPhaseNotFromTheComposedFraction(self):
+        """The bands are LAYOUT, NOT TIME. Composed, this job reads 64% done; the
+        honest statement is that DIFFUSION is 42% done after 100 s."""
+        self.register('local', [[{'phase': 'diffusion', 'fraction': 0.42,
+                                  'step': 84, 'total_steps': 200}]])
+        self.predicting.pending_info('local', _self=self.cmd)
+        self.age_phase('local', 100.0)
+        info = self.predicting.pending_info('local', _self=self.cmd)
+        # Stage-local: 100 * (1 - 0.42) / 0.42 = 138.1 s.
+        self.assertAlmostEqual(info['remaining'], 138.1, delta=2.0)
+        # Composed would be 100 * (1 - 0.6394) / 0.6394 = 56.4 s -- a countdown
+        # that runs out while diffusion is still going.
+        self.assertGreater(info['remaining'], 100.0)
+
+    def testATerminalJobCarriesNoEta(self):
+        """A cancelled job keeps reporting its last status until Swift notices;
+        a countdown on a card that has already stopped is a lie."""
+        self.register('stop', [[{'state': 'cancelled', 'phase': 'diffusion',
+                                 'fraction': 0.5}]])
+        self.predicting.pending_info('stop', _self=self.cmd)
+        self.age_phase('stop', 100.0)
+        info = self.predicting.pending_info('stop', _self=self.cmd)
+        self.assertIsNone(info['remaining'])
+
+    def testMalformedStepCountsAreCoercedAwayRatherThanRaising(self):
+        """status() is a third-party surface and every value crosses json.dumps
+        into a Swift decoder that does no coercion of its own."""
+        self.register('junk', [[{'phase': 'diffusion', 'fraction': 0.5,
+                                 'step': 'eighty-four', 'total_steps': None}]])
+        info = self.predicting.pending_info('junk', _self=self.cmd)
+        self.assertIsNone(info['step'])
+        self.assertIsNone(info['total_steps'])
+
+    def testTheRemainingFormatterMatchesTheSwiftCardsBuckets(self):
+        """ProgressCard.formatRemaining (ProgressTray.swift) verbatim -- the
+        tooltip and the card must not word one estimate two different ways."""
+        remaining = self.predicting.format_remaining
+        self.assertEqual(remaining(4), 'almost done')
+        self.assertEqual(remaining(45), '45 sec left')
+        self.assertEqual(remaining(240), '4 min left')
+        self.assertEqual(remaining(3594), 'over an hour left')
+        self.assertEqual(remaining(7200), 'over an hour left')
+
+    def testStepCountsAndEtaSurviveThePayloadAsScalars(self):
+        """A non-scalar would fail the whole PanelPayload decode in Swift."""
+        self.register('wire', [[{'phase': 'diffusion', 'fraction': 0.5,
+                                 'step': 100, 'total_steps': 200}]])
+        self.predicting.pending_info('wire', _self=self.cmd)
+        self.age_phase('wire', 100.0)
+        payload = self.panel_payload()
+        record = payload['pending_jobs']['wire']
+        self.assertEqual(record['step'], 100)
+        self.assertEqual(record['total_steps'], 200)
+        self.assertIsInstance(record['remaining'], float)
+        for key, value in record.items():
+            self.assertIsInstance(value, (str, int, float, bool, type(None)),
+                                  'pending_jobs.%s is not a scalar' % (key,))

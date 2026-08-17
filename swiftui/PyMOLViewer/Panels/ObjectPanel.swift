@@ -3701,6 +3701,16 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     /// The weight bundle this job is still waiting on, or nil once submitted.
     /// The tray hides this card while that bundle's own download card is up.
     let bundle: String?
+    /// Position WITHIN the current phase, e.g. diffusion step 84 of 200. Absent
+    /// for a phase that reports no steps, and for any status written before
+    /// boltz-mlx v0.2.1 gave RayMol a per-step callback to read.
+    let step: Int?
+    let totalSteps: Int?
+    /// Seconds left in the CURRENT PHASE, measured by Python from that phase's
+    /// own rate. Not a whole-job estimate: the band table the bar is composed
+    /// through is layout, not time (see compose_progress), so there is nothing
+    /// honest to extrapolate a whole-job countdown from.
+    let remaining: Double?
 
     /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
     /// migrated, so the single consumer accepts both. "cancelled" is included
@@ -3716,15 +3726,18 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case state, phase, fraction, moving, detail, error, bundle
         case modelsDone = "models_done", modelsTotal = "models_total", elapsed
+        case step, totalSteps = "total_steps", remaining
     }
 
     init(id: String, state: String, phase: String, fraction: Double?, moving: Bool,
          detail: String, modelsDone: Int, modelsTotal: Int, elapsed: Double,
-         error: String?, bundle: String? = nil) {
+         error: String?, bundle: String? = nil,
+         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil) {
         self.id = id; self.state = state; self.phase = phase
         self.fraction = fraction; self.moving = moving; self.detail = detail
         self.modelsDone = modelsDone; self.modelsTotal = modelsTotal
         self.elapsed = elapsed; self.error = error; self.bundle = bundle
+        self.step = step; self.totalSteps = totalSteps; self.remaining = remaining
     }
 
     init(from decoder: Decoder) throws {
@@ -3740,6 +3753,9 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         elapsed = try c.decodeIfPresent(Double.self, forKey: .elapsed) ?? 0
         error = try c.decodeIfPresent(String.self, forKey: .error)
         bundle = try c.decodeIfPresent(String.self, forKey: .bundle)
+        step = try c.decodeIfPresent(Int.self, forKey: .step)
+        totalSteps = try c.decodeIfPresent(Int.self, forKey: .totalSteps)
+        remaining = try c.decodeIfPresent(Double.self, forKey: .remaining)
     }
 
     /// `id` comes from the payload's dictionary key, not the record body.
@@ -3747,7 +3763,8 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         PredictionJobState(id: name, state: state, phase: phase, fraction: fraction,
                            moving: moving, detail: detail, modelsDone: modelsDone,
                            modelsTotal: modelsTotal, elapsed: elapsed, error: error,
-                           bundle: bundle)
+                           bundle: bundle, step: step, totalSteps: totalSteps,
+                           remaining: remaining)
     }
 }
 

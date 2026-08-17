@@ -55,6 +55,63 @@ final class PendingJobTests: XCTestCase {
         XCTAssertEqual(job.modelsTotal, 1)
     }
 
+    /// boltz-mlx v0.2.1's per-step callback reaches the card through three new
+    /// keys. All Optional: a phase with no steps, a Python older than this
+    /// change, or a suppressed ETA must not fail the record.
+    func testStepCountsAndTheEtaDecodeFromTheirSnakeCaseKeys() throws {
+        let measured = """
+        {"objects":["m"],"selections":[],"enabled":[],"sel_counts":{},
+         "nstate":{"m":1},"has_transp":{"m":false},"groups":[],"parent":{},
+         "pending":{"m":"pending: diffusion 64% step 84 of 200, 2 min left"},
+         "pending_jobs":{"m":{"state":"running","phase":"diffusion",
+           "fraction":0.6394,"moving":true,"detail":"pending: diffusion 64%",
+           "models_done":0,"models_total":1,"elapsed":412.5,"error":null,
+           "step":84,"total_steps":200,"remaining":138.1}}}
+        """
+        let decoded = try JSONDecoder().decode(
+            PanelPayload.self, from: Data(measured.utf8))
+        let job = try XCTUnwrap(decoded.pending_jobs?["m"])
+        XCTAssertEqual(job.step, 84)
+        XCTAssertEqual(job.totalSteps, 200)
+        XCTAssertEqual(job.remaining ?? 0, 138.1, accuracy: 0.01)
+    }
+
+    /// The increment-1 payload, replayed verbatim: none of the three keys exist.
+    func testARecordWithoutStepCountsOrAnEtaStillDecodes() throws {
+        let decoded = try JSONDecoder().decode(
+            PanelPayload.self, from: Data(payload.utf8))
+        let job = try XCTUnwrap(decoded.pending_jobs?["multi"])
+        XCTAssertNil(job.step)
+        XCTAssertNil(job.totalSteps)
+        XCTAssertNil(job.remaining)
+    }
+
+    /// The line the user actually reads. The percentage is the COMPOSED value --
+    /// the same number the bar draws, so text and bar cannot disagree -- while
+    /// "step 84 of 200" says where in the phase we are, and the countdown is the
+    /// phase's own measured estimate rather than the elapsed clock.
+    func testAMeasuredPredictionReadsAsPhasePercentStepModelAndEta() {
+        let job = PredictionJobState(
+            id: "p", state: "running", phase: "diffusion", fraction: 0.6394,
+            moving: true, detail: "d", modelsDone: 0, modelsTotal: 3,
+            elapsed: 412.5, error: nil, bundle: nil,
+            step: 84, totalSteps: 200, remaining: 240)
+        XCTAssertEqual(ProgressItem.prediction(job).detail,
+                       "Diffusion 64% · step 84 of 200 · model 1 of 3 · 4 min left")
+    }
+
+    /// With no measured rate yet, the card falls back to the elapsed clock it
+    /// showed before this increment — never a fabricated countdown.
+    func testAPredictionWithNoEtaStillShowsItsElapsedClock() {
+        let job = PredictionJobState(
+            id: "p", state: "running", phase: "trunk", fraction: nil,
+            moving: false, detail: "d", modelsDone: 0, modelsTotal: 1,
+            elapsed: 95, error: nil)
+        let item = ProgressItem.prediction(job)
+        XCTAssertEqual(item.detail, "Trunk · 2 min elapsed")
+        XCTAssertFalse(item.detail.contains("left"))
+    }
+
     func testBothErrorAndFailedCountAsAnErrorState() {
         // Swift's host writes "failed"; _DeferredJob writes "error". Neither wire
         // is migrated, so the single consumer must accept both.

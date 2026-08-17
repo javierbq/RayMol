@@ -119,10 +119,70 @@ final class BoltzJobManager {
         let peakBytes: Int?
         /// Wall time for the inference itself, excluding the one-time model load.
         let elapsedSeconds: Double?
+        /// Steps completed within the CURRENT phase, and that phase's total --
+        /// e.g. diffusion step 84 of 200. `fraction` is the same thing as a ratio;
+        /// these are carried as well because "step 84 of 200" is a far more
+        /// legible sentence than "42%", and because the ETA wants the raw counts.
+        ///
+        /// `var … = nil` rather than `let`: a default keeps the memberwise
+        /// initialiser's existing call sites (and their tests) compiling, and
+        /// Optional keeps a status file written before this field existed -- or by
+        /// any phase that reports no steps at all -- decoding cleanly.
+        var step: Int? = nil
+        var totalSteps: Int? = nil
 
         enum CodingKeys: String, CodingKey {
             case state, phase, fraction, error, resultPath = "result_path"
             case peakBytes = "peak_bytes", elapsedSeconds = "elapsed_s"
+            case step, totalSteps = "total_steps"
+        }
+    }
+
+    /// Rate-limits the status writes driven by boltz-mlx's per-step callback.
+    ///
+    /// Same policy, and the same two constants, as the weight fetcher's marker
+    /// throttle (`modules/pymol/predictors/fetching.py:38-41` --
+    /// `MARKER_INTERVAL = 0.15`, `MARKER_FRACTION_STEP = 0.01`, applied in `_emit`
+    /// at `:261-276`): skip a write only when BOTH too little time has passed AND
+    /// the bar would not visibly move, and never skip a stage's final step. A
+    /// 200-step run on a small input steps in milliseconds, and one status file
+    /// per step would be 200 atomic writes in a burst.
+    ///
+    /// `@unchecked Sendable` with its own lock, and pointedly NOT `stateQueue`:
+    /// the callback runs synchronously inside the sampling loop on the actor's
+    /// executor, while `stateQueue` is entered from the MAIN thread on every
+    /// cancel and is held for the ~10 s model build. Blocking the sampling loop
+    /// behind that would stall inference itself.
+    final class StepThrottle: @unchecked Sendable {
+        /// Floor on the gap between two writes.
+        static let interval: Double = 0.15
+        /// ...but always write when the bar would visibly move.
+        static let fractionStep: Double = 0.01
+
+        private let lock = NSLock()
+        private var lastStage = ""
+        private var lastTime: Double = 0
+        private var lastFraction: Double = 0
+
+        /// `now` is injected rather than read here so the policy is testable
+        /// without sleeping. Callers pass a MONOTONIC clock
+        /// (`ProcessInfo.processInfo.systemUptime`), not wall time.
+        func shouldEmit(stage: String, fraction: Double, isFinal: Bool,
+                        now: Double) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            // A stage change is itself news: the phase NAME the card shows
+            // changes, which no fraction comparison would catch.
+            let forced = isFinal || stage != lastStage
+            if !forced,
+               now - lastTime < Self.interval,
+               abs(fraction - lastFraction) < Self.fractionStep {
+                return false
+            }
+            lastStage = stage
+            lastTime = now
+            lastFraction = fraction
+            return true
         }
     }
 
@@ -290,6 +350,25 @@ final class BoltzJobManager {
 
     // MARK: - Inference
 
+    /// Records one step of a running phase, from inside boltz-mlx's callback.
+    ///
+    /// STATIC, and not `run()`'s nested `report`. That is forced, not stylistic:
+    /// the callback is `@Sendable` because it crosses into an actor, and a
+    /// `@Sendable` closure MAY NOT capture mutable locals -- which is exactly what
+    /// `report` closes over (`var peak`, `var elapsed`). Those two are nil for the
+    /// whole of inference anyway; they are only known once it has finished.
+    ///
+    /// Takes no lock and touches no MLX: it runs synchronously inside the sampling
+    /// loop, so everything it does is on inference's critical path.
+    private static func reportStep(to url: URL, phase: String, fraction: Double,
+                                   step: Int, totalSteps: Int) {
+        try? writeStatus(Status(state: "running", phase: phase, fraction: fraction,
+                                error: nil, resultPath: nil, peakBytes: nil,
+                                elapsedSeconds: nil,
+                                step: step, totalSteps: totalSteps),
+                         to: url)
+    }
+
     private func run(_ request: Request) {
         let statusURL = URL(fileURLWithPath: request.statusPath)
         // Captured by report() below; filled in once inference completes.
@@ -336,7 +415,12 @@ final class BoltzJobManager {
             report("running", "load", 0.1)
             let predictor = try loadedPredictor(directory: request.weightsDir)
 
-            report("running", "inference", 0.2)
+            // "trunk" at 0.0, not the old "inference" at 0.2: inference's band is
+            // ZERO-SPAN (predictors/boltz2.py) and only ever meant "started, cannot
+            // say how far in". boltz-mlx v0.2.1 can say, so the phase is named from
+            // the outset and the first callback replaces this within one recycle.
+            // Both bands start at 0.10, so the bar does not jump.
+            report("running", "trunk", 0.0)
             var options = BoltzPredictionOptions()
             options.recyclingSteps = request.recyclingSteps
             options.diffusionSteps = request.diffusionSteps
@@ -354,6 +438,34 @@ final class BoltzJobManager {
             // NOTE apply() also pins Memory.memoryLimit to boltz's 6 GB default, which
             // RayMol does not arbitrate and accepts for the life of the process.
             defer { BoltzRuntime.configureOnce() }
+            // The one place progress can be observed at all: BoltzPredictor is an
+            // actor that never suspends during a prediction, so nothing outside can
+            // poll it. boltz-mlx v0.2.1 emits after the MLX.eval that forces
+            // materialization in each of the two loops that have one -- trunk
+            // recycling and diffusion sampling -- so a reported step is a step that
+            // has genuinely been computed, not one merely queued into MLX's lazy
+            // graph.
+            let throttle = StepThrottle()
+            let onProgress: @Sendable (BoltzProgress) -> Void = { progress in
+                // "trunk" / "diffusion" EXACTLY: predictors/boltz2.py declares a
+                // band under each of those names. Spelled out here rather than
+                // taken from Stage.rawValue so the contract lives on RayMol's side
+                // of the boundary, where the band table it must match also lives.
+                let phase: String
+                switch progress.stage {
+                case .trunk: phase = "trunk"
+                case .diffusion: phase = "diffusion"
+                }
+                // Stage-LOCAL: status()['fraction'] is completion within the phase,
+                // and Python's compose_progress maps it into that phase's band.
+                let fraction = progress.fraction
+                guard throttle.shouldEmit(
+                    stage: phase, fraction: fraction,
+                    isFinal: progress.completed >= progress.total,
+                    now: ProcessInfo.processInfo.systemUptime) else { return }
+                Self.reportStep(to: statusURL, phase: phase, fraction: fraction,
+                                step: progress.completed, totalSteps: progress.total)
+            }
             // predictScored, not predict: pLDDT only exists on the scored path, because
             // it is a head on the confidence module. That module is real extra work — see
             // the cost note below — but a prediction with no per-residue confidence is
@@ -373,7 +485,8 @@ final class BoltzJobManager {
                         }
                     },
                     { try await predictor.predictScored(featurized: features,
-                                                        options: options) })
+                                                        options: options,
+                                                        onProgress: onProgress) })
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
