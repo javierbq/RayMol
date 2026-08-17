@@ -78,10 +78,22 @@ extension PendingJobTests {
         let item = ProgressItem.prediction(job)
         XCTAssertEqual(item.id, "predict:my pred")
         XCTAssertEqual(item.buttonTitle, "Cancel")
-        // Quoted: object names may contain spaces.
-        XCTAssertEqual(item.action, .command("predict_cancel \"my pred\""))
+        // Python path: object names may contain spaces, and the PyMOL text parser
+        // does not strip the surrounding quotes from its "[^"]*" token.
+        XCTAssertEqual(item.action, .python("cmd.predict_cancel('my pred')"))
         XCTAssertTrue(item.moving)
         XCTAssertFalse(item.isError)
+    }
+
+    func testPythonLiteralEscapesApostrophesAndDoesNotTerminateStringEarly() {
+        // A name with both a space and an apostrophe must not break the Python
+        // literal: the apostrophe must be backslash-escaped, not close the string.
+        let job = PredictionJobState(
+            id: "my pred's", state: "running", phase: "diffusion", fraction: nil,
+            moving: true, detail: "d", modelsDone: 0, modelsTotal: 1,
+            elapsed: 1, error: nil)
+        let item = ProgressItem.prediction(job)
+        XCTAssertEqual(item.action, .python("cmd.predict_cancel('my pred\\'s')"))
     }
 
     // -- Weight-fetch action contract -----------------------------------------

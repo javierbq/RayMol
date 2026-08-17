@@ -13,6 +13,12 @@ struct ProgressItem: Identifiable, Equatable {
     enum Action: Equatable {
         /// Run a PyMOL command through the engine's command channel.
         case command(String)
+        /// Run a Python source string through `engine.runPython(_:)`. Use this
+        /// when an argument must be passed as a properly-escaped Python literal
+        /// rather than a parser-split token — the PyMOL text parser does NOT strip
+        /// surrounding double-quotes from `"[^"]*"` matches, so a quoted object name
+        /// arrives with the quotes still attached.
+        case python(String)
         /// Clear the published weight-fetch state via `engine.cancelWeightsDownload()`.
         /// Used on error cards: there is no running download to cancel, but the card
         /// must still be dismissable.
@@ -68,14 +74,21 @@ struct ProgressItem: Identifiable, Equatable {
             moving: job.moving && !job.isError,
             isError: job.isError,
             buttonTitle: job.isError ? "Dismiss" : "Cancel",
-            action: job.isError ? .command("predict_dismiss \(quoted(job.id))")
-                                : .command("predict_cancel \(quoted(job.id))"),
+            // Python path rather than command-channel: the PyMOL text parser does
+            // not strip surrounding quotes from its "[^"]*" token, so a quoted
+            // object name would arrive with the quotes still attached.
+            action: job.isError ? .python("cmd.predict_dismiss(\(pythonLiteral(job.id)))")
+                                : .python("cmd.predict_cancel(\(pythonLiteral(job.id)))"),
             bundle: job.bundle)
     }
 
-    /// Object names may contain spaces, and the command line splits on them.
-    private static func quoted(_ name: String) -> String {
-        "\"" + name.replacingOccurrences(of: "\"", with: "") + "\""
+    /// A Python single-quoted string literal for an arbitrary object name.
+    /// Matches the escaping in BoltzJobManager.pythonLiteral(_:).
+    private static func pythonLiteral(_ value: String) -> String {
+        "'" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "") + "'"
     }
 
     /// Everything the tray should show, in order.

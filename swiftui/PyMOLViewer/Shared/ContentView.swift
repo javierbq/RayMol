@@ -295,6 +295,7 @@ struct ContentView: View {
                                               predictions: engine.predictionJobs)) { item in
             switch item.action {
             case .command(let cmd):    engine.runCommand(cmd)
+            case .python(let src):     engine.runPython(src)
             case .dismissWeightsFetch: engine.cancelWeightsDownload()
             case .none:                break
             }
