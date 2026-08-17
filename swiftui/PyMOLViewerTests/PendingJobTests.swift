@@ -79,9 +79,33 @@ extension PendingJobTests {
         XCTAssertEqual(item.id, "predict:my pred")
         XCTAssertEqual(item.buttonTitle, "Cancel")
         // Quoted: object names may contain spaces.
-        XCTAssertEqual(item.cancelCommand, "predict_cancel \"my pred\"")
+        XCTAssertEqual(item.action, .command("predict_cancel \"my pred\""))
         XCTAssertTrue(item.moving)
         XCTAssertFalse(item.isError)
+    }
+
+    // -- Weight-fetch action contract -----------------------------------------
+
+    func testARunningWeightsFetchItemCarriesACancelCommand() {
+        let fetch = WeightsFetchState(
+            id: "boltz2-mlx-int8", state: "running", phase: "download",
+            fraction: 0.4, received: 200, total: 500, elapsed: 10, error: nil)
+        let item = ProgressItem.weights(fetch)
+        XCTAssertEqual(item.action, .command("predict_weights_cancel boltz2-mlx-int8"))
+        XCTAssertEqual(item.buttonTitle, "Cancel")
+    }
+
+    func testAnErroredWeightsFetchItemYieldsDismissWeightsFetchNotNoop() {
+        // Before the Action enum, the error branch set cancelCommand = nil, so the
+        // guard in ContentView fired and the card was stuck on screen forever.
+        let fetch = WeightsFetchState(
+            id: "boltz2-mlx-int8", state: "error", phase: "download",
+            fraction: 0.0, received: 0, total: 529338573, elapsed: nil,
+            error: "failed to fetch https://example/b.zip")
+        let item = ProgressItem.weights(fetch)
+        XCTAssertEqual(item.action, .dismissWeightsFetch)
+        XCTAssertEqual(item.buttonTitle, "Dismiss")
+        XCTAssertTrue(item.isError)
     }
 
     func testAFailedPredictionShowsItsErrorAndOffersDismiss() {

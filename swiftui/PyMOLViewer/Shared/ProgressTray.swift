@@ -6,9 +6,21 @@
 // the app stays fully interactive for the whole ten-plus minutes.
 import SwiftUI
 
-/// One row. Kind-agnostic on purpose: the button runs `cancelCommand` verbatim
-/// through runCommand, so the view knows nothing about jobs or downloads.
+/// One row. Kind-agnostic on purpose: the view dispatches `action` through the
+/// tray's closure without knowing what kind of job produced the item.
 struct ProgressItem: Identifiable, Equatable {
+    /// What the tray's Cancel/Dismiss button should do when tapped.
+    enum Action: Equatable {
+        /// Run a PyMOL command through the engine's command channel.
+        case command(String)
+        /// Clear the published weight-fetch state via `engine.cancelWeightsDownload()`.
+        /// Used on error cards: there is no running download to cancel, but the card
+        /// must still be dismissable.
+        case dismissWeightsFetch
+        /// No button is shown (reserved for future use).
+        case none
+    }
+
     let id: String
     let icon: String
     let title: String
@@ -17,7 +29,7 @@ struct ProgressItem: Identifiable, Equatable {
     let moving: Bool
     let isError: Bool
     let buttonTitle: String
-    let cancelCommand: String?
+    let action: Action
     /// Set on a prediction still waiting on a weight fetch, so the tray can drop
     /// it while the download's own card is showing the same thing.
     let bundle: String?
@@ -33,7 +45,10 @@ struct ProgressItem: Identifiable, Equatable {
             moving: !fetch.isError,
             isError: fetch.isError,
             buttonTitle: fetch.isError ? "Dismiss" : "Cancel",
-            cancelCommand: fetch.isError ? nil : "predict_weights_cancel \(fetch.id)",
+            // Error cards have no running download to cancel, but still need a
+            // Dismiss path; dismissWeightsFetch clears the published state locally.
+            action: fetch.isError ? .dismissWeightsFetch
+                                  : .command("predict_weights_cancel \(fetch.id)"),
             bundle: fetch.id)
     }
 
@@ -53,8 +68,8 @@ struct ProgressItem: Identifiable, Equatable {
             moving: job.moving && !job.isError,
             isError: job.isError,
             buttonTitle: job.isError ? "Dismiss" : "Cancel",
-            cancelCommand: job.isError ? "predict_dismiss \(quoted(job.id))"
-                                       : "predict_cancel \(quoted(job.id))",
+            action: job.isError ? .command("predict_dismiss \(quoted(job.id))")
+                                : .command("predict_cancel \(quoted(job.id))"),
             bundle: job.bundle)
     }
 
@@ -167,7 +182,7 @@ struct ProgressCard: View {
                     .font(.subheadline).fontWeight(.medium)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                if item.cancelCommand != nil || item.isError {
+                if item.action != .none {
                     Button(item.buttonTitle) { onAction(item) }
                         .controlSize(.small)
                         .accessibilityIdentifier("progressTray.action.\(item.id)")

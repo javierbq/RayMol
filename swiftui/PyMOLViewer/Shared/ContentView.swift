@@ -293,8 +293,11 @@ struct ContentView: View {
         // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
                                               predictions: engine.predictionJobs)) { item in
-            guard let command = item.cancelCommand else { return }
-            engine.runCommand(command)
+            switch item.action {
+            case .command(let cmd):    engine.runCommand(cmd)
+            case .dismissWeightsFetch: engine.cancelWeightsDownload()
+            case .none:                break
+            }
         }
         #if RAYMOL_MPNN
         // Design inference blocks input like a long PyMOL op. Rendered by a dedicated
