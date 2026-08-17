@@ -494,6 +494,11 @@ def deliver_result(path, name, seed=None, _self=cmd):
             if not remaining:
                 _PENDING.pop(name, None)
                 _TRACK.pop(name, None)
+                # A successful delivery clears any retained failure record for
+                # this name, so a retry that succeeds does not leave a stale
+                # error card in the tray.
+                _LAST_INFO.pop(name, None)
+                _RECENT.pop(name, None)
 
 
 def session_save(session, _self=cmd):
@@ -991,7 +996,7 @@ SEE ALSO
     if not int(quiet):
         if removed:
             colorprinting.parrot(' predict_dismiss: cleared %s'
-                                 % (name or 'all cards'))
+                                 % (name or 'all cards',))
         else:
             colorprinting.warning(' predict_dismiss: nothing to clear')
 

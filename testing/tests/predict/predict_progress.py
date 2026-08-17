@@ -404,3 +404,75 @@ class TestPendingInfo(testing.PyMOLTestCase):
     def testDismissIsReachableAsACommand(self):
         from pymol import keywords
         self.assertIn('predict_dismiss', keywords.get_command_keywords())
+
+    def testDeliverResultClearsRetainedFailureRecord(self):
+        """A retry that succeeds must not leave a stale failure card.
+
+        deliver_result pops _PENDING directly (not via discard_pending), so the
+        clear must live there too. Sequence: fail, verify retained, retry via
+        deliver_result, verify card is gone.
+        """
+        import os, tempfile
+        pdb = ('ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00'
+               '           N\nATOM      2  CA  ALA A   1       1.458   0.000   0.000'
+               '  1.00  0.00           C\nEND\n')
+        fd, path = tempfile.mkstemp(suffix='.pdb')
+        try:
+            os.write(fd, pdb.encode())
+            os.close(fd)
+            # Step 1: register a failed job and retain it.
+            self.register('retry', [[{'state': 'failed', 'phase': 'inference',
+                                      'fraction': 0.0, 'error': 'oom'}]])
+            self.predicting.pending_info('retry', _self=self.cmd)
+            self.predicting.discard_pending('retry', _self=self.cmd)
+            self.assertIsNotNone(self.predicting._RECENT.get('retry'),
+                                 'pre-condition: failure must be retained')
+            # Step 2: retry -- register a new job into the SAME name and deliver it.
+            self.register('retry', [[{'state': 'done', 'phase': 'done',
+                                      'fraction': 1.0}]])
+            self.predicting.deliver_result(path, 'retry', _self=self.cmd)
+            # All three must be clean after a successful delivery.
+            self.assertIsNone(self.predicting._RECENT.get('retry'),
+                              '_RECENT must be cleared on successful delivery')
+            self.assertIsNone(self.predicting._LAST_INFO.get('retry'),
+                              '_LAST_INFO must be cleared on successful delivery')
+            self.assertIsNone(self.predicting.pending_info('retry', _self=self.cmd),
+                              'pending_info must return None for a delivered object')
+        finally:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+
+    def testDismissSpaceNameViaDirectApi(self):
+        """cmd.predict_dismiss('my pred') works; cmd.do passes quotes as literals.
+
+        FINDING: parsing.STRICT does NOT strip surrounding double-quotes from
+        arguments -- cmd.do('predict_dismiss "my pred"') passes the argument as
+        '"my pred"' (quotes included), not 'my pred'. Verified by sentinel-key
+        probe: only the literal-quoted key was removed, not 'my pred' itself.
+
+        The Swift error card must therefore avoid spaces in derived object names,
+        OR call the Python API directly rather than through cmd.do, OR strip its
+        own quotes before dispatching. The direct-API path is what every test in
+        this suite (and testDismissRemovesARetainedCard above) uses, and it works
+        for space-containing names.
+        """
+        self.register('my pred', [[{'state': 'failed', 'phase': 'inference',
+                                    'fraction': 0.0, 'error': 'x'}]])
+        self.predicting.pending_info('my pred', _self=self.cmd)
+        self.predicting.discard_pending('my pred', _self=self.cmd)
+        self.assertIsNotNone(self.predicting._RECENT.get('my pred'),
+                             'pre-condition: failure must be retained')
+        # Direct API: works fine for space names.
+        self.cmd.predict_dismiss('my pred')
+        self.assertIsNone(self.predicting._RECENT.get('my pred'),
+                          'direct API must dismiss space-containing name')
+        # cmd.do with quotes: STRICT passes the argument with the quotes as
+        # literal characters, not stripped -- 'my pred' is NOT matched.
+        self.predicting._RECENT['my pred'] = {'state': 'failed'}
+        self.cmd.do('predict_dismiss "my pred"')
+        # The key '"my pred"' (with quotes) would be popped, not 'my pred'.
+        # Assert the actual behaviour so a future Swift fix is caught immediately.
+        self.assertIsNotNone(self.predicting._RECENT.get('my pred'),
+                             'cmd.do with quoted arg does NOT strip quotes in STRICT mode')
