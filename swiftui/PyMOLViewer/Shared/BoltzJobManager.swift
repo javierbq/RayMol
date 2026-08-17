@@ -138,6 +138,32 @@ final class BoltzJobManager {
         _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
     }
 
+    #if DEBUG
+    /// Test seam: receives "write" then "discard" for each terminal settle. Same
+    /// pattern as PyMOLEngine's pythonTap -- `settle`'s ordering is the whole point
+    /// of the function and is otherwise invisible, because discardPlaceholder is a
+    /// main-queue hop into PyMOLEngine.shared that a unit test cannot observe.
+    static var settleTap: ((String) -> Void)?
+    #endif
+
+    /// Record a terminal status, THEN take the placeholder down. Order is
+    /// load-bearing: `discard_pending` pops `_PENDING`, the map every Python-derived
+    /// progress view is built from, so discarding first records the failure after the
+    /// only thing that could observe it has been deleted -- which is why an 11-minute
+    /// run that failed used to just make its object vanish.
+    ///
+    /// One function rather than six call-pairs so a seventh exit cannot get it wrong.
+    private static func settle(_ request: Request, _ status: Status, to url: URL) {
+        try? writeStatus(status, to: url)
+        #if DEBUG
+        settleTap?("write")
+        #endif
+        discardPlaceholder(request)
+        #if DEBUG
+        settleTap?("discard")
+        #endif
+    }
+
     // MARK: - Entry point from pollFeedback()
 
     func handle(marker line: String) {
@@ -178,8 +204,7 @@ final class BoltzJobManager {
             if let failure = Self.preflight(request) {
                 // Refused before any work: the placeholder Python just created will never
                 // be filled, so drop it rather than leaving an empty stub behind.
-                Self.discardPlaceholder(request)
-                try? Self.writeStatus(failure, to: URL(fileURLWithPath: request.statusPath))
+                Self.settle(request, failure, to: URL(fileURLWithPath: request.statusPath))
                 return
             }
             queue.async { self.run(request) }
@@ -280,6 +305,13 @@ final class BoltzJobManager {
         func isCancelled() -> Bool {
             stateQueue.sync { cancelled.contains(request.jobID) }
         }
+        func settle(_ state: String, _ phase: String, error: String? = nil) {
+            Self.settle(request,
+                        Status(state: state, phase: phase, fraction: 0,
+                               error: error, resultPath: nil,
+                               peakBytes: peak, elapsedSeconds: elapsed),
+                        to: statusURL)
+        }
 
         report("running", "featurize", 0.0)
         do {
@@ -292,16 +324,14 @@ final class BoltzJobManager {
             // noTemplateAtoms. So anything reported at all is refused here, instead of
             // returning a structure that quietly is not what was asked for.
             guard canonical.diagnostics.isEmpty else {
-                Self.discardPlaceholder(request)
-                report("failed", "featurize", 0,
+                settle("failed", "featurize",
                        error: "unsupported input: \(canonical.diagnostics)")
                 return
             }
             let features = try BoltzFeaturizer().featurize(canonical, alignments: [:])
 
             if isCancelled() {
-                Self.discardPlaceholder(request)
-                report("cancelled", "featurize", 0); return
+                settle("cancelled", "featurize"); return
             }
             report("running", "load", 0.1)
             let predictor = try loadedPredictor(directory: request.weightsDir)
@@ -349,8 +379,7 @@ final class BoltzJobManager {
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
 
             if isCancelled() {
-                Self.discardPlaceholder(request)
-                report("cancelled", "inference", 0); return
+                settle("cancelled", "inference"); return
             }
             report("running", "write", 0.95)
             // pLDDT into the B-factor column, which is what `spectrum b` colours by.
@@ -365,11 +394,9 @@ final class BoltzJobManager {
             Self.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch is CancellationError {
-            Self.discardPlaceholder(request)
-            report("cancelled", "inference", 0)
+            settle("cancelled", "inference")
         } catch {
-            Self.discardPlaceholder(request)
-            report("failed", "inference", 0, error: error.localizedDescription)
+            settle("failed", "inference", error: error.localizedDescription)
         }
         stateQueue.sync {
             cancelled.remove(request.jobID)

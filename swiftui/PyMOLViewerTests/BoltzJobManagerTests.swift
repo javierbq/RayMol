@@ -28,10 +28,15 @@ final class BoltzJobManagerTests: XCTestCase {
     }
 
     /// Mirrors exactly what host.py writes: `chains` is a list of OBJECTS, not pairs.
+    ///
+    /// The request JSON and status path are written into NSTemporaryDirectory() root (not
+    /// the test-scoped `dir` subdirectory) so that `handle()`, which constructs the
+    /// request URL from NSTemporaryDirectory() directly, can find the file.
     private func writeRequest(job: String,
                               chains: [(String, String)],
                               diffusionSteps: Int = 200) throws -> URL {
-        let url = dir.appendingPathComponent("raymol_predict_req_\(job).json")
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let url = tmpDir.appendingPathComponent("raymol_predict_req_\(job).json")
         let payload: [String: Any] = [
             "job_id": job,
             "weights_dir": dir.path,
@@ -40,7 +45,7 @@ final class BoltzJobManagerTests: XCTestCase {
             "diffusion_steps": diffusionSteps,
             "seed": 0,
             "out_path": dir.appendingPathComponent("out_\(job).pdb").path,
-            "status_path": dir.appendingPathComponent("raymol_predict_status_\(job).json").path,
+            "status_path": tmpDir.appendingPathComponent("raymol_predict_status_\(job).json").path,
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
         return url
@@ -289,6 +294,35 @@ final class BoltzJobManagerTests: XCTestCase {
             BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
         XCTAssertEqual(decoded.state, "failed")
     }
+    // MARK: - settle ordering
+
+    /// The status file must be on disk BEFORE the placeholder is taken down.
+    /// discard_pending pops _PENDING, which is the map every progress view reads;
+    /// discarding first strands the error where nothing can observe it.
+    func testPreflightRefusalWritesStatusBeforeDiscardingPlaceholder() throws {
+        var order: [String] = []
+        BoltzJobManager.settleTap = { order.append($0) }
+        defer { BoltzJobManager.settleTap = nil }
+
+        // 100k residues: far past any machine's fitting size, so preflight refuses
+        // without touching MLX.
+        let jobID = "test-\(UUID().uuidString.prefix(12))"
+        try writeRequest(job: jobID,
+                         chains: [("A", String(repeating: "A", count: 100_000))],
+                         diffusionSteps: 200)
+        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+
+        XCTAssertEqual(order, ["write", "discard"],
+                       "status must be written before the placeholder is discarded")
+
+        let statusURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("raymol_predict_status_\(jobID).json")
+        let status = try JSONDecoder().decode(
+            BoltzJobManager.Status.self, from: Data(contentsOf: statusURL))
+        XCTAssertEqual(status.state, "failed")
+        XCTAssertNotNil(status.error)
+    }
+
     /// The race live testing exposed. A cancel that arrives BEFORE the inference task is
     /// registered previously found no task, set only the flag, and was then never acted
     /// on: a job cancelled at ~12 s ran the full 49 s and reported "done". The unit test
