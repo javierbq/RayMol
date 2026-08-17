@@ -205,6 +205,7 @@ def get_command_keywords(self_cmd=cmd):
         'predict'        : [ self_cmd.predict         , 0 , 0 , ''  , parsing.STRICT ],
         'predict_status' : [ self_cmd.predict_status  , 0 , 0 , ''  , parsing.STRICT ],
         'predict_cancel' : [ self_cmd.predict_cancel  , 0 , 0 , ''  , parsing.STRICT ],
+        'predict_dismiss': [ self_cmd.predict_dismiss , 0 , 0 , ''  , parsing.STRICT ],
         'predict_result' : [ self_cmd.predict_result  , 0 , 0 , ''  , parsing.STRICT ],
         'predict_weights': [ self_cmd.predict_weights , 0 , 0 , ''  , parsing.STRICT ],
         'predict_weights_cancel': [ self_cmd.predict_weights_cancel , 0 , 0 , ''  , parsing.STRICT ],

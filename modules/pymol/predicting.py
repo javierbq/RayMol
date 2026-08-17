@@ -962,6 +962,40 @@ SEE ALSO
     return stopped
 
 
+def predict_dismiss(name='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "predict_dismiss" clears the retained card for a prediction that failed or was
+    cancelled. Success needs no dismissal -- the loaded object is its own
+    confirmation and its card retires on its own.
+
+USAGE
+
+    predict_dismiss [ name ]
+
+ARGUMENTS
+
+    name = string: the object whose card to clear. Omit to clear every one.
+
+SEE ALSO
+
+    predict, predict_status, predict_cancel
+    """
+    pump(_self=_self)
+    if name:
+        removed = _RECENT.pop(name, None) is not None
+    else:
+        removed = bool(_RECENT)
+        _RECENT.clear()
+    if not int(quiet):
+        if removed:
+            colorprinting.parrot(' predict_dismiss: cleared %s'
+                                 % (name or 'all cards'))
+        else:
+            colorprinting.warning(' predict_dismiss: nothing to clear')
+
+
 def _job(job_id):
     from .predictors.errors import PredictionError
     try:

@@ -379,3 +379,28 @@ class TestPendingInfo(testing.PyMOLTestCase):
         self.predicting.clear_pending()
         self.assertEqual(self.predicting._RECENT, {})
 
+    def testDismissRemovesARetainedCard(self):
+        self.register('boom', [[{'state': 'failed', 'phase': 'inference',
+                                 'fraction': 0.0, 'error': 'x'}]])
+        self.predicting.pending_info('boom', _self=self.cmd)
+        self.predicting.discard_pending('boom', _self=self.cmd)
+        self.cmd.predict_dismiss('boom')
+        self.assertIsNone(self.predicting.pending_info('boom', _self=self.cmd))
+
+    def testDismissWithNoArgumentClearsThemAll(self):
+        for name in ('a', 'b'):
+            self.register(name, [[{'state': 'failed', 'phase': 'inference',
+                                   'fraction': 0.0, 'error': 'x'}]])
+            self.predicting.pending_info(name, _self=self.cmd)
+            self.predicting.discard_pending(name, _self=self.cmd)
+        self.cmd.predict_dismiss()
+        self.assertEqual(self.predicting._RECENT, {})
+
+    def testDismissAtQuietZeroDoesNotExplode(self):
+        """parsing.py forces quiet=0 for command-line calls; a suite that only
+        tests quiet=1 never enters a single message-emitting branch."""
+        self.cmd.predict_dismiss('nothing-here', quiet=0)
+
+    def testDismissIsReachableAsACommand(self):
+        from pymol import keywords
+        self.assertIn('predict_dismiss', keywords.get_command_keywords())

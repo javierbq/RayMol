@@ -93,6 +93,15 @@ def _predict_job_shortcut():
         return Shortcut([])
 
 
+def _pending_card_shortcut():
+    """Objects with a retained progress card, for predict_dismiss. Never raises."""
+    try:
+        from pymol import predicting
+        return Shortcut(predicting.recent_objects())
+    except Exception:
+        return Shortcut([])
+
+
 def get_auto_arg_list(self_cmd=cmd):
     self_cmd = self_cmd._weakrefproxy
 
@@ -105,6 +114,7 @@ def get_auto_arg_list(self_cmd=cmd):
     aa_scene_e = [lambda: Shortcut(cmd.get_scene_list()), 'scene', '']
     aa_predictor_c = [_predictor_shortcut, 'predictor', ', ']
     aa_predict_job_c = [_predict_job_shortcut, 'job id', ', ']
+    aa_predict_card_c = [_pending_card_shortcut, 'object', ', ']
 
     return [
 # 1st
@@ -115,6 +125,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'predict_weights_cancel': aa_predictor_c,
         'predict_status' : aa_predict_job_c,
         'predict_cancel' : aa_predict_job_c,
+        'predict_dismiss': aa_predict_card_c,
         'predict_result' : aa_predict_job_c,
         'alignto'        : aa_obj_c,
         'alter'          : aa_sel_e,
