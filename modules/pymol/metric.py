@@ -11,7 +11,7 @@ import os
 
 from pymol import cmd, colorprinting
 from pymol.metrics import binding, document, schema, store
-from pymol.metrics.errors import MetricNotFound
+from pymol.metrics.errors import MetricAmbiguous, MetricNotFound
 
 
 def _fmt(value):
@@ -30,24 +30,48 @@ def _warn_if_stale(run, _self=cmd):
     return reason
 
 
-def _resolve(run='', object='', key='', _self=cmd):
+def _resolve(run='', object='', key='', tool='', _self=cmd):
     """The run a command should act on.
 
-    An explicit run id wins. Otherwise the NEWEST run on `object` that carries `key` --
-    newest because re-running a tool is how a user supersedes a result, and reaching
-    for the older one by default would make a second run look like it had not happened.
+    An explicit run id wins. Otherwise the NEWEST matching run on `object` -- newest
+    because re-running a tool is how a user supersedes a result, and reaching for the
+    older one by default would make the second run look as though it had not happened.
+
+    That ordering only means something WITHIN one tool. An object routinely carries runs
+    from several -- fold it, then design it -- and if more than one of them matches, the
+    newest is an arbitrary choice between different measurements rather than the latest
+    version of one. So that case is refused and names the tools, instead of colouring by
+    whichever tool happened to run last.
     """
     if run:
-        return store.get(run)
+        if store.have(run):
+            return store.get(run)
+        # `metrics_get my_object` is what a user types, and `run` is the first
+        # positional. So an unmatched run id that names an OBJECT with runs is read as
+        # one -- the same precedence metrics_delete already applies, id first. Anything
+        # matching neither still raises below, naming the run ids that do exist.
+        if run in store.objects():
+            object = run
+        else:
+            return store.get(run)
     if not object:
         raise MetricNotFound('name a run, or an object to take the newest run of')
-    candidates = [r for r in store.runs(object=object)
+    candidates = [r for r in store.runs(object=object, tool=str(tool or ''))
                   if not key or key in r.keys()]
     if not candidates:
         raise MetricNotFound(
-            'no run on %r%s; recorded objects: %s'
-            % (object, ' carrying %r' % key if key else '',
+            'no run on %r%s%s; recorded objects: %s'
+            % (object,
+               ' from %r' % tool if tool else '',
+               ' carrying %r' % key if key else '',
                ', '.join(store.objects()) or '(none)'))
+    tools = sorted({r.tool for r in candidates})
+    if len(tools) > 1:
+        raise MetricAmbiguous(
+            '%s have all measured %son %r. Name one with tool=, or a run with run= --'
+            ' taking the newest would pick between different measurements rather than'
+            ' between versions of one.'
+            % (', '.join(tools), '%r ' % key if key else '', object))
     return candidates[-1]
 
 
@@ -92,7 +116,7 @@ SEE ALSO
     return [run.summary() for run in runs]
 
 
-def metrics_get(run='', key='', object='', state=0, quiet=1, _self=cmd):
+def metrics_get(run='', key='', object='', state=0, tool='', quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -100,7 +124,7 @@ DESCRIPTION
 
 USAGE
 
-    metrics_get [ run [, key [, object [, state ]]]]
+    metrics_get [ run [, key [, object [, state [, tool ]]]]]
 
 ARGUMENTS
 
@@ -113,6 +137,11 @@ ARGUMENTS
 
     state = int: narrow to one model. {default: 0, meaning every state}
 
+    tool = str: which tool's run to take, e.g. boltz2. Needed only when several
+    tools have measured the same object -- that case is refused rather than
+    resolved by recency, because the newest of two DIFFERENT measurements is an
+    arbitrary choice. {default: none, meaning any}
+
 NOTES
 
     A residue- or pair-scope metric comes back with its INDEX -- the (chain, resi)
@@ -124,7 +153,7 @@ SEE ALSO
     metrics_list, metrics_color, metrics_export
     """
     run_obj = _resolve(run=str(run or ''), object=str(object or ''),
-                       key=str(key or ''), _self=_self)
+                       key=str(key or ''), tool=str(tool or ''), _self=_self)
     state = int(state or 0)
     _warn_if_stale(run_obj, _self=_self)
 
@@ -201,7 +230,8 @@ SEE ALSO
 
 
 def metrics_color(key, object='', run='', state=0, palette='blue_white_red',
-                  minimum=None, maximum=None, selection='', quiet=1, _self=cmd):
+                  minimum=None, maximum=None, selection='', tool='', quiet=1,
+                  _self=cmd):
     """
 DESCRIPTION
 
@@ -211,7 +241,7 @@ DESCRIPTION
 USAGE
 
     metrics_color key [, object [, run [, state [, palette
-        [, minimum [, maximum ]]]]]]
+        [, minimum [, maximum [, selection [, tool ]]]]]]]]
 
 ARGUMENTS
 
@@ -229,6 +259,11 @@ ARGUMENTS
     minimum, maximum = float: spectrum domain {default: the range the tool declared
     for this metric, so two runs colour comparably instead of each auto-scaling}
 
+    tool = str: which tool's run to colour by. Needed only when several tools have
+    measured "key" on this object -- with no way to tell them apart that case is
+    refused, because colouring by whichever tool ran last is not a choice the user
+    made. {default: none, meaning any}
+
 NOTES
 
     The B-factor column is a VIEW here, not storage: the run keeps the array, so this
@@ -244,7 +279,7 @@ SEE ALSO
     metrics_get, spectrum
     """
     run_obj = _resolve(run=str(run or ''), object=str(object or ''),
-                       key=str(key), _self=_self)
+                       key=str(key), tool=str(tool or ''), _self=_self)
     _warn_if_stale(run_obj, _self=_self)
     count = binding.color(
         run_obj, str(key), palette=str(palette),

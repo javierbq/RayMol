@@ -8,7 +8,8 @@ import tempfile
 
 from pymol import cmd, testing
 from pymol.metrics import binding, schema, store
-from pymol.metrics.errors import MetricNotFound, MetricScopeError
+from pymol.metrics.errors import (MetricAmbiguous, MetricNotFound,
+                                  MetricScopeError)
 
 TOOL = 'cmdtest'
 
@@ -122,6 +123,90 @@ class ListAndGetTest(MetricCommandTestCase):
         keys = {entry['key']: entry for entry in out[TOOL]}
         self.assertEqual(keys['conf']['scope'], schema.RESIDUE)
         self.assertEqual(keys['conf']['hi'], 100.0)
+
+
+class TwoToolsOnOneObjectTest(MetricCommandTestCase):
+    """An object carries runs from several tools. They must not silently mix."""
+
+    OTHER = 'cmdtest_other'
+
+    def setUp(self):
+        MetricCommandTestCase.setUp(self)
+        # A second tool declaring the SAME key name at the same scope: the case where
+        # recency is an arbitrary choice between different measurements.
+        schema.register(self.OTHER, [
+            schema.MetricSpec('conf', schema.RESIDUE, lo=0, hi=1),
+        ], replace=True)
+
+    def both(self):
+        name, index, mine = self.scored()
+        theirs = binding.record(name, self.OTHER, [
+            store.value(self.OTHER, 'conf', state=1, index=index,
+                        values=[0.5] * len(index))])
+        return name, index, mine, theirs
+
+    def testRunsFromTwoToolsCoexist(self):
+        name, index, mine, theirs = self.both()
+        self.assertEqual([r.tool for r in store.runs(object=name)],
+                         [TOOL, self.OTHER])
+        self.assertEqual(mine.one('conf', state=1).values[0], 10.0)
+        self.assertEqual(theirs.one('conf', state=1).values[0], 0.5)
+
+    def testTwoToolsSharingAKeyIsRefusedNotResolvedByRecency(self):
+        name, index, mine, theirs = self.both()
+        for call in (lambda: cmd.metrics_get(object=name, key='conf'),
+                     lambda: cmd.metrics_color('conf', object=name)):
+            try:
+                call()
+            except MetricAmbiguous as exc:
+                self.assertIn(TOOL, str(exc))
+                self.assertIn(self.OTHER, str(exc))
+            else:
+                self.fail('two tools carrying one key must not resolve silently')
+
+    def testToolNamesWhichOneToUse(self):
+        name, index, mine, theirs = self.both()
+        self.assertEqual(cmd.metrics_get(object=name, key='conf',
+                                         tool=self.OTHER)['values'][0], 0.5)
+        self.assertEqual(cmd.metrics_get(object=name, key='conf',
+                                         tool=TOOL)['values'][0], 10.0)
+        cmd.metrics_color('conf', object=name, tool=self.OTHER)
+        painted = []
+        cmd.iterate('%s and name CA' % name, 'painted.append(b)',
+                    space={'painted': painted})
+        self.assertEqual(set(painted), {0.5})
+
+    def testAnObjectNameInTheRunSlotIsReadAsAnObject(self):
+        # `metrics_get my_object` is what a user types, and `run` is the first
+        # positional. The id is tried first, so a run can never be shadowed.
+        self.scored('pep', recovery=7.0)
+        self.assertEqual(cmd.metrics_get('pep', 'recovery')['value'], 7.0)
+
+    def testNeitherARunNorAnObjectStillRaises(self):
+        self.scored('pep')
+        self.assertRaises(MetricNotFound, cmd.metrics_get, 'not_a_thing')
+
+    def testARunIdStillWinsOutright(self):
+        name, index, mine, theirs = self.both()
+        self.assertEqual(cmd.metrics_get(mine.id, 'conf')['values'][0], 10.0)
+
+    def testOneToolRunTwiceIsNotAmbiguous(self):
+        # Re-running supersedes: that IS an ordering, so the newest wins without
+        # anyone having to say so.
+        self.scored('pep', recovery=1.0)
+        self.scored('pep', recovery=2.0)
+        self.assertEqual(cmd.metrics_get(object='pep', key='recovery')['value'], 2.0)
+
+    def testAKeyOnlyOneToolHasNeedsNoDisambiguation(self):
+        # `recovery` is this tool's alone, so the other tool's run is not a candidate
+        # and nothing has to be named.
+        name, index, mine, theirs = self.both()
+        self.assertEqual(cmd.metrics_get(object=name, key='recovery')['value'], 42.0)
+
+    def testAnUnknownToolSaysSoRatherThanFallingBack(self):
+        name, index, mine, theirs = self.both()
+        self.assertRaises(MetricNotFound, cmd.metrics_get,
+                          object=name, key='conf', tool='nosuchtool')
 
 
 class ColorTest(MetricCommandTestCase):

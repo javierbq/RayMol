@@ -32,5 +32,16 @@ class MetricNotFound(MetricError):
     """No run, or no key within a run, under the requested name."""
 
 
+class MetricAmbiguous(MetricError):
+    """The request names something two different tools measured.
+
+    Distinct from MetricNotFound because the remedy is opposite: there is not too
+    little to act on but too much, and picking one silently is how a user ends up
+    colouring by a metric they did not ask for. Re-running ONE tool supersedes its own
+    earlier run -- that is not ambiguous and does not raise this -- but two tools that
+    happen to share a key name have no ordering between them that means anything.
+    """
+
+
 class MetricInputError(MetricError):
     """The value itself is unusable -- wrong type, ragged array, malformed index."""

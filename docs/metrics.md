@@ -39,14 +39,41 @@ Two rules make scope carry its weight:
 ## Commands
 
 ```
-metrics_list [object [, tool]]                  runs recorded in this session
-metrics_get [run [, key [, object [, state]]]]  one run, or one metric out of it
-metrics_color key [, object [, run [, state ...]]]   colour by a residue-scope array
-metrics_export filename [, object [, run]]      .json (everything) or .csv (long format)
-metrics_load filename [, object]                a document from outside RayMol
-metrics_delete name                             a run id, an object, or "all"
-metrics_schema [tool]                           what a tool measures, and at what scope
+metrics_list [object [, tool]]                       runs recorded in this session
+metrics_get [run [, key [, object [, state [, tool]]]]]  one run, or one metric out of it
+metrics_color key [, object [, run [, state ... [, tool]]]]  colour by a residue array
+metrics_export filename [, object [, run]]           .json (all) or .csv (long format)
+metrics_load filename [, object]                     a document from outside RayMol
+metrics_delete name                                  a run id, an object, or "all"
+metrics_schema [tool]                                what a tool measures, at what scope
 ```
+
+## Several tools on one object
+
+They do not collide. The unit of storage is the **run**, so folding an object, re-folding
+it with a deeper alignment and then designing it are three runs that all keep every
+value. Keys are namespaced by tool, so two tools may both declare `score` without
+meaning the same thing by it.
+
+When a command has to pick a run for you, it takes the newest **within one tool** --
+re-running is how a result is superseded, and reaching for the older one would make the
+second run look as though it had not happened. Across tools there is no such ordering, so
+if more than one tool matches, the command **refuses** and names them:
+
+```
+PyMOL> metrics_color conf, my_object
+ Error: cmdtest, cmdtest_other have all measured 'conf' on 'my_object'. Name one with
+ tool=, or a run with run= -- taking the newest would pick between different
+ measurements rather than between versions of one.
+
+PyMOL> metrics_color conf, my_object, tool=cmdtest
+```
+
+A key only one tool declares needs no disambiguation, and `run=` always wins outright.
+
+The one place two tools genuinely compete is the B-factor column, because `b` holds one
+scalar per atom. That is why it is a view: every array stays in the store, so
+`metrics_color` can put any of them back at any time.
 
 The B-factor column is a **view**, not storage. `metrics_color` writes an array into `b`
 and spectrums it; the run keeps the array, so it can be re-applied after another tool has
