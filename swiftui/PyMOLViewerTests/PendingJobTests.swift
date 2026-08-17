@@ -67,3 +67,73 @@ final class PendingJobTests: XCTestCase {
         }
     }
 }
+
+extension PendingJobTests {
+
+    func testAPredictionItemCarriesAPerObjectCancelCommand() {
+        let job = PredictionJobState(
+            id: "my pred", state: "running", phase: "diffusion", fraction: 0.5,
+            moving: true, detail: "pending: diffusion 64%", modelsDone: 0,
+            modelsTotal: 2, elapsed: 12, error: nil)
+        let item = ProgressItem.prediction(job)
+        XCTAssertEqual(item.id, "predict:my pred")
+        XCTAssertEqual(item.buttonTitle, "Cancel")
+        // Quoted: object names may contain spaces.
+        XCTAssertEqual(item.cancelCommand, "predict_cancel \"my pred\"")
+        XCTAssertTrue(item.moving)
+        XCTAssertFalse(item.isError)
+    }
+
+    func testAFailedPredictionShowsItsErrorAndOffersDismiss() {
+        let job = PredictionJobState(
+            id: "p", state: "failed", phase: "inference", fraction: nil,
+            moving: false, detail: "pending", modelsDone: 0, modelsTotal: 1,
+            elapsed: 600, error: "input of 9000 residues is too large")
+        let item = ProgressItem.prediction(job)
+        XCTAssertTrue(item.isError)
+        XCTAssertEqual(item.buttonTitle, "Dismiss")
+        XCTAssertEqual(item.detail, "input of 9000 residues is too large")
+        XCTAssertFalse(item.moving)
+    }
+
+    func testElapsedIsFormattedCoarsely() {
+        XCTAssertEqual(ProgressCard.formatElapsed(4), "4 sec")
+        XCTAssertEqual(ProgressCard.formatElapsed(95), "2 min")
+        XCTAssertEqual(ProgressCard.formatElapsed(4000), "1 hr 7 min")
+    }
+
+    private func job(_ id: String, state: String = "running",
+                     bundle: String? = nil) -> PredictionJobState {
+        PredictionJobState(id: id, state: state, phase: "inference", fraction: nil,
+                           moving: false, detail: "d", modelsDone: 0, modelsTotal: 1,
+                           elapsed: 1, error: state == "running" ? nil : "boom",
+                           bundle: bundle)
+    }
+
+    /// A cold-cache run must show ONE card, not two describing the same transfer
+    /// at two different percentages.
+    func testAPredictionWaitingOnALiveDownloadIsHidden() {
+        let fetch = WeightsFetchState(
+            id: "boltz2-mlx-int8", state: "running", phase: "download",
+            fraction: 0.4, received: 200, total: 500, elapsed: 10, error: nil)
+        let items = ProgressItem.tray(weights: fetch,
+                                      predictions: [job("p", bundle: "boltz2-mlx-int8")])
+        XCTAssertEqual(items.map(\.id), ["weights:boltz2-mlx-int8"])
+    }
+
+    func testAPredictionWaitingOnADIFFERENTBundleIsStillShown() {
+        let fetch = WeightsFetchState(
+            id: "other", state: "running", phase: "download",
+            fraction: 0.4, received: 200, total: 500, elapsed: 10, error: nil)
+        let items = ProgressItem.tray(weights: fetch,
+                                      predictions: [job("p", bundle: "boltz2-mlx-int8")])
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func testRunningCardsSortAboveErrorCards() {
+        let items = ProgressItem.tray(
+            weights: nil,
+            predictions: [job("zzz-failed", state: "failed"), job("aaa-running")])
+        XCTAssertEqual(items.map(\.id), ["predict:aaa-running", "predict:zzz-failed"])
+    }
+}
