@@ -294,10 +294,10 @@ struct ContentView: View {
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
                                               predictions: engine.predictionJobs)) { item in
             switch item.action {
-            case .command(let cmd):    engine.runCommand(cmd)
-            case .python(let src):     engine.runPython(src)
-            case .dismissWeightsFetch: engine.cancelWeightsDownload()
-            case .none:                break
+            case .command(let cmd):   engine.runCommand(cmd)
+            case .python(let src):    engine.runPython(src)
+            case .cancelWeightsFetch: engine.cancelWeightsDownload()
+            case .none:               break
             }
         }
         #if RAYMOL_MPNN

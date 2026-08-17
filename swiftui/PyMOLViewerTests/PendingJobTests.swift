@@ -80,9 +80,28 @@ extension PendingJobTests {
         XCTAssertEqual(item.buttonTitle, "Cancel")
         // Python path: object names may contain spaces, and the PyMOL text parser
         // does not strip the surrounding quotes from its "[^"]*" token.
-        XCTAssertEqual(item.action, .python("cmd.predict_cancel('my pred')"))
+        //
+        // The import is not decoration. runPython → PyRun_SimpleString executes in
+        // __main__, which starts EMPTY in this embedding — raymolrc binds `cmd`
+        // there only when ~/.raymolrc.py exists — so a bare `cmd.predict_cancel(…)`
+        // was a silent NameError and Cancel did nothing at all for most users.
+        XCTAssertEqual(item.action,
+                       .python("from pymol import cmd as _c\n_c.predict_cancel('my pred')"))
         XCTAssertTrue(item.moving)
         XCTAssertFalse(item.isError)
+    }
+
+    /// Every emitted Python statement must stand on its own in an empty __main__.
+    func testEveryEmittedPythonStatementImportsWhatItUses() {
+        for state in ["running", "failed", "cancelled"] {
+            let item = ProgressItem.prediction(job("p", state: state))
+            guard case .python(let src) = item.action else {
+                return XCTFail("\(state) did not emit a python action")
+            }
+            XCTAssertTrue(src.hasPrefix("from pymol import cmd as _c\n"),
+                          "\(state) emitted a bare reference: \(src)")
+            XCTAssertFalse(src.contains("\ncmd."), "\(state): \(src)")
+        }
     }
 
     func testPythonLiteralEscapesApostrophesAndDoesNotTerminateStringEarly() {
@@ -93,21 +112,29 @@ extension PendingJobTests {
             moving: true, detail: "d", modelsDone: 0, modelsTotal: 1,
             elapsed: 1, error: nil)
         let item = ProgressItem.prediction(job)
-        XCTAssertEqual(item.action, .python("cmd.predict_cancel('my pred\\'s')"))
+        XCTAssertEqual(
+            item.action,
+            .python("from pymol import cmd as _c\n_c.predict_cancel('my pred\\'s')"))
     }
 
     // -- Weight-fetch action contract -----------------------------------------
 
-    func testARunningWeightsFetchItemCarriesACancelCommand() {
+    /// The per-bundle command spelling was never executable. `WeightsFetchState.id`
+    /// is the BUNDLE id ("boltz2-mlx-int8"), but `predict_weights_cancel` takes a
+    /// PREDICTOR id and does `registry.get(predictor)` — so the emitted command
+    /// raised `PredictorNotFound: unknown predictor 'boltz2-mlx-int8'`, the 529 MB
+    /// download carried on, and the card stayed. Assert the ACTION, which is what
+    /// actually runs, rather than a string that never worked end to end.
+    func testARunningWeightsFetchItemCancelsThroughTheLocalAction() {
         let fetch = WeightsFetchState(
             id: "boltz2-mlx-int8", state: "running", phase: "download",
             fraction: 0.4, received: 200, total: 500, elapsed: 10, error: nil)
         let item = ProgressItem.weights(fetch)
-        XCTAssertEqual(item.action, .command("predict_weights_cancel boltz2-mlx-int8"))
+        XCTAssertEqual(item.action, .cancelWeightsFetch)
         XCTAssertEqual(item.buttonTitle, "Cancel")
     }
 
-    func testAnErroredWeightsFetchItemYieldsDismissWeightsFetchNotNoop() {
+    func testAnErroredWeightsFetchItemYieldsCancelWeightsFetchNotNoop() {
         // Before the Action enum, the error branch set cancelCommand = nil, so the
         // guard in ContentView fired and the card was stuck on screen forever.
         let fetch = WeightsFetchState(
@@ -115,9 +142,20 @@ extension PendingJobTests {
             fraction: 0.0, received: 0, total: 529338573, elapsed: nil,
             error: "failed to fetch https://example/b.zip")
         let item = ProgressItem.weights(fetch)
-        XCTAssertEqual(item.action, .dismissWeightsFetch)
+        XCTAssertEqual(item.action, .cancelWeightsFetch)
         XCTAssertEqual(item.buttonTitle, "Dismiss")
         XCTAssertTrue(item.isError)
+    }
+
+    /// No weights branch may emit a bundle id as a predictor id ever again.
+    func testNoWeightsBranchEmitsARawCommand() {
+        for state in ["running", "error"] {
+            let fetch = WeightsFetchState(
+                id: "boltz2-mlx-int8", state: state, phase: "download",
+                fraction: 0.4, received: 200, total: 500, elapsed: 10,
+                error: state == "error" ? "boom" : nil)
+            XCTAssertEqual(ProgressItem.weights(fetch).action, .cancelWeightsFetch, state)
+        }
     }
 
     func testAFailedPredictionShowsItsErrorAndOffersDismiss() {
@@ -130,6 +168,40 @@ extension PendingJobTests {
         XCTAssertEqual(item.buttonTitle, "Dismiss")
         XCTAssertEqual(item.detail, "input of 9000 residues is too large")
         XCTAssertFalse(item.moving)
+    }
+
+    /// A user's own Cancel must not be reported back to them as a failure.
+    ///
+    /// `settle("cancelled", …)` writes `error: nil` and Python retains the record,
+    /// so with only an error branch the card read "Prediction failed: p — Unknown
+    /// error": an unexplained failure for someone who had just pressed Cancel.
+    func testACancelledPredictionReadsAsCancelledNotFailed() {
+        let job = PredictionJobState(
+            id: "p", state: "cancelled", phase: "inference", fraction: 0.3,
+            moving: true, detail: "pending: inference", modelsDone: 0,
+            modelsTotal: 1, elapsed: 95, error: nil)
+        let item = ProgressItem.prediction(job)
+        XCTAssertEqual(item.title, "Prediction cancelled: p")
+        XCTAssertEqual(item.detail, "2 min elapsed")
+        XCTAssertFalse(item.detail.contains("Unknown error"))
+        XCTAssertEqual(item.icon, "xmark.circle")
+        XCTAssertTrue(item.isCancelled)
+        // Terminal like a failure: Dismiss, no live bar, sorted below live jobs.
+        XCTAssertTrue(item.isError)
+        XCTAssertEqual(item.buttonTitle, "Dismiss")
+        XCTAssertFalse(item.moving)
+    }
+
+    /// A real failure must keep its own presentation.
+    func testAFailedPredictionIsNotDressedUpAsCancelled() {
+        let item = ProgressItem.prediction(PredictionJobState(
+            id: "p", state: "failed", phase: "inference", fraction: nil,
+            moving: false, detail: "pending", modelsDone: 0, modelsTotal: 1,
+            elapsed: 95, error: "out of memory"))
+        XCTAssertFalse(item.isCancelled)
+        XCTAssertEqual(item.icon, "exclamationmark.triangle.fill")
+        XCTAssertEqual(item.title, "Prediction failed: p")
+        XCTAssertEqual(item.detail, "out of memory")
     }
 
     func testElapsedIsFormattedCoarsely() {

@@ -3703,8 +3703,15 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     let bundle: String?
 
     /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
-    /// migrated, so the single consumer accepts both.
+    /// migrated, so the single consumer accepts both. "cancelled" is included
+    /// because it is TERMINAL and needs the same card affordances (Dismiss, no bar,
+    /// sorted below live jobs) — see `isCancelled` for why it is still not a failure.
     var isError: Bool { state == "error" || state == "failed" || state == "cancelled" }
+
+    /// Terminal, but the user's own doing. `settle("cancelled", …)` writes
+    /// `error: nil`, so without this the card read "Prediction failed: X — Unknown
+    /// error" for someone who had just pressed Cancel.
+    var isCancelled: Bool { state == "cancelled" }
 
     enum CodingKeys: String, CodingKey {
         case state, phase, fraction, moving, detail, error, bundle
