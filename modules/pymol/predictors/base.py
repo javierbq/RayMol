@@ -165,6 +165,13 @@ class Predictor(abc.ABC):
     #: REJECTED by validate_options rather than silently ignored.
     option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
 
+    #: This predictor's pipeline phases, ordered, as (phase, start, end) bands.
+    #: EMPTY BY DEFAULT on purpose: the base class makes no claim about anyone's
+    #: pipeline. A predictor that declares nothing gets an indeterminate card with
+    #: a live elapsed clock -- the correct rendering of no information, and far
+    #: better than a bar derived from some other backend's phase names.
+    progress_phases = ()
+
     @abc.abstractmethod
     def check_available(self):
         """Raise PredictorUnavailable if this cannot run here and now.
@@ -194,3 +201,19 @@ class Predictor(abc.ABC):
         merged = dict(self.option_defaults)
         merged.update(options)
         return PredictionOptions(**merged)
+
+    def progress(self, status):
+        """Overall progress for one of this predictor's jobs: (fraction, moving).
+
+        CONCRETE, like validate_options -- never abstract. This class is a public
+        extension point and a new @abc.abstractmethod would break every predictor
+        already written against it. That also makes this the escape hatch: a
+        backend the band table cannot express overrides this method instead.
+
+        `status` is exactly what job.status() returned. This DERIVES from it and
+        never stores a second copy, so status()['fraction'] stays the single
+        source of truth and the two cannot drift.
+
+        Never raises.
+        """
+        return compose_progress(status, self.progress_phases)

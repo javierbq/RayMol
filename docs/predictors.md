@@ -82,14 +82,24 @@ it is shaped this way.
    because RayMol's Metal renderer reads object state on the main thread without taking
    PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
 
-8. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
+8. **Declare your progress phases, or your users get a spinner.** `progress_phases` is
+   an ordered tuple of `(phase, start, end)` bands on an overall 0–1 scale; your job's
+   `status()['fraction']` is completion *within* the current phase, and the app composes
+   the two. The base class declares none, so a predictor that skips this shows an
+   indeterminate card — which is correct if you genuinely cannot report movement, and a
+   missed opportunity if you can. Give a phase a zero-width band (`end == start`) to say
+   "started, cannot say how far in": that is honest, and far better than a bar frozen at
+   a made-up number. Widths are layout, not a time estimate — they cannot track wall
+   clock, because the same phase varies by orders of magnitude with input size.
+
+9. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
    changes outside your own.
 
-9. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
-   test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
-   runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
-   first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
+10. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
+    test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
+    runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
+    first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
 
-10. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+11. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
     merging. No CI job compiles Swift, and the shared target has broken each platform from the
     other before (#174, #226/#238).
