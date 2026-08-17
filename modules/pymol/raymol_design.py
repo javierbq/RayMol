@@ -18,6 +18,35 @@ _ONE_LETTER_TO_THREE = {v: k for k, v in _ONE.items()}
 _ONE_LETTER_TO_THREE['X'] = 'UNK'
 _INDEX_TO_THREE = {i: _ONE_LETTER_TO_THREE.get(c, 'UNK') for i, c in enumerate(_ALPHABET)}
 
+#: What ProteinMPNN measures, declared for the metric store (#308).
+#:
+#: Both are per RESIDUE and per STATE: the score depends on the backbone the sequence
+#: was threaded onto, so a design run against model 2 of a five-model prediction is not
+#: a statement about model 1. The domains are DesignColor.nativeFitDomain and
+#: .certaintyDomain, kept in step with the Swift legend so a stored array colours the
+#: same way the live panel did.
+#:
+#: Registered at import, not at first use: the object panel and `metrics_list` may meet
+#: a run restored from a .pse before Design mode has been opened in this session.
+_MPNN_TOOL = 'mpnn'
+_MPNN_SPECS = (
+    dict(key='native_fit', scope='residue', units='log P', label='Native fit',
+         lo=-6.0, hi=0.0, higher_is_better=True, summarizes='mean',
+         description='Log-probability MPNN assigns to the residue actually present,'
+                     ' scored leave-one-out against the backbone.'),
+    dict(key='certainty', scope='residue', label='Certainty', lo=0.0, hi=1.0,
+         higher_is_better=True, summarizes='mean',
+         description='1 - Shannon entropy / ln(21) over the 21-letter distribution:'
+                     ' 0 is flat, 1 is one-hot.'),
+)
+
+try:
+    from pymol.metrics import schema as _metric_schema
+    _metric_schema.register(_MPNN_TOOL, [
+        _metric_schema.MetricSpec(**spec) for spec in _MPNN_SPECS], replace=True)
+except Exception as _mt_e:      # pragma: no cover - bookkeeping must never break design
+    print(' design: could not declare MPNN metrics (%s)' % _mt_e)
+
 
 def _tmp(name):
     return os.path.join(tempfile.gettempdir(), name)
@@ -148,17 +177,65 @@ def selected_design_indices(obj, selection, state, src=''):
     return 'DESIGN_SELECTED:%d' % len(indices)
 
 
-def apply_design_coloring(obj, values_json_path, palette, lo, hi):
+def _record_design_metrics(obj, metric, rows, state=0):
+    """Keep a scored design pass in the metric store. Never raises.
+
+    The FULL index goes in, masked residues included, with their value as None. Absent
+    is not zero: a residue with no backbone was not scored, and recording it as 0.0
+    would put a real-looking number -- a terrible native fit -- where there is no
+    measurement. `MetricValue.as_map()` drops them again for colouring.
+
+    One run per scored pass, so re-scoring after a mutation is a new run rather than an
+    overwrite: that history is the point of a design session.
+    """
+    if not metric:
+        # An older caller that does not say which score it is passing. Recording it
+        # under a guessed key would put native-fit numbers in a certainty column.
+        return None
+    try:
+        from pymol.metrics import binding
+        from pymol.metrics import store as metric_store
+        if not state:
+            state = cmd.get_state()
+        index, values = [], []
+        for row in rows:
+            index.append((row['chain'], row['resi']))
+            values.append(row.get('value'))
+        value = metric_store.value(_MPNN_TOOL, metric, state=int(state),
+                                   index=index, values=values)
+        return binding.record(obj, _MPNN_TOOL, [value],
+                              inputs={'metric': metric, 'n_scored': len(
+                                  [v for v in values if v is not None])})
+    except Exception as exc:
+        print(' design: could not record %s metrics for %s (%s)' % (metric, obj, exc))
+        return None
+
+
+def apply_design_coloring(obj, values_json_path, palette, lo, hi, metric='',
+                          state=0):
     """Write per-residue scalar and apply spectrum coloring.
 
     values_json_path: path to JSON list of {'chain', 'resi', 'value'} dicts.
     palette: PyMOL palette name (e.g. 'blue_white_red').
     lo, hi: domain min/max used by the Swift legend; passed to spectrum when
             minimum/maximum kwargs are supported, otherwise auto-scaling is used.
+    metric: which score these values are — 'native_fit' or 'certainty'
+            (DesignColorMeaning). Recorded in the metric store under that name;
+            empty means "do not record", which is what an older caller gets.
+    state: the model the scores were computed against {default: 0, the displayed
+            state}.
     Returns 'DESIGN_COLOR:ok'.
 
-    Storage: Incentive PyMOL stores values in the custom atom property
-    p.mpnn_conf; Open-Source PyMOL falls back to the B-factor column (b).
+    Storage: the METRIC STORE owns these values (#308) — they are recorded against
+    the object before anything is coloured, so they survive a .pse, can be exported,
+    and can be re-applied with metrics_color after another tool has coloured over the
+    column. The p.mpnn_conf / B-factor write below is a rendering channel only.
+
+    That distinction is the bug this fixes: `b` is one unlabelled scalar per atom, and
+    on an open-source build these scores land there — so colouring a PREDICTED object
+    by design score used to overwrite that object's pLDDT with nothing saying the
+    column had changed meaning.
+
     Spectrum is run only over scored polymer residues — masked residues and
     non-polymer atoms (ligands, ions, waters) keep their baseline color.
     """
@@ -191,6 +268,11 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi):
     if not vmap:
         # No scored residues; nothing to alter or spectrum.
         return 'DESIGN_COLOR:ok'
+
+    # Record BEFORE colouring, so the numbers are kept even if the spectrum call
+    # cannot run (an unknown palette, a build without minimum/maximum). The store is
+    # where they live; the colour is a view of them.
+    _record_design_metrics(obj, metric, rows, state)
 
     # -- Fix 2: Build a selection of exactly the scored polymer residues so
     # that masked residues and all non-polymer atoms keep their baseline color

@@ -19,7 +19,7 @@ final class DesignControllerTests: XCTestCase {
                     logProbs: [[Float](repeating: Float(log(1.0 / 21.0)), count: 21)],
                     currentAALogProb: [-1.0])
             },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
@@ -59,7 +59,7 @@ final class DesignControllerTests: XCTestCase {
                     logProbs: [[Float](repeating: Float(log(1.0 / 21.0)), count: 21)],
                     currentAALogProb: [-1.0])
             },
-            applyColoring: { obj, _, _, _, _ in coloredObjects.append(obj) },
+            applyColoring: { obj, _, _, _, _, _, _ in coloredObjects.append(obj) },
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
@@ -102,7 +102,7 @@ final class DesignControllerTests: XCTestCase {
                     logProbs: [[Float](repeating: Float(log(1.0 / 21.0)), count: 21)],
                     currentAALogProb: [-1.0])
             },
-            applyColoring: { _, _, palette, _, _ in lastPalette = palette },
+            applyColoring: { _, _, palette, _, _, _, _ in lastPalette = palette },
             dim: { _ in },
             snapshot: { _ in },
             restore: { })

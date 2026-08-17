@@ -108,6 +108,19 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _ms_e:
         print("raymol msa registration failed: %s" % _ms_e)
 
+    # RayMol metrics (#308): what a tool measured about an object, carried in the .pse
+    # under `raymol_metrics`. The RESTORE clears the store when a session carries none,
+    # for the same reason the alignment one does -- numbers from the previous session
+    # must not survive attached to objects that are gone.
+    try:
+        from pymol.metrics import store as _metric_store
+        if _metric_store.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(_metric_store.session_restore)
+        if _metric_store.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(_metric_store.session_save)
+    except Exception as _mt_e:
+        print("raymol metrics registration failed: %s" % _mt_e)
+
     # take care of some deferred initialization
 
     _pymol._view_dict_sc = Shortcut()

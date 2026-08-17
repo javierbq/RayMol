@@ -109,6 +109,10 @@ final class PyMOLEngine: ObservableObject {
     // not an alignment yet — it has no depth, no columns and nothing to attach — and it
     // stops existing the moment it becomes one.
     @Published var msaSearches: [MSASearchEntry] = []
+    // What tools measured about the objects (#308). Rides the same OBJPANEL: payload,
+    // but keyed by object rather than standing alone: a metric belongs to the thing it
+    // was measured on, unlike an alignment, which belongs to a sequence.
+    @Published var metricRuns: [MetricRunEntry] = []
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);
@@ -2257,8 +2261,11 @@ final class PyMOLEngine: ObservableObject {
                 try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
             }
         },
-        applyColoring: { [weak self] obj, values, palette, lo, hi in
+        applyColoring: { [weak self] obj, values, palette, lo, hi, metric, state in
             guard let self else { return }
+            // Masked residues go across with a null value, not dropped: the Python side
+            // records the FULL index so an unscored residue is stored as absent rather
+            // than as a plausible-looking number (#308).
             let rows = values.map { ["chain": $0.0, "resi": $0.1, "value": $0.2 as Any] }
             if let data = try? JSONSerialization.data(withJSONObject: rows) {
                 let p = FileManager.default.temporaryDirectory
@@ -2266,7 +2273,8 @@ final class PyMOLEngine: ObservableObject {
                 try? data.write(to: p)
                 self.runPython("""
                     from pymol import raymol_design as _rd
-                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi))
+                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi), \
+                    '\(metric)', \(state))
                     """)
             }
         },

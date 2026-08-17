@@ -13,6 +13,18 @@ enum DesignColorMeaning: String, CaseIterable {
         case .certainty: return "Certainty"
         }
     }
+
+    /// The key this score is stored under in the metric store (#308).
+    /// Snake_case because it is an API: it appears in `metrics_get`, in an exported
+    /// CSV and in `metrics_color mpnn, native_fit`, alongside keys from every other
+    /// tool. Kept separate from `rawValue` so renaming a Swift case cannot silently
+    /// change what a saved .pse means.
+    var metricKey: String {
+        switch self {
+        case .nativeFit: return "native_fit"
+        case .certainty: return "certainty"
+        }
+    }
 }
 
 enum DesignColor {

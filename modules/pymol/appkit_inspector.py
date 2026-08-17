@@ -476,6 +476,56 @@ def _alignment_map():
         return {}
 
 
+#: Scalars a panel row shows before it says "and N more". A row is one line in a narrow
+#: pane, and a run may carry a dozen numbers; the rest are a `metrics_get` away.
+PANEL_SCALARS = 3
+
+
+def _metric_map(nstate=None):
+    """Runs recorded against objects (#308), as compact rows for the panel.
+
+    object -> [{run, tool, scalars, keys, states, stale}]
+
+    Cheap by construction, and this is the constraint that shapes it: the poll runs on
+    the MAIN thread every 500 ms and is already a measured hot spot (PR #270). So it
+    reads only scalars that were computed at record time, never walks a pLDDT or PAE
+    array, and asks the session NOTHING -- staleness is decided against the `nstate`
+    map the payload has already built, rather than by calling count_states again.
+
+    Never raises, for the same reason _alignment_map() does not: the caller's single
+    `except` writes no file at all, so a throw here freezes the panel on a stale list.
+    """
+    try:
+        from pymol.metrics import store
+        nstate = nstate or {}
+        out = {}
+        for name, summaries in store.panel_summary().items():
+            rows = []
+            for summary in summaries:
+                scalars = summary['scalars']
+                shown = list(scalars.items())[:PANEL_SCALARS]
+                rows.append({
+                    'run': summary['id'],
+                    'tool': summary['tool'],
+                    'keys': summary['keys'],
+                    'states': summary['states'],
+                    'scalars': [{'key': key, 'value': value}
+                                for key, value in shown],
+                    'more': max(0, len(scalars) - len(shown)),
+                    # States are positional, so a changed count means every per-state
+                    # value in this run may now point at different coordinates. Said
+                    # in the row rather than repaired, because nothing here can know
+                    # which state went.
+                    'stale': bool(summary['state_count']
+                                  and name in nstate
+                                  and nstate[name] != summary['state_count']),
+                })
+            out[name] = rows
+        return out
+    except Exception:
+        return {}
+
+
 #: Seconds of granularity for a search row's age. The panel repaints when this payload
 #: changes, so sending the raw float would repaint it on every 500 ms tick for the
 #: several MINUTES a search runs. A bucket makes the row change 12 times a minute
@@ -566,12 +616,13 @@ def poll_panel():
             parents = group_parents(objs, groups)
         except Exception:
             groups, parents = [], {}
+        nstate = {o: cmd.count_states('?' + o) for o in objs}
         payload = {
             'objects': objs,
             'selections': sels,
             'enabled': list(enabled),
             'sel_counts': {s: cmd.count_atoms(s) for s in sels},
-            'nstate': {o: cmd.count_states('?' + o) for o in objs},
+            'nstate': nstate,
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
@@ -593,6 +644,11 @@ def poll_panel():
             # in the section below it -- never as both a progress row and a result on
             # the same tick.
             'msa_searches': _search_map(),
+            # What tools measured about these objects (#308). Keyed by object, because
+            # a metric belongs to one -- unlike an alignment, which belongs to a
+            # sequence and gets its own section. Scalars only; the arrays stay in the
+            # store, where nothing on a 500 ms poll has to touch them.
+            'metrics': _metric_map(nstate),
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's
