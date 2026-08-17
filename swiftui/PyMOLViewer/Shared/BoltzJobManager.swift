@@ -195,6 +195,10 @@ final class BoltzJobManager {
                     cancelled.insert(marker.jobID)
                 }
             }
+            // Broadcast: a cancel marker carries only a job id, so there is nothing in it
+            // to route on. Every manager keeps only its own ids, and a cancel for a job
+            // this one never had is a no-op.
+            ProtenixJobManager.shared.cancel(jobID: marker.jobID)
         case .submit:
             let url = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
@@ -212,6 +216,17 @@ final class BoltzJobManager {
                                 + error.localizedDescription,
                            resultPath: nil, peakBytes: nil, elapsedSeconds: nil),
                     to: Self.statusURL(jobID: marker.jobID))
+                return
+            }
+            // Routed BEFORE preflight, because preflight below is Boltz's: its size model
+            // is fitted to Boltz's peaks, and its runtime check exists to refuse backends
+            // nothing implements. A protenix request is not that -- it has a manager.
+            //
+            // This manager owns the marker only because it was here first. When a third
+            // runtime lands, lift the parse-and-route out into a dispatcher rather than
+            // adding another branch here.
+            if request.runtime == ProtenixJobManager.runtimeName {
+                ProtenixJobManager.shared.submit(request)
                 return
             }
             if let failure = Self.preflight(request) {
@@ -307,7 +322,7 @@ final class BoltzJobManager {
     }
 
     /// Both refusals read the same to a caller; only the advice differs.
-    private static func refusal(_ message: String) -> Status {
+    static func refusal(_ message: String) -> Status {
         Status(state: "failed", phase: "preflight", fraction: 0, error: message,
                resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
     }
@@ -321,7 +336,7 @@ final class BoltzJobManager {
     /// marked pending after a successful load would be stripped from every subsequent
     /// session save. `deliver_result` also pins `zoom=0` -- a prediction can land many
     /// minutes after submit, and moving the camera then would interrupt the user.
-    private static func loadResult(_ request: Request) {
+    static func loadResult(_ request: Request) {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         let path = pythonLiteral(request.outPath)
         let name = pythonLiteral(objectName)
@@ -343,7 +358,7 @@ final class BoltzJobManager {
 
     /// Drops the placeholder when a job will never produce a structure. Python only
     /// deletes it if it is still empty, so this cannot destroy a completed result.
-    private static func discardPlaceholder(_ request: Request) {
+    static func discardPlaceholder(_ request: Request) {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(

@@ -1,5 +1,5 @@
 {
-  "originHash" : "b91c31a349f929b1906f517fae13f04085d0506bd25dcecf3db1bb097004fe0d",
+  "originHash" : "3f07e7ebcba532a1cffd5811489b6a22b88c92323632d559dfef6fbc8228736a",
   "pins" : [
     {
       "identity" : "boltz-mlx",
@@ -25,6 +25,15 @@
       "location" : "https://github.com/javierbq/proteinmpnn-mlx.git",
       "state" : {
         "revision" : "9cc71d2840a527c139eb9bacd624be01f8f48d95",
+        "version" : "0.1.2"
+      }
+    },
+    {
+      "identity" : "protenix-mlx",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/javierbq/protenix-mlx.git",
+      "state" : {
+        "revision" : "3afa72b06f6434c7ecc850df579bfc82721df12c",
         "version" : "0.1.2"
       }
     },

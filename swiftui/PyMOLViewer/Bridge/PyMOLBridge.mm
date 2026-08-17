@@ -114,9 +114,10 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // capability but several: BoltzJobManager implements "boltz" and nothing else, so a
     // predictor whose backend is missing refuses in check_available rather than
     // submitting a job that BoltzJobManager.preflight would refuse -- after the user had
-    // waited out a weight download. Keep in step with BoltzJobManager.boltzRuntime; add
-    // a name here only when its runtime actually ships.
-    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
+    // waited out a weight download. Keep in step with BoltzJobManager.boltzRuntime and
+    // ProtenixJobManager.runtimeName; add a name here only when its runtime actually
+    // ships, because check_available trusts this list to decide what can run.
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix", 1);
 #endif
 
     PyStatus status = Py_InitializeFromConfig(&config);
