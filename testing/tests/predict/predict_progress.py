@@ -268,6 +268,18 @@ class TestPendingInfo(testing.PyMOLTestCase):
             except Exception:
                 pass
 
+    def testCancellingByObjectNameStopsEveryModel(self):
+        jobs = self.register('multi', [[{'phase': 'diffusion', 'fraction': 0.1}]] * 3)
+        self.predicting.predict_cancel('multi', quiet=1, _self=self.cmd)
+        for job in jobs:
+            self.assertTrue(getattr(job, 'cancelled', False), job.job_id)
+
+    def testCancellingByJobIdStillCancelsExactlyThatJob(self):
+        jobs = self.register('multi', [[{'phase': 'diffusion', 'fraction': 0.1}]] * 2)
+        self.predicting.predict_cancel(jobs[0].job_id, quiet=1, _self=self.cmd)
+        self.assertTrue(getattr(jobs[0], 'cancelled', False))
+        self.assertFalse(getattr(jobs[1], 'cancelled', False))
+
     def testThePayloadCarriesTheRecordAndKeepsPendingAStringMap(self):
         """Swift decodes `pending` as [String: String]; widening it would break
         the whole PanelPayload decode and take the object list with it."""

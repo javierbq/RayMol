@@ -726,16 +726,37 @@ USAGE
 
     predict_cancel job_id
 
+ARGUMENTS
+
+    job_id = string: the job to cancel, or the name of a pending object -- which
+        cancels every model still outstanding for it.
+
 SEE ALSO
 
     predict
     """
+    # A pending OBJECT name cancels every model registered against it. The
+    # progress card's Cancel is per object, and with n_models > 1 cancelling only
+    # _PENDING[name][0] would leave the other N-1 running. Job ids are
+    # 'pending-<12 hex>' / backend-specific and never collide with object names,
+    # so this cannot shadow a real id.
+    ids = _PENDING.get(job_id)
+    if ids:
+        for one in list(ids):
+            try:
+                _job(one).cancel()
+            except Exception as exc:
+                colorprinting.warning(' predict_cancel: %s (%s)' % (one, exc))
+        if not int(quiet):
+            colorprinting.parrot(' predict_cancel: cancelled %d job(s) for %s'
+                                 % (len(ids), job_id))
+        return
     _job(job_id).cancel()
     # Reap now: a job cancelled before its weights arrived still has a placeholder
     # standing, and only the main thread may take it down.
     pump(_self=_self)
     if not int(quiet):
-        colorprinting.parrot(' predict: cancel requested for %s' % job_id)
+        colorprinting.parrot(' predict: cancel requested for %s' % (job_id,))
 
 
 def predict_result(job_id, name='', quiet=1, _self=cmd):
