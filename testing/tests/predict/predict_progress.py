@@ -268,6 +268,48 @@ class TestPendingInfo(testing.PyMOLTestCase):
             except Exception:
                 pass
 
+    def testThePayloadCarriesTheRecordAndKeepsPendingAStringMap(self):
+        """Swift decodes `pending` as [String: String]; widening it would break
+        the whole PanelPayload decode and take the object list with it."""
+        import json
+        import os
+        import tempfile
+        from pymol import appkit_inspector
+
+        self.register('multi', [[{'phase': 'diffusion', 'fraction': 0.5}]] * 2)
+        appkit_inspector.poll_panel()
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_objpanel_%d.json' % os.getpid())
+        with open(path) as handle:
+            payload = json.load(handle)
+
+        self.assertIsInstance(payload['pending']['multi'], str)
+        record = payload['pending_jobs']['multi']
+        self.assertEqual(record['models_total'], 2)
+        for key, value in record.items():
+            self.assertIsInstance(value, (str, int, float, bool, type(None)),
+                                  'pending_jobs.%s is not a scalar' % key)
+
+    def testPollPanelStillWritesAFileWhenAJobExplodes(self):
+        import os
+        import tempfile
+        from pymol import appkit_inspector
+
+        class Exploding(ProgressStubJob):
+            def status(self):
+                raise RuntimeError('boom')
+
+        job = Exploding([])
+        job.predictor_id = 'progress_stub'
+        self.predicting._JOBS[job.job_id] = job
+        self.predicting.register_pending('boom', job.job_id, _self=self.cmd)
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_objpanel_%d.json' % os.getpid())
+        if os.path.exists(path):
+            os.remove(path)
+        appkit_inspector.poll_panel()
+        self.assertTrue(os.path.exists(path))
+
     def testDeferredJobCarriesPercentageViaPredicatorFallback(self):
         """_DeferredJob.__slots__ blocks predictor_id; _job_progress must fall back
         to _predictor so fractions for in-flight phases are not silently dropped."""

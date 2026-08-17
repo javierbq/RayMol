@@ -437,26 +437,34 @@ def group_parents(objs, groups):
     return dict(parents)
 
 
-def _pending_map():
-    """name -> hover detail for prediction placeholders still waiting on a job.
+def _pending_maps():
+    """(detail_map, record_map) for prediction placeholders still waiting.
 
-    Never raises: a failure here would freeze the whole object panel on a stale list,
-    because the caller's single `except` writes no file at all.
+    Two maps from ONE pass, so the hover tooltip and the progress card are the
+    same computation and cannot disagree.
+
+    Never raises: a failure here would freeze the whole object panel on a stale
+    list, because the caller's single `except` writes no file at all.
     """
     try:
         from pymol import predicting
         names = predicting.pending_objects()
         if not names:
-            return {}
-        out = {}
+            return {}, {}
+        details, records = {}, {}
         for name in names:
             try:
-                out[name] = predicting.pending_detail(name) or 'pending'
+                info = predicting.pending_info(name)
             except Exception:
-                out[name] = 'pending'
-        return out
+                info = None
+            if info is None:
+                details[name] = 'pending'
+                continue
+            details[name] = info.get('detail') or 'pending'
+            records[name] = info
+        return details, records
     except Exception:
-        return {}
+        return {}, {}
 
 
 def poll_panel():
@@ -495,6 +503,17 @@ def poll_panel():
             parents = group_parents(objs, groups)
         except Exception:
             groups, parents = [], {}
+        # Structure prediction (#224, #291): objects that are empty placeholders
+        # waiting on a running job. `pending` is the hover tooltip (a plain string
+        # map -- Swift decodes it as [String: String] and widening it would fail
+        # the whole payload decode). `pending_jobs` is the structured record the
+        # progress tray renders.
+        #
+        # Cheap by construction: normally empty, and only pending names read a
+        # status file -- one read per pending OBJECT, never per model. This poll
+        # runs on the MAIN thread every 500 ms and was already a measured hot spot
+        # (PR #270), so it must stay O(pending), never O(objects).
+        pending_details, pending_records = _pending_maps()
         payload = {
             'objects': objs,
             'selections': sels,
@@ -504,15 +523,8 @@ def poll_panel():
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
-            # Structure prediction (#224): objects that are empty placeholders waiting on
-            # a running job. The panel disables their enable-toggle (there is nothing to
-            # show) and puts the detail string in a hover tooltip.
-            #
-            # Cheap by construction: `pending` is normally empty, and only pending names
-            # read a status file. This poll runs on the MAIN thread every 500 ms and was
-            # already a measured hot spot (PR #270), so it must stay O(pending), never
-            # O(objects).
-            'pending': _pending_map(),
+            'pending': pending_details,
+            'pending_jobs': pending_records,
         }
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's
