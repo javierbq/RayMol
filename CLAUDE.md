@@ -50,6 +50,17 @@ C++ uses `.clang-format` (Linux brace style, 2-space indent, 80-column limit). N
 
 - **Git flow:** Do not commit or push directly to `master`. Create a feature branch, push it, and open a pull request into `master` for review before merging.
 - **macOS app testing:** When functionally testing the native macOS SwiftUI/Metal app, use the `mac-vm-test` skill whenever it is available. It builds on the host and drives the app inside an isolated, disposable macOS VM (leased from the `javierbq/mac-vm-pool` golden image) rather than touching the host's own UI.
+- **Local dev/test build naming:** Never leave a local dev/test app as plain `RayMol.app`. Build normally, then rename the finished `.app` to a distinguishing name — an issue #, PR #, or short tag (e.g. `RayMol-287.app`, `RayMol-PR290.app`, `RayMol-master.app`) — and re-sign it, since renaming invalidates the ad-hoc signature:
+  ```bash
+  DST=.../RayMol-<suffix>.app
+  cp -R .../RayMol.app "$DST"
+  mv "$DST/Contents/MacOS/RayMol" "$DST/Contents/MacOS/RayMol-<suffix>"
+  plutil -replace CFBundleExecutable -string "RayMol-<suffix>" "$DST/Contents/Info.plist"
+  plutil -replace CFBundleName -string "RayMol-<suffix>" "$DST/Contents/Info.plist"
+  plutil -replace CFBundleDisplayName -string "RayMol-<suffix>" "$DST/Contents/Info.plist"
+  codesign --force --deep --sign - "$DST"
+  ```
+  Do NOT pass `PRODUCT_NAME=RayMol-<suffix>` on the `xcodebuild` command line — it applies globally to every target in the build, including SPM package resource-bundle targets (e.g. mlx-swift's `Cmlx.bundle`), and breaks copy-phase steps that still reference the old bundle name by string. Multiple branches/worktrees are often under test at the same time; an unsuffixed build can overwrite or shadow another one in progress, causing verification against the wrong binary. Release builds keep the plain `RayMol` name — this rule is dev-only.
 
 ## Architecture
 
