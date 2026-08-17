@@ -1,14 +1,23 @@
 """Runs, their values, the named store, and the .pse round trip.
 
-WHY THIS IS NOT A C++ OBJECT, and not an atom property. A metric has no geometry, so
-every one of `CObject`'s virtuals would be a stub -- the argument pymol.msas.store
-already makes. It is not `p.*` either: custom atom properties are incentive-only and
-open-source raises IncentiveOnlyException, which is why both Design and assign_stereo
-already carry a B-factor fallback. And the B-factor column is not storage at all: it is
-one unlabelled scalar per atom, freely overwritten by the next tool that colours by it.
-Measured before this existed: a design pass on a predicted object silently replaced
-that object's pLDDT with its own score, with nothing in the session saying the column
-had changed meaning.
+WHY THIS IS NOT A C++ OBJECT. A metric has no geometry, so every one of `CObject`'s
+virtuals would be a stub -- the argument pymol.msas.store already makes.
+
+WHY NOT `p.*` ATOM PROPERTIES, which this fork does implement (`layer1/Property.cpp`,
+ungated -- unlike stock open-source PyMOL, where the same write raises
+IncentiveOnlyException and Design and assign_stereo fall back to the B-factor column).
+Three reasons, none of them about availability:
+
+- a property is per ATOM and carries no run, so two runs of one tool cannot coexist and
+  neither can say which options produced it;
+- it has no scope: `mean_plddt` is per state and `pae` is per residue PAIR, and neither
+  fits on an atom at all;
+- it does not survive a .pse, so the numbers die with the session that made them.
+
+The B-factor column is not storage either: one unlabelled scalar per atom, rounded to
+two decimals by any PDB round trip, and freely overwritten by the next tool that colours
+by it -- including `metrics_color` itself. So `b` is treated here as a rendering channel
+that the store can refill, never as the record.
 
 Nothing here imports `cmd`. Whatever has to ask the session -- does that state exist,
 are those residues in that object -- lives in binding.py, so the store stays a data

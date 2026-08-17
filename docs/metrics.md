@@ -60,9 +60,16 @@ its colour instead of being clamped to the end of the palette. The spectrum span
 the tool declared for that metric, so two runs colour comparably rather than each
 auto-scaling to itself — override with `minimum=` / `maximum=` if you want otherwise.
 
-The B-factor column is a **view** here, not storage. The run keeps the array, so colouring
-by a design score and then putting the prediction's confidence back is two commands, in
-either order, any number of times.
+The B-factor column is a **view** here, not storage. It holds one scalar per atom, so only
+one metric can be displayed through it at a time and anything that colours by it — a
+second `metrics_color`, a `spectrum count` — displaces what was there. Because the run
+keeps the array, colouring by a design score and then putting the prediction's confidence
+back is two commands, in either order, any number of times.
+
+Nor is an atom property the record. RayMol does implement `p.*` (Design writes
+`p.mpnn_conf`, `assign_stereo` writes `p.stereo`), but a property is per atom: it carries
+no run, no units and no provenance, cannot hold a per-state or per-pair value, and does not
+survive a `.pse`.
 
 ## Several models in one object
 

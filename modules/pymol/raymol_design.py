@@ -231,10 +231,12 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi, metric='',
     and can be re-applied with metrics_color after another tool has coloured over the
     column. The p.mpnn_conf / B-factor write below is a rendering channel only.
 
-    That distinction is the bug this fixes: `b` is one unlabelled scalar per atom, and
-    on an open-source build these scores land there — so colouring a PREDICTED object
-    by design score used to overwrite that object's pLDDT with nothing saying the
-    column had changed meaning.
+    That distinction matters because neither write is a record. `p.mpnn_conf` is per
+    ATOM: it carries no run, no units and no provenance, and it does not survive a .pse.
+    And `b` — which is where these scores land on a build WITHOUT p.* properties, i.e.
+    stock open-source PyMOL rather than RayMol's own build — is one unlabelled scalar
+    per atom, so there the design score displaces whatever a prediction left in it, with
+    nothing saying the column had changed meaning.
 
     Spectrum is run only over scored polymer residues — masked residues and
     non-polymer atoms (ligands, ions, waters) keep their baseline color.

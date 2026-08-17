@@ -319,8 +319,10 @@ class ColorTest(MetricCommandTestCase):
                          sorted([10.0 * (i + 1) for i in range(len(index))]))
 
     def testColorIsRepeatableAfterAnotherToolOverwritesB(self):
-        # The bug this closes: a design pass used to overwrite a prediction's pLDDT in
-        # the B-factor column with nothing saying the column had changed meaning.
+        # `b` holds one scalar per atom, so anything that colours by it -- a second
+        # metrics_color, `spectrum count`, a design pass on a build without p.*
+        # properties -- displaces whatever was there. The store is what makes that
+        # recoverable rather than final.
         name, index, run = self.scored()
         cmd.metrics_color('conf', object=name)
         cmd.alter(name, 'b = -1.0')             # another tool colours over it

@@ -321,9 +321,9 @@ ARGUMENTS
 NOTES
 
     The B-factor column is a VIEW here, not storage: the run keeps the array, so this
-    can be re-run after another tool has coloured over the column. Before the metric
-    store existed, a design pass overwrote a prediction's pLDDT and there was no way
-    back.
+    can be re-run after anything has coloured over the column -- a second
+    metrics_color, a design pass on a build with no p.* properties, or a plain
+    "spectrum count". Only one metric fits in "b" at a time; the record is elsewhere.
 
     Only the residues the metric was measured on are recoloured; everything else keeps
     its colour rather than being clamped to the end of the palette.

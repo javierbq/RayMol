@@ -156,10 +156,10 @@ def color(run, key, palette='blue_white_red', state=None, chain=None,
           minimum=None, maximum=None, selection='', _self=_cmd_module):
     """Colour by a stored residue array, writing it into B-factors as a VIEW.
 
-    `b` is a rendering channel here, not storage: the run keeps the array, and this
-    can be re-run after another tool has coloured over the column. That is the whole
-    point of the store -- before it, a design pass overwrote a prediction's pLDDT and
-    there was no way back.
+    `b` is a rendering channel here, not storage: the run keeps the array, and this can
+    be re-run after anything has coloured over the column -- another tool, a `spectrum
+    count`, or a second `metrics_color`. Only one metric can be in `b` at a time, which
+    is precisely why the record lives elsewhere.
 
     Only the residues the array actually measured are spectrumed. Everything else keeps
     its colour instead of being clamped to the first palette entry, which is the fix
