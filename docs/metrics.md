@@ -11,9 +11,9 @@ designing it are three runs, and none overwrites another.
 
 ## Seeing what has been measured
 
-In the app, open the object panel: a **METRICS** section appears once anything has been
-recorded, one row per run, showing the tool, the object and its first few numbers. Hover a
-row for the full list. Right-click offers **Color by**, **Print values** and **Delete**.
+There is no GUI for this yet — an object-panel section was built and then stripped back
+out until the presentation is settled, so everything below is the command line and the
+Python API. `store.summaries()` is the shape a future surface would read.
 
 At the command line:
 
@@ -180,8 +180,8 @@ Export those as JSON.
 - Renaming an object moves its runs; deleting it drops them. `create` does **not** copy
   them — a copy may be a subset selection, so the array's residues need not apply.
 - States are positional. If an object's state count changes after a run was recorded, the
-  run is flagged **stale** in `metrics_list`, in `metrics_get` and on the panel row.
-  Nothing repairs it, because nothing can know which state went.
+  run is flagged **stale** in `metrics_list` and in `metrics_get`. Nothing repairs it,
+  because nothing can know which state went.
 
 ## Commands
 
@@ -200,9 +200,9 @@ metrics_schema [tool]                                      what a tool measures
 
 # For tool authors
 
-The machinery is tool-agnostic. A tool declares what it measures **once**; the store, the
-object panel, `metrics_color` and export all work off that declaration, so adding a tool
-never means editing the store.
+The machinery is tool-agnostic. A tool declares what it measures **once**; the store,
+`metrics_color` and export all work off that declaration, so adding a tool never means
+editing the store.
 
 ## Scope
 
@@ -322,6 +322,7 @@ Tests are in `testing/tests/metrics/`:
 pymol -ckqy testing/testing.py --run testing/tests/metrics
 ```
 
-One constraint worth knowing before touching the panel path: the object panel polls the
-main thread every 500 ms, so its payload carries precomputed scalars only and never walks
-an array. A PAE matrix is the residue index squared.
+One constraint to keep if you add a surface for this: whatever polls it will do so on
+the main thread, so read `store.summaries()` — precomputed scalars, no array ever walked.
+A PAE matrix is the residue index squared, and #271 is what that discipline cost the
+object panel once already.

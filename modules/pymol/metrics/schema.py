@@ -1,7 +1,7 @@
 """Scopes, metric declarations, and the per-tool registry.
 
 A tool declares what it measures ONCE, here, and everything generic falls out of that
-declaration: the panel renders a run without knowing the tool, `metrics_color` can
+declaration: a listing renders a run without knowing the tool, `metrics_color` can
 colour by any residue-scope key by name, export is one code path, and two runs of one
 tool are comparable because they share a schema. If adding a tool needs an edit inside
 store.py or metric.py, this declaration is not carrying enough.
@@ -135,7 +135,7 @@ class MetricSpec:
 
 #: tool id -> {key: MetricSpec}. Process-wide, like the predictor registry and the MSA
 #: store; a second pymol2 instance shares it. Insertion-ordered, which is the order
-#: `metrics_schema` and the panel list keys in.
+#: `metrics_schema` lists keys in.
 _SCHEMAS = {}
 
 

@@ -14,7 +14,7 @@ class MetricSchemaError(MetricError):
     """A tool wrote a key it never declared, or declared one incoherently.
 
     Raised rather than accepted because an undeclared key has no scope, no units and
-    no label, so nothing downstream -- the panel, `metrics_color`, export -- can do
+    no label, so nothing downstream -- `metrics_color`, export, a listing -- can do
     anything with it but print a bare number.
     """
 

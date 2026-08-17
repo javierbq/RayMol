@@ -394,55 +394,6 @@ struct ObjectEntry: Identifiable, Equatable {
     }
 }
 
-// MARK: - Metrics (#308)
-
-/// One run of one tool against one object: what it measured, and when.
-///
-/// Unlike an `AlignmentEntry` this belongs TO an object — a prediction's confidence is
-/// about the coordinates it produced — so the section groups by object rather than
-/// standing on its own. An object carries many runs: folding it, re-folding it with a
-/// deeper alignment and then designing it are three, and none replaces another.
-///
-/// Scalars only, and only the first few. The arrays behind a run (per-residue pLDDT, a
-/// PAE matrix) stay in the Python store: this arrives on a 500 ms main-thread poll, and
-/// a PAE matrix is the residue index squared.
-struct MetricRunEntry: Identifiable, Equatable {
-    /// One scalar. A struct rather than a (String, Double?) tuple because `ForEach`
-    /// needs an identity, and Swift has no key paths into tuple components.
-    struct Scalar: Identifiable, Equatable {
-        let key: String
-        /// nil for a measurement that is genuinely ABSENT: a single-chain fold has no
-        /// interface score, and 0 would read as a terrible one rather than as none.
-        let value: Double?
-        var id: String { key }
-
-        /// "84.2" / "620 MB" / "—". Absent prints as a dash, never as a zero.
-        var display: String {
-            guard let value else { return "—" }
-            if key.hasSuffix("_bytes") { return String(format: "%.0f MB", value / 1e6) }
-            if key.hasSuffix("_s") { return String(format: "%.1f s", value) }
-            if value == value.rounded(), abs(value) < 1e6 { return String(Int(value)) }
-            return String(format: "%.3g", value)
-        }
-    }
-
-    let id: String
-    let object: String
-    /// Which tool measured this: boltz2, mpnn, a plugin's own name.
-    let tool: String
-    /// Every key the run carries, arrays included — the arrays simply have no value
-    /// here, because reading one to draw a row is what this payload refuses to do.
-    let keys: [String]
-    let states: [Int]
-    let scalars: [Scalar]
-    /// Scalars not shown, so a row can say so instead of implying it showed everything.
-    let more: Int
-    /// The object's state count changed after this was recorded. States are positional,
-    /// so per-state values may now describe different coordinates. Flagged, never
-    /// repaired: nothing on either side can know which state went.
-    let isStale: Bool
-}
-
 // MARK: - Alignments (#296)
 
 /// One loaded multiple-sequence alignment.
@@ -1246,20 +1197,6 @@ struct ObjectPanel: View {
                             }
                         }
                     }
-
-                    // METRICS (#308) — hidden when nothing has been measured, for the
-                    // same reason ALIGNMENTS is: most sessions never run a tool, and a
-                    // permanently empty section is chrome.
-                    if !engine.metricRuns.isEmpty {
-                        sectionHeader("METRICS", id: "metrics",
-                                      tag: "\(engine.metricRuns.count)") { EmptyView() }
-                        if openSections.contains("metrics") {
-                            ForEach(Array(engine.metricRuns.enumerated()),
-                                    id: \.element.id) { index, run in
-                                MetricRunRowView(entry: run, isAlt: index % 2 == 1)
-                            }
-                        }
-                    }
                 }
                 .padding(.vertical, 2)
                 // Report natural list height so the portrait panel can hug Objects
@@ -1556,113 +1493,6 @@ private struct AlignmentRowView: View {
         if let attachment = entry.attachment {
             text += targetExists ? ", for \(attachment) — click to reveal"
                                  : ", for \(attachment), which is not in this session"
-        }
-        return text
-    }
-}
-
-// MARK: - Metric run row (#308)
-
-/// One run: which tool measured what, on which object, and the first few numbers.
-///
-/// Read-only by design. Every action a run affords — colouring by one of its arrays,
-/// exporting it, deleting it — needs a KEY, and which keys are per-residue is in the
-/// tool's schema rather than in this payload. So the row offers the two things it can
-/// state without guessing (colour by the first array key, delete the run) and leaves
-/// the rest to `metrics_get` / `metrics_export`, where the scope is known.
-private struct MetricRunRowView: View {
-    let entry: MetricRunEntry
-    let isAlt: Bool
-    @EnvironmentObject var engine: PyMOLEngine
-
-    /// True when the object this run measured is still in the session. Runs are dropped
-    /// when their object is deleted, so this is normally true — but a .pse whose object
-    /// failed to load can leave one behind, and the row should not offer to colour it.
-    private var objectExists: Bool {
-        engine.objects.contains { !$0.isSelection && $0.name == entry.object }
-    }
-
-    /// Keys with no scalar value are the arrays: per-residue confidence, a PAE matrix.
-    /// The first is what "Color by" acts on. A pair-scope key would be wrong here, but
-    /// `metrics_color` refuses one by scope rather than this row having to know.
-    private var arrayKeys: [String] {
-        let scalarKeys = Set(entry.scalars.map(\.key))
-        return entry.keys.filter { !scalarKeys.contains($0) }
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            // Line up with the object rows' chevron + checkbox gutter.
-            Spacer().frame(width: 13 + kGutterW)
-
-            Text(entry.tool)
-                .font(.system(size: 11))
-                .foregroundColor(PanelTheme.textColor)
-                .lineLimit(1)
-
-            Text(entry.object)
-                .font(.system(size: 9))
-                .foregroundColor(PanelTheme.selectionTextColor)
-                .lineLimit(1)
-                .truncationMode(.head)
-
-            Spacer(minLength: 4)
-
-            if entry.isStale {
-                // A caveat, not an error: the numbers are still here, they may just no
-                // longer line up with the states they name.
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 9))
-                    .foregroundColor(PanelTheme.disabledColor)
-            }
-            ForEach(Array(entry.scalars.prefix(2))) { scalar in
-                Text(scalar.display)
-                    .font(.system(size: 9).monospacedDigit())
-                    .foregroundColor(PanelTheme.disabledColor)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .frame(height: kRowH)
-        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
-        .contentShape(Rectangle())
-        .help(tooltip)
-        .contextMenu {
-            ForEach(arrayKeys, id: \.self) { key in
-                Button("Color by \(key)") {
-                    engine.runCommand("metrics_color \(key), run=\(entry.id)")
-                }
-                .disabled(!objectExists)
-            }
-            if !arrayKeys.isEmpty { Divider() }
-            Button("Print values") {
-                engine.runCommand("metrics_get \(entry.id), quiet=0")
-            }
-            Button("Delete", role: .destructive) {
-                engine.runCommand("metrics_delete \(entry.id)")
-            }
-        }
-    }
-
-    /// The full scalar list, which the row itself has no width for.
-    private var tooltip: String {
-        var text = "\(entry.tool) on \(entry.object)"
-        if !entry.states.isEmpty {
-            text += entry.states.count == 1
-                ? ", state \(entry.states[0])"
-                : ", states \(entry.states.map(String.init).joined(separator: ", "))"
-        }
-        for scalar in entry.scalars {
-            text += "\n\(scalar.key): \(scalar.display)"
-        }
-        if entry.more > 0 { text += "\n… and \(entry.more) more" }
-        if !arrayKeys.isEmpty {
-            text += "\narrays: \(arrayKeys.joined(separator: ", "))"
-        }
-        if entry.isStale {
-            text += "\nThe object's state count changed after this was measured,"
-                + " so per-state values may no longer line up."
         }
         return text
     }
@@ -4159,33 +3989,6 @@ extension PyMOLEngine {
             // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
             // panel on its last list.
             let msa_searches: [MSASearchSummary]?
-            // Metric runs (#308), keyed by the OBJECT they were measured on — unlike
-            // alignments, which belong to a sequence and get their own section. Scalars
-            // only: a pLDDT array and a PAE matrix stay in the Python store, where a
-            // 500 ms poll never has to walk them.
-            //
-            // Optional for the reason every field above is: this decode is one
-            // `guard let`, so a missing key would freeze the whole object panel rather
-            // than cost one section.
-            let metrics: [String: [MetricRunSummary]]?
-
-            struct MetricRunSummary: Decodable {
-                let run: String
-                let tool: String
-                let keys: [String]
-                let states: [Int]
-                let scalars: [MetricScalar]
-                let more: Int
-                let stale: Bool
-            }
-
-            struct MetricScalar: Decodable {
-                let key: String
-                // Nullable, and it must stay so: absent is not zero. A single-chain
-                // fold has no interface score, and rendering one as 0 would read as a
-                // terrible interface rather than as no measurement.
-                let value: Double?
-            }
 
             struct AlignmentSummary: Decodable {
                 let depth: Int
@@ -4254,31 +4057,12 @@ extension PyMOLEngine {
                            server: $0.server, elapsed: $0.elapsed)
         }
 
-        // Flattened to one list, sorted by object then by record order within it: the
-        // payload is a JSON object, and Foundation's dictionary decode does not
-        // preserve the store's own ordering.
-        let metricRuns = (payload.metrics ?? [:]).sorted { $0.key < $1.key }
-            .flatMap { object, runs in
-                runs.map { run in
-                    MetricRunEntry(
-                        id: run.run, object: object, tool: run.tool,
-                        keys: run.keys, states: run.states,
-                        scalars: run.scalars.map {
-                            MetricRunEntry.Scalar(key: $0.key, value: $0.value)
-                        },
-                        more: run.more, isStale: run.stale)
-                }
-            }
-
         DispatchQueue.main.async {
             // Guard: the ~500ms poll usually returns the same object list;
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
             if self.alignments != alignments { self.alignments = alignments }
-            // Same guard, same reason: with nothing recorded this is empty every tick
-            // and must not repaint the panel twice a second.
-            if self.metricRuns != metricRuns { self.metricRuns = metricRuns }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.
             if self.msaSearches != searches { self.msaSearches = searches }

@@ -37,7 +37,7 @@ def state_count(object, _self=_cmd_module):
 def residue_index(object, _self=_cmd_module):
     """The set of (chain, resi) in `object`. ONE pass over its atoms.
 
-    O(atoms), so it is called once per record and never from the panel poll.
+    O(atoms), so it is called once per record and never from a poll.
 
     Deliberately `iterate`, not `iterate_state`: chain and resi are per-ATOM in PyMOL,
     shared by every state, so the index is a property of the object rather than of one
@@ -134,7 +134,7 @@ def stale_reason(run, _self=_cmd_module):
     value in every run on it now points one model along -- the numbers are still there
     and still look right. Nothing here repairs that, because nothing here can know
     which state went; it is reported instead, in metrics_list, in metrics_get and on
-    the panel row, so the number is never read as current without the caveat.
+    every listing, so the number is never read as current without the caveat.
     """
     if not _exists(run.object, _self=_self):
         return 'object %r is gone' % run.object

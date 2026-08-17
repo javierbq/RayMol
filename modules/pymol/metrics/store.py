@@ -45,7 +45,7 @@ SESSION_KEY = 'raymol_metrics'
 SESSION_VERSION = 1
 
 #: run id -> MetricRun, insertion-ordered: the order runs were recorded, which is the
-#: order the panel and metrics_list show and the order export writes.
+#: order metrics_list shows and the order export writes.
 _RUNS = {}
 
 
@@ -244,12 +244,12 @@ class MetricRun:
         return found[0]
 
     def scalars(self, state=None):
-        """{key: value} for the scalar scopes -- what a panel row and a CSV want.
+        """{key: value} for the scalar scopes -- what a listing and a CSV want.
 
         Object-scope values are always included: they are true of every state. State
         and chain values are included only when they match `state`, or when no state
         was asked for. Never touches an array, so this stays cheap enough for the
-        object panel's 500 ms main-thread poll (the discipline #271 fixed).
+        poll (the discipline #271 had to restore for the object panel).
         """
         out = {}
         for entry in self.values:
@@ -263,7 +263,7 @@ class MetricRun:
         return out
 
     def summary(self, state=None):
-        """The cheap description the panel and metrics_list show. No arrays."""
+        """The cheap description metrics_list and any future surface show. No arrays."""
         return {
             'id': self.id,
             'tool': self.tool,
@@ -308,7 +308,7 @@ def record(object, tool, values, tool_version='', inputs=None, states=(),
     if not schema.declared(tool):
         raise MetricSchemaError(
             'tool %r has declared no metrics; call metrics.schema.register(%r, [...])'
-            ' before recording, so the panel and export know what the numbers are'
+            ' before recording, so listings and export know what the numbers are'
             % (tool, tool))
     run = MetricRun(run_id or new_id(tool), tool, str(object), values,
                     tool_version=tool_version, inputs=inputs, states=states,
@@ -413,11 +413,16 @@ def clear():
     _RUNS.clear()
 
 
-def panel_summary(objects=None):
-    """object name -> [run summary], for the object panel's 500 ms poll.
+def summaries(objects=None):
+    """object name -> [run summary]. The shape a surface reads runs in.
 
     Scalars only: O(runs x scalar values), touching nothing that was not computed at
-    record time. Never walks an array and never asks the session anything.
+    record time. Never walks an array and never asks the session anything -- because
+    whatever polls this will do so on the main thread, which is the discipline #271 had
+    to restore for the object panel.
+
+    No UI consumes it yet; the panel section was stripped back out of #308 until the
+    presentation is settled. `metrics_list` is the current reader.
     """
     wanted = None if objects is None else set(objects)
     out = {}

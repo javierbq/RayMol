@@ -7,7 +7,7 @@
     errors.py     the exception taxonomy
 
 The machinery is tool-agnostic on purpose. A tool declares what it measures once --
-key, scope, dtype, units -- and the store, the panel, `metrics_color` and export work
+key, scope, dtype, units -- and the store, `metrics_color` and export all work
 from that declaration, so the fifth predictor needs no edit in here. Nothing in this
 package imports a predictor, a design module, or `cmd` except `binding.py`, which is
 the one place a session is consulted.

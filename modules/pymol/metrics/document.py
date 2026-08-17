@@ -10,7 +10,7 @@ one with `metrics_load`. Two producers, one reader, no second format to keep in 
       "tool": "boltz2",                  # required
       "tool_version": "boltz2-bf16",     # optional
       "object": "pred_ab12cd34",         # optional; the caller may name it instead
-      "note": "",                        # optional, free text for the panel row
+      "note": "",                        # optional, free text shown beside the run
       "inputs": {...},                   # optional provenance: options, seed, msa
       "schema": [ {"key": ..., "scope": ...}, ... ],   # required for an unknown tool
       "values": [

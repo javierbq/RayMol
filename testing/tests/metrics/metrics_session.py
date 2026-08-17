@@ -120,43 +120,32 @@ class RoundTripTest(MetricSessionTestCase):
         self.assertEqual(store.get(run.id).scalars()['recovery'], 42.5)
 
 
-class PanelPayloadTest(MetricSessionTestCase):
-    """What the object panel is handed, and what it must never make anyone compute."""
+class SummaryTest(MetricSessionTestCase):
+    """The cheap description a surface reads, and what it must never make it compute.
 
-    def payload(self):
-        from pymol import appkit_inspector as ai
-        path = os.path.join(tempfile.gettempdir(),
-                            'pymol_objpanel_%d.json' % os.getpid())
-        ai.poll_panel()
-        with open(path) as handle:
-            return json.load(handle)
+    No UI consumes this yet -- the object-panel section was stripped back out until the
+    presentation is settled -- but the shape is what any surface will want, and the
+    constraint is why: whatever polls it runs on the main thread.
+    """
 
-    def testRunsReachThePanelKeyedByObject(self):
+    def testSummaryIsScalarsOnlyAndNamesTheArrays(self):
+        # A PAE matrix is the residue index squared, so a summary must name an array
+        # and never carry its values.
         name, index, run = self.scored()
-        rows = self.payload()['metrics'][name]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['run'], run.id)
-        self.assertEqual(rows[0]['tool'], TOOL)
-        self.assertIn('recovery', [s['key'] for s in rows[0]['scalars']])
+        summary = run.summary()
+        self.assertIn('conf', summary['keys'])
+        self.assertNotIn('conf', summary['scalars'])
+        self.assertEqual(summary['scalars']['recovery'], 42.5)
+        self.assertNotIn('values', json.dumps(summary))
 
-    def testArraysAreNamedButNeverSent(self):
-        # A PAE matrix is the residue index squared. The panel polls the main thread
-        # every 500 ms; it gets the KEY and no values.
+    def testSummaryCarriesWhatStalenessNeeds(self):
+        # `state_count` at record time, so a surface can compare it against the object's
+        # current count without asking the store anything.
         name, index, run = self.scored()
-        rows = self.payload()['metrics'][name]
-        self.assertIn('conf', rows[0]['keys'])
-        self.assertNotIn('conf', [s['key'] for s in rows[0]['scalars']])
-        self.assertNotIn('values', json.dumps(rows[0]))
-
-    def testStalenessIsFlaggedForThePanel(self):
-        name, index, run = self.scored()
-        self.assertFalse(self.payload()['metrics'][name][0]['stale'])
+        self.assertEqual(run.summary()['state_count'], cmd.count_states(name))
         cmd.create(name, name, 1, 2)
-        self.assertTrue(self.payload()['metrics'][name][0]['stale'])
-
-    def testNothingRecordedMeansAnEmptyMap(self):
-        cmd.fab('ACDEF', 'bare', chain='A')
-        self.assertEqual(self.payload()['metrics'], {})
+        self.assertNotEqual(run.summary()['state_count'], cmd.count_states(name))
+        self.assertTrue(binding.is_stale(run))
 
 
 class FollowsTheObjectTest(MetricSessionTestCase):
