@@ -143,7 +143,11 @@ struct ProgressCard: View {
             // Rounding can carry 59.5 s → 60; bump to "1 min" rather than "60 sec".
             if s >= 60 { return "1 min" }
             return "\(s) sec"
-        case ..<3600: return "\(Int((seconds / 60).rounded())) min"
+        case ..<3600:
+            let m = Int((seconds / 60).rounded())
+            // Rounding can carry 3570–3599 s → 60 min; bump to "1 hr 0 min".
+            if m >= 60 { return "1 hr 0 min" }
+            return "\(m) min"
         default:
             var hours = Int(seconds / 3600)
             var minutes = Int(((seconds - Double(hours) * 3600) / 60).rounded())

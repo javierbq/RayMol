@@ -118,6 +118,14 @@ extension PendingJobTests {
         XCTAssertEqual(ProgressCard.formatRemaining(3594), "over an hour left")
     }
 
+    func testElapsedDoesNotPrint60Min() {
+        // 3570–3599 s round to 60 min in the ..<3600 branch — must carry to "1 hr 0 min"
+        // and must match what the default branch produces at exactly 3600.
+        let atBoundary = ProgressCard.formatElapsed(3599)
+        XCTAssertFalse(atBoundary.contains("60 min"), "got: \(atBoundary)")
+        XCTAssertEqual(atBoundary, ProgressCard.formatElapsed(3600))
+    }
+
     private func job(_ id: String, state: String = "running",
                      bundle: String? = nil) -> PredictionJobState {
         PredictionJobState(id: id, state: state, phase: "inference", fraction: nil,
