@@ -109,7 +109,7 @@ class TestRequestNamesItsRuntime(testing.PyMOLTestCase):
         self.assertEqual(self.submit('boltz2-bf16')['runtime'], 'boltz')
 
     def testProtenixRequestSaysProtenix(self):
-        self.assertEqual(self.submit('protenix-base')['runtime'], 'protenix')
+        self.assertEqual(self.submit('protenix-base-int8')['runtime'], 'protenix')
 
     def testEveryRegisteredPredictorNamesARuntime(self):
         """A request with no runtime is read as BOLTZ at the far end, deliberately.
@@ -144,7 +144,7 @@ class TestOnlyDeclaredKnobsReachTheWire(testing.PyMOLTestCase):
 
     def testAMethodWithNoAlignmentSendsNoDepth(self):
         """msa_depth on the wire would record a run as having used an alignment."""
-        self.assertNotIn('msa_depth', self.submit('protenix-base'))
+        self.assertNotIn('msa_depth', self.submit('protenix-base-int8'))
 
     def testKnobsDefaultToEveryOptionWhenUnspecified(self):
         """An explicit `knobs=None` keeps the pre-seam behaviour for any caller."""

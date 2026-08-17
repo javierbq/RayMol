@@ -33,14 +33,17 @@ class TestPredictCompletion(testing.PyMOLTestCase):
         self.assertEqual(cmd._parser.complete('predict boltz2-'),
                          'predict boltz2-bf16, ')
 
-    def testAnIdSharingNoPrefixCompletesInOneStep(self):
-        """The payoff for NOT naming it `protenix`: 'p' identifies it uniquely.
+    def testProtenixCompletesToItsCommonPrefixThenBranches(self):
+        """Nine protenix packs share `protenix-`, so 'p' gets you that far and no further.
 
-        Had a second Protenix pack shipped as `protenix`, this would stop at the bare
-        `protenix` with no separator -- the dead end `boltz2` already creates above.
+        The payoff for giving every id a precision suffix is the step AFTER this one:
+        because no id is a prefix of another, `protenix-base-i` resolves to a runnable
+        command with its separator, rather than stopping dead the way `boltz2` does for
+        `boltz2-bf16`.
         """
-        self.assertEqual(cmd._parser.complete('predict p'),
-                         'predict protenix-base, ')
+        self.assertEqual(cmd._parser.complete('predict p'), 'predict protenix-')
+        self.assertEqual(cmd._parser.complete('predict protenix-base-i'),
+                         'predict protenix-base-int8, ')
 
     def testPredictWeightsAlsoOffersPredictors(self):
         self.assertEqual(cmd._parser.complete('predict_weights b'),

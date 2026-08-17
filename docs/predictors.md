@@ -23,7 +23,21 @@ it is shaped this way.
 |---|---|---|---|
 | `boltz2` | `boltz` | affine-int8, 507 MB | the default |
 | `boltz2-bf16` | `boltz` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
-| `protenix-base` | `protenix` | affine-int8, 214 MB | complexes, single sequence. **Not runnable yet** — no build carries the `protenix` runtime, see #309 |
+| `protenix-{tiny,mini,base,v2}-{int8,fp16,bf16}` | `protenix` | 84–582 MB | twelve packs, complexes, single sequence, confidence head |
+
+`protenix-base-int8` is the default choice. tiny and mini are v0.5.0 models at 4 recycles /
+5 diffusion steps — seconds rather than minutes, and correspondingly rough. The dense
+precisions cost roughly twice the disk for no demonstrated accuracy, exactly as
+`boltz2-bf16` does. The `v2` packs are **mirror-sourced** — its official checkpoint has
+answered 403 since April 2026 — which their `name` says where a user picking a predictor
+will see it.
+
+Twelve ids rather than one predictor with a `pack=` option, because that is what
+`WeightBundle` already models: one bundle per predictor, pinned by digest. They are built
+from a table generated out of protenix-mlx's `WEIGHTS.md` rather than hand-copied — twelve
+transcribed digests is twelve chances to paste one that fails only on a user's machine,
+after the download. Every id ends in a precision suffix so none is a prefix of another;
+see step 1.
 
 ## Runtimes
 

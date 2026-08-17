@@ -12,7 +12,8 @@ from pymol import cmd, predicting, testing
 from pymol.predictors import host
 from pymol.predictors.errors import (PredictionInputError, PredictionOptionError,
                                      PredictorUnavailable)
-from pymol.predictors.protenix import MAX_RESIDUES, ProtenixBasePredictor
+from pymol.predictors import registry
+from pymol.predictors.protenix import MAX_RESIDUES, PREDICTORS
 
 
 class HostEnvTestCase(testing.PyMOLTestCase):
@@ -42,14 +43,14 @@ class TestAvailability(HostEnvTestCase):
         os.environ.pop(host.HOST_ENV, None)
         os.environ.pop(host.RUNTIMES_ENV, None)
         self.assertRaises(PredictorUnavailable,
-                          ProtenixBasePredictor().check_available)
+                          registry.get('protenix-base-int8').check_available)
 
     def testNoHostIsReportedAsNoHostEvenWhenTheRuntimeIsAlsoMissing(self):
         """Order matters: the two failures have different remedies."""
         os.environ.pop(host.HOST_ENV, None)
         os.environ.pop(host.RUNTIMES_ENV, None)
         try:
-            ProtenixBasePredictor().check_available()
+            registry.get('protenix-base-int8').check_available()
         except PredictorUnavailable as error:
             self.assertIn('application host', str(error))
         else:
@@ -59,9 +60,9 @@ class TestAvailability(HostEnvTestCase):
         """This is today's state: no build carries the protenix runtime yet."""
         self.declareHost('boltz')
         try:
-            ProtenixBasePredictor().check_available()
+            registry.get('protenix-base-int8').check_available()
         except PredictorUnavailable as error:
-            self.assertIn('protenix-base', str(error))
+            self.assertIn('protenix-base-int8', str(error))
             self.assertIn('does not carry', str(error))
         else:
             self.fail('expected PredictorUnavailable')
@@ -70,7 +71,7 @@ class TestAvailability(HostEnvTestCase):
         """So the user can tell "wrong build" from "wrong predictor name"."""
         self.declareHost('boltz,mystery')
         try:
-            ProtenixBasePredictor().check_available()
+            registry.get('protenix-base-int8').check_available()
         except PredictorUnavailable as error:
             self.assertIn('boltz', str(error))
         else:
@@ -78,13 +79,13 @@ class TestAvailability(HostEnvTestCase):
 
     def testAvailableOnAHostCarryingProtenix(self):
         self.declareHost('boltz,protenix')
-        self.assertIsNone(ProtenixBasePredictor().check_available())
+        self.assertIsNone(registry.get('protenix-base-int8').check_available())
 
     def testAHostDeclaringNothingIsAssumedBoltzOnly(self):
         os.environ[host.HOST_ENV] = '1'
         os.environ.pop(host.RUNTIMES_ENV, None)
         self.assertRaises(PredictorUnavailable,
-                          ProtenixBasePredictor().check_available)
+                          registry.get('protenix-base-int8').check_available)
 
 
 class TestComplexesAreAccepted(testing.PyMOLTestCase):
@@ -97,7 +98,7 @@ class TestComplexesAreAccepted(testing.PyMOLTestCase):
     """
 
     def predictor(self):
-        return ProtenixBasePredictor()
+        return registry.get('protenix-base-int8')
 
     def testOneChainIsAccepted(self):
         spec = self.predictor().parse_spec('ACDEFGHIK', 'p')
@@ -130,7 +131,7 @@ class TestComplexesAreAccepted(testing.PyMOLTestCase):
 class TestResidueValidation(testing.PyMOLTestCase):
 
     def predictor(self):
-        return ProtenixBasePredictor()
+        return registry.get('protenix-base-int8')
 
     def testNonCanonicalRejectedRatherThanSubstituted(self):
         for sequence in ('ACDEFX', 'ACDEFU', 'ACDEFB', 'ACDEFZ'):
@@ -184,7 +185,7 @@ class TestOptions(testing.PyMOLTestCase):
     """Protenix recycles a trunk and runs reverse diffusion, so it takes Boltz's knobs."""
 
     def predictor(self):
-        return ProtenixBasePredictor()
+        return registry.get('protenix-base-int8')
 
     def testTheReleasedOperatingPointIsTheDefault(self):
         options = self.predictor().validate_options({})
@@ -216,7 +217,7 @@ class TestAlignmentsRefused(testing.PyMOLTestCase):
     """supports_msa is False, so an alignment is refused BY NAME rather than dropped."""
 
     def testAnAlignmentIsRefused(self):
-        predictor = ProtenixBasePredictor()
+        predictor = registry.get('protenix-base-int8')
         spec = predictor.parse_spec('ACDEFG')
 
         class FakeMSA:
@@ -232,7 +233,7 @@ class TestAlignmentsRefused(testing.PyMOLTestCase):
             self.fail('expected PredictionInputError')
 
     def testNoAlignmentIsFine(self):
-        predictor = ProtenixBasePredictor()
+        predictor = registry.get('protenix-base-int8')
         spec = predictor.parse_spec('ACDEFG')
         self.assertEqual(predictor.bind_alignments(spec, {}).alignments, {})
 
@@ -241,7 +242,7 @@ class TestWireFormat(testing.PyMOLTestCase):
     """What reaches the Swift host: its runtime, and only its own knobs."""
 
     def submit(self, sequence='ACDEFG', options=None):
-        predictor = ProtenixBasePredictor()
+        predictor = registry.get('protenix-base-int8')
         spec = predictor.parse_spec(sequence, 'pred')
         options = predictor.validate_options(options or {})
         with redirect_stdout(io.StringIO()) as buf:
@@ -278,12 +279,130 @@ class TestWireFormat(testing.PyMOLTestCase):
         self.assertIn('PREDICT:submit:%s' % job.job_id, out)
 
 
+class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
+    """One id per published pack, and every one of them fetchable and distinct."""
+
+    def ids(self):
+        from pymol.predictors import registry
+        return [i for i in registry.available() if i.startswith('protenix-')]
+
+    def testAllTwelvePacksAreRegistered(self):
+        self.assertEqual(len(self.ids()), 12)
+
+    def testEveryVariantAndPrecisionIsOffered(self):
+        expected = {'protenix-%s-%s' % (v, p)
+                    for v in ('tiny', 'mini', 'base', 'v2')
+                    for p in ('int8', 'fp16', 'bf16')}
+        self.assertEqual(set(self.ids()), expected)
+
+    def testV2SaysItIsMirrorSourcedWhereAUserWouldSeeIt(self):
+        """Its official checkpoint has answered 403 since April 2026.
+
+        These packs come from a Hugging Face mirror whose uploader states no affiliation.
+        The file audits clean structurally and is pinned by digest, but no official
+        checksum exists for ANY Protenix checkpoint, so nothing authoritative confirms the
+        weight values. That belongs in the NAME, not only in a comment.
+        """
+        from pymol.predictors import registry
+        for precision in ('int8', 'fp16', 'bf16'):
+            name = registry.get('protenix-v2-%s' % precision).name
+            self.assertIn('mirror', name.lower(), precision)
+
+    def testV2IsCappedLowerBecauseItIsMeasuredLess(self):
+        from pymol.predictors import registry
+        from pymol.predictors.protenix import MAX_RESIDUES, V2_MAX_RESIDUES
+        self.assertLess(V2_MAX_RESIDUES, MAX_RESIDUES)
+        self.assertEqual(registry.get('protenix-v2-int8').max_residues, V2_MAX_RESIDUES)
+        self.assertEqual(registry.get('protenix-base-int8').max_residues, MAX_RESIDUES)
+
+    def testV2RefusesAboveItsOwnCapNotBases(self):
+        from pymol.predictors import registry
+        from pymol.predictors.protenix import V2_MAX_RESIDUES
+        sequence = 'A' * (V2_MAX_RESIDUES + 1)
+        # Fine for base, refused for v2 -- the cap is per pack, not per method.
+        registry.get('protenix-base-int8').parse_spec(sequence)
+        try:
+            registry.get('protenix-v2-int8').parse_spec(sequence)
+        except PredictionInputError as error:
+            self.assertIn('protenix-v2-int8', str(error))
+        else:
+            self.fail('expected v2 to refuse above its own cap')
+
+    def testNoIdIsAPrefixOfAnother(self):
+        """docs/predictors.md step 1: a shared prefix is a tab-completion dead end.
+
+        With nine ids this stops being a nicety. Every one ends in a precision suffix of
+        the same shape, so `predict protenix-b<Tab>` can always make progress.
+        """
+        for one in self.ids():
+            for other in self.ids():
+                if one != other:
+                    self.assertFalse(other.startswith(one), '%s / %s' % (one, other))
+
+    def testEveryPackHasItsOwnDigestAndSize(self):
+        """Nine bundles copied by hand is nine chances to paste the wrong digest."""
+        from pymol.predictors import registry
+        seen = {}
+        for pid in self.ids():
+            bundle = registry.get(pid).weight_bundle
+            self.assertEqual(len(bundle.sha256), 64, pid)
+            self.assertNotIn(bundle.sha256, seen,
+                             '%s and %s share a digest' % (pid, seen.get(bundle.sha256)))
+            seen[bundle.sha256] = pid
+            self.assertGreater(bundle.size, 1_000_000, pid)
+
+    def testDigestsAreRealHex(self):
+        """A padded or placeholder digest is the failure mode this guards."""
+        from pymol.predictors import registry
+        for pid in self.ids():
+            sha = registry.get(pid).weight_bundle.sha256
+            self.assertRegex(sha, r'^[0-9a-f]{64}$', pid)
+            self.assertNotEqual(sha, '0' * 64, pid)
+            # A real sha256 has no long runs; a hand-padded one usually does.
+            self.assertNotIn('a0a0a0a0a0a0', sha, pid)
+
+    def testTinyAndMiniUseTheirOwnShorterSchedule(self):
+        """v0.5.0 models were trained at 4 recycles / 5 steps.
+
+        Running them at base's 10 / 200 would spend forty times the compute on a model
+        that was not trained to use it -- and quietly, since nothing would fail.
+        """
+        from pymol.predictors import registry
+        for pid in ('protenix-tiny-int8', 'protenix-mini-bf16'):
+            defaults = registry.get(pid).option_defaults
+            self.assertEqual(defaults['recycling_steps'], 4, pid)
+            self.assertEqual(defaults['diffusion_steps'], 5, pid)
+
+    def testBaseUsesTheReleasedOperatingPoint(self):
+        from pymol.predictors import registry
+        defaults = registry.get('protenix-base-fp16').option_defaults
+        self.assertEqual(defaults['recycling_steps'], 10)
+        self.assertEqual(defaults['diffusion_steps'], 200)
+
+    def testEveryPackSharesTheOneRuntime(self):
+        """Nine tools, one backend -- the boltz2 / boltz2-bf16 pattern."""
+        from pymol.predictors.protenix import RUNTIME
+        from pymol.predictors import registry
+        for pid in self.ids():
+            self.assertEqual(registry.get(pid).submit.__self__.__class__.__mro__[1].__name__,
+                             'ProtenixPredictor', pid)
+        self.assertEqual(RUNTIME, 'protenix')
+
+    def testTheDensePacksAreLargerThanTheQuantisedOne(self):
+        """Sanity on the transcription: fp16 is about twice int8, per variant."""
+        from pymol.predictors import registry
+        for variant in ('tiny', 'mini', 'base', 'v2'):
+            small = registry.get('protenix-%s-int8' % variant).weight_bundle.size
+            dense = registry.get('protenix-%s-fp16' % variant).weight_bundle.size
+            self.assertGreater(dense, small * 1.5, variant)
+
+
 class TestRegistration(testing.PyMOLTestCase):
 
     def testRegisteredUnderItsId(self):
         from pymol.predictors import registry
-        self.assertIn('protenix-base', registry.available())
-        self.assertEqual(registry.get('protenix-base').id, 'protenix-base')
+        self.assertIn('protenix-base-int8', registry.available())
+        self.assertEqual(registry.get('protenix-base-int8').id, 'protenix-base-int8')
 
     def testIdIsNotAPrefixExtensionOfAnother(self):
         """docs/predictors.md step 1: a shared prefix breaks tab completion.
@@ -293,12 +412,12 @@ class TestRegistration(testing.PyMOLTestCase):
         `protenix` that names no runnable predictor.
         """
         from pymol.predictors import registry
-        for other in (i for i in registry.available() if i != 'protenix-base'):
-            self.assertFalse('protenix-base'.startswith(other))
-            self.assertFalse(other.startswith('protenix-base'))
+        for other in (i for i in registry.available() if i != 'protenix-base-int8'):
+            self.assertFalse('protenix-base-int8'.startswith(other))
+            self.assertFalse(other.startswith('protenix-base-int8'))
 
     def testWeightBundleIsDeclaredWithARealDigest(self):
-        bundle = ProtenixBasePredictor().weight_bundle
+        bundle = registry.get('protenix-base-int8').weight_bundle
         self.assertEqual(len(bundle.sha256), 64)
         self.assertNotEqual(set(bundle.sha256), {'0'})
         self.assertGreater(bundle.size, 0)
@@ -307,7 +426,7 @@ class TestRegistration(testing.PyMOLTestCase):
 
     def testConfigJsonIsAMandatoryMember(self):
         """A Protenix checkpoint carries no architecture, so the pack must."""
-        self.assertIn('config.json', ProtenixBasePredictor().weight_bundle.members)
+        self.assertIn('config.json', registry.get('protenix-base-int8').weight_bundle.members)
 
 
 class TestCommandSurface(HostEnvTestCase):
@@ -324,7 +443,7 @@ class TestCommandSurface(HostEnvTestCase):
         try:
             registry.get('protenix')
         except PredictorNotFound as error:
-            self.assertIn('protenix-base', str(error))
+            self.assertIn('protenix-base-int8', str(error))
         else:
             self.fail('expected a bare "protenix" to be unknown')
 
@@ -333,13 +452,13 @@ class TestCommandSurface(HostEnvTestCase):
         for quiet in (0, 1):
             with redirect_stdout(io.StringIO()):
                 self.assertRaises(PredictorUnavailable, cmd.predict,
-                                  'protenix-base', 'ACDEFG', quiet=quiet)
+                                  'protenix-base-int8', 'ACDEFG', quiet=quiet)
 
     def testWeightsSurfaceReportsTheBundleWithoutFetchingIt(self):
         """predict_weights iterates EVERY predictor, so this must not download."""
         for quiet in (0, 1):
-            out = cmd.predict_weights('protenix-base', download=0, quiet=quiet)
-            self.assertEqual(out['protenix-base']['bundle'],
+            out = cmd.predict_weights('protenix-base-int8', download=0, quiet=quiet)
+            self.assertEqual(out['protenix-base-int8']['bundle'],
                              'protenix-base-mlx-int8')
 
 
@@ -381,21 +500,27 @@ class TestBulkPrefetchSkipsWhatCannotRun(HostEnvTestCase):
                         or 'boltz2-mlx-int8' in self.started)
 
     def testNamingItExplicitlyStillFetches(self):
+        """Asserted as "fetched OR already cached" -- a machine that has run a fold has
+        the pack, so asserting a download tests local state rather than the filter."""
         self.declareHost('boltz')
-        cmd.predict_weights('protenix-base', download=1, async_=1)
-        self.assertIn('protenix-base-mlx-int8', self.started)
+        out = cmd.predict_weights('protenix-base-int8', download=1, async_=1)
+        self.assertTrue(out['protenix-base-int8']['cached']
+                        or 'protenix-base-mlx-int8' in self.started)
 
     def testBulkFetchTakesItOnceTheRuntimeIsThere(self):
         self.declareHost('boltz,protenix')
-        cmd.predict_weights(download=1, async_=1)
-        self.assertIn('protenix-base-mlx-int8', self.started)
+        out = cmd.predict_weights(download=1, async_=1)
+        self.assertTrue(out['protenix-base-int8']['cached']
+                        or 'protenix-base-mlx-int8' in self.started)
+        # And the OTHER packs, which no fold has cached, are genuinely fetched.
+        self.assertIn('protenix-tiny-mlx-int8', self.started)
 
     def testItIsStillReportedEvenWhenNotFetched(self):
         """Skipping the download must not hide the predictor from the report."""
         self.declareHost('boltz')
         out = cmd.predict_weights(download=1, async_=1)
-        self.assertIn('protenix-base', out)
-        self.assertEqual(out['protenix-base']['bundle'], 'protenix-base-mlx-int8')
+        self.assertIn('protenix-base-int8', out)
+        self.assertEqual(out['protenix-base-int8']['bundle'], 'protenix-base-mlx-int8')
 
     def testTheSkipIsExplainedAtQuietZero(self):
         self.declareHost('boltz')
@@ -407,5 +532,5 @@ class TestBulkPrefetchSkipsWhatCannotRun(HostEnvTestCase):
         """Every knob it declares already existed, so cmd.predict is untouched."""
         import inspect
         parameters = inspect.signature(predicting.predict).parameters
-        for knob in ProtenixBasePredictor().option_defaults:
+        for knob in registry.get('protenix-base-int8').option_defaults:
             self.assertIn(knob, parameters)
