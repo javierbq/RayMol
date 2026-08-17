@@ -56,8 +56,8 @@ RUNTIME = 'protenix'
 #: measured by RSS the same sweep reads 400 residues as costing LESS than 60, because MLX
 #: recycles buffers in a cache it need not return to the OS.
 #:
-#:                60 res   250 res   400 res   550 res   700 res
-#:     base          547      2279      3868      6303      8622
+#:                60 res   250 res   400 res   550 res   700 res   900 res
+#:     base          547      2279      3868      6303      8622     16513
 #:     v2            -- (509 MiB at 15 residues; its 256-wide pair track costs more)
 #:
 #: Variants converge as the input grows: the now-unshipped tiny and mini measured 3494 and
@@ -66,7 +66,8 @@ RUNTIME = 'protenix'
 #: length rather than scaled by parameter count -- what decides whether a fold fits is how
 #: long it is, not which pack runs it.
 MEASURED_PEAK_MIB = {
-    'base': ((60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622)),
+    'base': ((60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622),
+             (900, 16513)),
     # v2 is swept only at the short end so far. Its pair track is 256 wide against every
     # other variant's 128, so the N^2 term is doubled and base's curve UNDERSTATES it --
     # which is the direction that gets a session jetsam-killed. Until it is swept
@@ -80,11 +81,20 @@ MEASURED_PEAK_MIB = {
 #: 400 -- chosen because a fold whose own confidence is 26 is rarely worth six minutes --
 #: and was raised deliberately, since that is a judgement for whoever is waiting.
 #:
-#: Still not an extrapolation: beyond 700 nothing has been run, and the Swift guard's
-#: history is that guessing past the data runs optimistic. Raise it again with a
-#: measurement, and note that the memory budget (ProtenixSizeGuard.budgetBytes, now 32 GB)
-#: is the other half of the policy -- on a 32 GiB machine that is effectively all of it,
-#: so a long fold and an unsaved session are a bad combination.
+#: 900 residues IS measured and does fit -- 16.1 GiB, half the 32 GB budget -- and the cap
+#: still sits below it, for a reason that only measuring found: it took **2.5 hours**.
+#: That is 24x the wall clock of 700 residues for 1.3x the length, because at 16 GiB on a
+#: 32 GiB machine the fold stops being compute-bound and starts paging. The model's own
+#: confidence there is 26.4, so it is two and a half hours for a structure that says
+#: nothing can be concluded from it.
+#:
+#: So the ceiling is no longer "where the data runs out" but "where the time stops being
+#: worth it", which is a judgement -- raise it to 900 if you want the option and can leave
+#: a machine to it. Beyond 900 nothing has been run at all.
+#:
+#: The memory budget (ProtenixSizeGuard.budgetBytes, 32 GB) is the other half of the
+#: policy: on a 32 GiB machine that is effectively all of it, so a long fold and an
+#: unsaved session are a bad combination.
 MAX_RESIDUES = 700
 
 #: v2's own ceiling, lower because its memory is only measured at the short end and its

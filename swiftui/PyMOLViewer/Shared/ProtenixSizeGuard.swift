@@ -29,6 +29,11 @@ enum ProtenixSizeGuard {
     /// to those numbers would have concluded big inputs are cheap.
     static let measured: [(tokens: Int, peakMiB: Int)] = [
         (60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622),
+        // 900 fits — 16.1 GiB, half the budget — and took 2.5 HOURS: 24x the wall clock
+        // of 700 for 1.3x the length, because at 16 GiB on a 32 GiB machine the fold
+        // starts paging. Kept in the table because interpolation between 700 and 900 is
+        // then real rather than fitted, even though `maximumTokens` stops at 700.
+        (900, 16513),
     ]
 
     /// Hard ceiling, matching `pymol.predictors.protenix.MAX_RESIDUES`.
@@ -38,10 +43,13 @@ enum ProtenixSizeGuard {
     /// confidence is 26 — and was raised deliberately: that is a judgement about whether
     /// a fold is worth the wait, which belongs to whoever is waiting.
     ///
-    /// It is still not an extrapolation. 700 is measured; beyond it nothing has been run,
-    /// and `PredictSizeGuard`'s docstring records three separate occasions where guessing
-    /// past the data ran optimistic. Both ends enforce this: Python refuses before the
-    /// download, this refuses before the tensors.
+    /// Below the largest measurement (900) on purpose, and for a reason only measuring
+    /// found: 900 residues FITS, at 16.1 GiB against a 32 GB budget, and takes 2.5 hours.
+    /// That is 24x the wall clock of 700 for 1.3x the length — the fold stops being
+    /// compute-bound and starts paging — for a structure whose own confidence is 26.4.
+    /// The ceiling is therefore "where the time stops being worth it" rather than "where
+    /// the data runs out". Both ends enforce it: Python refuses before the download, this
+    /// refuses before the tensors.
     static let maximumTokens = 700
 
     /// The most memory one fold may target.
