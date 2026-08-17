@@ -33,11 +33,30 @@ enum ProtenixSizeGuard {
 
     /// Hard ceiling, matching `pymol.predictors.protenix.MAX_RESIDUES`.
     ///
-    /// Below the largest measurement (700) on purpose: 700 runs, at 8.6 GB and six
-    /// minutes, and the model's own confidence at that length is 26 — so it costs six
-    /// minutes to produce a structure it says nothing can be concluded from. Both ends
-    /// enforce it: Python refuses before the download, this refuses before the tensors.
-    static let maximumTokens = 400
+    /// Now the largest length actually MEASURED, rather than below it. It was 400 —
+    /// chosen because 700 costs 8.6 GB and six minutes for a structure whose own
+    /// confidence is 26 — and was raised deliberately: that is a judgement about whether
+    /// a fold is worth the wait, which belongs to whoever is waiting.
+    ///
+    /// It is still not an extrapolation. 700 is measured; beyond it nothing has been run,
+    /// and `PredictSizeGuard`'s docstring records three separate occasions where guessing
+    /// past the data ran optimistic. Both ends enforce this: Python refuses before the
+    /// download, this refuses before the tensors.
+    static let maximumTokens = 700
+
+    /// The most memory one fold may target.
+    ///
+    /// Raised to 32 GB by request, from the previous `0.75 × physical`. On a 32 GiB
+    /// machine that is effectively all of it, which is a deliberate trade and worth
+    /// naming: MLX allocating to the ceiling while the app holds a session is how a
+    /// jetsam SIGKILL happens, and that kill is asynchronous — no Swift handler can
+    /// intercept it, and on macOS it takes the user's unsaved work with it. The mitigation
+    /// is to save before a long fold, not to catch anything.
+    ///
+    /// Lower it here to go back to the conservative behaviour; the fractions below are
+    /// applied to THIS rather than to physical memory, so one number moves the whole
+    /// policy.
+    static let budgetBytes = 32 * 1024 * 1024 * 1024
 
     /// Same tiers as `PredictSizeGuard`, deliberately: whatever fraction of a machine is
     /// prudent to hand one MLX model does not depend on which model it is.
@@ -73,18 +92,23 @@ enum ProtenixSizeGuard {
     }
 
     /// Refuse, caution, or proceed. `nil`-free: every outcome is a case.
+    ///
+    /// `availableBytes` is what the machine has; the fold is sized against
+    /// `min(budgetBytes, availableBytes)`, so a smaller machine is still protected by its
+    /// own memory and a larger one is still bounded by the budget.
     static func decide(tokens: Int, availableBytes: Int) -> PredictSizeGuard.Decision {
+        let budget = min(budgetBytes, availableBytes)
         guard tokens <= maximumTokens else {
             return .refuse(maxFittingTokens: min(maximumTokens,
-                                                 largestFittingTokenCount(availableBytes)))
+                                                 largestFittingTokenCount(budget)))
         }
         let estimate = estimatedBytes(tokens: tokens)
-        let fraction = Double(estimate) / Double(max(availableBytes, 1))
+        let fraction = Double(estimate) / Double(max(budget, 1))
         if fraction <= okFraction { return .ok }
         if fraction <= warnFraction {
-            return .warn(estimatedBytes: estimate, availableBytes: availableBytes)
+            return .warn(estimatedBytes: estimate, availableBytes: budget)
         }
-        return .refuse(maxFittingTokens: largestFittingTokenCount(availableBytes))
+        return .refuse(maxFittingTokens: largestFittingTokenCount(budget))
     }
 
     /// The largest token count whose estimate stays inside the warn budget.

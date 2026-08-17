@@ -1,10 +1,17 @@
 """Protenix via protenix-mlx: ByteDance's AlphaFold3-class predictor, in Swift/MLX.
 
-Twelve packs: four model variants at three precisions each, every one a separate
-predictor id. That is the `boltz2` / `boltz2-bf16` pattern taken to its conclusion — one
-runtime, many tools — and it works for the same reason: `host.submit` sends `weights_dir`
-per job and the Swift side picks its matmul path from the artifact manifest, so a dense
-pack needs no code of its own.
+Six packs: the base and v2 variants at three precisions each, every one a separate
+predictor id. That is the `boltz2` / `boltz2-bf16` pattern -- one runtime, many tools --
+and it works for the same reason: `host.submit` sends `weights_dir` per job and the Swift
+side picks its matmul path from the artifact manifest, so a dense pack needs no code.
+
+**tiny and mini are published but NOT offered here.** They are v0.5.0 models trained to 4
+recycles / 5 diffusion steps, and five steps does not converge the geometry: at a fixed
+seed tiny gives CA-CA distances of 3.26 A against base's 3.67 and an ideal 3.80, which is
+loose enough that DSSP stops calling helices and the cartoon breaks into segments. They
+are fast -- 11 s against base's 35 -- but a fold nobody should trust is not worth 11
+seconds either, and offering it invites exactly that. protenix-mlx still builds and
+publishes them; add them back here if a use appears that wants speed over geometry.
 
 Protein-only, canonical-20, complexes included: the port's featurizer groups chains into
 entities and builds the cross-chain pair features, so a multimer is something this method
@@ -19,9 +26,8 @@ structure with nothing in the result saying so. The MSA module IS ported, so thi
 reachable rather than remaining structural -- see #274.
 
 **Which one to use.** `protenix-base-int8` is the default choice and the one whose memory
-is measured most thoroughly. tiny and mini are v0.5.0 models at 4 recycles / 5 diffusion
-steps: seconds rather than minutes, and correspondingly rough -- they exist for iteration,
-not for answers. The dense precisions cost roughly twice the disk and more memory for no
+is measured most thoroughly. v2 scores highest on a short probe but is mirror-sourced and
+measured least. The dense precisions cost roughly twice the disk and more memory for no
 demonstrated accuracy, exactly as `boltz2-bf16` does; they are here so that experiment is
 possible on-device rather than because they are better.
 
@@ -50,19 +56,16 @@ RUNTIME = 'protenix'
 #: measured by RSS the same sweep reads 400 residues as costing LESS than 60, because MLX
 #: recycles buffers in a cache it need not return to the OS.
 #:
-#:                60 res   250 res   400 res
-#:     tiny          250      2083      3494
-#:     mini          298      2172      3625
-#:     base          547      2279      3868
+#:                60 res   250 res   400 res   550 res   700 res
+#:     base          547      2279      3868      6303      8622
 #:     v2            -- (509 MiB at 15 residues; its 256-wide pair track costs more)
 #:
-#: The variants converge as the input grows: at 400 residues they are within 10% of each
-#: other, because the N^2 pair representation dwarfs the weights. Which is why the cap
-#: below is the same for all of them rather than scaled by parameter count -- the thing
-#: that decides whether a fold fits is the sequence, not the pack.
+#: Variants converge as the input grows: the now-unshipped tiny and mini measured 3494 and
+#: 3625 MiB at 400 residues against base's 3868, within 10% of each other, because the
+#: N^2 pair representation dwarfs the weights. That is why the cap is driven by sequence
+#: length rather than scaled by parameter count -- what decides whether a fold fits is how
+#: long it is, not which pack runs it.
 MEASURED_PEAK_MIB = {
-    'tiny': ((60, 250), (250, 2083), (400, 3494)),
-    'mini': ((60, 298), (250, 2172), (400, 3625)),
     'base': ((60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622)),
     # v2 is swept only at the short end so far. Its pair track is 256 wide against every
     # other variant's 128, so the N^2 term is doubled and base's curve UNDERSTATES it --
@@ -71,14 +74,18 @@ MEASURED_PEAK_MIB = {
     'v2': ((15, 509),),
 }
 
-#: Hard ceiling, in residues, across every variant.
+#: Hard ceiling, in residues, across every variant except v2.
 #:
-#: Below the largest measurement (700 for base, at 8.6 GB and six minutes) on purpose:
-#: alongside a loaded session that is where a jetsam kill takes the user's unsaved work,
-#: and the model's own confidence at that length is 26 -- six minutes to produce a
-#: structure it says nothing can be concluded from. 400 is the largest length that both
-#: fits comfortably and is worth the wait. Raise it with a measurement AND a reason.
-MAX_RESIDUES = 400
+#: The largest length actually MEASURED (700 for base, at 8.6 GB and six minutes). It was
+#: 400 -- chosen because a fold whose own confidence is 26 is rarely worth six minutes --
+#: and was raised deliberately, since that is a judgement for whoever is waiting.
+#:
+#: Still not an extrapolation: beyond 700 nothing has been run, and the Swift guard's
+#: history is that guessing past the data runs optimistic. Raise it again with a
+#: measurement, and note that the memory budget (ProtenixSizeGuard.budgetBytes, now 32 GB)
+#: is the other half of the policy -- on a 32 GiB machine that is effectively all of it,
+#: so a long fold and an unsaved session are a bad combination.
+MAX_RESIDUES = 700
 
 #: v2's own ceiling, lower because its memory is only measured at the short end and its
 #: pair representation is twice as wide. Not a judgement about the model -- it scores
@@ -109,15 +116,11 @@ _SUFFIX = {'int8': 'int8', 'float16': 'fp16', 'bfloat16': 'bf16'}
 #: v0.5.0 models trained to a much shorter schedule; using base's 10/200 on them would
 #: spend forty times the compute on a model that was not trained to use it.
 _OPERATING_POINT = {
-    'tiny': (4, 5),
-    'mini': (4, 5),
     'base': (10, 200),
     'v2': (10, 200),
 }
 
 _DESCRIPTION = {
-    'tiny': 'Protenix tiny v0.5.0',
-    'mini': 'Protenix mini v0.5.0',
     'base': 'Protenix base v1.0.0',
     'v2': 'Protenix v2',
 }
@@ -129,36 +132,6 @@ _DESCRIPTION = {
 #: twelve chances to paste the wrong one, and a wrong digest fails only on a user's
 #: machine, after the download.
 _PACKS = (
-    _Pack('tiny', 'int8',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-tiny-v1/'
-          'protenix-tiny-mlx-int8-v1.zip',
-          '11716a7c69d10c0b9c90410503bc2b4b05a3c83f8b39c572bf4d962a56094858',
-          87_543_789),
-    _Pack('tiny', 'float16',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-tiny-v1/'
-          'protenix-tiny-mlx-float16-v1.zip',
-          '73fdf864366461380cee4b316b354018118e55f5d0ce6ee7be698d30b64274a1',
-          173_209_981),
-    _Pack('tiny', 'bfloat16',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-tiny-v1/'
-          'protenix-tiny-mlx-bfloat16-v1.zip',
-          '77777d1a40dc45b5de900978e2d0018fd361e93fdebb4384c4928c07866b99b9',
-          151_635_809),
-    _Pack('mini', 'int8',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-mini-v1/'
-          'protenix-mini-mlx-int8-v1.zip',
-          'ea3a8f81ad8ce055b5b3d1dba92f595b5284dfc2c13b8eedd0458827babc0cea',
-          96_248_656),
-    _Pack('mini', 'float16',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-mini-v1/'
-          'protenix-mini-mlx-float16-v1.zip',
-          '159206251babea99824110da45546707ed1428f0cf1b5a38025cc2db76f7337d',
-          193_494_769),
-    _Pack('mini', 'bfloat16',
-          'https://github.com/javierbq/protenix-mlx/releases/download/weights-mini-v1/'
-          'protenix-mini-mlx-bfloat16-v1.zip',
-          '9dc3a7397d054421d1b9a64959477c927a86b56446b1f24fa642a57d4a5a8837',
-          171_699_965),
     _Pack('base', 'int8',
           'https://github.com/javierbq/protenix-mlx/releases/download/weights-base-v1/'
           'protenix-base-mlx-int8-v1.zip',

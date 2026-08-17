@@ -107,10 +107,43 @@ final class ProtenixRuntimeTests: XCTestCase {
     }
 
     func testTheCapAgreesWithThePythonSide() {
-        // Both ends enforce it: Python refuses before the 214 MB download, this refuses
-        // before the tensors. They disagreeing means one of them is decoration.
-        XCTAssertEqual(ProtenixSizeGuard.maximumTokens, 400,
+        // Both ends enforce it: Python refuses before the download, this refuses before
+        // the tensors. They disagreeing means one of them is decoration.
+        XCTAssertEqual(ProtenixSizeGuard.maximumTokens, 700,
                        "keep in step with pymol.predictors.protenix.MAX_RESIDUES")
+    }
+
+    func testTheCapIsTheLargestMeasuredPointAndNotBeyondIt() {
+        // The one invariant that survives raising the cap: it may reach the data and no
+        // further. PredictSizeGuard's docstring records three occasions where a fit past
+        // its measurements ran optimistic.
+        let largest = ProtenixSizeGuard.measured.map(\.tokens).max() ?? 0
+        XCTAssertLessThanOrEqual(ProtenixSizeGuard.maximumTokens, largest)
+    }
+
+    func testTheBudgetIsWhatBoundsAFoldOnALargeMachine() {
+        // 32 GB by request. A machine with more RAM than that is still held to it.
+        let huge = 512 * 1024 * 1024 * 1024
+        let decision = ProtenixSizeGuard.decide(tokens: 700, availableBytes: huge)
+        XCTAssertEqual(decision, .ok, "8.6 GB against a 32 GB budget is comfortable")
+        XCTAssertEqual(ProtenixSizeGuard.budgetBytes, 32 * 1024 * 1024 * 1024)
+    }
+
+    func testASmallMachineIsStillProtectedByItsOwnMemory() {
+        // The budget is a ceiling, not a promise: an 8 GB Mac is sized against 8 GB.
+        let decision = ProtenixSizeGuard.decide(tokens: 700,
+                                                availableBytes: 8 * 1024 * 1024 * 1024)
+        guard case .refuse = decision else {
+            return XCTFail("8.6 GB cannot fit in 8 GB, got \(decision)")
+        }
+    }
+
+    func testTheLengthThatPromptedThisFits() {
+        // 532 residues, the input that hit the old 400 cap. Interpolates to ~6 GB, which
+        // is measured territory: 550 was swept at 6303 MiB.
+        XCTAssertEqual(ProtenixSizeGuard.decide(tokens: 532,
+                                                availableBytes: 32 * 1024 * 1024 * 1024),
+                       .ok)
     }
 
     func testAModestFoldIsAccepted() {

@@ -168,6 +168,11 @@ class TestResidueValidation(testing.PyMOLTestCase):
         self.assertRaises(PredictionInputError,
                           self.predictor().parse_spec, 'A' * (MAX_RESIDUES + 1))
 
+    def testTheLengthThatPromptedTheRaiseIsAccepted(self):
+        """532 residues hit the old 400 cap. 550 is measured, at 6.3 GB."""
+        spec = self.predictor().parse_spec('A' * 532)
+        self.assertEqual(len(spec.chains[0][1]), 532)
+
     def testAtTheLimitAccepted(self):
         spec = self.predictor().parse_spec('A' * MAX_RESIDUES)
         self.assertEqual(len(spec.chains[0][1]), MAX_RESIDUES)
@@ -286,14 +291,26 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
         from pymol.predictors import registry
         return [i for i in registry.available() if i.startswith('protenix-')]
 
-    def testAllTwelvePacksAreRegistered(self):
-        self.assertEqual(len(self.ids()), 12)
+    def testAllSixPacksAreRegistered(self):
+        self.assertEqual(len(self.ids()), 6)
 
-    def testEveryVariantAndPrecisionIsOffered(self):
+    def testEveryOfferedVariantAndPrecision(self):
         expected = {'protenix-%s-%s' % (v, p)
-                    for v in ('tiny', 'mini', 'base', 'v2')
+                    for v in ('base', 'v2')
                     for p in ('int8', 'fp16', 'bf16')}
         self.assertEqual(set(self.ids()), expected)
+
+    def testTinyAndMiniAreNotOffered(self):
+        """Published upstream, deliberately not registered here.
+
+        Five diffusion steps does not converge the geometry: at a fixed seed tiny gives
+        CA-CA 3.26 A against base's 3.67 and an ideal 3.80, loose enough that DSSP stops
+        calling helices. Fast is not a virtue on its own -- a fold nobody should trust is
+        not worth 11 seconds either, and offering it invites exactly that.
+        """
+        for variant in ('tiny', 'mini'):
+            for precision in ('int8', 'fp16', 'bf16'):
+                self.assertNotIn('protenix-%s-%s' % (variant, precision), self.ids())
 
     def testV2SaysItIsMirrorSourcedWhereAUserWouldSeeIt(self):
         """Its official checkpoint has answered 403 since April 2026.
@@ -361,17 +378,17 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
             # A real sha256 has no long runs; a hand-padded one usually does.
             self.assertNotIn('a0a0a0a0a0a0', sha, pid)
 
-    def testTinyAndMiniUseTheirOwnShorterSchedule(self):
-        """v0.5.0 models were trained at 4 recycles / 5 steps.
+    def testEveryOfferedPackUsesTheFullSchedule(self):
+        """base and v2 are both 10 recycles / 200 steps, from their own config.json.
 
-        Running them at base's 10 / 200 would spend forty times the compute on a model
-        that was not trained to use it -- and quietly, since nothing would fail.
+        The shorter 4 / 5 schedule belonged to the v0.5.0 models that are no longer
+        offered; nothing here should silently inherit it.
         """
         from pymol.predictors import registry
-        for pid in ('protenix-tiny-int8', 'protenix-mini-bf16'):
+        for pid in self.ids():
             defaults = registry.get(pid).option_defaults
-            self.assertEqual(defaults['recycling_steps'], 4, pid)
-            self.assertEqual(defaults['diffusion_steps'], 5, pid)
+            self.assertEqual(defaults['recycling_steps'], 10, pid)
+            self.assertEqual(defaults['diffusion_steps'], 200, pid)
 
     def testBaseUsesTheReleasedOperatingPoint(self):
         from pymol.predictors import registry
@@ -391,7 +408,7 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
     def testTheDensePacksAreLargerThanTheQuantisedOne(self):
         """Sanity on the transcription: fp16 is about twice int8, per variant."""
         from pymol.predictors import registry
-        for variant in ('tiny', 'mini', 'base', 'v2'):
+        for variant in ('base', 'v2'):
             small = registry.get('protenix-%s-int8' % variant).weight_bundle.size
             dense = registry.get('protenix-%s-fp16' % variant).weight_bundle.size
             self.assertGreater(dense, small * 1.5, variant)
@@ -512,8 +529,8 @@ class TestBulkPrefetchSkipsWhatCannotRun(HostEnvTestCase):
         out = cmd.predict_weights(download=1, async_=1)
         self.assertTrue(out['protenix-base-int8']['cached']
                         or 'protenix-base-mlx-int8' in self.started)
-        # And the OTHER packs, which no fold has cached, are genuinely fetched.
-        self.assertIn('protenix-tiny-mlx-int8', self.started)
+        # And the other packs, which no fold has cached, are genuinely fetched.
+        self.assertIn('protenix-v2-mlx-int8', self.started)
 
     def testItIsStillReportedEvenWhenNotFetched(self):
         """Skipping the download must not hide the predictor from the report."""
