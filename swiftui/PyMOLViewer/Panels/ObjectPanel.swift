@@ -3678,6 +3678,101 @@ extension ObjectEntry {
     }
 }
 
+// MARK: - Prediction job state
+
+/// One pending prediction, as reported by `predicting.pending_info`.
+///
+/// Every field except `state` and `phase` is Optional-or-defaulted on the wire:
+/// a partially-populated record must not fail the WHOLE PanelPayload decode and
+/// take the object list down with it.
+struct PredictionJobState: Codable, Equatable, Identifiable {
+    /// The object name. Unique per pending placeholder, which is exactly the
+    /// granularity of one card -- n_models shares one object and one card.
+    let id: String
+    let state: String
+    let phase: String
+    let fraction: Double?
+    let moving: Bool
+    let detail: String
+    let modelsDone: Int
+    let modelsTotal: Int
+    let elapsed: Double
+    let error: String?
+    /// The weight bundle this job is still waiting on, or nil once submitted.
+    /// The tray hides this card while that bundle's own download card is up.
+    let bundle: String?
+
+    /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
+    /// migrated, so the single consumer accepts both.
+    var isError: Bool { state == "error" || state == "failed" || state == "cancelled" }
+
+    enum CodingKeys: String, CodingKey {
+        case state, phase, fraction, moving, detail, error, bundle
+        case modelsDone = "models_done", modelsTotal = "models_total", elapsed
+    }
+
+    init(id: String, state: String, phase: String, fraction: Double?, moving: Bool,
+         detail: String, modelsDone: Int, modelsTotal: Int, elapsed: Double,
+         error: String?, bundle: String? = nil) {
+        self.id = id; self.state = state; self.phase = phase
+        self.fraction = fraction; self.moving = moving; self.detail = detail
+        self.modelsDone = modelsDone; self.modelsTotal = modelsTotal
+        self.elapsed = elapsed; self.error = error; self.bundle = bundle
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = ""                       // filled in from the dictionary key
+        state = try c.decode(String.self, forKey: .state)
+        phase = try c.decode(String.self, forKey: .phase)
+        fraction = try c.decodeIfPresent(Double.self, forKey: .fraction)
+        moving = try c.decodeIfPresent(Bool.self, forKey: .moving) ?? false
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? "pending"
+        modelsDone = try c.decodeIfPresent(Int.self, forKey: .modelsDone) ?? 0
+        modelsTotal = try c.decodeIfPresent(Int.self, forKey: .modelsTotal) ?? 1
+        elapsed = try c.decodeIfPresent(Double.self, forKey: .elapsed) ?? 0
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        bundle = try c.decodeIfPresent(String.self, forKey: .bundle)
+    }
+
+    /// `id` comes from the payload's dictionary key, not the record body.
+    func withID(_ name: String) -> PredictionJobState {
+        PredictionJobState(id: name, state: state, phase: phase, fraction: fraction,
+                           moving: moving, detail: detail, modelsDone: modelsDone,
+                           modelsTotal: modelsTotal, elapsed: elapsed, error: error,
+                           bundle: bundle)
+    }
+}
+
+// MARK: - Object panel JSON payload
+
+/// Decoded shape of the tempfile written by `appkit_inspector.poll_panel`.
+///
+/// Extracted from the function body so `@testable import RayMol` can decode it
+/// in unit tests, establishing the same "real payload → real decoder" discipline
+/// that `WeightsFetchStateTests` uses for the WEIGHTS: marker.
+struct PanelPayload: Decodable {
+    let objects: [String]
+    let selections: [String]
+    let enabled: [String]
+    let sel_counts: [String: Int]
+    let nstate: [String: Int]?
+    let has_transp: [String: Bool]?
+    // Group tree (#255). OPTIONAL on purpose: a non-optional field makes
+    // the whole decode fail against an older bundled appkit_inspector.py,
+    // which would freeze the panel on its last list rather than degrade
+    // to a flat one.
+    let groups: [String]?
+    let parent: [String: String]?
+    // Structure prediction (#224). Optional for the same reason as `groups`: a
+    // non-optional field would fail the whole decode against an older bundled
+    // appkit_inspector.py and freeze the panel on its last list.
+    let pending: [String: String]?
+    /// #291. Optional so an older bundled Python still decodes and the tray simply
+    /// shows no prediction cards.
+    let pending_jobs: [String: PredictionJobState]?
+}
+
 // MARK: - PyMOLEngine extensions for object polling
 
 extension PyMOLEngine {
@@ -3692,25 +3787,6 @@ extension PyMOLEngine {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_objpanel_\(ProcessInfo.processInfo.processIdentifier).json")
         guard let data = FileManager.default.contents(atPath: path) else { return }
-
-        struct PanelPayload: Decodable {
-            let objects: [String]
-            let selections: [String]
-            let enabled: [String]
-            let sel_counts: [String: Int]
-            let nstate: [String: Int]?
-            let has_transp: [String: Bool]?
-            // Group tree (#255). OPTIONAL on purpose: a non-optional field makes
-            // the whole decode fail against an older bundled appkit_inspector.py,
-            // which would freeze the panel on its last list rather than degrade
-            // to a flat one.
-            let groups: [String]?
-            let parent: [String: String]?
-            // Structure prediction (#224). Optional for the same reason as `groups`: a
-            // non-optional field would fail the whole decode against an older bundled
-            // appkit_inspector.py and freeze the panel on its last list.
-            let pending: [String: String]?
-        }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
             return
@@ -3747,11 +3823,16 @@ extension PyMOLEngine {
             ))
         }
 
+        let jobs = (payload.pending_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
+
         DispatchQueue.main.async {
             // Guard: the ~500ms poll usually returns the same object list;
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            if self.predictionJobs != jobs { self.predictionJobs = jobs }
         }
     }
 }

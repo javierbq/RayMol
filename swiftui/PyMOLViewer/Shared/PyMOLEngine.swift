@@ -116,6 +116,11 @@ final class PyMOLEngine: ObservableObject {
     // here after it settles, so the sheet can say why nothing happened rather than
     // just vanishing; success and cancellation clear it.
     @Published var weightsFetch: WeightsFetchState?
+    /// Running predictions, newest-object-first, refreshed by the 500 ms panel
+    /// poll. Rendered by ProgressTray. Guarded on assignment like every other
+    /// collection here -- an unguarded 2 Hz assignment re-lays-out the tray on
+    /// every tick even when nothing changed.
+    @Published var predictionJobs: [PredictionJobState] = []
     @Published var sequenceVisible = false {
         // Showing the strip must (re)fetch the sequence data — toggling the
         // panel on (menu/toolbar) only flipped this bool, so the strip rendered

@@ -1,0 +1,69 @@
+import XCTest
+@testable import RayMol
+
+final class PendingJobTests: XCTestCase {
+
+    /// Captured from $TMPDIR/pymol_objpanel_<pid>.json during a real 2-model run.
+    private let payload = """
+    {"objects":["multi"],"selections":[],"enabled":[],"sel_counts":{},
+     "nstate":{"multi":1},"has_transp":{"multi":false},"groups":[],"parent":{},
+     "pending":{"multi":"pending: diffusion 64% (model 1 of 2)"},
+     "pending_jobs":{"multi":{"state":"running","phase":"diffusion",
+       "fraction":0.3196,"moving":true,
+       "detail":"pending: diffusion 64% (model 1 of 2)",
+       "models_done":0,"models_total":2,"elapsed":412.5,"error":null}}}
+    """
+
+    func testTheRecordDecodesFromARealPayload() throws {
+        let decoded = try JSONDecoder().decode(
+            PanelPayload.self, from: Data(payload.utf8))
+        let job = try XCTUnwrap(decoded.pending_jobs?["multi"])
+        XCTAssertEqual(job.phase, "diffusion")
+        XCTAssertEqual(job.fraction ?? 0, 0.3196, accuracy: 0.0001)
+        XCTAssertTrue(job.moving)
+        XCTAssertEqual(job.modelsTotal, 2)
+        XCTAssertEqual(job.elapsed, 412.5, accuracy: 0.01)
+        XCTAssertNil(job.error)
+        XCTAssertFalse(job.isError)
+    }
+
+    /// An older bundled Python has no pending_jobs key. The object list must
+    /// still decode -- otherwise the whole panel freezes on a stale list.
+    func testAPayloadWithoutPendingJobsStillDecodes() throws {
+        let old = """
+        {"objects":["a"],"selections":[],"enabled":[],"sel_counts":{},
+         "nstate":{"a":1},"has_transp":{"a":false},"groups":[],"parent":{},
+         "pending":{}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(old.utf8))
+        XCTAssertEqual(decoded.objects, ["a"])
+        XCTAssertNil(decoded.pending_jobs)
+    }
+
+    /// A partially-populated record must not fail the WHOLE payload decode.
+    func testARecordMissingOptionalFieldsStillDecodes() throws {
+        let partial = """
+        {"objects":["p"],"selections":[],"enabled":[],"sel_counts":{},
+         "nstate":{"p":1},"has_transp":{"p":false},"groups":[],"parent":{},
+         "pending":{"p":"pending"},
+         "pending_jobs":{"p":{"state":"running","phase":"pending"}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(partial.utf8))
+        let job = try XCTUnwrap(decoded.pending_jobs?["p"])
+        XCTAssertNil(job.fraction)
+        XCTAssertFalse(job.moving)
+        XCTAssertEqual(job.modelsTotal, 1)
+    }
+
+    func testBothErrorAndFailedCountAsAnErrorState() {
+        // Swift's host writes "failed"; _DeferredJob writes "error". Neither wire
+        // is migrated, so the single consumer must accept both.
+        for state in ["error", "failed"] {
+            let job = PredictionJobState(
+                id: "x", state: state, phase: "inference", fraction: nil,
+                moving: false, detail: "d", modelsDone: 0, modelsTotal: 1,
+                elapsed: 1, error: "boom")
+            XCTAssertTrue(job.isError, state)
+        }
+    }
+}
