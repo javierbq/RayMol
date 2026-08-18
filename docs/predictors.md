@@ -13,7 +13,7 @@ it is shaped this way.
 | `modules/pymol/predicting.py` | the `cmd.*` surface; you should not need to touch it |
 | `modules/pymol/predictors/base.py` | `Predictor` contract, `PredictionSpec`, `PredictionOptions` |
 | `modules/pymol/predictors/weights.py` | `WeightBundle`, `BundledSource`, `WeightCache` |
-| `modules/pymol/predictors/registry.py` | `register` / `get` / `available` / `unregister` |
+| `modules/pymol/predictors/registry.py` | `register` / `get` / `available` / `unregister` / `register_alias` |
 | `modules/pymol/predictors/host.py` | transport to the Swift inference host |
 | `modules/pymol/predictors/_template.py` | copy-me skeleton |
 
@@ -29,6 +29,11 @@ it is shaped this way.
 disk for no demonstrated accuracy, exactly as `boltz2-bf16` does. The `v2` packs are
 **mirror-sourced** — its official checkpoint has answered 403 since April 2026 — which
 their `name` says where a user picking a predictor will see it.
+
+`protenix` is a shorthand for `protenix-v2-int8`, resolved by `registry.get()` via
+`register_alias` but absent from `registry.available()` -- so it never appears in
+Tab-completion or the "no id is a prefix of another" check below, and `predict protenix,
+...` and `predict protenix-v2-int8, ...` submit to the identical predictor.
 
 protenix-mlx also publishes `tiny` and `mini`, which are **deliberately not registered**:
 they are v0.5.0 models at 4 recycles / 5 diffusion steps, and five steps does not converge

@@ -280,3 +280,11 @@ PREDICTORS = tuple(_build(pack) for pack in _PACKS)
 #: The one to reach for. Named so `predict_weights` and documentation have something to
 #: point at without hardcoding a string in three places.
 DEFAULT_ID = 'protenix-base-int8'
+
+#: Shorthand -> real id. `protenix` is not itself a registered id -- see _SUFFIX above
+#: for why no id may be a prefix of another -- but it is a convenient thing to type at
+#: a prompt, so registry.get() resolves it without registry.available() ever offering
+#: it. Points at v2, not DEFAULT_ID: base is still the thoroughly-measured, non-mirror
+#: choice for a script that wants that explicitly, but the bare shorthand is worth
+#: keeping pointed at whichever pack should get a plain `predict protenix, ...` today.
+ALIASES = {'protenix': 'protenix-v2-int8'}

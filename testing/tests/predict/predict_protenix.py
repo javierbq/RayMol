@@ -345,6 +345,19 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
         else:
             self.fail('expected v2 to refuse above its own cap')
 
+    def testBareProtenixAliasesToV2Int8(self):
+        from pymol.predictors import registry
+        self.assertIs(registry.get('protenix'), registry.get('protenix-v2-int8'))
+
+    def testBareProtenixIsNotOffered(self):
+        """The alias resolves in registry.get() but must not appear in available().
+
+        Otherwise it would both show up in Tab-completion and violate the very
+        no-id-is-a-prefix-of-another invariant it exists to route around.
+        """
+        from pymol.predictors import registry
+        self.assertNotIn('protenix', registry.available())
+
     def testNoIdIsAPrefixOfAnother(self):
         """docs/predictors.md step 1: a shared prefix is a tab-completion dead end.
 
