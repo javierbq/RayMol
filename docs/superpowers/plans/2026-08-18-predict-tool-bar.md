@@ -1284,15 +1284,44 @@ In `ContentView.swift`, near `designModeBar` (line ~2060) add:
     #endif
 ```
 
-Then in the macOS layout's alignment-strip region — the same place `else if engine.designMode { designModeBar }` is chained for the macOS body (find the macOS layout branch; the Design bar is chained there) — add a peer:
+**Docking (macOS-specific — important):** on macOS the Design tool is a floating
+top overlay (`DesignOverlayView` inside `.overlay(alignment: .top)`), NOT the
+docked `designModeBar` (that `else if engine.designMode { designModeBar }` chain
+is only in the iOS/iPad layouts). The user wants a *bar under the alignment*, so
+dock the Predict bar in the macOS `VSplitView`, directly beneath the
+`SequencePanel` pane. The clean spot is the TOP of the viewport `VStack` (the one
+that currently holds `macViewport` and the timeline), so the bar renders under the
+sequence strip and above the 3D view without becoming its own draggable split
+pane. Locate this block in the macOS body:
 
 ```swift
-                #if os(macOS)
-                else if engine.predictMode { predictBar }
-                #endif
+                VStack(spacing: 0) {
+                    macViewport
+                    // ...
+                    if engine.timelineMode {
+                        Divider()
+                        TimelinePanel()
+                    }
+                }
 ```
 
-(Confirm `themeManager` is the ContentView's `ThemeManager` property name at that scope; match how `designModeBar` obtains its theme.)
+and insert the bar (plus a divider) as the first children:
+
+```swift
+                VStack(spacing: 0) {
+                    if engine.predictMode {
+                        predictBar
+                        Divider()
+                    }
+                    macViewport
+                    // ... unchanged ...
+                }
+```
+
+`themeManager` is the ContentView's `ThemeManager` property (used nearby, e.g.
+`themeManager.active.tabTint`). The bar sizes to its content within the VStack; no
+explicit frame is needed. Do NOT add an `else if engine.predictMode` chain to the
+iOS/iPad layouts — this feature is macOS-only.
 
 - [ ] **Step 4: Build and verify it compiles**
 
