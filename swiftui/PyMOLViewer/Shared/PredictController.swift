@@ -155,6 +155,176 @@ final class PredictController: ObservableObject {
     var refreshTrigger: (String) -> Void = { _ in }
     var availableBytesProvider: () -> Int = { PredictSizeGuard.availableBytes }
 
-    // Filled in Task 3.
+    // Per-run plan: the alignment name expected for each requested spec-chain id.
+    private var plannedNames: [String: String] = [:]
+
+    // MARK: entering the mode / input changes
+
+    /// Load predictors (input-independent) and clear the form's resolved state.
+    func refresh() {
+        chains = []
+        msaChains = []
+        resolveError = nil
+        phase = .idle
+        pendingSizeWarning = nil
+        refreshTrigger("")          // emit('') → predictors only
+    }
+
+    /// Re-resolve the current input (called debounced by PredictBar on inputText edits).
+    func inputChanged() { refreshTrigger(inputText) }
+
+    /// Apply a decoded pymol_predict_<pid>.json payload.
+    func loadFormPayload(_ payload: PredictFormPayload) {
+        availablePredictors = payload.predictors
+        if predictor.isEmpty || !payload.predictors.contains(where: { $0.id == predictor }) {
+            predictor = payload.predictors.first?.id ?? ""
+        }
+        chains = payload.chains
+        resolveError = payload.error
+        // Drop any selected MSA chains that no longer exist in the resolved input.
+        let ids = Set(payload.chains.map(\.id))
+        msaChains = msaChains.intersection(ids)
+    }
+
+    // MARK: run
+
+    private var selectedSupportsMSA: Bool {
+        availablePredictors.first { $0.id == predictor }?.msa ?? false
+    }
+
+    private var tokenCount: Int { chains.reduce(0) { $0 + $1.length } }
+
+    private var effectiveMSADepth: Int {
+        if let d = Int(msaDepthText), d > 0 { return d }
+        return (useMSA && selectedSupportsMSA && !msaChains.isEmpty)
+            ? PredictSizeGuard.maximumMSADepth : 1
+    }
+
+    func run() {
+        guard !predictor.isEmpty, !chains.isEmpty else {
+            phase = .error(resolveError ?? "Nothing to fold — enter a sequence, "
+                           + "selection, or object.")
+            return
+        }
+        // Size guard (per predictor). A warn stops for confirmation; a refusal is fatal.
+        let decision = predictor.hasPrefix("protenix")
+            ? ProtenixSizeGuard.decide(tokens: tokenCount,
+                                       availableBytes: availableBytesProvider())
+            : PredictSizeGuard.decide(tokens: tokenCount, msaDepth: effectiveMSADepth,
+                                      availableBytes: availableBytesProvider())
+        switch decision {
+        case .ok:
+            proceed()
+        case let .warn(estimatedBytes, availableBytes):
+            pendingSizeWarning = PredictSizeWarning(estimatedBytes: estimatedBytes,
+                                                    availableBytes: availableBytes)
+        case let .refuse(maxFittingTokens):
+            phase = .error("Too large for this machine — at most about "
+                           + "\(maxFittingTokens) residues fit.")
+        case let .refuseDepth(maxFittingDepth):
+            phase = .error("The alignment is too deep for this machine — set "
+                           + "msa_depth to at most \(maxFittingDepth).")
+        }
+    }
+
+    func confirmPendingWarning() { pendingSizeWarning = nil; proceed() }
+    func cancelPendingWarning() { pendingSizeWarning = nil; phase = .idle }
+
+    private var useMSAEffective: Bool {
+        useMSA && selectedSupportsMSA && !msaChains.isEmpty
+    }
+
+    private func proceed() {
+        pendingSizeWarning = nil
+        guard useMSAEffective else { submitPredict(); return }
+
+        // Plan one alignment name per requested chain; start a search for each that is
+        // not already satisfied (object chain already attached, or literal alignment
+        // already present is handled on the next onEngineState tick).
+        plannedNames = [:]
+        let literalSeqs = PredictController.literalChainSequences(inputText)
+        var started = 0
+        for ch in chains where msaChains.contains(ch.id) {
+            let literal = ch.isFromObject ? nil
+                : (indexOf(ch).map { $0 < literalSeqs.count ? literalSeqs[$0] : "" } ?? "")
+            let name = PredictController.alignmentBaseName(for: ch, literalSequence: literal)
+            plannedNames[ch.id] = name
+            let sequence = ch.isFromObject
+                ? "(\(inputText)) and chain \(ch.chain)"
+                : (literal ?? "")
+            let cmd = PredictController.msaSearchPython(
+                sequence: sequence, name: name,
+                target: ch.isFromObject ? ch.object : "",
+                chain: ch.isFromObject ? ch.chain : "",
+                mode: msaMode, server: server)
+            runPythonSeam(cmd)
+            started += 1
+        }
+        phase = .searching(remaining: started)
+    }
+
+    private func indexOf(_ ch: PredictChain) -> Int? {
+        chains.firstIndex(where: { $0.id == ch.id })
+    }
+
+    /// Called from the engine's 500 ms alignment/search poll. Advances or completes
+    /// the search-then-predict pipeline.
+    func onEngineState(alignments: [AlignmentEntry], searches: [MSASearchEntry]) {
+        guard case .searching = phase else { return }
+        let searchNames = Set(searches.map(\.name))
+        var remaining: [String] = []
+        var failed: [String] = []
+        for ch in chains where msaChains.contains(ch.id) {
+            if isSatisfied(ch, alignments: alignments) { continue }
+            let name = plannedNames[ch.id] ?? ""
+            if searchNames.contains(name) { remaining.append(ch.id) }  // still running
+            else { failed.append(ch.id) }                              // gone, no result
+        }
+        if !failed.isEmpty {
+            phase = .error("MSA search did not complete for chain(s) "
+                           + failed.sorted().joined(separator: ", ") + ".")
+            return
+        }
+        if remaining.isEmpty { submitPredict() }
+        else { phase = .searching(remaining: remaining.count) }
+    }
+
+    /// A requested chain is satisfied once its alignment exists. Object chains match on
+    /// attachment to (object, source chain) — which also reuses an alignment the user
+    /// attached earlier; literal chains match on the planned alignment name.
+    private func isSatisfied(_ ch: PredictChain, alignments: [AlignmentEntry]) -> Bool {
+        if ch.isFromObject {
+            return alignments.contains { $0.target == ch.object && $0.chain == ch.chain }
+        }
+        let name = plannedNames[ch.id] ?? ""
+        return alignments.contains { $0.name == name }
+    }
+
+    private func submitPredict() {
+        let seed = Int(seedText)
+        let depth = Int(msaDepthText)
+        // msa= slots only for the literal path; object inputs auto-use attachments.
+        var slots: String? = nil
+        if useMSAEffective, let first = chains.first, !first.isFromObject {
+            slots = PredictController.msaSlots(
+                orderedChains: chains, requested: msaChains,
+                nameFor: { plannedNames[$0.id] ?? "" })
+        }
+        let cmd = PredictController.predictPython(
+            predictor: predictor, input: inputText, nModels: nModels,
+            recyclingSteps: recyclingSteps, diffusionSteps: diffusionSteps,
+            seed: seed, msaDepth: depth,
+            name: resultName.isEmpty ? nil : resultName, msa: slots)
+        runPythonSeam(cmd)
+        phase = .predicting
+    }
+
+    func cancel() {
+        for name in plannedNames.values {
+            runPythonSeam("from pymol import cmd as _c\n_c.msa_cancel(\(PredictController.pythonLiteral(name)))")
+        }
+        plannedNames = [:]
+        phase = .idle
+    }
 }
 #endif

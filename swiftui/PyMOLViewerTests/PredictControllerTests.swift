@@ -90,5 +90,152 @@ final class PredictControllerTests: XCTestCase {
         XCTAssertTrue(payload.chains.first!.isFromObject)
         XCTAssertNil(payload.error)
     }
+
+    // MARK: Task 2 deferred — direct coverage of pure statics
+
+    func testFNVDigestIsPinned() {
+        // FNV-1a 32-bit hash of "MKTAY" — pinned so any future change to the hash is caught.
+        XCTAssertEqual(PredictController.fnvHex("MKTAY"), "6c788fb1")
+    }
+
+    func testAlignmentBaseNameObjectPath() {
+        let ch = PredictChain(id: "A", length: 129, object: "1ubq", chain: "A")
+        XCTAssertEqual(PredictController.alignmentBaseName(for: ch, literalSequence: nil),
+                       "predui_1ubq_A")
+    }
+
+    func testAlignmentBaseNameLiteralPath() {
+        let ch = PredictChain(id: "A", length: 5, object: "", chain: "")
+        let name = PredictController.alignmentBaseName(for: ch, literalSequence: "MKTAY")
+        XCTAssertEqual(name, "predui_\(PredictController.fnvHex("MKTAY"))_A")
+    }
+}
+
+@MainActor
+final class PredictControllerRunTests: XCTestCase {
+
+    private let gib = 1024 * 1024 * 1024
+
+    private func makeController(captured: NSMutableArray) -> PredictController {
+        let c = PredictController()
+        c.runPythonSeam = { captured.add($0) }
+        c.availableBytesProvider = { 64 * (1024 * 1024 * 1024) }  // never warns
+        return c
+    }
+
+    private func chain(_ id: String, _ len: Int, obj: String = "", ch: String = "")
+        -> PredictChain { PredictChain(id: id, length: len, object: obj, chain: ch) }
+
+    func testRunWithoutMSASubmitsPredictImmediately() {
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 30)], error: nil))
+        c.inputText = "MKTAY"
+        c.predictor = "boltz2"
+        c.nModels = 3
+        c.run()
+        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(cmds.count, 1)
+        let sent = cmds[0] as! String
+        XCTAssertTrue(sent.contains("_c.predict('boltz2', 'MKTAY'"))
+        XCTAssertTrue(sent.contains("n_models=3"))
+    }
+
+    func testRunWithMSAObjectPathStartsSearchesThenPredicts() {
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 60, obj: "1ubq", ch: "A")], error: nil))
+        c.inputText = "1ubq"
+        c.predictor = "boltz2"
+        c.useMSA = true
+        c.msaChains = ["A"]
+        c.run()
+
+        // A search started; not predicting yet. The search is chain-SCOPED —
+        // msa_search refuses a complex, so per-chain scoping is required even for a
+        // single-chain object.
+        XCTAssertEqual(c.phase, .searching(remaining: 1))
+        XCTAssertEqual(cmds.count, 1)
+        XCTAssertTrue((cmds[0] as! String).contains("_c.msa_search('(1ubq) and chain A'"))
+        XCTAssertTrue((cmds[0] as! String).contains("target='1ubq'"))
+        XCTAssertTrue((cmds[0] as! String).contains("chain='A'"))
+
+        // The alignment lands (name matches predui_1ubq_A, attached to 1ubq/A).
+        let landed = AlignmentEntry(id: "aln", name: "predui_1ubq_A", depth: 8,
+                                    columns: 60, residues: 60, target: "1ubq", chain: "A")
+        c.onEngineState(alignments: [landed], searches: [])
+
+        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(cmds.count, 2)
+        // Object path: predict does NOT carry an msa= arg (auto-attach).
+        XCTAssertFalse((cmds[1] as! String).contains("msa="))
+        XCTAssertTrue((cmds[1] as! String).contains("_c.predict('boltz2', '1ubq'"))
+    }
+
+    func testMSALiteralPathPassesSlots() {
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 5), chain("B", 5)], error: nil))
+        c.inputText = "MKTAY/GSHMA"
+        c.predictor = "boltz2"
+        c.useMSA = true
+        c.msaChains = ["A"]              // only chain A gets an MSA
+        c.run()
+        XCTAssertEqual(c.phase, .searching(remaining: 1))
+        let name = PredictController.alignmentBaseName(
+            for: c.chains[0], literalSequence: "MKTAY")
+        let landed = AlignmentEntry(id: "aln", name: name, depth: 4, columns: 5,
+                                    residues: 5, target: "", chain: "")
+        c.onEngineState(alignments: [landed], searches: [])
+        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertTrue((cmds.lastObject as! String).contains("msa='\(name)/'"))  // B empty
+    }
+
+    func testSearchThatVanishesWithoutLandingIsAnError() {
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 60, obj: "1ubq", ch: "A")], error: nil))
+        c.inputText = "1ubq"; c.predictor = "boltz2"; c.useMSA = true; c.msaChains = ["A"]
+        c.run()
+        // No alignment, and no running search with the planned name → it failed/cancelled.
+        c.onEngineState(alignments: [], searches: [])
+        guard case .error = c.phase else { return XCTFail("expected error phase") }
+        XCTAssertEqual(cmds.count, 1)   // predict was never submitted
+    }
+
+    func testOversizeRaisesWarningNotSubmit() {
+        let cmds = NSMutableArray()
+        let c = PredictController()
+        c.runPythonSeam = { cmds.add($0) }
+        c.availableBytesProvider = { 4 * (1024 * 1024 * 1024) }  // small machine
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 120)], error: nil))
+        c.inputText = "…120 residues…"; c.predictor = "boltz2"
+        c.run()
+        XCTAssertNotNil(c.pendingSizeWarning)
+        XCTAssertEqual(cmds.count, 0)          // nothing submitted yet
+        c.confirmPendingWarning()
+        XCTAssertNil(c.pendingSizeWarning)
+        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(cmds.count, 1)
+    }
+
+    func testPredictorSelectionDefaultsToFirst() {
+        let c = PredictController()
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true),
+                         PredictorInfo(id: "protenix", msa: false)],
+            chains: [], error: nil))
+        XCTAssertEqual(c.predictor, "boltz2")
+    }
 }
 #endif
