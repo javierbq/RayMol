@@ -373,11 +373,33 @@ final class BoltzJobManager {
            scored.pae.count == index.count * index.count {
             values.append(["key": "pae", "state": 0, "index": index,
                            "values": scored.pae])
+            // The matrix's own summary, written by the producer for the reason
+            // `mean_plddt` is: which entries went into it is a property of the tool.
+            //
+            // OFF THE DIAGONAL. PAE(i, i) is definitionally near zero and says nothing,
+            // so counting it would pull the mean down by roughly 1/n — ~3% at 35
+            // residues, worse the shorter the chain. Needs n >= 2 to mean anything.
+            let n = index.count
+            if n > 1 {
+                var total = 0.0
+                for i in 0..<n {
+                    for j in 0..<n where i != j { total += scored.pae[i * n + j] }
+                }
+                values.append(["key": "mean_pae", "state": 0,
+                               "value": total / Double(n * (n - 1))])
+            }
         }
         // nil for a single chain, where an interface score is undefined. Absent rather
         // than 0, which would read as a terrible interface instead of no interface.
+        //
+        // Both directions of ipSAE go across: `min_ipsae` is the gate (the worse
+        // direction is what a designed interface should be judged on) and `ipsae` is
+        // max(A->B, B->A), which boltz-mlx reports for continuity with the reference
+        // implementation and which will read higher. Sending only one of them would
+        // leave a reader unable to tell which normalisation they had.
         if let interface = scored.interfaceScores() {
             values.append(["key": "min_ipsae", "state": 0, "value": interface.minIPSAE])
+            values.append(["key": "ipsae", "state": 0, "value": interface.ipsae])
             values.append(["key": "ipae", "state": 0, "value": interface.ipae])
         }
         guard !values.isEmpty else { return }

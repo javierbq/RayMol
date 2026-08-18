@@ -43,9 +43,17 @@ PyMOL> metrics_schema boltz2
    plddt              residue  pLDDT    Per-residue confidence  [0..100]
    mean_plddt         state    pLDDT    Mean confidence  [0..100]
    pae                pair     A        Predicted aligned error  [0..32]
+   mean_pae           state    A        Mean predicted aligned error  [0..32]
    min_ipsae          state    -        min ipSAE  [0..1]
+   ipsae              state    -        ipSAE  [0..1]
    ipae               state    A        Interface PAE  [0..32]
 ```
+
+Read the descriptions before quoting any of these. `mean_pae` is the whole matrix off the
+diagonal, so it exists for a single chain; `ipae` is inter-chain pairs only. `min_ipsae`
+(the worse direction) is the gate metric, `ipsae` is `max(A->B, B->A)` and will read
+higher — and neither carries a threshold, because boltz-mlx computes the combined-length
+ipSAE variant and a cutoff quoted for another variant moves the operating point.
 
 ## Colouring by a metric
 

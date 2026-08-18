@@ -119,6 +119,10 @@ class ShippedSchemaTest(testing.PyMOLTestCase):
         self.assertIn('plddt', [s.key for s in schema.specs('boltz2')])
         self.assertEqual(schema.spec('boltz2', 'plddt').scope, schema.RESIDUE)
         self.assertEqual(schema.spec('boltz2', 'pae').scope, schema.PAIR)
+        # Both ipSAE variants are declared, because they are not interchangeable.
+        self.assertEqual(schema.spec('boltz2', 'ipsae').scope, schema.STATE)
+        self.assertEqual(schema.spec('boltz2', 'min_ipsae').scope, schema.STATE)
+        self.assertEqual(schema.spec('boltz2', 'mean_pae').units, 'A')
         self.assertEqual(schema.spec('boltz2', 'mean_plddt').scope, schema.STATE)
         self.assertEqual(schema.spec('boltz2', 'msa_depth').scope, schema.CHAIN)
 

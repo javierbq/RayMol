@@ -54,13 +54,32 @@ CONFIDENCE_SPECS = (
                lo=0, hi=32, higher_is_better=False,
                description='Row-major over the residue index: the expected error in'
                            ' residue i once the structure is aligned on residue j.'),
+    MetricSpec('mean_pae', STATE, units='A', label='Mean predicted aligned error',
+               lo=0, hi=32, higher_is_better=False,
+               description='Mean of the PAE matrix OFF THE DIAGONAL. PAE(i, i) is'
+                           ' definitionally near zero and carries no information, so'
+                           ' including it would dilute the mean by 1/n -- 3% for a'
+                           ' 35-residue peptide, and the shorter the chain the worse.'
+                           ' Distinct from `ipae`, which is inter-chain pairs only:'
+                           ' this one is defined for a single chain too.'),
     MetricSpec('min_ipsae', STATE, label='min ipSAE', lo=0, hi=1,
                higher_is_better=True,
-               description='Interface score between the first two chains. ABSENT for'
-                           ' a single chain, where an interface score is undefined --'
-                           ' not zero, which would read as a terrible interface.'),
+               description='min(A->B, B->A) between the first two chains -- the GATE'
+                           ' metric, because the worse direction is what a designed'
+                           ' interface should be judged on. ABSENT for a single chain,'
+                           ' where an interface score is undefined -- not zero, which'
+                           ' would read as a terrible interface. No threshold is'
+                           ' implied: boltz-mlx computes the combined-length (d0chn)'
+                           ' variant, and a cutoff quoted for another variant moves the'
+                           ' operating point permissively.'),
+    MetricSpec('ipsae', STATE, label='ipSAE', lo=0, hi=1, higher_is_better=True,
+               description='max(A->B, B->A). Reported for continuity with the ipSAE'
+                           ' reference implementation; NOT the gate -- use `min_ipsae`'
+                           ' for that, and expect this to read higher.'),
     MetricSpec('ipae', STATE, units='A', label='Interface PAE', lo=0, hi=32,
-               higher_is_better=False),
+               higher_is_better=False,
+               description='Mean PAE over inter-chain pairs, both directions. < 10 A is'
+                           ' the conventional confident-interface mark.'),
 )
 
 #: The usual set for a method with a confidence head.

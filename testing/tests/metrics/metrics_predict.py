@@ -96,9 +96,13 @@ class PredictMetricTestCase(testing.PyMOLTestCase):
             {'key': 'mean_plddt', 'state': 0, 'value': 82.0},
             {'key': 'pae', 'state': 0, 'index': index,
              'values': [1.0] * (residues * residues)},
+            # The matrix summary rides with the matrix, and unlike the interface scores
+            # it is defined for a single chain too.
+            {'key': 'mean_pae', 'state': 0, 'value': 3.5},
         ]
         if with_interface:
             values.append({'key': 'min_ipsae', 'state': 0, 'value': 0.71})
+            values.append({'key': 'ipsae', 'state': 0, 'value': 0.83})
             values.append({'key': 'ipae', 'state': 0, 'value': 4.2})
         with open(path, 'w') as handle:
             json.dump({'tool': 'boltz2', 'object': 'pred', 'values': values}, handle)
@@ -164,7 +168,13 @@ class HostDocumentTest(PredictMetricTestCase):
         self.assertEqual(run.one('mean_plddt', state=1).value, 82.0)
         # PAE used to be computed on every run and dropped on the floor.
         self.assertEqual(len(run.one('pae', state=1).values), 25)
+        self.assertEqual(run.one('mean_pae', state=1).value, 3.5)
         self.assertEqual(run.one('min_ipsae', state=1).value, 0.71)
+        # Both ipSAE directions, and they are not interchangeable: min is the gate,
+        # ipsae is max(A->B, B->A) and reads higher.
+        self.assertEqual(run.one('ipsae', state=1).value, 0.83)
+        self.assertGreater(run.one('ipsae', state=1).value,
+                           run.one('min_ipsae', state=1).value)
         plddt = run.one('plddt', state=1)
         self.assertEqual([tuple(p) for p in plddt.index],
                          [('A', str(i + 1)) for i in range(5)])
@@ -206,6 +216,11 @@ class HostDocumentTest(PredictMetricTestCase):
                       self.document(path, with_interface=False))
         run = self.deliver(job)
         self.assertEqual(run.find('min_ipsae'), [])
+        self.assertEqual(run.find('ipsae'), [])
+        self.assertEqual(run.find('ipae'), [])
+        # mean_pae is NOT an interface score: it is the whole matrix, so a single chain
+        # still has one.
+        self.assertEqual(run.one('mean_pae', state=1).value, 3.5)
 
     def testTheStructureStillLoadsWhenMetricsCannotBeRecorded(self):
         # A prediction that folded must not fail to appear because its numbers could
