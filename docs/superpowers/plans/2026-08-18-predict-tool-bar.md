@@ -20,7 +20,12 @@
 - **MSA support is per-predictor.** A predictor advertises `supports_msa` (boltz2 True, protenix False). The bar disables "Use MSA" when the selected model does not support it.
 - **Size guard is per-predictor.** `predictor` id starting with `protenix` → `ProtenixSizeGuard.decide(tokens:availableBytes:)`; otherwise `PredictSizeGuard.decide(tokens:msaDepth:availableBytes:)`. Both return `PredictSizeGuard.Decision`.
 - **Mode exclusivity.** Move / Measure / Design / Predict are mutually exclusive; each setter clears the others and `exitActiveInteractionMode()` leaves whichever is active.
-- **Build/verify (macOS, per project memory):** two-stage build — build the core FIRST, THEN `xcodebuild` — and name any dev build with a suffix (never plain `RayMol.app`). Functional UI checks run in a disposable VM via the `mac-vm-test` skill.
+- **Build/verify (macOS) — canonical commands for THIS worktree** (deps already symlinked; `build_macos_swiftui/libpymol_core.a` present via symlink; all new code is Swift-only so the C++ core need NOT be rebuilt):
+  - Run unit tests: `cd swiftui && xcodebuild test -scheme UnitTests_macOS -destination 'platform=macOS' -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation -only-testing:PyMOLViewerTests/<TestClass> 2>&1 | tail -30` (the `UnitTests_macOS` scheme builds+runs ONLY `PyMOLViewerTests`, never the iOS targets).
+  - Build the app: `cd swiftui && xcodebuild build -scheme PyMOLViewer_macOS -configuration Debug -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation 2>&1 | tail -15`.
+  - The `-skipPackagePluginValidation -skipMacroValidation` flags are MANDATORY (mlx-swift ships a build-tool plugin Xcode otherwise gates on interactive trust → exit 65 before compiling).
+  - The first build is a full one (several minutes); subsequent incremental builds are fast.
+  - Functional UI checks run in a disposable VM via the `mac-vm-test` skill; name any dev build with a suffix (never plain `RayMol.app`).
 - **CI:** the embedded-test runner enumerates test files by hand in `.github/workflows/raymol-embedded-tests.yml`; a new Python test file that is not added there never runs.
 
 ---
@@ -362,7 +367,7 @@ final class PredictControllerTests: XCTestCase {
 
 Run (from `swiftui/`):
 ```bash
-xcodebuild test -scheme RayMol -destination 'platform=macOS' -only-testing:PyMOLViewerTests/PredictControllerTests 2>&1 | tail -20
+xcodebuild test -scheme UnitTests_macOS -destination 'platform=macOS' -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation -only-testing:PyMOLViewerTests/PredictControllerTests 2>&1 | tail -30
 ```
 Expected: FAIL — `cannot find 'PredictController' in scope` / unknown types.
 
@@ -541,7 +546,7 @@ final class PredictController: ObservableObject {
 
 Run:
 ```bash
-xcodebuild test -scheme RayMol -destination 'platform=macOS' -only-testing:PyMOLViewerTests/PredictControllerTests 2>&1 | tail -20
+xcodebuild test -scheme UnitTests_macOS -destination 'platform=macOS' -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation -only-testing:PyMOLViewerTests/PredictControllerTests 2>&1 | tail -30
 ```
 Expected: PASS (all composition tests). The `PredictController` class has no behavior yet — that's fine; these tests hit only the statics and the Codable types.
 
@@ -888,7 +893,7 @@ Replace the `// Filled in Task 3.` comment in `PredictController.swift` with the
 
 Run:
 ```bash
-xcodebuild test -scheme RayMol -destination 'platform=macOS' -only-testing:PyMOLViewerTests/PredictControllerRunTests 2>&1 | tail -30
+xcodebuild test -scheme UnitTests_macOS -destination 'platform=macOS' -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation -only-testing:PyMOLViewerTests/PredictControllerRunTests 2>&1 | tail -30
 ```
 Expected: PASS. If `.searching(remaining:)` equality trips on associated values, confirm `PredictPhase` derives `Equatable` (it does in Task 2).
 
@@ -1037,7 +1042,7 @@ Add the reader (place it near `parseObjectPanelFeedback`, or in PyMOLEngine.swif
 
 Run (two-stage, per project memory — core FIRST):
 ```bash
-cd swiftui && ./build_macos_core.sh && xcodebuild build -scheme RayMol -destination 'platform=macOS' 2>&1 | tail -15
+cd swiftui && xcodebuild build -scheme PyMOLViewer_macOS -configuration Debug -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation 2>&1 | tail -15
 ```
 Expected: `BUILD SUCCEEDED`. (Use whatever the repo's core build step is — see `deps_macos`/`build_macos_swiftui` per project memory; the invariant is that `xcodebuild` alone silently links a stale `libpymol_core.a`.)
 
@@ -1293,7 +1298,7 @@ Then in the macOS layout's alignment-strip region — the same place `else if en
 
 Run:
 ```bash
-cd swiftui && ./build_macos_core.sh && xcodebuild build -scheme RayMol -destination 'platform=macOS' 2>&1 | tail -15
+cd swiftui && xcodebuild build -scheme PyMOLViewer_macOS -configuration Debug -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation 2>&1 | tail -15
 ```
 Expected: `BUILD SUCCEEDED`.
 
@@ -1317,7 +1322,8 @@ git commit -m "feat(predict): Tools-menu Predict entry + docked PredictBar"
 Build normally, then rename + re-sign per project memory (never leave a plain `RayMol.app`):
 
 ```bash
-cd swiftui && ./build_macos_core.sh && xcodebuild build -scheme RayMol -destination 'platform=macOS'
+cd swiftui && xcodebuild build -scheme PyMOLViewer_macOS -configuration Debug -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation
+# built app: build_mac_dd/Build/Products/Debug/RayMol.app
 # then apply the RayMol-<suffix> rename + codesign recipe from CLAUDE.md (e.g. RayMol-predict.app)
 ```
 
@@ -1333,8 +1339,8 @@ Use the `mac-vm-test` skill. Verify, capturing a screenshot at each step:
 - [ ] **Step 3: Run the full embedded + unit suites**
 
 ```bash
-pymol -ckqy testing/testing.py --run testing/tests/test_appkit_predict.py
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' -only-testing:PyMOLViewerTests/PredictControllerTests -only-testing:PyMOLViewerTests/PredictControllerRunTests 2>&1 | tail -20
+# embedded python test — use the shadow-PYTHONPATH recipe in the ledger (Homebrew pymol)
+cd swiftui && xcodebuild test -scheme UnitTests_macOS -destination 'platform=macOS' -derivedDataPath build_mac_dd -skipPackagePluginValidation -skipMacroValidation -only-testing:PyMOLViewerTests/PredictControllerTests -only-testing:PyMOLViewerTests/PredictControllerRunTests 2>&1 | tail -30
 ```
 Expected: all PASS.
 
