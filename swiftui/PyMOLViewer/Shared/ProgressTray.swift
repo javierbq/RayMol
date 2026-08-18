@@ -293,6 +293,19 @@ struct ProgressCard: View {
 }
 
 /// The container. Bottom-trailing, capped in height, scrolling past the cap.
+/// Natural height of the tray's rows, reported up from a background reader.
+///
+/// Measured rather than capped with `.frame(maxHeight:)`, because that modifier
+/// does not cap: it makes a view FLEXIBLE up to the value, so against a tall
+/// parent the tray expanded to the full allowance and drew a mostly-empty box.
+/// Hugging exactly AND refusing to grow past a limit needs the real height.
+private struct TrayContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ProgressTray: View {
     let items: [ProgressItem]
     let onAction: (ProgressItem) -> Void
@@ -300,6 +313,8 @@ struct ProgressTray: View {
     /// Minimised across launches: a long prediction outlives the window, and a
     /// user who collapsed the tray once means it for the whole session.
     @AppStorage("progressTrayCollapsed") private var collapsed = false
+
+    @State private var contentHeight: CGFloat = 0
 
     /// Rendered rows. Bounded so SwiftUI's diff cost cannot grow with n_models.
     private static let maxRows = 8
@@ -327,6 +342,13 @@ struct ProgressTray: View {
         return parts.joined(separator: " · ")
     }
 
+    /// Never taller than 45% of the viewport, and never taller than the viewport
+    /// itself less its padding -- on iOS the tray is clipped to the viewport,
+    /// which is far shorter than the window.
+    private func cap(_ size: CGSize) -> CGFloat {
+        max(120, min(size.height * 0.45, size.height - 32))
+    }
+
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
@@ -346,19 +368,28 @@ struct ProgressTray: View {
     }
 
     private func tray(in size: CGSize) -> some View {
-        VStack(spacing: 0) {
+        let limit = cap(size)
+        let scrolls = contentHeight > limit
+        return VStack(spacing: 0) {
             header
             if !collapsed {
                 Divider().opacity(0.4)
-                // The cap goes on the CONTENT, before the background: applied
-                // after it, SwiftUI paints the card at its natural height and
-                // then centres it in a taller box -- which both floats the card
-                // off the bottom edge and leaves the scroll view unbounded, so
-                // the cap never does the job it exists for.
-                //
-                // A FRACTION, never a constant: on iOS the tray is clipped to
-                // the viewport, which is far shorter than the window.
-                stack.frame(maxHeight: max(140, size.height * 0.45), alignment: .top)
+                ScrollView(.vertical, showsIndicators: scrolls) {
+                    rows.background(
+                        GeometryReader { inner in
+                            Color.clear.preference(
+                                key: TrayContentHeightKey.self, value: inner.size.height)
+                        })
+                }
+                .onPreferenceChange(TrayContentHeightKey.self) { contentHeight = $0 }
+                // Hug the rows exactly; stop growing at the limit.
+                .frame(height: min(max(contentHeight, 1), limit))
+                // No rubber-banding on a tray that already fits.
+                .scrollDisabled(!scrolls)
+                // The native scrollbar only appears mid-scroll (#131), so the
+                // fade is the resting cue that there is more below -- and only
+                // when there IS more, or it would dim the last visible row.
+                .mask(scrolls ? AnyView(fade) : AnyView(Color.black))
             }
         }
         // 340 + 2*16 padding = 372, against an iPhone SE's 375pt.
@@ -367,6 +398,16 @@ struct ProgressTray: View {
         .overlay(RoundedRectangle(cornerRadius: 10)
             .strokeBorder(.secondary.opacity(0.25)))
         .shadow(radius: 6)
+    }
+
+    private var fade: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: 0.92),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top, endPoint: .bottom)
     }
 
     private var header: some View {
@@ -396,28 +437,6 @@ struct ProgressTray: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .contentShape(Rectangle())
-    }
-
-    private var stack: some View {
-        // Hug one or two cards; scroll past that. Same shape as
-        // sceneButtonsOverlay's ViewThatFits, turned vertical.
-        ViewThatFits(in: .vertical) {
-            rows
-            ScrollView(.vertical, showsIndicators: false) { rows }
-                // The native scrollbar only appears mid-scroll (#131), so the
-                // fade is the resting cue that there is more below. Applied to
-                // the SCROLLING branch only -- on the outer view it would fade
-                // the hugging branch too.
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0),
-                            .init(color: .black, location: 0.92),
-                            .init(color: .clear, location: 1),
-                        ],
-                        startPoint: .top, endPoint: .bottom)
-                )
-        }
     }
 
     private var rows: some View {
