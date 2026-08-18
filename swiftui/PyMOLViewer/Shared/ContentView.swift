@@ -450,16 +450,7 @@ struct ContentView: View {
                 // The viewport takes the remaining (majority of) space, with the
                 // Timeline transport docked beneath it whenever there's more than
                 // one frame to play (states / trajectory / movie).
-                VStack(spacing: 0) {
-                    macViewport
-                    // The docked bottom transport was removed: movie playback lives
-                    // in the Movie tab, model stepping in the Object panel. Only the
-                    // full timeline editor still docks here (when expanded).
-                    if engine.timelineMode {
-                        Divider()
-                        TimelinePanel()
-                    }
-                }
+                macViewportStack
                 // Drag a .pdb/.cif/.pse/etc. onto the viewport to load it (same
                 // path as File ▸ Open / Finder "Open With"). Highlight while hovered.
                 .onDrop(of: [.fileURL], isTargeted: $isViewportDropTargeted) { providers in
@@ -600,6 +591,33 @@ struct ContentView: View {
                     pymolKeyMonitor = nil
                 }
             }
+    }
+
+    // PredictBar docked in the macOS viewport column. Declared here (inside the
+    // first #if os(macOS) block) so macViewportStack can reference it without a
+    // second #if guard — same scoping pattern as mouseLegendCard / macViewport.
+    @ViewBuilder private var predictBar: some View {
+        PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
+    }
+
+    // The viewport column in the macOS HSplitView: PredictBar (when active) + the
+    // 3D Metal view + the Timeline dock. Extracted so macOSLayoutBase's body stays
+    // within the type-checker's size limit — same pattern as macViewport itself.
+    @ViewBuilder private var macViewportStack: some View {
+        VStack(spacing: 0) {
+            if engine.predictMode {
+                predictBar
+                Divider()
+            }
+            macViewport
+            // The docked bottom transport was removed: movie playback lives
+            // in the Movie tab, model stepping in the Object panel. Only the
+            // full timeline editor still docks here (when expanded).
+            if engine.timelineMode {
+                Divider()
+                TimelinePanel()
+            }
+        }
     }
 
     // Esc → back out one level. A local key-down monitor rather than .onKeyPress
@@ -2906,6 +2924,9 @@ struct ContentView: View {
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
+        #if os(macOS)
+        if engine.predictMode { return ("Predict", "atom", "atom") }
+        #endif
         return nil
     }
 
@@ -2957,15 +2978,26 @@ struct ContentView: View {
             .disabled(isDesignLocked)
         }
         #endif
+        #if os(macOS)
+        Button {
+            engine.setPredictMode(!engine.predictMode)
+        } label: {
+            if engine.predictMode {
+                Label("Predict", systemImage: "checkmark")
+            } else {
+                Text("Predict")
+            }
+        }
+        #endif
     }
 
     /// Tooltip for the Tools menu. Names only the tools this build actually has —
     /// Design is absent from non-MPNN builds, so it must not be advertised there.
     private var toolsMenuHelp: String {
         #if RAYMOL_MPNN
-        let tools = "Move objects · Measure distances · Design with MPNN"
+        let tools = "Move objects · Measure distances · Design with MPNN · Predict structures"
         #else
-        let tools = "Move objects · Measure distances"
+        let tools = "Move objects · Measure distances · Predict structures"
         #endif
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }
         return "\(active.name) mode is active — Tools: \(tools)"
