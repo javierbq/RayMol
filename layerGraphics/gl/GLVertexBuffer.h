@@ -132,6 +132,9 @@ public:
   std::size_t cpuStride() const { return m_cpuStride; }
   const BufferDataDesc& getDesc() const { return m_cpuDesc; }
   bool hasCPUData() const { return !m_cpuData.empty(); }
+  const void* cpuDataPtr() const override {
+    return m_cpuData.empty() ? nullptr : m_cpuData.data();
+  }
 
 private:
   void retainInterleavedCPUCopy();
@@ -232,6 +235,9 @@ public:
   const std::byte* cpuData() const { return m_cpuData.data(); }
   std::size_t cpuDataSize() const { return m_cpuData.size(); }
   bool hasCPUData() const { return !m_cpuData.empty(); }
+  const void* cpuDataPtr() const override {
+    return m_cpuData.empty() ? nullptr : m_cpuData.data();
+  }
 
 private:
   void bufferSubData(std::size_t offset, pymol::span<const std::byte> data);

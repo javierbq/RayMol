@@ -5287,7 +5287,10 @@ CGO* CGOOptimizeConnectors(const CGO* I, int est)
   CGO* cgo = nullptr;
   int num_total_connectors;
   int ok = true;
-  int use_geometry_shaders =
+  // The Metal renderer expands connectors in its vertex shader, so it wants
+  // the same compact one-record-per-connector layout the GL geometry-shader
+  // path uses (and it never reads a_isCenterPt).
+  int use_geometry_shaders = I->G->Renderer ||
       SettingGetGlobal_b(I->G, cSetting_use_geometry_shaders);
   int factor = (use_geometry_shaders ? 1 : 4);
   num_total_connectors =

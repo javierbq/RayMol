@@ -156,6 +156,14 @@ public:
   virtual ~GPUBuffer() {};
   virtual size_t get_hash_id() { return _hashid; }
   virtual void bind() const = 0;
+  /**
+   * @return Address of the CPU-side copy non-GL renderers upload from, or
+   * nullptr if this buffer keeps none.
+   * @note Renderers that cache GPU uploads keyed on this address must drop
+   * the entry before the buffer dies, or a recycled heap address will serve
+   * stale vertex data (see CShaderMgr::freeAllGPUBuffers).
+   */
+  virtual const void* cpuDataPtr() const { return nullptr; }
 protected:
   virtual void set_hash_id(size_t id) { _hashid = id; }
 private:
