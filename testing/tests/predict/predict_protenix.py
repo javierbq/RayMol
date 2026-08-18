@@ -219,39 +219,54 @@ class TestTheRefusalQuotesTheVariantThatActuallyFailed(testing.PyMOLTestCase):
         self.assertIn('at %d residues' % MAX_RESIDUES,
                       self.refusal('protenix-base-int8'))
 
-    def testV2DoesNotClaimItsCapIsMeasured(self):
-        """The bug, stated as a test: 250 is a placeholder, not a measurement."""
-        message = self.refusal('protenix-v2-int8')
-        self.assertNotIn('That limit is measured', message)
-        self.assertIn('placeholder', message)
+    def testV2AlsoCallsItsCapMeasuredNowThatItIs(self):
+        """v2 was swept for #316, so "measured" became the honest word for it too.
 
-    def testV2SaysHowFarItsSweepActuallyGot(self):
-        """15 residues / 509 MiB is the whole of what has been run, and it should say so."""
-        from pymol.predictors.protenix import MEASURED_PEAK_MIB
-        residues, peak = MEASURED_PEAK_MIB['v2'][-1]
+        This test read the other way round when the cap was 250: the point is not which
+        word appears but that the word tracks the table, and the table changed.
+        """
         message = self.refusal('protenix-v2-int8')
-        self.assertIn('%d residues (%d MiB peak)' % (residues, peak), message)
+        self.assertIn('That limit is measured', message)
+        self.assertNotIn('placeholder', message)
 
-    def testV2QuotesNoNumberFromBasesSweep(self):
-        """The regression itself: base's peaks must not appear in v2's refusal."""
-        from pymol.predictors.protenix import MEASURED_PEAK_MIB
+    def testV2QuotesItsOwnPeakAndNotBases(self):
+        """The regression itself, and it survives the caps being equal.
+
+        base and v2 now stop at the same length, so a refusal that still reached for
+        base's table would produce a message that LOOKS right -- same cap, same shape,
+        wrong gigabytes. Only the peak distinguishes them.
+        """
+        from pymol.predictors.protenix import MEASURED_PEAK_MIB, V2_MAX_RESIDUES
+        peak = dict(MEASURED_PEAK_MIB['v2'])[V2_MAX_RESIDUES]
         message = self.refusal('protenix-v2-int8')
-        for _, peak in MEASURED_PEAK_MIB['base']:
-            self.assertNotIn(str(peak), message, peak)
+        self.assertIn('%.1f GiB' % (peak / 1024.0), message)
+        for _, other in MEASURED_PEAK_MIB['base']:
+            self.assertNotIn(str(other), message, other)
         self.assertNotIn('8.6 GB', message)
 
-    def testV2SaysWhyBasesCurveCannotJustBeReused(self):
-        """A 256-wide pair track doubles the N^2 term, so base UNDERSTATES v2."""
-        message = self.refusal('protenix-v2-int8')
-        self.assertIn('256', message)
-        self.assertIn('UNDERSTATE', message)
+    def testTheTwoVariantsQuoteDifferentPeaks(self):
+        """The sharpest form of #316: same sentence, same cap, different numbers.
 
-    def testV2OffersTheMeasuredPackAsTheRemedy(self):
-        """The user hit this at 429 residues; base is measured to 700 and would run it."""
-        from pymol.predictors.protenix import DEFAULT_ID, MAX_RESIDUES
-        message = self.refusal('protenix-v2-int8')
-        self.assertIn(DEFAULT_ID, message)
-        self.assertIn(str(MAX_RESIDUES), message)
+        If these two ever agree, something is reading one table for both packs again --
+        which is the whole bug, and it would be invisible in any test that only checked
+        one of them.
+        """
+        self.assertNotEqual(self.refusal('protenix-base-int8'),
+                            self.refusal('protenix-v2-int8'))
+
+    def testV2IsMeasuredHigherThanBaseAtItsCap(self):
+        """Not a message test: the reason the two tables cannot be shared.
+
+        A 256-wide pair track against base's 128 roughly doubles the N^2 term, and the
+        sweep bears it out at every length. If this ever inverts, the v2 row was
+        mis-transcribed, and mis-transcribed downward is the direction that kills
+        sessions.
+        """
+        from pymol.predictors.protenix import MEASURED_PEAK_MIB
+        base = dict(MEASURED_PEAK_MIB['base'])
+        for residues, peak in MEASURED_PEAK_MIB['v2']:
+            if residues in base:
+                self.assertGreater(peak, base[residues], residues)
 
     def testEveryPackNamesItselfAndItsOwnCap(self):
         """Six ids, two caps -- the header has to come from the pack that refused."""
@@ -467,25 +482,34 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
             name = registry.get('protenix-v2-%s' % precision).name
             self.assertIn('mirror', name.lower(), precision)
 
-    def testV2IsCappedLowerBecauseItIsMeasuredLess(self):
+    def testNeitherCapOutrunsItsOwnSweep(self):
+        """The one invariant that survives a cap moving: it may reach the data, not pass it.
+
+        This replaces an assertion that v2's cap was strictly LOWER than base's, which was
+        true only while v2 was unswept and stopped being true the moment it was measured
+        to the same length. What must hold forever is that a cap is a measurement.
+        """
         from pymol.predictors import registry
-        from pymol.predictors.protenix import MAX_RESIDUES, V2_MAX_RESIDUES
-        self.assertLess(V2_MAX_RESIDUES, MAX_RESIDUES)
+        from pymol.predictors.protenix import (MAX_RESIDUES, MEASURED_PEAK_MIB,
+                                               V2_MAX_RESIDUES)
+        for variant, cap in (('base', MAX_RESIDUES), ('v2', V2_MAX_RESIDUES)):
+            swept = max(residues for residues, _ in MEASURED_PEAK_MIB[variant])
+            self.assertLessEqual(cap, swept, variant)
         self.assertEqual(registry.get('protenix-v2-int8').max_residues, V2_MAX_RESIDUES)
         self.assertEqual(registry.get('protenix-base-int8').max_residues, MAX_RESIDUES)
 
-    def testV2RefusesAboveItsOwnCapNotBases(self):
+    def testEachPackRefusesAtItsOwnCapAndNotAnothersProtenix(self):
+        """The cap is per pack, not per method, whether or not the two happen to agree."""
         from pymol.predictors import registry
-        from pymol.predictors.protenix import V2_MAX_RESIDUES
-        sequence = 'A' * (V2_MAX_RESIDUES + 1)
-        # Fine for base, refused for v2 -- the cap is per pack, not per method.
-        registry.get('protenix-base-int8').parse_spec(sequence)
-        try:
-            registry.get('protenix-v2-int8').parse_spec(sequence)
-        except PredictionInputError as error:
-            self.assertIn('protenix-v2-int8', str(error))
-        else:
-            self.fail('expected v2 to refuse above its own cap')
+        for pid in ('protenix-base-int8', 'protenix-v2-int8'):
+            predictor = registry.get(pid)
+            predictor.parse_spec('A' * predictor.max_residues)
+            try:
+                predictor.parse_spec('A' * (predictor.max_residues + 1))
+            except PredictionInputError as error:
+                self.assertIn(pid, str(error))
+            else:
+                self.fail('expected %s to refuse above its own cap' % pid)
 
     def testBareProtenixAliasesToV2Int8(self):
         from pymol.predictors import registry

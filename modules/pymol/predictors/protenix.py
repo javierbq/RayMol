@@ -58,7 +58,13 @@ RUNTIME = 'protenix'
 #:
 #:                60 res   250 res   400 res   550 res   700 res   900 res
 #:     base          547      2279      3868      6303      8622     16513
-#:     v2            -- (509 MiB at 15 residues; its 256-wide pair track costs more)
+#:     v2            738      2777      5914      9068        --        --
+#:
+#: v2 is now swept too, and the gap is what the shape of the two networks predicts: its
+#: pair track is 256 wide against base's 128, and it costs 35% more at 60 residues and
+#: 53% more at 400. Sizing a v2 fold from base's row would have been optimistic at every
+#: single length -- which is why the row existed as a placeholder until it could be run,
+#: rather than being interpolated from the row above it.
 #:
 #: Variants converge as the input grows: the now-unshipped tiny and mini measured 3494 and
 #: 3625 MiB at 400 residues against base's 3868, within 10% of each other, because the
@@ -68,11 +74,14 @@ RUNTIME = 'protenix'
 MEASURED_PEAK_MIB = {
     'base': ((60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622),
              (900, 16513)),
-    # v2 is swept only at the short end so far. Its pair track is 256 wide against every
-    # other variant's 128, so the N^2 term is doubled and base's curve UNDERSTATES it --
-    # which is the direction that gets a session jetsam-killed. Until it is swept
-    # properly, V2_MAX_RESIDUES caps it well inside what has been run.
-    'v2': ((15, 509),),
+    # Swept with scripts/protenix_memory_sweep.py, at the same lengths as base so the two
+    # rows are comparable point for point. The run's control -- the same harness against
+    # base at 60 and 120 -- reproduced base's committed numbers to within 3.5%, which is
+    # what licenses reading this row alongside that one; a v2 row from a harness that
+    # cannot reproduce base would be evidence about the harness.
+    #
+    # The single (15, 509) point this replaces was never wrong, only lonely.
+    'v2': ((60, 738), (120, 1649), (250, 2777), (400, 5914), (550, 9068)),
 }
 
 #: Hard ceiling, in residues, across every variant except v2.
@@ -97,20 +106,38 @@ MEASURED_PEAK_MIB = {
 #: unsaved session are a bad combination.
 MAX_RESIDUES = 700
 
-#: v2's own ceiling, lower because its memory is only measured at the short end and its
-#: pair representation is twice as wide. Not a judgement about the model -- it scores
-#: highest of the four on a short probe -- but about what has been measured.
-V2_MAX_RESIDUES = 250
+#: v2's own ceiling: the largest length it has actually been RUN at, the same rule
+#: MAX_RESIDUES follows.
+#:
+#: It was 250, and 250 was never a measurement -- v2 had been swept at one point, 15
+#: residues, and 250 was picked to sit well inside what had been run because base's curve
+#: understates v2 rather than overstating it. The sweep exists now (#316,
+#: scripts/protenix_memory_sweep.py), so this is data again: 550 residues peaks at 9068 MiB
+#: and takes 497 s on an M1 Max / 32 GiB.
+#:
+#: **700 was attempted and abandoned, which is why this is not 700.** It is the same
+#: wall base hit at 900 and for the same reason: 550 finishes in 8 minutes, and 700 was
+#: still running past 20 with the machine 15 GB into swap -- superlinear in exactly the
+#: way a fold looks when it stops being compute-bound and starts paging. Its peak is
+#: therefore unknown, and an unknown peak is not a ceiling. Whoever wants 700 can measure
+#: it: leave the machine to it, and this constant follows the number.
+#:
+#: Still its own constant rather than merged into MAX_RESIDUES, because v2 costs 44%
+#: more memory than base at the same length -- the two ceilings are independent, and the
+#: next one to move will move for one variant and not the other.
+V2_MAX_RESIDUES = 550
 
 #: Why a variant's ceiling sits where it does, when that ceiling is NOT itself one of the
 #: points in MEASURED_PEAK_MIB. Keyed by variant; a variant absent from here has a cap the
 #: sweep actually reached, and `_limit_rationale` reads the reason off the table instead
 #: of out of prose. Data rather than an if-branch so that the day v2 is swept properly,
 #: deleting its entry is the whole change.
-_UNMEASURED_CAP_REASON = {
-    'v2': "its pair track is 256 wide against every other variant's 128, so the N^2 "
-          "term is roughly doubled and base's curve would UNDERSTATE it",
-}
+#:
+#: Empty, and that is the goal state rather than an oversight: every variant offered here
+#: is now capped at a length it has been run at. It stays because the branch it feeds
+#: does -- a variant added without a sweep, or a ceiling set above one, has to say so
+#: rather than borrow the word "measured" from a neighbour.
+_UNMEASURED_CAP_REASON = {}
 
 
 def _limit_rationale(variant, limit):
