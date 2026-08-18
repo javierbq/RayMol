@@ -432,7 +432,12 @@ struct ContentView: View {
             VSplitView {
                 if showCommandPanel {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                        .frame(minHeight: 44, idealHeight: 60, maxHeight: 150)
+                        // idealHeight keeps the launch layout at a two-line
+                        // terminal; maxHeight is unbounded (#317) so the splitter
+                        // can be dragged as far as the user wants when reading a
+                        // long predict/build log. The viewport's own minHeight
+                        // (360) + layoutPriority stop it being squeezed away.
+                        .frame(minHeight: 44, idealHeight: 60, maxHeight: .infinity)
                 }
 
                 if engine.sequenceVisible {
