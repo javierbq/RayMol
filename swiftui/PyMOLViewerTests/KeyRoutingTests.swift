@@ -257,4 +257,66 @@ final class KeyRoutingTests: XCTestCase {
         XCTAssertNil(tok(48))   // Tab
         XCTAssertNil(tok(51))   // Delete
     }
+
+    // MARK: - Selection-mode cycling (Tab / Shift+Tab, #319)
+
+    /// Tab must never yield a set_key token, whatever the modifiers or focus —
+    /// otherwise the cycling monitor and the cmd.set_key monitor would both act
+    /// on the same event.
+    func testTabNeverYieldsAKeyToken() {
+        for mods: NSEvent.ModifierFlags in [[], [.shift], [.control], [.option],
+                                            [.command], [.control, .shift]] {
+            XCTAssertNil(tok(48, "\t", mods))
+            XCTAssertNil(tok(48, "\t", mods, focused: true))
+            XCTAssertNil(tok(48, "\t", mods, editing: true))
+        }
+    }
+
+    func testTabCyclesForwardAndShiftTabBack() {
+        XCTAssertEqual(KeyRouting.selectionModeStep(keyCode: 48, modifiers: [],
+                                                    textEditingActive: false), 1)
+        XCTAssertEqual(KeyRouting.selectionModeStep(keyCode: 48, modifiers: [.shift],
+                                                    textEditingActive: false), -1)
+    }
+
+    /// ⌘⇥ is the app switcher and ⌃⇥ switches tabs — only bare Tab is ours.
+    func testModifiedTabPassesThrough() {
+        for mods: NSEvent.ModifierFlags in [[.command], [.control], [.option],
+                                            [.command, .shift], [.control, .shift],
+                                            [.option, .shift]] {
+            XCTAssertNil(KeyRouting.selectionModeStep(keyCode: 48, modifiers: mods,
+                                                      textEditingActive: false))
+        }
+    }
+
+    /// Mid-edit, Tab belongs to the field (the command line completes with it).
+    /// A focused-but-empty field is NOT mid-edit and still cycles — the command
+    /// line holds focus indefinitely once clicked (#73).
+    func testTabPassesThroughWhileEditingOnly() {
+        XCTAssertNil(KeyRouting.selectionModeStep(keyCode: 48, modifiers: [],
+                                                  textEditingActive: true))
+        XCTAssertNil(KeyRouting.selectionModeStep(keyCode: 48, modifiers: [.shift],
+                                                  textEditingActive: true))
+        XCTAssertEqual(KeyRouting.selectionModeStep(keyCode: 48, modifiers: [],
+                                                    textEditingActive: false), 1)
+    }
+
+    func testNonTabKeysNeverCycle() {
+        for keyCode: UInt16 in [53, 36, 51, 123, 17, 48 + 1] {
+            XCTAssertNil(KeyRouting.selectionModeStep(keyCode: keyCode, modifiers: [],
+                                                      textEditingActive: false))
+        }
+    }
+
+    /// The mode ring wraps both ways and survives an out-of-range setting value.
+    func testSelectionModeRingWraps() {
+        let n = SelectionModeMenu.modes.count
+        XCTAssertEqual(n, 7)
+        XCTAssertEqual((0..<n).map { SelectionModeMenu.nextMode(from: $0, forward: true) },
+                       [1, 2, 3, 4, 5, 6, 0])
+        XCTAssertEqual((0..<n).map { SelectionModeMenu.nextMode(from: $0, forward: false) },
+                       [6, 0, 1, 2, 3, 4, 5])
+        XCTAssertTrue((0..<n).contains(SelectionModeMenu.nextMode(from: 42, forward: true)))
+        XCTAssertTrue((0..<n).contains(SelectionModeMenu.nextMode(from: -3, forward: false)))
+    }
 }

@@ -1287,12 +1287,35 @@ struct ObjectPanel: View {
 /// from every tab; on iPhone it sits in the Object panel's top toolbar.
 struct SelectionModeMenu: View {
     @EnvironmentObject var engine: PyMOLEngine
-    private let modes: [(Int, String)] = [(0, "Atoms"), (1, "Residues"), (2, "Chains"),
-                                          (3, "Segments"), (4, "Objects"), (5, "Molecules"), (6, "C-α")]
+    // Static so the Tab / Shift+Tab shortcut (#319, installSelectionModeKeyMonitor
+    // in ContentView) cycles through exactly the list this menu shows.
+    static let modes: [(Int, String)] = [(0, "Atoms"), (1, "Residues"), (2, "Chains"),
+                                         (3, "Segments"), (4, "Objects"), (5, "Molecules"), (6, "C-α")]
+
+    /// The mode one entry forward (Tab) or back (Shift+Tab) from `cur`, wrapping
+    /// at both ends. The floored modulo also brings an out-of-range setting
+    /// value back inside the list rather than going negative.
+    static func nextMode(from cur: Int, forward: Bool) -> Int {
+        let n = modes.count
+        return ((cur + (forward ? 1 : -1)) % n + n) % n
+    }
+
+    /// Apply `nextMode` to the live setting — the Tab / Shift+Tab shortcut's action.
+    static func cycle(_ engine: PyMOLEngine, forward: Bool) {
+        let cur = Int(engine.sceneState.values["mouse_selection_mode"] ?? 1)
+        let next = nextMode(from: cur, forward: forward)
+        engine.runCommand("set mouse_selection_mode, \(next)")
+        // Reflect the new mode immediately instead of waiting for the ~500ms
+        // scene poll to report it back: the label above updates on the
+        // keystroke, and two quick Tabs advance two modes rather than reading
+        // the same stale `cur` twice. The poll still has the last word.
+        engine.sceneState.values["mouse_selection_mode"] = Double(next)
+    }
+
     var body: some View {
         let cur = Int(engine.sceneState.values["mouse_selection_mode"] ?? 1)
         Menu {
-            ForEach(modes, id: \.0) { m in
+            ForEach(Self.modes, id: \.0) { m in
                 Button { engine.runCommand("set mouse_selection_mode, \(m.0)") } label: {
                     if m.0 == cur { Label(m.1, systemImage: "checkmark") } else { Text(m.1) }
                 }
@@ -1300,13 +1323,18 @@ struct SelectionModeMenu: View {
         } label: {
             HStack(spacing: 2) {
                 Image(systemName: "hand.tap").font(.system(size: 9))
-                Text(modes.first(where: { $0.0 == cur })?.1 ?? "Residues").font(.system(size: 10))
+                Text(Self.modes.first(where: { $0.0 == cur })?.1 ?? "Residues").font(.system(size: 10))
             }
             .foregroundColor(PanelTheme.headerColor)
         }
         .repMenuChrome()
         .fixedSize()
+        // Tab cycling is the macOS key monitor only, so only macOS advertises it.
+        #if os(macOS)
+        .help("Selection mode — what a tap selects (Tab / ⇧Tab to cycle)")
+        #else
         .help("Selection mode — what a tap selects")
+        #endif
     }
 }
 
