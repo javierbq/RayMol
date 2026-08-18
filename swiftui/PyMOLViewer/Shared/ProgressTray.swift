@@ -297,40 +297,105 @@ struct ProgressTray: View {
     let items: [ProgressItem]
     let onAction: (ProgressItem) -> Void
 
+    /// Minimised across launches: a long prediction outlives the window, and a
+    /// user who collapsed the tray once means it for the whole session.
+    @AppStorage("progressTrayCollapsed") private var collapsed = false
+
     /// Rendered rows. Bounded so SwiftUI's diff cost cannot grow with n_models.
     private static let maxRows = 8
 
     private var shown: ArraySlice<ProgressItem> { items.prefix(Self.maxRows) }
     private var overflow: Int { max(items.count - Self.maxRows, 0) }
+    private var errorCount: Int { items.filter(\.isError).count }
+    private var runningCount: Int { items.count - errorCount }
+
+    /// Mean of whatever reports a real fraction. Nil when nothing does, which is
+    /// why the collapsed pill falls back to a bare count rather than "0%".
+    private var aggregate: Double? {
+        let known = items.filter { !$0.isError && $0.moving }.compactMap(\.fraction)
+        guard !known.isEmpty else { return nil }
+        return known.reduce(0, +) / Double(known.count)
+    }
+
+    private var summary: String {
+        var parts: [String] = []
+        if runningCount > 0 { parts.append("\(runningCount) running") }
+        if errorCount > 0 { parts.append("\(errorCount) failed") }
+        if collapsed, let f = aggregate {
+            parts.append("\(Int((min(max(f, 0), 1) * 100).rounded()))%")
+        }
+        return parts.joined(separator: " · ")
+    }
 
     var body: some View {
         GeometryReader { geo in
-            VStack {
+            VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                HStack {
+                HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    if !items.isEmpty {
-                        stack
-                            // 340 + 2*16 padding = 372, against an iPhone SE's 375pt.
-                            .frame(width: min(340, geo.size.width - 32))
-                            .background(.ultraThinMaterial,
-                                        in: RoundedRectangle(cornerRadius: 10))
-                            .overlay(RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(.secondary.opacity(0.25)))
-                            .shadow(radius: 6)
-                            // A FRACTION, never a constant: on iOS the tray is
-                            // clipped to the viewport, which is far shorter than
-                            // the window.
-                            .frame(maxHeight: max(140, geo.size.height * 0.45))
-                            .padding(16)
-                    }
+                    if !items.isEmpty { tray(in: geo.size) }
                 }
             }
+            .padding(16)
         }
-        // Animate insert/remove only -- NOT the 2 Hz fraction tick, which would
-        // re-run the transition on every poll.
+        // Animate insert/remove and the collapse, NOT the 2 Hz fraction tick --
+        // animating that would re-run the transition on every poll.
         .animation(.easeInOut(duration: 0.18), value: items.map(\.id))
+        .animation(.easeInOut(duration: 0.18), value: collapsed)
         .allowsHitTesting(!items.isEmpty)
+    }
+
+    private func tray(in size: CGSize) -> some View {
+        VStack(spacing: 0) {
+            header
+            if !collapsed {
+                Divider().opacity(0.4)
+                // The cap goes on the CONTENT, before the background: applied
+                // after it, SwiftUI paints the card at its natural height and
+                // then centres it in a taller box -- which both floats the card
+                // off the bottom edge and leaves the scroll view unbounded, so
+                // the cap never does the job it exists for.
+                //
+                // A FRACTION, never a constant: on iOS the tray is clipped to
+                // the viewport, which is far shorter than the window.
+                stack.frame(maxHeight: max(140, size.height * 0.45), alignment: .top)
+            }
+        }
+        // 340 + 2*16 padding = 372, against an iPhone SE's 375pt.
+        .frame(width: min(340, size.width - 32))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(.secondary.opacity(0.25)))
+        .shadow(radius: 6)
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            // Collapsed, this is the only thing on screen saying a job failed,
+            // so it carries the warning colour rather than staying neutral.
+            if collapsed && errorCount > 0 {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+            Text(summary)
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button {
+                collapsed.toggle()
+            } label: {
+                Image(systemName: collapsed ? "chevron.up" : "chevron.down")
+                    .font(.caption2)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "Show running jobs" : "Minimise")
+            .accessibilityIdentifier("progressTray.collapse")
+            .accessibilityLabel(collapsed ? "Show running jobs" : "Minimise progress tray")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
     }
 
     private var stack: some View {
