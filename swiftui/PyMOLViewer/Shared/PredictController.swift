@@ -158,6 +158,12 @@ final class PredictController: ObservableObject {
     // Per-run plan: the alignment name expected for each requested spec-chain id.
     private var plannedNames: [String: String] = [:]
 
+    // Fix A: latest snapshot from onEngineState (updated even while idle).
+    private var latestAlignments: [AlignmentEntry] = []
+
+    // Fix B: one-tick grace so the just-fired search can register before being declared failed.
+    private var failGraceTicks = 0
+
     // MARK: entering the mode / input changes
 
     /// Load predictors (input-independent) and clear the form's resolved state.
@@ -238,9 +244,8 @@ final class PredictController: ObservableObject {
         pendingSizeWarning = nil
         guard useMSAEffective else { submitPredict(); return }
 
-        // Plan one alignment name per requested chain; start a search for each that is
-        // not already satisfied (object chain already attached, or literal alignment
-        // already present is handled on the next onEngineState tick).
+        // Plan one alignment name per requested chain; start a search only for chains
+        // not already satisfied by the current latestAlignments snapshot (Fix A).
         plannedNames = [:]
         let literalSeqs = PredictController.literalChainSequences(inputText)
         var started = 0
@@ -249,6 +254,8 @@ final class PredictController: ObservableObject {
                 : (indexOf(ch).map { $0 < literalSeqs.count ? literalSeqs[$0] : "" } ?? "")
             let name = PredictController.alignmentBaseName(for: ch, literalSequence: literal)
             plannedNames[ch.id] = name
+            // Fix A: skip search if alignment already landed.
+            if isSatisfied(ch, alignments: latestAlignments) { continue }
             let sequence = ch.isFromObject
                 ? "(\(inputText)) and chain \(ch.chain)"
                 : (literal ?? "")
@@ -260,6 +267,10 @@ final class PredictController: ObservableObject {
             runPythonSeam(cmd)
             started += 1
         }
+        // Fix A: if all chains were already satisfied, predict immediately.
+        if started == 0 { submitPredict(); return }
+        // Fix B: arm the one-tick grace so the just-fired searches can register.
+        failGraceTicks = 1
         phase = .searching(remaining: started)
     }
 
@@ -270,6 +281,8 @@ final class PredictController: ObservableObject {
     /// Called from the engine's 500 ms alignment/search poll. Advances or completes
     /// the search-then-predict pipeline.
     func onEngineState(alignments: [AlignmentEntry], searches: [MSASearchEntry]) {
+        // Fix A: always record latest state so proceed() can skip already-satisfied chains.
+        latestAlignments = alignments
         guard case .searching = phase else { return }
         let searchNames = Set(searches.map(\.name))
         var remaining: [String] = []
@@ -281,6 +294,13 @@ final class PredictController: ObservableObject {
             else { failed.append(ch.id) }                              // gone, no result
         }
         if !failed.isEmpty {
+            // Fix B: one-tick grace before declaring failure — the just-fired search may
+            // not have appeared in msaSearches on the very first poll tick.
+            if failGraceTicks > 0 {
+                failGraceTicks -= 1
+                phase = .searching(remaining: failed.count + remaining.count)
+                return
+            }
             phase = .error("MSA search did not complete for chain(s) "
                            + failed.sorted().joined(separator: ", ") + ".")
             return

@@ -205,10 +205,38 @@ final class PredictControllerRunTests: XCTestCase {
             chains: [chain("A", 60, obj: "1ubq", ch: "A")], error: nil))
         c.inputText = "1ubq"; c.predictor = "boltz2"; c.useMSA = true; c.msaChains = ["A"]
         c.run()
-        // No alignment, and no running search with the planned name → it failed/cancelled.
+        // Fix B: the FIRST tick with no alignment and no running search burns the grace tick
+        // — the search hasn't had time to appear in engine.msaSearches yet.
         c.onEngineState(alignments: [], searches: [])
-        guard case .error = c.phase else { return XCTFail("expected error phase") }
+        XCTAssertEqual(c.phase, .searching(remaining: 1), "first tick must NOT error (grace)")
+        XCTAssertEqual(cmds.count, 1)   // predict still not submitted
+        // SECOND tick with neither alignment nor running search → genuinely failed.
+        c.onEngineState(alignments: [], searches: [])
+        guard case .error = c.phase else { return XCTFail("expected error phase on second tick") }
         XCTAssertEqual(cmds.count, 1)   // predict was never submitted
+    }
+
+    func testAlreadySatisfiedChainSkipsSearchAndPredictsDirect() {
+        // Fix A: if the alignment is already present when run() is called, no msa_search
+        // is fired and predict is submitted immediately (no .searching phase).
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 60, obj: "1ubq", ch: "A")], error: nil))
+        c.inputText = "1ubq"; c.predictor = "boltz2"; c.useMSA = true; c.msaChains = ["A"]
+        // Feed the matching alignment while idle — latestAlignments is populated.
+        let existing = AlignmentEntry(id: "aln", name: "predui_1ubq_A", depth: 8,
+                                      columns: 60, residues: 60, target: "1ubq", chain: "A")
+        c.onEngineState(alignments: [existing], searches: [])
+        XCTAssertEqual(c.phase, .idle, "onEngineState while idle must not change phase")
+        c.run()
+        // Already satisfied → no msa_search, goes straight to predict.
+        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(cmds.count, 1)
+        XCTAssertFalse((cmds[0] as! String).contains("msa_search"), "no search needed")
+        XCTAssertTrue((cmds[0] as! String).contains("_c.predict("))
+        XCTAssertFalse((cmds[0] as! String).contains("msa="), "object path: no msa= arg")
     }
 
     func testOversizeRaisesWarningNotSubmit() {
