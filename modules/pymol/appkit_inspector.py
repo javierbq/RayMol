@@ -488,6 +488,68 @@ def _pending_maps():
         return {}, {}
 
 
+def _alignment_map():
+    """name -> {depth, columns, residues, target, chain} for every loaded MSA (#296).
+
+    Never raises, for the same reason _pending_maps() does not: the caller's single
+    `except` writes no file at all, so a throw here freezes the panel on a stale list.
+
+    Cheap by construction -- every value was computed once at load time. This must
+    never re-read or re-parse an a3m: the poll runs on the MAIN thread every 500 ms
+    and is already a measured hot spot (PR #270), and an alignment is megabytes.
+    """
+    try:
+        from pymol.msas import store
+        return store.panel_summary()
+    except Exception:
+        return {}
+
+
+#: Seconds of granularity for a search row's age. The panel repaints when this payload
+#: changes, so sending the raw float would repaint it on every 500 ms tick for the
+#: several MINUTES a search runs. A bucket makes the row change 12 times a minute
+#: instead of 120, and it costs nothing that is visible: the row shows a coarse age
+#: because the server reports no progress fraction, and inventing one would be a
+#: plausible-looking lie (see Search.snapshot).
+SEARCH_ELAPSED_BUCKET = 5
+
+
+def _search_map():
+    """In-flight MSA searches (#298), oldest first, for the panel's progress rows.
+
+    An alignment takes MINUTES to build and does not exist until it lands, so without
+    this the object panel shows nothing at all while one is being searched for -- and
+    the ALIGNMENTS section hides itself when empty, so a user's first search gives no
+    sign anything is happening. `searching.active()` was written for this ("Drives the
+    app's progress row") and had no consumer until now.
+
+    Never raises, for the same reason _pending_maps() and _alignment_map() do not: the
+    caller's single `except` writes no file at all, so a throw here freezes the panel
+    on a stale list.
+
+    Cheap by construction, and O(searches) rather than O(objects): `active()` is
+    normally EMPTY, and a snapshot is a handful of scalars copied under a short lock.
+    Nothing here reads the network or touches an a3m.
+    """
+    try:
+        from pymol.msas import searching
+        rows = []
+        for search in searching.active():
+            snapshot = search.snapshot()
+            elapsed = snapshot.get('elapsed') or 0
+            rows.append({
+                'id': snapshot['id'],
+                'name': snapshot['name'],
+                'phase': snapshot['phase'],
+                'server': snapshot['server'],
+                'elapsed': int(elapsed // SEARCH_ELAPSED_BUCKET
+                               * SEARCH_ELAPSED_BUCKET),
+            })
+        return rows
+    except Exception:
+        return []
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -508,6 +570,15 @@ def poll_panel():
     try:
         from pymol import predicting
         predicting.pump()
+    except Exception:
+        pass
+    # The MSA search's pump (#298), for exactly the same reason: the search runs on a
+    # thread that may not touch the store the panel reads two lines below, so the
+    # finished alignment is put there HERE. Its own try, and before the list is
+    # gathered, so an alignment that lands shows up on this tick rather than the next.
+    try:
+        from pymol import msa as _msa
+        _msa.pump()
     except Exception:
         pass
     try:
@@ -548,6 +619,15 @@ def poll_panel():
             'parent': parents,
             'pending': pending_details,
             'pending_jobs': pending_records,
+            # Alignments (#296). Not objects -- they have no geometry and nothing in
+            # the Executive knows about them -- so the panel draws them as their own
+            # section rather than as rows in the object list.
+            'alignments': _alignment_map(),
+            # Searches still running (#298). Gathered AFTER the pump above, so a search
+            # that just finished has already become an alignment and is counted once,
+            # in the section below it -- never as both a progress row and a result on
+            # the same tick.
+            'msa_searches': _search_map(),
         }
         # Serialise BEFORE opening the file. open(..., 'w') truncates immediately, so
         # doing the dumps inside the `with` leaves a ZERO-BYTE file behind when a value

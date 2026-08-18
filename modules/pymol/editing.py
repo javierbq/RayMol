@@ -467,6 +467,17 @@ PYMOL API
         finally:
             _self.unlock(r,_self)
         if _self._raising(r,_self): raise pymol.CmdException
+        # Metrics are keyed by object NAME (#308), so a rename would orphan them --
+        # the same cost the MSA store pays for resolving its target lazily. Carried
+        # here rather than reconciled from a poll, so a headless script sees it too.
+        # Never fatal: a rename that worked must not report failure because a
+        # bookkeeping table did not move.
+        try:
+            from pymol.metrics import store as _metric_store
+            _metric_store.rename_object(str(old_name), str(new_name))
+        except Exception as _mt_e:
+            print(" metrics: could not follow %s -> %s (%s)"
+                  % (old_name, new_name, _mt_e))
         return r
 
 

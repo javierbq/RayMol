@@ -73,6 +73,11 @@
             value = "1"
             isEnabled = "YES">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "RAYMOL_PREDICT_MSA_SWEEP"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
       </EnvironmentVariables>
    </TestAction>
    <LaunchAction

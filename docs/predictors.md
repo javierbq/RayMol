@@ -17,10 +17,79 @@ it is shaped this way.
 | `modules/pymol/predictors/host.py` | transport to the Swift inference host |
 | `modules/pymol/predictors/_template.py` | copy-me skeleton |
 
+## Shipped predictors
+
+| id | runtime | weights | notes |
+|---|---|---|---|
+| `boltz2` | `boltz` | affine-int8, 507 MB | the default |
+| `boltz2-bf16` | `boltz` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| `protenix-{base,v2}-{int8,fp16,bf16}` | `protenix` | 225–610 MB | six packs, complexes, single sequence, confidence head |
+
+`protenix-base-int8` is the default choice. The dense precisions cost roughly twice the
+disk for no demonstrated accuracy, exactly as `boltz2-bf16` does. The `v2` packs are
+**mirror-sourced** — its official checkpoint has answered 403 since April 2026 — which
+their `name` says where a user picking a predictor will see it.
+
+protenix-mlx also publishes `tiny` and `mini`, which are **deliberately not registered**:
+they are v0.5.0 models at 4 recycles / 5 diffusion steps, and five steps does not converge
+the geometry — CA-CA 3.26 Å against base's 3.67 and an ideal 3.80, loose enough that DSSP
+stops calling helices. They fold in 11 s against base's 35, but a fold nobody should trust
+is not worth 11 seconds either.
+
+Six ids rather than one predictor with a `pack=` option, because that is what
+`WeightBundle` already models: one bundle per predictor, pinned by digest. They are built
+from a table generated out of protenix-mlx's `WEIGHTS.md` rather than hand-copied — twelve
+transcribed digests is twelve chances to paste one that fails only on a user's machine,
+after the download. Every id ends in a precision suffix so none is a prefix of another;
+see step 1.
+
+## Runtimes
+
+A predictor's **runtime** is the Swift backend that runs it, named on the wire by
+`host.submit(..., runtime=)`. It is a separate axis from the predictor id: `boltz2` and
+`boltz2-bf16` are two predictors and one runtime, because `host.submit` sends `weights_dir`
+per job and the Swift side picks its matmul path from the artifact manifest — a dense pack
+declares no quantization block — so one runtime serves both.
+
+The distinction has to be on the wire because weights and featurizer are method-specific.
+Running one method's request on another's backend does not fail; it tokenizes with the
+wrong featurizer and returns a confident wrong structure. So:
+
+- `BoltzJobManager` implements `boltz` and **refuses** any other in `preflight`, before it
+  applies its size model — which is fitted to Boltz's measured peaks and would be
+  meaningless applied to another method's request even as a refusal.
+- `PyMOLBridge` advertises what is actually linked in `RAYMOL_PREDICT_RUNTIMES`, which is
+  what lets `check_available` refuse **before** a weight download rather than after.
+- `Request.runtime` is **optional** on the Swift side, absent meaning `boltz`. A
+  non-optional field would turn any Python/Swift version skew into "malformed prediction
+  request" instead of a refusal that names the missing runtime. The same reasoning applies
+  to `object_name` and `alignments`.
+
+That default is also the trap: a new predictor that forgets to pass `runtime=` is silently
+dispatched to Boltz. `predict_runtime.py` asserts every registered predictor names one.
+
+`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`, which
+is what "two predictors, one runtime" looks like in practice. It needs boltz-mlx >= 0.2.0.
+
+It is **not** an upgrade. On an M3 Pro at 117 tokens, recycling 3 / 200 steps, dense
+bfloat16 costs 2x the disk, +63% peak RSS (620 MiB -> 1012 MiB) and +22% wall clock
+(14.50 s -> 17.76 s), because MLX's `quantizedMM` beats a dense fp16 matmul on these
+memory-bound shapes. And it buys no *demonstrated* accuracy: the two packs differ by
+3.1 A at a fixed seed, while the model's own seed-to-seed spread within int8 alone is
+4.9-7.0 A. Ranking them needs ground truth and many samples per condition. It exists so
+that experiment is possible on-device.
+
+Note also that the Boltz-2 checkpoint is float32 throughout — there are no original
+bfloat16 weights to load. Both dense widths are a narrowing of that float32, and
+float16 is the closer one at identical size (`--precision float16` exports it).
+
 ## Steps
 
 1. **Copy the template** to `modules/pymol/predictors/<your_id>.py` and pick a permanent
-   `id`. It appears in user scripts and saved sessions: treat it as API.
+   `id`. It appears in user scripts and saved sessions: treat it as API. Avoid making it
+   an *extension* of an existing id if you can: `boltz2-bf16` shares a prefix with
+   `boltz2`, so `predict b<Tab>` now stops at `boltz2` with no `, ` separator instead of
+   completing to a runnable command.
 
 2. **Write the tests first.** Add `testing/tests/predict/predict_<your_id>.py` subclassing
    `pymol.testing.PyMOLTestCase`. Do **not** name it `test_*.py` unless you want the pytest
@@ -53,6 +122,13 @@ it is shaped this way.
    rather than failing mid-run. Platform, OS floor, host presence — not weight state, which the
    weight manager is allowed to fix by downloading.
 
+   If your method needs a Swift backend of its own, call `host.require_runtime` after
+   `host.require_available`: the two failures have different remedies ("you are headless"
+   versus "this build does not carry that backend"), and checking here is what refuses
+   BEFORE a multi-hundred-megabyte download rather than after it. A bulk
+   `predict_weights download=1` also consults this, so a predictor that cannot run is
+   reported but not fetched.
+
 5. **Implement `parse_spec` to reject, not repair.** If the backend silently ignores input it
    does not support, catching that is your job: check what it does with a ligand, a nucleic
    acid, an `X`, and an empty chain, and raise for each. boltz-mlx is the cautionary case —
@@ -66,7 +142,52 @@ it is shaped this way.
    appear as a named parameter on `cmd.predict`, or Python raises `TypeError` before your
    validation runs.
 
-7. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
+7. **Declare `supports_msa` — and mean it.** It is `False` on the base class, so a method that
+   says nothing REFUSES `predict ..., msa=...` by name. That is the point: a predictor that
+   accepted an alignment and folded single-sequence anyway would return a worse structure with
+   nothing in the result saying the alignment had been dropped. Upstream Boltz is the
+   cautionary case here — it silently substitutes a depth-1 dummy MSA when an a3m does not
+   match its chain, so every score it then reports describes the wrong complex.
+
+   Setting it `True` means three things:
+
+   - read `spec.alignments` in `submit`. It is `{chain id: MSA}` and it is **partial**: a chain
+     with no entry is folded single-sequence. Mixed is the design case, not an edge case — a
+     real alignment for the target and none for a designed binder, which has no homologs.
+   - add `'msa_depth': MAX_MSA_DEPTH` to `option_defaults`, or the depth lever is rejected by
+     name. That is correct for a method with no depth to lever, and wrong for one that has.
+   - keep the alignment's bytes intact. `MSA.a3m` is the file VERBATIM because the parser at
+     the far end reproduces upstream's bugs deliberately; re-serializing it from a parse makes
+     any parity claim a statement about a file that no longer exists.
+
+   The base `bind_alignments` already refuses an alignment whose query is not exactly the
+   chain's sequence. Override it only to add a constraint of your own, then call `super()`.
+
+8. **Declare `metric_specs` — what your method MEASURES.** Empty on the base class, so a
+   method that says nothing records provenance and cost and no numbers of its own.
+   `predictors/metrics.py` carries the shared sets: `SCORED_SPECS` for a method with a
+   confidence head, `UNSCORED_SPECS` for one without. `registry.register` declares them
+   under your `id`, and from there the object panel, `metrics_color` and `metrics_export`
+   handle a method they have never heard of — see [metrics.md](metrics.md).
+
+   Declare only what your method genuinely produces, for the reason `supports_msa` is
+   `False` by default: a caller that finds `plddt` in the schema is entitled to conclude
+   the tool can produce it. A method whose sampler emits coordinates and nothing else has
+   no confidence module, so it declares neither `plddt` nor `pae` — `UNSCORED_SPECS` is
+   exactly that set.
+
+   Scope is the part to get right. `n_residues` is `object`-scope — a property of the
+   sequence, the same for all five models of `n_models=5`; `mean_plddt` is `state`-scope
+   because each model has its own; `msa_depth` is `chain`-scope because a designed binder
+   has an alignment for the target and none for itself.
+
+   Anything the **runtime** measures and Python cannot see — a per-residue array, a
+   pairwise matrix — is written by the Swift side as a metric document at
+   `request.metrics_path`, in the format `docs/metrics.md` gives. `BoltzJobManager.writeMetrics`
+   is the worked example. Elapsed time and peak memory already reach the store through
+   the status file; do not send them twice from two sources that could disagree.
+
+9. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
    main thread, so blocking stalls the render loop for the whole inference.
 
    Nothing on that thread may block for long, and the reason is sharper than "the UI stutters":
@@ -82,24 +203,24 @@ it is shaped this way.
    because RayMol's Metal renderer reads object state on the main thread without taking
    PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
 
-8. **Declare your progress phases, or your users get a spinner.** `progress_phases` is
-   an ordered tuple of `(phase, start, end)` bands on an overall 0–1 scale; your job's
-   `status()['fraction']` is completion *within* the current phase, and the app composes
-   the two. The base class declares none, so a predictor that skips this shows an
-   indeterminate card — which is correct if you genuinely cannot report movement, and a
-   missed opportunity if you can. Give a phase a zero-width band (`end == start`) to say
-   "started, cannot say how far in": that is honest, and far better than a bar frozen at
-   a made-up number. Widths are layout, not a time estimate — they cannot track wall
-   clock, because the same phase varies by orders of magnitude with input size.
+10. **Declare your progress phases, or your users get a spinner.** `progress_phases` is
+    an ordered tuple of `(phase, start, end)` bands on an overall 0–1 scale; your job's
+    `status()['fraction']` is completion *within* the current phase, and the app composes
+    the two. The base class declares none, so a predictor that skips this shows an
+    indeterminate card — which is correct if you genuinely cannot report movement, and a
+    missed opportunity if you can. Give a phase a zero-width band (`end == start`) to say
+    "started, cannot say how far in": that is honest, and far better than a bar frozen at
+    a made-up number. Widths are layout, not a time estimate — they cannot track wall
+    clock, because the same phase varies by orders of magnitude with input size.
 
-9. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
-   changes outside your own.
+11. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
+    changes outside your own.
 
-10. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
+12. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
     test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
     runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
     first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
 
-11. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+13. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
     merging. No CI job compiles Swift, and the shared target has broken each platform from the
     other before (#174, #226/#238).

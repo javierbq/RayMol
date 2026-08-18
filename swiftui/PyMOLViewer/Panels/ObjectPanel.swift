@@ -394,6 +394,81 @@ struct ObjectEntry: Identifiable, Equatable {
     }
 }
 
+// MARK: - Alignments (#296)
+
+/// One loaded multiple-sequence alignment.
+///
+/// Deliberately NOT an `ObjectEntry`. An alignment has no geometry, nothing in the
+/// Executive knows about it, and not one of A/S/H/L/C means anything for it — so it
+/// gets its own type and its own section rather than a row that looks actionable and
+/// is not. Everything here was computed once, at load time, on the Python side: the
+/// panel polls every 500 ms and must never make anyone re-read an a3m to draw a row.
+struct AlignmentEntry: Identifiable, Equatable {
+    let id: String
+    let name: String
+    /// Sequences, AFTER duplicate rows are dropped — what the featurizer will see.
+    let depth: Int
+    /// Aligned columns, which is the query's length with its gaps.
+    let columns: Int
+    /// The query's length without them.
+    let residues: Int
+    /// Object and chain this alignment was attached to, by NAME: renaming or deleting
+    /// the object does not update it, so this can outlive what it points at.
+    let target: String
+    let chain: String
+
+    /// "8 × 24" — sequences by columns.
+    var shape: String { "\(depth) × \(columns)" }
+
+    var attachment: String? {
+        guard !target.isEmpty else { return nil }
+        return chain.isEmpty ? target : "\(target)/\(chain)"
+    }
+}
+
+/// One MSA search still running (#298).
+///
+/// A search takes MINUTES and produces nothing until it lands, so without a row for it
+/// the panel is silent for the whole time — and because the ALIGNMENTS section hides
+/// itself when empty, a user's first search shows no sign of anything happening at all.
+///
+/// Carries no progress fraction because the ColabFold server reports none. The phase
+/// and the age are what is actually known, and showing a bar derived from neither would
+/// be a plausible-looking lie.
+struct MSASearchEntry: Identifiable, Equatable {
+    let id: String
+    /// The name the alignment will land under, so the row and its result read the same.
+    let name: String
+    /// submit | queued | search | download | read | cached
+    let phase: String
+    let server: String
+    /// Seconds since the search began, quantised by the Python side — see
+    /// `appkit_inspector.SEARCH_ELAPSED_BUCKET` for why it is not the raw value.
+    let elapsed: Int
+
+    /// "searching" — what the phase means to someone who did not write it.
+    var phaseText: String {
+        switch phase {
+        case "submit": return "submitting"
+        case "queued": return "queued"
+        case "search": return "searching"
+        case "download": return "downloading"
+        case "read": return "reading"
+        case "cached": return "cached"
+        default: return phase
+        }
+    }
+
+    /// "searching · 2m 15s". Coarse on purpose; see the type comment.
+    var detail: String {
+        guard elapsed > 0 else { return phaseText }
+        let minutes = elapsed / 60, seconds = elapsed % 60
+        let age = minutes > 0 ? "\(minutes)m \(String(format: "%02d", seconds))s"
+                              : "\(seconds)s"
+        return "\(phaseText) · \(age)"
+    }
+}
+
 // MARK: - Group tree (#255)
 
 /// One drawn row of the flattened object tree.
@@ -962,7 +1037,8 @@ struct ObjectPanel: View {
     @State private var groupNameText = ""
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
-    @State private var openSections: Set<String> = ["objects", "selections"]
+    @State private var openSections: Set<String> = ["objects", "selections",
+                                                    "alignments"]
     // Which group rows are expanded. Deliberately NOT engine.expandedDetail: that
     // is a single-slot accordion for the rep inspector whose didSet re-polls and
     // which ContentView reads to resize the panel, so reusing it would make
@@ -1088,6 +1164,36 @@ struct ObjectPanel: View {
                         } else {
                             ForEach(Array(selections.enumerated()), id: \.element.id) { index, obj in
                                 ObjectRowView(entry: obj, isAlt: index % 2 == 1)
+                            }
+                        }
+                    }
+
+                    // ALIGNMENTS (#296) — shown only when there is something in it.
+                    // Unlike OBJECTS and SELECTIONS, which are always meaningful, a
+                    // permanently empty third section would be pure chrome for the
+                    // many sessions that never load an alignment.
+                    //
+                    // A running search counts too (#298), or the section stays hidden
+                    // for the several minutes before the first alignment lands — which
+                    // is precisely when a user most needs to see that something is
+                    // happening.
+                    if !engine.alignments.isEmpty || !engine.msaSearches.isEmpty {
+                        sectionHeader(
+                            "ALIGNMENTS", id: "alignments",
+                            tag: "\(engine.alignments.count + engine.msaSearches.count)"
+                        ) { EmptyView() }
+                        if openSections.contains("alignments") {
+                            // Searches first: they are what is changing, and each one
+                            // is replaced in place by its own result when it lands.
+                            ForEach(Array(engine.msaSearches.enumerated()),
+                                    id: \.element.id) { index, search in
+                                MSASearchRowView(entry: search, isAlt: index % 2 == 1)
+                            }
+                            ForEach(Array(engine.alignments.enumerated()),
+                                    id: \.element.id) { index, aln in
+                                AlignmentRowView(
+                                    entry: aln,
+                                    isAlt: (index + engine.msaSearches.count) % 2 == 1)
                             }
                         }
                     }
@@ -1290,6 +1396,167 @@ private struct ObjectRowView: View {
 
     private func toggleEnabled() {
         engine.setObjectEnabled(entry.name, !entry.isEnabled)
+    }
+}
+
+// MARK: - Alignment row (#296)
+
+/// One alignment: its name, its shape, and what it is attached to.
+///
+/// No visibility toggle and no A/S/H/L/C. There is nothing to enable, show, hide,
+/// label or color — an alignment is data the next prediction reads, not something
+/// drawn — and offering the controls anyway would make the row look actionable when
+/// every one of them is a no-op. Deleting and renaming are `msa_delete` / `msa_rename`
+/// on the command line, which the context menu offers here.
+///
+/// Clicking REVEALS the target instead: the one relationship the row already shows is
+/// which chain this alignment is for, so that is what a tap acts on.
+private struct AlignmentRowView: View {
+    let entry: AlignmentEntry
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    /// True when the object this alignment names is still here. The attachment is by
+    /// NAME and does not follow a rename or a delete, so a row pointing at nothing is
+    /// a normal state rather than an error — but clicking one must not fire
+    /// `Invalid selection name` into the console, and the row should look different.
+    private var targetExists: Bool {
+        !entry.target.isEmpty
+            && engine.objects.contains { !$0.isSelection && $0.name == entry.target }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Line up with the object rows' chevron + checkbox gutter.
+            Spacer().frame(width: 13 + kGutterW)
+
+            Text(entry.name)
+                .font(.system(size: 11))
+                .foregroundColor(PanelTheme.textColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            if let attachment = entry.attachment {
+                Text(attachment)
+                    .font(.system(size: 9))
+                    // Dimmed when the object is gone: the panel is ~300pt wide, so
+                    // there is no room to spell it out on the row. The tooltip does.
+                    .foregroundColor(targetExists ? PanelTheme.selectionTextColor
+                                                  : PanelTheme.disabledColor)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+            Text(entry.shape)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        .onTapGesture { reveal() }
+        .help(tooltip)
+        .contextMenu {
+            Button("Reveal target") { reveal() }
+                .disabled(!targetExists)
+            Button("Detach") { engine.runCommand("msa_detach \(entry.name)") }
+                .disabled(entry.attachment == nil)
+            Divider()
+            Button("Delete", role: .destructive) {
+                engine.runCommand("msa_delete \(entry.name)")
+            }
+        }
+    }
+
+    /// Take the camera to what this alignment describes: enable the object, zoom the
+    /// chain. No named selection is made — one per click would litter the session with
+    /// selections the user never asked for.
+    ///
+    /// `animate=-1` defers to the `animation` setting, matching the panel's own Zoom
+    /// action rather than hard-coding a duration.
+    private func reveal() {
+        guard targetExists else { return }
+        let selection = entry.chain.isEmpty
+            ? entry.target
+            : "(\(entry.target)) and chain \(entry.chain)"
+        engine.setObjectEnabled(entry.target, true)
+        engine.runCommand("zoom \(selection), animate=-1")
+    }
+
+    private var tooltip: String {
+        var text = "\(entry.depth) sequences × \(entry.columns) columns"
+            + " (\(entry.residues) residues)"
+        if let attachment = entry.attachment {
+            text += targetExists ? ", for \(attachment) — click to reveal"
+                                 : ", for \(attachment), which is not in this session"
+        }
+        return text
+    }
+}
+
+// MARK: - MSA search row (#298)
+
+/// One search in flight, in the place its result will appear.
+///
+/// Deliberately in the ALIGNMENTS section rather than a banner or a sheet: a search is
+/// a BACKGROUND operation — `msa_search` returns immediately and the user is expected to
+/// keep working — so a modal would be wrong, and the row turning into the alignment it
+/// produces is the clearest statement of what is going on.
+///
+/// An indeterminate spinner, not a bar. The ColabFold server reports queue position and
+/// nothing else; a percentage here would have to be invented.
+private struct MSASearchRowView: View {
+    let entry: MSASearchEntry
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Line up with the object rows' chevron + checkbox gutter, as the
+            // alignment rows do.
+            Spacer().frame(width: 13 + kGutterW)
+
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.mini)
+                .frame(width: 10, height: 10)
+
+            Text(entry.name)
+                .font(.system(size: 11))
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            Text(entry.detail)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        .help(tooltip)
+        .contextMenu {
+            // The one action there is. Cancelling by SEARCH ID rather than by name:
+            // the name is not unique until the alignment lands, and two searches for
+            // the same object would otherwise cancel whichever msa_cancel found first.
+            Button("Cancel search", role: .destructive) {
+                engine.runCommand("msa_cancel \(entry.id)")
+            }
+        }
+    }
+
+    private var tooltip: String {
+        "Building \(entry.name) on \(entry.server) — \(entry.detail)."
+            + " It runs in the background; the alignment appears here when it lands."
     }
 }
 
@@ -3795,6 +4062,34 @@ struct PanelPayload: Decodable {
     /// #291. Optional so an older bundled Python still decodes and the tray simply
     /// shows no prediction cards.
     let pending_jobs: [String: PredictionJobState]?
+    // Alignments (#296), same reasoning again. Values are scalars only — no a3m
+    // bytes travel through this payload.
+    let alignments: [String: AlignmentSummary]?
+    // Searches still running (#298), oldest first. A LIST, unlike `alignments`:
+    // the order is the order they were started, and a JSON object would lose it
+    // the way the alignments decode has to sort to get it back.
+    //
+    // Optional for the same reason as every field above, and it matters more
+    // here than anywhere: this decode is a single `guard let`, so one missing
+    // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
+    // panel on its last list.
+    let msa_searches: [MSASearchSummary]?
+
+    struct AlignmentSummary: Decodable {
+        let depth: Int
+        let columns: Int
+        let residues: Int
+        let target: String
+        let chain: String
+    }
+
+    struct MSASearchSummary: Decodable {
+        let id: String
+        let name: String
+        let phase: String
+        let server: String
+        let elapsed: Int
+    }
 }
 
 // MARK: - PyMOLEngine extensions for object polling
@@ -3850,6 +4145,20 @@ extension PyMOLEngine {
         let jobs = (payload.pending_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Sorted by name so the order is stable: the payload is a JSON object, and
+        // Foundation's dictionary decode does not preserve the store's load order.
+        let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
+            AlignmentEntry(id: "aln_\($0.key)", name: $0.key,
+                           depth: $0.value.depth, columns: $0.value.columns,
+                           residues: $0.value.residues,
+                           target: $0.value.target, chain: $0.value.chain)
+        }
+
+        // Already oldest-first, so no sort: see the payload comment.
+        let searches = (payload.msa_searches ?? []).map {
+            MSASearchEntry(id: $0.id, name: $0.name, phase: $0.phase,
+                           server: $0.server, elapsed: $0.elapsed)
+        }
 
         DispatchQueue.main.async {
             // Guard: the ~500ms poll usually returns the same object list;
@@ -3857,6 +4166,10 @@ extension PyMOLEngine {
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
+            if self.alignments != alignments { self.alignments = alignments }
+            // Same guard, and it carries the weight here: with no search running this
+            // is empty every tick and must not repaint the panel twice a second.
+            if self.msaSearches != searches { self.msaSearches = searches }
         }
     }
 }

@@ -17,6 +17,13 @@ final class BoltzJobManager {
 
     static let shared = BoltzJobManager()
 
+    /// The one inference runtime this manager implements, as it appears on the wire.
+    /// Kept in step with `pymol.predictors.boltz2.RUNTIME`, and with the value
+    /// `PyMOLBridge` advertises in `RAYMOL_PREDICT_RUNTIMES` — that variable is what lets
+    /// a predictor whose backend is NOT linked here refuse in `check_available` instead
+    /// of submitting a job that only gets refused after a weight download.
+    static let boltzRuntime = "boltz"
+
     /// MLX must never run on the main thread. `cmd.predict` from the console arrives ON
     /// the main thread, which is exactly why submit is fire-and-forget.
     private let queue = DispatchQueue(label: "io.raymol.predict.inference",
@@ -77,15 +84,46 @@ final class BoltzJobManager {
 
     struct Chain: Codable { let chain: String; let sequence: String }
 
+    /// One chain's multiple-sequence alignment, as a PATH to an a3m.
+    ///
+    /// A path rather than inline text because an alignment is megabytes — the barnase
+    /// one boltz-mlx tests against is ~1.3 MB — and base64 inside a JSON this decodes in
+    /// one gulp buys nothing over a file that is read once and dropped. Python writes
+    /// each file BEFORE the request that names it, so a request that decodes has its
+    /// alignments already complete on disk.
+    struct Alignment: Codable {
+        let chain: String
+        let a3mPath: String
+
+        enum CodingKeys: String, CodingKey { case chain, a3mPath = "a3m_path" }
+    }
+
     struct Request: Codable {
         let jobID: String
         let weightsDir: String
         let chains: [Chain]
+        /// Which backend must run this job. OPTIONAL, absent meaning ``boltzRuntime`` —
+        /// every Python side that predates a second runtime wrote no such key, and the
+        /// only runtime that existed then was this one. A request naming a runtime this
+        /// build does not carry is REFUSED in `preflight`, never run here: the weights and
+        /// the featurizer are method-specific, so running one method's request on
+        /// another's backend would not fail, it would return a confident wrong answer.
+        let runtime: String?
         let recyclingSteps: Int
         let diffusionSteps: Int
         let seed: UInt64
         let outPath: String
         let statusPath: String
+        /// Per-chain alignments. OPTIONAL, so a request written by a Python side that
+        /// predates #297 still decodes — the same reasoning as `objectName` below.
+        ///
+        /// PARTIAL by design: a chain that is absent gets upstream's depth-1 dummy MSA
+        /// (`BoltzFeaturizer` falls back to `MSAAlignment.singleSequence`), which is
+        /// exactly the designed-binder case — a real alignment for the target, none for
+        /// the binder, because a designed binder has no homologs to align.
+        let alignments: [Alignment]?
+        /// Rows to read from each a3m, from the top. Optional for the same reason.
+        let msaDepth: Int?
         /// Object the finished structure is loaded into. Python creates an empty
         /// placeholder under this name at submit time; loading into it lands at state 1,
         /// and a repeat prediction of the same sequence appends model 2, 3, ...
@@ -96,12 +134,25 @@ final class BoltzJobManager {
         /// falling back to the explicit `predict_result` flow. Same reasoning as the
         /// object panel's optional `groups`/`pending` fields.
         let objectName: String?
+        /// Where to write what this run MEASURED, as a `pymol.metrics` document (#308).
+        ///
+        /// The confidence numbers exist only in here: pLDDT rounded into a B-factor
+        /// column was the only one that used to survive, and `ScoredStructure.pae` and
+        /// `interfaceScores()` were computed on every run and thrown away. A PAE matrix
+        /// is per residue PAIR and an interface score is per run, so neither fits in
+        /// the PDB — hence a second file rather than more columns.
+        ///
+        /// Optional for the reason `objectName` is: absent simply means the Python side
+        /// predates this and records the run without them, rather than the whole request
+        /// failing to decode.
+        let metricsPath: String?
 
         enum CodingKeys: String, CodingKey {
-            case jobID = "job_id", weightsDir = "weights_dir", chains
+            case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
-            case objectName = "object_name"
+            case objectName = "object_name", metricsPath = "metrics_path"
+            case alignments, msaDepth = "msa_depth"
         }
     }
 
@@ -242,6 +293,10 @@ final class BoltzJobManager {
                     cancelled.insert(marker.jobID)
                 }
             }
+            // Broadcast: a cancel marker carries only a job id, so there is nothing in it
+            // to route on. Every manager keeps only its own ids, and a cancel for a job
+            // this one never had is a no-op.
+            ProtenixJobManager.shared.cancel(jobID: marker.jobID)
         case .submit:
             let url = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
@@ -259,6 +314,17 @@ final class BoltzJobManager {
                                 + error.localizedDescription,
                            resultPath: nil, peakBytes: nil, elapsedSeconds: nil),
                     to: Self.statusURL(jobID: marker.jobID))
+                return
+            }
+            // Routed BEFORE preflight, because preflight below is Boltz's: its size model
+            // is fitted to Boltz's peaks, and its runtime check exists to refuse backends
+            // nothing implements. A protenix request is not that -- it has a manager.
+            //
+            // This manager owns the marker only because it was here first. When a third
+            // runtime lands, lift the parse-and-route out into a dispatcher rather than
+            // adding another branch here.
+            if request.runtime == ProtenixJobManager.runtimeName {
+                ProtenixJobManager.shared.submit(request)
                 return
             }
             if let failure = Self.preflight(request) {
@@ -287,10 +353,26 @@ final class BoltzJobManager {
     }
 
     /// Refuse before allocating anything. Returns nil when the run may proceed.
+    ///
+    /// Sees only what the REQUEST says, because it runs on the main thread from
+    /// `pollFeedback`: the alignment's real depth costs a parse of the a3m, which
+    /// belongs on the inference queue. `alignmentPreflight` makes that second check.
     static func preflight(_ request: Request) -> Status? {
+        // Runtime first, before any sizing: the size model below is Boltz's, fitted to
+        // Boltz's measured peaks, so applying it to another method's request would be
+        // meaningless even as a refusal. Absent means Boltz, per `Request.runtime`.
+        if let runtime = request.runtime, runtime != boltzRuntime {
+            return refusal("this build of RayMol does not carry the '\(runtime)' "
+                         + "inference runtime")
+        }
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         switch PredictSizeGuard.decide(tokens: tokens,
                                        availableBytes: PredictSizeGuard.availableBytes) {
+        case .refuseDepth:
+            // Unreachable: this call passes no depth, so it defaults to 1. Handled
+            // rather than defaulted away so that adding a depth here cannot silently
+            // become "proceed".
+            return refusal("the alignment is too large for this machine")
         case .ok, .warn:
             // `.warn` deliberately proceeds, so `okFraction` has no effect on this path
             // today — the tier is not yet surfaced anywhere. It is kept rather than
@@ -301,11 +383,45 @@ final class BoltzJobManager {
             // `.warn` there rather than reviving it here.
             return nil
         case let .refuse(maxFittingTokens):
-            return Status(state: "failed", phase: "preflight", fraction: 0,
-                          error: "input of \(tokens) residues is too large for this "
-                               + "machine; at most about \(maxFittingTokens) fit",
-                          resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
+            return refusal("input of \(tokens) residues is too large for this machine; "
+                         + "at most about \(maxFittingTokens) fit")
         }
+    }
+
+    /// Refuse a run whose ALIGNMENT is what will not fit. Returns nil to proceed.
+    ///
+    /// The deepest alignment is used against the total token count, rather than summing
+    /// per-chain products. It is the conservative reading of the two — a dimer with one
+    /// deep alignment is charged as though both chains carried it — and it is the one
+    /// that cannot license a run that then dies, which is the only direction that
+    /// matters here.
+    static func alignmentPreflight(_ request: Request,
+                                   alignments: [String: MSAAlignment]) -> Status? {
+        guard let deepest = alignments.values.map(\.depth).max(), deepest > 1 else {
+            return nil
+        }
+        let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
+        switch PredictSizeGuard.decide(tokens: tokens, msaDepth: deepest,
+                                       availableBytes: PredictSizeGuard.availableBytes) {
+        case .ok, .warn:
+            return nil
+        case let .refuseDepth(maxFittingDepth):
+            return refusal(
+                maxFittingDepth >= 1
+                    ? "an alignment \(deepest) rows deep is too large for this machine "
+                    + "at \(tokens) residues; retry with msa_depth=\(maxFittingDepth)"
+                    : "\(tokens) residues with an alignment is too large for this "
+                    + "machine")
+        case let .refuse(maxFittingTokens):
+            return refusal("input of \(tokens) residues is too large for this machine; "
+                         + "at most about \(maxFittingTokens) fit")
+        }
+    }
+
+    /// Both refusals read the same to a caller; only the advice differs.
+    static func refusal(_ message: String) -> Status {
+        Status(state: "failed", phase: "preflight", fraction: 0, error: message,
+               resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
     }
 
     // MARK: - Handing the result back to Python
@@ -317,7 +433,7 @@ final class BoltzJobManager {
     /// marked pending after a successful load would be stripped from every subsequent
     /// session save. `deliver_result` also pins `zoom=0` -- a prediction can land many
     /// minutes after submit, and moving the camera then would interrupt the user.
-    private static func loadResult(_ request: Request) {
+    static func loadResult(_ request: Request) {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         let path = pythonLiteral(request.outPath)
         let name = pythonLiteral(objectName)
@@ -326,6 +442,106 @@ final class BoltzJobManager {
                 "from pymol import predicting as _p; "
                 + "_p.deliver_result(\(path), \(name), seed=\(request.seed))")
         }
+    }
+
+    /// (chain, resi) for every residue, numbered exactly as the PDB written beside it.
+    ///
+    /// A MIRROR of `StructureWriter.pdb`'s numbering — 1-based per chain, reset at each
+    /// chain break — and it has to stay one. The metric arrays are indexed by residue,
+    /// and PyMOL reads its residue numbers out of that PDB, so any drift between the two
+    /// would land every per-residue confidence on the wrong residue: an array that is
+    /// still the right length, still plausible, and silently off by a register.
+    private static func residueIndex(_ canonical: CanonicalStructure) -> [[String]] {
+        var out: [[String]] = []
+        var previousChain: String?
+        var resSeq = 0
+        for residue in canonical.orderedResidues {
+            if let previous = previousChain, previous != residue.hostChain { resSeq = 0 }
+            previousChain = residue.hostChain
+            resSeq += 1
+            out.append([residue.hostChain, String(resSeq)])
+        }
+        return out
+    }
+
+    /// Write the confidence numbers as a `pymol.metrics` document.
+    ///
+    /// Only what the RUNTIME knows: elapsed time and peak memory reach the store through
+    /// the status file, and the options and seed through the Python side, so nothing is
+    /// reported twice from two sources that could disagree.
+    ///
+    /// Best effort by construction. A prediction that folded must not be reported as
+    /// failed because its metrics could not be serialized, so every failure here is
+    /// swallowed and the run is simply recorded without them.
+    private static func writeMetrics(request: Request, scored: ScoredStructure,
+                                     canonical: CanonicalStructure) {
+        guard let path = request.metricsPath, !path.isEmpty else { return }
+        let index = residueIndex(canonical)
+        var values: [[String: Any]] = []
+
+        // Length checks rather than trust: a count mismatch means the scores and the
+        // structure do not describe the same prediction, which is exactly what
+        // StructureWriter refuses to write through. Skipped, not guessed at.
+        if scored.plddt.count == index.count, !index.isEmpty {
+            values.append(["key": "plddt", "state": 0, "index": index,
+                           "values": scored.plddt])
+            // The producer writes its own summary. The store never derives one: which
+            // residues went into a mean is a property of the tool, not of the store.
+            values.append(["key": "mean_plddt", "state": 0,
+                           "value": scored.plddt.reduce(0, +) / Double(scored.plddt.count)])
+        }
+        if scored.tokenCount == index.count,
+           scored.pae.count == index.count * index.count {
+            values.append(["key": "pae", "state": 0, "index": index,
+                           "values": scored.pae])
+            // The matrix's own summary, written by the producer for the reason
+            // `mean_plddt` is: which entries went into it is a property of the tool.
+            //
+            // OFF THE DIAGONAL. PAE(i, i) is definitionally near zero and says nothing,
+            // so counting it would pull the mean down by roughly 1/n — ~3% at 35
+            // residues, worse the shorter the chain. Needs n >= 2 to mean anything.
+            let n = index.count
+            if n > 1 {
+                var total = 0.0
+                for i in 0..<n {
+                    for j in 0..<n where i != j { total += scored.pae[i * n + j] }
+                }
+                values.append(["key": "mean_pae", "state": 0,
+                               "value": total / Double(n * (n - 1))])
+            }
+        }
+        // nil for a single chain, where an interface score is undefined. Absent rather
+        // than 0, which would read as a terrible interface instead of no interface.
+        //
+        // Both directions of ipSAE go across: `min_ipsae` is the gate (the worse
+        // direction is what a designed interface should be judged on) and `ipsae` is
+        // max(A->B, B->A), which boltz-mlx reports for continuity with the reference
+        // implementation and which will read higher. Sending only one of them would
+        // leave a reader unable to tell which normalisation they had.
+        if let interface = scored.interfaceScores() {
+            values.append(["key": "min_ipsae", "state": 0, "value": interface.minIPSAE])
+            values.append(["key": "ipsae", "state": 0, "value": interface.ipsae])
+            values.append(["key": "ipae", "state": 0, "value": interface.ipae])
+        }
+        guard !values.isEmpty else { return }
+
+        // `tool` is overwritten by the Python side, which knows which PREDICTOR selected
+        // this runtime — boltz2 and boltz2-bf16 are one runtime and two tools, and only
+        // the command layer can tell them apart. Sent anyway so the file is readable on
+        // its own. `state` is likewise restamped: how many models already sit in the
+        // object is not knowable here.
+        let document: [String: Any] = [
+            "tool": "boltz2",
+            "object": request.objectName ?? "",
+            "values": values,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: document) else { return }
+        let url = URL(fileURLWithPath: path)
+        let temp = url.appendingPathExtension("tmp")
+        // Complete, or not there at all: the Python side opens this by path the moment
+        // the load marker fires, which is a poll away from this write.
+        guard (try? data.write(to: temp)) != nil else { return }
+        _ = try? FileManager.default.replaceItemAt(url, withItemAt: temp)
     }
 
     /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
@@ -339,7 +555,7 @@ final class BoltzJobManager {
 
     /// Drops the placeholder when a job will never produce a structure. Python only
     /// deletes it if it is still empty, so this cannot destroy a completed result.
-    private static func discardPlaceholder(_ request: Request) {
+    static func discardPlaceholder(_ request: Request) {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(
@@ -407,7 +623,24 @@ final class BoltzJobManager {
                        error: "unsupported input: \(canonical.diagnostics)")
                 return
             }
-            let features = try BoltzFeaturizer().featurize(canonical, alignments: [:])
+            let alignments = try Self.loadAlignments(request)
+            // The SECOND size check, and the one that can see the alignment. `preflight`
+            // runs on the main thread from pollFeedback and may only look at the request,
+            // where the depth is a CAP (16384 by default) rather than what the a3m
+            // actually holds — deciding on the cap would refuse a 200-row alignment as
+            // though it were 16,384. The real depth is only known once the a3m is parsed,
+            // and parsing megabytes of it on the main thread is not an option. Here it is
+            // known, this is the inference queue, and nothing large has been allocated
+            // yet: featurize on the next line is where the tensors appear.
+            if let failure = Self.alignmentPreflight(request, alignments: alignments) {
+                // settle, not discard-then-write: discard_pending pops _PENDING, the map
+                // every progress view reads, so discarding first records the refusal
+                // after the only thing that could show it is gone.
+                Self.settle(request, failure, to: statusURL)
+                return
+            }
+            let features = try BoltzFeaturizer().featurize(canonical,
+                                                          alignments: alignments)
 
             if isCancelled() {
                 settle("cancelled", "featurize"); return
@@ -501,6 +734,11 @@ final class BoltzJobManager {
                                               plddt: scored.plddt)
             try text.write(to: URL(fileURLWithPath: request.outPath),
                            atomically: true, encoding: .utf8)
+            // What this run MEASURED, beside the structure it measured (#308). Written
+            // BEFORE the load below, because `deliver_result` reads it as part of
+            // loading: a file that appeared afterwards would leave the run recorded
+            // with its provenance and cost and none of its confidence numbers.
+            Self.writeMetrics(request: request, scored: scored, canonical: canonical)
             // Load BEFORE reporting done: predict_status returning done should already
             // imply the object is populated, or a script that polls then reads the object
             // races the load.
@@ -509,11 +747,74 @@ final class BoltzJobManager {
         } catch is CancellationError {
             settle("cancelled", "inference")
         } catch {
-            settle("failed", "inference", error: error.localizedDescription)
+            // Failed, carrying the message — and NOT retried without the alignment.
+            // Upstream Boltz silently substitutes a dummy MSA when an a3m does not match
+            // its chain, so every score it then reports describes the wrong complex with
+            // nothing saying so. boltz-mlx throws instead, on purpose; retrying here
+            // would undo that and reintroduce the exact failure it was written to
+            // prevent.
+            settle("failed", "inference", error: Self.message(for: error))
         }
         stateQueue.sync {
             cancelled.remove(request.jobID)
             runningTasks.removeValue(forKey: request.jobID)
+        }
+    }
+
+    // MARK: - Alignments
+
+    /// Reads each chain's a3m into the parser that will consume it.
+    ///
+    /// The truncation is the PARSER's own (`maximumSequences`), not a slice taken here:
+    /// it counts rows after deduplication and after the query, which is a different
+    /// count from the file's line numbers, and applying a second, cruder cut first
+    /// would silently mean something else.
+    ///
+    /// `taxonomy: nil` is deliberate and not a gap. Cross-chain pairing reads taxonomy
+    /// only from `>UniRef100_*` headers and only when a database is supplied, so it is
+    /// inert for locally generated files. Marking a multimer's rows as paired without
+    /// one would assert co-evolution across the very interface an interface score
+    /// measures — and that fails by reading HIGH rather than by crashing.
+    static func loadAlignments(_ request: Request) throws -> [String: MSAAlignment] {
+        guard let entries = request.alignments, !entries.isEmpty else { return [:] }
+        // Nil only for a request written before #297, which also carries no alignments —
+        // so this fallback is for a hand-written request, and it is upstream's own cap.
+        let depth = request.msaDepth ?? BoltzInputLimits.desktop.maximumMSADepth
+        var loaded: [String: MSAAlignment] = [:]
+        for entry in entries {
+            let text = try String(contentsOfFile: entry.a3mPath, encoding: .utf8)
+            loaded[entry.chain] = try MSAAlignment.a3m(text, maximumSequences: depth,
+                                                      taxonomy: nil)
+        }
+        return loaded
+    }
+
+    /// The message an error actually carries.
+    ///
+    /// `localizedDescription` bridges a plain Swift error through `NSError` and returns a
+    /// placeholder naming only the case NUMBER — "The operation couldn't be completed.
+    /// (BoltzMLX.BoltzFeaturizerError error 5.)". For most failures that is merely poor.
+    /// For `msaQueryMismatch` it is destructive: that error's entire job is to say which
+    /// chain and which position disagree, and it is the only thing standing between the
+    /// user and a confident score for the wrong complex — upstream Boltz does not throw
+    /// at all there, it substitutes a dummy MSA and reports numbers.
+    static func message(for error: Error) -> String {
+        switch error {
+        case let error as BoltzFeaturizerError:
+            return error.description
+        case let error as MSAParseError:
+            // Reachable only if the two parsers disagree: Python checks every row's
+            // column count at `load_msa`, before any of this. Worth saying plainly
+            // rather than as a raw enum case, because "they disagree" is the news.
+            switch error {
+            case .empty:
+                return "the alignment file contains no sequences"
+            case let .rowLengthMismatch(row, expected, found):
+                return "row \(row + 1) of the alignment has \(found) aligned columns "
+                     + "but the query has \(expected)"
+            }
+        default:
+            return error.localizedDescription
         }
     }
 

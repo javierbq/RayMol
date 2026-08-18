@@ -84,8 +84,15 @@ final class DesignController: ObservableObject {
 
     /// Apply per-residue coloring to `objectName`.
     /// `values`: (chain, resi, scalar?) for every residue in the set order.
+    /// `metric` and `state` are for the metric store (#308), not for the colour: the
+    /// values are RECORDED against the object before they are rendered, so they
+    /// survive the session and can be re-applied after another tool colours over the
+    /// B-factor column. Without the name the Python side would be storing an unlabelled
+    /// array — native fit and certainty are both "the scalar", and only here is it
+    /// known which one this is.
     typealias ColorFn = (_ obj: String, _ values: [(String, String, Float?)],
-                         _ palette: String, _ lo: Float, _ hi: Float) -> Void
+                         _ palette: String, _ lo: Float, _ hi: Float,
+                         _ metric: String, _ state: Int) -> Void
 
     /// Show/hide non-destructive sidechain sticks for one residue on `obj`.
     /// Returns whether WE added the sticks on a show (`on == true`) — the
@@ -577,7 +584,8 @@ final class DesignController: ObservableObject {
         }
         let dom = DesignColor.domain(colorMeaning)
         legendDomain = dom
-        applyColoring(object, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+        applyColoring(object, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound,
+                      colorMeaning.metricKey, set.state)
     }
 
     /// Current displayed state for `object`. Delegates to the injected closure.
@@ -1101,7 +1109,8 @@ final class DesignController: ObservableObject {
                 let scalar = DesignColor.scalar(scores, colorMeaning)
                 let vals: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
                 let dom = DesignColor.domain(colorMeaning)
-                applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+                applyColoring(w, vals, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound,
+                              colorMeaning.metricKey, set.state)
             }
             // Stale sidechain sticks are gone (object was replaced); clear tracking
             // and re-add for the pinned/hovered residue on the fresh atoms.
@@ -1196,7 +1205,8 @@ final class DesignController: ObservableObject {
         let values: [(String, String, Float?)] = zip(set.residues, scalar).map { ($0.chain, $0.resi, $1) }
         let dom = DesignColor.domain(colorMeaning)
         legendDomain = dom
-        applyColoring(w, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound)
+        applyColoring(w, values, DesignColor.palette(colorMeaning), dom.lowerBound, dom.upperBound,
+                      colorMeaning.metricKey, set.state)
     }
 
     /// Discard the working copy and reset all edit-session state.

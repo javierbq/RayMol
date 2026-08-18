@@ -73,4 +73,6 @@ jobs:
               testing/tests/raymol/design_region.py \
               testing/tests/raymol/design_saverestore.py \
               testing/tests/raymol/scene_ttt.py \
-              testing/tests/predict
+              testing/tests/predict \
+              testing/tests/msa \
+              testing/tests/metrics

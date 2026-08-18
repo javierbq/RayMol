@@ -40,6 +40,31 @@ from .predicting import \
       predict_weights_cancel
 
 #--------------------------------------------------------------------
+from . import msa
+from .msa import \
+      load_msa,             \
+      msa_list,             \
+      msa_delete,           \
+      msa_rename,           \
+      msa_attach,           \
+      msa_detach,           \
+      msa_search,           \
+      msa_server,           \
+      msa_status,           \
+      msa_cancel
+
+#--------------------------------------------------------------------
+from . import metric
+from .metric import \
+      metrics_list,         \
+      metrics_get,          \
+      metrics_delete,       \
+      metrics_color,        \
+      metrics_export,       \
+      metrics_load,         \
+      metrics_schema
+
+#--------------------------------------------------------------------
 from . import creating
 from .creating import \
       copy,               \

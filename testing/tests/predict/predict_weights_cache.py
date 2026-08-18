@@ -92,6 +92,72 @@ class TestCacheValidity(testing.PyMOLTestCase):
             self.assertTrue(cache.is_cached(make_bundle()))
 
 
+class TestIncomingSweep(testing.PyMOLTestCase):
+    """Scratch stranded by a process that died mid-download must be reclaimed.
+
+    ensure()'s `finally` never ran for these: the fetch is a daemon thread, so
+    quitting the app takes the interpreter down without unwinding it and leaves a
+    half-gigabyte .part behind for good.
+    """
+
+    def _incoming(self, cache):
+        path = cache._incoming()
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _debris(self, incoming, pid):
+        token = '%s-%d' % ('c' * 64, pid)
+        part = os.path.join(incoming, token + '.part')
+        staging = os.path.join(incoming, token + '.d')
+        with open(part, 'wb') as handle:
+            handle.write(b'partial')
+        os.makedirs(staging)
+        return part, staging
+
+    def testDeadOwnersScratchIsReclaimed(self):
+        from pymol.predictors.weights import WeightCache
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            incoming = self._incoming(cache)
+            # A pid that cannot be running: os.getpid() is this process, and
+            # _pid_alive treats an unreachable pid as gone.
+            part, staging = self._debris(incoming, 999999)
+            cache.sweep_incoming()
+            self.assertFalse(os.path.exists(part))
+            self.assertFalse(os.path.exists(staging))
+
+    def testLiveOwnersScratchIsLeftAlone(self):
+        """A concurrent downloader's scratch is not ours to delete."""
+        from pymol.predictors.weights import WeightCache
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            incoming = self._incoming(cache)
+            part, staging = self._debris(incoming, os.getpid())
+            cache.sweep_incoming()
+            self.assertTrue(os.path.exists(part))
+            self.assertTrue(os.path.exists(staging))
+
+    def testUnrecognizedEntriesAreLeftAlone(self):
+        """.incoming is not this method's to empty -- only its own token shape."""
+        from pymol.predictors.weights import WeightCache
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            incoming = self._incoming(cache)
+            keep = [os.path.join(incoming, name) for name in
+                    ('notes.txt', 'stub-v1.lock', 'short-999999.part')]
+            for path in keep:
+                with open(path, 'w') as handle:
+                    handle.write('x')
+            cache.sweep_incoming()
+            for path in keep:
+                self.assertTrue(os.path.exists(path), path)
+
+    def testSweepSurvivesAMissingIncoming(self):
+        from pymol.predictors.weights import WeightCache
+        with testing.mkdtemp() as root:
+            WeightCache(root).sweep_incoming()      # must not raise
+
+
 class TestBundledSource(testing.PyMOLTestCase):
 
     def testResolveReturnsAnExistingPath(self):

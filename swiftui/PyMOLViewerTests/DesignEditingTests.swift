@@ -15,7 +15,7 @@ final class DesignEditingTests: XCTestCase {
             score: { _, _ in
                 MPNNModel.ScoreResult(logProbs: [], currentAALogProb: [])
             },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
@@ -213,7 +213,7 @@ final class DesignEditingTests: XCTestCase {
                     logProbs: Array(repeating: Array(repeating: -3, count: 21), count: seq.count),
                     currentAALogProb: Array(repeating: -3, count: seq.count))
             },
-            applyColoring: { obj, _, _, _, _ in
+            applyColoring: { obj, _, _, _, _, _, _ in
                 recoloredObjs.append(obj)
                 rescoreDone.fulfill()
             },
@@ -266,7 +266,7 @@ final class DesignEditingTests: XCTestCase {
                     logProbs: Array(repeating: Array(repeating: -3.0, count: 21), count: seq.count),
                     currentAALogProb: Array(repeating: -3.0, count: seq.count))
             },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in },
             snapshot: { _ in },
             restore: { })
@@ -341,7 +341,7 @@ final class DesignEditingTests: XCTestCase {
         let c = DesignController(
             enumerate: { _, _ in emptySet },
             score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in },
             snapshot: { _ in },
             restore: { },

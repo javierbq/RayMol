@@ -17,7 +17,7 @@ import shutil
 import sys
 import time
 import zipfile
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .errors import (WeightBundleLayoutError, WeightCacheUnwritable,
@@ -28,14 +28,38 @@ from .errors import (WeightBundleLayoutError, WeightCacheUnwritable,
 #: existence -- is what makes a cache valid.
 SENTINEL = '.ok'
 
-#: Patch point for tests. Never call urllib.request.urlopen directly below.
+#: Patch points for tests. Never call urllib.request.urlopen or time.sleep
+#: directly below.
 _urlopen = urlopen
+_sleep = time.sleep
 
 #: Stream in 1 MiB chunks: bundles are hundreds of MiB (see WeightBundle.size)
 #: and must never be buffered whole.
 CHUNK_BYTES = 1 << 20
 
 DEFAULT_TIMEOUT = 30.0
+
+#: Hard ceiling on transfer attempts for one bundle. Two budgets rather than one
+#: because they bound different failures: MAX_STALLED_ATTEMPTS ends a transfer that
+#: cannot get past a given byte, while MAX_DOWNLOAD_ATTEMPTS ends one that keeps
+#: creeping forward. A ~1 GiB bundle over a CDN serving under 1 MiB/s takes tens of
+#: minutes, so a handful of stalls along the way is normal and must not be fatal --
+#: only a stall that no longer makes progress is.
+MAX_DOWNLOAD_ATTEMPTS = 20
+MAX_STALLED_ATTEMPTS = 4
+
+RETRY_BACKOFF_BASE = 0.5
+RETRY_BACKOFF_MAX = 15.0
+
+#: Statuses worth another attempt. Any other 4xx is a bad URL or a withdrawn
+#: release asset, where retrying only delays the error the user needs to see.
+#: 416 is handled separately: it means our .part is longer than the resource,
+#: which is a local problem to fix by restarting, not a server problem to wait out.
+RETRYABLE_STATUSES = frozenset([408, 429, 500, 502, 503, 504, 507, 509])
+
+#: Errno values that mean the cache -- not the network -- is the problem.
+UNWRITABLE_ERRNOS = frozenset(
+    [errno.ENOSPC, errno.EACCES, errno.EROFS, errno.ENOTDIR])
 
 
 class WeightBundle:
@@ -142,6 +166,42 @@ class WeightCache:
             raise WeightCacheUnwritable(
                 'cannot create %s: %s' % (path, exc))
 
+    def sweep_incoming(self):
+        """Reclaim scratch left behind by a process that is no longer running.
+
+        ensure()'s `finally` covers every exit path it is given the chance to run on,
+        but the fetch runs on a daemon thread (see predictors.fetching): quitting the
+        app mid-download tears the interpreter down without unwinding it, and a
+        half-gigabyte `.part` plus its `.d` staging directory are stranded under
+        .incoming with nothing that would ever look at them again. One observed
+        instance held 529 MiB for weeks.
+
+        The pid baked into the scratch token is what makes them reclaimable -- the
+        same liveness test the stale-lock path already relies on, and the reason the
+        token carries a pid in the first place. A recycled pid only means the debris
+        waits for the next sweep.
+
+        Never fatal: this is housekeeping in front of a download, and an entry that
+        cannot be classified or removed is simply left where it is.
+        """
+        incoming = self._incoming()
+        try:
+            entries = os.listdir(incoming)
+        except OSError:
+            return
+        for name in entries:
+            stem, extension = os.path.splitext(name)
+            if extension not in ('.part', '.d'):
+                continue
+            pid = _pid_from_token(stem)
+            if pid is None or _pid_alive(pid):
+                continue
+            path = os.path.join(incoming, name)
+            if extension == '.d':
+                _rmtree(path)
+            else:
+                _unlink(path)
+
     def _lock_path(self, bundle):
         return os.path.join(self._incoming(),
                             '%s-%s.lock' % (bundle.id, bundle.version))
@@ -201,7 +261,9 @@ class WeightCache:
 
         Nothing partial survives either way: the `finally` below removes the scratch
         file and staging directory, and the sentinel that makes a cache valid is only
-        written by _publish.
+        written by _publish. The one exit that skips that `finally` -- the process
+        dying under the daemon thread this runs on -- is swept up here on the next
+        call rather than left on disk (see sweep_incoming).
         """
         if isinstance(bundle, BundledSource):
             return bundle.resolve()
@@ -210,6 +272,7 @@ class WeightCache:
 
         incoming = self._incoming()
         self._makedirs(incoming)
+        self.sweep_incoming()
         if not self._acquire_lock(bundle):
             return self.path_for(bundle)         # someone else finished it
 
@@ -237,41 +300,72 @@ class WeightCache:
         return target
 
     def _download(self, bundle, part, progress, should_cancel=None):
-        """Stream to `part`, hashing as we go, and verify before anything is published."""
-        digest = hashlib.sha256()
-        received = 0
-        expected = bundle.size or 0
+        """Stream to `part`, hashing as we go, and verify before anything is published.
+
+        Resumable, because one stalled socket must not cost the whole transfer.
+        Bundles here run 500 MiB to 1 GiB and the release CDN routinely serves them at
+        well under 1 MiB/s, which leaves a window of tens of minutes in which a single
+        read that stalls past DEFAULT_TIMEOUT used to discard everything received so
+        far and restart from byte zero (observed on the 996 MiB boltz2-mlx-bf16 bundle:
+        a timeout at ~84% threw away ~875 MiB).
+
+        The resume is per-call: `part` is keyed on this process's pid, so an attempt
+        only ever continues a prefix this call itself wrote. Scratch stranded by an
+        earlier process is reclaimed by sweep_incoming, not adopted -- adopting it
+        would mean trusting bytes whose provenance nothing here can check.
+        """
         # Before opening the socket at all: a cancel that arrives while this caller was
         # queued on the lock should cost nothing.
         _raise_if_cancelled(should_cancel, bundle)
-        try:
-            request = Request(bundle.url, headers={'User-Agent': 'RayMol'})
-            with _urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
-                with open(part, 'wb') as handle:
-                    while True:
-                        chunk = response.read(CHUNK_BYTES)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        digest.update(chunk)
-                        received += len(chunk)
-                        if progress and expected:
-                            progress('download',
-                                     min(1.0, float(received) / expected))
-                        # After the write, not before: a cancelled chunk is still
-                        # hashed and written, so `received` never overstates the file.
-                        _raise_if_cancelled(should_cancel, bundle)
-        except URLError as exc:
-            _unlink(part)
-            raise WeightDownloadFailed(
-                'failed to fetch %s: %s' % (bundle.url, exc.reason))
-        except OSError as exc:
-            _unlink(part)
-            if exc.errno in (errno.ENOSPC, errno.EACCES, errno.EROFS, errno.ENOTDIR):
-                raise WeightCacheUnwritable(
-                    'cannot write %s: %s' % (part, exc))
-            raise WeightDownloadFailed(
-                'download of %s was interrupted: %s' % (bundle.url, exc))
+        _unlink(part)
+        expected = bundle.size or 0
+        received, digest = 0, hashlib.sha256()
+        attempts = stalled = 0
+        while True:
+            try:
+                received, digest = self._stream_to_part(
+                    bundle, part, received, digest, progress, should_cancel)
+                if not expected or received >= expected:
+                    break
+                # A body that simply stops short raises nothing at all. Before
+                # resume existed this could only ever become a checksum mismatch;
+                # now it is just another interrupted transfer to continue.
+                reason = ('download of %s ended early at %d of %d bytes'
+                          % (bundle.url, received, expected))
+            except HTTPError as exc:
+                if exc.code == 416 and received:
+                    # We asked to resume past the end of the resource: the .part is
+                    # longer than what the server holds. That is ours to fix.
+                    _unlink(part)
+                elif exc.code not in RETRYABLE_STATUSES:
+                    _unlink(part)
+                    raise WeightDownloadFailed(
+                        'failed to fetch %s: %s' % (bundle.url, exc))
+                reason = 'failed to fetch %s: %s' % (bundle.url, exc)
+            except URLError as exc:
+                reason = 'failed to fetch %s: %s' % (bundle.url, exc.reason)
+            except OSError as exc:
+                if exc.errno in UNWRITABLE_ERRNOS:
+                    _unlink(part)
+                    raise WeightCacheUnwritable(
+                        'cannot write %s: %s' % (part, exc))
+                reason = ('download of %s was interrupted: %s'
+                          % (bundle.url, exc))
+
+            # Re-derive both the byte count and the running hash from the file on
+            # disk. The hasher inside the failed attempt may have absorbed bytes that
+            # never reached the disk, and a sha256 cannot be rolled back -- so the
+            # file, which is what the next attempt appends to, is the only honest
+            # source for both.
+            resumed, digest = _rehash_part(part, should_cancel, bundle)
+            stalled = 0 if resumed > received else stalled + 1
+            received = resumed
+            attempts += 1
+            if attempts >= MAX_DOWNLOAD_ATTEMPTS or stalled >= MAX_STALLED_ATTEMPTS:
+                _unlink(part)
+                raise WeightDownloadFailed(
+                    '%s (gave up after %d attempts)' % (reason, attempts))
+            _backoff(stalled, should_cancel, bundle)
 
         actual = digest.hexdigest()
         if actual != bundle.sha256:
@@ -279,6 +373,49 @@ class WeightCache:
             raise WeightChecksumMismatch(
                 'checksum mismatch for %s: expected %s, got %s'
                 % (bundle.id, bundle.sha256, actual))
+
+    def _stream_to_part(self, bundle, part, offset, digest, progress,
+                        should_cancel):
+        """One transfer attempt. Returns (bytes on disk, hash of those bytes).
+
+        With `offset` > 0 this asks for `Range: bytes=<offset>-` and appends the
+        response. A server that ignores Range answers 200 with the WHOLE body:
+        appending that would splice a duplicate prefix into the file and surface only
+        much later, as a checksum mismatch after another full download. So anything
+        but a 206 discards the prefix and restarts the attempt from zero, which is
+        exactly what the un-resumed path did anyway.
+        """
+        headers = {'User-Agent': 'RayMol'}
+        if offset:
+            headers['Range'] = 'bytes=%d-' % offset
+        request = Request(bundle.url, headers=headers)
+        expected = bundle.size or 0
+        with _urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
+            resuming = bool(offset) and _status_of(response) == 206
+            if not resuming:
+                offset, digest = 0, hashlib.sha256()
+            received = offset
+            with open(part, 'r+b' if resuming else 'wb') as handle:
+                if resuming:
+                    # Write exactly where the hash ends, whatever else is in the
+                    # file: `digest` covers the first `offset` bytes and nothing
+                    # beyond them may survive.
+                    handle.seek(offset)
+                    handle.truncate()
+                while True:
+                    chunk = response.read(CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+                    if progress and expected:
+                        progress('download',
+                                 min(1.0, float(received) / expected))
+                    # After the write, not before: a cancelled chunk is still
+                    # hashed and written, so `received` never overstates the file.
+                    _raise_if_cancelled(should_cancel, bundle)
+        return received, digest
 
     def _extract(self, bundle, part, staging, progress, should_cancel=None):
         """Extract to staging, then assert the layout is exactly what was declared."""
@@ -327,6 +464,79 @@ def _raise_if_cancelled(should_cancel, bundle):
     if should_cancel is not None and should_cancel():
         raise WeightDownloadCancelled(
             'fetch of %s weights was cancelled' % bundle.id)
+
+
+def _status_of(response):
+    """HTTP status of an urlopen result, or 200 when it does not report one.
+
+    200 is the safe default because of what the caller does with it: it reads as
+    "the server did not honour Range", which restarts the transfer. Guessing 206
+    from a response that never said so would append onto a prefix.
+    """
+    status = getattr(response, 'status', None)
+    if status is None:
+        status = getattr(response, 'code', None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return 200
+
+
+def _rehash_part(part, should_cancel=None, bundle=None):
+    """Return (bytes on disk, sha256 of those bytes) for a partial download.
+
+    Re-reading ~1 GiB costs well under a second -- three orders of magnitude less
+    than re-fetching it over the link these bundles actually arrive on.
+
+    A partial file we cannot read is not worth diagnosing: dropping it costs one
+    restart, whereas resuming from a length we could not verify corrupts the result.
+    """
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with open(part, 'rb') as handle:
+            while True:
+                chunk = handle.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                total += len(chunk)
+                _raise_if_cancelled(should_cancel, bundle)
+    except OSError:
+        _unlink(part)
+        return 0, hashlib.sha256()
+    return total, digest
+
+
+def _backoff(stalled, should_cancel, bundle):
+    """Wait before the next attempt, without swallowing a cancel.
+
+    Slept in short slices rather than one long call: a user who hits cancel during
+    the wait should not be made to sit through the rest of it.
+    """
+    deadline = time.monotonic() + min(RETRY_BACKOFF_MAX,
+                                      RETRY_BACKOFF_BASE * (2 ** stalled))
+    while True:
+        _raise_if_cancelled(should_cancel, bundle)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        _sleep(min(0.05, remaining))
+
+
+def _pid_from_token(stem):
+    """The pid encoded in a `<sha256>-<pid>` scratch token, or None.
+
+    None means "leave it alone": an entry that does not match the shape this module
+    writes belongs to something else, and .incoming is not ours to empty.
+    """
+    sha, _, pid = stem.rpartition('-')
+    if len(sha) != 64:
+        return None
+    try:
+        return int(pid)
+    except ValueError:
+        return None
 
 
 def _read_pid(path):

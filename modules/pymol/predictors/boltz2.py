@@ -1,12 +1,19 @@
 """Boltz-2 via boltz-mlx: a Swift/MLX int8 port running on-device.
 
-Protein-only, canonical-20, single-sequence (no MSA). Ligands, nucleic acids,
-modified residues, cyclic peptides and structural templates are unsupported by the
-featurizer and are rejected here rather than silently dropped.
+Protein-only, canonical-20. Ligands, nucleic acids, modified residues, cyclic
+peptides and structural templates are unsupported by the featurizer and are rejected
+here rather than silently dropped.
+
+Multiple-sequence alignments ARE supported (#297): the featurizer takes a per-chain
+map and falls back to upstream's depth-1 dummy alignment for any chain without one.
+Cross-chain PAIRING is inert for locally generated a3m files -- taxonomy is read only
+from `>UniRef100_*` headers and only when a taxonomy database is supplied, which
+nothing here supplies -- so a multimer gets per-chain alignments, not a paired one.
 """
 from . import host
-from .base import Predictor, PredictionSpec, parse_chains
+from .base import MAX_MSA_DEPTH, Predictor, PredictionSpec, parse_chains
 from .errors import PredictionInputError
+from .metrics import SCORED_SPECS
 from .weights import WeightBundle
 
 #: The canonical 20. X, U, B and Z are deliberately absent: the featurizer throws
@@ -15,6 +22,10 @@ CANONICAL = set('ACDEFGHIKLMNPQRSTVWY')
 
 #: BoltzInputLimits.desktop caps at 1024 tokens, and one token is one residue.
 MAX_RESIDUES = 1024
+
+#: The backend the Swift host dispatches to. Also what a request with no `runtime` at all
+#: is taken to mean, so an older Python side keeps working -- see host.DEFAULT_RUNTIME.
+RUNTIME = 'boltz'
 
 
 class Boltz2Predictor(Predictor):
@@ -40,7 +51,21 @@ class Boltz2Predictor(Predictor):
     # the artifact's config.json (already 1.5) and is not a per-call knob.
     # diffusion_samples is absent because the port does not plumb it and only
     # diffusion sample 0 escapes BoltzPredictor.
-    option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
+    #
+    # msa_depth is the memory lever: MSA tensors are depth x tokens, so it is the one
+    # knob that changes peak memory without changing what is being folded. Defaulted to
+    # the ceiling, so an alignment is used in full unless the user says otherwise.
+    option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0,
+                       'msa_depth': MAX_MSA_DEPTH}
+
+    # The featurizer takes `alignments:` and throws msaLengthMismatch / msaQueryMismatch
+    # on a mismatch rather than falling back to a dummy MSA the way upstream does.
+    supports_msa = True
+
+    # Scored: `predictScored` runs the confidence module, so pLDDT, the full PAE matrix
+    # and the interface scores all exist. Everything but pLDDT used to be computed and
+    # dropped on the floor -- #308 is what gives them somewhere to land.
+    metric_specs = SCORED_SPECS
 
     #: 'inference' is the coarse phase the host writes today, and it is zero-span
     #: because boltz-mlx v0.1.1 reports nothing from inside predictScored. 'trunk'
@@ -82,4 +107,5 @@ class Boltz2Predictor(Predictor):
         return PredictionSpec(chains, name)
 
     def submit(self, spec, options, weights_path):
-        return host.submit(spec, options, weights_path)
+        return host.submit(spec, options, weights_path, runtime=RUNTIME,
+                           knobs=self.option_defaults)

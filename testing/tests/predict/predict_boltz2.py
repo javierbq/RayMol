@@ -129,7 +129,10 @@ class TestHostTransport(testing.PyMOLTestCase):
         status = job.status()
         self.assertEqual(status['state'], 'done')
         self.assertEqual(status['result_path'], '/tmp/out.pdb')
-        os.unlink(job.request_path)
+        # Reading a TERMINAL status is also what retires the job's inputs, so the
+        # request is gone by now -- see HostJob._discard_inputs. The status file is
+        # deliberately kept: predict_status must keep answering for a settled job.
+        self.assertFalse(os.path.exists(job.request_path))
         os.unlink(job.status_path)
 
     def testHalfWrittenStatusFallsBackToQueued(self):

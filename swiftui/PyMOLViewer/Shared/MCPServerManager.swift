@@ -15,7 +15,24 @@ final class MCPServerManager: ObservableObject {
     @Published var pendingApproval = false
 
     let token: String
-    private let preferredPort = 51737
+    private let defaultPort = 51737
+    /// The handoff this instance wrote, so shutdown removes its own and no one else's.
+    private var writtenHandoff: URL?
+
+    /// The port to ask for, honouring `RAYMOL_MCP_PORT` when it is set.
+    ///
+    /// Dev/testing, like `RAYMOL_MCP_ENABLE` / `RAYMOL_MCP_BIND` / `RAYMOL_MCP_AUTOTRUST`
+    /// and never present in a Finder or `open` launch. It exists because a dev build and
+    /// an installed RayMol cannot both have 51737: the second to start fails to bind and
+    /// comes up with no server at all, so the one you are trying to test is the one you
+    /// cannot drive. `RAYMOL_MCP_PORT=0` asks the OS for any free port, which the Python
+    /// side already supports and reports back on the `MCP:started` line.
+    private var preferredPort: Int {
+        guard let declared = ProcessInfo.processInfo.environment["RAYMOL_MCP_PORT"],
+              let port = Int(declared), (0...65535).contains(port)
+        else { return defaultPort }
+        return port
+    }
     private weak var engine: PyMOLEngine?
     private var pulseWork: DispatchWorkItem?
     // When the "Claude is controlling RayMol" banner first appeared in the current
@@ -279,13 +296,23 @@ final class MCPServerManager: ObservableObject {
 
     // MARK: Handoff file (for the Phase 2 Claude Mac app bridge)
 
+    /// Where a client looks up this instance's port and token.
+    ///
+    /// A build running on an overridden port writes a SIBLING file rather than the
+    /// canonical `mcp.json`. The override exists so a dev build can run beside an
+    /// installed RayMol; clobbering the installed app's handoff on the way past would
+    /// trade one collision for another, and the dev instance is not the canonical one.
     private func handoffURL() -> URL? {
         let fm = FileManager.default
         guard let base = fm.urls(for: .applicationSupportDirectory,
                                  in: .userDomainMask).first else { return nil }
         let dir = base.appendingPathComponent("RayMol", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("mcp.json")
+        let overridden = ProcessInfo.processInfo.environment["RAYMOL_MCP_PORT"] != nil
+        guard overridden, let live = port else {
+            return dir.appendingPathComponent("mcp.json")
+        }
+        return dir.appendingPathComponent("mcp-\(live).json")
     }
 
     private func writeHandoff(port: Int?) {
@@ -295,11 +322,19 @@ final class MCPServerManager: ObservableObject {
             try? data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                    ofItemAtPath: url.path)
+            writtenHandoff = url
         }
     }
 
+    /// Remove the file this instance actually wrote, not the one it would write now.
+    ///
+    /// `handleFeedbackEvent` clears `port` before calling this, so recomputing the path
+    /// would resolve an overridden instance back to the canonical `mcp.json` and delete
+    /// another RayMol's handoff on the way out — the collision the override exists to
+    /// avoid, arriving at shutdown instead of startup.
     private func removeHandoff() {
-        if let url = handoffURL() { try? FileManager.default.removeItem(at: url) }
+        if let url = writtenHandoff { try? FileManager.default.removeItem(at: url) }
+        writtenHandoff = nil
     }
 
     private static func randomHex(_ bytes: Int) -> String {

@@ -209,6 +209,36 @@ class PredictAPITest(testing.PyMOLTestCase):
             settle()
         self.assertEqual(job.spec.chains, (('A', 'AA'), ('B', 'GG')))
 
+    def testObjectIsFoldedAsItsSequence(self):
+        """The whole point of the object path: no retyping the sequence."""
+        cmd.fab('ACDEFG', 'pep')
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.predict('stub', 'pep')
+            settle()
+        self.assertEqual(job.spec.chains, (('A', 'ACDEFG'),))
+
+    def testSelectionIsFoldedAsItsSequence(self):
+        cmd.fab('ACDEFG', 'pep')
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.predict('stub', 'pep and resi 1-3')
+            settle()
+        self.assertEqual(job.spec.chains, (('A', 'ACD'),))
+
+    def testObjectAndItsSequenceLandInTheSameObject(self):
+        """The auto-load name is a digest of the RESOLVED sequence, so folding an
+        object and typing out its sequence append models to one object rather than
+        littering the session with two."""
+        cmd.fab('ACDEFG', 'pep')
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            from_object = cmd.predict('stub', 'pep')
+            settle()
+            from_string = cmd.predict('stub', 'ACDEFG')
+            settle()
+        self.assertEqual(from_object.spec.name, from_string.spec.name)
+
     def testPredictIsRegisteredAsACommandKeyword(self):
         self.assertIn('predict', cmd.keyword)
         self.assertIn('predict_status', cmd.keyword)
