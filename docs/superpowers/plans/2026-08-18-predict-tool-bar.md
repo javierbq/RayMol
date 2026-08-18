@@ -613,11 +613,14 @@ final class PredictControllerRunTests: XCTestCase {
         c.msaChains = ["A"]
         c.run()
 
-        // A search started; not predicting yet.
+        // A search started; not predicting yet. The search is chain-SCOPED —
+        // msa_search refuses a complex, so per-chain scoping is required even for a
+        // single-chain object.
         XCTAssertEqual(c.phase, .searching(remaining: 1))
         XCTAssertEqual(cmds.count, 1)
-        XCTAssertTrue((cmds[0] as! String).contains("_c.msa_search('1ubq'"))
+        XCTAssertTrue((cmds[0] as! String).contains("_c.msa_search('(1ubq) and chain A'"))
         XCTAssertTrue((cmds[0] as! String).contains("target='1ubq'"))
+        XCTAssertTrue((cmds[0] as! String).contains("chain='A'"))
 
         // The alignment lands (name matches predui_1ubq_A, attached to 1ubq/A).
         let landed = AlignmentEntry(id: "aln", name: "predui_1ubq_A", depth: 8,
