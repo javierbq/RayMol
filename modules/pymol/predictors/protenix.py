@@ -102,6 +102,55 @@ MAX_RESIDUES = 700
 #: highest of the four on a short probe -- but about what has been measured.
 V2_MAX_RESIDUES = 250
 
+#: Why a variant's ceiling sits where it does, when that ceiling is NOT itself one of the
+#: points in MEASURED_PEAK_MIB. Keyed by variant; a variant absent from here has a cap the
+#: sweep actually reached, and `_limit_rationale` reads the reason off the table instead
+#: of out of prose. Data rather than an if-branch so that the day v2 is swept properly,
+#: deleting its entry is the whole change.
+_UNMEASURED_CAP_REASON = {
+    'v2': "its pair track is 256 wide against every other variant's 128, so the N^2 "
+          "term is roughly doubled and base's curve would UNDERSTATE it",
+}
+
+
+def _limit_rationale(variant, limit):
+    """Why THIS variant refuses at THIS length, in its own measured numbers.
+
+    The refusal this feeds used to quote base's 700 residues / 8.6 GB / confidence 26 no
+    matter which pack raised it, which told a v2 user three facts about a pack they were
+    not running and implied v2's 250 was a memory measurement. It is not one: v2 has been
+    swept at a single point, 15 residues. A refusal that misreports its own evidence is
+    worse than a terse one, because the reader's next move -- accept a hard memory wall,
+    or go measure -- is exactly the thing the wrong numbers decide for them.
+
+    Two branches, chosen by the data and not by the variant name: if the cap is at or
+    below the largest length this variant has actually been run at, it IS a measurement,
+    and the peak at that length is quoted. If the cap sits above the sweep, it is a
+    placeholder, and the message says so along with how far the sweep really got.
+    """
+    points = MEASURED_PEAK_MIB.get(variant) or ()
+    if not points:
+        return ("That limit is a conservative placeholder: no memory sweep exists for "
+                "this pack at all, so nothing here is known either to fit or not to.")
+    measured_to, peak_mib = points[-1]
+    if limit <= measured_to:
+        at_cap = [point for point in points if point[0] <= limit][-1]
+        return ("That limit is measured, not intrinsic: peak memory is ~N^2 in tokens, "
+                "and this pack's own sweep reaches %.1f GiB at %d residues. Single-"
+                "sequence confidence is ~26 from 400 residues up, so folding longer is "
+                "rarely worth the wait even where it fits."
+                % (at_cap[1] / 1024.0, at_cap[0]))
+    return ("That limit is a conservative placeholder rather than a measured ceiling: "
+            "this pack has only been swept up to %d residues (%d MiB peak)%s. Guessing "
+            "past measured data is how a fold gets SIGKILLed mid-run instead of cleanly "
+            "refused, so the cap sits well inside what has been run until a real sweep "
+            "raises it -- see MEASURED_PEAK_MIB. %s is measured to %d residues if you "
+            "need the length now."
+            % (measured_to, peak_mib,
+               ', and ' + _UNMEASURED_CAP_REASON[variant]
+               if variant in _UNMEASURED_CAP_REASON else '',
+               DEFAULT_ID, MAX_RESIDUES))
+
 
 class _Pack:
     """One published weight pack: what to fetch, and how the model it holds behaves."""
@@ -216,11 +265,12 @@ class ProtenixPredictor(Predictor):
                     % (chain, ', '.join(bad)))
             total += len(seq)
         if total > limit:
+            # The rationale comes from THIS pack's row of MEASURED_PEAK_MIB rather than
+            # from a sentence about base's sweep -- see `_limit_rationale`.
             raise PredictionInputError(
-                '%d residues exceeds %s\'s %d-residue limit. That limit is measured, '
-                'not intrinsic: peak memory is ~N^2 in tokens and reaches 8.6 GB at 700 '
-                'residues, where the model\'s own confidence is 26 anyway.'
-                % (total, self.id, limit))
+                '%d residues exceeds %s\'s %d-residue limit. %s'
+                % (total, self.id, limit,
+                   _limit_rationale(self.pack.variant if self.pack else None, limit)))
         return PredictionSpec(chains, name)
 
     def submit(self, spec, options, weights_path):
