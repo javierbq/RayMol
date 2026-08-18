@@ -22,7 +22,6 @@ SHADER_FILES = [
     "surface.metal",
     "sphere.metal",
     "cylinder.metal",
-    "label.metal",
     "bg.metal",
     "line.metal",
     "trilines.metal",
@@ -33,7 +32,6 @@ SHADER_FILES = [
     "volume.metal",
     "ramp.metal",
     "bezier.metal",
-    "connector.metal",
 ]
 
 
