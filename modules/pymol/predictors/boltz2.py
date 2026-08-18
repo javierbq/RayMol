@@ -13,6 +13,7 @@ nothing here supplies -- so a multimer gets per-chain alignments, not a paired o
 from . import host
 from .base import MAX_MSA_DEPTH, Predictor, PredictionSpec, parse_chains
 from .errors import PredictionInputError
+from .metrics import SCORED_SPECS
 from .weights import WeightBundle
 
 #: The canonical 20. X, U, B and Z are deliberately absent: the featurizer throws
@@ -60,6 +61,11 @@ class Boltz2Predictor(Predictor):
     # The featurizer takes `alignments:` and throws msaLengthMismatch / msaQueryMismatch
     # on a mismatch rather than falling back to a dummy MSA the way upstream does.
     supports_msa = True
+
+    # Scored: `predictScored` runs the confidence module, so pLDDT, the full PAE matrix
+    # and the interface scores all exist. Everything but pLDDT used to be computed and
+    # dropped on the floor -- #308 is what gives them somewhere to land.
+    metric_specs = SCORED_SPECS
 
     def check_available(self):
         host.require_available(self.id)

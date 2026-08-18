@@ -11,7 +11,7 @@ final class DesignIOSPortTests: XCTestCase {
         return DesignController(
             enumerate: { _, _ in emptySet },
             score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in }, snapshot: { _ in }, restore: { })
     }
 
@@ -249,7 +249,7 @@ final class DesignIOSPortTests: XCTestCase {
                     logProbs: [[Float](repeating: Float(log(1.0 / 21.0)), count: 21)],
                     currentAALogProb: [-1.0])
             },
-            applyColoring: { _, _, palette, _, _ in lastPalette = palette },
+            applyColoring: { _, _, palette, _, _, _, _ in lastPalette = palette },
             dim: { _ in }, snapshot: { _ in }, restore: { })
         c.enter()
         await c.focusAwait("stub")
@@ -637,7 +637,7 @@ final class DesignIOSPortTests: XCTestCase {
                 semaphore.wait()
                 return goodResult
             },
-            applyColoring: { _, _, _, _, _ in },
+            applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in }, snapshot: { _ in }, restore: { })
 
         // Step 1: seed cache for obj1

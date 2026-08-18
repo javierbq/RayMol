@@ -163,7 +163,31 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    The base `bind_alignments` already refuses an alignment whose query is not exactly the
    chain's sequence. Override it only to add a constraint of your own, then call `super()`.
 
-8. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
+8. **Declare `metric_specs` — what your method MEASURES.** Empty on the base class, so a
+   method that says nothing records provenance and cost and no numbers of its own.
+   `predictors/metrics.py` carries the shared sets: `SCORED_SPECS` for a method with a
+   confidence head, `UNSCORED_SPECS` for one without. `registry.register` declares them
+   under your `id`, and from there the object panel, `metrics_color` and `metrics_export`
+   handle a method they have never heard of — see [metrics.md](metrics.md).
+
+   Declare only what your method genuinely produces, for the reason `supports_msa` is
+   `False` by default: a caller that finds `plddt` in the schema is entitled to conclude
+   the tool can produce it. A method whose sampler emits coordinates and nothing else has
+   no confidence module, so it declares neither `plddt` nor `pae` — `UNSCORED_SPECS` is
+   exactly that set.
+
+   Scope is the part to get right. `n_residues` is `object`-scope — a property of the
+   sequence, the same for all five models of `n_models=5`; `mean_plddt` is `state`-scope
+   because each model has its own; `msa_depth` is `chain`-scope because a designed binder
+   has an alignment for the target and none for itself.
+
+   Anything the **runtime** measures and Python cannot see — a per-residue array, a
+   pairwise matrix — is written by the Swift side as a metric document at
+   `request.metrics_path`, in the format `docs/metrics.md` gives. `BoltzJobManager.writeMetrics`
+   is the worked example. Elapsed time and peak memory already reach the store through
+   the status file; do not send them twice from two sources that could disagree.
+
+9. **`submit` must not block.** `cmd.predict` is reachable from the console, which runs on the
    main thread, so blocking stalls the render loop for the whole inference.
 
    Nothing on that thread may block for long, and the reason is sharper than "the UI stutters":
@@ -179,14 +203,14 @@ float16 is the closer one at identical size (`--precision float16` exports it).
    because RayMol's Metal renderer reads object state on the main thread without taking
    PyMOL's API lock. If you extend the fetcher, keep every session touch inside `pump()`.
 
-9. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
+10. **Register it** in `predictors/__init__.py`'s `_register_builtins()` — the only file that
    changes outside your own.
 
-10. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
+11. **Make CI run your tests.** `.github/workflows/raymol-embedded-tests.yml` hand-enumerates
    test paths. The `testing/tests/predict` directory is already listed, so a new file inside it
    runs automatically. If you add a path by hand anywhere in that list, **rebase onto master
    first** — the list has silently dropped files before, and PR #259 had to retro-add seven.
 
-11. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
+12. **If your predictor adds Swift**, hand-compile **both** the macOS and iOS slices before
     merging. No CI job compiles Swift, and the shared target has broken each platform from the
     other before (#174, #226/#238).

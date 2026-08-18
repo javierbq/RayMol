@@ -95,6 +95,12 @@ class HostJob:
         self.request_path = _path('req', job_id)
         self.status_path = _path('status', job_id)
         self.out_path = _path('result', job_id, 'pdb')
+        #: Where the host writes what it MEASURED, as a pymol.metrics document (#308).
+        #: Separate from the PDB because most of it does not fit in one: a PAE matrix
+        #: is per residue PAIR, and the interface scores are per run. Optional at the
+        #: far end -- a host that predates it simply writes no file, and the run is
+        #: recorded with its provenance and cost and no confidence numbers.
+        self.metrics_path = _path('metrics', job_id, 'json')
         #: Chain id -> a3m written for this job. Cleaned up when the job settles.
         self.a3m_paths = {}
 
@@ -204,6 +210,11 @@ def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None):
         'alignments': alignments,
         'out_path': job.out_path,
         'status_path': job.status_path,
+        # Where to write the metrics document. OPTIONAL at the far end, like `runtime`
+        # and `alignments`: a host that does not know the key writes nothing, and
+        # deliver_result records the run without the confidence numbers rather than
+        # failing to record it at all.
+        'metrics_path': job.metrics_path,
         # The object the host loads the finished structure into. Resolved at submit time
         # so an empty placeholder can exist in the session immediately, and so the host
         # needs no second round-trip to find out where the result belongs.

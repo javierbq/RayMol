@@ -53,6 +53,17 @@ from .msa import \
       msa_cancel
 
 #--------------------------------------------------------------------
+from . import metric
+from .metric import \
+      metrics_list,         \
+      metrics_get,          \
+      metrics_delete,       \
+      metrics_color,        \
+      metrics_export,       \
+      metrics_load,         \
+      metrics_schema
+
+#--------------------------------------------------------------------
 from . import creating
 from .creating import \
       copy,               \

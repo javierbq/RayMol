@@ -144,6 +144,16 @@ class Predictor(abc.ABC):
     #: rejected by name, which is correct for a method that has no depth to lever.
     supports_msa = False
 
+    #: MetricSpecs this method can produce (#308). Registered under `id` when the
+    #: predictor is, so a run's numbers arrive with a scope, units and a range, and the
+    #: panel, `metrics_color` and export can handle a method they have never heard of.
+    #:
+    #: Declare only what this method GENUINELY measures. `pymol.predictors.metrics`
+    #: carries the shared sets; a method with no confidence module must not declare
+    #: `plddt`, for the same reason it must not claim `supports_msa`: a caller that
+    #: finds a key in the schema is entitled to conclude the tool can produce it.
+    metric_specs = ()
+
     @abc.abstractmethod
     def check_available(self):
         """Raise PredictorUnavailable if this cannot run here and now.

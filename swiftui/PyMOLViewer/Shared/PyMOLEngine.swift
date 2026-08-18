@@ -2257,8 +2257,11 @@ final class PyMOLEngine: ObservableObject {
                 try model.score(residues, sequence: native, mode: .leaveOneOut, seed: 0)
             }
         },
-        applyColoring: { [weak self] obj, values, palette, lo, hi in
+        applyColoring: { [weak self] obj, values, palette, lo, hi, metric, state in
             guard let self else { return }
+            // Masked residues go across with a null value, not dropped: the Python side
+            // records the FULL index so an unscored residue is stored as absent rather
+            // than as a plausible-looking number (#308).
             let rows = values.map { ["chain": $0.0, "resi": $0.1, "value": $0.2 as Any] }
             if let data = try? JSONSerialization.data(withJSONObject: rows) {
                 let p = FileManager.default.temporaryDirectory
@@ -2266,7 +2269,8 @@ final class PyMOLEngine: ObservableObject {
                 try? data.write(to: p)
                 self.runPython("""
                     from pymol import raymol_design as _rd
-                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi))
+                    _rd.apply_design_coloring('\(obj)', '\(p.path)', '\(palette)', \(lo), \(hi), \
+                    '\(metric)', \(state))
                     """)
             }
         },

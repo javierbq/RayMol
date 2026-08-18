@@ -21,6 +21,17 @@ def register(predictor, replace=False):
             'predictor %r is already registered; pass replace=True to override'
             % predictor.id)
     _REGISTRY[predictor.id] = predictor
+    # Declare what this method measures, at the one moment the method becomes
+    # reachable (#308). `replace=True` because re-registering a predictor is legal
+    # here and its schema must follow it rather than raise on the second pass.
+    # Never fatal: a metric schema is bookkeeping, and a predictor that can fold must
+    # not become unusable because its declaration is malformed.
+    if predictor.metric_specs:
+        try:
+            from pymol.metrics import schema
+            schema.register(predictor.id, predictor.metric_specs, replace=True)
+        except Exception as exc:
+            print(' predict: %s declared unusable metrics (%s)' % (predictor.id, exc))
     return predictor
 
 

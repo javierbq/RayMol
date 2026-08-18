@@ -395,6 +395,14 @@ USAGE
                 _msa_searching.forget()
             except Exception:
                 pass
+            # And the metric store (#308), for the same reason as the alignments: it is
+            # Python-side, so the C reinitialize cannot see it, and a run left behind
+            # would name an object the fresh session does not have.
+            try:
+                from pymol.metrics import store as _metric_store
+                _metric_store.clear()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 
@@ -562,6 +570,22 @@ SEE ALSO
         finally:
             _self.unlock(r,_self)
         if _self._raising(r,_self): raise pymol.CmdException
+        # Drop metrics whose object just went (#308). Done by DIFFING rather than by
+        # matching `name`, because this takes wildcards and "all", and a pattern is not
+        # something a bookkeeping table should try to re-interpret. Guarded on the store
+        # being non-empty so the ordinary delete costs one dict check.
+        #
+        # Not deferred to a lazy "does it still exist" test: a NEW object created under
+        # the recycled name would inherit measurements of a structure it has nothing to
+        # do with, which is exactly the silent wrongness the metric store exists to end.
+        try:
+            from pymol.metrics import store as _metric_store
+            if _metric_store.ids():
+                alive = set(_self.get_names('objects'))
+                for _gone in [o for o in _metric_store.objects() if o not in alive]:
+                    _metric_store.forget_object(_gone)
+        except Exception as _mt_e:
+            print(" metrics: could not reconcile after delete (%s)" % _mt_e)
         return r
 
     def delete_states(name: str, states: str, *, _self=cmd):

@@ -192,8 +192,8 @@ class _DeferredJob:
     (status file, cancel marker) and every session-side path by the object name.
     """
 
-    __slots__ = ('job_id', 'spec', 'options', 'object_name', '_predictor',
-                 '_bundle', '_real', '_error', '_cancelled', '_reaped')
+    __slots__ = ('job_id', 'spec', 'options', 'object_name', 'predictor_id',
+                 '_predictor', '_bundle', '_real', '_error', '_cancelled', '_reaped')
 
     def __init__(self, spec, options, predictor, bundle, object_name):
         import uuid
@@ -201,6 +201,10 @@ class _DeferredJob:
         self.spec = spec
         self.options = options
         self.object_name = object_name
+        # Which method this is a job of. A HostJob is told the same thing in predict();
+        # both carry it so metric recording can ask any job handle, deferred or not,
+        # without knowing which kind it holds.
+        self.predictor_id = predictor.id
         self._predictor = predictor
         self._bundle = bundle
         self._real = None
@@ -324,6 +328,178 @@ def pump(_self=cmd):
     return settled
 
 
+def _host_handle(job):
+    """The handle that owns the host-side paths, unwrapping a deferred job.
+
+    A _DeferredJob's own id is not the host's -- the host allocates its id inside
+    submit() -- so anything keyed by a temp-file path has to come from the real job.
+    """
+    return getattr(job, '_real', None) or job
+
+
+def _run_inputs(job, seed):
+    """The provenance half of a metric run: what this prediction was ASKED to do.
+
+    Inputs, not metrics, because they are not measurements -- but a metric without
+    them is not evidence of anything, which is why they travel in the same record.
+    #293 (a second weight pack) and #301 (an alignment, at a depth) both change the
+    numbers without changing the sequence, so both have to be here.
+    """
+    spec = getattr(job, 'spec', None)
+    options = getattr(job, 'options', None)
+    inputs = {'predictor': getattr(job, 'predictor_id', '') or '',
+              'seed': None if seed is None else int(seed)}
+    if options is not None:
+        inputs['options'] = options.as_dict()
+        # The seed the job actually ran with wins over the one the host echoed back:
+        # with n_models only the first model uses the seed the user gave.
+        inputs['seed'] = options.seed
+    if spec is not None:
+        inputs['chains'] = [{'chain': chain, 'length': len(sequence)}
+                            for chain, sequence in spec.chains]
+        alignments = getattr(spec, 'alignments', None) or {}
+        if alignments:
+            inputs['alignments'] = {chain: msa.name
+                                    for chain, msa in alignments.items()}
+    return inputs
+
+
+def _run_values(job, status, state):
+    """The metrics the PYTHON side knows, without asking the host for anything.
+
+    Deliberately independent of the metrics document: a host that never writes one --
+    an older app, or a runtime with no confidence module -- still gets a run carrying
+    what the prediction cost and what it was over. Everything here is a measurement or
+    a fact about the input, never a knob (knobs are inputs).
+    """
+    from pymol.metrics import store as metric_store
+    predictor_id = getattr(job, 'predictor_id', '') or ''
+    spec = getattr(job, 'spec', None)
+    options = getattr(job, 'options', None)
+    values = []
+
+    def _add(key, **kwargs):
+        # A predictor declares the subset it can produce, so a key it never declared is
+        # simply not written -- that is the capability contract working, not a failure.
+        # ONLY that: a scope or type error is a bug in this function and must not be
+        # swallowed into a silently incomplete run.
+        from pymol.metrics.errors import MetricSchemaError
+        try:
+            values.append(metric_store.value(predictor_id, key, **kwargs))
+        except MetricSchemaError:
+            pass
+
+    if spec is not None:
+        _add('n_residues', value=spec.total_residues)
+        _add('n_chains', value=len(spec.chains))
+        # Chain scope, because it genuinely differs per chain: an alignment for the
+        # target and none for the binder is the designed-binder case, not an omission.
+        # The depth RECORDED is the depth READ -- the parser truncates at msa_depth --
+        # so a run that used 1000 rows of a 6000-row alignment says 1000.
+        depth_cap = getattr(options, 'msa_depth', None)
+        for chain, msa in (getattr(spec, 'alignments', None) or {}).items():
+            depth = msa.depth if depth_cap is None else min(msa.depth, depth_cap)
+            _add('msa_depth', value=depth, chain=chain)
+
+    for key in ('elapsed_s', 'peak_bytes'):
+        # Absent stays absent: a host that reported no timing gets no `elapsed_s`,
+        # rather than a zero that reads as an instantaneous fold.
+        if status.get(key) is not None:
+            _add(key, value=status[key], state=state)
+    return values
+
+
+def _document_values(job, predictor_id, state, object_name):
+    """What the HOST measured: pLDDT, PAE, the interface scores.
+
+    These exist only inside the runtime. Before #308 exactly one of them survived --
+    pLDDT, as rounded B-factors -- and `ScoredStructure.pae` and `interfaceScores()`
+    were computed and dropped.
+
+    The document's own `tool` is overridden with the predictor that ran. The host knows
+    its RUNTIME ('boltz'), not which predictor selected it, and boltz2 and boltz2-bf16
+    share one runtime while declaring their metrics separately. This is our own host
+    writing to a path we named, not a foreign file, so the Python side is the
+    authority on which tool produced it.
+    """
+    import json
+    import os
+    from pymol.metrics import document
+
+    handle = _host_handle(job)
+    path = getattr(handle, 'metrics_path', '')
+    if not path or not os.path.exists(path):
+        return []
+    with open(path) as stream:
+        payload = json.load(stream)
+    payload['tool'] = predictor_id
+    # A document may name its own state, but the state a model actually landed in is
+    # known only here -- the host cannot know how many models preceded it in the
+    # object. So the state is stamped on the way in, over anything the file claims.
+    for entry in payload.get('values') or []:
+        if 'state' in entry or entry.get('index') is not None:
+            entry['state'] = state
+    # The object is named here too, rather than trusted from the file: the host wrote it
+    # at submit time, and a rename between submit and delivery would leave the document
+    # naming an object that no longer exists.
+    parsed = document.parse(payload, object=object_name)
+    return parsed['values']
+
+
+def _weight_version(predictor_id):
+    """Which weights produced this run, as `bundle-id vN`, or '' for a method with none.
+
+    Part of the record because it is the thing most likely to differ between two runs
+    that otherwise look identical: boltz2 and boltz2-bf16 are the same model at two
+    precisions (#293), and comparing their numbers without knowing which pack ran is
+    comparing nothing.
+    """
+    try:
+        bundle = registry.get(predictor_id).weight_bundle
+    except Exception:
+        return ''
+    if bundle is None:
+        return ''
+    version = getattr(bundle, 'version', '')
+    return ('%s %s' % (bundle.id, version)).strip()
+
+
+def record_run(name, job_id, state, _self=cmd):
+    """Record what this prediction measured, against the object it landed in (#308).
+
+    Returns the MetricRun, or None when there is nothing to attach it to. Never raises
+    into the delivery path: a structure that folded must not fail to appear because its
+    metrics could not be filed.
+    """
+    from pymol.metrics import binding
+    job = _JOBS.get(job_id)
+    if job is None:
+        return None
+    predictor_id = getattr(job, 'predictor_id', '') or ''
+    if not predictor_id:
+        return None
+    try:
+        status = job.status()
+    except Exception:
+        status = {}
+
+    values = _run_values(job, status, state)
+    try:
+        values.extend(_document_values(job, predictor_id, state, name))
+    except Exception as exc:
+        # The host's numbers are the valuable half, so a malformed document is worth
+        # a warning -- but the run is still recorded with what the Python side knows.
+        colorprinting.warning(
+            ' predict: could not read the metrics %s wrote for job %s (%s)'
+            % (predictor_id, job_id, exc))
+    if not values:
+        return None
+    return binding.record(name, predictor_id, values,
+                          tool_version=_weight_version(predictor_id),
+                          inputs=_run_inputs(job, status.get('seed')),
+                          _self=_self)
+
+
 def deliver_result(path, name, seed=None, _self=cmd):
     """Load a finished prediction into its placeholder and retire the pending mark.
 
@@ -335,6 +511,10 @@ def deliver_result(path, name, seed=None, _self=cmd):
     camera onto it while the user is working elsewhere is hostile. The object is already
     visible, because the placeholder appeared at submit time.
     """
+    # Read BEFORE the finally block pops it: this is the job whose model is landing,
+    # and it is what says which predictor, which options and which alignment produced
+    # the coordinates about to be loaded.
+    landing = (_PENDING.get(name) or [None])[0]
     try:
         _self.load(path, name, zoom=0)
         # Record which seed produced THIS model, in its state title, so a multi-model
@@ -364,6 +544,18 @@ def deliver_result(path, name, seed=None, _self=cmd):
             # exactly like a prediction that folded to nothing but loops.
             colorprinting.warning(' predict: could not assign secondary structure to %s'
                                   ' (%s)' % (name, exc))
+        # Attach what this run measured to the object it just landed in (#308). AFTER
+        # the load, because the metrics are checked against the object -- the state
+        # they were measured on has to exist before they can name it.
+        #
+        # Never fatal, and warned rather than swallowed, for the reason dss above is:
+        # a prediction that arrives with no numbers looks exactly like a prediction
+        # from a host that measured none.
+        try:
+            record_run(name, landing, _self.count_states(name), _self=_self)
+        except Exception as exc:
+            colorprinting.warning(' predict: could not record metrics for %s (%s)'
+                                  % (name, exc))
     finally:
         # Retire only THIS job. With n_models > 1 the object stays pending until the last
         # model has landed, so the panel keeps showing progress for the rest.
@@ -937,6 +1129,11 @@ SEE ALSO
             job = _DeferredJob(spec, model_options, predictor_obj, bundle, object_name)
         else:
             job = predictor_obj.submit(spec, model_options, weights_path)
+        # Stamped here rather than passed into submit(): the handle a predictor returns
+        # is its own type, and the registry id is the one fact about the run that the
+        # command layer knows and the transport does not (boltz2 and boltz2-bf16 share
+        # one runtime). Metric recording reads it back off the handle.
+        job.predictor_id = predictor_obj.id
         _JOBS[job.job_id] = job
         # The placeholder goes up for a deferred job too, so the object panel shows the
         # download the same way it shows inference -- pending_detail reads the phase off

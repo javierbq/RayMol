@@ -134,12 +134,24 @@ final class BoltzJobManager {
         /// falling back to the explicit `predict_result` flow. Same reasoning as the
         /// object panel's optional `groups`/`pending` fields.
         let objectName: String?
+        /// Where to write what this run MEASURED, as a `pymol.metrics` document (#308).
+        ///
+        /// The confidence numbers exist only in here: pLDDT rounded into a B-factor
+        /// column was the only one that used to survive, and `ScoredStructure.pae` and
+        /// `interfaceScores()` were computed on every run and thrown away. A PAE matrix
+        /// is per residue PAIR and an interface score is per run, so neither fits in
+        /// the PDB — hence a second file rather than more columns.
+        ///
+        /// Optional for the reason `objectName` is: absent simply means the Python side
+        /// predates this and records the run without them, rather than the whole request
+        /// failing to decode.
+        let metricsPath: String?
 
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
-            case objectName = "object_name"
+            case objectName = "object_name", metricsPath = "metrics_path"
             case alignments, msaDepth = "msa_depth"
         }
     }
@@ -347,6 +359,106 @@ final class BoltzJobManager {
         }
     }
 
+    /// (chain, resi) for every residue, numbered exactly as the PDB written beside it.
+    ///
+    /// A MIRROR of `StructureWriter.pdb`'s numbering — 1-based per chain, reset at each
+    /// chain break — and it has to stay one. The metric arrays are indexed by residue,
+    /// and PyMOL reads its residue numbers out of that PDB, so any drift between the two
+    /// would land every per-residue confidence on the wrong residue: an array that is
+    /// still the right length, still plausible, and silently off by a register.
+    private static func residueIndex(_ canonical: CanonicalStructure) -> [[String]] {
+        var out: [[String]] = []
+        var previousChain: String?
+        var resSeq = 0
+        for residue in canonical.orderedResidues {
+            if let previous = previousChain, previous != residue.hostChain { resSeq = 0 }
+            previousChain = residue.hostChain
+            resSeq += 1
+            out.append([residue.hostChain, String(resSeq)])
+        }
+        return out
+    }
+
+    /// Write the confidence numbers as a `pymol.metrics` document.
+    ///
+    /// Only what the RUNTIME knows: elapsed time and peak memory reach the store through
+    /// the status file, and the options and seed through the Python side, so nothing is
+    /// reported twice from two sources that could disagree.
+    ///
+    /// Best effort by construction. A prediction that folded must not be reported as
+    /// failed because its metrics could not be serialized, so every failure here is
+    /// swallowed and the run is simply recorded without them.
+    private static func writeMetrics(request: Request, scored: ScoredStructure,
+                                     canonical: CanonicalStructure) {
+        guard let path = request.metricsPath, !path.isEmpty else { return }
+        let index = residueIndex(canonical)
+        var values: [[String: Any]] = []
+
+        // Length checks rather than trust: a count mismatch means the scores and the
+        // structure do not describe the same prediction, which is exactly what
+        // StructureWriter refuses to write through. Skipped, not guessed at.
+        if scored.plddt.count == index.count, !index.isEmpty {
+            values.append(["key": "plddt", "state": 0, "index": index,
+                           "values": scored.plddt])
+            // The producer writes its own summary. The store never derives one: which
+            // residues went into a mean is a property of the tool, not of the store.
+            values.append(["key": "mean_plddt", "state": 0,
+                           "value": scored.plddt.reduce(0, +) / Double(scored.plddt.count)])
+        }
+        if scored.tokenCount == index.count,
+           scored.pae.count == index.count * index.count {
+            values.append(["key": "pae", "state": 0, "index": index,
+                           "values": scored.pae])
+            // The matrix's own summary, written by the producer for the reason
+            // `mean_plddt` is: which entries went into it is a property of the tool.
+            //
+            // OFF THE DIAGONAL. PAE(i, i) is definitionally near zero and says nothing,
+            // so counting it would pull the mean down by roughly 1/n — ~3% at 35
+            // residues, worse the shorter the chain. Needs n >= 2 to mean anything.
+            let n = index.count
+            if n > 1 {
+                var total = 0.0
+                for i in 0..<n {
+                    for j in 0..<n where i != j { total += scored.pae[i * n + j] }
+                }
+                values.append(["key": "mean_pae", "state": 0,
+                               "value": total / Double(n * (n - 1))])
+            }
+        }
+        // nil for a single chain, where an interface score is undefined. Absent rather
+        // than 0, which would read as a terrible interface instead of no interface.
+        //
+        // Both directions of ipSAE go across: `min_ipsae` is the gate (the worse
+        // direction is what a designed interface should be judged on) and `ipsae` is
+        // max(A->B, B->A), which boltz-mlx reports for continuity with the reference
+        // implementation and which will read higher. Sending only one of them would
+        // leave a reader unable to tell which normalisation they had.
+        if let interface = scored.interfaceScores() {
+            values.append(["key": "min_ipsae", "state": 0, "value": interface.minIPSAE])
+            values.append(["key": "ipsae", "state": 0, "value": interface.ipsae])
+            values.append(["key": "ipae", "state": 0, "value": interface.ipae])
+        }
+        guard !values.isEmpty else { return }
+
+        // `tool` is overwritten by the Python side, which knows which PREDICTOR selected
+        // this runtime — boltz2 and boltz2-bf16 are one runtime and two tools, and only
+        // the command layer can tell them apart. Sent anyway so the file is readable on
+        // its own. `state` is likewise restamped: how many models already sit in the
+        // object is not knowable here.
+        let document: [String: Any] = [
+            "tool": "boltz2",
+            "object": request.objectName ?? "",
+            "values": values,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: document) else { return }
+        let url = URL(fileURLWithPath: path)
+        let temp = url.appendingPathExtension("tmp")
+        // Complete, or not there at all: the Python side opens this by path the moment
+        // the load marker fires, which is a poll away from this write.
+        guard (try? data.write(to: temp)) != nil else { return }
+        _ = try? FileManager.default.replaceItemAt(url, withItemAt: temp)
+    }
+
     /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
     /// but building source text without quoting is how injection bugs start.
     private static func pythonLiteral(_ value: String) -> String {
@@ -478,6 +590,11 @@ final class BoltzJobManager {
                                               plddt: scored.plddt)
             try text.write(to: URL(fileURLWithPath: request.outPath),
                            atomically: true, encoding: .utf8)
+            // What this run MEASURED, beside the structure it measured (#308). Written
+            // BEFORE the load below, because `deliver_result` reads it as part of
+            // loading: a file that appeared afterwards would leave the run recorded
+            // with its provenance and cost and none of its confidence numbers.
+            Self.writeMetrics(request: request, scored: scored, canonical: canonical)
             // Load BEFORE reporting done: predict_status returning done should already
             // imply the object is populated, or a script that polls then reads the object
             // races the load.
