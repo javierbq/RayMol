@@ -345,6 +345,19 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
         else:
             self.fail('expected v2 to refuse above its own cap')
 
+    def testBareProtenixAliasesToV2Int8(self):
+        from pymol.predictors import registry
+        self.assertIs(registry.get('protenix'), registry.get('protenix-v2-int8'))
+
+    def testBareProtenixIsNotOffered(self):
+        """The alias resolves in registry.get() but must not appear in available().
+
+        Otherwise it would both show up in Tab-completion and violate the very
+        no-id-is-a-prefix-of-another invariant it exists to route around.
+        """
+        from pymol.predictors import registry
+        self.assertNotIn('protenix', registry.available())
+
     def testNoIdIsAPrefixOfAnother(self):
         """docs/predictors.md step 1: a shared prefix is a tab-completion dead end.
 
@@ -454,15 +467,20 @@ class TestCommandSurface(HostEnvTestCase):
     """
 
     def testAnUnknownPredictorNamesThisOneAmongTheAlternatives(self):
-        """The registry's own error is how a user discovers the id."""
+        """The registry's own error is how a user discovers the id.
+
+        Not "protenix" itself -- that bare name is now a registered alias for
+        protenix-v2-int8 (see TestEveryPackIsAPredictor.testBareProtenixAliasesToV2Int8)
+        -- so this uses a name that is unknown under any spelling.
+        """
         from pymol.predictors import registry
         from pymol.predictors.errors import PredictorNotFound
         try:
-            registry.get('protenix')
+            registry.get('protenix-nonexistent')
         except PredictorNotFound as error:
             self.assertIn('protenix-base-int8', str(error))
         else:
-            self.fail('expected a bare "protenix" to be unknown')
+            self.fail('expected an unknown predictor id to raise')
 
     def testRefusalIsReportedAtBothVerbosities(self):
         self.declareHost('boltz')

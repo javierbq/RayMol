@@ -4,6 +4,12 @@ from .errors import PredictionError, PredictorNotFound
 
 _REGISTRY = {}
 
+#: Shorthand id -> real id, e.g. 'protenix' -> 'protenix-v2-int8'. Deliberately a
+#: separate table rather than a second _REGISTRY entry: real ids must never share a
+#: prefix (see protenix.py's _SUFFIX comment), and an alias resolved only by `get()` -
+#: absent from `available()` - can't trip that invariant or show up in Tab-completion.
+_ALIASES = {}
+
 
 def register(predictor, replace=False):
     """Make `predictor` discoverable under its id.
@@ -35,8 +41,18 @@ def register(predictor, replace=False):
     return predictor
 
 
+def register_alias(alias, target_id):
+    """Make `alias` resolve to whatever is registered under `target_id`.
+
+    Not validated against `target_id` existing yet: builtins register their packs
+    before their aliases, but nothing requires that order.
+    """
+    _ALIASES[alias] = target_id
+
+
 def get(predictor_id):
-    """Return the predictor registered under `predictor_id`."""
+    """Return the predictor registered under `predictor_id`, resolving aliases first."""
+    predictor_id = _ALIASES.get(predictor_id, predictor_id)
     try:
         return _REGISTRY[predictor_id]
     except KeyError:
