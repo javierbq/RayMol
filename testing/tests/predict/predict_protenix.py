@@ -467,15 +467,20 @@ class TestCommandSurface(HostEnvTestCase):
     """
 
     def testAnUnknownPredictorNamesThisOneAmongTheAlternatives(self):
-        """The registry's own error is how a user discovers the id."""
+        """The registry's own error is how a user discovers the id.
+
+        Not "protenix" itself -- that bare name is now a registered alias for
+        protenix-v2-int8 (see TestEveryPackIsAPredictor.testBareProtenixAliasesToV2Int8)
+        -- so this uses a name that is unknown under any spelling.
+        """
         from pymol.predictors import registry
         from pymol.predictors.errors import PredictorNotFound
         try:
-            registry.get('protenix')
+            registry.get('protenix-nonexistent')
         except PredictorNotFound as error:
             self.assertIn('protenix-base-int8', str(error))
         else:
-            self.fail('expected a bare "protenix" to be unknown')
+            self.fail('expected an unknown predictor id to raise')
 
     def testRefusalIsReportedAtBothVerbosities(self):
         self.declareHost('boltz')
