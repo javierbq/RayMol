@@ -72,3 +72,5 @@ class TestAppkitPredict(testing.PyMOLTestCase):
         payload = _payload()
         self.assertEqual(payload['chains'], [])
         self.assertIsNotNone(payload['error'])
+        # predictors are still resolved on the error path
+        self.assertGreater(len(payload['predictors']), 0)

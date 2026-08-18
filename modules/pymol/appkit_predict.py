@@ -68,9 +68,9 @@ def emit(input_str=''):
     stale one. A process-local filename keeps multiple RayMol windows from
     overwriting each other's payload.
     """
-    chains, error = _chains(input_str)
-    payload = {'predictors': _predictors(), 'chains': chains, 'error': error}
     try:
+        chains, error = _chains(input_str)
+        payload = {'predictors': _predictors(), 'chains': chains, 'error': error}
         blob = json.dumps(payload)
         p = os.path.join(tempfile.gettempdir(), 'pymol_predict_%d.json' % os.getpid())
         with open(p, 'w') as f:
