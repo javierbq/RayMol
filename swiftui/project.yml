@@ -40,6 +40,30 @@ packages:
     # an artifact manifest declares no quantization block, which is what the
     # boltz2-bf16 predictor's pack does.
     from: 0.2.0
+  # protenix-mlx: on-device Protenix (AlphaFold3-class) structure prediction (#309).
+  # macOS only, for the same reasons boltz-mlx is: MLX cannot run in the iOS Simulator,
+  # and Protenix is heavier than Boltz at equal length -- 3.9 GB peak at 400 residues.
+  #
+  # It featurizes in Swift, so unlike boltz-mlx it also carries a resource bundle (the
+  # canonical-20 reference conformers, ~90 KB of JSON).
+  #
+  # Pins mlx-swift as a RANGE rather than exactly, so it composes with BoltzMLX's exact
+  # 0.31.6 instead of deadlocking against it.
+  ProtenixMLX:
+    url: https://github.com/javierbq/protenix-mlx.git
+    # 0.1.1 adds the progress/cancellation hook fold() needs to be driveable: without it
+    # predict_cancel would do nothing for up to six minutes, and there is no fraction to
+    # report. See FoldProgress.
+    #
+    # 0.1.2 fixes systematically compressed geometry -- the sampler was using struct
+    # defaults (step_scale_eta 1.0, gamma0 0.0) instead of the pack's own 1.5 / 0.8, which
+    # produced folds whose CA-CA distances averaged 3.27 A against an ideal 3.80. Anything
+    # below it folds plausible-looking structures with bad local chemistry.
+    #
+    # 0.1.3 makes the protenix-v2 packs loadable at all: the confidence head hardcoded 4
+    # triangle-attention heads, and v2's 256-wide pair track needs 8, so all three v2
+    # packs died on load. Required for the v2 predictors registered here.
+    from: 0.1.3
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -551,6 +575,12 @@ targets:
       - package: BoltzMLX
         product: BoltzMLX
         platforms: [macOS]
+      # protenix-mlx: the second inference runtime (#309). Same macOS-only filter and
+      # the same reasoning as BoltzMLX above, and likewise outside the Sparkle markers
+      # so archive_appstore.sh does not strip prediction out of the MAS build.
+      - package: ProtenixMLX
+        product: ProtenixMLX
+        platforms: [macOS]
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
@@ -588,6 +618,9 @@ targets:
       # own `platform: macOS`, so no platformFilter is needed.
       - package: BoltzMLX
         product: BoltzMLX
+      # ProtenixMLX: same, for ProtenixJobManager.swift.
+      - package: ProtenixMLX
+        product: ProtenixMLX
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests

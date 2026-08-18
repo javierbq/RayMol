@@ -19,16 +19,57 @@ it is shaped this way.
 
 ## Shipped predictors
 
-| id | weights | notes |
-|---|---|---|
-| `boltz2` | affine-int8, 507 MB | the default |
-| `boltz2-bf16` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| id | runtime | weights | notes |
+|---|---|---|---|
+| `boltz2` | `boltz` | affine-int8, 507 MB | the default |
+| `boltz2-bf16` | `boltz` | dense bfloat16, 996 MB | same model, same runtime, unquantized |
+| `protenix-{base,v2}-{int8,fp16,bf16}` | `protenix` | 225–610 MB | six packs, complexes, single sequence, confidence head |
 
-`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`.
-That works because `host.submit` sends `weights_dir` per job and the Swift runtime
-picks its matmul path from the artifact manifest — a dense pack declares no
-quantization block — so one runtime serves both with no host change. It needs
-boltz-mlx >= 0.2.0.
+`protenix-base-int8` is the default choice. The dense precisions cost roughly twice the
+disk for no demonstrated accuracy, exactly as `boltz2-bf16` does. The `v2` packs are
+**mirror-sourced** — its official checkpoint has answered 403 since April 2026 — which
+their `name` says where a user picking a predictor will see it.
+
+protenix-mlx also publishes `tiny` and `mini`, which are **deliberately not registered**:
+they are v0.5.0 models at 4 recycles / 5 diffusion steps, and five steps does not converge
+the geometry — CA-CA 3.26 Å against base's 3.67 and an ideal 3.80, loose enough that DSSP
+stops calling helices. They fold in 11 s against base's 35, but a fold nobody should trust
+is not worth 11 seconds either.
+
+Six ids rather than one predictor with a `pack=` option, because that is what
+`WeightBundle` already models: one bundle per predictor, pinned by digest. They are built
+from a table generated out of protenix-mlx's `WEIGHTS.md` rather than hand-copied — twelve
+transcribed digests is twelve chances to paste one that fails only on a user's machine,
+after the download. Every id ends in a precision suffix so none is a prefix of another;
+see step 1.
+
+## Runtimes
+
+A predictor's **runtime** is the Swift backend that runs it, named on the wire by
+`host.submit(..., runtime=)`. It is a separate axis from the predictor id: `boltz2` and
+`boltz2-bf16` are two predictors and one runtime, because `host.submit` sends `weights_dir`
+per job and the Swift side picks its matmul path from the artifact manifest — a dense pack
+declares no quantization block — so one runtime serves both.
+
+The distinction has to be on the wire because weights and featurizer are method-specific.
+Running one method's request on another's backend does not fail; it tokenizes with the
+wrong featurizer and returns a confident wrong structure. So:
+
+- `BoltzJobManager` implements `boltz` and **refuses** any other in `preflight`, before it
+  applies its size model — which is fitted to Boltz's measured peaks and would be
+  meaningless applied to another method's request even as a refusal.
+- `PyMOLBridge` advertises what is actually linked in `RAYMOL_PREDICT_RUNTIMES`, which is
+  what lets `check_available` refuse **before** a weight download rather than after.
+- `Request.runtime` is **optional** on the Swift side, absent meaning `boltz`. A
+  non-optional field would turn any Python/Swift version skew into "malformed prediction
+  request" instead of a refusal that names the missing runtime. The same reasoning applies
+  to `object_name` and `alignments`.
+
+That default is also the trap: a new predictor that forgets to pass `runtime=` is silently
+dispatched to Boltz. `predict_runtime.py` asserts every registered predictor names one.
+
+`boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`, which
+is what "two predictors, one runtime" looks like in practice. It needs boltz-mlx >= 0.2.0.
 
 It is **not** an upgrade. On an M3 Pro at 117 tokens, recycling 3 / 200 steps, dense
 bfloat16 costs 2x the disk, +63% peak RSS (620 MiB -> 1012 MiB) and +22% wall clock
@@ -80,6 +121,13 @@ float16 is the closer one at identical size (`--precision float16` exports it).
 4. **Implement `check_available`** so the predictor disappears cleanly where it cannot run
    rather than failing mid-run. Platform, OS floor, host presence — not weight state, which the
    weight manager is allowed to fix by downloading.
+
+   If your method needs a Swift backend of its own, call `host.require_runtime` after
+   `host.require_available`: the two failures have different remedies ("you are headless"
+   versus "this build does not carry that backend"), and checking here is what refuses
+   BEFORE a multi-hundred-megabyte download rather than after it. A bulk
+   `predict_weights download=1` also consults this, so a predictor that cannot run is
+   reported but not fetched.
 
 5. **Implement `parse_spec` to reject, not repair.** If the backend silently ignores input it
    does not support, catching that is your job: check what it does with a ligand, a nucleic

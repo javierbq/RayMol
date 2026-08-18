@@ -1081,9 +1081,26 @@ SEE ALSO
     wait = not host.available() if int(async_) < 0 else not int(async_)
     out = {}
     for pid in ids:
-        bundle = registry.get(pid).weight_bundle
+        predictor_obj = registry.get(pid)
+        bundle = predictor_obj.weight_bundle
         if bundle is None:
             out[pid] = {'cached': True, 'path': None, 'bundle': None}
+            continue
+        # A BULK fetch downloads only what this build could actually run. Asking for one
+        # predictor BY NAME still downloads it -- that is someone pre-warming a cache
+        # deliberately, possibly for a build they do not have yet.
+        #
+        # Without this, "fetch everything" means every registered pack whether or not the
+        # host carries its runtime: `protenix-base` alone is 214 MB that no shipping build
+        # can use yet, pulled down by a command aimed at the predictors that do work.
+        if int(download) and not predictor and not _can_run(predictor_obj):
+            out[pid] = {'cached': bool(cache.is_cached(bundle)),
+                        'path': cache.path_for(bundle),
+                        'bundle': bundle.id}
+            if not int(quiet):
+                colorprinting.parrot(
+                    ' predict: %s cannot run in this build; not fetching its weights'
+                    % pid)
             continue
         if int(download) and not cache.is_cached(bundle):
             fetching.start(bundle, cache)
@@ -1096,6 +1113,21 @@ SEE ALSO
             colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))
     return out
+
+
+def _can_run(predictor_obj):
+    """True if this predictor could run here, for deciding whether to pre-fetch.
+
+    Never raises: `check_available` is a predictor's own code, and a bulk pre-warm must
+    not be derailed by one method's availability check. An error means "cannot say", and a
+    bulk fetch treats that as "do not download" -- the cheap direction to be wrong in,
+    since naming the predictor explicitly still fetches it.
+    """
+    try:
+        predictor_obj.check_available()
+    except Exception:
+        return False
+    return True
 
 
 def _wait_for_fetch(bundle, quiet, _poll=0.1):
