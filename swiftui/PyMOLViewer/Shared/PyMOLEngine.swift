@@ -207,6 +207,11 @@ final class PyMOLEngine: ObservableObject {
     // Design mode: protein-design overlay (MPNN score/design). Mutually exclusive
     // with Move and Measure modes — entering any one clears the others.
     @Published var designMode: Bool = false
+    // Predict tool (macOS): an exclusive interaction mode like Move/Measure/Design,
+    // but its "bar" is a form that composes cmd.predict rather than a viewport tool.
+    #if os(macOS)
+    @Published var predictMode: Bool = false
+    #endif
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
@@ -2079,6 +2084,9 @@ final class PyMOLEngine: ObservableObject {
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
             setDesignMode(false)                                            // mutually exclusive
+            #if os(macOS)
+            setPredictMode(false)   // mutually exclusive
+            #endif
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -2179,9 +2187,29 @@ final class PyMOLEngine: ObservableObject {
             // ENTERING branch, and the clearing block below is `if on`-guarded.
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
+            #if os(macOS)
+            setPredictMode(false)   // mutually exclusive
+            #endif
         }
         designMode = on
     }
+
+    #if os(macOS)
+    /// Enter/leave Predict mode. Exclusive with Move/Measure/Design, matching
+    /// setDesignMode's entering-branch clears. On entry, refresh the form (loads the
+    /// predictor list); on exit, reset any in-flight search/predict tracking.
+    func setPredictMode(_ on: Bool) {
+        if on {
+            if interactionMode == .move { setInteractionMode(.viewing) }
+            if measureMode != nil { setMeasureMode(nil) }
+            setDesignMode(false)
+            predictMode = true
+            MainActor.assumeIsolated { predictController.refresh() }
+        } else {
+            predictMode = false
+        }
+    }
+    #endif
 
     // MARK: - Exclusive interaction modes (Move / Design / Measure)
 
@@ -2210,6 +2238,9 @@ final class PyMOLEngine: ObservableObject {
         if designMode     { setDesignMode(false);       exited = exited || !designMode }
         if interactionMode == .move { setInteractionMode(.viewing); exited = exited || interactionMode != .move }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
+        #if os(macOS)
+        if predictMode { setPredictMode(false); exited = exited || !predictMode }
+        #endif
         return exited
     }
 
@@ -2480,6 +2511,35 @@ final class PyMOLEngine: ObservableObject {
     }()
 #endif
 
+    #if os(macOS)
+    lazy var predictController: PredictController = {
+        // PredictController is @MainActor; lazy vars run in a nonisolated context.
+        // assumeIsolated is safe here: predictController is always first accessed from
+        // @MainActor code (UI callbacks, engine methods) — the same pattern as
+        // designController's _designCalcCancellable block above.
+        MainActor.assumeIsolated {
+            let pc = PredictController()
+            // Compose work as command strings — the only Python direction available.
+            pc.runPythonSeam = { [weak self] code in self?.runPython(code) }
+            // Trigger the tempfile-JSON feed; PREDICT_FORM:ready routes back below.
+            pc.refreshTrigger = { [weak self] input in
+                let lit = PredictController.pythonLiteral(input)
+                self?.runPython("from pymol import appkit_predict as _ap\n_ap.emit(\(lit))")
+            }
+            // Drive the search→predict state machine off the object poll's published state.
+            self.$alignments
+                .combineLatest(self.$msaSearches)
+                .sink { [weak pc] aligns, searches in
+                    pc?.onEngineState(alignments: aligns, searches: searches)
+                }
+                .store(in: &self.predictCancellables)
+            return pc
+        }
+    }()
+
+    private var predictCancellables = Set<AnyCancellable>()
+    #endif
+
     // MARK: - Move mode (rigid-body object gizmo)
 
     /// Viewport aspect (width / height) for the gizmo projection. Falls back to
@@ -2497,6 +2557,9 @@ final class PyMOLEngine: ObservableObject {
         if mode == .move {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
+            #if os(macOS)
+            setPredictMode(false)   // mutually exclusive
+            #endif
             refreshGizmo()
         } else {
             armedAxis = nil
@@ -3115,6 +3178,14 @@ final class PyMOLEngine: ObservableObject {
                     #if os(macOS)
                     BoltzJobManager.shared.handle(marker: line)
                     #endif
+                } else if line.hasPrefix("PREDICT_FORM:ready") {
+                    #if os(macOS)
+                    parsePredictFormFeedback()
+                    #endif
+                } else if line.hasPrefix("PREDICT_FORM:err") {
+                    // swallow — a resolve error is already carried in the JSON payload's
+                    // `error` field on a normal `ready`; this only fires if the write
+                    // itself failed, which the bar surfaces as a stale form.
                 } else if line.hasPrefix("MCP:") {
                     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
                     let body = String(line.dropFirst("MCP:".count))
@@ -3205,6 +3276,19 @@ final class PyMOLEngine: ObservableObject {
         let pyList = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }.joined(separator: ", ")
         runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
     }
+
+    #if os(macOS)
+    func parsePredictFormFeedback() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_predict_\(ProcessInfo.processInfo.processIdentifier).json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let payload = try? JSONDecoder().decode(PredictFormPayload.self, from: data)
+        else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.predictController.loadFormPayload(payload)
+        }
+    }
+    #endif
 
     // Parse the inspector JSON (written by appkit_inspector.poll to a temp file;
     // the feedback line is just the "OBJDETAIL:ready" trigger) → objectDetails +
