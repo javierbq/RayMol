@@ -34,6 +34,7 @@ from .predicting import \
       predict,              \
       predict_status,       \
       predict_cancel,       \
+      predict_dismiss,      \
       predict_result,       \
       predict_weights,      \
       predict_weights_cancel

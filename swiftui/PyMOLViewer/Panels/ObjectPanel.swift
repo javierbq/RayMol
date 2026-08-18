@@ -3945,6 +3945,153 @@ extension ObjectEntry {
     }
 }
 
+// MARK: - Prediction job state
+
+/// One pending prediction, as reported by `predicting.pending_info`.
+///
+/// Every field except `state` and `phase` is Optional-or-defaulted on the wire:
+/// a partially-populated record must not fail the WHOLE PanelPayload decode and
+/// take the object list down with it.
+struct PredictionJobState: Codable, Equatable, Identifiable {
+    /// The object name. Unique per pending placeholder, which is exactly the
+    /// granularity of one card -- n_models shares one object and one card.
+    let id: String
+    let state: String
+    let phase: String
+    let fraction: Double?
+    let moving: Bool
+    let detail: String
+    let modelsDone: Int
+    let modelsTotal: Int
+    let elapsed: Double
+    let error: String?
+    /// The weight bundle this job is still waiting on, or nil once submitted.
+    /// The tray hides this card while that bundle's own download card is up.
+    let bundle: String?
+    /// Position WITHIN the current phase, e.g. diffusion step 84 of 200. Absent
+    /// for a phase that reports no steps, and for any status written before
+    /// boltz-mlx v0.2.1 gave RayMol a per-step callback to read.
+    let step: Int?
+    let totalSteps: Int?
+    /// Seconds left in the CURRENT PHASE, measured by Python from that phase's
+    /// own rate. Not a whole-job estimate: the band table the bar is composed
+    /// through is layout, not time (see compose_progress), so there is nothing
+    /// honest to extrapolate a whole-job countdown from.
+    let remaining: Double?
+
+    /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
+    /// migrated, so the single consumer accepts both. "cancelled" is included
+    /// because it is TERMINAL and needs the same card affordances (Dismiss, no bar,
+    /// sorted below live jobs) — see `isCancelled` for why it is still not a failure.
+    var isError: Bool { state == "error" || state == "failed" || state == "cancelled" }
+
+    /// Terminal, but the user's own doing. `settle("cancelled", …)` writes
+    /// `error: nil`, so without this the card read "Prediction failed: X — Unknown
+    /// error" for someone who had just pressed Cancel.
+    var isCancelled: Bool { state == "cancelled" }
+
+    enum CodingKeys: String, CodingKey {
+        case state, phase, fraction, moving, detail, error, bundle
+        case modelsDone = "models_done", modelsTotal = "models_total", elapsed
+        case step, totalSteps = "total_steps", remaining
+    }
+
+    init(id: String, state: String, phase: String, fraction: Double?, moving: Bool,
+         detail: String, modelsDone: Int, modelsTotal: Int, elapsed: Double,
+         error: String?, bundle: String? = nil,
+         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil) {
+        self.id = id; self.state = state; self.phase = phase
+        self.fraction = fraction; self.moving = moving; self.detail = detail
+        self.modelsDone = modelsDone; self.modelsTotal = modelsTotal
+        self.elapsed = elapsed; self.error = error; self.bundle = bundle
+        self.step = step; self.totalSteps = totalSteps; self.remaining = remaining
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = ""                       // filled in from the dictionary key
+        state = try c.decode(String.self, forKey: .state)
+        phase = try c.decode(String.self, forKey: .phase)
+        fraction = try c.decodeIfPresent(Double.self, forKey: .fraction)
+        moving = try c.decodeIfPresent(Bool.self, forKey: .moving) ?? false
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? "pending"
+        modelsDone = try c.decodeIfPresent(Int.self, forKey: .modelsDone) ?? 0
+        modelsTotal = try c.decodeIfPresent(Int.self, forKey: .modelsTotal) ?? 1
+        elapsed = try c.decodeIfPresent(Double.self, forKey: .elapsed) ?? 0
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        bundle = try c.decodeIfPresent(String.self, forKey: .bundle)
+        step = try c.decodeIfPresent(Int.self, forKey: .step)
+        totalSteps = try c.decodeIfPresent(Int.self, forKey: .totalSteps)
+        remaining = try c.decodeIfPresent(Double.self, forKey: .remaining)
+    }
+
+    /// `id` comes from the payload's dictionary key, not the record body.
+    func withID(_ name: String) -> PredictionJobState {
+        PredictionJobState(id: name, state: state, phase: phase, fraction: fraction,
+                           moving: moving, detail: detail, modelsDone: modelsDone,
+                           modelsTotal: modelsTotal, elapsed: elapsed, error: error,
+                           bundle: bundle, step: step, totalSteps: totalSteps,
+                           remaining: remaining)
+    }
+}
+
+// MARK: - Object panel JSON payload
+
+/// Decoded shape of the tempfile written by `appkit_inspector.poll_panel`.
+///
+/// Extracted from the function body so `@testable import RayMol` can decode it
+/// in unit tests, establishing the same "real payload → real decoder" discipline
+/// that `WeightsFetchStateTests` uses for the WEIGHTS: marker.
+struct PanelPayload: Decodable {
+    let objects: [String]
+    let selections: [String]
+    let enabled: [String]
+    let sel_counts: [String: Int]
+    let nstate: [String: Int]?
+    let has_transp: [String: Bool]?
+    // Group tree (#255). OPTIONAL on purpose: a non-optional field makes
+    // the whole decode fail against an older bundled appkit_inspector.py,
+    // which would freeze the panel on its last list rather than degrade
+    // to a flat one.
+    let groups: [String]?
+    let parent: [String: String]?
+    // Structure prediction (#224). Optional for the same reason as `groups`: a
+    // non-optional field would fail the whole decode against an older bundled
+    // appkit_inspector.py and freeze the panel on its last list.
+    let pending: [String: String]?
+    /// #291. Optional so an older bundled Python still decodes and the tray simply
+    /// shows no prediction cards.
+    let pending_jobs: [String: PredictionJobState]?
+    // Alignments (#296), same reasoning again. Values are scalars only — no a3m
+    // bytes travel through this payload.
+    let alignments: [String: AlignmentSummary]?
+    // Searches still running (#298), oldest first. A LIST, unlike `alignments`:
+    // the order is the order they were started, and a JSON object would lose it
+    // the way the alignments decode has to sort to get it back.
+    //
+    // Optional for the same reason as every field above, and it matters more
+    // here than anywhere: this decode is a single `guard let`, so one missing
+    // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
+    // panel on its last list.
+    let msa_searches: [MSASearchSummary]?
+
+    struct AlignmentSummary: Decodable {
+        let depth: Int
+        let columns: Int
+        let residues: Int
+        let target: String
+        let chain: String
+    }
+
+    struct MSASearchSummary: Decodable {
+        let id: String
+        let name: String
+        let phase: String
+        let server: String
+        let elapsed: Int
+    }
+}
+
 // MARK: - PyMOLEngine extensions for object polling
 
 extension PyMOLEngine {
@@ -3959,53 +4106,6 @@ extension PyMOLEngine {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_objpanel_\(ProcessInfo.processInfo.processIdentifier).json")
         guard let data = FileManager.default.contents(atPath: path) else { return }
-
-        struct PanelPayload: Decodable {
-            let objects: [String]
-            let selections: [String]
-            let enabled: [String]
-            let sel_counts: [String: Int]
-            let nstate: [String: Int]?
-            let has_transp: [String: Bool]?
-            // Group tree (#255). OPTIONAL on purpose: a non-optional field makes
-            // the whole decode fail against an older bundled appkit_inspector.py,
-            // which would freeze the panel on its last list rather than degrade
-            // to a flat one.
-            let groups: [String]?
-            let parent: [String: String]?
-            // Structure prediction (#224). Optional for the same reason as `groups`: a
-            // non-optional field would fail the whole decode against an older bundled
-            // appkit_inspector.py and freeze the panel on its last list.
-            let pending: [String: String]?
-            // Alignments (#296), same reasoning again. Values are scalars only — no a3m
-            // bytes travel through this payload.
-            let alignments: [String: AlignmentSummary]?
-            // Searches still running (#298), oldest first. A LIST, unlike `alignments`:
-            // the order is the order they were started, and a JSON object would lose it
-            // the way the alignments decode has to sort to get it back.
-            //
-            // Optional for the same reason as every field above, and it matters more
-            // here than anywhere: this decode is a single `guard let`, so one missing
-            // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
-            // panel on its last list.
-            let msa_searches: [MSASearchSummary]?
-
-            struct AlignmentSummary: Decodable {
-                let depth: Int
-                let columns: Int
-                let residues: Int
-                let target: String
-                let chain: String
-            }
-
-            struct MSASearchSummary: Decodable {
-                let id: String
-                let name: String
-                let phase: String
-                let server: String
-                let elapsed: Int
-            }
-        }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
             return
@@ -4042,6 +4142,9 @@ extension PyMOLEngine {
             ))
         }
 
+        let jobs = (payload.pending_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -4062,6 +4165,7 @@ extension PyMOLEngine {
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

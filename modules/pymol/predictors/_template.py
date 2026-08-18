@@ -33,6 +33,18 @@ class TemplatePredictor(Predictor):
     # validate_options(), never silently ignored.
     option_defaults = {'recycling_steps': 3, 'diffusion_steps': 200, 'seed': 0}
 
+    # -- Progress ----------------------------------------------------------
+    # YOUR pipeline's phases, not anyone else's. The base class declares none,
+    # so leaving this empty shows an indeterminate spinner and an elapsed clock
+    # -- correct when you have nothing to report, wrong if you do. Give a phase
+    # a non-empty band ONLY if your backend really reports movement inside it;
+    # a zero-span band is how you say "started this phase, cannot say how far
+    # in". Widths are LAYOUT, not a time estimate -- see compose_progress.
+    progress_phases = (('setup', 0.00, 0.10),
+                       ('sample', 0.10, 0.95),
+                       ('write', 0.95, 1.00),
+                       ('done', 1.00, 1.00))
+
     # -- Multiple-sequence alignments --------------------------------------
     # True ONLY if this method can genuinely use one. Left False here, which is
     # what makes `predict ..., msa=x` refuse by name: a method that accepted an

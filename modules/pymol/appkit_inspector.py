@@ -437,32 +437,61 @@ def group_parents(objs, groups):
     return dict(parents)
 
 
-def _pending_map():
-    """name -> hover detail for prediction placeholders still waiting on a job.
+def _pending_maps():
+    """(detail_map, record_map) for prediction placeholders still waiting.
 
-    Never raises: a failure here would freeze the whole object panel on a stale list,
-    because the caller's single `except` writes no file at all.
+    Two maps from ONE pass, so the hover tooltip and the progress card are the
+    same computation and cannot disagree.
+
+    The two maps do NOT cover the same names, and that asymmetry is the point:
+
+      details -- ONLY genuinely pending objects. Its sole consumer is `isPending`
+                 in ObjectPanel, which greys the enable checkbox and blocks the
+                 row's tap-to-toggle. A RETAINED terminal record belongs to a real
+                 object that may already carry a landed model (n_models=2, model 1
+                 lands, model 2 fails), so listing it here would dim and disable a
+                 live structure -- and label it "pending: inference" -- until the
+                 user found Dismiss.
+      records -- pending AND retained. This is what the progress tray renders, and
+                 saying WHY an eleven-minute run produced nothing is the whole
+                 reason retention exists.
+
+    Never raises: a failure here would freeze the whole object panel on a stale
+    list, because the caller's single `except` writes no file at all.
     """
     try:
         from pymol import predicting
-        names = predicting.pending_objects()
-        if not names:
-            return {}
-        out = {}
-        for name in names:
+        pending = list(predicting.pending_objects())
+        retained = [n for n in predicting.recent_objects() if n not in pending]
+        if not pending and not retained:
+            return {}, {}
+        details, records = {}, {}
+        for name in pending:
             try:
-                out[name] = predicting.pending_detail(name) or 'pending'
+                info = predicting.pending_info(name)
             except Exception:
-                out[name] = 'pending'
-        return out
+                info = None
+            if info is None:
+                details[name] = 'pending'
+                continue
+            details[name] = info.get('detail') or 'pending'
+            records[name] = info
+        for name in retained:
+            try:
+                info = predicting.pending_info(name)
+            except Exception:
+                info = None
+            if info is not None:
+                records[name] = info
+        return details, records
     except Exception:
-        return {}
+        return {}, {}
 
 
 def _alignment_map():
     """name -> {depth, columns, residues, target, chain} for every loaded MSA (#296).
 
-    Never raises, for the same reason _pending_map() does not: the caller's single
+    Never raises, for the same reason _pending_maps() does not: the caller's single
     `except` writes no file at all, so a throw here freezes the panel on a stale list.
 
     Cheap by construction -- every value was computed once at load time. This must
@@ -494,7 +523,7 @@ def _search_map():
     sign anything is happening. `searching.active()` was written for this ("Drives the
     app's progress row") and had no consumer until now.
 
-    Never raises, for the same reason _pending_map() and _alignment_map() do not: the
+    Never raises, for the same reason _pending_maps() and _alignment_map() do not: the
     caller's single `except` writes no file at all, so a throw here freezes the panel
     on a stale list.
 
@@ -566,6 +595,19 @@ def poll_panel():
             parents = group_parents(objs, groups)
         except Exception:
             groups, parents = [], {}
+        # Structure prediction (#224, #291): objects that are empty placeholders
+        # waiting on a running job. `pending` is the hover tooltip (a plain string
+        # map -- Swift decodes it as [String: String] and widening it would fail
+        # the whole payload decode), and it carries ONLY still-running jobs because
+        # its consumer disables the object's enable-toggle. `pending_jobs` is the
+        # structured record the progress tray renders, and it additionally carries
+        # RETAINED terminal records so a failed run can say why it produced nothing.
+        #
+        # Cheap by construction: normally empty, and only pending names read a
+        # status file -- one read per pending OBJECT, never per model. This poll
+        # runs on the MAIN thread every 500 ms and was already a measured hot spot
+        # (PR #270), so it must stay O(pending), never O(objects).
+        pending_details, pending_records = _pending_maps()
         payload = {
             'objects': objs,
             'selections': sels,
@@ -575,15 +617,8 @@ def poll_panel():
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
-            # Structure prediction (#224): objects that are empty placeholders waiting on
-            # a running job. The panel disables their enable-toggle (there is nothing to
-            # show) and puts the detail string in a hover tooltip.
-            #
-            # Cheap by construction: `pending` is normally empty, and only pending names
-            # read a status file. This poll runs on the MAIN thread every 500 ms and was
-            # already a measured hot spot (PR #270), so it must stay O(pending), never
-            # O(objects).
-            'pending': _pending_map(),
+            'pending': pending_details,
+            'pending_jobs': pending_records,
             # Alignments (#296). Not objects -- they have no geometry and nothing in
             # the Executive knows about them -- so the panel draws them as their own
             # section rather than as rows in the object list.
@@ -594,6 +629,11 @@ def poll_panel():
             # the same tick.
             'msa_searches': _search_map(),
         }
+        # Serialise BEFORE opening the file. open(..., 'w') truncates immediately, so
+        # doing the dumps inside the `with` leaves a ZERO-BYTE file behind when a value
+        # turns out not to be JSON-serialisable -- worse than a stale one, and it takes
+        # every other reader of this path down with the panel.
+        blob = json.dumps(payload)
         # Multiple RayMol windows may run as separate processes. A process-local
         # filename prevents an empty instance from replacing another instance's
         # populated object list and briefly showing the empty-state overlay over
@@ -601,7 +641,7 @@ def poll_panel():
         p = os.path.join(tempfile.gettempdir(),
                          'pymol_objpanel_%d.json' % os.getpid())
         with open(p, 'w') as _f:
-            _f.write(json.dumps(payload))
+            _f.write(blob)
         print('OBJPANEL:ready')
     except Exception as e:
         print('OBJPANEL_ERR:' + str(e))

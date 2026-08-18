@@ -67,6 +67,26 @@ class Boltz2Predictor(Predictor):
     # dropped on the floor -- #308 is what gives them somewhere to land.
     metric_specs = SCORED_SPECS
 
+    #: 'inference' is the coarse phase the host writes today, and it is zero-span
+    #: because boltz-mlx v0.1.1 reports nothing from inside predictScored. 'trunk'
+    #: and 'diffusion' replace it once v0.1.2's per-step callbacks land -- declared
+    #: from day one so that increment is a Swift-side change with no rename and no
+    #: edit here. They overlap 'inference' deliberately: they are alternative names
+    #: for the same span, and exactly one of the three is ever the current phase.
+    #:
+    #: The weight fetch is absent on purpose. Its card owns that window and has a
+    #: genuinely measured bytes/total bar; including it here would leave a
+    #: warm-cache run -- every run after the first -- starting at ~25%.
+    progress_phases = (
+        ('featurize', 0.00, 0.03),
+        ('load',      0.03, 0.10),
+        ('inference', 0.10, 0.10),
+        ('trunk',     0.10, 0.40),
+        ('diffusion', 0.40, 0.97),
+        ('write',     0.97, 1.00),
+        ('done',      1.00, 1.00),
+    )
+
     def check_available(self):
         host.require_available(self.id)
 

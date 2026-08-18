@@ -121,9 +121,9 @@ final class WeightsFetchStateTests: XCTestCase {
     func testRemainingIsFormattedCoarsely() {
         // Coarse on purpose: a to-the-second countdown invites trust in a number
         // derived from an average rate.
-        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(4), "almost done")
-        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(45), "45 sec left")
-        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(240), "4 min left")
-        XCTAssertEqual(WeightDownloadOverlay.formatRemaining(9000), "over an hour left")
+        XCTAssertEqual(ProgressCard.formatRemaining(4), "almost done")
+        XCTAssertEqual(ProgressCard.formatRemaining(45), "45 sec left")
+        XCTAssertEqual(ProgressCard.formatRemaining(240), "4 min left")
+        XCTAssertEqual(ProgressCard.formatRemaining(9000), "over an hour left")
     }
 }

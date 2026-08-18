@@ -39,7 +39,11 @@ packages:
     # 0.2.0 adds the dense fp16/bfloat16 weight path: BoltzWeightStore selects it when
     # an artifact manifest declares no quantization block, which is what the
     # boltz2-bf16 predictor's pack does.
-    from: 0.2.0
+    #
+    # 0.2.1 is a FLOOR, not a preference (#291): predictScored's `onProgress` only
+    # exists from there, so BoltzJobManager does not compile against 0.2.0 and a
+    # fresh resolve that landed on it would fail the build rather than degrade.
+    from: 0.2.1
   # protenix-mlx: on-device Protenix (AlphaFold3-class) structure prediction (#309).
   # macOS only, for the same reasons boltz-mlx is: MLX cannot run in the iOS Simulator,
   # and Protenix is heavier than Boltz at equal length -- 3.9 GB peak at 400 residues.

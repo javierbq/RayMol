@@ -62,6 +62,44 @@ OBJECT_NAME_DIGEST_CHARS = 8
 #: (to keep placeholders out of a .pse), and by cleanup on failure/cancel/quit.
 _PENDING = {}
 
+#: name -> per-object progress bookkeeping the job handles cannot supply:
+#: {'total': N, 'done': k, 'started': monotonic_seconds, 'floor': fraction,
+#:  'phase': str, 'phase_started': monotonic_seconds}.
+#: `floor` is a monotone clamp -- bands make monotonicity meaningful, this makes
+#: it guaranteed against a phase table that drifts, HostJob's 'queued' fallback,
+#: and the fraction reset every terminal path in Swift writes.
+#: `phase` / `phase_started` are the ETA's clock: it is measured per PHASE, so
+#: entering a new one must restart it rather than inherit the previous phase's.
+_TRACK = {}
+
+#: Below this stage-local fraction the ETA is suppressed. `remaining` divides by
+#: f, so at f = 0.005 a phase two seconds old projects a six-minute wait that the
+#: next step revises away -- a confidently wrong countdown, which is worse than no
+#: countdown. WeightsFetchState.secondsRemaining (PyMOLEngine.swift) refuses on
+#: the same grounds, there with `received > 0`.
+ETA_MIN_FRACTION = 0.02
+
+#: ...and for the same reason, nothing is projected from a phase this young.
+#: WeightsFetchState uses one second over a download that reports ~500 times;
+#: a phase here can report as few as four times (recycling 3 = 4 trunk passes),
+#: so its first sample is far coarser and deserves a wider window.
+ETA_MIN_PHASE_SECONDS = 2.0
+
+#: name -> the last record of a job that ended badly, held so the card can say
+#: WHY an eleven-minute run produced nothing. Success is not retained: the loaded
+#: object is its own confirmation. Capped, oldest-first, so a scripted loop of
+#: failures cannot grow it without bound.
+_RECENT = {}
+
+#: How many terminal records to hold.
+MAX_RECENT = 16
+
+#: name -> the most recent pending_info() result. A FALLBACK only: discard_pending
+#: re-reads the status fresh, because the cached copy is one poll old and the
+#: failure it needs to retain is written milliseconds before the discard runs.
+#: This still covers a name that left _PENDING before the discard reached it.
+_LAST_INFO = {}
+
 
 def default_object_name(sequence, predictor_id=''):
     """The object name a prediction lands in when the caller does not pick one.
@@ -102,30 +140,253 @@ def pending_objects():
     return {name: list(ids) for name, ids in _PENDING.items()}
 
 
+def recent_objects():
+    """Names whose job ended badly and whose card is still waiting to be seen."""
+    return list(_RECENT)
+
+
+def pending_info(name, _self=cmd):
+    """Structured progress for a placeholder, or None if it is not pending.
+
+    Keys: state, phase, fraction (0..1 or None), moving, detail, models_done,
+    models_total, elapsed, error, step, total_steps, remaining.
+
+    ONE status read per pending OBJECT, never per model: this runs on the main
+    thread every 500 ms and n_models can be 20. The first outstanding job is the
+    one in flight; the rest are queued behind it.
+
+    Never raises. The whole body -- status(), the composition AND the arithmetic
+    -- is inside one try, because appkit_inspector's caller writes no file at all
+    if this throws, which freezes the object panel on a stale list.
+    """
+    import time
+    job_ids = _PENDING.get(name)
+    if not job_ids:
+        return _RECENT.get(name)
+    track = _TRACK.setdefault(name, {'total': len(job_ids), 'done': 0,
+                                     'started': time.monotonic(), 'floor': 0.0})
+    info = {'state': 'running', 'phase': 'pending', 'fraction': None,
+            'moving': False, 'models_done': 0, 'models_total': 1,
+            'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None,
+            'step': None, 'total_steps': None, 'remaining': None}
+    try:
+        info['models_done'] = track['done']
+        info['models_total'] = max(track['total'], 1)
+        info['elapsed'] = max(time.monotonic() - track['started'], 0.0)
+        job = _JOBS.get(job_ids[0])
+        if job is not None:
+            # The weight bundle this job is still waiting on, or None once it has
+            # been submitted. The tray hides a prediction card while its bundle's
+            # own download card is up, so a cold-cache run shows ONE card and not
+            # two describing the same transfer at two different percentages.
+            bundle = getattr(job, '_bundle', None)
+            if bundle is not None and getattr(job, '_real', None) is None:
+                info['bundle'] = getattr(bundle, 'id', None)
+            status = job.status()
+            # Coerced, not trusted. status() is a THIRD-PARTY surface (any registered
+            # predictor supplies it) and every value here crosses json.dumps into a
+            # strongly-typed Swift decoder that does no coercion of its own. A
+            # ValueError in 'error' is not JSON-serialisable and truncates the panel
+            # file to zero bytes; an int in 'phase' decodes as a non-String and fails
+            # the WHOLE PanelPayload, taking the object list down with it.
+            info['state'] = str(status.get('state') or 'running')
+            info['phase'] = str(status.get('phase') or 'pending')
+            error = status.get('error')
+            info['error'] = None if error is None else str(error)
+            info['step'] = _as_int(status.get('step'))
+            info['total_steps'] = _as_int(status.get('total_steps'))
+            # The ETA's clock. A new phase restarts it: rates are per phase (the
+            # trunk's four passes and diffusion's two hundred steps are nothing
+            # alike), so inheriting the previous phase's start would project
+            # diffusion's first step from the trunk's whole duration.
+            #
+            # A fraction that went BACKWARDS restarts it too. With n_models the
+            # next job enters the SAME phase name at step 1, so the phase test
+            # alone would keep model 1's start time and quietly inflate every
+            # estimate for model 2 by the whole of model 1.
+            local = _as_float(status.get('fraction'))
+            if (track.get('phase') != info['phase']
+                    or local is None
+                    or local < track.get('phase_fraction', 0.0)):
+                track['phase'] = info['phase']
+                track['phase_started'] = time.monotonic()
+            track['phase_fraction'] = 0.0 if local is None else local
+            phase_elapsed = max(
+                time.monotonic() - track.get('phase_started', time.monotonic()), 0.0)
+            # STAGE-LOCAL, from the raw status -- never the composed value below.
+            # compose_progress's own docstring says the bands are LAYOUT, NOT TIME
+            # ('load' is ~10 s cold and ~0 s warm; inference is 6.5 s at 60
+            # residues and 675 s at 600), so a countdown extrapolated from the
+            # composed fraction would be confidently wrong.
+            if info['state'] == 'running':
+                info['remaining'] = _phase_remaining(local, phase_elapsed)
+            fraction, moving = _job_progress(job, status)
+            if fraction is not None:
+                whole = (track['done'] + fraction) / info['models_total']
+                whole = max(whole, track.get('floor', 0.0))
+                track['floor'] = whole
+                info['fraction'] = whole
+                info['moving'] = bool(moving)
+            elif track.get('floor'):
+                info['fraction'] = track['floor']
+        info['detail'] = _format_detail(info)
+    except Exception:
+        pass
+    _LAST_INFO[name] = info
+    return info
+
+
+def _job_progress(job, status):
+    """(fraction, moving) from the job's own predictor, or (None, False).
+
+    Tries predictor_id via the registry first (set on regular jobs in predict()),
+    then falls back to _predictor (the raw object stored on _DeferredJob before
+    its real job is submitted). _DeferredJob.__slots__ blocks the predictor_id
+    assignment, so without the fallback all deferred-phase fractions are dropped.
+    """
+    try:
+        from .predictors import registry
+        predictor_id = getattr(job, 'predictor_id', '') or ''
+        if predictor_id:
+            predictor = registry.get(predictor_id)
+        else:
+            predictor = getattr(job, '_predictor', None)
+        if predictor is None:
+            return None, False
+        fraction, moving = predictor.progress(status)
+        # progress() is overridable, so the finiteness guard cannot live only in
+        # compose_progress. A NaN reaching pending_info poisons track['floor']
+        # permanently -- every later max() against it is NaN too -- and writes an
+        # invalid JSON literal that no decoder accepts.
+        if fraction is not None:
+            import math
+            if (not isinstance(fraction, (int, float))
+                    or isinstance(fraction, bool)
+                    or not math.isfinite(float(fraction))):
+                return None, False
+        return fraction, bool(moving)
+    except Exception:
+        return None, False
+
+
+def _as_int(value):
+    """A non-negative int, or None. Coerced, because status() is third-party.
+
+    Every value in this record crosses json.dumps into a strongly-typed Swift
+    decoder that does no coercion of its own, so a float or a numeric string here
+    would fail the WHOLE payload decode and take the object list with it.
+    """
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        number = int(value)
+    except Exception:
+        return None
+    return number if number >= 0 else None
+
+
+def _as_float(value):
+    """A finite float, or None. status() is third-party; nothing here is trusted."""
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        import math
+        number = float(value)
+    except Exception:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _phase_remaining(local_fraction, phase_elapsed):
+    """Seconds left IN THE CURRENT PHASE, from its own measured rate, or None.
+
+        remaining = phase_elapsed * (1 - f) / f
+
+    `local_fraction` is status()['fraction'] RAW -- completion within the phase.
+    Never the composed whole-job value: the band table compose_progress folds
+    that through is layout, not time, so a countdown derived from it would be a
+    guess wearing a number's clothes.
+
+    Suppressed for a young phase and for a tiny f, where the divisor makes the
+    estimate wild. Follows WeightsFetchState.secondsRemaining's policy
+    (PyMOLEngine.swift), which likewise refuses rather than reporting an absurd
+    figure, and which extrapolates from an AVERAGE rate rather than an
+    instantaneous one -- phase_elapsed / f is exactly that average.
+
+    Never raises: it is on the 500 ms main-thread poll.
+    """
+    try:
+        import math
+        if phase_elapsed < ETA_MIN_PHASE_SECONDS:
+            return None
+        if local_fraction is None or isinstance(local_fraction, bool):
+            return None
+        f = float(local_fraction)
+        if not math.isfinite(f) or f < ETA_MIN_FRACTION or f >= 1.0:
+            return None
+        return phase_elapsed * (1.0 - f) / f
+    except Exception:
+        return None
+
+
+def format_remaining(seconds):
+    """'4 min left'. Deliberately coarse, and deliberately identical to
+    ProgressCard.formatRemaining (ProgressTray.swift), so the hover tooltip and
+    the progress card never word the same estimate two different ways.
+
+    Coarse because a to-the-second countdown derived from an average rate invites
+    a trust it has not earned.
+    """
+    if seconds < 10:
+        return 'almost done'
+    if seconds < 90:
+        # int(x + 0.5), not round(): Swift's .rounded() is half-away-from-zero
+        # while Python's round() is half-to-even, and the two would disagree on
+        # exactly the .5 cases this formatter is built to round.
+        return '%d sec left' % (int(seconds + 0.5),)
+    if seconds < 3600:
+        minutes = int(seconds / 60.0 + 0.5)
+        # Rounding can carry 59.5 min -> 60; route those to the next bucket.
+        if minutes >= 60:
+            return 'over an hour left'
+        return '%d min left' % (minutes,)
+    return 'over an hour left'
+
+
+def _format_detail(info):
+    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), 4 min left'.
+
+    Short -- it is a tooltip. The percentage is the COMPOSED whole-job value, the
+    same number the progress bar draws, so the two can never disagree; the
+    stage-local position is said precisely by 'step 84 of 200' instead. The
+    estimate is the current phase's, which is what was actually measured.
+    """
+    parts = ['pending: %s' % (info['phase'],)]
+    if info['fraction'] is not None and info['moving']:
+        parts.append('%d%%' % (int(info['fraction'] * 100),))
+    step, total_steps = info.get('step'), info.get('total_steps')
+    if step is not None and total_steps:
+        parts.append('step %d of %d' % (step, total_steps))
+    detail = ' '.join(parts)
+    if info['models_total'] > 1:
+        detail += ' (model %d of %d)' % (
+            min(info['models_done'] + 1, info['models_total']), info['models_total'])
+    remaining = info.get('remaining')
+    if remaining is not None:
+        detail += ', %s' % (format_remaining(remaining),)
+    return detail
+
+
 def pending_detail(name, _self=cmd):
     """One-line description of the job a placeholder is waiting on, or None.
 
-    This is the string the object panel shows on hover, so it must stay short and must
-    never raise: it is rendered from a 500 ms poll on the main thread.
+    This is the string the object panel shows on hover, so it must stay short and
+    must never raise: it is rendered from a 500 ms poll on the main thread. It is
+    now a thin formatter over pending_info, so the tooltip and the progress card
+    can never disagree.
     """
-    job_ids = _PENDING.get(name)
-    if not job_ids:
-        return None
-    job_id = job_ids[0]
-    job = _JOBS.get(job_id)
-    if job is None:
-        return 'pending'
-    try:
-        status = job.status()
-    except Exception:
-        return 'pending'
-    phase = status.get('phase') or status.get('state') or 'pending'
-    fraction = status.get('fraction') or 0.0
-    detail = 'pending: %s %d%%' % (phase, int(float(fraction) * 100))
-    outstanding = len(job_ids)
-    if outstanding > 1:
-        detail += ' (%d models queued)' % outstanding
-    return detail
+    info = pending_info(name, _self=_self)
+    return None if info is None else info['detail']
 
 
 def register_pending(name, job_id, _self=cmd):
@@ -139,6 +400,10 @@ def register_pending(name, job_id, _self=cmd):
     if name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
+    import time
+    track = _TRACK.setdefault(
+        name, {'total': 0, 'done': 0, 'started': time.monotonic(), 'floor': 0.0})
+    track['total'] += 1
 
 
 def discard_pending(name, _self=cmd):
@@ -147,7 +412,33 @@ def discard_pending(name, _self=cmd):
     The atom check is the important part: cleanup can race a job that just finished, and
     deleting a completed structure would destroy the very thing the user asked for.
     """
+    # Capture BEFORE the pop: this is the only moment the record still exists and
+    # we already know the outcome.
+    #
+    # Read it FRESH. _LAST_INFO holds whatever the last 500 ms poll saw, and the
+    # real ordering in the app is: poll observes 'running' -> inference fails on a
+    # background queue -> settle() writes the terminal status file -> the discard is
+    # hopped to the main queue and runs within milliseconds, LONG before the next
+    # poll. Trusting the cache therefore retains nothing on the only path that
+    # matters. Nothing deletes the status file (BoltzJobManager has no removeItem
+    # on statusPath), so re-reading it here is what actually sees the failure;
+    # _LAST_INFO stays as the fallback for a job that vanished from _PENDING first.
+    #
+    # NOT on the poll path: discard_pending runs once per placeholder teardown, so
+    # this does not add a per-tick status read.
+    fresh = None
+    try:
+        fresh = pending_info(name, _self=_self)
+    except Exception:
+        pass
+    last = fresh or _LAST_INFO.get(name)
+    _LAST_INFO.pop(name, None)
+    if last is not None and last.get('state') in ('error', 'failed', 'cancelled'):
+        while len(_RECENT) >= MAX_RECENT:
+            _RECENT.pop(next(iter(_RECENT)))
+        _RECENT[name] = last
     _PENDING.pop(name, None)
+    _TRACK.pop(name, None)
     try:
         if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
             _self.delete(name)
@@ -168,6 +459,9 @@ def clear_pending(_self=cmd):
             _JOBS.pop(job_id, None)
     for name in list(_PENDING):
         discard_pending(name, _self=_self)
+    _TRACK.clear()
+    _RECENT.clear()
+    _LAST_INFO.clear()
 
 
 # -- Deferred submit: jobs waiting on a weight download ------------------------
@@ -562,8 +856,17 @@ def deliver_result(path, name, seed=None, _self=cmd):
         remaining = _PENDING.get(name)
         if remaining:
             remaining.pop(0)
+            track = _TRACK.get(name)
+            if track is not None:
+                track['done'] += 1
             if not remaining:
                 _PENDING.pop(name, None)
+                _TRACK.pop(name, None)
+                # A successful delivery clears any retained failure record for
+                # this name, so a retry that succeeds does not leave a stale
+                # error card in the tray.
+                _LAST_INFO.pop(name, None)
+                _RECENT.pop(name, None)
 
 
 def session_save(session, _self=cmd):
@@ -1135,6 +1438,12 @@ SEE ALSO
         # one runtime). Metric recording reads it back off the handle.
         job.predictor_id = predictor_obj.id
         _JOBS[job.job_id] = job
+        # Which predictor to ask for progress bands. Set here rather than required
+        # of every job class, so a third-party handle needs no new attribute.
+        try:
+            job.predictor_id = predictor_obj.id
+        except AttributeError:
+            pass          # __slots__ handle: it simply gets the spinner
         # The placeholder goes up for a deferred job too, so the object panel shows the
         # download the same way it shows inference -- pending_detail reads the phase off
         # the job, which reports "download"/"extract" until the real one takes over. If
@@ -1194,16 +1503,37 @@ USAGE
 
     predict_cancel job_id
 
+ARGUMENTS
+
+    job_id = string: the job to cancel, or the name of a pending object -- which
+        cancels every model still outstanding for it.
+
 SEE ALSO
 
     predict
     """
+    # A pending OBJECT name cancels every model registered against it. The
+    # progress card's Cancel is per object, and with n_models > 1 cancelling only
+    # _PENDING[name][0] would leave the other N-1 running. Job ids are
+    # 'pending-<12 hex>' / backend-specific and never collide with object names,
+    # so this cannot shadow a real id.
+    ids = _PENDING.get(job_id)
+    if ids:
+        for one in list(ids):
+            try:
+                _job(one).cancel()
+            except Exception as exc:
+                colorprinting.warning(' predict_cancel: %s (%s)' % (one, exc))
+        if not int(quiet):
+            colorprinting.parrot(' predict_cancel: cancelled %d job(s) for %s'
+                                 % (len(ids), job_id))
+        return
     _job(job_id).cancel()
     # Reap now: a job cancelled before its weights arrived still has a placeholder
     # standing, and only the main thread may take it down.
     pump(_self=_self)
     if not int(quiet):
-        colorprinting.parrot(' predict: cancel requested for %s' % job_id)
+        colorprinting.parrot(' predict: cancel requested for %s' % (job_id,))
 
 
 def predict_result(job_id, name='', quiet=1, _self=cmd):
@@ -1409,6 +1739,40 @@ SEE ALSO
     if not int(quiet):
         colorprinting.parrot(' predict: cancelled %d weight download(s)' % stopped)
     return stopped
+
+
+def predict_dismiss(name='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "predict_dismiss" clears the retained card for a prediction that failed or was
+    cancelled. Success needs no dismissal -- the loaded object is its own
+    confirmation and its card retires on its own.
+
+USAGE
+
+    predict_dismiss [ name ]
+
+ARGUMENTS
+
+    name = string: the object whose card to clear. Omit to clear every one.
+
+SEE ALSO
+
+    predict, predict_status, predict_cancel
+    """
+    pump(_self=_self)
+    if name:
+        removed = _RECENT.pop(name, None) is not None
+    else:
+        removed = bool(_RECENT)
+        _RECENT.clear()
+    if not int(quiet):
+        if removed:
+            colorprinting.parrot(' predict_dismiss: cleared %s'
+                                 % (name or 'all cards',))
+        else:
+            colorprinting.warning(' predict_dismiss: nothing to clear')
 
 
 def _job(job_id):
