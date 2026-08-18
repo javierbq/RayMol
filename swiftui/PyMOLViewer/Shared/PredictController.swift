@@ -345,6 +345,7 @@ final class PredictController: ObservableObject {
         }
         plannedNames = [:]
         phase = .idle
+        failGraceTicks = 0
     }
 }
 #endif

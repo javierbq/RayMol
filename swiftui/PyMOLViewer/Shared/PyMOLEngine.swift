@@ -2199,6 +2199,9 @@ final class PyMOLEngine: ObservableObject {
     /// setDesignMode's entering-branch clears. On entry, refresh the form (loads the
     /// predictor list); on exit, reset any in-flight search/predict tracking.
     func setPredictMode(_ on: Bool) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
         if on {
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
@@ -2206,6 +2209,7 @@ final class PyMOLEngine: ObservableObject {
             predictMode = true
             MainActor.assumeIsolated { predictController.refresh() }
         } else {
+            MainActor.assumeIsolated { predictController.cancel() }
             predictMode = false
         }
     }

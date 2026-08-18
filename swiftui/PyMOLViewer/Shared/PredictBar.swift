@@ -23,8 +23,7 @@ struct PredictBar: View {
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
-        .onAppear { controller.refresh() }
-        .onChange(of: controller.inputText) { _ in controller.inputChanged() }
+        .onChange(of: controller.inputText) { controller.inputChanged() }
     }
 
     private var selectedSupportsMSA: Bool {
@@ -129,7 +128,11 @@ struct PredictBar: View {
     private var canRun: Bool {
         !controller.predictor.isEmpty && !controller.chains.isEmpty
             && controller.resolveError == nil
-            && { if case .searching = controller.phase { return false }; return true }()
+            && controller.pendingSizeWarning == nil
+            && { switch controller.phase {
+                 case .searching, .predicting: return false
+                 default: return true
+                 } }()
     }
 
     // Row 3: which chains get an MSA + a privacy note.
@@ -157,7 +160,7 @@ struct PredictBar: View {
         controller.server.isEmpty ? "the ColabFold MSA server" : controller.server
     }
 
-    // Row 4 (Advanced): recycling / diffusion / seed / msa_depth / mode / name / server.
+    // Row 4 (Advanced): recycling / diffusion / seed / msa_depth / msa_mode / server / name.
     private var advancedRow: some View {
         HStack(spacing: 10) {
             labeled("recycle") { Stepper("\(controller.recyclingSteps)",
@@ -168,6 +171,16 @@ struct PredictBar: View {
                 .frame(width: 60).textFieldStyle(.roundedBorder) }
             labeled("depth") { TextField("auto", text: $controller.msaDepthText)
                 .frame(width: 60).textFieldStyle(.roundedBorder) }
+            labeled("mode") {
+                Picker("", selection: $controller.msaMode) {
+                    ForEach(["env", "all", "env-nofilter", "nofilter"], id: \.self) {
+                        Text($0).tag($0)
+                    }
+                }
+                .labelsHidden().frame(width: 110)
+            }
+            labeled("server") { TextField("default", text: $controller.server)
+                .frame(width: 90).textFieldStyle(.roundedBorder) }
             labeled("name") { TextField("auto", text: $controller.resultName)
                 .frame(width: 90).textFieldStyle(.roundedBorder) }
             Spacer(minLength: 0)

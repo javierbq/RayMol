@@ -2988,6 +2988,7 @@ struct ContentView: View {
                 Text("Predict")
             }
         }
+        .disabled(isDesignLocked)
         #endif
     }
 

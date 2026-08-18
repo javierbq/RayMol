@@ -257,6 +257,36 @@ final class PredictControllerRunTests: XCTestCase {
         XCTAssertEqual(cmds.count, 1)
     }
 
+    func testCancelDuringSearchPreventsAutoSubmit() {
+        // Fix 1: cancel() during .searching must stop the state machine so that a
+        // subsequently-landed alignment does NOT trigger submitPredict.
+        let cmds = NSMutableArray()
+        let c = makeController(captured: cmds)
+        c.loadFormPayload(PredictFormPayload(
+            predictors: [PredictorInfo(id: "boltz2", msa: true)],
+            chains: [chain("A", 60, obj: "1ubq", ch: "A")], error: nil))
+        c.inputText = "1ubq"; c.predictor = "boltz2"; c.useMSA = true; c.msaChains = ["A"]
+
+        // Start the MSA flow — should be .searching with one msa_search command sent.
+        c.run()
+        XCTAssertEqual(c.phase, .searching(remaining: 1))
+        XCTAssertEqual(cmds.count, 1)
+
+        // Cancel — must send msa_cancel, clear plannedNames, and reset to idle.
+        c.cancel()
+        XCTAssertEqual(c.phase, .idle, "cancel must reset phase to .idle")
+        XCTAssertTrue((cmds.lastObject as! String).contains("msa_cancel"),
+                      "cancel must send msa_cancel command")
+        let countAfterCancel = cmds.count
+
+        // Simulate the alignment landing AFTER cancel — must not auto-submit predict.
+        let landed = AlignmentEntry(id: "aln", name: "predui_1ubq_A", depth: 8,
+                                    columns: 60, residues: 60, target: "1ubq", chain: "A")
+        c.onEngineState(alignments: [landed], searches: [])
+        XCTAssertEqual(c.phase, .idle, "landed alignment after cancel must not change phase")
+        XCTAssertEqual(cmds.count, countAfterCancel, "no predict submitted after cancel")
+    }
+
     func testPredictorSelectionDefaultsToFirst() {
         let c = PredictController()
         c.loadFormPayload(PredictFormPayload(
