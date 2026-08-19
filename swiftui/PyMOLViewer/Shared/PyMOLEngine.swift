@@ -2400,16 +2400,6 @@ final class PyMOLEngine: ObservableObject {
                 _rd.show_all_sidechains('\(obj)', \(on ? 1 : 0))
                 """)
         },
-        pinnedIndicator: { [weak self] obj, chain, resi in
-            // Commit the pinned residue to 'sele' (pink committed-selection pass) or clear it.
-            // Uses the same idiom as pick_at: cmd.select('sele', ..., enable=1) for the committed
-            // pink pass, or 'none'/enable=0 to clear. Runs on the @MainActor (called from
-            // setPinned / exit / focus-change), so runPython is safe on the main thread.
-            self?.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.set_pinned_indicator('\(obj)', '\(chain)', '\(resi)')
-                """)
-        },
         designRegion: { [weak self] residues, fixed, native, omit, temperature in
             guard let self else {
                 throw NSError(domain: "raymol.design", code: 2,

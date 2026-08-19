@@ -40,25 +40,43 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(c.selectedResidueIndices, [0, 2])   // idx 1 (invalid) dropped
     }
 
-    // Shift-click region building: toggleRegionResidue adds/removes valid residues,
-    // ignores invalid ones, and detaches into a "custom" ad-hoc region.
+    // Click-built region under the count-driven rule: successive toggles accumulate
+    // designable residues into a region, non-designable positions never count,
+    // dropping back to ONE designable residue returns to single-residue pin mode
+    // (empty region), and removing the last one leaves nothing active. The label of
+    // a click-built region is "sele" — it IS the ordinary selection now, not a
+    // separate "custom" copy the controller keeps on the side.
     func testToggleRegionResidueBuildsAdHocRegion() {
         let c = makeController()
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: [true, true, false, true])
         XCTAssertFalse(c.regionModeActive)
+
         c.toggleRegionResidue(residueIndex: 3)
+        XCTAssertEqual(c.pinnedResidueIndex, 3,
+                       "one designable residue is single-residue mode, not a region")
+        XCTAssertFalse(c.regionModeActive)
+
         c.toggleRegionResidue(residueIndex: 1)
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])   // kept sorted
         XCTAssertTrue(c.regionModeActive)
-        XCTAssertEqual(c.selectedSelectionName, "custom")
-        c.toggleRegionResidue(residueIndex: 2)             // invalid → ignored
+        XCTAssertNil(c.pinnedResidueIndex, "region mode drops the pin")
+        XCTAssertEqual(c.selectedSelectionName, "sele",
+                       "a click-built region is labelled 'sele'")
+
+        c.toggleRegionResidue(residueIndex: 2)             // invalid → never counts
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])
-        c.toggleRegionResidue(residueIndex: 1)             // remove
-        XCTAssertEqual(c.selectedResidueIndices, [3])
-        c.toggleRegionResidue(residueIndex: 3)             // remove last → empty
+
+        c.toggleRegionResidue(residueIndex: 1)             // remove → one left
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "one designable residue leaves region mode")
+        XCTAssertEqual(c.pinnedResidueIndex, 3, "the survivor is pinned")
+        XCTAssertNil(c.selectedSelectionName)
+
+        c.toggleRegionResidue(residueIndex: 3)             // remove last → nothing
         XCTAssertFalse(c.regionModeActive)
         XCTAssertNil(c.selectedSelectionName)
+        XCTAssertNil(c.pinnedResidueIndex)
     }
 
     func testTogglePalette() {
@@ -386,6 +404,173 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(c.syncFromSele(), 0)
         XCTAssertTrue(c.selectedResidueIndices.isEmpty)
         XCTAssertNil(c.pinnedResidueIndex)
+    }
+
+    // MARK: – Gestures route through 'sele'
+
+    // Successive taps accumulate, exactly like normal-mode clicks: 1 -> pin,
+    // 2 -> region. This is the behaviour the whole change exists to deliver.
+    func testSuccessiveTapsAccumulateIntoARegion() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+
+        c.tapResidue(residueIndex: 1)
+        XCTAssertEqual(c.pinnedResidueIndex, 1)
+        XCTAssertFalse(c.regionModeActive)
+
+        c.tapResidue(residueIndex: 0)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 1], "region stays sorted")
+        XCTAssertNil(c.pinnedResidueIndex)
+        XCTAssertTrue(c.regionModeActive)
+
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 1, 2])
+    }
+
+    // Tapping a selected residue removes it, matching pick_at's toggle.
+    func testTapOnSelectedResidueDeselects() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.tapResidue(residueIndex: 1)
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(c.selectedResidueIndices, [1, 2])
+
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(c.pinnedResidueIndex, 1, "back to single-residue mode")
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+
+        c.tapResidue(residueIndex: 1)
+        XCTAssertNil(c.pinnedResidueIndex, "last residue removed -> nothing active")
+    }
+
+    // A click on empty space clears, as it does in normal mode. Focus is kept.
+    func testEmptySpaceHitClearsSelectionButKeepsFocus() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)
+        c.tapResidue(residueIndex: 1)
+        XCTAssertTrue(c.regionModeActive)
+
+        c.handleViewportHit(object: "", chain: "", resi: "", hasResidue: false)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+        XCTAssertNil(c.pinnedResidueIndex)
+        XCTAssertEqual(c.focusObject, "m1", "clearing must not change focus")
+    }
+
+    // A hit on the focus object with no resolvable residue is a no-op, not a clear.
+    func testHitOnFocusObjectWithoutResidueIsNoOp() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)
+        c.handleViewportHit(object: "m1", chain: "A", resi: "99", hasResidue: true)
+        XCTAssertEqual(c.pinnedResidueIndex, 0,
+                       "an unresolvable residue must not disturb the selection")
+    }
+
+    // The lasso dropdown writes 'sele' and keeps its own label.
+    func testPickSelectionWritesSeleAndKeepsItsLabel() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
+                       selectedIndices: { _, _, _, _ in [0, 2] })
+        c.pickSelection("loop")
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2])
+        XCTAssertEqual(c.selectedSelectionName, "loop")
+
+        // A subsequent click detaches from the named region.
+        c.tapResidue(residueIndex: 1)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 1, 2])
+        XCTAssertEqual(c.selectedSelectionName, "sele")
+    }
+
+    // clearSelection empties 'sele' rather than only the mirrored array, so a
+    // following sync cannot resurrect the region.
+    func testClearSelectionEmptiesSele() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)
+        c.tapResidue(residueIndex: 1)
+        c.clearSelection()
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+        XCTAssertEqual(c.syncFromSele(), 0, "'sele' itself must be empty, not just the mirror")
+    }
+
+    // D3: reaching 2+ residues ARMS the Redesign button; it must never run MPNN
+    // on its own. Auto-running would burn an inference per click and throw away
+    // every intermediate result.
+    func testBuildingARegionNeverRunsInference() {
+        let c = makeController()
+        var designCalls = 0
+        c.injectRegion(designRegion: { r, _, _, _, _ in
+            designCalls += 1
+            return Array(repeating: 0, count: r.count)
+        })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        c.tapResidue(residueIndex: 0)
+        c.tapResidue(residueIndex: 1)
+        c.tapResidue(residueIndex: 2)
+
+        XCTAssertTrue(c.regionModeActive, "3 residues must designate a region")
+        XCTAssertEqual(designCalls, 0,
+                       "designating a region must not run inference (D3)")
+    }
+
+    // D4: a hit on a NON-focus object retargets design AND selects that residue in
+    // one gesture, so the first click on another structure is never dead. The
+    // selection must be applied after the async focus completes, or it would be
+    // resolved against the previous object's residue set.
+    //
+    // Driven through the DEBUG `refocusAndSelectAwait` seam, which calls the SAME
+    // private method the synchronous `focusThenSelect` wraps in a Task. Awaiting the
+    // seam is deterministic; polling `focusObject` with a fixed number of
+    // `Task.yield()`s would not be, because `focusAwait` crosses a real
+    // DispatchQueue hop. That `handleViewportHit` routes a non-focus object into
+    // this path is covered by DesignIOSPortTests.testHandleViewportHitRefocusesOnDifferentObject.
+    func testHitOnOtherObjectRefocusesAndSelects() async {
+        let residues = (1...3).map { i in
+            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
+                                                      o: .zero, chain: 0, resSeq: i),
+                          valid: true)
+        }
+        let c = DesignController(
+            enumerate: { obj, _ in
+                DesignResidueSet(object: obj, state: 1, residues: residues)
+            },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1", "m2"]
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)       // a residue selected on the OLD focus
+
+        await c.refocusAndSelectAwait(object: "m2", chain: "A", resi: "2", hasResidue: true)
+
+        XCTAssertEqual(c.focusObject, "m2", "the click must retarget design")
+        XCTAssertEqual(c.pinnedResidueIndex, 1,
+                       "the clicked residue must be selected by the same click (D4)")
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "old-focus residues must not linger in the region")
+    }
+
+    // D2: leaving Design mode must NOT wipe the user's ordinary selection.
+    func testExitDoesNotClearSele() {
+        let c = makeController()
+        var cleared = false
+        c.injectSele(clearSele: { cleared = true })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)
+        c.exit()
+        XCTAssertFalse(cleared,
+                       "exiting Design mode must leave 'sele' alone (D2)")
     }
 }
 #endif
