@@ -229,6 +229,9 @@ final class DesignRegionTests: XCTestCase {
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
+        XCTAssertEqual(c.editedSequence, [5, 9, 9],
+                       "the redesign must actually have run — without this the flag "
+                     + "assertions below pass vacuously on any early return")
         XCTAssertFalse(c.isRedesigning, "isRedesigning must clear after a successful redesign")
         XCTAssertFalse(c.isRepacking, "isRepacking must clear after the follow-up repack")
     }
@@ -274,6 +277,9 @@ final class DesignRegionTests: XCTestCase {
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
+        XCTAssertEqual(c.errorText, "Region redesign failed",
+                       "design() must actually have been called and rejected for its "
+                     + "length — otherwise the rollback assertion below is vacuous")
         XCTAssertFalse(c.isRedesigning)
         XCTAssertEqual(c.editedSequence, [5, 5, 5])   // rolled back
     }
@@ -537,30 +543,66 @@ final class DesignRegionTests: XCTestCase {
     // DispatchQueue hop. That `handleViewportHit` routes a non-focus object into
     // this path is covered by DesignIOSPortTests.testHandleViewportHitRefocusesOnDifferentObject.
     func testHitOnOtherObjectRefocusesAndSelects() async {
-        let residues = (1...3).map { i in
-            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
+        // m2's residues deliberately use DIFFERENT keys from m1's (which
+        // setFocusForTest builds as chain "A", resi "1"..."3"), so the two objects
+        // are not interchangeable and no future test can pass by accident.
+        let m2Residues = (1...3).map { i in
+            DesignResidue(chain: "B", resi: "\(100 + i)", resn: "ALA", aa: 5,
                           backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
-                                                      o: .zero, chain: 0, resSeq: i),
+                                                      o: .zero, chain: 1, resSeq: 100 + i),
                           valid: true)
         }
         let c = DesignController(
             enumerate: { obj, _ in
-                DesignResidueSet(object: obj, state: 1, residues: residues)
+                DesignResidueSet(object: obj, state: 1, residues: m2Residues)
             },
             score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
             applyColoring: { _, _, _, _, _, _, _ in },
             dim: { _ in }, snapshot: { _ in }, restore: { })
         c.allObjects = ["m1", "m2"]
+
+        // 'sele', modelled object-awarely: PyMOL resolves a selection against
+        // whichever object is in scope, so reading it while the OLD object is still
+        // focused yields the OLD object's indices. That is the hazard under test.
+        var sele: Set<String> = []
+        var focusWhenWritten: String?
+        c.injectSele(
+            seleState: { obj, _, _ in
+                let keys = (obj == "m2")
+                    ? ["B/101", "B/102", "B/103"]
+                    : ["A/1", "A/2", "A/3"]
+                let idx = keys.enumerated().compactMap { sele.contains($0.element) ? $0.offset : nil }
+                return (indices: idx, digest: "\(sele.sorted())", total: sele.count)
+            },
+            toggleSele: { _, chain, resi in
+                let k = "\(chain)/\(resi)"
+                if sele.contains(k) { sele.remove(k) } else { sele.insert(k) }
+            },
+            setSeleResidue: { [weak c] _, chain, resi in
+                // Record WHEN the write lands relative to the refocus. This is the
+                // load-bearing assertion: every state assertion below also passes
+                // if the two steps are swapped, because `focusAwait` ends with its
+                // own `syncFromSele()` and would re-derive the right indices anyway.
+                focusWhenWritten = c?.focusObject
+                sele = ["\(chain)/\(resi)"]
+            })
+
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.tapResidue(residueIndex: 0)       // a residue selected on the OLD focus
+        XCTAssertEqual(c.pinnedResidueIndex, 0, "pre-condition: A/1 selected on m1")
 
-        await c.refocusAndSelectAwait(object: "m2", chain: "A", resi: "2", hasResidue: true)
+        await c.refocusAndSelectAwait(object: "m2", chain: "B", resi: "102", hasResidue: true)
 
+        XCTAssertEqual(focusWhenWritten, "m2",
+                       "the selection must be written AFTER the refocus completes — "
+                     + "writing it first resolves the new residue against the OLD "
+                     + "object's residue set and silently produces wrong indices")
         XCTAssertEqual(c.focusObject, "m2", "the click must retarget design")
         XCTAssertEqual(c.pinnedResidueIndex, 1,
                        "the clicked residue must be selected by the same click (D4)")
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
                       "old-focus residues must not linger in the region")
+        XCTAssertEqual(sele, ["B/102"], "'sele' holds exactly the clicked residue")
     }
 
     // Ending an edit session must leave the derived state agreeing with 'sele'.
@@ -593,6 +635,65 @@ final class DesignRegionTests: XCTestCase {
             XCTAssertTrue(c.regionModeActive, "\(path): region mode must survive the teardown")
             XCTAssertEqual(c.selectedSelectionName, "sele", "\(path): label re-derived")
         }
+    }
+
+    // The lasso name must not outlive the region it labels. Designate a named
+    // region, leave Design mode, then re-enter with 'sele' untouched: the region
+    // re-derives from 'sele' and is now click-built, so it must carry the "sele"
+    // label, not the stale lasso name. The focus-change path shares the same reset
+    // (both go through clearRegionState), so this covers it too.
+    func testStaleLassoNameDoesNotSurviveLeavingDesignMode() async {
+        let residues = (1...3).map { i in
+            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
+                                                      o: .zero, chain: 0, resSeq: i),
+                          valid: true)
+        }
+        let c = DesignController(
+            enumerate: { obj, _ in
+                DesignResidueSet(object: obj, state: 1, residues: residues)
+            },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1"]
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
+                       selectedIndices: { _, _, _, _ in [0, 2] })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        c.pickSelection("loop")
+        XCTAssertEqual(c.selectedSelectionName, "loop", "pre-condition: named region")
+
+        c.exit()                      // must scrub the stale name
+        await c.focusAwait("m1")      // re-enter; 'sele' still holds both residues
+
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2],
+                       "pre-condition: the region still derives from 'sele'")
+        XCTAssertEqual(c.selectedSelectionName, "sele",
+                       "the lasso name must not outlive the region it labelled")
+    }
+
+    // A refocus whose enumerate throws must leave 'sele' untouched. Writing anyway
+    // would swap the user's selection for a residue that cannot be resolved against
+    // any residue set, leaving them with neither the old selection nor a usable new
+    // one.
+    func testFailedRefocusLeavesSeleUntouched() async {
+        struct Boom: Error {}
+        var wrote = false
+        let c = DesignController(
+            enumerate: { _, _ in throw Boom() },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1", "m2"]
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.injectSele(setSeleResidue: { _, _, _ in wrote = true },
+                     clearSele: { wrote = true })
+
+        await c.refocusAndSelectAwait(object: "m2", chain: "A", resi: "2", hasResidue: true)
+
+        XCTAssertNotNil(c.errorText, "pre-condition: the focus must actually have failed")
+        XCTAssertFalse(wrote, "a failed refocus must not touch 'sele'")
     }
 
     // D2: leaving Design mode must NOT wipe the user's ordinary selection.
