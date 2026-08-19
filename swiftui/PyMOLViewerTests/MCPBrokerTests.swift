@@ -45,4 +45,59 @@ final class MCPBrokerTests: XCTestCase {
         ])
         XCTAssertEqual(out.map(\.pid), [1, 2])
     }
+
+    // MARK: - keys
+
+    func testKeyIsTheDisplayNameWhenUnique() {
+        let k = MCPInstanceRegistry.keys(for: MCPInstanceRegistry.decodeAll([
+            blob(pid: 1, name: "RayMol"),
+            blob(pid: 2, name: "RayMol-287"),
+        ]))
+        XCTAssertEqual(k[1], "RayMol")
+        XCTAssertEqual(k[2], "RayMol-287")
+    }
+
+    // Two checkouts can produce two apps with the SAME display name. Handing
+    // Claude two identical keys would make disambiguation impossible, so the
+    // pid has to enter the key — but only for the colliding names.
+    func testCollidingNamesGetPidSuffixedKeys() {
+        let k = MCPInstanceRegistry.keys(for: MCPInstanceRegistry.decodeAll([
+            blob(pid: 1, name: "RayMol"),
+            blob(pid: 2, name: "RayMol"),
+            blob(pid: 3, name: "RayMol-287"),
+        ]))
+        XCTAssertEqual(k[1], "RayMol#1")
+        XCTAssertEqual(k[2], "RayMol#2")
+        XCTAssertEqual(k[3], "RayMol-287")
+    }
+
+    // MARK: - match
+
+    func testMatchAcceptsName_KeyForm_AndBarePid() {
+        let list = MCPInstanceRegistry.decodeAll([
+            blob(pid: 1, name: "RayMol"),
+            blob(pid: 2, name: "RayMol"),
+            blob(pid: 3, name: "RayMol-287"),
+        ])
+        XCTAssertEqual(MCPInstanceRegistry.match("RayMol-287", in: list)?.pid, 3)
+        XCTAssertEqual(MCPInstanceRegistry.match("RayMol#2", in: list)?.pid, 2)
+        XCTAssertEqual(MCPInstanceRegistry.match("3", in: list)?.pid, 3)
+    }
+
+    // An ambiguous bare name must NOT resolve to an arbitrary instance —
+    // silently driving the wrong window is the failure this whole design exists
+    // to prevent.
+    func testMatchRefusesAnAmbiguousName() {
+        let list = MCPInstanceRegistry.decodeAll([
+            blob(pid: 1, name: "RayMol"),
+            blob(pid: 2, name: "RayMol"),
+        ])
+        XCTAssertNil(MCPInstanceRegistry.match("RayMol", in: list))
+    }
+
+    func testMatchReturnsNilForUnknownKey() {
+        let list = MCPInstanceRegistry.decodeAll([blob(pid: 1, name: "RayMol")])
+        XCTAssertNil(MCPInstanceRegistry.match("Nope", in: list))
+        XCTAssertNil(MCPInstanceRegistry.match("999", in: list))
+    }
 }

@@ -25,5 +25,32 @@ enum MCPInstanceRegistry {
     static func decodeAll(_ blobs: [Data]) -> [MCPInstance] {
         blobs.compactMap(decode)
     }
+
+    /// pid → the key a client uses to name this instance. Bare display name when
+    /// unique; `Name#<pid>` only for the names that actually collide, so the
+    /// common single-instance case stays readable.
+    static func keys(for instances: [MCPInstance]) -> [Int: String] {
+        var counts: [String: Int] = [:]
+        for i in instances { counts[i.name, default: 0] += 1 }
+        var out: [Int: String] = [:]
+        for i in instances {
+            out[i.pid] = (counts[i.name] ?? 0) > 1 ? "\(i.name)#\(i.pid)" : i.name
+        }
+        return out
+    }
+
+    /// Resolve a user- or model-supplied key. Accepts the assigned key, a bare
+    /// display name when unambiguous, or a bare pid. Returns nil when the key is
+    /// unknown OR ambiguous — the caller must ask rather than guess.
+    static func match(_ key: String, in instances: [MCPInstance]) -> MCPInstance? {
+        let keyed = keys(for: instances)
+        if let hit = instances.first(where: { keyed[$0.pid] == key }) { return hit }
+        if let pid = Int(key), let hit = instances.first(where: { $0.pid == pid }) {
+            return hit
+        }
+        let byName = instances.filter { $0.name == key }
+        return byName.count == 1 ? byName[0] : nil
+    }
 }
 #endif
+
