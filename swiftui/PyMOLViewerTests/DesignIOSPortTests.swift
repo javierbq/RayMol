@@ -442,59 +442,51 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertEqual(designCalls, 1, "macOS default provider must let the design run")
     }
 
-    // Region-edit OFF: a plain tap pins for inspection, exactly as before.
-    func testTapPinsWhenRegionEditModeIsOff() {
+    // One tap pins for inspection; the region stays empty so the propensity pills
+    // still show. This is the single-residue behaviour the change preserves.
+    func testSingleTapPinsAndDoesNotBuildARegion() {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        XCTAssertFalse(c.regionEditMode)
 
         c.tapResidue(residueIndex: 1)
 
         XCTAssertEqual(c.pinnedResidueIndex, 1)
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
-                      "pinning must not build a region")
+                      "one residue must not enter region mode")
     }
 
-    // Region-edit ON: the same tap toggles region membership and does not pin.
-    func testTapTogglesRegionWhenRegionEditModeIsOn() {
+    // A second tap on a different residue turns the selection into a region and
+    // drops the pin — no mode toggle involved.
+    func testSecondTapBuildsRegionAndDropsThePin() {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.regionEditMode = true
 
         c.tapResidue(residueIndex: 1)
-        XCTAssertEqual(c.selectedResidueIndices, [1])
-        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
-
         c.tapResidue(residueIndex: 0)
         XCTAssertEqual(c.selectedResidueIndices, [0, 1], "region stays sorted")
-        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
+        XCTAssertNil(c.pinnedResidueIndex)
 
+        // Tapping a member removes it, dropping back to single-residue mode.
         c.tapResidue(residueIndex: 1)
-        XCTAssertEqual(c.selectedResidueIndices, [0], "a second tap removes")
-        XCTAssertNil(c.pinnedResidueIndex, "region editing must not also pin")
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+        XCTAssertEqual(c.pinnedResidueIndex, 0)
     }
 
-    // Non-designable positions cannot enter a region, however they are tapped.
-    func testTapIgnoresInvalidResiduesInRegionEditMode() {
+    // Non-designable positions can never be pinned or enter a region, however
+    // many times they are tapped.
+    func testTapIgnoresNonDesignableResidues() {
         let c = makeController()
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, false, true])
-        c.regionEditMode = true
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: [true, false, true])
 
         c.tapResidue(residueIndex: 1)
+        XCTAssertNil(c.pinnedResidueIndex,
+                     "a residue with no backbone is not designable")
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
 
-        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
-                      "an invalid residue must never join the region")
-    }
-
-    // Leaving Design mode must not strand the toggle on for the next session.
-    func testExitClearsRegionEditMode() {
-        let c = makeController()
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.regionEditMode = true
-
-        c.exit()
-
-        XCTAssertFalse(c.regionEditMode)
+        // A designable residue alongside it still works normally.
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(c.pinnedResidueIndex, 2)
     }
 
     // MARK: – Task 8: MPNNRuntime configuration
@@ -561,20 +553,18 @@ final class DesignIOSPortTests: XCTestCase {
                       "pinning via handleViewportHit must not build a region")
     }
 
-    // Same-object tap in region-edit mode → toggleRegionResidue via tapResidue.
-    // This is the improvement over the previous macOS behaviour: the old onChange
-    // block called setPinned directly, bypassing region-edit mode.
-    func testHandleViewportHitInRegionEditModeTogglesRegion() {
+    // Two viewport hits on the focus object accumulate into a region, so the
+    // viewport and the sequence strip agree without any mode switch.
+    func testHandleViewportHitAccumulatesRegionOnFocusObject() {
         let c = makeController()
-        c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.regionEditMode = true
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
 
-        c.handleViewportHit(object: "obj1", chain: "A", resi: "2", hasResidue: true)
+        c.handleViewportHit(object: "m1", chain: "A", resi: "2", hasResidue: true)
+        XCTAssertEqual(c.pinnedResidueIndex, 1)
 
-        XCTAssertEqual(c.selectedResidueIndices, [1],
-                       "in region-edit mode, tapping a residue on the focus object must toggle its region membership")
-        XCTAssertNil(c.pinnedResidueIndex,
-                     "region editing via handleViewportHit must not also pin")
+        c.handleViewportHit(object: "m1", chain: "A", resi: "3", hasResidue: true)
+        XCTAssertEqual(c.selectedResidueIndices, [1, 2])
+        XCTAssertNil(c.pinnedResidueIndex)
     }
 
     // An empty object name means the tap landed on empty space — must be a no-op.

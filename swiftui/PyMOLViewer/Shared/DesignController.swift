@@ -260,12 +260,6 @@ final class DesignController: ObservableObject {
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
 
-    /// True while the user is building an ad-hoc region by tapping positions.
-    /// Replaces shift-click, which does not exist on touch (and whose SwiftUI
-    /// modifier is unavailable on iOS). Ships on macOS too — the explicit toggle
-    /// is the discoverable path; shift-click remains as a power-user shortcut.
-    @Published var regionEditMode = false
-
     /// Label for the blocking "Calculating…" overlay while a long design inference
     /// runs (nil = not busy). Covers exactly two edit-triggered heavy ops — a region
     /// redesign and a manual repack. The redesign clears `isRedesigning` BEFORE the
@@ -906,12 +900,6 @@ final class DesignController: ObservableObject {
         syncFromSele()
     }
 
-    /// Historical name for `tapResidue`, kept because call sites and tests read
-    /// naturally with it. Both go through 'sele', so they are now the same action.
-    func toggleRegionResidue(residueIndex i: Int) {
-        tapResidue(residueIndex: i)
-    }
-
     /// Clear the region by emptying 'sele' → back to nothing selected.
     func clearSelection() {
         pickedSelectionName = nil
@@ -943,7 +931,6 @@ final class DesignController: ObservableObject {
         availableSelections = []
         pendingSizeWarning = nil
         suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
-        regionEditMode = false
         designToken += 1   // cancel any in-flight region design
         designMirror.set(designToken)
     }
