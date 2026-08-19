@@ -416,7 +416,7 @@ final class DesignIOSPortTests: XCTestCase {
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
                        },
-                       selectedIndices: { _, _, _, _ in [0] })
+                       selectedIndices: { _, _, _, _ in [0, 1] })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
