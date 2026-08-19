@@ -709,12 +709,16 @@ class TestBulkPrefetchSkipsWhatCannotRun(HostEnvTestCase):
                         or 'protenix-base-mlx-int8' in self.started)
 
     def testBulkFetchTakesItOnceTheRuntimeIsThere(self):
+        """Both asserted as "fetched OR already cached" -- a machine that has run a fold,
+        or a prior bulk prefetch, has the pack, so asserting a download tests local state
+        rather than the filter."""
         self.declareHost('boltz,protenix')
         out = cmd.predict_weights(download=1, async_=1)
         self.assertTrue(out['protenix-base-int8']['cached']
                         or 'protenix-base-mlx-int8' in self.started)
-        # And the other packs, which no fold has cached, are genuinely fetched.
-        self.assertIn('protenix-v2-mlx-int8', self.started)
+        # And the other packs, no longer filtered out, are reached as well.
+        self.assertTrue(out['protenix-v2-int8']['cached']
+                        or 'protenix-v2-mlx-int8' in self.started)
 
     def testItIsStillReportedEvenWhenNotFetched(self):
         """Skipping the download must not hide the predictor from the report."""
