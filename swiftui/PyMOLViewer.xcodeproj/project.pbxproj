@@ -564,7 +564,6 @@
 				1C6F80E717BFF4DB64E10103 /* iOS: Prepare Python binary modules */,
 				AAD907DBCD08F79F40554C45 /* iOS: Bundle PyMOL modules + data */,
 				CD8CDE496B92B386AFFAF903 /* macOS: Bundle Python + modules + data */,
-				9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */,
 				B650AF53FA2F4FEAA543F840 /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
 				8BEF1B8DF38196521747DA4E /* Bundle MPNN.mpnnpack */,
 			);
@@ -600,7 +599,6 @@
 				88BA34A4D715F3339CB65D98 /* iOS: Prepare Python binary modules */,
 				888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */,
 				D4BACCBE2A1F237569400BDF /* macOS: Bundle Python + modules + data */,
-				BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */,
 				383CF53EC37C88EB8111EAAB /* macOS: Bundle Homebrew dylibs into Frameworks (@rpath) */,
 				A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */,
 			);
@@ -1005,25 +1003,6 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
 		};
-		9E6C77C7CD459CB2DA2480FE /* macOS: Build + bundle pymol.metallib */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Build + bundle pymol.metallib";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\n/usr/bin/python3 \"$SRCROOT/../scripts/compile_metal_shaders.py\" --sdk macosx --output \"/tmp/pymol_macos.metallib\" || true\n[ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib \"$RES/pymol.metallib\" || echo \"metallib skipped (runtime-compile fallback)\"\n";
-		};
 		A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1100,25 +1079,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\" \\\n    --sign-identity \"$EXPANDED_CODE_SIGN_IDENTITY\" --hardened\nelse\n  /usr/bin/python3 \"$SRCROOT/../scripts/bundle_macos_dylibs.py\" \\\n    \"$CODESIGNING_FOLDER_PATH\"\nfi\n";
-		};
-		BF132E66AE9FA9391D373A58 /* macOS: Build + bundle pymol.metallib */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "macOS: Build + bundle pymol.metallib";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "case \"$PLATFORM_NAME\" in macosx*) ;; *) exit 0 ;; esac\nset -e\nRES=\"$CODESIGNING_FOLDER_PATH/Contents/Resources\"\n/usr/bin/python3 \"$SRCROOT/../scripts/compile_metal_shaders.py\" --sdk macosx --output \"/tmp/pymol_macos.metallib\" || true\n[ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib \"$RES/pymol.metallib\" || echo \"metallib skipped (runtime-compile fallback)\"\n";
 		};
 		CD8CDE496B92B386AFFAF903 /* macOS: Bundle Python + modules + data */ = {
 			isa = PBXShellScriptBuildPhase;

@@ -58,7 +58,13 @@ RUNTIME = 'protenix'
 #:
 #:                60 res   250 res   400 res   550 res   700 res   900 res
 #:     base          547      2279      3868      6303      8622     16513
-#:     v2            -- (509 MiB at 15 residues; its 256-wide pair track costs more)
+#:     v2            738      2777      5914      9068        --        --
+#:
+#: v2 is now swept too, and the gap is what the shape of the two networks predicts: its
+#: pair track is 256 wide against base's 128, and it costs 35% more at 60 residues and
+#: 53% more at 400. Sizing a v2 fold from base's row would have been optimistic at every
+#: single length -- which is why the row existed as a placeholder until it could be run,
+#: rather than being interpolated from the row above it.
 #:
 #: Variants converge as the input grows: the now-unshipped tiny and mini measured 3494 and
 #: 3625 MiB at 400 residues against base's 3868, within 10% of each other, because the
@@ -68,11 +74,14 @@ RUNTIME = 'protenix'
 MEASURED_PEAK_MIB = {
     'base': ((60, 547), (120, 942), (250, 2279), (400, 3868), (550, 6303), (700, 8622),
              (900, 16513)),
-    # v2 is swept only at the short end so far. Its pair track is 256 wide against every
-    # other variant's 128, so the N^2 term is doubled and base's curve UNDERSTATES it --
-    # which is the direction that gets a session jetsam-killed. Until it is swept
-    # properly, V2_MAX_RESIDUES caps it well inside what has been run.
-    'v2': ((15, 509),),
+    # Swept with scripts/protenix_memory_sweep.py, at the same lengths as base so the two
+    # rows are comparable point for point. The run's control -- the same harness against
+    # base at 60 and 120 -- reproduced base's committed numbers to within 3.5%, which is
+    # what licenses reading this row alongside that one; a v2 row from a harness that
+    # cannot reproduce base would be evidence about the harness.
+    #
+    # The single (15, 509) point this replaces was never wrong, only lonely.
+    'v2': ((60, 738), (120, 1649), (250, 2777), (400, 5914), (550, 9068)),
 }
 
 #: Hard ceiling, in residues, across every variant except v2.
@@ -97,10 +106,77 @@ MEASURED_PEAK_MIB = {
 #: unsaved session are a bad combination.
 MAX_RESIDUES = 700
 
-#: v2's own ceiling, lower because its memory is only measured at the short end and its
-#: pair representation is twice as wide. Not a judgement about the model -- it scores
-#: highest of the four on a short probe -- but about what has been measured.
-V2_MAX_RESIDUES = 250
+#: v2's own ceiling: the largest length it has actually been RUN at, the same rule
+#: MAX_RESIDUES follows.
+#:
+#: It was 250, and 250 was never a measurement -- v2 had been swept at one point, 15
+#: residues, and 250 was picked to sit well inside what had been run because base's curve
+#: understates v2 rather than overstating it. The sweep exists now (#316,
+#: scripts/protenix_memory_sweep.py), so this is data again: 550 residues peaks at 9068 MiB
+#: and takes 497 s on an M1 Max / 32 GiB.
+#:
+#: **700 was attempted and abandoned, which is why this is not 700.** It is the same
+#: wall base hit at 900 and for the same reason: 550 finishes in 8 minutes, and 700 was
+#: still running past 20 with the machine 15 GB into swap -- superlinear in exactly the
+#: way a fold looks when it stops being compute-bound and starts paging. Its peak is
+#: therefore unknown, and an unknown peak is not a ceiling. Whoever wants 700 can measure
+#: it: leave the machine to it, and this constant follows the number.
+#:
+#: Still its own constant rather than merged into MAX_RESIDUES, because v2 costs 44%
+#: more memory than base at the same length -- the two ceilings are independent, and the
+#: next one to move will move for one variant and not the other.
+V2_MAX_RESIDUES = 550
+
+#: Why a variant's ceiling sits where it does, when that ceiling is NOT itself one of the
+#: points in MEASURED_PEAK_MIB. Keyed by variant; a variant absent from here has a cap the
+#: sweep actually reached, and `_limit_rationale` reads the reason off the table instead
+#: of out of prose. Data rather than an if-branch so that the day v2 is swept properly,
+#: deleting its entry is the whole change.
+#:
+#: Empty, and that is the goal state rather than an oversight: every variant offered here
+#: is now capped at a length it has been run at. It stays because the branch it feeds
+#: does -- a variant added without a sweep, or a ceiling set above one, has to say so
+#: rather than borrow the word "measured" from a neighbour.
+_UNMEASURED_CAP_REASON = {}
+
+
+def _limit_rationale(variant, limit):
+    """Why THIS variant refuses at THIS length, in its own measured numbers.
+
+    The refusal this feeds used to quote base's 700 residues / 8.6 GB / confidence 26 no
+    matter which pack raised it, which told a v2 user three facts about a pack they were
+    not running and implied v2's 250 was a memory measurement. It is not one: v2 has been
+    swept at a single point, 15 residues. A refusal that misreports its own evidence is
+    worse than a terse one, because the reader's next move -- accept a hard memory wall,
+    or go measure -- is exactly the thing the wrong numbers decide for them.
+
+    Two branches, chosen by the data and not by the variant name: if the cap is at or
+    below the largest length this variant has actually been run at, it IS a measurement,
+    and the peak at that length is quoted. If the cap sits above the sweep, it is a
+    placeholder, and the message says so along with how far the sweep really got.
+    """
+    points = MEASURED_PEAK_MIB.get(variant) or ()
+    if not points:
+        return ("That limit is a conservative placeholder: no memory sweep exists for "
+                "this pack at all, so nothing here is known either to fit or not to.")
+    measured_to, peak_mib = points[-1]
+    if limit <= measured_to:
+        at_cap = [point for point in points if point[0] <= limit][-1]
+        return ("That limit is measured, not intrinsic: peak memory is ~N^2 in tokens, "
+                "and this pack's own sweep reaches %.1f GiB at %d residues. Single-"
+                "sequence confidence is ~26 from 400 residues up, so folding longer is "
+                "rarely worth the wait even where it fits."
+                % (at_cap[1] / 1024.0, at_cap[0]))
+    return ("That limit is a conservative placeholder rather than a measured ceiling: "
+            "this pack has only been swept up to %d residues (%d MiB peak)%s. Guessing "
+            "past measured data is how a fold gets SIGKILLed mid-run instead of cleanly "
+            "refused, so the cap sits well inside what has been run until a real sweep "
+            "raises it -- see MEASURED_PEAK_MIB. %s is measured to %d residues if you "
+            "need the length now."
+            % (measured_to, peak_mib,
+               ', and ' + _UNMEASURED_CAP_REASON[variant]
+               if variant in _UNMEASURED_CAP_REASON else '',
+               DEFAULT_ID, MAX_RESIDUES))
 
 
 class _Pack:
@@ -216,11 +292,12 @@ class ProtenixPredictor(Predictor):
                     % (chain, ', '.join(bad)))
             total += len(seq)
         if total > limit:
+            # The rationale comes from THIS pack's row of MEASURED_PEAK_MIB rather than
+            # from a sentence about base's sweep -- see `_limit_rationale`.
             raise PredictionInputError(
-                '%d residues exceeds %s\'s %d-residue limit. That limit is measured, '
-                'not intrinsic: peak memory is ~N^2 in tokens and reaches 8.6 GB at 700 '
-                'residues, where the model\'s own confidence is 26 anyway.'
-                % (total, self.id, limit))
+                '%d residues exceeds %s\'s %d-residue limit. %s'
+                % (total, self.id, limit,
+                   _limit_rationale(self.pack.variant if self.pack else None, limit)))
         return PredictionSpec(chains, name)
 
     def submit(self, spec, options, weights_path):
@@ -280,3 +357,11 @@ PREDICTORS = tuple(_build(pack) for pack in _PACKS)
 #: The one to reach for. Named so `predict_weights` and documentation have something to
 #: point at without hardcoding a string in three places.
 DEFAULT_ID = 'protenix-base-int8'
+
+#: Shorthand -> real id. `protenix` is not itself a registered id -- see _SUFFIX above
+#: for why no id may be a prefix of another -- but it is a convenient thing to type at
+#: a prompt, so registry.get() resolves it without registry.available() ever offering
+#: it. Points at v2, not DEFAULT_ID: base is still the thoroughly-measured, non-mirror
+#: choice for a script that wants that explicitly, but the bare shorthand is worth
+#: keeping pointed at whichever pack should get a plain `predict protenix, ...` today.
+ALIASES = {'protenix': 'protenix-v2-int8'}

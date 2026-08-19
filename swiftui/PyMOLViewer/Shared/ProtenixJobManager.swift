@@ -73,7 +73,12 @@ final class ProtenixJobManager {
     /// Refuse before allocating anything, on what the request alone says.
     static func preflight(_ request: BoltzJobManager.Request) -> BoltzJobManager.Status? {
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
-        switch ProtenixSizeGuard.decide(tokens: tokens,
+        // The variant, not just the length: v2 costs ~35% more than base at 60 residues
+        // and ~22% more at 250, so sizing it against base's curve is optimistic, which
+        // is the direction that ends in a jetsam kill (#316). Derived from the weights
+        // directory because that is the only thing in the request that names the pack.
+        let variant = ProtenixSizeGuard.Variant(weightsDirectory: request.weightsDir)
+        switch ProtenixSizeGuard.decide(tokens: tokens, variant: variant,
                                         availableBytes: PredictSizeGuard.availableBytes) {
         case .refuse(let maxFitting):
             return BoltzJobManager.refusal(

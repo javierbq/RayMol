@@ -515,14 +515,6 @@ targets:
                 -o runtime --timestamp=none "$f" || true
             done
           fi
-      - name: "macOS: Build + bundle pymol.metallib"
-        basedOnDependencyAnalysis: false
-        script: |
-          case "$PLATFORM_NAME" in macosx*) ;; *) exit 0 ;; esac
-          set -e
-          RES="$CODESIGNING_FOLDER_PATH/Contents/Resources"
-          /usr/bin/python3 "$SRCROOT/../scripts/compile_metal_shaders.py" --sdk macosx --output "/tmp/pymol_macos.metallib" || true
-          [ -f /tmp/pymol_macos.metallib ] && cp /tmp/pymol_macos.metallib "$RES/pymol.metallib" || echo "metallib skipped (runtime-compile fallback)"
       # macOS portability: freetype/libpng are linked out of Homebrew (-lfreetype
       # -lpng16 from /opt/homebrew/lib in PyMOLBridge.xcconfig), so the linker
       # bakes /opt/homebrew/.../libfreetype.6.dylib into the binary as a hard load

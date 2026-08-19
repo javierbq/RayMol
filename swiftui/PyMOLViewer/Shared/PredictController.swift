@@ -213,11 +213,20 @@ final class PredictController: ObservableObject {
             return
         }
         // Size guard (per predictor). A warn stops for confirmation; a refusal is fatal.
-        let decision = predictor.hasPrefix("protenix")
-            ? ProtenixSizeGuard.decide(tokens: tokenCount,
-                                       availableBytes: availableBytesProvider())
-            : PredictSizeGuard.decide(tokens: tokenCount, msaDepth: effectiveMSADepth,
-                                      availableBytes: availableBytesProvider())
+        // Protenix sizes per VARIANT (#316): base and v2 have different pair-tensor
+        // widths and caps. Map the id → variant the same way ProtenixSizeGuard does —
+        // explicitly base only for a "protenix-base*" pack, else the expensive v2
+        // (which also covers the "protenix" alias for protenix-v2-int8).
+        let decision: PredictSizeGuard.Decision
+        if predictor.hasPrefix("protenix") {
+            let variant: ProtenixSizeGuard.Variant =
+                predictor.contains("protenix-base") ? .base : .v2
+            decision = ProtenixSizeGuard.decide(tokens: tokenCount, variant: variant,
+                                                availableBytes: availableBytesProvider())
+        } else {
+            decision = PredictSizeGuard.decide(tokens: tokenCount, msaDepth: effectiveMSADepth,
+                                               availableBytes: availableBytesProvider())
+        }
         switch decision {
         case .ok:
             proceed()

@@ -1365,14 +1365,93 @@ static void CGO_gl_draw_labels(CCGORenderer* I, CGO_op_data pc)
   pickvbo->unbind();
 }
 
+// Metal path for label connectors (background box, background outline and the
+// connector line). The GL path below relies on connector.gs to amplify one
+// vertex per connector into all of that geometry; Metal has no geometry
+// shaders, so hand the un-expanded per-connector records to
+// Renderer::drawConnectors, which does the amplification in its vertex shader.
+static void drawConnectorsViaMetal(
+    CCGORenderer* I, const cgo::draw::connectors* sp)
+{
+  auto* G = I->G;
+  if (I->isPicking)
+    return; // connectors are not pickable (the GL path returns here too)
+
+  auto* vbo = G->ShaderMgr->getGPUBuffer<VertexBufferGL>(sp->vboid);
+  if (!vbo || !vbo->hasCPUData())
+    return;
+
+  pymol::Renderer::ConnectorDrawCall call;
+  call.data = vbo->cpuData();
+  call.dataSize = vbo->cpuDataSize();
+  call.stride = vbo->cpuStride();
+  call.connectorCount = sp->nconnectors;
+
+  for (const auto& d : vbo->getDesc().descs) {
+    int off = static_cast<int>(d.offset);
+    if (d.attr_name == "a_target_pt3d")
+      call.targetOff = off;
+    else if (d.attr_name == "a_center_pt3d")
+      call.centerOff = off;
+    else if (d.attr_name == "a_indentFactor")
+      call.indentOff = off;
+    else if (d.attr_name == "a_screenWorldOffset")
+      call.screenWorldOff = off;
+    else if (d.attr_name == "a_textSize")
+      call.textSizeOff = off;
+    else if (d.attr_name == "a_Color")
+      call.colorOff = off;
+    else if (d.attr_name == "a_relative_mode")
+      call.relModeOff = off;
+    else if (d.attr_name == "a_draw_flags")
+      call.drawFlagsOff = off;
+    else if (d.attr_name == "a_bkgrd_color")
+      call.bgColorOff = off;
+    else if (d.attr_name == "a_rel_ext_length")
+      call.relExtLenOff = off;
+    else if (d.attr_name == "a_con_width")
+      call.conWidthOff = off;
+  }
+
+  auto extent = SceneGetExtentStereo(G);
+  call.screenW = extent.width;
+  call.screenH = extent.height;
+  call.screenOriginVertexScale = SceneGetScreenVertexScale(G, nullptr) / 2.f;
+  float front = SceneGetCurrentFrontSafe(G);
+  float back = SceneGetCurrentBackSafe(G);
+  call.front = front;
+  call.clipRange = back - front;
+  call.lineSmooth = SettingGetGlobal_b(G, cSetting_line_smooth) ? 1 : 0;
+
+  // Mirrors the "textureToLabelSize" uniform of the GL connector shader.
+  CSetting *s1 = nullptr, *s2 = nullptr;
+  if (I->rep && I->rep->cs)
+    s1 = I->rep->cs->Setting.get();
+  if (I->rep && I->rep->obj)
+    s2 = I->rep->obj->Setting.get();
+  float label_size = SettingGet_f(G, s1, s2, cSetting_label_size);
+  if (label_size < 0.f && I->info) {
+    float v_scale = SceneGetScreenVertexScale(G, nullptr);
+    call.textureToLabelSize =
+        v_scale * static_cast<float>(I->info->texture_font_size) / label_size;
+  } else {
+    call.textureToLabelSize = 1.f;
+  }
+
+  G->Renderer->drawConnectors(call);
+}
+
 static void CGO_gl_draw_connectors(CCGORenderer* I, CGO_op_data pc)
 {
-  if (I->G->Renderer)
+  const cgo::draw::connectors* sp = reinterpret_cast<decltype(sp)>(*pc);
+
+  if (I->G->Renderer) {
+    drawConnectorsViaMetal(I, sp);
     return;
+  }
+
   int use_geometry_shaders =
       SettingGetGlobal_b(I->G, cSetting_use_geometry_shaders);
-
-  const cgo::draw::connectors* sp = reinterpret_cast<decltype(sp)>(*pc);
 
   GLenum mode = GL_LINES;
   int factor = 2;

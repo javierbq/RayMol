@@ -33,6 +33,7 @@ Z* -------------------------------------------------------------------
 #include "FileStream.h"
 #include "Matrix.h"
 #include "Parse.h"
+#include "Renderer.h"
 
 #ifndef _PYMOL_NO_AA_SHADERS
 #endif
@@ -1662,8 +1663,17 @@ void CShaderMgr::freeAllGPUBuffers() {
   for (auto hashid : _gpu_objects_to_free_vector) {
     auto search = _gpu_object_map.find(hashid);
     if (search != _gpu_object_map.end()) {
-      if (search->second)
+      if (search->second) {
+        // Non-GL renderers cache their GPU upload keyed on the address of this
+        // buffer's CPU copy. Drop that entry before the address is freed —
+        // the replacement buffer for a rebuilt rep very often lands on the
+        // same block, and would otherwise be drawn with the old contents.
+        if (G->Renderer) {
+          if (const void* cpu = search->second->cpuDataPtr())
+            G->Renderer->invalidateVBOCacheEntry(cpu);
+        }
         delete search->second;
+      }
       _gpu_object_map.erase(search);
     }
   }
