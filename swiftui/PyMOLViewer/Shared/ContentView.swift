@@ -428,7 +428,15 @@ struct ContentView: View {
             #if !RAYMOL_MAS_RESTRICTED
             MCPDrivingBanner()
             #endif
-            HSplitView {
+            // Left | right as a plain HStack, NOT an HSplitView. The right column is
+            // a FIXED 340pt (see below), so that split view's divider could never be
+            // dragged — all it contributed was a system divider whose mouse-tracking
+            // band SWALLOWED clicks on the inspector tongue sitting on the seam (#325;
+            // bisected in the VM: x=679 dead, x=690 live). A 1pt themed hairline draws
+            // the same seam, lets the tongue straddle it, and is exactly what the iPad
+            // landscape layout does. The VSplitView inside — which IS draggable and
+            // carries the console/sequence sizing — stays.
+            HStack(spacing: 0) {
             // Left column: the pane rail pinned on TOP, then terminal, sequence and
             // the 3D viewport stacked in a VSplitView so each stays drag-resizable.
             // The desktop keeps its splitters — #325 converged only the SHOW/HIDE
@@ -440,7 +448,7 @@ struct ContentView: View {
                 // macViewportStack. tools:false because the Mac keeps its own Tools
                 // pill cluster in the toolbar (#323).
                 if macAnyTopPane {
-                    topPaneRail(floating: false, tools: false).background(themeChromeBg)
+                    topPaneRail(floating: false).background(themeChromeBg)
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
             VSplitView {
@@ -485,6 +493,7 @@ struct ContentView: View {
                 }
             }
             } // end left-column VStack
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
@@ -503,21 +512,21 @@ struct ContentView: View {
             // reachable regardless.
             if showThemeStudio {
                 // Theme studio takes over the right column; viewport stays live.
+                Rectangle().fill(hairlineColor).frame(width: 1)
                 ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                     .environmentObject(engine)
                     .environmentObject(themeManager)
                     .frame(width: 340)
             } else if showObjectPanel {
+                // The seam the tongue centres on. Drawn by us now that the HSplitView
+                // divider is gone — same hairline the iPad layout uses.
+                Rectangle().fill(hairlineColor).frame(width: 1)
                 inspectorSwitcher()
                     .frame(width: 340)   // compact; the Movie-tab transport is shrunk (TransportBar kT* consts) to fit rather than widening the column
                     .overlay(alignment: .leading) {
-                        // NOT seam:true here (unlike iPad): NSSplitView claims a few
-                        // points of mouse tracking either side of its divider, and a
-                        // seam-centred pill lands inside that band — it draws, but the
-                        // divider eats the click (verified in the VM: x=679 dead,
-                        // x=690 live). Inset it so the whole pill sits on the panel.
-                        panelTongue(shown: objectsBinding, axis: .vertical)
-                            .padding(.leading, 6)
+                        // seam:true shifts the pill left by half its width so it is
+                        // centred ON the hairline rather than sitting beside it.
+                        panelTongue(shown: objectsBinding, axis: .vertical, seam: true)
                     }
             }
         }
@@ -539,14 +548,12 @@ struct ContentView: View {
         .toolbar {
             // Leading — Open only.
             macOpenToolbar
-            // Trailing — the interaction tools as one Tools menu (Move · Measure ·
-            // Design, mutually exclusive; #304), then actions and status. (Those
-            // three were separate toggle buttons until the trailing cluster ran out
-            // of room. The Timeline/movie toggle was removed — it lives on the Movie
-            // menu / ⌥⌘M. Theme moved into the Display segment, mirroring iOS
-            // Settings → Themes. The Console / Sequence / Inspector toggles left in
-            // #325 — they are the rail + tongue now, as on iPhone/iPad.)
-            macToolsMenu
+            // Trailing — actions and status only. Everything that toggles a pane or
+            // a mode now lives on the pane rail (#325): Console · Seq · Tools is one
+            // pill cluster there, and the Inspector is an edge tongue, exactly as on
+            // iPhone/iPad. (The Timeline/movie toggle was removed earlier — it lives
+            // on the Movie menu / ⌥⌘M. Theme is in the Display segment, mirroring
+            // iOS Settings → Themes.)
             exportMenu
             #if !RAYMOL_MAS_RESTRICTED
             ToolbarItem(placement: .primaryAction) {
@@ -672,7 +679,7 @@ struct ContentView: View {
                 // already-long modifier chain stays inside the type-checker's limit.
                 .overlay(alignment: .top) {
                     if !macAnyTopPane {
-                        topPaneRail(floating: true, tools: false).padding(.top, 8)
+                        topPaneRail(floating: true).padding(.top, 8)
                     }
                 }
             // The docked bottom transport was removed: movie playback lives
@@ -2236,8 +2243,7 @@ struct ContentView: View {
     // over the full-bleed viewport; when a panel is open the caller docks the rail on
     // matching panel chrome and passes floating:false (bare pills, no capsule).
     @ViewBuilder
-    private func topPaneRail(floating: Bool = true, centered: Bool = true,
-                             tools: Bool = true) -> some View {
+    private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
@@ -2248,12 +2254,10 @@ struct ContentView: View {
             // toggles — the same consolidation as the Mac toolbar's macToolsMenu,
             // and it buys back rail width that iPhone landscape was already short
             // of (labels drop out there). The per-item inference lock lives in
-            // interactionToolItems.
-            //
-            // macOS passes tools:false — the Mac keeps the SAME consolidation as its
-            // own toolbar pill cluster (macToolsMenu, #323), so the rail must not
-            // duplicate it. There the rail is Console · Seq only.
-            if tools { railToolsMenu }
+            // interactionToolItems. macOS shows it here too: #325 moved the Mac's
+            // Tools control off the toolbar and into this group, so Console · Seq ·
+            // Tools is now ONE pill cluster on both platforms.
+            railToolsMenu
         }
         .padding(.horizontal, floating ? 8 : 0)
         .padding(.vertical, floating ? 5 : 6)
@@ -2353,6 +2357,9 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // Inherited from the retired macOS toolbar pill: on the Mac this is a real
+        // tooltip naming the tools this build has. No-op on iOS.
+        .help(toolsMenuHelp)
         .accessibilityLabel(active.map { "Tools, \($0.name) mode on" } ?? "Tools")
     }
 
@@ -3146,73 +3153,11 @@ struct ContentView: View {
         return "\(active.name) mode is active — Tools: \(tools)"
     }
 
-    // The three exclusive interaction modes as ONE toolbar menu (#304). They are
-    // mutually exclusive — setInteractionMode / setMeasureMode / setDesignMode each
-    // clear the other two — so a radio-style menu models them better than three
-    // independent toggles, and it frees the two toolbar slots the trailing cluster
-    // had run out of. Marks the active mode with a `checkmark` Label, matching
-    // SelectionModeMenu (ObjectPanel). Sits where the Design button used to:
-    // .primaryAction (trailing).
-    //
-    // Declared UNCONDITIONALLY — only the Design ITEM is #if RAYMOL_MPNN. Wrapping
-    // the whole menu would take Move and Measure out of non-MPNN builds too.
-    //
-    // ⌃M (Move) and ⌃D (Design) still toggle these directly; they live on the
-    // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
-    private var macToolsMenu: some ToolbarContent {
-        // OWN ToolbarItemGroup so macOS renders the Tools control as its own pill
-        // cluster, cleanly separated from its neighbours — no manual Divider (which
-        // got absorbed into a neighbouring pill) and no regrouping as the selection
-        // changes.
-        ToolbarItemGroup(placement: .primaryAction) {
-            if let active = activeInteractionTool {
-                // Active: an ACCENT pill. primaryAction (body click) turns the mode off;
-                // the disclosure chevron still opens the tool list, so you can switch
-                // Move→Measure etc. without leaving the toolbar.
-                Menu {
-                    interactionToolItems
-                } label: {
-                    toolsPill(icon: active.macIcon, text: active.name, active: true)
-                } primaryAction: {
-                    engine.exitActiveInteractionMode()
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .help("\(active.name) is on — click to turn it off, or use the menu to switch tools")
-            } else {
-                // Idle: the SAME pill shape, a neutral fill; the click opens the tool list.
-                Menu {
-                    interactionToolItems
-                } label: {
-                    toolsPill(icon: "wrench.and.screwdriver", text: "Tools", active: false)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .help(toolsMenuHelp)
-            }
-        }
-    }
-
-    // One pill, one shape, both toolbar states — only the fill and label change, so
-    // the control never regroups or resizes as a tool turns on. Colour is a Shape FILL
-    // drawn as button CONTENT (the toolbar strips .background/.tint off a Menu label,
-    // but renders a Capsule().fill inside a plain-styled button — cf. MCPStatusView).
-    @ViewBuilder
-    private func toolsPill(icon: String, text: String, active: Bool) -> some View {
-        ZStack {
-            Capsule().fill(active
-                ? themeManager.active.accent.color
-                : Color.primary.opacity(0.08))
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                Text(text)
-            }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(active ? Color.white : Color.primary)
-            .padding(.horizontal, 10).padding(.vertical, 3)
-        }
-        .fixedSize()
-    }
+    // (Removed: macToolsMenu + toolsPill — the toolbar's Tools cluster from #304/#323.
+    // #325 moved Tools into the pane rail so Console · Seq · Tools read as one button
+    // group on macOS just as they do on iPhone/iPad; railToolsMenu is the single
+    // implementation now, and it inherited this control's toolsMenuHelp tooltip.
+    // ⌃M / ⌃D still toggle Move / Design from the Mouse and Design menus.)
 
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
     // docked transport — there is no toolbar button for it (removed: its icon read
