@@ -120,6 +120,11 @@ same injection.
 
 ## Cold launch and trust
 
+Only `tools/call` cold-launches. `initialize`, `tools/list` and `ping` are
+answered locally when no instance is live, so merely opening a Claude client
+never opens RayMol — it only stops showing an error. Launching is a
+consequence of asking RayMol to do something.
+
 Triggered by a tool call that resolves to zero instances:
 
 1. The broker sets `raymol.mcp.enabled = true` in its own `UserDefaults`. The
