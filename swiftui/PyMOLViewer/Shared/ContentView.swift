@@ -3019,26 +3019,42 @@ struct ContentView: View {
     // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
     private var macToolsMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            Menu {
-                interactionToolItems
-            } label: {
-                // Idle: a neutral "Tools" wrench. Active: that mode's own glyph — the
-                // toolbar's whole "a mode is on" signal.
-                //
-                // Deliberately NOT tinted. The macOS toolbar draws a Menu's glyph as a
-                // template in its own colour and swallows every attempt to recolour it
-                // — .foregroundColor on the Label, .symbolRenderingMode(.palette) +
-                // .foregroundStyle on the Image, and .tint on the Menu were each built
-                // and checked against macOS 26 in a VM, and all three stayed grey.
-                // NOTE the buttons this replaced carried exactly that dead
-                // .foregroundColor, so no tint was ever actually visible here. The
-                // glyph swap is real, and each mode also raises its own on-canvas bar
-                // (measureOverlay / designModeBar / the Move gizmo), which reads far
-                // louder than a toolbar tint would.
-                Label(activeInteractionTool?.name ?? "Tools",
-                      systemImage: activeInteractionTool?.macIcon ?? "wrench.and.screwdriver")
+            if let active = activeInteractionTool {
+                // A mode is ON. The button now reads as active AND acts as a toggle:
+                //   • ACCENT-FILLED label — the macOS toolbar refuses to recolour a plain
+                //     Menu's template glyph AND ignores button-style tints (.foregroundColor,
+                //     .palette+.foregroundStyle, .tint, and .buttonStyle(.borderedProminent)
+                //     all stayed grey when checked in a VM). What the toolbar DOES render is a
+                //     view's OWN .background fill — cf. MCPStatusView's status dot — so we paint
+                //     an accent capsule around a custom label ourselves.
+                //   • a PRIMARY click exits the active mode (primaryAction), matching how a
+                //     lone toggle button turns itself off.
+                //   • the tool list stays reachable on the disclosure chevron, so switching
+                //     Move→Measure etc. still works without leaving the toolbar.
+                Menu {
+                    interactionToolItems
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: active.macIcon)
+                        Text(active.name)
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(themeManager.active.accent.color, in: Capsule())
+                } primaryAction: {
+                    engine.exitActiveInteractionMode()
+                }
+                .help("\(active.name) is on — click to turn it off, or use the menu to switch tools")
+            } else {
+                // Idle: a neutral "Tools" wrench; a click opens the tool list.
+                Menu {
+                    interactionToolItems
+                } label: {
+                    Label("Tools", systemImage: "wrench.and.screwdriver")
+                }
+                .help(toolsMenuHelp)
             }
-            .help(toolsMenuHelp)
         }
     }
 
