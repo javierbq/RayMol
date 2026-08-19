@@ -20,7 +20,8 @@ residue can be active at a time. Multi-residue selection *does* exist
 
 - the "Select region…" lasso dropdown (named selections), or
 - flipping the modal **"Tap to edit region"** toggle (`regionEditMode`, the
-  `hand.tap` button) so that taps call `toggleRegionResidue` instead of pinning.
+  `hand.tap` button) so that taps call `toggleRegionResidue` instead of pinning, or
+- on macOS only, shift-clicking a column of the sequence strip.
 
 So the same physical gesture means "replace the single selection" in one mode and
 "add to the selection" in the other, and the multi-select path is behind a mode
@@ -50,7 +51,8 @@ output of design mode rather than its input.
   click and discard every intermediate result.)
 - Single-residue redesign through the region path. One residue keeps the
   propensity-pill route, which already expresses "mutate this position".
-- Removing the `regionEditMode` toggle (see Decision D6).
+- Reworking the design overlay's layout, coloring modes, repack, or compare paths.
+  This change is confined to how a selection is made and how the mode is derived.
 
 ## Behavior specification
 
@@ -175,9 +177,11 @@ identity). Passing `selection='sele'` is sufficient; no new mapping logic.
 
 **`ContentView.swift`** (macOS design bar) and **`DesignCompactPanel.swift`** (iOS)
 
-- Sequence-strip clicks route through the same toggle path; shift-click remains as
-  a harmless alias for the same action.
-- The `regionEditMode` button stays but no longer changes behavior (D6).
+- Sequence-strip clicks route through the same toggle path as viewport clicks; the
+  macOS-only shift-click gesture is deleted (D8), removing the strip's last
+  `#if os(macOS)` branch.
+- The region-edit toggle is deleted from both the macOS design bar
+  (`regionEditToggle`) and the iOS compact panel (`regionEditButton`) (D6).
 
 ## Refresh: noticing external `sele` changes
 
@@ -217,11 +221,20 @@ O(selected residues), which is normally a handful.
   residue shows transient sticks. Showing sticks for every region member would
   explode on a large region, and the global "show sidechains" toggle already
   covers that intent.
-- **D6 — `regionEditMode` is kept but inert.** Its branch in `tapResidue` is
-  removed; the button and the published flag remain so existing call sites and
-  accessibility labels keep working. *Known cost:* a control that changes nothing
-  usually reads as a bug. Removing it (button + flag + tests) or repurposing it as
-  a "lock region" affordance are both small follow-ups.
+- **D6 — `regionEditMode` is removed entirely.** The count of `sele` now decides
+  single-vs-region, so the modal toggle has no job left, and a control that changes
+  nothing reads as a bug. Deleted: the `@Published var regionEditMode`, its branch
+  in `tapResidue`, its reset in `clearRegionState`, `regionEditToggle` in
+  `ContentView.swift`, and `regionEditButton` in `DesignCompactPanel.swift`. No
+  XCUITest depends on its `"Tap to edit region"` accessibility label (only
+  historical plan docs mention it, which stay untouched).
+- **D8 — The macOS shift-click shortcut is removed too.** Once a plain tap toggles
+  region membership, `TapGesture().modifiers(.shift)` calling
+  `toggleRegionResidue` is an exact duplicate of the plain tap. Its own comment
+  documents the hazard: if SwiftUI ever delivered both, the position would be
+  "toggled twice — added then removed — a silent no-op". Deleting it also removes
+  the last `#if os(macOS)` divergence in the sequence strip, which is valuable given
+  this file's history of platform-only symbols leaking across targets.
 
 ## Testing
 
@@ -263,10 +276,14 @@ behavior this change removes, and will fail until updated:
 - `testTapIgnoresInvalidResiduesInRegionEditMode` — same premise; keep the
   invalid-residue assertion but drop the `regionEditMode` framing.
 
-This is the concrete cost of D6: the only tests that prove the toggle does anything
-are the ones the change invalidates. `testTapPinsWhenRegionEditModeIsOff` and the
-stick-ownership tests at `DesignIOSPortTests:1032` / `DesignEditingTests:363`
-survive unchanged (verified against the new semantics).
+Because D6 deletes `regionEditMode`, both of these stop compiling rather than
+merely failing, so they are rewritten (not deleted) to assert the count-driven rule
+— the multi-residue coverage they provide is exactly what this change needs.
+`testTapPinsWhenRegionEditModeIsOff` loses its `regionEditMode` assertion but keeps
+its body. `testHandleViewportHitRegionEditMode` (`DesignIOSPortTests:564`) likewise
+becomes a plain multi-tap test. The stick-ownership tests at
+`DesignIOSPortTests:1032` and `DesignEditingTests:363` survive unchanged (verified
+against the new semantics).
 
 **Manual / functional**
 
