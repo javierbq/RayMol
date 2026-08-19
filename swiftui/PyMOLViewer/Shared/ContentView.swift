@@ -458,16 +458,7 @@ struct ContentView: View {
                 // The viewport takes the remaining (majority of) space, with the
                 // Timeline transport docked beneath it whenever there's more than
                 // one frame to play (states / trajectory / movie).
-                VStack(spacing: 0) {
-                    macViewport
-                    // The docked bottom transport was removed: movie playback lives
-                    // in the Movie tab, model stepping in the Object panel. Only the
-                    // full timeline editor still docks here (when expanded).
-                    if engine.timelineMode {
-                        Divider()
-                        TimelinePanel()
-                    }
-                }
+                macViewportStack
                 // Drag a .pdb/.cif/.pse/etc. onto the viewport to load it (same
                 // path as File ▸ Open / Finder "Open With"). Highlight while hovered.
                 .onDrop(of: [.fileURL], isTargeted: $isViewportDropTargeted) { providers in
@@ -613,6 +604,33 @@ struct ContentView: View {
                     selectionModeKeyMonitor = nil
                 }
             }
+    }
+
+    // PredictBar docked in the macOS viewport column. Declared here (inside the
+    // first #if os(macOS) block) so macViewportStack can reference it without a
+    // second #if guard — same scoping pattern as mouseLegendCard / macViewport.
+    @ViewBuilder private var predictBar: some View {
+        PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
+    }
+
+    // The viewport column in the macOS HSplitView: PredictBar (when active) + the
+    // 3D Metal view + the Timeline dock. Extracted so macOSLayoutBase's body stays
+    // within the type-checker's size limit — same pattern as macViewport itself.
+    @ViewBuilder private var macViewportStack: some View {
+        VStack(spacing: 0) {
+            if engine.predictMode {
+                predictBar
+                Divider()
+            }
+            macViewport
+            // The docked bottom transport was removed: movie playback lives
+            // in the Movie tab, model stepping in the Object panel. Only the
+            // full timeline editor still docks here (when expanded).
+            if engine.timelineMode {
+                Divider()
+                TimelinePanel()
+            }
+        }
     }
 
     // Shared by all three local key-down monitors below: a modal, sheet,
@@ -2952,6 +2970,9 @@ struct ContentView: View {
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
+        #if os(macOS)
+        if engine.predictMode { return ("Predict", "atom", "atom") }
+        #endif
         return nil
     }
 
@@ -3003,15 +3024,27 @@ struct ContentView: View {
             .disabled(isDesignLocked)
         }
         #endif
+        #if os(macOS)
+        Button {
+            engine.setPredictMode(!engine.predictMode)
+        } label: {
+            if engine.predictMode {
+                Label("Predict", systemImage: "checkmark")
+            } else {
+                Text("Predict")
+            }
+        }
+        .disabled(isDesignLocked)
+        #endif
     }
 
     /// Tooltip for the Tools menu. Names only the tools this build actually has —
     /// Design is absent from non-MPNN builds, so it must not be advertised there.
     private var toolsMenuHelp: String {
         #if RAYMOL_MPNN
-        let tools = "Move objects · Measure distances · Design with MPNN"
+        let tools = "Move objects · Measure distances · Design with MPNN · Predict structures"
         #else
-        let tools = "Move objects · Measure distances"
+        let tools = "Move objects · Measure distances · Predict structures"
         #endif
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }
         return "\(active.name) mode is active — Tools: \(tools)"
@@ -3031,28 +3064,58 @@ struct ContentView: View {
     // ⌃M (Move) and ⌃D (Design) still toggle these directly; they live on the
     // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
     private var macToolsMenu: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                interactionToolItems
-            } label: {
-                // Idle: a neutral "Tools" wrench. Active: that mode's own glyph — the
-                // toolbar's whole "a mode is on" signal.
-                //
-                // Deliberately NOT tinted. The macOS toolbar draws a Menu's glyph as a
-                // template in its own colour and swallows every attempt to recolour it
-                // — .foregroundColor on the Label, .symbolRenderingMode(.palette) +
-                // .foregroundStyle on the Image, and .tint on the Menu were each built
-                // and checked against macOS 26 in a VM, and all three stayed grey.
-                // NOTE the buttons this replaced carried exactly that dead
-                // .foregroundColor, so no tint was ever actually visible here. The
-                // glyph swap is real, and each mode also raises its own on-canvas bar
-                // (measureOverlay / designModeBar / the Move gizmo), which reads far
-                // louder than a toolbar tint would.
-                Label(activeInteractionTool?.name ?? "Tools",
-                      systemImage: activeInteractionTool?.macIcon ?? "wrench.and.screwdriver")
+        // OWN ToolbarItemGroup so macOS renders the Tools control as its own pill
+        // cluster, cleanly separated from the panelToggles group — no manual Divider
+        // (which got absorbed into a neighbouring pill) and no regrouping with the
+        // Console button as the selection changes.
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let active = activeInteractionTool {
+                // Active: an ACCENT pill. primaryAction (body click) turns the mode off;
+                // the disclosure chevron still opens the tool list, so you can switch
+                // Move→Measure etc. without leaving the toolbar.
+                Menu {
+                    interactionToolItems
+                } label: {
+                    toolsPill(icon: active.macIcon, text: active.name, active: true)
+                } primaryAction: {
+                    engine.exitActiveInteractionMode()
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help("\(active.name) is on — click to turn it off, or use the menu to switch tools")
+            } else {
+                // Idle: the SAME pill shape, a neutral fill; the click opens the tool list.
+                Menu {
+                    interactionToolItems
+                } label: {
+                    toolsPill(icon: "wrench.and.screwdriver", text: "Tools", active: false)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help(toolsMenuHelp)
             }
-            .help(toolsMenuHelp)
         }
+    }
+
+    // One pill, one shape, both toolbar states — only the fill and label change, so
+    // the control never regroups or resizes as a tool turns on. Colour is a Shape FILL
+    // drawn as button CONTENT (the toolbar strips .background/.tint off a Menu label,
+    // but renders a Capsule().fill inside a plain-styled button — cf. MCPStatusView).
+    @ViewBuilder
+    private func toolsPill(icon: String, text: String, active: Bool) -> some View {
+        ZStack {
+            Capsule().fill(active
+                ? themeManager.active.accent.color
+                : Color.primary.opacity(0.08))
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                Text(text)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(active ? Color.white : Color.primary)
+            .padding(.horizontal, 10).padding(.vertical, 3)
+        }
+        .fixedSize()
     }
 
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
