@@ -181,7 +181,6 @@ set(CORE_SOURCES
     ${LAYER5_SOURCES}
     ${GENERATED_SOURCES}
     ${VMD_SOURCES}
-    ${PYMOL_ROOT}/layer0/MetalShaderMgr.mm
     ${PYMOL_ROOT}/layerGraphics/metal/RendererMetal.mm
 )
 
@@ -410,11 +409,5 @@ if(NOT PYMOL_IOS AND NOT PYMOL_METAL_ONLY)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${PYMOL_ROOT}/modules
             $<TARGET_BUNDLE_DIR:PyMOL>/Contents/Resources/modules
-    )
-
-    add_custom_command(TARGET PyMOL POST_BUILD
-        COMMAND ${HOST_PYTHON} ${PYMOL_ROOT}/scripts/compile_metal_shaders.py
-            --output $<TARGET_BUNDLE_DIR:PyMOL>/Contents/Resources/pymol.metallib
-        COMMENT "Compiling Metal shaders into pymol.metallib"
     )
 endif()
