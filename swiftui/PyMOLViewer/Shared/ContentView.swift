@@ -429,9 +429,20 @@ struct ContentView: View {
             MCPDrivingBanner()
             #endif
             HSplitView {
-            // Left column: terminal on TOP, sequence directly under it, then the
-            // 3D viewport, stacked in a VSplitView so each is drag-resizable and
-            // each is hideable via the toolbar toggles.
+            // Left column: the pane rail pinned on TOP, then terminal, sequence and
+            // the 3D viewport stacked in a VSplitView so each stays drag-resizable.
+            // The desktop keeps its splitters — #325 converged only the SHOW/HIDE
+            // affordance onto the iOS rail + tongue, not the layout engine, so the
+            // toolbar's three panel toggles are gone.
+            VStack(spacing: 0) {
+                // Docked band above the split whenever a top pane (or a mode bar) is
+                // up; otherwise the rail floats over the viewport — see
+                // macViewportStack. tools:false because the Mac keeps its own Tools
+                // pill cluster in the toolbar (#323).
+                if macAnyTopPane {
+                    topPaneRail(floating: false, tools: false).background(themeChromeBg)
+                    Rectangle().fill(hairlineColor).frame(height: 1)
+                }
             VSplitView {
                 if showCommandPanel {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted)
@@ -473,6 +484,17 @@ struct ContentView: View {
                     }
                 }
             }
+            } // end left-column VStack
+            // Inspector CLOSED → its tongue rides the left column's trailing edge, so
+            // there is still something to grab once the toolbar toggle is gone. Open →
+            // the tongue moves onto the inspector's own leading edge (below). Hidden
+            // while Theme Studio owns the right column: that panel has its own close
+            // button. Mirrors the iPad landscape layout.
+            .overlay(alignment: .trailing) {
+                if !showThemeStudio && !showObjectPanel {
+                    panelTongue(shown: objectsBinding, axis: .vertical)
+                }
+            }
 
             // Right column: objects + (chat). Only exists (and only occupies its
             // 300pt width) when at least one of its panels is shown — when both are
@@ -488,6 +510,15 @@ struct ContentView: View {
             } else if showObjectPanel {
                 inspectorSwitcher()
                     .frame(width: 340)   // compact; the Movie-tab transport is shrunk (TransportBar kT* consts) to fit rather than widening the column
+                    .overlay(alignment: .leading) {
+                        // NOT seam:true here (unlike iPad): NSSplitView claims a few
+                        // points of mouse tracking either side of its divider, and a
+                        // seam-centred pill lands inside that band — it draws, but the
+                        // divider eats the click (verified in the VM: x=679 dead,
+                        // x=690 live). Inset it so the whole pill sits on the panel.
+                        panelTongue(shown: objectsBinding, axis: .vertical)
+                            .padding(.leading, 6)
+                    }
             }
         }
         } // end VStack
@@ -509,13 +540,13 @@ struct ContentView: View {
             // Leading — Open only.
             macOpenToolbar
             // Trailing — the interaction tools as one Tools menu (Move · Measure ·
-            // Design, mutually exclusive; #304), then view toggles, actions, and
-            // status. (Those three were separate toggle buttons until the trailing
-            // cluster ran out of room. The Timeline/movie toggle was removed — it
-            // lives on the Movie menu / ⌥⌘M. Theme moved into the Display segment,
-            // mirroring iOS Settings → Themes.)
+            // Design, mutually exclusive; #304), then actions and status. (Those
+            // three were separate toggle buttons until the trailing cluster ran out
+            // of room. The Timeline/movie toggle was removed — it lives on the Movie
+            // menu / ⌥⌘M. Theme moved into the Display segment, mirroring iOS
+            // Settings → Themes. The Console / Sequence / Inspector toggles left in
+            // #325 — they are the rail + tongue now, as on iPhone/iPad.)
             macToolsMenu
-            panelToggles
             exportMenu
             #if !RAYMOL_MAS_RESTRICTED
             ToolbarItem(placement: .primaryAction) {
@@ -613,6 +644,18 @@ struct ContentView: View {
         PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
     }
 
+    // Is anything docked at the top of the left column? Mirrors the iOS layouts'
+    // `anyTop`: the rail sits on a chrome band above the panes when one is open and
+    // floats over the viewport otherwise. Move / Measure / Design are included even
+    // though their macOS bars float over the viewport rather than docking — with the
+    // rail floating too they would land on the same spot. Predict is NOT: PredictBar
+    // docks inside macViewportStack, ABOVE the rail's overlay.
+    private var macAnyTopPane: Bool {
+        showCommandPanel || engine.sequenceVisible
+            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode
+    }
+
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
     // 3D Metal view + the Timeline dock. Extracted so macOSLayoutBase's body stays
     // within the type-checker's size limit — same pattern as macViewport itself.
@@ -623,6 +666,15 @@ struct ContentView: View {
                 Divider()
             }
             macViewport
+                // Nothing docked → the rail floats on its frosted capsule over the
+                // viewport, exactly as on iPad. Attached HERE rather than inside
+                // macViewport so it lands below PredictBar, and so macViewport's
+                // already-long modifier chain stays inside the type-checker's limit.
+                .overlay(alignment: .top) {
+                    if !macAnyTopPane {
+                        topPaneRail(floating: true, tools: false).padding(.top, 8)
+                    }
+                }
             // The docked bottom transport was removed: movie playback lives
             // in the Movie tab, model stepping in the Object panel. Only the
             // full timeline editor still docks here (when expanded).
@@ -1103,6 +1155,36 @@ struct ContentView: View {
         #endif
     }
 
+    // iPhone landscape == compact width + compact height (iPad is regular height in
+    // both orientations; iPhone portrait is compact width + regular height).
+    // Declared outside the #if os(iOS) block because the SHARED pane rail
+    // (topPaneRail / railTongue) reads it to drop pill labels on the narrow phone
+    // rail. macOS has no size classes, so it is unconditionally false there.
+    private var isPhoneLandscape: Bool {
+        #if os(iOS)
+        return hSize == .compact && vSize == .compact
+        #else
+        return false
+        #endif
+    }
+    // Effective pane bindings: iPhone landscape uses its own minimal-default state;
+    // everywhere else (iPad, macOS) the shared show* bools. Also outside
+    // #if os(iOS) — since #325 the macOS layout drives the same rail and tongue.
+    private var consoleBinding: Binding<Bool> {
+        #if os(iOS)
+        return isPhoneLandscape ? $landConsole : $showCommandPanel
+        #else
+        return $showCommandPanel
+        #endif
+    }
+    private var objectsBinding: Binding<Bool> {
+        #if os(iOS)
+        return isPhoneLandscape ? $landObjects : $showObjectPanel
+        #else
+        return $showObjectPanel
+        #endif
+    }
+
     #if os(iOS)
     // Default to the Objects tab: a touch user tunes representations far more
     // than they type commands, and it avoids greeting them with console log text.
@@ -1221,17 +1303,10 @@ struct ContentView: View {
         #endif
     }
 
-    // iPhone landscape == compact width + compact height (iPad is regular height in
-    // both orientations; iPhone portrait is compact width + regular height).
-    private var isPhoneLandscape: Bool { hSize == .compact && vSize == .compact }
     // iPad in portrait (regular width + portrait interface orientation). The
     // expanded timeline dock is landscape-only, so its Expand button + the nav-bar
     // clapperboard toggle are disabled here and the dock auto-closes on rotation.
     private var isPadPortrait: Bool { hSize != .compact && interfacePortrait }
-    // Effective pane bindings: iPhone landscape uses its own minimal-default state;
-    // everywhere else (iPad) uses the shared show* bools.
-    private var consoleBinding: Binding<Bool> { isPhoneLandscape ? $landConsole : $showCommandPanel }
-    private var objectsBinding: Binding<Bool> { isPhoneLandscape ? $landObjects : $showObjectPanel }
 
     // iPad (regular size class) mac-style layout state. The left column stacks the
     // terminal (CommandPanel) on top, the sequence (SequencePanel) under it, then
@@ -2058,7 +2133,16 @@ struct ContentView: View {
         return CGFloat(rows) * 30 + 28
     }
 
-    // Horizontal drag handle under the terminal that resizes its height. Dragging
+    #endif  // ── end of the iOS-only layouts ─────────────────────────────────────
+
+    // MARK: - Shared pane chrome: theme colors + the rail / tongue affordances
+    //
+    // Everything from here to the next `#if os(iOS)` is SHARED. It was iOS-only
+    // until #325 converged the macOS panel controls onto the same rail + tongue —
+    // the Console / Sequence / Inspector toolbar toggles are gone, and
+    // `macOSLayoutBase` now drives these directly. `designModeBar` and
+    // `termResizeDivider` are still iOS-only and keep their own guards below.
+
     // Themed chrome surfaces (so panels/dividers follow the active theme rather
     // than a hardcoded dark gray — e.g. on the Paper/light theme).
     private var themeChromeBg: Color { themeManager.active.panelBackground.color }
@@ -2073,7 +2157,8 @@ struct ContentView: View {
     // panel. Horizontal (a wide little tab) when the panel docks at the bottom;
     // vertical when it docks on the trailing side. Tapping toggles `shown`; the
     // chevron points the way the panel will move. Stays visible when collapsed so
-    // the panel can be pulled back. iPad (regular-width) layout only.
+    // the panel can be pulled back. Used by the iPad layouts and, since #325, by the
+    // macOS inspector — there WITHOUT seam:true (see that call site).
     @ViewBuilder
     private func panelTongue(shown: Binding<Bool>, axis: Axis, seam: Bool = false) -> some View {
         let isShown = shown.wrappedValue
@@ -2116,6 +2201,7 @@ struct ContentView: View {
                             y: seam && axis == .horizontal ? -9 : 0)
     }
 
+    #if os(iOS)
     // Design-mode docked bar for the iOS layouts. Resolves to EmptyView when the
     // feature is compiled out, so the mode chain in all four layouts can reference
     // it unconditionally. iPhone (compact width) gets the same overlay panel as
@@ -2136,20 +2222,22 @@ struct ContentView: View {
         EmptyView()
         #endif
     }
+    #endif
 
     // The twin-tongue "seam rail" welded to the viewport's TOP edge (iPad). Mirrors
     // the bottom inspector tongue: two labeled pills in FIXED slots — Console (left)
     // + Sequence (right) — each toggling its own pane. Shown = accent fill + chevron
     // up (retract the pane up); hidden = muted outline + chevron down (drop it down).
     // Always drawn, so it's the permanent seam between the top pane-stack and the 3D
-    // view — the top mirror of the bottom inspector tongue. iPad layout only.
+    // view — the top mirror of the bottom inspector tongue. iPad + macOS (#325).
     //
-    // The pinned toggle rail: Console · Seq · Move · Measure · Design. `floating`
+    // The pinned toggle rail: Console · Seq · Tools. `floating`
     // (nothing open) wraps the pills in a tight blur capsule that hugs them and floats
     // over the full-bleed viewport; when a panel is open the caller docks the rail on
     // matching panel chrome and passes floating:false (bare pills, no capsule).
     @ViewBuilder
-    private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
+    private func topPaneRail(floating: Bool = true, centered: Bool = true,
+                             tools: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
@@ -2161,7 +2249,11 @@ struct ContentView: View {
             // and it buys back rail width that iPhone landscape was already short
             // of (labels drop out there). The per-item inference lock lives in
             // interactionToolItems.
-            railToolsMenu
+            //
+            // macOS passes tools:false — the Mac keeps the SAME consolidation as its
+            // own toolbar pill cluster (macToolsMenu, #323), so the rail must not
+            // duplicate it. There the rail is Console · Seq only.
+            if tools { railToolsMenu }
         }
         .padding(.horizontal, floating ? 8 : 0)
         .padding(.vertical, floating ? 5 : 6)
@@ -2169,11 +2261,19 @@ struct ContentView: View {
         // floating → tight frosted capsule hugging the buttons; docked → bare pills
         // on the caller's chrome band. `centered` false left-aligns the row (iPhone
         // landscape, where the floating tool pills occupy the top-right).
+        //
+        // NOTE the `.allowsHitTesting(false)` on the rim: it is pure decoration, but
+        // as a plain overlay it covers the whole capsule and on macOS it SWALLOWS the
+        // clicks meant for the pills underneath — they draw, they report AXPress, and
+        // nothing happens (bisected in the VM, #325; the docked rail, which has no
+        // rim, was always fine). iOS tolerated it, so the iPad rail never showed the
+        // bug. Decorative overlays here must stay out of the hit path.
         let styled = Group {
             if floating {
                 pillRow
                     .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.12))
+                        .allowsHitTesting(false))
             } else {
                 pillRow
             }
@@ -2220,6 +2320,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("rail-\(label.lowercased())")
         .accessibilityLabel("\(label) pane, \(on ? "shown" : "hidden")")
     }
 
@@ -2258,6 +2359,9 @@ struct ContentView: View {
     // (Removed: railToggle. Its only callers were the Move / Measure / Design pills,
     // now folded into railToolsMenu — see #304.)
 
+    #if os(iOS)  // ── back to the iOS-only layouts ────────────────────────────────
+
+    // Horizontal drag handle under the terminal that resizes its height. Dragging
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
     @ViewBuilder
     private func termResizeDivider(maxTerm: CGFloat) -> some View {
@@ -2748,14 +2852,6 @@ struct ContentView: View {
     }
     #endif
 
-    // SF Symbols has no glyph for "sequence", and `textformat.abc` drew the word
-    // "Abc" — it read as a text-formatting control, not the sequence viewer. The
-    // macOS toolbar toggle therefore letters its own icon: the word "Seq". Declared
-    // outside the iOS #if so the shared toolbar can use it.
-    private var seqGlyph: some View {
-        Text("Seq").font(.system(size: 11, weight: .semibold))
-    }
-
     // The expanded-timeline dock's Expand button is disabled only in iPad portrait
     // (a landscape-only, iOS concept); always enabled on macOS. Declared outside the
     // iOS #if so the shared inspectorSwitcher can read it on both platforms.
@@ -3056,7 +3152,7 @@ struct ContentView: View {
     // independent toggles, and it frees the two toolbar slots the trailing cluster
     // had run out of. Marks the active mode with a `checkmark` Label, matching
     // SelectionModeMenu (ObjectPanel). Sits where the Design button used to:
-    // .primaryAction (trailing), immediately before panelToggles.
+    // .primaryAction (trailing).
     //
     // Declared UNCONDITIONALLY — only the Design ITEM is #if RAYMOL_MPNN. Wrapping
     // the whole menu would take Move and Measure out of non-MPNN builds too.
@@ -3065,9 +3161,9 @@ struct ContentView: View {
     // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
     private var macToolsMenu: some ToolbarContent {
         // OWN ToolbarItemGroup so macOS renders the Tools control as its own pill
-        // cluster, cleanly separated from the panelToggles group — no manual Divider
-        // (which got absorbed into a neighbouring pill) and no regrouping with the
-        // Console button as the selection changes.
+        // cluster, cleanly separated from its neighbours — no manual Divider (which
+        // got absorbed into a neighbouring pill) and no regrouping as the selection
+        // changes.
         ToolbarItemGroup(placement: .primaryAction) {
             if let active = activeInteractionTool {
                 // Active: an ACCENT pill. primaryAction (body click) turns the mode off;
@@ -3122,32 +3218,12 @@ struct ContentView: View {
     // docked transport — there is no toolbar button for it (removed: its icon read
     // as an empty slot in the trailing cluster).
 
-    // The three desktop panes as one consistent toggle group. NOTE the right panel
-    // toggle is "Inspector" (sidebar icon), NOT "Objects" — Objects is now a SEGMENT
-    // inside the inspector switcher, so the toolbar must not duplicate it.
-    private var panelToggles: some ToolbarContent {
-        // Explicit .primaryAction keeps these in the trailing cluster next to the
-        // other primaryAction items (Timeline, Export, MCP status) so SwiftUI does
-        // not insert a phantom empty slot at the default/primaryAction boundary.
-        // Fallback if the phantom slot persists: wrap all four trailing items
-        // (panelToggles + exportMenu + MCP status) in one ToolbarItemGroup(placement: .primaryAction).
-        ToolbarItemGroup(placement: .primaryAction) {
-            Toggle(isOn: $showCommandPanel) {
-                Label("Console", systemImage: "terminal")
-            }
-            Toggle(isOn: $engine.sequenceVisible) {
-                Label {
-                    Text("Sequence")
-                } icon: {
-                    seqGlyph
-                }
-            }
-            .accessibilityLabel("Sequence")
-            Toggle(isOn: $showObjectPanel) {
-                Label("Inspector", systemImage: "sidebar.right")
-            }
-        }
-    }
+    // (Removed: panelToggles — the Console / Sequence / Inspector toolbar toggles,
+    // and seqGlyph, the lettered "Seq" icon that existed only for the middle one.
+    // #325 converged all three onto the iOS affordances: Console + Seq are rail
+    // pills (topPaneRail), the Inspector is an edge tongue (panelTongue). The rail
+    // is always on screen — floating over the viewport when every pane is closed —
+    // so nothing became unreachable.)
 
     // MARK: - Export menu (macOS)
 
