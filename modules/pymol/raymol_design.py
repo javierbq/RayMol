@@ -1,6 +1,7 @@
 """RayMol Design-mode core helpers: residue enumeration, coloring, and
 exact visual-state save/restore. Mirrors the appkit_sequence bundled-module
 pattern (writes JSON to TMPDIR, returns a short marker)."""
+import hashlib
 import json
 import os
 import tempfile
@@ -175,6 +176,94 @@ def selected_design_indices(obj, selection, state, src=''):
     except Exception:
         pass
     return 'DESIGN_SELECTED:%d' % len(indices)
+
+
+# Design mode active? The selection digest below is O(selected residues) and is
+# called from appkit_inspector.poll_panel, which runs on the MAIN thread every
+# 500 ms and is a measured hot spot (PR #270). Gating on this flag keeps the cost
+# at a single boolean check whenever Design mode is not on. A list rather than a
+# bare module global so the setter never needs `global`.
+_DESIGN_ACTIVE = [False]
+
+
+def set_design_active(on):
+    """Arm or disarm the Design-mode 'sele' digest computed by poll_panel."""
+    _DESIGN_ACTIVE[0] = bool(on) if isinstance(on, bool) else bool(int(on))
+    return 'DESIGN_ACTIVE:%d' % (1 if _DESIGN_ACTIVE[0] else 0)
+
+
+def _sele_residue_keys():
+    """Sorted (model, chain, resi) of every guide residue in the active 'sele'.
+
+    '?sele' rather than 'sele' so a session that has never had a selection yields
+    [] instead of raising. Guide atoms only, so the key set is one entry per
+    residue regardless of how many of its atoms the user picked.
+    """
+    keys = []
+    try:
+        cmd.iterate('(?sele) and polymer and guide',
+                    'keys.append((model, chain, resi))', space={'keys': keys})
+    except Exception:
+        return []
+    return sorted(keys)
+
+
+def _digest_of(keys):
+    """Stable short fingerprint of a residue-key list."""
+    return '%d:%s' % (len(keys),
+                      hashlib.md5(repr(keys).encode('utf-8')).hexdigest()[:16])
+
+
+def sele_digest():
+    """Fingerprint of the active 'sele' residue set, or '' when Design is off.
+
+    Used purely for change detection: the Swift side re-derives its selection
+    state only when this value differs from the last one it saw.
+    """
+    if not _DESIGN_ACTIVE[0]:
+        return ''
+    return _digest_of(_sele_residue_keys())
+
+
+def sele_design_indices(obj, state, src=''):
+    """Map the active 'sele' -> full-length residue indices in obj's guide order.
+
+    The Design-mode counterpart of selected_design_indices, hard-wired to 'sele'
+    so the viewer's ordinary selection is the single source of truth for what
+    Design mode is working on. Scoped through _scope(obj, src) so a selection made
+    on the ORIGINAL object still maps onto a focused working copy by (chain, resi)
+    identity once an edit session has begun.
+
+    Output: $TMPDIR/raymol_design_sele.json =
+        {'indices': [int], 'digest': str, 'n_total': int}
+      indices  - 'sele' within the scope, as 0-based indices into obj's guide order
+      digest   - fingerprint of the WHOLE 'sele' residue set (all objects)
+      n_total  - residue count of 'sele' across ALL objects, so a caller can tell
+                 "nothing selected" from "selected, but on another structure"
+
+    `state` is accepted for signature symmetry with selected_design_indices and is
+    likewise unused: guide order is read from the current state.
+    Returns 'DESIGN_SELE:<n>'.
+    """
+    order = _obj_residue_order(obj)
+    scope = _scope(obj, src)
+    sel_res = set()
+    try:
+        cmd.iterate('%s and (?sele) and polymer and guide' % scope,
+                    'sel_res.add((chain, resi))', space={'sel_res': sel_res})
+    except Exception:
+        pass
+    indices = [i for i, cr in enumerate(order) if cr in sel_res]
+    keys = _sele_residue_keys()
+    payload = {'indices': indices,
+               'digest': _digest_of(keys),
+               'n_total': len(keys)}
+    try:
+        with open(_tmp('raymol_design_sele.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELE:%d' % len(indices)
 
 
 def _record_design_metrics(obj, metric, rows, state=0):
