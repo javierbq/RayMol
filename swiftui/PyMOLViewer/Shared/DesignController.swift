@@ -759,6 +759,15 @@ final class DesignController: ObservableObject {
         editSourceObject = nil
         clearRegionState()
         compareEnabled = false   // bare assignment — do NOT call setCompare(false)
+        // Re-derive: `clearRegionState()` above wipes the region, but 'sele' was
+        // never touched by the teardown, so without this the derived state and
+        // 'sele' silently disagree — pink markers on 2+ residues while the Redesign
+        // button and palette row are gone. The panel poll cannot repair it: it is
+        // digest-gated, and an unchanged 'sele' yields an identical digest, so the
+        // re-derive is skipped and the wrong state persists until the user happens
+        // to click a residue. Runs last, after `focusObject` has been re-pointed at
+        // the source object, so the sync resolves against the right residue set.
+        syncFromSele()
     }
 
     // MARK: – Engine-free 'sele' fallbacks

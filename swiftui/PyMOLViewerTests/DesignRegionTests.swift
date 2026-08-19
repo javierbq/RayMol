@@ -170,18 +170,21 @@ final class DesignRegionTests: XCTestCase {
     func testScatterWithInvalidGap() async {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, _, _, _ in [9, 8] },   // valid-projected result (L=2)
-                       selectedIndices: { _, _, _, _ in [2] })      // full idx 2 → valid-projected 1
+                       selectedIndices: { _, _, _, _ in [0, 2] })   // full idx 0,2 → valid-projected 0,1
         c.setFocusForTest("m1", nativeSequence: [5, 6, 7], validFlags: [true, false, true])
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
-        XCTAssertEqual(c.editedSequence, [5, 6, 8])         // only full idx 2 changed → result[1]==8
+        // Both designed values must land on the correct side of the invalid gap:
+        // full 0 ← result[0]==9, full 2 ← result[1]==8, and full 1 (no backbone)
+        // is skipped entirely and keeps its native identity.
+        XCTAssertEqual(c.editedSequence, [9, 6, 8])
     }
 
     func testNativeSequenceReflectsPriorEdits() async {
         var capturedNative: [Int]?
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, native, _, _ in capturedNative = native; return native },
-                       selectedIndices: { _, _, _, _ in [2] })
+                       selectedIndices: { _, _, _, _ in [2, 3] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: allValid(4))
         await c.applyMutationAwait(residueIndex: 0, aa: 7)  // earlier manual edit
         c.pickSelection("reg")
@@ -193,7 +196,7 @@ final class DesignRegionTests: XCTestCase {
         var capturedOmit: [Set<Int>]?
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, native, omit, _ in capturedOmit = omit; return native },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         c.togglePalette(4); c.togglePalette(12)
@@ -207,7 +210,7 @@ final class DesignRegionTests: XCTestCase {
         var capturedTemp: Float?
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, native, _, temp in capturedTemp = temp; return native },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.designTemperature = 0.7
         c.pickSelection("reg")
@@ -221,7 +224,7 @@ final class DesignRegionTests: XCTestCase {
     func testBusyFlagsClearAfterSuccessfulRedesign() async {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.injectRepack(repack: { _, _ in "REPACKED" }, loadRepacked: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
@@ -239,7 +242,7 @@ final class DesignRegionTests: XCTestCase {
         var flagDuringRepack: Bool?
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.injectRepack(repack: { _, _ in "PDB" },
                        loadRepacked: { [weak c] _, _ in flagDuringRepack = c?.isRedesigning })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
@@ -256,7 +259,7 @@ final class DesignRegionTests: XCTestCase {
         struct Boom: Error {}
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, _, _, _ in throw Boom() },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
@@ -267,7 +270,7 @@ final class DesignRegionTests: XCTestCase {
     func testBusyFlagClearsWhenDesignReturnsWrongLength() async {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, _, _, _ in [1, 2, 3, 4, 5, 6, 7] },  // wrong length
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
@@ -279,7 +282,7 @@ final class DesignRegionTests: XCTestCase {
         var called = false
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, _, native, _, _ in called = true; return native },
-                       selectedIndices: { _, _, _, _ in [0] })
+                       selectedIndices: { _, _, _, _ in [0, 1] })
         c.setFocusForTest("m1", nativeSequence: [5, 5], validFlags: allValid(2))
         c.pickSelection("reg")
         for i in 0..<20 where c.paletteAllowed.contains(i) { c.togglePalette(i) }
@@ -307,7 +310,7 @@ final class DesignRegionTests: XCTestCase {
     func testManualEditAfterRedesignClearsRevert() async {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1] })
+                       selectedIndices: { _, _, _, _ in [1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
@@ -558,6 +561,38 @@ final class DesignRegionTests: XCTestCase {
                        "the clicked residue must be selected by the same click (D4)")
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
                       "old-focus residues must not linger in the region")
+    }
+
+    // Ending an edit session must leave the derived state agreeing with 'sele'.
+    // teardownEditSession calls clearRegionState(), which wipes the region, but the
+    // teardown never touches 'sele' — so without a re-derive the UI loses the
+    // Redesign button and palette row while the pink markers still show a
+    // multi-residue selection. The panel poll cannot rescue it: it is digest-gated,
+    // and an unchanged 'sele' produces an identical digest, so the re-derive is
+    // skipped and the wrong state persists until the user happens to click a
+    // residue. Both teardown paths (Keep and Discard) share the code, so both are
+    // exercised here.
+    func testEndingAnEditSessionKeepsTheRegionDerivedFromSele() async {
+        for keep in [true, false] {
+            let c = makeController(); wireEdit(c)
+            c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
+            c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+            c.tapResidue(residueIndex: 0)
+            c.tapResidue(residueIndex: 2)
+            XCTAssertEqual(c.selectedResidueIndices, [0, 2], "pre-condition: region designated")
+
+            await c.applyMutationAwait(residueIndex: 1, aa: 7)   // begins the edit session
+            XCTAssertTrue(c.editing, "pre-condition: an edit session must be open")
+
+            if keep { c.keepEdits() } else { c.discardEdits() }
+
+            let path = keep ? "Keep" : "Discard"
+            XCTAssertFalse(c.editing, "\(path): the session must be closed")
+            XCTAssertEqual(c.selectedResidueIndices, [0, 2],
+                           "\(path): 'sele' still holds both residues, so the region must survive")
+            XCTAssertTrue(c.regionModeActive, "\(path): region mode must survive the teardown")
+            XCTAssertEqual(c.selectedSelectionName, "sele", "\(path): label re-derived")
+        }
     }
 
     // D2: leaving Design mode must NOT wipe the user's ordinary selection.
