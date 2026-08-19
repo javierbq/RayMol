@@ -34,35 +34,118 @@ enum MCPBridge {
 
     static let installedAppPath = "/Applications/RayMol.app"
 
+    /// Which bundle a cold launch opens. `RAYMOL_MCP_INSTALLED_APP` overrides it
+    /// so the e2e harness can drive a suffixed dev build instead of clobbering
+    /// the user's installed RayMol — dev/testing only, like RAYMOL_MCP_PORT, and
+    /// never present in a Finder or `open` launch.
+    static func coldLaunchTarget(override: String?) -> String {
+        guard let o = override, !o.isEmpty else { return installedAppPath }
+        return o
+    }
+
+    static var coldLaunchPath: String {
+        coldLaunchTarget(override: ProcessInfo.processInfo.environment["RAYMOL_MCP_INSTALLED_APP"])
+    }
+
     /// Opening a client must not open RayMol. Launching is a consequence of
     /// asking RayMol to DO something, so only tools/call qualifies.
     static func mayColdLaunch(method: String) -> Bool { method == "tools/call" }
 
-    /// Launch the installed app and wait for it to register. Returns nil on a
-    /// missing bundle or on timeout; the caller turns that into a tool error.
-    static func coldLaunch(timeout: TimeInterval = 20) -> MCPInstance? {
-        let url = URL(fileURLWithPath: installedAppPath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        // The broker IS RayMol's binary, so this writes RayMol's own defaults
-        // domain — the launched app auto-starts its server even on a machine
-        // where MCP has never been switched on.
-        UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
+    enum ColdLaunchOutcome: Equatable {
+        case launched(MCPInstance)
+        /// The bundle is up but never registered — its MCP server is off.
+        case alreadyRunningNotRegistered
+        case notInstalled
+        case launchFailed(String)
+        case timedOut
+    }
 
-        let cfg = NSWorkspace.OpenConfiguration()
-        cfg.activates = true
-        let sem = DispatchSemaphore(value: 0)
-        // Racing brokers are harmless: openApplication on an already-launching
-        // app activates it, so both converge on one instance.
-        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in sem.signal() }
-        _ = sem.wait(timeout: .now() + 10)
+    /// Pure: what to tell the user. Each failure names its OWN cause — collapsing
+    /// them sends the user to a setting that is not the problem.
+    static func coldLaunchMessage(_ outcome: ColdLaunchOutcome, path: String) -> String {
+        switch outcome {
+        case .launched:
+            return ""
+        case .notInstalled:
+            return "RayMol isn't installed at \(path). Install it, then retry."
+        case .alreadyRunningNotRegistered:
+            return "RayMol is already running but its MCP server is off. "
+                + "In RayMol, turn on Connect ▸ Enable AI control, then retry."
+        case .launchFailed(let why):
+            return "Couldn't launch RayMol at \(path): \(why)"
+        case .timedOut:
+            return "RayMol opened but its MCP server didn't start within 20s. "
+                + "In RayMol, turn on Connect ▸ Enable AI control, then retry."
+        }
+    }
+
+    /// Cold launch is the LAST resort. A pre-registry RayMol is invisible to the
+    /// scan but still answers on its legacy handoff, and launching a second copy
+    /// on top of the one the user is working in is worse than any error.
+    static func shouldColdLaunch(legacyReachable: Bool) -> Bool { !legacyReachable }
+
+    /// The environment a cold-launched RayMol starts with.
+    ///
+    /// `RAYMOL_MCP_ENABLE=1` makes it bring its server up without persisting
+    /// `raymol.mcp.enabled` — a cold launch must not silently turn the server on
+    /// for every future manual launch too. `RAYMOL_MCP_PORT` is forwarded only
+    /// when set, so the e2e harness can keep off a port another build owns.
+    static func launchEnvironment(portOverride: String?) -> [String: String] {
+        var env = ["RAYMOL_MCP_ENABLE": "1"]
+        if let p = portOverride, !p.isEmpty { env["RAYMOL_MCP_PORT"] = p }
+        return env
+    }
+
+    /// Is this exact bundle already up? Checked by PATH, not bundle id: every dev
+    /// build shares `io.raymol.RayMol`, so an id check would confuse a worktree
+    /// build for the installed app.
+    static func isRunning(bundlePath: String) -> Bool {
+        let want = URL(fileURLWithPath: bundlePath).standardizedFileURL.path
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleURL?.standardizedFileURL.path == want
+        }
+    }
+
+    /// Launch the target app and wait for it to register.
+    static func coldLaunch(timeout: TimeInterval = 20) -> ColdLaunchOutcome {
+        let path = coldLaunchPath
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else { return .notInstalled }
+
+        // Already up and still unregistered means its server is off, not that it
+        // needs launching. Starting a second copy would just add a window.
+        let wasRunning = isRunning(bundlePath: path)
+        if !wasRunning {
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = true
+            // Every RayMol build shares a bundle id, so without this LaunchServices
+            // "opens" an already-running dev build from another checkout and never
+            // starts the bundle we actually asked for.
+            cfg.createsNewApplicationInstance = true
+            cfg.environment = launchEnvironment(
+                portOverride: ProcessInfo.processInfo.environment["RAYMOL_MCP_PORT"])
+            let sem = DispatchSemaphore(value: 0)
+            var launchError: String? = nil
+            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, err in
+                if let err { launchError = err.localizedDescription }
+                sem.signal()
+            }
+            if sem.wait(timeout: .now() + 15) == .timedOut {
+                return .launchFailed("the launch request timed out")
+            }
+            if let launchError { return .launchFailed(launchError) }
+        }
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let live = MCPInstanceRegistry.liveDirectoryInstances()
-            if let hit = live.first(where: { $0.installed }) ?? live.first { return hit }
+            if let hit = live.first(where: { $0.appPath == path })
+                ?? live.first(where: { $0.installed }) ?? live.first {
+                return .launched(hit)
+            }
             Thread.sleep(forTimeInterval: 0.4)
         }
-        return nil
+        return wasRunning ? .alreadyRunningNotRegistered : .timedOut
     }
 
     /// Resolve which RayMol this call belongs to.
@@ -190,16 +273,18 @@ enum MCPBridge {
                 "text": "No running RayMol named \"\(key)\". Call list_raymol_instances."]],
                 "isError": true])
         case .none where mayColdLaunch(method: method):
-            if let launched = coldLaunch() {
+            // A RayMol that predates the registry answers here and must not be
+            // duplicated by a cold launch.
+            if let legacy = legacyHandoff(), let body = proxy(raw: forward, to: legacy) {
+                return body.isEmpty ? nil : body
+            }
+            let outcome = coldLaunch()
+            if case .launched(let launched) = outcome {
                 setBound(launched)
                 instance = launched
             } else {
-                let exists = FileManager.default.fileExists(atPath: installedAppPath)
                 return ok(id: id, result: ["content": [["type": "text",
-                    "text": exists
-                        ? "RayMol opened but its MCP server didn't start within 20s. "
-                          + "In RayMol, turn on Connect ▸ Enable AI control, then retry."
-                        : "RayMol isn't installed at \(installedAppPath). Install it, then retry."]],
+                    "text": coldLaunchMessage(outcome, path: coldLaunchPath)]],
                     "isError": true])
             }
         default:

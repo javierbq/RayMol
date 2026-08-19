@@ -289,4 +289,62 @@ final class MCPBrokerTests: XCTestCase {
         XCTAssertTrue(args.contains("--"))
         XCTAssertEqual(args.last, "--mcp-bridge")
     }
+
+    // The e2e harness must be able to cold-launch a SUFFIXED dev build instead of
+    // clobbering the user's real /Applications/RayMol.app. Same dev-only escape
+    // hatch as RAYMOL_MCP_PORT, and like it, never set in a Finder/`open` launch.
+    func testColdLaunchTargetHonoursTheDevOverride() {
+        XCTAssertEqual(MCPBridge.coldLaunchTarget(override: nil), "/Applications/RayMol.app")
+        XCTAssertEqual(MCPBridge.coldLaunchTarget(override: ""), "/Applications/RayMol.app")
+        XCTAssertEqual(MCPBridge.coldLaunchTarget(override: "/tmp/RayMol-broker.app"),
+                       "/tmp/RayMol-broker.app")
+    }
+
+    // MARK: - cold launch outcomes
+
+    // Every failure must name its OWN cause. The first cut collapsed a failed
+    // launch into "the MCP server didn't start", which blames the user's toggle
+    // for a LaunchServices problem and sends them to the wrong setting.
+    func testEachColdLaunchFailureExplainsItself() {
+        let notInstalled = MCPBridge.coldLaunchMessage(.notInstalled, path: "/Applications/RayMol.app")
+        XCTAssertTrue(notInstalled.contains("/Applications/RayMol.app"))
+        XCTAssertFalse(notInstalled.contains("Enable AI control"))
+
+        let running = MCPBridge.coldLaunchMessage(.alreadyRunningNotRegistered,
+                                                  path: "/Applications/RayMol.app")
+        XCTAssertTrue(running.contains("Enable AI control"))
+        XCTAssertTrue(running.contains("already running"))
+
+        let failed = MCPBridge.coldLaunchMessage(.launchFailed("kLSNoExecutableErr"),
+                                                 path: "/Applications/RayMol.app")
+        XCTAssertTrue(failed.contains("kLSNoExecutableErr"))
+        XCTAssertFalse(failed.contains("Enable AI control"))
+
+        let timedOut = MCPBridge.coldLaunchMessage(.timedOut, path: "/Applications/RayMol.app")
+        XCTAssertTrue(timedOut.contains("Enable AI control"))
+    }
+
+    // A cold launch must not leave the user's settings changed. Writing
+    // raymol.mcp.enabled=true would silently make EVERY future manual launch
+    // start the MCP server — a preference the user never chose. The launch
+    // environment carries the intent instead, and dies with the process.
+    func testLaunchEnvEnablesTheServerWithoutPersistingAPreference() {
+        let env = MCPBridge.launchEnvironment(portOverride: nil)
+        XCTAssertEqual(env["RAYMOL_MCP_ENABLE"], "1")
+        XCTAssertNil(env["RAYMOL_MCP_PORT"])
+
+        // The harness needs the launched app off the default port when another
+        // build already owns it.
+        let pinned = MCPBridge.launchEnvironment(portOverride: "0")
+        XCTAssertEqual(pinned["RAYMOL_MCP_PORT"], "0")
+    }
+
+    // A RayMol built BEFORE the registry existed never writes an entry, so the
+    // scan sees nothing and the broker would cold-launch a SECOND copy on top of
+    // the one the user is already using. The legacy handoff has to be tried
+    // first — cold launch is the last resort, not the first.
+    func testLegacyHandoffIsTriedBeforeColdLaunching() {
+        XCTAssertFalse(MCPBridge.shouldColdLaunch(legacyReachable: true))
+        XCTAssertTrue(MCPBridge.shouldColdLaunch(legacyReachable: false))
+    }
 }

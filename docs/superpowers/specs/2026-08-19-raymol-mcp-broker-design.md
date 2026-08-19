@@ -127,19 +127,37 @@ consequence of asking RayMol to do something.
 
 Triggered by a tool call that resolves to zero instances:
 
-1. The broker sets `raymol.mcp.enabled = true` in its own `UserDefaults`. The
-   broker process is RayMol's own binary and therefore shares RayMol's defaults
-   domain, so the launched app auto-starts its server even where it has never
-   been enabled. No environment-variable or `open` argument passing is required.
-2. Launch `/Applications/RayMol.app` via `NSWorkspace.openApplication`.
-3. Poll the registry for a fresh entry, ceiling 20 seconds. Engine
+1. **Try the legacy handoff first.** A RayMol built before the registry existed
+   never registers, so the scan reports zero while the user is actively working
+   in it. Launching a second copy on top of that is worse than any error, so
+   cold launch is the last resort, not the first.
+2. If this exact bundle is already running and still unregistered, do NOT
+   launch — its MCP server is simply off. Report that, naming the setting.
+3. Launch via `NSWorkspace.openApplication` with
+   `createsNewApplicationInstance = true`. Every RayMol build shares
+   `CFBundleIdentifier = io.raymol.RayMol`, so without it LaunchServices
+   "opens" an already-running build from another checkout and never starts the
+   requested bundle. The launch error is captured, never discarded.
+4. The launched app is given `RAYMOL_MCP_ENABLE=1` through
+   `OpenConfiguration.environment` rather than having `raymol.mcp.enabled`
+   written to its defaults. Persisting that preference would silently make every
+   future *manual* launch start the MCP server too — a setting the user never
+   chose. The environment carries the intent and dies with the process.
+5. Poll the registry for a fresh entry, ceiling 20 seconds. Engine
    initialization plus Python server start is slow enough that a short timeout
    would flake.
-4. Bind, then forward the original call. The client observes one slow call
+6. Bind, then forward the original call. The client observes one slow call
    rather than an error.
 
-No launch lock is required: `openApplication` on an already-launching app
-activates it, so two brokers racing converge on one instance.
+Each failure names its own cause — not installed, launch failed (with the
+LaunchServices error), already running with the server off, or timed out.
+Collapsing them sends the user to a setting that is not the problem.
+
+No launch lock is required: two brokers racing converge on one instance.
+
+`RAYMOL_MCP_INSTALLED_APP` overrides the launch target. Dev/testing only, like
+`RAYMOL_MCP_PORT`, and it exists so the end-to-end harness can drive a suffixed
+dev build instead of overwriting the user's installed RayMol.
 
 **Trust remains a human gate.** A model-initiated cold launch is not a
 user-initiated connect, so `initialize` raises RayMol's normal Allow prompt, and
@@ -162,6 +180,9 @@ Every failure returns an actionable tool result. The server is never dead.
 | Launch succeeds, no registration within 20 s | `isError` — open Connect ▸ Enable AI control |
 | Two or more instances | Ambiguity listing |
 | RayMol quits mid-session | Sticky binding drops; next call re-resolves and cold-launches |
+| Bundle already running but unregistered | `isError` — its MCP server is off, naming Connect ▸ Enable AI control |
+| `NSWorkspace` refuses the launch | `isError` carrying the LaunchServices error, not a server-didn't-start message |
+| A pre-registry RayMol is running | Proxied through the legacy `mcp.json` handoff; no second copy is launched |
 
 The existing 120-second proxy timeout in `MCPBridge.proxy` is unchanged.
 
