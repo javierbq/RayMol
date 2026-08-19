@@ -121,12 +121,45 @@ enum MCPBridge {
 
     private static func response(for msg: [String: Any], method: String,
                                  id: Any?, raw: Data) -> Data? {
+        // Broker-native tool: answered here, never forwarded.
+        if method == "tools/call",
+           let params = msg["params"] as? [String: Any],
+           params["name"] as? String == "list_raymol_instances" {
+            return ok(id: id, result: ["content": [["type": "text",
+                "text": instancesText(MCPInstanceRegistry.liveDirectoryInstances())]]])
+        }
+        // Pull `instance` out of the arguments and strip it from what we forward.
+        var forward = raw
+        var requestedKey: String? = nil
+        if method == "tools/call", var msgCopy = msg as [String: Any]?,
+           var params = msgCopy["params"] as? [String: Any],
+           var args = params["arguments"] as? [String: Any],
+           let key = args["instance"] as? String {
+            requestedKey = key
+            args["instance"] = nil
+            params["arguments"] = args
+            msgCopy["params"] = params
+            forward = (try? JSONSerialization.data(withJSONObject: msgCopy)) ?? raw
+        }
+
         // Try the live server first.
-        let target = resolveTarget(requestedKey: nil)
+        let target = resolveTarget(requestedKey: requestedKey)
         var instance: MCPInstance? = nil
-        if case .bound(let i) = target { instance = i } else { instance = legacyHandoff() }
+        switch target {
+        case .bound(let i):
+            instance = i
+        case .ambiguous(let list) where method == "tools/call":
+            return ok(id: id, result: ["content": [["type": "text",
+                "text": ambiguityText(list)]], "isError": true])
+        case .unknownKey(let key) where method == "tools/call":
+            return ok(id: id, result: ["content": [["type": "text",
+                "text": "No running RayMol named \"\(key)\". Call list_raymol_instances."]],
+                "isError": true])
+        default:
+            instance = legacyHandoff()
+        }
         if let instance {
-            if let body = proxy(raw: raw, to: instance) {
+            if let body = proxy(raw: forward, to: instance) {
                 return body.isEmpty ? nil : body   // empty = 202 notification ack
             }
             // Unreachable or 401 (a recycled pid, or a rotated token): the binding
@@ -161,17 +194,68 @@ enum MCPBridge {
         ])
     }
 
-    private static func localToolsList(id: Any?) -> Data {
-        // Static mirror of raymol_mcp/tools.py TOOLS (used only when the server is
-        // down; the live list is proxied when it's up). Keep names in sync.
-        let tools: [[String: Any]] = [
+    /// Static mirror of raymol_mcp/tools.py TOOLS (used only when the server is
+    /// down; the live list is proxied when it's up). Keep names in sync —
+    /// MCPBrokerTests.testOfflineToolsListStillNamesEveryTool pins the list.
+    static func localToolsSpec() -> [[String: Any]] {
+        [
             ["name": "run_pymol_command", "description": "Run one PyMOL command-language statement (e.g. 'fetch 1ubq, async=0').", "inputSchema": ["type": "object", "properties": ["command": ["type": "string"]], "required": ["command"]]],
             ["name": "run_python", "description": "Execute arbitrary Python with 'cmd' (PyMOL API), 'np', 'Bio'. State persists.", "inputSchema": ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]]],
             ["name": "get_session_state", "description": "Return objects, selections, camera view, frame info as JSON.", "inputSchema": ["type": "object", "properties": [:]]],
             ["name": "capture_viewport", "description": "Ray-traced PNG of the current view.", "inputSchema": ["type": "object", "properties": ["width": ["type": "integer"], "height": ["type": "integer"]]]],
             ["name": "search_pdb", "description": "Full-text RCSB PDB search; returns PDB IDs.", "inputSchema": ["type": "object", "properties": ["query": ["type": "string"], "limit": ["type": "integer"]], "required": ["query"]]],
         ]
-        return ok(id: id, result: ["tools": tools])
+    }
+
+    /// Every tool gains an optional `instance` override. The broker strips it
+    /// before forwarding, so the Python tool schemas stay untouched.
+    static func withInstanceArg(_ tools: [[String: Any]]) -> [[String: Any]] {
+        tools.map { tool in
+            var t = tool
+            var schema = (t["inputSchema"] as? [String: Any]) ?? ["type": "object"]
+            var props = (schema["properties"] as? [String: Any]) ?? [:]
+            props["instance"] = [
+                "type": "string",
+                "description": "Which running RayMol to drive (e.g. \"RayMol\", \"RayMol-287\"). "
+                    + "Omit unless list_raymol_instances shows more than one.",
+            ]
+            schema["properties"] = props     // `required` deliberately untouched
+            t["inputSchema"] = schema
+            return t
+        }
+    }
+
+    static let listInstancesTool: [String: Any] = [
+        "name": "list_raymol_instances",
+        "description": "List running RayMol instances and the key that names each one.",
+        "inputSchema": ["type": "object", "properties": [String: Any]()],
+    ]
+
+    static func offlineToolNames() -> [String] {
+        (localToolsSpec() + [listInstancesTool]).compactMap { $0["name"] as? String }
+    }
+
+    static func ambiguityText(_ instances: [MCPInstance]) -> String {
+        let keyed = MCPInstanceRegistry.keys(for: instances)
+        let rows = instances.map { i -> String in
+            let key = keyed[i.pid] ?? String(i.pid)
+            return "  • \(key)\(i.installed ? " (installed)" : " (dev build)") — \(i.appPath)"
+        }.joined(separator: "\n")
+        return "More than one RayMol is running. Ask the user which one to drive, then "
+            + "retry with the instance argument set:\n\n\(rows)\n"
+    }
+
+    private static func instancesText(_ instances: [MCPInstance]) -> String {
+        guard !instances.isEmpty else { return "No RayMol is running." }
+        let keyed = MCPInstanceRegistry.keys(for: instances)
+        return instances.map { i in
+            "\(keyed[i.pid] ?? String(i.pid))\(i.installed ? " (installed)" : " (dev build)") "
+                + "— pid \(i.pid), port \(i.port), \(i.appPath)"
+        }.joined(separator: "\n")
+    }
+
+    private static func localToolsList(id: Any?) -> Data {
+        ok(id: id, result: ["tools": withInstanceArg(localToolsSpec()) + [listInstancesTool]])
     }
 
     private static func ok(id: Any?, result: [String: Any]) -> Data {

@@ -200,4 +200,46 @@ final class MCPBrokerTests: XCTestCase {
         let list = MCPInstanceRegistry.decodeAll([blob(pid: mine), blob(pid: 999_999, name: "Ghost")])
         XCTAssertEqual(MCPInstanceRegistry.liveOnly(list).map(\.pid), [mine])
     }
+
+    // MARK: - offline contract
+
+    // The pre-existing guarantee this whole change must preserve: with nothing
+    // running, a client still gets a usable tools list, so the server never
+    // presents as errored.
+    func testOfflineToolsListStillNamesEveryTool() {
+        XCTAssertEqual(MCPBridge.offlineToolNames(),
+                       ["run_pymol_command", "run_python", "get_session_state",
+                        "capture_viewport", "search_pdb", "list_raymol_instances"])
+    }
+
+    // MARK: - instance argument
+
+    func testInstanceArgIsAddedToEveryToolSchema() {
+        let injected = MCPBridge.withInstanceArg([
+            ["name": "run_python",
+             "inputSchema": ["type": "object", "properties": ["code": ["type": "string"]],
+                             "required": ["code"]]],
+        ])
+        let schema = injected[0]["inputSchema"] as? [String: Any]
+        let props = schema?["properties"] as? [String: Any]
+        XCTAssertNotNil(props?["instance"], "every tool must accept an instance override")
+        XCTAssertNotNil(props?["code"], "existing properties must survive injection")
+        // `instance` is an override, never a requirement.
+        XCTAssertEqual(schema?["required"] as? [String], ["code"])
+    }
+
+    // MARK: - ambiguity
+
+    // The reply has to be actionable without further tool calls: it names the
+    // choices AND the exact way to re-issue, or the model will just guess.
+    func testAmbiguityTextListsEveryKeyAndSaysHowToRetry() {
+        let list = MCPInstanceRegistry.decodeAll([
+            blob(pid: 1, name: "RayMol"),
+            blob(pid: 2, name: "RayMol-287", installed: false),
+        ])
+        let text = MCPBridge.ambiguityText(list)
+        XCTAssertTrue(text.contains("RayMol"))
+        XCTAssertTrue(text.contains("RayMol-287"))
+        XCTAssertTrue(text.contains("instance"))
+    }
 }
