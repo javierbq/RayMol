@@ -4,8 +4,22 @@
 import Foundation
 
 enum MCPDesktopInstaller {
+    static let installedCommand = "/Applications/RayMol.app/Contents/MacOS/RayMol"
+
+    /// Pure: which binary a client should be told to spawn.
+    ///
+    /// Prefers the installed app. Without this a dev build run from a worktree
+    /// registers its own throwaway path, and the client hard-errors the moment
+    /// that build directory is cleaned.
+    static func preferredCommand(installedExists: Bool, running: String?) -> String {
+        if installedExists { return installedCommand }
+        return running ?? installedCommand
+    }
+
     static func bridgeCommand() -> String {
-        Bundle.main.executablePath ?? "/Applications/RayMol.app/Contents/MacOS/RayMol"
+        preferredCommand(
+            installedExists: FileManager.default.fileExists(atPath: installedCommand),
+            running: Bundle.main.executablePath)
     }
 
     private static func desktopConfigURL() -> URL {

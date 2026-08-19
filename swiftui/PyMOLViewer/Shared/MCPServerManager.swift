@@ -195,36 +195,35 @@ final class MCPServerManager: ObservableObject {
 
     var claudeCLIPath: String? { Self.findClaude() }
 
+    /// Pure: the `claude mcp add` arguments. Stdio, so the entry stays valid
+    /// across RayMol restarts and closures — the broker is spawned on demand and
+    /// finds the live instance itself.
+    static func claudeCodeAddArgs(command: String) -> [String] {
+        ["mcp", "add", "raymol", "--scope", "user", "--", command, "--mcp-bridge"]
+    }
+
     func connectClaudeCode(completion: @escaping (String) -> Void) {
-        guard isRunning, let port = port else {
-            completion("Turn on the MCP server first.")
-            return
-        }
         // noteUserInitiatedConnect sets UI state — keep it synchronous on the main thread.
         noteUserInitiatedConnect()
-        // pushTrusted calls runPython which must run on the main thread (PyMOLBridge PAutoBlock).
-        pushTrusted()
-        // Capture values before leaving the main thread.
-        let capturedPort = port
-        let capturedToken = token
+        if isRunning {
+            // pushTrusted calls runPython which must run on the main thread.
+            pushTrusted()
+        }
+        let command = MCPDesktopInstaller.bridgeCommand()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             self.installSkillFile()
-            let url = "http://127.0.0.1:\(capturedPort)/mcp"
-            let header = "Authorization: Bearer \(capturedToken)"
-            let manual = "claude mcp add --transport http raymol \(url) "
-                + "--header \"\(header)\" --scope user"
+            let args = Self.claudeCodeAddArgs(command: command)
+            let manual = "claude " + args.joined(separator: " ")
             guard let claude = Self.findClaude() else {
                 DispatchQueue.main.async {
                     completion("Claude Code CLI not found. Run this in a terminal:\n\n\(manual)")
                 }
                 return
             }
-            _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])  // idempotent
-            let (code, out) = Self.runClaude(claude, [
-                "mcp", "add", "--transport", "http", "raymol", url,
-                "--header", header, "--scope", "user",
-            ])
+            // Idempotent, and REQUIRED: an older pinned-HTTP entry would otherwise survive.
+            _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])
+            let (code, out) = Self.runClaude(claude, args)
             let msg: String
             if code == 0 {
                 msg = "Connected. In Claude Code, run /mcp (or restart it) to pick up RayMol, "

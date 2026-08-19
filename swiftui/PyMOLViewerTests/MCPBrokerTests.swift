@@ -259,4 +259,34 @@ final class MCPBrokerTests: XCTestCase {
     func testInstalledAppPathIsTheApplicationsBundle() {
         XCTAssertEqual(MCPBridge.installedAppPath, "/Applications/RayMol.app")
     }
+
+    // MARK: - registration
+
+    // The desktop-app failure this change exists to fix: a Debug build in a
+    // worktree wrote its OWN path into claude_desktop_config.json, and Claude
+    // reported a hard error once that build directory was cleaned.
+    func testBridgeCommandPrefersTheInstalledApp() {
+        XCTAssertEqual(
+            MCPDesktopInstaller.preferredCommand(
+                installedExists: true,
+                running: "/Users/x/build_mac_dd/Build/Products/Debug/RayMol.app/Contents/MacOS/RayMol"),
+            "/Applications/RayMol.app/Contents/MacOS/RayMol")
+    }
+
+    func testBridgeCommandFallsBackToTheRunningBundle() {
+        XCTAssertEqual(
+            MCPDesktopInstaller.preferredCommand(installedExists: false, running: "/tmp/R.app/C/MacOS/R"),
+            "/tmp/R.app/C/MacOS/R")
+    }
+
+    // Claude Code must be registered as a spawnable stdio command, never as a
+    // pinned loopback URL — the URL is what goes stale on every restart.
+    func testClaudeCodeArgsRegisterStdioNotHttp() {
+        let args = MCPServerManager.claudeCodeAddArgs(command: "/Applications/RayMol.app/Contents/MacOS/RayMol")
+        XCTAssertFalse(args.contains("--transport"))
+        XCTAssertFalse(args.contains(where: { $0.contains("127.0.0.1") }))
+        XCTAssertEqual(Array(args.prefix(3)), ["mcp", "add", "raymol"])
+        XCTAssertTrue(args.contains("--"))
+        XCTAssertEqual(args.last, "--mcp-bridge")
+    }
 }
