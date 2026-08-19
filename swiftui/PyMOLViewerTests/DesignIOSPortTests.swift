@@ -1005,6 +1005,23 @@ final class DesignIOSPortTests: XCTestCase {
     //
     // No existing test covers this specific invariant — testReconcileSticksIsNoOpWhenShowSidechainsOn
     // tests the early-return guard (showSidechains == true), which is a separate path.
+    // An iOS tap that MISSES must reach the controller as an empty hit so it
+    // clears the selection. The old designPickResidue returned early on a miss,
+    // making empty-space taps silently inert.
+    func testEmptyHitClearsThroughTheSameRouting() {
+        let c = makeController()
+        var clearCalls = 0
+        c.injectSele(clearSele: { clearCalls += 1 })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        c.tapResidue(residueIndex: 0)
+
+        c.handleViewportHit(object: "", chain: "", resi: "", hasResidue: false)
+
+        XCTAssertEqual(clearCalls, 1,
+                       "a miss must clear 'sele' through the injected closure")
+        XCTAssertEqual(c.focusObject, "m1", "a miss must not change focus")
+    }
+
     func testSticksNotOwnedByControllerAreNeverRemoved() {
         var hiddenResidue: [String] = []
         let c = makeController()

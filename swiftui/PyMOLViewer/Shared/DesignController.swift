@@ -337,7 +337,12 @@ final class DesignController: ObservableObject {
                      designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
                      selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] },
-                     releaseModel: @escaping ReleaseModelFn = { }) {
+                     releaseModel: @escaping ReleaseModelFn = { },
+                     seleState: SeleStateFn? = nil,
+                     toggleSele: ToggleSeleFn? = nil,
+                     setSeleResidue: SetSeleResidueFn? = nil,
+                     setSeleNamed: SetSeleNamedFn? = nil,
+                     clearSele: ClearSeleFn? = nil) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -359,6 +364,11 @@ final class DesignController: ObservableObject {
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
         self.releaseModelFn = releaseModel
+        self.seleStateFn = seleState
+        self.toggleSeleFn = toggleSele
+        self.setSeleResidueFn = setSeleResidue
+        self.setSeleNamedFn = setSeleNamed
+        self.clearSeleFn = clearSele
     }
 
     // MARK: – Public interface
