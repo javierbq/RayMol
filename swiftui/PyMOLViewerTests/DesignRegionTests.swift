@@ -297,5 +297,95 @@ final class DesignRegionTests: XCTestCase {
         await c.applyMutationAwait(residueIndex: 2, aa: 3)
         XCTAssertNil(c.redesignSnapshot)                    // revert invalidated by a manual edit
     }
+
+    // MARK: – 'sele' as the single source of truth
+
+    // No selection -> nothing active. This is the idle state the greyed propensity
+    // row renders.
+    func testSyncFromSeleWithNothingSelected() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        XCTAssertEqual(c.syncFromSele(), 0)
+        XCTAssertNil(c.pinnedResidueIndex)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+        XCTAssertFalse(c.regionModeActive)
+    }
+
+    // Exactly one selected residue must reproduce today's single-residue
+    // behaviour: pinned, and NOT region mode, so the propensity pills still show.
+    func testOneSelectedResiduePinsAndStaysOutOfRegionMode() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.injectSele(seleState: { _, _, _ in (indices: [1], digest: "d1", total: 1) })
+        XCTAssertEqual(c.syncFromSele(), 1)
+        XCTAssertEqual(c.pinnedResidueIndex, 1)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "a single residue must not enter region mode")
+        XCTAssertFalse(c.regionModeActive)
+        XCTAssertNil(c.selectedSelectionName,
+                     "the region label belongs to region mode only")
+    }
+
+    // Two or more selected residues auto-designate the region and drop the pin,
+    // so the palette row replaces the propensity pills.
+    func testTwoSelectedResiduesEnterRegionMode() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 2], digest: "d2", total: 2) })
+        XCTAssertEqual(c.syncFromSele(), 2)
+        XCTAssertNil(c.pinnedResidueIndex,
+                     "region mode must clear the single-residue pin")
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2])
+        XCTAssertTrue(c.regionModeActive)
+        XCTAssertEqual(c.selectedSelectionName, "sele",
+                       "a click-built region is labelled 'sele'")
+    }
+
+    // Non-designable positions (missing backbone) never count, so selecting one
+    // designable and one invalid residue is still single-residue mode.
+    func testInvalidResiduesAreDroppedFromTheCount() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: [true, false, true])
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d3", total: 2) })
+        XCTAssertEqual(c.syncFromSele(), 1,
+                       "index 1 is not designable and must not count")
+        XCTAssertEqual(c.pinnedResidueIndex, 0)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+    }
+
+    // Out-of-range indices from a stale payload must not crash or leak in.
+    func testOutOfRangeIndicesAreIgnored() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.injectSele(seleState: { _, _, _ in (indices: [1, 99, -1], digest: "d4", total: 3) })
+        XCTAssertEqual(c.syncFromSele(), 1)
+        XCTAssertEqual(c.pinnedResidueIndex, 1)
+    }
+
+    // Residues selected on OTHER structures are reported so the UI can say so
+    // instead of silently ignoring them.
+    func testOffFocusResiduesAreCounted() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: allValid(3))
+        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "d5", total: 3) })
+        c.syncFromSele()
+        XCTAssertEqual(c.seleResiduesOffFocus, 2)
+    }
+
+    // With no focus object there is nothing to resolve against; sync must reset
+    // rather than keep stale indices.
+    func testSyncWithoutFocusResets() {
+        let c = makeController()
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d6", total: 2) })
+        XCTAssertEqual(c.syncFromSele(), 0)
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty)
+        XCTAssertNil(c.pinnedResidueIndex)
+    }
 }
 #endif
