@@ -3064,49 +3064,58 @@ struct ContentView: View {
     // ⌃M (Move) and ⌃D (Design) still toggle these directly; they live on the
     // Mouse / Design CommandMenus in PyMOLApp, independent of this toolbar item.
     private var macToolsMenu: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+        // OWN ToolbarItemGroup so macOS renders the Tools control as its own pill
+        // cluster, cleanly separated from the panelToggles group — no manual Divider
+        // (which got absorbed into a neighbouring pill) and no regrouping with the
+        // Console button as the selection changes.
+        ToolbarItemGroup(placement: .primaryAction) {
             if let active = activeInteractionTool {
-                // A mode is ON: render an ACCENT-COLOURED toggle that a click turns off.
-                //
-                // Colour has to come from a Shape FILL inside a plain Button — NOT from a
-                // Menu. The macOS toolbar replaces a Menu label's surface with its own dark
-                // menu-button chrome, which strips every tint tried (.foregroundColor,
-                // .palette+.foregroundStyle, .tint, .buttonStyle(.borderedProminent), and a
-                // .background(_,in:Capsule) modifier — all verified grey in a VM). What the
-                // toolbar DOES render is a filled Shape drawn as button CONTENT — cf.
-                // MCPStatusView's status dot (a Circle().fill in a plain Button). So we draw
-                // the accent Capsule ourselves and drop the chrome with .buttonStyle(.plain).
-                //
-                // Cost: no inline tool-switch while active — clicking exits, then the idle
-                // Menu picks the next tool. The two things asked for (reads-as-active, click-
-                // closes) are met; each mode also raises its own on-canvas bar.
-                Button {
-                    engine.exitActiveInteractionMode()
-                } label: {
-                    ZStack {
-                        Capsule().fill(themeManager.active.accent.color)
-                        HStack(spacing: 4) {
-                            Image(systemName: active.macIcon)
-                            Text(active.name)
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10).padding(.vertical, 3)
-                    }
-                    .fixedSize()
-                }
-                .buttonStyle(.plain)
-                .help("\(active.name) is on — click to turn it off")
-            } else {
-                // Idle: a neutral "Tools" wrench; a click opens the tool list.
+                // Active: an ACCENT pill. primaryAction (body click) turns the mode off;
+                // the disclosure chevron still opens the tool list, so you can switch
+                // Move→Measure etc. without leaving the toolbar.
                 Menu {
                     interactionToolItems
                 } label: {
-                    Label("Tools", systemImage: "wrench.and.screwdriver")
+                    toolsPill(icon: active.macIcon, text: active.name, active: true)
+                } primaryAction: {
+                    engine.exitActiveInteractionMode()
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help("\(active.name) is on — click to turn it off, or use the menu to switch tools")
+            } else {
+                // Idle: the SAME pill shape, a neutral fill; the click opens the tool list.
+                Menu {
+                    interactionToolItems
+                } label: {
+                    toolsPill(icon: "wrench.and.screwdriver", text: "Tools", active: false)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .help(toolsMenuHelp)
             }
         }
+    }
+
+    // One pill, one shape, both toolbar states — only the fill and label change, so
+    // the control never regroups or resizes as a tool turns on. Colour is a Shape FILL
+    // drawn as button CONTENT (the toolbar strips .background/.tint off a Menu label,
+    // but renders a Capsule().fill inside a plain-styled button — cf. MCPStatusView).
+    @ViewBuilder
+    private func toolsPill(icon: String, text: String, active: Bool) -> some View {
+        ZStack {
+            Capsule().fill(active
+                ? themeManager.active.accent.color
+                : Color.primary.opacity(0.08))
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                Text(text)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(active ? Color.white : Color.primary)
+            .padding(.horizontal, 10).padding(.vertical, 3)
+        }
+        .fixedSize()
     }
 
     // Timeline (movie studio) mode is entered from the Movie menu (⌥⌘M) and the
