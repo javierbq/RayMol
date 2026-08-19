@@ -1,0 +1,59 @@
+# RayMol structure prediction -- Protenix (protenix-mlx) memory sweep
+#
+# HARDWARE
+#   machine          Apple M1 Max
+#   model            MacBookPro18,2
+#   memory           32.0 GiB (34359738368 bytes)
+#   os               26.5.2
+#   toolchain        Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)
+#
+# BUILD
+#   NOTE Release only. A Debug (-Onone) build is ~10x slower; peak memory
+#        survives it but the seconds column must never be quoted from one.
+#
+# WEIGHTS
+#   variant          v2
+#   precision        int8
+#   artifact         protenix-v2-mlx-int8 v1 (release weights-v2-v1 on javierbq/protenix-mlx)
+#   zip sha256       1eef8793e18be9f4a5dd040392e4358fbac1bfbf1d63dee33b7a5bc9398d4432
+#
+# CONTROL  (the same harness against the BASE pack, whose numbers are already
+#           committed in MEASURED_PEAK_MIB -- run first, because a v2 row from a
+#           harness that cannot reproduce base is evidence about the harness)
+#   60 residues      566 MiB measured / 547 committed  (+3.5%)
+#   120 residues     941 MiB measured / 942 committed  (-0.1%)
+#
+# WHERE THIS STOPS
+#   700 was attempted and ABANDONED, which is why the table ends at 550 and why
+#   V2_MAX_RESIDUES does too. 550 finished in 497 s; 700 was still running past
+#   1400 s with the machine ~15 GB into swap, i.e. superlinear in the way a fold
+#   looks once it stops being compute-bound and starts paging -- the same wall base
+#   hit at 900 residues (16513 MiB, 2.5 hours). Its peak is therefore UNKNOWN, and
+#   an unknown peak is not a ceiling. Nothing here should be interpolated past 550.
+#
+# CAVEAT ON THE SECONDS COLUMN
+#   The machine was not idle: other builds and a game client were running, so
+#   elapsed_s is pessimistic and should be read as an upper bound rather than a
+#   benchmark. peak_mib is NOT affected -- it is MLX's own counter for this
+#   process, not a share of the machine.
+#
+# METHOD
+#   peak_mib         MLX.Memory.peakMemory, as ProtenixMLXCLI prints it. NOT
+#                    process RSS -- RSS is not monotonic in problem size here
+#                    and understates the real peak by orders of magnitude.
+#   elapsed_s        as the CLI reports it, INCLUDING the one-time model load,
+#                    because every point is its own process.
+#   sequences        N-terminal prefixes of one deterministic canonical-20
+#                    draw (splitmix64, seed 0x9E3779B97F4A7C15), so only
+#                    length varies. The folds are meaningless; the shapes are
+#                    the measurement.
+#   operating point  the pack's own: recycling and diffusion steps come from
+#                    its config.json, confidence head ON.
+#   date             2026-08-18
+#
+residues,atoms,peak_mib,elapsed_s,mean_plddt,recycles,diffusion_steps
+60,497,738,19.4,66.2,10,200
+120,997,1649,30.2,48.8,10,200
+250,2044,2777,90.9,41.9,10,200
+400,3276,5914,258.8,36.4,10,200
+550,4566,9068,496.8,32.4,10,200

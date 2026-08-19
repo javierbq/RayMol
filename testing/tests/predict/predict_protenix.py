@@ -186,6 +186,163 @@ class TestResidueValidation(testing.PyMOLTestCase):
             self.fail('expected PredictionInputError')
 
 
+class TestTheRefusalQuotesTheVariantThatActuallyFailed(testing.PyMOLTestCase):
+    """#316: the over-length refusal used to quote base's sweep whatever refused it.
+
+    A v2 user who asked for 429 residues was told the limit "is measured" and that peak
+    memory "reaches 8.6 GB at 700 residues" -- three numbers from a pack they were not
+    running, and, worse, the claim that v2's 250 came from a memory measurement. It did
+    not: v2 is swept at one point, 15 residues. Which of the two it is decides the
+    reader's next move (accept a wall, or go measure), so the message has to get it
+    right, and has to get it right FROM the table rather than from prose that can drift
+    out of step with it.
+    """
+
+    def refusal(self, predictor_id):
+        from pymol.predictors import registry
+        predictor = registry.get(predictor_id)
+        try:
+            predictor.parse_spec('A' * (predictor.max_residues + 1))
+        except PredictionInputError as error:
+            return str(error)
+        self.fail('expected %s to refuse above its cap' % predictor_id)
+
+    def testBaseCallsItsCapMeasuredBecauseItIs(self):
+        """700 is a point in base's own sweep, so "measured" is the honest word."""
+        self.assertIn('That limit is measured', self.refusal('protenix-base-int8'))
+
+    def testBaseQuotesThePeakItsOwnTableRecordsAtTheCap(self):
+        """Derived from MEASURED_PEAK_MIB, so a future sweep cannot leave prose stale."""
+        from pymol.predictors.protenix import MAX_RESIDUES, MEASURED_PEAK_MIB
+        peak = dict(MEASURED_PEAK_MIB['base'])[MAX_RESIDUES]
+        self.assertIn('%.1f GiB' % (peak / 1024.0), self.refusal('protenix-base-int8'))
+        self.assertIn('at %d residues' % MAX_RESIDUES,
+                      self.refusal('protenix-base-int8'))
+
+    def testV2AlsoCallsItsCapMeasuredNowThatItIs(self):
+        """v2 was swept for #316, so "measured" became the honest word for it too.
+
+        This test read the other way round when the cap was 250: the point is not which
+        word appears but that the word tracks the table, and the table changed.
+        """
+        message = self.refusal('protenix-v2-int8')
+        self.assertIn('That limit is measured', message)
+        self.assertNotIn('placeholder', message)
+
+    def testV2QuotesItsOwnPeakAndNotBases(self):
+        """The regression itself, and it survives the caps being equal.
+
+        base and v2 now stop at the same length, so a refusal that still reached for
+        base's table would produce a message that LOOKS right -- same cap, same shape,
+        wrong gigabytes. Only the peak distinguishes them.
+        """
+        from pymol.predictors.protenix import MEASURED_PEAK_MIB, V2_MAX_RESIDUES
+        peak = dict(MEASURED_PEAK_MIB['v2'])[V2_MAX_RESIDUES]
+        message = self.refusal('protenix-v2-int8')
+        self.assertIn('%.1f GiB' % (peak / 1024.0), message)
+        for _, other in MEASURED_PEAK_MIB['base']:
+            self.assertNotIn(str(other), message, other)
+        self.assertNotIn('8.6 GB', message)
+
+    def testTheTwoVariantsQuoteDifferentPeaks(self):
+        """The sharpest form of #316: same sentence, same cap, different numbers.
+
+        If these two ever agree, something is reading one table for both packs again --
+        which is the whole bug, and it would be invisible in any test that only checked
+        one of them.
+        """
+        self.assertNotEqual(self.refusal('protenix-base-int8'),
+                            self.refusal('protenix-v2-int8'))
+
+    def testV2IsMeasuredHigherThanBaseAtItsCap(self):
+        """Not a message test: the reason the two tables cannot be shared.
+
+        A 256-wide pair track against base's 128 roughly doubles the N^2 term, and the
+        sweep bears it out at every length. If this ever inverts, the v2 row was
+        mis-transcribed, and mis-transcribed downward is the direction that kills
+        sessions.
+        """
+        from pymol.predictors.protenix import MEASURED_PEAK_MIB
+        base = dict(MEASURED_PEAK_MIB['base'])
+        for residues, peak in MEASURED_PEAK_MIB['v2']:
+            if residues in base:
+                self.assertGreater(peak, base[residues], residues)
+
+    def testEveryPackNamesItselfAndItsOwnCap(self):
+        """Six ids, two caps -- the header has to come from the pack that refused."""
+        from pymol.predictors import registry
+        for pid in (i for i in registry.available() if i.startswith('protenix-')):
+            message = self.refusal(pid)
+            self.assertIn(pid, message, pid)
+            self.assertIn('%d-residue limit' % registry.get(pid).max_residues,
+                          message, pid)
+
+    def testBothPrecisionsOfAVariantGiveTheSameRationale(self):
+        """The curve is a property of the variant's shape, not of its quantisation."""
+        for variant in ('base', 'v2'):
+            rationales = set()
+            for suffix in ('int8', 'fp16', 'bf16'):
+                message = self.refusal('protenix-%s-%s' % (variant, suffix))
+                rationales.add(message.split('limit. ', 1)[1])
+            self.assertEqual(len(rationales), 1, variant)
+
+
+class TestTheRationaleFollowsTheTableNotTheProse(testing.PyMOLTestCase):
+    """`_limit_rationale` is unit-tested directly, because its whole point is that the
+    day someone sweeps v2 the message corrects itself with no prose edit.
+
+    Testing it only through v2's current one-point table would pass just as well if the
+    branch were hardcoded to the variant name.
+    """
+
+    def rationale(self, table, variant, limit):
+        from pymol.predictors import protenix
+        saved = protenix.MEASURED_PEAK_MIB
+        protenix.MEASURED_PEAK_MIB = table
+        try:
+            return protenix._limit_rationale(variant, limit)
+        finally:
+            protenix.MEASURED_PEAK_MIB = saved
+
+    def testACapInsideTheSweepReadsAsMeasured(self):
+        table = {'v2': ((60, 900), (250, 4400), (400, 7600))}
+        message = self.rationale(table, 'v2', 400)
+        self.assertIn('That limit is measured', message)
+        self.assertIn('%.1f GiB' % (7600 / 1024.0), message)
+        self.assertNotIn('placeholder', message)
+
+    def testACapAboveTheSweepReadsAsAPlaceholder(self):
+        table = {'v2': ((60, 900), (250, 4400))}
+        message = self.rationale(table, 'v2', 400)
+        self.assertIn('placeholder', message)
+        self.assertIn('250 residues (4400 MiB peak)', message)
+
+    def testACapExactlyAtTheLastSweptPointIsMeasured(self):
+        """The boundary is <=, not <: 250 measured means 250 may be quoted as measured."""
+        table = {'v2': ((60, 900), (250, 4400))}
+        self.assertIn('That limit is measured', self.rationale(table, 'v2', 250))
+
+    def testAnIntermediateCapQuotesTheHighestPointAtOrBelowIt(self):
+        """Never a point ABOVE the cap: that would overstate what the cap permits."""
+        table = {'base': ((60, 547), (250, 2279), (400, 3868))}
+        message = self.rationale(table, 'base', 300)
+        self.assertIn('at 250 residues', message)
+        self.assertNotIn('3868', message)
+
+    def testAVariantWithNoSweepAtAllSaysSo(self):
+        """Not "measured", and not a confident-sounding number either."""
+        message = self.rationale({'base': ((60, 547),)}, 'mystery', 250)
+        self.assertIn('no memory sweep exists', message)
+        self.assertNotIn('That limit is measured', message)
+
+    def testAVariantWithNoRecordedReasonStillRefusesCleanly(self):
+        """_UNMEASURED_CAP_REASON is an optional annotation, not a required one."""
+        table = {'mini': ((15, 400),)}
+        message = self.rationale(table, 'mini', 250)
+        self.assertIn('placeholder', message)
+        self.assertIn('15 residues (400 MiB peak)', message)
+
+
 class TestOptions(testing.PyMOLTestCase):
     """Protenix recycles a trunk and runs reverse diffusion, so it takes Boltz's knobs."""
 
@@ -325,25 +482,34 @@ class TestEveryPackIsAPredictor(testing.PyMOLTestCase):
             name = registry.get('protenix-v2-%s' % precision).name
             self.assertIn('mirror', name.lower(), precision)
 
-    def testV2IsCappedLowerBecauseItIsMeasuredLess(self):
+    def testNeitherCapOutrunsItsOwnSweep(self):
+        """The one invariant that survives a cap moving: it may reach the data, not pass it.
+
+        This replaces an assertion that v2's cap was strictly LOWER than base's, which was
+        true only while v2 was unswept and stopped being true the moment it was measured
+        to the same length. What must hold forever is that a cap is a measurement.
+        """
         from pymol.predictors import registry
-        from pymol.predictors.protenix import MAX_RESIDUES, V2_MAX_RESIDUES
-        self.assertLess(V2_MAX_RESIDUES, MAX_RESIDUES)
+        from pymol.predictors.protenix import (MAX_RESIDUES, MEASURED_PEAK_MIB,
+                                               V2_MAX_RESIDUES)
+        for variant, cap in (('base', MAX_RESIDUES), ('v2', V2_MAX_RESIDUES)):
+            swept = max(residues for residues, _ in MEASURED_PEAK_MIB[variant])
+            self.assertLessEqual(cap, swept, variant)
         self.assertEqual(registry.get('protenix-v2-int8').max_residues, V2_MAX_RESIDUES)
         self.assertEqual(registry.get('protenix-base-int8').max_residues, MAX_RESIDUES)
 
-    def testV2RefusesAboveItsOwnCapNotBases(self):
+    def testEachPackRefusesAtItsOwnCapAndNotAnothersProtenix(self):
+        """The cap is per pack, not per method, whether or not the two happen to agree."""
         from pymol.predictors import registry
-        from pymol.predictors.protenix import V2_MAX_RESIDUES
-        sequence = 'A' * (V2_MAX_RESIDUES + 1)
-        # Fine for base, refused for v2 -- the cap is per pack, not per method.
-        registry.get('protenix-base-int8').parse_spec(sequence)
-        try:
-            registry.get('protenix-v2-int8').parse_spec(sequence)
-        except PredictionInputError as error:
-            self.assertIn('protenix-v2-int8', str(error))
-        else:
-            self.fail('expected v2 to refuse above its own cap')
+        for pid in ('protenix-base-int8', 'protenix-v2-int8'):
+            predictor = registry.get(pid)
+            predictor.parse_spec('A' * predictor.max_residues)
+            try:
+                predictor.parse_spec('A' * (predictor.max_residues + 1))
+            except PredictionInputError as error:
+                self.assertIn(pid, str(error))
+            else:
+                self.fail('expected %s to refuse above its own cap' % pid)
 
     def testBareProtenixAliasesToV2Int8(self):
         from pymol.predictors import registry

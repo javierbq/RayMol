@@ -148,7 +148,9 @@ public:
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
+  void invalidateVBOCacheEntry(const void* cpuData) override;
   void drawLabels(const LabelDrawCall& call) override;
+  void drawConnectors(const ConnectorDrawCall& call) override;
   void drawSphereImpostors(const SphereImpostorDrawCall& call) override;
   void drawCylinderImpostors(const CylinderImpostorDrawCall& call) override;
   void setPostParams(int fogEnabled, float fogStart, float fogEnd, float bgR,
@@ -219,6 +221,10 @@ private:
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
       uint64_t generation);
+  // The connector VBO layout comes from CGOOptimizeConnectors, so the vertex
+  // descriptor is built from the first draw call's offsets and rebuilt only if
+  // a later call disagrees.
+  void buildConnectorPipeline(const ConnectorDrawCall& call);
 
   // 4x4 matrix stored column-major
   using Mat4 = std::array<float, 16>;
@@ -582,6 +588,17 @@ private:
   id<MTLSamplerState> _labelSampler = nil;
   id<MTLTexture> _labelAtlas = nil;  // glyph atlas, uploaded from CPU copy
   uint64_t _labelAtlasGen = 0;       // generation of the uploaded atlas
+  // Label connectors (background box / outline / connector line). The vertex
+  // shader amplifies one per-connector record into kConnectorVertsPerInstance
+  // vertices, so there is no per-vertex buffer to cache beyond the CGO's own.
+  id<MTLRenderPipelineState> _connectorPipeline = nil;
+  size_t _connectorStride = 0;       // layout the pipeline was built for
+  // Grow-on-demand upload buffer for the per-connector records. Deliberately
+  // NOT the pointer-keyed _vboCache: the connector CGO is rebuilt whenever a
+  // label setting changes, and a recycled heap address would serve stale
+  // background/connector colors from the cache.
+  id<MTLBuffer> _connectorBuffer = nil;
+  size_t _connectorBufferSize = 0;
   uint32_t _currentProgram = 0;
 
   // Depth/stencil state

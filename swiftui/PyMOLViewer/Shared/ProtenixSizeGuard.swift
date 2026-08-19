@@ -17,7 +17,59 @@ import Foundation
 /// refuses beyond the last one, so it can never be optimistic about a size nobody has
 /// run — the failure mode is "refuses something that would have worked", which costs a
 /// user a message rather than their unsaved session.
+///
+/// **One curve per variant, because one curve for both was optimistic for v2** (#316).
+/// Until that ticket this type held base's numbers and sized every Protenix fold with
+/// them, v2 included. v2's pair track is 256 wide against base's 128, so its N² term is
+/// roughly doubled, and the shortfall was real at every length that has now been
+/// measured: 738 MiB against base's 547 at 60 residues, 2777 against 2279 at 250. That
+/// is the same shape as the three shortfalls ``PredictSizeGuard`` records in its own
+/// docstring — a curve applied past the data it was fitted to, running optimistic — and
+/// optimistic is the direction that ends in a jetsam SIGKILL rather than a message.
 enum ProtenixSizeGuard {
+
+    /// Which pack a fold runs, and therefore which measured curve sizes it.
+    ///
+    /// Two variants ship at three precisions each; precision is absent here on purpose,
+    /// because it is not what decides the peak. The weights differ by ~2x between int8
+    /// and fp16, but the N² pair representation dwarfs them as the input grows — the
+    /// tiny, mini and base packs measured within 10% of each other at 400 residues
+    /// despite very different parameter counts. What separates base from v2 is the
+    /// WIDTH of that pair tensor, which is a property of the variant.
+    enum Variant {
+
+        case base
+        case v2
+
+        /// The variant a weights directory holds, read off the bundle id in its path.
+        ///
+        /// Defaults to the EXPENSIVE variant, not the cheap one. A path this does not
+        /// recognise means the guard does not know what it is about to size, and the
+        /// only safe reading of "I do not know" is the curve that refuses soonest.
+        /// Getting this backwards would make a typo in a bundle id silently license a
+        /// fold against numbers from a smaller model.
+        init(weightsDirectory: String) {
+            self = weightsDirectory.contains("protenix-base-mlx") ? .base : .v2
+        }
+
+        /// (residues, peak MiB) at this pack's shipped operating point — recycling 10 /
+        /// 200 steps, confidence head included — on an M-series Mac.
+        var measured: [(tokens: Int, peakMiB: Int)] {
+            switch self {
+            case .base: return ProtenixSizeGuard.measured
+            case .v2: return ProtenixSizeGuard.measuredV2
+            }
+        }
+
+        /// Hard ceiling, matching this variant's cap in
+        /// `pymol.predictors.protenix` (MAX_RESIDUES / V2_MAX_RESIDUES).
+        var maximumTokens: Int {
+            switch self {
+            case .base: return ProtenixSizeGuard.maximumTokens
+            case .v2: return ProtenixSizeGuard.maximumTokensV2
+            }
+        }
+    }
 
     /// (residues, peak MiB) at the shipped operating point — recycling 10 / 200 steps,
     /// confidence head included — for the base int8 pack on an M-series Mac.
@@ -52,6 +104,28 @@ enum ProtenixSizeGuard {
     /// refuses before the tensors.
     static let maximumTokens = 700
 
+    /// v2's curve, measured the same way and at the same lengths as base's.
+    ///
+    /// Produced by `scripts/protenix_memory_sweep.py`, whose control run reproduced
+    /// base's committed numbers to within 3.5% before any of this was recorded — a v2
+    /// row from a harness that cannot reproduce base is evidence about the harness, not
+    /// about v2.
+    ///
+    /// It sits ABOVE base at every length, by 35% at 60 residues and 22% at 250, which
+    /// is exactly why the two cannot share a table.
+    static let measuredV2: [(tokens: Int, peakMiB: Int)] = [
+        (60, 738), (120, 1649), (250, 2777), (400, 5914), (550, 9068),
+    ]
+
+    /// v2's hard ceiling, matching `pymol.predictors.protenix.V2_MAX_RESIDUES`.
+    ///
+    /// The largest length v2 has been RUN at, and no further — the same rule base's cap
+    /// follows. It was 250, chosen as a placeholder well inside what had been run
+    /// because v2 had been swept at a single point (15 residues) and base's curve
+    /// understates it. The sweep now exists, so the ceiling is data again rather than
+    /// caution.
+    static let maximumTokensV2 = 550
+
     /// The most memory one fold may target.
     ///
     /// Raised to 32 GB by request, from the previous `0.75 × physical`. On a 32 GiB
@@ -75,12 +149,13 @@ enum ProtenixSizeGuard {
     ///
     /// Below the first point the first point's cost is used rather than scaling down to
     /// zero: ~500 MiB of that is the weight pack, which a 4-residue peptide pays in full.
-    static func estimatedBytes(tokens: Int) -> Int {
-        let mib = estimatedPeakMiB(tokens: tokens)
+    static func estimatedBytes(tokens: Int, variant: Variant = .base) -> Int {
+        let mib = estimatedPeakMiB(tokens: tokens, variant: variant)
         return mib * 1024 * 1024
     }
 
-    static func estimatedPeakMiB(tokens: Int) -> Int {
+    static func estimatedPeakMiB(tokens: Int, variant: Variant = .base) -> Int {
+        let measured = variant.measured
         guard let first = measured.first, let last = measured.last else { return 0 }
         if tokens <= first.tokens { return first.peakMiB }
         if tokens >= last.tokens {
@@ -104,28 +179,40 @@ enum ProtenixSizeGuard {
     /// `availableBytes` is what the machine has; the fold is sized against
     /// `min(budgetBytes, availableBytes)`, so a smaller machine is still protected by its
     /// own memory and a larger one is still bounded by the budget.
-    static func decide(tokens: Int, availableBytes: Int) -> PredictSizeGuard.Decision {
+    /// `variant` has no default, deliberately. A default is precisely how this type came
+    /// to size v2 folds with base's numbers: every call reads as if it had said which
+    /// pack it meant, and none of them had. The estimate helpers below still default,
+    /// because they are inspection rather than a gate on a real fold.
+    static func decide(tokens: Int, variant: Variant,
+                       availableBytes: Int) -> PredictSizeGuard.Decision {
         let budget = min(budgetBytes, availableBytes)
+        let maximumTokens = variant.maximumTokens
         guard tokens <= maximumTokens else {
-            return .refuse(maxFittingTokens: min(maximumTokens,
-                                                 largestFittingTokenCount(budget)))
+            return .refuse(maxFittingTokens: min(
+                maximumTokens, largestFittingTokenCount(budget, variant: variant)))
         }
-        let estimate = estimatedBytes(tokens: tokens)
+        let estimate = estimatedBytes(tokens: tokens, variant: variant)
         let fraction = Double(estimate) / Double(max(budget, 1))
         if fraction <= okFraction { return .ok }
         if fraction <= warnFraction {
             return .warn(estimatedBytes: estimate, availableBytes: budget)
         }
-        return .refuse(maxFittingTokens: largestFittingTokenCount(budget))
+        return .refuse(maxFittingTokens: largestFittingTokenCount(budget,
+                                                                   variant: variant))
     }
 
     /// The largest token count whose estimate stays inside the warn budget.
-    static func largestFittingTokenCount(_ availableBytes: Int) -> Int {
+    static func largestFittingTokenCount(_ availableBytes: Int,
+                                         variant: Variant = .base) -> Int {
         let budget = Int(Double(availableBytes) * warnFraction)
         var best = 0
         var tokens = 1
-        while tokens <= maximumTokens {
-            if estimatedBytes(tokens: tokens) <= budget { best = tokens } else { break }
+        while tokens <= variant.maximumTokens {
+            if estimatedBytes(tokens: tokens, variant: variant) <= budget {
+                best = tokens
+            } else {
+                break
+            }
             tokens += 1
         }
         return best

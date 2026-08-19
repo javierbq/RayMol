@@ -75,9 +75,13 @@ final class ProtenixRuntimeTests: XCTestCase {
     func testEveryMeasuredPointIsReproducedExactly() {
         // Interpolation must pass through its own data. A guard that smooths its
         // measurements is a fit, and a fit is the thing this type exists to avoid.
-        for point in ProtenixSizeGuard.measured where point.tokens <= 700 {
-            XCTAssertEqual(ProtenixSizeGuard.estimatedPeakMiB(tokens: point.tokens),
-                           point.peakMiB, "at \(point.tokens) residues")
+        for variant in [ProtenixSizeGuard.Variant.base, .v2] {
+            for point in variant.measured where point.tokens <= variant.maximumTokens {
+                XCTAssertEqual(
+                    ProtenixSizeGuard.estimatedPeakMiB(tokens: point.tokens,
+                                                       variant: variant),
+                    point.peakMiB, "\(variant) at \(point.tokens) residues")
+            }
         }
     }
 
@@ -100,7 +104,8 @@ final class ProtenixRuntimeTests: XCTestCase {
     func testTheCapIsRefusedEvenOnAHugeMachine() {
         let huge = 512 * 1024 * 1024 * 1024  // 512 GB
         let decision = ProtenixSizeGuard.decide(
-            tokens: ProtenixSizeGuard.maximumTokens + 1, availableBytes: huge)
+            tokens: ProtenixSizeGuard.maximumTokens + 1, variant: .base,
+            availableBytes: huge)
         guard case .refuse = decision else {
             return XCTFail("above the cap must refuse regardless of memory, got \(decision)")
         }
@@ -111,20 +116,25 @@ final class ProtenixRuntimeTests: XCTestCase {
         // the tensors. They disagreeing means one of them is decoration.
         XCTAssertEqual(ProtenixSizeGuard.maximumTokens, 700,
                        "keep in step with pymol.predictors.protenix.MAX_RESIDUES")
+        XCTAssertEqual(ProtenixSizeGuard.maximumTokensV2, 550,
+                       "keep in step with pymol.predictors.protenix.V2_MAX_RESIDUES")
     }
 
     func testTheCapIsTheLargestMeasuredPointAndNotBeyondIt() {
         // The one invariant that survives raising the cap: it may reach the data and no
         // further. PredictSizeGuard's docstring records three occasions where a fit past
         // its measurements ran optimistic.
-        let largest = ProtenixSizeGuard.measured.map(\.tokens).max() ?? 0
-        XCTAssertLessThanOrEqual(ProtenixSizeGuard.maximumTokens, largest)
+        for variant in [ProtenixSizeGuard.Variant.base, .v2] {
+            let largest = variant.measured.map(\.tokens).max() ?? 0
+            XCTAssertLessThanOrEqual(variant.maximumTokens, largest, "\(variant)")
+        }
     }
 
     func testTheBudgetIsWhatBoundsAFoldOnALargeMachine() {
         // 32 GB by request. A machine with more RAM than that is still held to it.
         let huge = 512 * 1024 * 1024 * 1024
-        let decision = ProtenixSizeGuard.decide(tokens: 700, availableBytes: huge)
+        let decision = ProtenixSizeGuard.decide(tokens: 700, variant: .base,
+                                                availableBytes: huge)
         XCTAssertEqual(decision, .ok, "8.6 GB against a 32 GB budget is comfortable")
         XCTAssertEqual(ProtenixSizeGuard.budgetBytes, 32 * 1024 * 1024 * 1024)
     }
@@ -132,6 +142,7 @@ final class ProtenixRuntimeTests: XCTestCase {
     func testASmallMachineIsStillProtectedByItsOwnMemory() {
         // The budget is a ceiling, not a promise: an 8 GB Mac is sized against 8 GB.
         let decision = ProtenixSizeGuard.decide(tokens: 700,
+                                                variant: .base,
                                                 availableBytes: 8 * 1024 * 1024 * 1024)
         guard case .refuse = decision else {
             return XCTFail("8.6 GB cannot fit in 8 GB, got \(decision)")
@@ -142,23 +153,99 @@ final class ProtenixRuntimeTests: XCTestCase {
         // 532 residues, the input that hit the old 400 cap. Interpolates to ~6 GB, which
         // is measured territory: 550 was swept at 6303 MiB.
         XCTAssertEqual(ProtenixSizeGuard.decide(tokens: 532,
+                                                variant: .base,
                                                 availableBytes: 32 * 1024 * 1024 * 1024),
                        .ok)
     }
 
     func testAModestFoldIsAccepted() {
         let decision = ProtenixSizeGuard.decide(tokens: 60,
+                                                variant: .base,
                                                 availableBytes: 36 * 1024 * 1024 * 1024)
         XCTAssertEqual(decision, .ok)
     }
 
     func testATinyMachineRefusesAndSaysWhatWouldFit() {
         let decision = ProtenixSizeGuard.decide(tokens: 400,
+                                                variant: .base,
                                                 availableBytes: 2 * 1024 * 1024 * 1024)
         guard case .refuse(let fitting) = decision else {
             return XCTFail("2 GB cannot hold a 400-residue fold, got \(decision)")
         }
         XCTAssertLessThan(fitting, 400)
+    }
+
+    func testV2IsSizedAboveBaseAtEveryMeasuredLength() {
+        // The whole reason the two cannot share a table. v2's 256-wide pair track roughly
+        // doubles the N^2 term, so base's curve is optimistic for v2 -- and optimistic is
+        // the direction that gets a session jetsam-killed rather than a request refused.
+        for point in ProtenixSizeGuard.Variant.v2.measured
+        where point.tokens <= ProtenixSizeGuard.maximumTokens {
+            XCTAssertGreaterThan(
+                ProtenixSizeGuard.estimatedPeakMiB(tokens: point.tokens, variant: .v2),
+                ProtenixSizeGuard.estimatedPeakMiB(tokens: point.tokens, variant: .base),
+                "at \(point.tokens) residues")
+        }
+    }
+
+    func testAV2WeightsPathSelectsV2sCurve() {
+        // How the runtime knows which curve to use: nothing else in the request names
+        // the pack.
+        let directory = "/Users/x/Library/Application Support/RayMol/weights/"
+        XCTAssertEqual(
+            ProtenixSizeGuard.Variant(weightsDirectory: directory + "protenix-v2-mlx-int8/v1"),
+            .v2)
+        XCTAssertEqual(
+            ProtenixSizeGuard.Variant(weightsDirectory: directory + "protenix-base-mlx-int8/v1"),
+            .base)
+    }
+
+    func testAnUnrecognisedWeightsPathTakesTheExpensiveCurve() {
+        // "I do not know what this is" must refuse sooner, not later. Defaulting to base
+        // would let a typo in a bundle id license a fold against a smaller model's
+        // numbers.
+        XCTAssertEqual(ProtenixSizeGuard.Variant(weightsDirectory: "/nowhere"), .v2)
+    }
+
+    func testEachVariantRefusesAtItsOwnCap() {
+        // Per pack, not per method -- and asserted without assuming which cap is lower.
+        // v2's was 250 against base's 700 while v2 was unswept, and the two now agree;
+        // what must hold either way is that each refuses at its own.
+        let huge = 512 * 1024 * 1024 * 1024
+        for variant in [ProtenixSizeGuard.Variant.base, .v2] {
+            XCTAssertNotEqual(
+                ProtenixSizeGuard.decide(tokens: variant.maximumTokens, variant: variant,
+                                         availableBytes: huge),
+                ProtenixSizeGuard.decide(tokens: variant.maximumTokens + 1,
+                                         variant: variant, availableBytes: huge),
+                "\(variant) must treat its cap and one past it differently")
+            guard case .refuse = ProtenixSizeGuard.decide(
+                tokens: variant.maximumTokens + 1, variant: variant,
+                availableBytes: huge) else {
+                return XCTFail("\(variant) must refuse above its own cap")
+            }
+        }
+    }
+
+    func testAMachineThatFitsBaseNeedNotFitV2() {
+        // Why the guard has to know which pack it is sizing, stated as a machine rather
+        // than a percentage: at 550 residues base peaks at 6303 MiB and v2 at 9068, so
+        // there are real Macs between the two. Sized from base's row, v2 was waved onto
+        // every one of them.
+        let tokens = 550
+        let baseBytes = ProtenixSizeGuard.estimatedBytes(tokens: tokens, variant: .base)
+        let v2Bytes = ProtenixSizeGuard.estimatedBytes(tokens: tokens, variant: .v2)
+        XCTAssertGreaterThan(v2Bytes, baseBytes)
+        // Just too little for v2's real peak, comfortably enough for base's.
+        let available = Int(Double(v2Bytes) / PredictSizeGuard.warnFraction) - 1
+        guard case .refuse = ProtenixSizeGuard.decide(tokens: tokens, variant: .v2,
+                                                      availableBytes: available) else {
+            return XCTFail("v2 does not fit and must be refused")
+        }
+        XCTAssertNotEqual(ProtenixSizeGuard.decide(tokens: tokens, variant: .base,
+                                                   availableBytes: available),
+                          ProtenixSizeGuard.decide(tokens: tokens, variant: .v2,
+                                                   availableBytes: available))
     }
 
     func testBoltzsGuardIsUntouched() {

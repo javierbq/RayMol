@@ -144,6 +144,34 @@ enum KeyRouting {
         return prefix + "-" + ch.uppercased()
     }
 
+    /// Tab / Shift+Tab → cycle the selection mode (#319): +1 to advance, -1 to
+    /// go back, nil meaning "not ours — pass the event through untouched".
+    /// Pure for the same reason `token` is: the monitor in ContentView supplies
+    /// the facts (and adds the modal/sheet/panel guard the other monitors use),
+    /// so the policy itself stays unit-testable.
+    ///
+    /// Yields on:
+    ///   • any key but Tab;
+    ///   • ⌘/⌃/⌥ held — ⌘⇥ is the app switcher, ⌃⇥ switches tabs; only bare Tab
+    ///     and Shift+Tab cycle;
+    ///   • `textEditingActive` — a field focused AND non-empty owns Tab, which
+    ///     keeps the command line's Tab completion (CommandTextField's
+    ///     insertTab: handler) intact. An EMPTY focused field still cycles:
+    ///     MetalViewport declines first-responder status (#73), so the command
+    ///     line keeps focus indefinitely once clicked and a plain "is a field
+    ///     focused" test would make the shortcut dead for the rest of the
+    ///     session. Completing an empty command line is the one behaviour
+    ///     traded away for that.
+    static func selectionModeStep(keyCode: UInt16,
+                                  modifiers: NSEvent.ModifierFlags,
+                                  textEditingActive: Bool) -> Int? {
+        guard keyCode == 48 else { return nil }  // 48 = Tab
+        if modifiers.contains(.command) || modifiers.contains(.control)
+            || modifiers.contains(.option) { return nil }
+        if textEditingActive { return nil }
+        return modifiers.contains(.shift) ? -1 : 1
+    }
+
     /// PyMOL's modifier prefix for the held combination, or nil when it has no
     /// token at all. modifier_keys is ['', 'SHFT', 'CTRL', 'CTSH', 'ALT'] — it
     /// has no entry for ALT+SHFT or CTRL+ALT, so rather than guess a prefix we

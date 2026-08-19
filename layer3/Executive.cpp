@@ -8151,6 +8151,13 @@ void ExecutiveInvalidateSelectionIndicators(PyMOLGlobals* G)
   CExecutive* I = G->Executive;
   ExecutiveInvalidateSelectionIndicatorsCGO(G);
   I->selectorTextureSize = 0;
+  // The sole caller is the glyph-atlas wrap in TextureIsCharTextured(), which
+  // restarts the packing cursor at the origin. Forget where the indicator used
+  // to live too, or ExecutiveRegenerateTextureForSelector() keeps re-filling
+  // the stale sub-rect that the glyph packer is now handing out again — the
+  // pink indicator and freshly rasterized label glyphs then overwrite each
+  // other in the shared texture.
+  I->selectorTextureAllocatedSize = 0;
 }
 
 void ExecutiveInvalidateSelectionIndicatorsCGO(PyMOLGlobals* G)

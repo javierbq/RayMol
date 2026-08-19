@@ -199,6 +199,9 @@ struct ContentView: View {
     // status (#73), so the viewport never receives keyDown and a monitor is the
     // only way to see keys at all. Installed/removed alongside it.
     @State private var pymolKeyMonitor: Any?
+    // Local key-down monitor token for Tab / Shift+Tab → cycle the selection
+    // mode (#319). Same rationale and lifecycle as the two monitors above.
+    @State private var selectionModeKeyMonitor: Any?
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -432,7 +435,12 @@ struct ContentView: View {
             VSplitView {
                 if showCommandPanel {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                        .frame(minHeight: 44, idealHeight: 60, maxHeight: 150)
+                        // idealHeight keeps the launch layout at a two-line
+                        // terminal; maxHeight is unbounded (#317) so the splitter
+                        // can be dragged as far as the user wants when reading a
+                        // long predict/build log. The viewport's own minHeight
+                        // (360) + layoutPriority stop it being squeezed away.
+                        .frame(minHeight: 44, idealHeight: 60, maxHeight: .infinity)
                 }
 
                 if engine.sequenceVisible {
@@ -589,6 +597,7 @@ struct ContentView: View {
                 }
                 installEscKeyMonitor()
                 installPyMOLKeyMonitor()
+                installSelectionModeKeyMonitor()
             }
             .onDisappear {
                 if let token = escKeyMonitor {
@@ -599,7 +608,48 @@ struct ContentView: View {
                     NSEvent.removeMonitor(token)
                     pymolKeyMonitor = nil
                 }
+                if let token = selectionModeKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    selectionModeKeyMonitor = nil
+                }
             }
+    }
+
+    // Shared by all three local key-down monitors below: a modal, sheet,
+    // popover or NSPanel owns the keyboard while it is up, so keys belong to it
+    // (pgup/pgdn must not change scenes behind an open Fetch-from-PDB sheet,
+    // Esc must dismiss the sheet rather than clear the selection, …).
+    //
+    // Detect secondary windows STRUCTURALLY: SwiftUI's NSApp.mainWindow is
+    // unreliable (often nil in Window-scene apps), so a `keyWindow != mainWindow`
+    // test wrongly swallows keys on the main window.
+    private func secondaryWindowOwnsKeys() -> Bool {
+        if NSApp.modalWindow != nil { return true }
+        if let keyWindow = NSApp.keyWindow {
+            // Sheets set isSheet; popovers/NSMenu helpers are NSPanels.
+            return keyWindow.isSheet || keyWindow is NSPanel
+        }
+        return false
+    }
+
+    // The two keyboard-focus facts the dispatching monitors need:
+    //   focused — an editable field is first responder (drives KeyRouting's
+    //     Tier A non-US-keyboard yield for ALT/CTSH combos).
+    //   editing — focused AND non-empty (drives Tier B, the arrows/home/end/
+    //     ctrl-letter yield while the user is composing).
+    // We require the text view to be editable or a field editor: the feedback
+    // log uses .textSelection(.enabled), and if SwiftUI's selectable-but-not-
+    // editable NSTextView ever becomes first responder its `string` is the
+    // entire log, which would silently disable arrows/home/end until focus moved.
+    private func textFocusFlags() -> (focused: Bool, editing: Bool) {
+        let responder = NSApp.keyWindow?.firstResponder
+        if let tv = responder as? NSTextView, tv.isEditable || tv.isFieldEditor {
+            return (true, !tv.string.isEmpty)
+        }
+        if let tf = responder as? NSTextField, tf.isEditable {
+            return (true, !tf.stringValue.isEmpty)
+        }
+        return (false, false)
     }
 
     // Esc → back out one level. A local key-down monitor rather than .onKeyPress
@@ -622,14 +672,8 @@ struct ContentView: View {
         escKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.keyCode == 53 else { return event }  // 53 = Esc
             // (a) A modal/sheet/panel/popover owns the interaction → let it handle
-            // Esc (dismiss). Detect secondary windows STRUCTURALLY: SwiftUI's
-            // NSApp.mainWindow is unreliable (often nil in Window-scene apps), so a
-            // `keyWindow != mainWindow` test wrongly swallows Esc on the main window.
-            if NSApp.modalWindow != nil { return event }
-            if let keyWindow = NSApp.keyWindow {
-                // Sheets set isSheet; popovers/NSMenu helpers are NSPanels.
-                if keyWindow.isSheet || keyWindow is NSPanel { return event }
-            }
+            // Esc (dismiss). See secondaryWindowOwnsKeys above.
+            if secondaryWindowOwnsKeys() { return event }
             // NOTE: intentionally does NOT defer to a focused text field — Esc
             // acts regardless of keyboard focus (incl. while the command-line box
             // is focused), per product decision. Only true modal/sheet/panel
@@ -660,43 +704,45 @@ struct ContentView: View {
     private func installPyMOLKeyMonitor() {
         guard pymolKeyMonitor == nil else { return }
         pymolKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Deliberately mirrors the Esc monitor's modal/sheet/panel guard
-            // (installEscKeyMonitor above): if a sheet, alert, or popover is
-            // the key window, keys belong to it — pgup/pgdn must not change
-            // scenes behind an open Fetch-from-PDB sheet, for example.
-            if NSApp.modalWindow != nil { return event }
-            if let keyWindow = NSApp.keyWindow {
-                if keyWindow.isSheet || keyWindow is NSPanel { return event }
-            }
+            // Shared modal/sheet/panel guard (secondaryWindowOwnsKeys above):
+            // if a sheet, alert, or popover is the key window, keys belong to
+            // it — pgup/pgdn must not change scenes behind an open
+            // Fetch-from-PDB sheet, for example.
+            if secondaryWindowOwnsKeys() { return event }
 
-            // Compute two focus flags passed into KeyRouting.token:
-            //   textFieldFocused — an editable field is first responder (drives
-            //     the Tier A non-US-keyboard yield for ALT/CTSH combos).
-            //   textEditingActive — focused AND non-empty (drives Tier B, the
-            //     arrows/home/end/ctrl-letter yield while the user is composing).
-            // We require the text view to be editable or a field editor: the
-            // feedback log uses .textSelection(.enabled), and if SwiftUI's
-            // selectable-but-not-editable NSTextView ever becomes first
-            // responder its `string` is the entire log, which would silently
-            // disable arrows/home/end until focus moved.
-            let responder = NSApp.keyWindow?.firstResponder
-            var textFieldFocused = false
-            var textEditingActive = false
-            if let tv = responder as? NSTextView, tv.isEditable || tv.isFieldEditor {
-                textFieldFocused = true
-                textEditingActive = !tv.string.isEmpty
-            } else if let tf = responder as? NSTextField, tf.isEditable {
-                textFieldFocused = true
-                textEditingActive = !tf.stringValue.isEmpty
-            }
-
+            let focus = textFocusFlags()
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                     modifiers: event.modifierFlags,
-                    textFieldFocused: textFieldFocused,
-                    textEditingActive: textEditingActive) else { return event }
+                    textFieldFocused: focus.focused,
+                    textEditingActive: focus.editing) else { return event }
             return engine.invokeKeyBinding(token) ? nil : event
+        }
+    }
+
+    // Tab / Shift+Tab → cycle the selection mode (#319), i.e. the same
+    // atoms/residues/chains/… list SelectionModeMenu shows. A third local
+    // monitor for the same reason as the two above (#73), and it cannot contend
+    // with them: Esc only looks at keyCode 53, and Tab carries neither CTRL nor
+    // ALT so KeyRouting.token always returns nil for it.
+    //
+    // Which Tab presses are ours lives in KeyRouting.selectionModeStep (pure,
+    // unit-tested) — bare Tab and Shift+Tab only, and never while a field is
+    // mid-edit, so the command line's Tab completion is untouched. The
+    // modal/sheet/panel guard stays here alongside the other monitors', and as
+    // with the Esc monitor the event is consumed only when the shortcut
+    // actually fires; otherwise it falls through to normal focus navigation.
+    private func installSelectionModeKeyMonitor() {
+        guard selectionModeKeyMonitor == nil else { return }
+        selectionModeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let step = KeyRouting.selectionModeStep(
+                    keyCode: event.keyCode,
+                    modifiers: event.modifierFlags,
+                    textEditingActive: textFocusFlags().editing) else { return event }
+            if secondaryWindowOwnsKeys() { return event }
+            SelectionModeMenu.cycle(engine, forward: step > 0)
+            return nil  // consume — don't move keyboard focus as well
         }
     }
 

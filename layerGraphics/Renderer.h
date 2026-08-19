@@ -243,6 +243,13 @@ public:
   // creating it from data if not already cached.
   virtual void invalidateVBOCache(uint64_t key) {}
 
+  // Drop the cached GPU upload for one CPU-side buffer. Called just before the
+  // CPU buffer is freed: renderers key their upload cache on that address, and
+  // the allocator readily hands the same block to the replacement buffer, so
+  // without this a rebuilt rep (e.g. after `set label_color`) keeps drawing the
+  // previous rep's vertex data. Default: no-op.
+  virtual void invalidateVBOCacheEntry(const void* cpuData) {}
+
   // Screen-aligned textured text quads (labels + measurement text). The
   // interleaved vertex data carries the attributes the GL label shader uses;
   // byte offsets are within `stride` (-1 = absent). The glyph atlas is an
@@ -273,6 +280,40 @@ public:
     float clipRange = 1.f;
   };
   virtual void drawLabels(const LabelDrawCall&) {}
+
+  // Label connectors: the background box, the background outline and the
+  // connector line(s) that tie a floating label back to its atom. The GL path
+  // expands one vertex per connector into all of that geometry with a geometry
+  // shader (data/shaders/connector.gs); Metal has none, so the renderer gets
+  // the un-expanded per-connector records (one per connector, the same compact
+  // layout CGOOptimizeConnectors builds for the geometry-shader path) plus the
+  // byte offsets of each attribute within `stride` (-1 = absent), and expands
+  // them itself. Default: no-op (the GL path uses its own shader).
+  struct ConnectorDrawCall {
+    int connectorCount = 0;
+    const void* data = nullptr;
+    size_t dataSize = 0;
+    size_t stride = 0;
+    int targetOff = -1;        // a_target_pt3d (Float3)
+    int centerOff = -1;        // a_center_pt3d (Float3)
+    int indentOff = -1;        // a_indentFactor (Float2)
+    int screenWorldOff = -1;   // a_screenWorldOffset (Float3)
+    int textSizeOff = -1;      // a_textSize (Float2)
+    int colorOff = -1;         // a_Color (UByte4Norm)
+    int relModeOff = -1;       // a_relative_mode (UByte, not normalized)
+    int drawFlagsOff = -1;     // a_draw_flags (UByte, not normalized)
+    int bgColorOff = -1;       // a_bkgrd_color (UByte4Norm, a = bg alpha)
+    int relExtLenOff = -1;     // a_rel_ext_length (Float)
+    int conWidthOff = -1;      // a_con_width (Float)
+    float screenW = 1.f;
+    float screenH = 1.f;
+    float screenOriginVertexScale = 1.f;
+    float textureToLabelSize = 1.f;
+    float front = 0.f;
+    float clipRange = 1.f;
+    int lineSmooth = 1;        // antialias the connector line edges
+  };
+  virtual void drawConnectors(const ConnectorDrawCall&) {}
 
   // Sphere impostors: interleaved triangle-list VBO (6 verts/sphere, two tris
   // per screen-aligned quad) with attributes a_vertex_radius (Float4
