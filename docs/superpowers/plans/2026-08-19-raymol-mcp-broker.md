@@ -752,8 +752,14 @@ In `response(for:method:id:raw:)` (line 96), replace the opening `if let body = 
         let target = resolveTarget(requestedKey: nil)
         var instance: MCPInstance? = nil
         if case .bound(let i) = target { instance = i } else { instance = legacyHandoff() }
-        if let instance, let body = proxy(raw: raw, to: instance) {
-            return body.isEmpty ? nil : body   // empty = 202 notification ack
+        if let instance {
+            if let body = proxy(raw: raw, to: instance) {
+                return body.isEmpty ? nil : body   // empty = 202 notification ack
+            }
+            // Unreachable or 401 (a recycled pid, or a rotated token): the binding
+            // is stale, so drop it and let the next call re-resolve rather than
+            // retrying a port that is not ours.
+            setBound(nil)
         }
 ```
 
@@ -1354,7 +1360,7 @@ BODY
 
 **Spec coverage.** Registry file + fields → Task 4. Broker resolution order → Task 3, wired in Task 5. Ambiguity listing → Task 6. Instance keys with `#pid` collisions → Task 2. `instance` injection/stripping + `list_raymol_instances` → Task 6. Cold launch, defaults flip, 20 s poll, no launch lock → Task 7. Only-`tools/call`-launches → Task 7. Trust unchanged → no task sets `set_trusted`; asserted by the Task 9 Allow-prompt step. Error table → Tasks 6–7 (`ambiguous`, `unknownKey`, missing bundle, timeout) and Task 4 (`liveDirectoryInstances` prunes corrupt and dead entries). Migration → Task 8 plus Task 9 Step 5. Testing → Tasks 1–8 unit tests, Task 9 end-to-end.
 
-**Gap found and closed.** The spec lists "port returns 401 (stale token) → prune, rescan". Pid-liveness alone misses a pid that was recycled by an unrelated process. `liveDirectoryInstances` prunes dead pids only; the 401 case is left to `proxy` returning nil, which falls through to `legacyHandoff` and then to the offline reply. That is acceptable behavior but is NOT what the spec says. Task 5's `proxy` therefore must be treated as the 401 handler — the implementer should clear the sticky binding on a nil proxy result so the next call re-resolves. Add this to Task 5 Step 3: in `response`, on `proxy(...) == nil`, call `setBound(nil)` before falling through.
+**Gap found and closed.** The spec lists "port returns 401 (stale token) → prune, rescan". Pid-liveness alone misses a pid recycled by an unrelated process, so `liveDirectoryInstances` cannot be the whole answer. Fixed inline in Task 5 Step 3: a nil `proxy` result now clears the sticky binding, so the next call re-resolves instead of retrying a port that is no longer ours.
 
 **Placeholder scan.** No TBD/TODO. Every code step carries real code. Task 5 Step 1 honestly states it has no unit seam rather than inventing one.
 
