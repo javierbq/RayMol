@@ -71,3 +71,70 @@ class TestDesignRegion(testing.PyMOLTestCase):
         with open(os.path.join(tempfile.gettempdir(),
                                'raymol_design_selected.json')) as f:
             self.assertEqual(json.load(f)['indices'], [1, 3])
+
+    def _sele_payload(self):
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_sele.json')) as f:
+            return json.load(f)
+
+    def testSeleIndicesMapInGuideOrder(self):
+        obj = self._peptide()
+        cmd.select('sele', '%s and resi 2+4' % obj)
+        from pymol import raymol_design as rd
+        marker = rd.sele_design_indices(obj, 1)
+        self.assertTrue(marker.startswith('DESIGN_SELE:'))
+        data = self._sele_payload()
+        # resi 2 and 4 -> 0-based guide-order indices 1 and 3.
+        self.assertEqual(data['indices'], [1, 3])
+        self.assertEqual(data['n_total'], 2)
+
+    def testSeleIndicesEmptyWithoutSele(self):
+        obj = self._peptide()          # reinitialize() in _peptide drops any 'sele'
+        from pymol import raymol_design as rd
+        rd.sele_design_indices(obj, 1)
+        data = self._sele_payload()
+        self.assertEqual(data['indices'], [])
+        self.assertEqual(data['n_total'], 0)
+
+    def testSeleIndicesScopeToFocusObject(self):
+        obj = self._peptide()
+        cmd.fab('AAAAA', 'm2')
+        cmd.select('sele', '(m1 and resi 2) or (m2 and resi 3)')
+        from pymol import raymol_design as rd
+        rd.sele_design_indices('m1', 1)
+        data = self._sele_payload()
+        # Only m1's residue is designable here; m2's still counts toward n_total.
+        self.assertEqual(data['indices'], [1])
+        self.assertEqual(data['n_total'], 2)
+
+    def testSeleIndicesResolveOriginalOntoWorkingCopy(self):
+        obj = self._peptide()
+        cmd.create('%s_design' % obj, obj, zoom=0)
+        cmd.select('sele', '%s and resi 2+4' % obj)   # selection on the ORIGINAL
+        from pymol import raymol_design as rd
+        # Focus = working copy, no src: the original's selection does not intersect.
+        rd.sele_design_indices('%s_design' % obj, 1)
+        self.assertEqual(self._sele_payload()['indices'], [])
+        # With src = original it maps by (chain, resi) onto the copy's guide order.
+        rd.sele_design_indices('%s_design' % obj, 1, src=obj)
+        self.assertEqual(self._sele_payload()['indices'], [1, 3])
+
+    def testSeleDigestIsGatedOnDesignActive(self):
+        obj = self._peptide()
+        cmd.select('sele', '%s and resi 2' % obj)
+        from pymol import raymol_design as rd
+        rd.set_design_active(0)
+        self.assertEqual(rd.sele_digest(), '',
+                         'digest must cost nothing while Design mode is off')
+        rd.set_design_active(1)
+        try:
+            d1 = rd.sele_digest()
+            self.assertTrue(d1)
+            # Re-selecting the SAME residues must not change the digest.
+            cmd.select('sele', '%s and resi 2' % obj)
+            self.assertEqual(rd.sele_digest(), d1)
+            # A different residue set must change it.
+            cmd.select('sele', '%s and resi 2+3' % obj)
+            self.assertNotEqual(rd.sele_digest(), d1)
+        finally:
+            rd.set_design_active(0)   # never leak the flag into another test
