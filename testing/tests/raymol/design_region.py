@@ -138,3 +138,70 @@ class TestDesignRegion(testing.PyMOLTestCase):
             self.assertNotEqual(rd.sele_digest(), d1)
         finally:
             rd.set_design_active(0)   # never leak the flag into another test
+
+    def _sele_resis(self):
+        """Sorted resi strings of the guide residues currently in 'sele'."""
+        out = set()
+        cmd.iterate('(?sele) and polymer and guide',
+                    'out.add(resi)', space={'out': out})
+        return sorted(out, key=int)
+
+    def testToggleSeleResidueAddsThenRemoves(self):
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        self.assertEqual(rd.toggle_sele_residue(obj, '', '2'),
+                         'DESIGN_SELE_TOGGLE:on')
+        self.assertEqual(self._sele_resis(), ['2'])
+        rd.toggle_sele_residue(obj, '', '4')
+        self.assertEqual(self._sele_resis(), ['2', '4'])
+        # Same residue again -> removed, matching a normal-mode click.
+        self.assertEqual(rd.toggle_sele_residue(obj, '', '2'),
+                         'DESIGN_SELE_TOGGLE:off')
+        self.assertEqual(self._sele_resis(), ['4'])
+
+    def testSetSeleResidueReplaces(self):
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(obj, '', '2')
+        rd.toggle_sele_residue(obj, '', '3')
+        rd.set_sele_residue(obj, '', '5')
+        self.assertEqual(self._sele_resis(), ['5'],
+                         'set must replace the selection, not extend it')
+
+    def testSetSeleFromSelectionCopiesNamedRegion(self):
+        obj = self._peptide()
+        cmd.select('loop', '%s and resi 2+3' % obj)
+        from pymol import raymol_design as rd
+        rd.set_sele_from_selection('loop')
+        self.assertEqual(self._sele_resis(), ['2', '3'])
+
+    def testSetSeleFromMissingSelectionEmpties(self):
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(obj, '', '2')
+        # A name that does not exist must empty 'sele', never raise.
+        rd.set_sele_from_selection('nope')
+        self.assertEqual(self._sele_resis(), [])
+
+    def testToggleIsResidueScopedRegardlessOfMouseSelectionMode(self):
+        # D1: Design clicks always expand to RESIDUE scope. With
+        # mouse_selection_mode = 0 (atom) a normal-mode click would commit a single
+        # ATOM, which maps to zero guide residues -- a click that silently selects
+        # nothing. Design must ignore the setting entirely.
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        for mode in (0, 1, 2, 4):
+            cmd.set('mouse_selection_mode', mode)
+            rd.clear_sele()
+            rd.toggle_sele_residue(obj, '', '2')
+            self.assertEqual(self._sele_resis(), ['2'],
+                             'mouse_selection_mode %d must not change the scope '
+                             'of a Design-mode click' % mode)
+        cmd.set('mouse_selection_mode', 1)   # restore the default
+
+    def testClearSeleEmpties(self):
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(obj, '', '2')
+        self.assertEqual(rd.clear_sele(), 'DESIGN_SELE_CLEAR:ok')
+        self.assertEqual(self._sele_resis(), [])

@@ -266,6 +266,62 @@ def sele_design_indices(obj, state, src=''):
     return 'DESIGN_SELE:%d' % len(indices)
 
 
+def toggle_sele_residue(obj, chain, resi):
+    """Add or remove one residue in the active 'sele' (a Design-mode click).
+
+    Deliberately mirrors metal_pick.pick_at's toggle idiom so that a click means
+    the same thing in Design mode as in normal mode: already selected -> remove,
+    otherwise add. Always leaves 'sele' enabled so the renderer's pink committed
+    pass draws it. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
+    """
+    expr = '(%s)' % _residue_sel(obj, chain, resi)
+    try:
+        already = cmd.count_atoms('(?sele) and %s' % expr) > 0
+    except Exception:
+        already = False
+    if already:
+        cmd.select('sele', '(?sele) and not %s' % expr, enable=1)
+    else:
+        cmd.select('sele', '(?sele) or %s' % expr, enable=1)
+    return 'DESIGN_SELE_TOGGLE:%s' % ('off' if already else 'on')
+
+
+def set_sele_residue(obj, chain, resi):
+    """Replace the active 'sele' with exactly one residue.
+
+    Used when a Design-mode click lands on a DIFFERENT object than the current
+    focus: design retargets to that object and the selection starts fresh there,
+    so residues of the previous focus never linger in the region.
+    Returns 'DESIGN_SELE_SET:ok'.
+    """
+    cmd.select('sele', _residue_sel(obj, chain, resi), enable=1)
+    return 'DESIGN_SELE_SET:ok'
+
+
+def set_sele_from_selection(name):
+    """Replace the active 'sele' with the contents of the named selection.
+
+    Backs the lasso dropdown: designating a named region writes it into 'sele' so
+    'sele' stays the single source of truth instead of the controller holding a
+    second, divergent copy. '?name' so a stale name empties the selection rather
+    than raising. Returns 'DESIGN_SELE_NAMED:ok'.
+    """
+    cmd.select('sele', '(?%s)' % name, enable=1)
+    return 'DESIGN_SELE_NAMED:ok'
+
+
+def clear_sele():
+    """Empty the active 'sele' (a Design-mode click on empty space).
+
+    Matches metal_pick.pick_at's empty-space behaviour. enable=0 because there is
+    nothing to draw, and an enabled empty selection would still suppress other
+    selections (cmd.enable is exclusive for selections).
+    Returns 'DESIGN_SELE_CLEAR:ok'.
+    """
+    cmd.select('sele', 'none', enable=0)
+    return 'DESIGN_SELE_CLEAR:ok'
+
+
 def _record_design_metrics(obj, metric, rows, state=0):
     """Keep a scored design pass in the metric store. Never raises.
 
