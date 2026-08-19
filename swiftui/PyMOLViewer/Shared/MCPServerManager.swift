@@ -77,7 +77,7 @@ final class MCPServerManager: ObservableObject {
         guard forced || UserDefaults.standard.bool(forKey: "raymol.mcp.enabled") else { return }
         guard let engine else { return }
         if engine.isReady {
-            start()
+            start(persist: Self.shouldPersistEnabledFlag(forcedByEnvironment: forced))
         } else if attempt < 40 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.autoStartIfEnabled(attempt: attempt + 1)
@@ -89,9 +89,17 @@ final class MCPServerManager: ObservableObject {
 
     func toggle() { isRunning ? stop() : start() }
 
-    func start() {
+    /// Pure: does starting the server also mean the user asked for it to start
+    /// every time? Only when they flipped the toggle themselves. A start forced
+    /// by RAYMOL_MCP_ENABLE — a VM test, or a broker cold-launching us for one
+    /// Claude tool call — must leave the preference untouched.
+    static func shouldPersistEnabledFlag(forcedByEnvironment: Bool) -> Bool {
+        !forcedByEnvironment
+    }
+
+    func start(persist: Bool = true) {
         guard let engine, engine.isReady, !isRunning else { return }
-        UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
+        if persist { UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled") }
         // start() returns the live port; the manager learns it from the MCP:started line.
         let b64 = Data(token.utf8).base64EncodedString()
         engine.runPython(

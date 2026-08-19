@@ -347,4 +347,13 @@ final class MCPBrokerTests: XCTestCase {
         XCTAssertFalse(MCPBridge.shouldColdLaunch(legacyReachable: true))
         XCTAssertTrue(MCPBridge.shouldColdLaunch(legacyReachable: false))
     }
+
+    // A cold launch must leave the user's Connect toggle exactly as it was. The
+    // env-forced start path therefore must NOT persist it — otherwise every
+    // future MANUAL launch quietly starts the MCP server too, which is a
+    // decision only the user gets to make.
+    func testEnvForcedStartDoesNotPersistTheToggle() {
+        XCTAssertFalse(MCPServerManager.shouldPersistEnabledFlag(forcedByEnvironment: true))
+        XCTAssertTrue(MCPServerManager.shouldPersistEnabledFlag(forcedByEnvironment: false))
+    }
 }
