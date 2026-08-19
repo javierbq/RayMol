@@ -3020,32 +3020,37 @@ struct ContentView: View {
     private var macToolsMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             if let active = activeInteractionTool {
-                // A mode is ON. The button now reads as active AND acts as a toggle:
-                //   • ACCENT-FILLED label — the macOS toolbar refuses to recolour a plain
-                //     Menu's template glyph AND ignores button-style tints (.foregroundColor,
-                //     .palette+.foregroundStyle, .tint, and .buttonStyle(.borderedProminent)
-                //     all stayed grey when checked in a VM). What the toolbar DOES render is a
-                //     view's OWN .background fill — cf. MCPStatusView's status dot — so we paint
-                //     an accent capsule around a custom label ourselves.
-                //   • a PRIMARY click exits the active mode (primaryAction), matching how a
-                //     lone toggle button turns itself off.
-                //   • the tool list stays reachable on the disclosure chevron, so switching
-                //     Move→Measure etc. still works without leaving the toolbar.
-                Menu {
-                    interactionToolItems
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: active.macIcon)
-                        Text(active.name)
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9).padding(.vertical, 3)
-                    .background(themeManager.active.accent.color, in: Capsule())
-                } primaryAction: {
+                // A mode is ON: render an ACCENT-COLOURED toggle that a click turns off.
+                //
+                // Colour has to come from a Shape FILL inside a plain Button — NOT from a
+                // Menu. The macOS toolbar replaces a Menu label's surface with its own dark
+                // menu-button chrome, which strips every tint tried (.foregroundColor,
+                // .palette+.foregroundStyle, .tint, .buttonStyle(.borderedProminent), and a
+                // .background(_,in:Capsule) modifier — all verified grey in a VM). What the
+                // toolbar DOES render is a filled Shape drawn as button CONTENT — cf.
+                // MCPStatusView's status dot (a Circle().fill in a plain Button). So we draw
+                // the accent Capsule ourselves and drop the chrome with .buttonStyle(.plain).
+                //
+                // Cost: no inline tool-switch while active — clicking exits, then the idle
+                // Menu picks the next tool. The two things asked for (reads-as-active, click-
+                // closes) are met; each mode also raises its own on-canvas bar.
+                Button {
                     engine.exitActiveInteractionMode()
+                } label: {
+                    ZStack {
+                        Capsule().fill(themeManager.active.accent.color)
+                        HStack(spacing: 4) {
+                            Image(systemName: active.macIcon)
+                            Text(active.name)
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 3)
+                    }
+                    .fixedSize()
                 }
-                .help("\(active.name) is on — click to turn it off, or use the menu to switch tools")
+                .buttonStyle(.plain)
+                .help("\(active.name) is on — click to turn it off")
             } else {
                 // Idle: a neutral "Tools" wrench; a click opens the tool list.
                 Menu {
