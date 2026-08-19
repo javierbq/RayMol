@@ -14,6 +14,7 @@
 
 - **Platforms:** macOS *and* iOS. Design mode is gated on the `RAYMOL_MPNN` compilation condition, which `swiftui/project.yml` sets for `macosx*`, `iphoneos*`, and `iphonesimulator*`. Every Swift change must compile for both.
 - **CI does not cover this code.** No workflow runs `PyMOLViewerTests`, and CI never compiles the iOS target. Swift tests and both-platform compiles are **manual** (Task 8). Do not treat a green CI as verification.
+- **Xcode scheme names** (there is no scheme called `RayMol`): tests run under `UnitTests_macOS`; the app targets are `PyMOLViewer_macOS` and `PyMOLViewer_iOS`; the project is `swiftui/PyMOLViewer.xcodeproj`. `-skipPackagePluginValidation` is required — the project pulls SwiftPM dependencies (MPNNKit, mlx-swift, Sparkle, BoltzMLX, ProtenixMLX) whose plugins otherwise block the build.
 - **New Python test files are invisible to CI unless registered.** `.github/workflows/raymol-embedded-tests.yml` hand-lists test files. This plan therefore adds tests to `testing/tests/raymol/design_region.py`, which is already listed (line ~73). Do not create a new Python test file.
 - **Python tests run through PyMOL, not pytest.** A working environment is ALREADY BUILT at `.venv-sdd/` in this worktree, and its pure-Python layer is symlinked back to `modules/`, so your edits are live. Verified command:
   ```bash
@@ -572,7 +573,8 @@ Append to `swiftui/PyMOLViewerTests/DesignRegionTests.swift`, inside the existin
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -30
 ```
 
@@ -749,7 +751,8 @@ In the `#if DEBUG` block of `DesignController.swift`, next to `injectRegion` (~l
 - [ ] **Step 7: Run the tests to verify they pass**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -30
 ```
 
@@ -959,7 +962,8 @@ Append to `swiftui/PyMOLViewerTests/DesignRegionTests.swift` (reuses `seleContro
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -30
 ```
 
@@ -1110,7 +1114,8 @@ The pink marker *is* `sele` now, so nothing should push a selection outward. Del
 - [ ] **Step 8: Run the tests to verify they pass**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -30
 ```
 
@@ -1230,7 +1235,8 @@ Then find the `handleViewportHit` region-edit test near line 564 (`testHandleVie
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignIOSPortTests 2>&1 | tail -30
 ```
 
@@ -1315,7 +1321,8 @@ Expected: no output. (Matches under `swiftui/build_ios_restricted/` or in `docs/
 - [ ] **Step 7: Run the full design test suite**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests 2>&1 | tail -40
 ```
 
@@ -1382,7 +1389,8 @@ Append to `swiftui/PyMOLViewerTests/DesignIOSPortTests.swift`:
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignIOSPortTests/testEmptyHitClearsThroughTheSameRouting 2>&1 | tail -20
 ```
 
@@ -1499,7 +1507,8 @@ In `setDesignMode(_:)` in `PyMOLEngine.swift`, replace the final `designMode = o
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests 2>&1 | tail -40
 ```
 
@@ -1595,7 +1604,8 @@ Append to `swiftui/PyMOLViewerTests/DesignRegionTests.swift`:
 
 ```bash
 .venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -25
 ```
 
@@ -1654,7 +1664,8 @@ In `parseObjectPanelFeedback` in the same file, immediately after the `guard let
 
 ```bash
 .venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests 2>&1 | tail -40
 ```
 
@@ -1725,11 +1736,14 @@ In `DesignCompactPanel.swift`, inside `actionRow`, immediately after `regionButt
 The core must be built BEFORE `xcodebuild`, or `xcodebuild` silently links a stale `libpymol_core.a` and you test old code:
 
 ```bash
-pip install --verbose --no-build-isolation --config-settings testing=True .
 cd swiftui && xcodegen generate && \
-  xcodebuild -scheme RayMol -destination 'platform=macOS' \
-  -skipPackagePluginValidation build 2>&1 | tail -20
+  xcodebuild -project PyMOLViewer.xcodeproj -scheme PyMOLViewer_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation build 2>&1 | tail -20
 ```
+
+The core is ALREADY built for this branch (see Global Constraints) and
+`libpymol_core.a` is present, so do not re-run `pip install` here — a rebuild
+would destroy the symlinks the Python suite depends on.
 
 Expected: `BUILD SUCCEEDED`.
 
@@ -1738,7 +1752,7 @@ Expected: `BUILD SUCCEEDED`.
 CI never compiles iOS, and `ContentView.swift` has leaked platform-only symbols in both directions before (#174, #226, #238). This step is the only thing that catches it:
 
 ```bash
-cd swiftui && xcodebuild -scheme PyMOLViewer_iOS \
+cd swiftui && xcodebuild -project PyMOLViewer.xcodeproj -scheme PyMOLViewer_iOS \
   -destination 'generic/platform=iOS Simulator' \
   -skipPackagePluginValidation build 2>&1 | tail -20
 ```
@@ -1748,7 +1762,8 @@ Expected: `BUILD SUCCEEDED`. If it fails on a symbol the macOS build accepted, t
 - [ ] **Step 5: Run the whole Swift and Python design suites**
 
 ```bash
-cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
+cd swiftui && xcodebuild test -project PyMOLViewer.xcodeproj -scheme UnitTests_macOS \
+  -destination 'platform=macOS' -skipPackagePluginValidation \
   -only-testing:PyMOLViewerTests 2>&1 | tail -40
 ```
 
