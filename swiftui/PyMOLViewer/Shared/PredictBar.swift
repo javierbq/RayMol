@@ -52,8 +52,11 @@ struct PredictBar: View {
                 ProgressView().scaleEffect(0.6)
                 Text("Building \(n) alignment\(n == 1 ? "" : "s")…").font(.system(size: 11))
             case .predicting:
-                ProgressView().scaleEffect(0.6)
-                Text("Prediction submitted — see the progress tray.").font(.system(size: 11))
+                // submitPredict() returns the bar to .idle the moment a job is handed
+                // off, so this is unreachable in practice — the progress tray is the
+                // single source of truth for a running fold. Kept for switch
+                // exhaustiveness; deliberately renders nothing (no sticky banner).
+                EmptyView()
             case .error(let m):
                 Label(m, systemImage: "xmark.octagon").font(.system(size: 11))
                     .foregroundColor(.red).lineLimit(2)

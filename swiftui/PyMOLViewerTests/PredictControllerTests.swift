@@ -136,7 +136,9 @@ final class PredictControllerRunTests: XCTestCase {
         c.predictor = "boltz2"
         c.nModels = 3
         c.run()
-        XCTAssertEqual(c.phase, .predicting)
+        // Submitting hands the job to the tray and returns the bar to ready (.idle),
+        // rather than dwelling on a sticky "submitted" status.
+        XCTAssertEqual(c.phase, .idle)
         XCTAssertEqual(cmds.count, 1)
         let sent = cmds[0] as! String
         XCTAssertTrue(sent.contains("_c.predict('boltz2', 'MKTAY'"))
@@ -169,7 +171,7 @@ final class PredictControllerRunTests: XCTestCase {
                                     columns: 60, residues: 60, target: "1ubq", chain: "A")
         c.onEngineState(alignments: [landed], searches: [])
 
-        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(c.phase, .idle)   // submitted → bar back to ready; tray owns progress
         XCTAssertEqual(cmds.count, 2)
         // Object path: predict does NOT carry an msa= arg (auto-attach).
         XCTAssertFalse((cmds[1] as! String).contains("msa="))
@@ -193,7 +195,7 @@ final class PredictControllerRunTests: XCTestCase {
         let landed = AlignmentEntry(id: "aln", name: name, depth: 4, columns: 5,
                                     residues: 5, target: "", chain: "")
         c.onEngineState(alignments: [landed], searches: [])
-        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(c.phase, .idle)   // submitted → bar back to ready
         XCTAssertTrue((cmds.lastObject as! String).contains("msa='\(name)/'"))  // B empty
     }
 
@@ -231,8 +233,8 @@ final class PredictControllerRunTests: XCTestCase {
         c.onEngineState(alignments: [existing], searches: [])
         XCTAssertEqual(c.phase, .idle, "onEngineState while idle must not change phase")
         c.run()
-        // Already satisfied → no msa_search, goes straight to predict.
-        XCTAssertEqual(c.phase, .predicting)
+        // Already satisfied → no msa_search, goes straight to predict, then back to idle.
+        XCTAssertEqual(c.phase, .idle)
         XCTAssertEqual(cmds.count, 1)
         XCTAssertFalse((cmds[0] as! String).contains("msa_search"), "no search needed")
         XCTAssertTrue((cmds[0] as! String).contains("_c.predict("))
@@ -253,7 +255,7 @@ final class PredictControllerRunTests: XCTestCase {
         XCTAssertEqual(cmds.count, 0)          // nothing submitted yet
         c.confirmPendingWarning()
         XCTAssertNil(c.pendingSizeWarning)
-        XCTAssertEqual(c.phase, .predicting)
+        XCTAssertEqual(c.phase, .idle)   // confirm → submit → bar back to ready
         XCTAssertEqual(cmds.count, 1)
     }
 

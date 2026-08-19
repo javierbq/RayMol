@@ -336,7 +336,13 @@ final class PredictController: ObservableObject {
             seed: seed, msaDepth: depth,
             name: resultName.isEmpty ? nil : resultName, msa: slots)
         runPythonSeam(cmd)
-        phase = .predicting
+        // The job is now the engine's; the progress tray is its single source of
+        // truth from here. Return the bar to ready rather than leaving a sticky
+        // "submitted" status that only the mode-exit button could clear — so the
+        // user can watch the tray (or queue another fold) unobstructed.
+        plannedNames = [:]
+        failGraceTicks = 0
+        phase = .idle
     }
 
     func cancel() {
