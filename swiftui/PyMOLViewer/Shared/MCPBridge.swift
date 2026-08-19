@@ -5,6 +5,7 @@
 // friendly error for tool calls, so Claude always shows the server + tools.
 #if os(macOS) && !RAYMOL_MAS_RESTRICTED
 import Foundation
+import AppKit
 
 enum MCPBridge {
     private static let protocolVersion = "2025-06-18"
@@ -29,6 +30,39 @@ enum MCPBridge {
     }
     private static func setBound(_ i: MCPInstance?) {
         boundLock.lock(); boundInstance = i; boundLock.unlock()
+    }
+
+    static let installedAppPath = "/Applications/RayMol.app"
+
+    /// Opening a client must not open RayMol. Launching is a consequence of
+    /// asking RayMol to DO something, so only tools/call qualifies.
+    static func mayColdLaunch(method: String) -> Bool { method == "tools/call" }
+
+    /// Launch the installed app and wait for it to register. Returns nil on a
+    /// missing bundle or on timeout; the caller turns that into a tool error.
+    static func coldLaunch(timeout: TimeInterval = 20) -> MCPInstance? {
+        let url = URL(fileURLWithPath: installedAppPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        // The broker IS RayMol's binary, so this writes RayMol's own defaults
+        // domain — the launched app auto-starts its server even on a machine
+        // where MCP has never been switched on.
+        UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
+
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        let sem = DispatchSemaphore(value: 0)
+        // Racing brokers are harmless: openApplication on an already-launching
+        // app activates it, so both converge on one instance.
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, _ in sem.signal() }
+        _ = sem.wait(timeout: .now() + 10)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let live = MCPInstanceRegistry.liveDirectoryInstances()
+            if let hit = live.first(where: { $0.installed }) ?? live.first { return hit }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        return nil
     }
 
     /// Resolve which RayMol this call belongs to.
@@ -155,6 +189,19 @@ enum MCPBridge {
             return ok(id: id, result: ["content": [["type": "text",
                 "text": "No running RayMol named \"\(key)\". Call list_raymol_instances."]],
                 "isError": true])
+        case .none where mayColdLaunch(method: method):
+            if let launched = coldLaunch() {
+                setBound(launched)
+                instance = launched
+            } else {
+                let exists = FileManager.default.fileExists(atPath: installedAppPath)
+                return ok(id: id, result: ["content": [["type": "text",
+                    "text": exists
+                        ? "RayMol opened but its MCP server didn't start within 20s. "
+                          + "In RayMol, turn on Connect ▸ Enable AI control, then retry."
+                        : "RayMol isn't installed at \(installedAppPath). Install it, then retry."]],
+                    "isError": true])
+            }
         default:
             instance = legacyHandoff()
         }

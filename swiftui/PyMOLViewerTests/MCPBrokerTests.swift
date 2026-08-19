@@ -242,4 +242,21 @@ final class MCPBrokerTests: XCTestCase {
         XCTAssertTrue(text.contains("RayMol-287"))
         XCTAssertTrue(text.contains("instance"))
     }
+
+    // MARK: - cold launch
+
+    // Guards the rule that opening a Claude client must NOT open RayMol: only a
+    // tool call may launch. Regressing this turns every client start into a
+    // window appearing on the user's screen.
+    func testOnlyToolsCallMayColdLaunch() {
+        XCTAssertTrue(MCPBridge.mayColdLaunch(method: "tools/call"))
+        XCTAssertFalse(MCPBridge.mayColdLaunch(method: "initialize"))
+        XCTAssertFalse(MCPBridge.mayColdLaunch(method: "tools/list"))
+        XCTAssertFalse(MCPBridge.mayColdLaunch(method: "ping"))
+        XCTAssertFalse(MCPBridge.mayColdLaunch(method: "notifications/initialized"))
+    }
+
+    func testInstalledAppPathIsTheApplicationsBundle() {
+        XCTAssertEqual(MCPBridge.installedAppPath, "/Applications/RayMol.app")
+    }
 }
