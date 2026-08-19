@@ -100,4 +100,78 @@ final class MCPBrokerTests: XCTestCase {
         XCTAssertNil(MCPInstanceRegistry.match("Nope", in: list))
         XCTAssertNil(MCPInstanceRegistry.match("999", in: list))
     }
+
+    // MARK: - resolve
+
+    private var one: [MCPInstance] { MCPInstanceRegistry.decodeAll([blob(pid: 1, name: "RayMol")]) }
+    private var two: [MCPInstance] {
+        MCPInstanceRegistry.decodeAll([blob(pid: 1, name: "RayMol"),
+                                       blob(pid: 2, name: "RayMol-287")])
+    }
+
+    func testSingleLiveInstanceBinds() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: one, requestedKey: nil, envKey: nil, sticky: nil),
+            .bound(one[0]))
+    }
+
+    func testEmptyRegistryReportsNone() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: [], requestedKey: nil, envKey: nil, sticky: nil),
+            .none)
+    }
+
+    func testTwoInstancesAreAmbiguousRatherThanGuessed() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: two, requestedKey: nil, envKey: nil, sticky: nil),
+            .ambiguous(two))
+    }
+
+    // Precedence: an explicit in-conversation key beats env, sticky and the scan,
+    // so "use the 287 build" can rebind mid-session.
+    func testRequestedKeyWinsOverEverything() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: two, requestedKey: "RayMol-287",
+                                        envKey: "RayMol", sticky: two[0]),
+            .bound(two[1]))
+    }
+
+    func testEnvKeyWinsOverStickyAndScan() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: two, requestedKey: nil,
+                                        envKey: "RayMol-287", sticky: two[0]),
+            .bound(two[1]))
+    }
+
+    // Without sticky binding a two-instance setup would re-ask on every call.
+    func testStickyBindingSurvivesAnAmbiguousScan() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: two, requestedKey: nil, envKey: nil,
+                                        sticky: two[0]),
+            .bound(two[0]))
+    }
+
+    // The app the session was bound to quit; its entry is gone. Falling back to
+    // the scan is what makes "RayMol quit mid-session" cold-launch again.
+    func testStickyBindingIsDroppedWhenItsInstanceDied() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: [], requestedKey: nil, envKey: nil,
+                                        sticky: two[0]),
+            .none)
+    }
+
+    func testUnknownRequestedKeyIsReportedNotIgnored() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: two, requestedKey: "RayMol-999",
+                                        envKey: nil, sticky: nil),
+            .unknownKey("RayMol-999"))
+    }
+
+    // A stale env var must not strand a working single-instance session.
+    func testUnknownEnvKeyFallsThroughToTheScan() {
+        XCTAssertEqual(
+            MCPInstanceRegistry.resolve(instances: one, requestedKey: nil,
+                                        envKey: "RayMol-999", sticky: nil),
+            .bound(one[0]))
+    }
 }
