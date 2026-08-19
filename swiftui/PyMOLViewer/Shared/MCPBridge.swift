@@ -19,6 +19,28 @@ enum MCPBridge {
         sessionIdLock.lock(); sessionId = s; sessionIdLock.unlock()
     }
 
+    /// The instance this broker session is bound to. Set on first successful
+    /// resolution and reused, so a multi-instance setup is disambiguated once
+    /// per client session rather than once per call.
+    private static var boundInstance: MCPInstance? = nil
+    private static let boundLock = NSLock()
+    private static func getBound() -> MCPInstance? {
+        boundLock.lock(); defer { boundLock.unlock() }; return boundInstance
+    }
+    private static func setBound(_ i: MCPInstance?) {
+        boundLock.lock(); boundInstance = i; boundLock.unlock()
+    }
+
+    /// Resolve which RayMol this call belongs to.
+    static func resolveTarget(requestedKey: String?) -> MCPTarget {
+        let env = ProcessInfo.processInfo.environment["RAYMOL_MCP_INSTANCE"]
+        let target = MCPInstanceRegistry.resolve(
+            instances: MCPInstanceRegistry.liveDirectoryInstances(),
+            requestedKey: requestedKey, envKey: env, sticky: getBound())
+        if case .bound(let i) = target { setBound(i) } else { setBound(nil) }
+        return target
+    }
+
     static func run() {
         while let line = readLine(strippingNewline: true) {
             if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
@@ -36,7 +58,7 @@ enum MCPBridge {
         // Claude closed our stdin (it quit) — tell the server to terminate our
         // session so the connected-client count updates immediately instead of
         // waiting for the idle sweep.
-        if let sid = getSessionId(), let h = handoff(),
+        if let sid = getSessionId(), let h = getBound() ?? legacyHandoff(),
            let url = URL(string: "http://127.0.0.1:\(h.port)/mcp") {
             var req = URLRequest(url: url)
             req.httpMethod = "DELETE"
@@ -50,27 +72,30 @@ enum MCPBridge {
 
     // MARK: handoff
 
-    private static func handoff() -> (port: Int, token: String)? {
+    /// Legacy single-instance handoff, used only when the registry is empty —
+    /// e.g. a RayMol built before the registry existed.
+    private static func legacyHandoff() -> MCPInstance? {
         let url = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/RayMol/mcp.json")
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let port = obj["port"] as? Int, let token = obj["token"] as? String
         else { return nil }
-        return (port, token)
+        return MCPInstance(pid: 0, port: port, token: token,
+                           appPath: "/Applications/RayMol.app", name: "RayMol",
+                           installed: true, startedAt: "")
     }
 
     // MARK: proxy
 
     // Returns the server's JSON response bytes, or nil if the server is unreachable.
-    private static func proxy(raw: Data) -> Data? {
-        guard let h = handoff(),
-              let url = URL(string: "http://127.0.0.1:\(h.port)/mcp") else { return nil }
+    private static func proxy(raw: Data, to instance: MCPInstance) -> Data? {
+        guard let url = URL(string: "http://127.0.0.1:\(instance.port)/mcp") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.httpBody = raw
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(h.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(instance.token)", forHTTPHeaderField: "Authorization")
         if let sid = getSessionId() { req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id") }
         let sem = DispatchSemaphore(value: 0)
         var out: Data? = nil
@@ -97,8 +122,17 @@ enum MCPBridge {
     private static func response(for msg: [String: Any], method: String,
                                  id: Any?, raw: Data) -> Data? {
         // Try the live server first.
-        if let body = proxy(raw: raw) {
-            return body.isEmpty ? nil : body   // empty = 202 notification ack
+        let target = resolveTarget(requestedKey: nil)
+        var instance: MCPInstance? = nil
+        if case .bound(let i) = target { instance = i } else { instance = legacyHandoff() }
+        if let instance {
+            if let body = proxy(raw: raw, to: instance) {
+                return body.isEmpty ? nil : body   // empty = 202 notification ack
+            }
+            // Unreachable or 401 (a recycled pid, or a rotated token): the binding
+            // is stale, so drop it and let the next call re-resolve rather than
+            // retrying a port that is not ours.
+            setBound(nil)
         }
         // Server unreachable: answer locally.
         switch method {
