@@ -2192,6 +2192,10 @@ final class PyMOLEngine: ObservableObject {
             #endif
         }
         designMode = on
+        // Arm/disarm the Design-mode 'sele' digest that poll_panel computes. Off ⇒
+        // that 500 ms main-thread poll pays one boolean check (see raymol_design
+        // .sele_digest), which is why this must be toggled rather than always on.
+        runPython("from pymol import raymol_design as _rd; _rd.set_design_active(\(on ? 1 : 0))")
     }
 
     #if os(macOS)
@@ -2484,6 +2488,43 @@ final class PyMOLEngine: ObservableObject {
             // Called on DesignController's inference queue, which is the only
             // context that touches _mpnnModel — see loadedMPNNModel().
             self?._mpnnModel = nil
+        },
+        seleState: { [weak self] obj, src, state in
+            guard let self else { return (indices: [], digest: "", total: 0) }
+            let srcArg = (src?.isEmpty == false) ? src! : ""
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.sele_design_indices('\(obj)', \(state), src='\(srcArg)')
+                """)
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_sele.json")
+            guard let data = FileManager.default.contents(atPath: path.path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return (indices: [], digest: "", total: 0) }
+            return (indices: (root["indices"] as? [Int]) ?? [],
+                    digest: (root["digest"] as? String) ?? "",
+                    total: (root["n_total"] as? Int) ?? 0)
+        },
+        toggleSele: { [weak self] obj, chain, resi in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.toggle_sele_residue('\(obj)', '\(chain)', '\(resi)')
+                """)
+        },
+        setSeleResidue: { [weak self] obj, chain, resi in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)')
+                """)
+        },
+        setSeleNamed: { [weak self] name in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_sele_from_selection('\(name)')
+                """)
+        },
+        clearSele: { [weak self] in
+            self?.runPython("from pymol import raymol_design as _rd; _rd.clear_sele()")
         }
         )
         // Propagate isCalculating into @Published isDesignCalculating so
@@ -2913,18 +2954,24 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
-        guard let data = FileManager.default.contents(atPath: path),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let hit = root["hit"] as? Bool, hit,
-              let chain = root["chain"] as? String,
-              let resi  = root["resi"]  as? String
-        else { return }
-        let focusObj = root["obj"] as? String ?? ""
+        var obj = "", chain = "", resi = ""
+        var hit = false
+        if let data = FileManager.default.contents(atPath: path),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            hit   = (root["hit"] as? Bool) ?? false
+            obj   = root["obj"]   as? String ?? ""
+            chain = root["chain"] as? String ?? ""
+            resi  = root["resi"]  as? String ?? ""
+        }
+        // A MISS must still reach the controller: an empty-space tap clears the
+        // selection (normal-mode parity). The previous early return on `hit ==
+        // false` made empty taps silently inert. An empty `object` is exactly what
+        // the macOS path already delivers on a miss (longPressPick builds
+        // LongPressHit with obj: "" and isEmpty: true), so both platforms converge.
         MainActor.assumeIsolated {
-            designController.handleViewportHit(object: focusObj,
-                                               chain: chain,
-                                               resi: resi,
-                                               hasResidue: true)   // guard above ensures hit==true
+            designController.handleViewportHit(object: hit ? obj : "",
+                                               chain: chain, resi: resi,
+                                               hasResidue: hit)
         }
     }
 
