@@ -111,6 +111,20 @@ final class DesignController: ObservableObject {
     typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
     /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
     typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
+    /// Read the active 'sele' for `obj`, scoped to `obj` + its edit `src` exactly as
+    /// `SelectedIndicesFn` is. Returns the full-length guide indices inside that
+    /// scope, a digest of the WHOLE selection (used only for change detection), and
+    /// the total selected residue count across all objects.
+    typealias SeleStateFn = (_ obj: String, _ src: String?, _ state: Int)
+        -> (indices: [Int], digest: String, total: Int)
+    /// Add or remove one residue in the active 'sele'.
+    typealias ToggleSeleFn = (_ obj: String, _ chain: String, _ resi: String) -> Void
+    /// Replace the active 'sele' with exactly one residue.
+    typealias SetSeleResidueFn = (_ obj: String, _ chain: String, _ resi: String) -> Void
+    /// Replace the active 'sele' with the contents of a named selection.
+    typealias SetSeleNamedFn = (_ name: String) -> Void
+    /// Empty the active 'sele'.
+    typealias ClearSeleFn = () -> Void
     /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
     /// never on the main thread — the model is owned by that queue.
     typealias ReleaseModelFn = () -> Void
@@ -143,6 +157,32 @@ final class DesignController: ObservableObject {
     private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
     private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
     private var releaseModelFn: ReleaseModelFn = { }
+
+    // MARK: – 'sele' access (single source of truth)
+    //
+    // OPTIONAL rather than defaulted closures: a stored property's default value
+    // cannot reference `self`, and the engine-free fallbacks below must read
+    // `lastSet` / `focusObject`. nil therefore means "use the local fallback",
+    // which is what unit tests get — and that matters, because
+    // `pinnedResidueIndex` is now DERIVED: against no-op stubs every existing pin
+    // assertion would read nil.
+    private var seleStateFn: SeleStateFn?
+    private var toggleSeleFn: ToggleSeleFn?
+    private var setSeleResidueFn: SetSeleResidueFn?
+    private var setSeleNamedFn: SetSeleNamedFn?
+    private var clearSeleFn: ClearSeleFn?
+
+    /// In-memory stand-in for PyMOL's 'sele' used by the fallbacks. Keys are
+    /// "chain\u{1}resi" — the same encoding `stickKey` produces.
+    private var stubSele: Set<String> = []
+
+    /// Digest of the selection the last `syncFromSele()` resolved. The panel-poll
+    /// hook compares against this so it only re-derives when 'sele' really changed.
+    private(set) var lastSeleDigest: String = ""
+
+    /// Name of the last selection explicitly designated through the lasso dropdown.
+    /// Any click clears it, so a click-built region falls back to the "sele" label.
+    private var pickedSelectionName: String?
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -178,6 +218,9 @@ final class DesignController: ObservableObject {
     @Published var paletteAllowed: Set<Int> = Set(0..<20)
     /// Name of the selection currently designated as the region (nil = single-residue mode).
     @Published private(set) var selectedSelectionName: String?
+    /// Residues in 'sele' that are NOT on the focus object. Design ignores them,
+    /// so the UI surfaces the count rather than silently dropping them.
+    @Published private(set) var seleResiduesOffFocus: Int = 0
     /// Selections available in the dropdown, refreshed on open.
     @Published private(set) var availableSelections: [DesignSelectionOption] = []
     /// Pre-batch sequence + editCount captured before the last region redesign (nil = nothing to revert).
@@ -711,6 +754,87 @@ final class DesignController: ObservableObject {
         editSourceObject = nil
         clearRegionState()
         compareEnabled = false   // bare assignment — do NOT call setCompare(false)
+    }
+
+    // MARK: – Engine-free 'sele' fallbacks
+    //
+    // Used when no closure is injected, so unit tests drive the REAL derivation
+    // instead of no-op stubs. Behaviourally identical to the Python helpers:
+    // toggle adds/removes, set replaces, clear empties.
+
+    private func seleToggleLocal(_ chain: String, _ resi: String) {
+        let k = stickKey(chain, resi)
+        if stubSele.contains(k) { stubSele.remove(k) } else { stubSele.insert(k) }
+    }
+
+    private func seleSetLocal(_ chain: String, _ resi: String) {
+        stubSele = [stickKey(chain, resi)]
+    }
+
+    private func seleClearLocal() { stubSele.removeAll() }
+
+    /// Local counterpart of `SeleStateFn`: resolve `stubSele` against the focus
+    /// object's residue set, in guide order.
+    private func seleStateLocal() -> (indices: [Int], digest: String, total: Int) {
+        guard let obj = focusObject, let set = lastSet[obj] else {
+            return (indices: [], digest: "\(stubSele.count)", total: stubSele.count)
+        }
+        let idx = set.residues.enumerated().compactMap { i, r in
+            stubSele.contains(stickKey(r.chain, r.resi)) ? i : nil
+        }
+        return (indices: idx, digest: "\(stubSele.count):\(idx)", total: stubSele.count)
+    }
+
+    /// Read the current 'sele' state through the injected closure, or the local
+    /// fallback when none is injected. Only reached with a focus object present
+    /// (`syncFromSele` guards first), so the no-focus branch just defers to the
+    /// fallback rather than inventing an empty result.
+    private func readSeleState() -> (indices: [Int], digest: String, total: Int) {
+        guard let obj = focusObject, let set = lastSet[obj] else { return seleStateLocal() }
+        if let fn = seleStateFn { return fn(obj, editSourceObject, set.state) }
+        return seleStateLocal()
+    }
+
+    // MARK: – Deriving the mode from 'sele'
+
+    /// Re-derive the Design-mode selection state from the active 'sele'.
+    ///
+    /// This is the ONLY writer of `pinnedResidueIndex` and
+    /// `selectedResidueIndices`. The count of DESIGNABLE residues in
+    /// `sele ∩ scope(focusObject, editSourceObject)` picks the mode:
+    ///   0  → nothing active (propensity row renders in its greyed idle form)
+    ///   1  → that residue is pinned; the region stays empty so `regionModeActive`
+    ///        is false and the propensity pills behave exactly as before
+    ///   ≥2 → the region is designated on 'sele'; the pin is cleared so the
+    ///        palette row and the Redesign button take over
+    ///
+    /// Returns the designable count, so callers and tests can assert the mode
+    /// without re-reading three properties.
+    @discardableResult
+    func syncFromSele() -> Int {
+        guard let obj = focusObject, let set = lastSet[obj] else {
+            pinnedResidueIndex = nil
+            selectedResidueIndices = []
+            selectedSelectionName = nil
+            seleResiduesOffFocus = 0
+            return 0
+        }
+        let state = readSeleState()
+        lastSeleDigest = state.digest
+        let inScope = state.indices.filter { $0 >= 0 && $0 < set.residues.count }
+        let valid = inScope.filter { set.residues[$0].valid }.sorted()
+        seleResiduesOffFocus = max(0, state.total - inScope.count)
+        if valid.count >= 2 {
+            selectedResidueIndices = valid
+            selectedSelectionName = pickedSelectionName ?? "sele"
+            pinnedResidueIndex = nil
+        } else {
+            selectedResidueIndices = []
+            selectedSelectionName = nil
+            pinnedResidueIndex = valid.first
+        }
+        reconcileSticks()
+        return valid.count
     }
 
     // MARK: – Region redesign: designation + palette (Task 2)
@@ -1275,6 +1399,20 @@ final class DesignController: ObservableObject {
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
+    }
+
+    /// Override the 'sele' closures for testing. Any argument left nil keeps the
+    /// engine-free local fallback for that operation.
+    func injectSele(seleState: SeleStateFn? = nil,
+                    toggleSele: ToggleSeleFn? = nil,
+                    setSeleResidue: SetSeleResidueFn? = nil,
+                    setSeleNamed: SetSeleNamedFn? = nil,
+                    clearSele: ClearSeleFn? = nil) {
+        if let seleState { self.seleStateFn = seleState }
+        if let toggleSele { self.toggleSeleFn = toggleSele }
+        if let setSeleResidue { self.setSeleResidueFn = setSeleResidue }
+        if let setSeleNamed { self.setSeleNamedFn = setSeleNamed }
+        if let clearSele { self.clearSeleFn = clearSele }
     }
 
     /// Override the model-release closure for testing (Phase 2d).
