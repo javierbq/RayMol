@@ -87,7 +87,72 @@ enum MCPInstanceRegistry {
         default: return .ambiguous(instances)
         }
     }
+
+    // MARK: - Directory + self-registration
+
+    static func directory() -> URL? {
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .applicationSupportDirectory,
+                                 in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("RayMol/instances", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Only an app under /Applications may be the cold-launch target, so a dev
+    /// build in a worktree never becomes the thing a client launches by default.
+    static func isInstalled(path: String) -> Bool {
+        path.hasPrefix("/Applications/")
+    }
+
+    static func selfEntry(pid: Int, port: Int, token: String,
+                          bundle: Bundle, startedAt: String) -> MCPInstance {
+        let path = bundle.bundlePath
+        let name = (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        return MCPInstance(pid: pid, port: port, token: token, appPath: path,
+                           name: name, installed: isInstalled(path: path),
+                           startedAt: startedAt)
+    }
+
+    static func write(_ entry: MCPInstance) -> URL? {
+        guard let dir = directory(),
+              let data = try? JSONEncoder().encode(entry) else { return nil }
+        let url = dir.appendingPathComponent("\(entry.pid).json")
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: url.path)
+        return url
+    }
+
+    /// Drop entries whose process is gone. `kill(pid, 0)` succeeds for a live
+    /// process we own and fails with ESRCH once it is reaped.
+    static func liveOnly(_ instances: [MCPInstance]) -> [MCPInstance] {
+        instances.filter { kill(pid_t($0.pid), 0) == 0 || errno == EPERM }
+    }
+
+    /// Read the directory, prune dead entries (deleting their files), return the rest.
+    static func liveDirectoryInstances() -> [MCPInstance] {
+        guard let dir = directory(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+        else { return [] }
+        var found: [MCPInstance] = []
+        for n in names where n.hasSuffix(".json") {
+            let url = dir.appendingPathComponent(n)
+            guard let data = try? Data(contentsOf: url), let e = decode(data) else {
+                try? FileManager.default.removeItem(at: url)   // unreadable: not useful to anyone
+                continue
+            }
+            if liveOnly([e]).isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                found.append(e)
+            }
+        }
+        return found.sorted { $0.pid < $1.pid }
+    }
 }
 #endif
+
 
 

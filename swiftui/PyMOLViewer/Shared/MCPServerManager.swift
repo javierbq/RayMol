@@ -18,6 +18,8 @@ final class MCPServerManager: ObservableObject {
     private let defaultPort = 51737
     /// The handoff this instance wrote, so shutdown removes its own and no one else's.
     private var writtenHandoff: URL?
+    /// The registry entry this instance wrote, removed on the way out.
+    private var writtenInstanceEntry: URL?
 
     /// The port to ask for, honouring `RAYMOL_MCP_PORT` when it is set.
     ///
@@ -122,11 +124,13 @@ final class MCPServerManager: ObservableObject {
             isRunning = true
             port = Int(detail)
             writeHandoff(port: port)
+            writeInstanceEntry(port: port)
             logLine("server started on \(detail)")
         case "stopped":
             isRunning = false; port = nil; clientCount = 0; activeTool = false
             trustedThisSession = false
             removeHandoff()
+            removeInstanceEntry()
             logLine("server stopped")
         case "connect":
             clientCount += 1
@@ -335,6 +339,24 @@ final class MCPServerManager: ObservableObject {
     private func removeHandoff() {
         if let url = writtenHandoff { try? FileManager.default.removeItem(at: url) }
         writtenHandoff = nil
+    }
+
+    /// Advertise this process in the instance registry, so a broker spawned by a
+    /// Claude client can find it without a pinned port.
+    private func writeInstanceEntry(port: Int?) {
+        guard let port else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let entry = MCPInstanceRegistry.selfEntry(
+            pid: Int(ProcessInfo.processInfo.processIdentifier), port: port,
+            token: token, bundle: .main, startedAt: stamp)
+        writtenInstanceEntry = MCPInstanceRegistry.write(entry)
+    }
+
+    private func removeInstanceEntry() {
+        if let url = writtenInstanceEntry {
+            try? FileManager.default.removeItem(at: url)
+        }
+        writtenInstanceEntry = nil
     }
 
     private static func randomHex(_ bytes: Int) -> String {

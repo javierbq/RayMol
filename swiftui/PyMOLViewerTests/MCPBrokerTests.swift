@@ -174,4 +174,30 @@ final class MCPBrokerTests: XCTestCase {
                                         envKey: "RayMol-999", sticky: nil),
             .bound(one[0]))
     }
+
+    // MARK: - selfEntry
+
+    // `installed` decides whether the broker may treat this app as the cold-launch
+    // target; deriving it from the bundle path keeps dev builds out of that role.
+    func testSelfEntryMarksAnAppOutsideApplicationsAsNotInstalled() {
+        XCTAssertFalse(MCPInstanceRegistry.isInstalled(path: "/Users/x/build/RayMol-287.app"))
+        XCTAssertTrue(MCPInstanceRegistry.isInstalled(path: "/Applications/RayMol.app"))
+    }
+
+    func testSelfEntryRoundTripsThroughDecode() {
+        let e = MCPInstance(pid: 7, port: 51737, token: "t", appPath: "/Applications/RayMol.app",
+                            name: "RayMol", installed: true, startedAt: "2026-08-19T10:00:00Z")
+        let data = try! JSONEncoder().encode(e)
+        XCTAssertEqual(MCPInstanceRegistry.decode(data), e)
+    }
+
+    // MARK: - liveness
+
+    // A crashed RayMol leaves its file behind. Proxying to that port either fails
+    // or, worse, reaches whatever else bound it since.
+    func testDeadPidsArePrunedFromAScan() {
+        let mine = Int(ProcessInfo.processInfo.processIdentifier)
+        let list = MCPInstanceRegistry.decodeAll([blob(pid: mine), blob(pid: 999_999, name: "Ghost")])
+        XCTAssertEqual(MCPInstanceRegistry.liveOnly(list).map(\.pid), [mine])
+    }
 }
