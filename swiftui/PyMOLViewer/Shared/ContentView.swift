@@ -839,10 +839,10 @@ struct ContentView: View {
             }
             #if RAYMOL_MPNN
             // Design mode click routing: a click (left or right) sets longPressHit.
-            // Routes through the shared handleViewportHit three-way rule so iOS and
-            // macOS behave identically — and so region-edit mode is honoured on macOS
-            // (the previous direct setPinned call bypassed tapResidue and therefore
-            // always pinned even when the user was building a region by clicking).
+            // Routes through handleViewportHit (four-way rule: empty space clears,
+            // same-object residue tap toggles region membership via tapResidue, same-
+            // object non-residue tap is a no-op, different object refocuses) so iOS and
+            // macOS behave identically.
             // Clears longPressHit so the context-menu dialog never fires in design mode.
             .onChange(of: engine.longPressHit) { hit in
                 guard engine.designMode, let hit = hit else { return }
@@ -3634,8 +3634,8 @@ private let designPinnedColor = Color(red: 0.98, green: 0.60, blue: 0.10)
 /// propensity pills, the residue badge, and the hover sidechain sticks all
 /// react identically to hovering here vs. mousing over the structure.
 ///
-/// Tapping a column calls setPinned(chain:resi:), the same path as a viewport
-/// click-to-pin, so clicking here pins the same way as clicking in the scene.
+/// Tapping a column calls tapResidue(residueIndex:), the same action as a
+/// viewport click, so the strip and the structure always agree.
 ///
 /// Feature 11: the PINNED column gets a persistent gold/orange border + fill;
 /// the HOVERED column gets a transient subtle-grey fill.
@@ -3727,23 +3727,8 @@ struct DesignSequenceStripView: View {
                 controller.clearHover()
             }
         }
-        // macOS keeps shift-click as a shortcut for building an ad-hoc region.
-        // `TapGesture().modifiers(_:)` is unavailable on iOS — this was the single
-        // iOS compile error in the whole Design feature. The cross-platform path is
-        // controller.regionEditMode, which a plain tap honours (see tapResidue).
-        //
-        // The shift gesture is DISABLED while regionEditMode is on: in that mode a
-        // plain tap already toggles the region, so leaving both active would make
-        // correctness depend on SwiftUI suppressing one of them. If it ever failed to,
-        // the position would be toggled twice — added then removed — a silent no-op.
-        #if os(macOS)
-        .highPriorityGesture(
-            TapGesture().modifiers(.shift).onEnded {
-                controller.toggleRegionResidue(residueIndex: i)
-            },
-            including: controller.regionEditMode ? .subviews : .all
-        )
-        #endif
+        // A plain tap toggles this position in 'sele' — the same gesture, and the
+        // same meaning, as a click in the viewport or in normal mode.
         .onTapGesture {
             controller.tapResidue(residueIndex: i)
         }
@@ -3785,8 +3770,6 @@ private struct DesignRegionStripView: View {
     private var controls: some View {
         HStack(spacing: 8) {
             selectionButton
-            stripDivider
-            regionEditToggle
             if controller.regionModeActive {
                 stripDivider
                 Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
@@ -3836,34 +3819,6 @@ private struct DesignRegionStripView: View {
                                   dismiss: { showPicker = false })
                 .presentationCompactAdaptation(.popover)
         }
-    }
-
-    // Explicit region-building mode: while on, a plain tap on a sequence column or
-    // in the viewport adds/removes that position. This is the touch replacement for
-    // shift-click, and the discoverable path on macOS too.
-    private var regionEditToggle: some View {
-        Button {
-            controller.regionEditMode.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: controller.regionEditMode
-                        ? "hand.tap.fill" : "hand.tap")
-                    .font(.system(size: 10))
-                Text("Tap to edit")
-                    .font(.system(size: 11,
-                                  weight: controller.regionEditMode ? .semibold : .regular))
-            }
-            .foregroundColor(controller.regionEditMode
-                             ? .white : theme.active.panelText.color.opacity(0.85))
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(controller.regionEditMode
-                        ? theme.active.accent.color
-                        : theme.active.panelText.color.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
-        .help("Build a region by tapping positions in the sequence or the structure")
-        .accessibilityLabel("Tap to edit region, \(controller.regionEditMode ? "on" : "off")")
     }
 
     // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.

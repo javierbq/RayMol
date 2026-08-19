@@ -46,34 +46,34 @@ final class DesignRegionTests: XCTestCase {
     // (empty region), and removing the last one leaves nothing active. The label of
     // a click-built region is "sele" — it IS the ordinary selection now, not a
     // separate "custom" copy the controller keeps on the side.
-    func testToggleRegionResidueBuildsAdHocRegion() {
+    func testTapResidueBuildsAdHocRegion() {
         let c = makeController()
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: [true, true, false, true])
         XCTAssertFalse(c.regionModeActive)
 
-        c.toggleRegionResidue(residueIndex: 3)
+        c.tapResidue(residueIndex: 3)
         XCTAssertEqual(c.pinnedResidueIndex, 3,
                        "one designable residue is single-residue mode, not a region")
         XCTAssertFalse(c.regionModeActive)
 
-        c.toggleRegionResidue(residueIndex: 1)
+        c.tapResidue(residueIndex: 1)
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])   // kept sorted
         XCTAssertTrue(c.regionModeActive)
         XCTAssertNil(c.pinnedResidueIndex, "region mode drops the pin")
         XCTAssertEqual(c.selectedSelectionName, "sele",
                        "a click-built region is labelled 'sele'")
 
-        c.toggleRegionResidue(residueIndex: 2)             // invalid → never counts
+        c.tapResidue(residueIndex: 2)             // invalid → never counts
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])
 
-        c.toggleRegionResidue(residueIndex: 1)             // remove → one left
+        c.tapResidue(residueIndex: 1)             // remove → one left
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
                       "one designable residue leaves region mode")
         XCTAssertEqual(c.pinnedResidueIndex, 3, "the survivor is pinned")
         XCTAssertNil(c.selectedSelectionName)
 
-        c.toggleRegionResidue(residueIndex: 3)             // remove last → nothing
+        c.tapResidue(residueIndex: 3)             // remove last → nothing
         XCTAssertFalse(c.regionModeActive)
         XCTAssertNil(c.selectedSelectionName)
         XCTAssertNil(c.pinnedResidueIndex)
