@@ -15,7 +15,11 @@
 - **Platforms:** macOS *and* iOS. Design mode is gated on the `RAYMOL_MPNN` compilation condition, which `swiftui/project.yml` sets for `macosx*`, `iphoneos*`, and `iphonesimulator*`. Every Swift change must compile for both.
 - **CI does not cover this code.** No workflow runs `PyMOLViewerTests`, and CI never compiles the iOS target. Swift tests and both-platform compiles are **manual** (Task 8). Do not treat a green CI as verification.
 - **New Python test files are invisible to CI unless registered.** `.github/workflows/raymol-embedded-tests.yml` hand-lists test files. This plan therefore adds tests to `testing/tests/raymol/design_region.py`, which is already listed (line ~73). Do not create a new Python test file.
-- **Python tests run through PyMOL, not pytest:** `pymol -ckqy testing/testing.py --run tests/raymol/design_region.py`. The repo's `.venv` PyMOL is broken (namespace-package conflict); use a Homebrew `pymol` with a shadow `PYTHONPATH` pointing at this worktree's `modules/`.
+- **Python tests run through PyMOL, not pytest.** A working environment is ALREADY BUILT at `.venv-sdd/` in this worktree, and its pure-Python layer is symlinked back to `modules/`, so your edits are live. Verified command:
+  ```bash
+  .venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
+  ```
+  Note the path form `testing/tests/...`, matching `.github/workflows/raymol-embedded-tests.yml`. The form in the test file's own docstring (`tests/raymol/...`) is WRONG: `cli()` resolves no files, silently does nothing, and exits 1 without printing one word. The exit code is the failure count, so 0 means pass. Do NOT rebuild or reinstall — neither the Homebrew `pymol` nor the shared repo `.venv` can run this suite, and a rebuild would cost you the working symlinks.
 - **`poll_panel` runs on the main thread every 500 ms and is a measured hot spot** (PR #270 fixed a 713 ms tick). Anything added to it must be O(1) when Design mode is off.
 - **`cmd.enable` is exclusive for selections.** Enabling `sele` disables other selections; `_preselect` must stay `enable=0`. Unchanged behaviour, but do not "fix" it.
 - **Decisions carried from the spec, all binding:**
@@ -121,7 +125,7 @@ Append to `testing/tests/raymol/design_region.py` inside `class TestDesignRegion
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 ```
 
 Expected: FAIL — `AttributeError: module 'pymol.raymol_design' has no attribute 'sele_design_indices'` (and the same for `sele_digest` / `set_design_active`).
@@ -241,7 +245,7 @@ def sele_design_indices(obj, state, src=''):
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 ```
 
 Expected: PASS, all tests in `TestDesignRegion` (the five new ones plus the four pre-existing).
@@ -354,7 +358,7 @@ Append to `testing/tests/raymol/design_region.py` inside `class TestDesignRegion
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 ```
 
 Expected: FAIL — `AttributeError: module 'pymol.raymol_design' has no attribute 'toggle_sele_residue'`.
@@ -423,7 +427,7 @@ def clear_sele():
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 ```
 
 Expected: PASS.
@@ -1590,7 +1594,7 @@ Append to `swiftui/PyMOLViewerTests/DesignRegionTests.swift`:
 - [ ] **Step 2: Run both suites to verify they fail**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
   -only-testing:PyMOLViewerTests/DesignRegionTests 2>&1 | tail -25
 ```
@@ -1649,7 +1653,7 @@ In `parseObjectPanelFeedback` in the same file, immediately after the `guard let
 - [ ] **Step 6: Run both suites to verify they pass**
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
 cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
   -only-testing:PyMOLViewerTests 2>&1 | tail -40
 ```
@@ -1749,11 +1753,11 @@ cd swiftui && xcodebuild test -scheme RayMol -destination 'platform=macOS' \
 ```
 
 ```bash
-pymol -ckqy testing/testing.py --run tests/raymol/design_region.py
-pymol -ckqy testing/testing.py --run tests/raymol/design_editing.py
-pymol -ckqy testing/testing.py --run tests/raymol/design_enumerate.py
-pymol -ckqy testing/testing.py --run tests/raymol/design_color.py
-pymol -ckqy testing/testing.py --run tests/raymol/design_saverestore.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_region.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_editing.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_enumerate.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_color.py
+.venv-sdd/bin/pymol -ckqy testing/testing.py --run testing/tests/raymol/design_saverestore.py
 ```
 
 Expected: all PASS. Report actual output; do not claim success without it.
