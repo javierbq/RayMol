@@ -457,6 +457,11 @@ final class DesignController: ObservableObject {
     private func refocusAndSelect(object: String, chain: String, resi: String,
                                   hasResidue: Bool) async {
         await focusAwait(object)
+        // A failed focus (enumerate threw) leaves no residue set for `object`, so a
+        // write here would replace the user's selection with a residue that cannot
+        // resolve — they would be left with neither their old selection nor a usable
+        // new one. Bail instead and leave 'sele' exactly as it was.
+        guard lastSet[object] != nil else { return }
         pickedSelectionName = nil
         if hasResidue {
             if let fn = setSeleResidueFn { fn(object, chain, resi) }
@@ -926,6 +931,12 @@ final class DesignController: ObservableObject {
     private func clearRegionState() {
         selectedResidueIndices = []
         selectedSelectionName = nil
+        // The lasso name must not outlive the region it labels: `syncFromSele`
+        // prefers it on every derive, so a stale one would label a click-built
+        // region after re-entering Design mode or switching focus with 2+ residues
+        // still in 'sele'. Reset here because this is the one point both `exit()`
+        // and the focus-change path go through.
+        pickedSelectionName = nil
         paletteAllowed = Set(0..<20)
         redesignSnapshot = nil
         isRedesigning = false
