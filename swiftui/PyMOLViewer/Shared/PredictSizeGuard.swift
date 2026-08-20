@@ -66,46 +66,67 @@ import os   // os_proc_available_memory()
 /// - ``maximumTokens`` becomes ``iOSMaximumTokens``, the largest input actually folded
 ///   on device.
 ///
-/// and the three fitted terms take iOS values. **Reusing the Mac constants was tried
-/// first and is wrong** — not merely conservative, unusable: at 117 tokens the Mac fit
-/// estimates 2.25 GB, and against a realistic iPhone app budget near 2.5 GB that is 86%,
-/// which this guard REFUSES. The Mac curve would have made the 100–150-residue fold this
-/// port exists for impossible on the device it was ported to. A guard that refuses
-/// everything is not a safe guard, it is a broken feature wearing a safe guard's clothes.
+/// and the three fitted terms take iOS values. **Reusing the Mac constants is safe but
+/// over-conservative.** Measured against the device footprints below it over-predicts by
+/// 1.23–1.39×, so it would not have got anyone jetsam-killed — but it is cautious enough
+/// to REFUSE sizes that fold perfectly well: at 130 residues it estimates 2.52 GB against
+/// the measured 3.27 GB budget (77%, past ``warnFraction``) for a fold that actually
+/// peaked at 2.00 GB and finished in 64 s. The iOS terms buy back that headroom without
+/// giving up margin over any measurement.
 ///
 /// ### How the iOS constants were derived
 ///
-/// From the one iOS peak anyone has recorded: **iPhone 15 Pro, 117 tokens / 899 atoms,
-/// ~1.4 GB `phys_footprint`** (boltz-mlx `examples/BoltzMLXDemo/DEVICE_BENCHMARK.md`).
-/// That is already the jetsam-relevant process footprint, cache included — so unlike
-/// `DesignSizeGuard`, no correction is needed for MLX's peak excluding its buffer cache.
+/// From a device sweep on the target hardware — iPhone 15 Pro, iOS 26.6, Release build,
+/// single chain, no MSA, at the shipped operating point (3 recycles / 200 diffusion
+/// steps). **Peak `phys_footprint`, sampled every 200 ms throughout the run** by
+/// `BoltzJobManager.FootprintSampler`:
 ///
-/// The Mac curve's SHAPE is kept (a linear term plus a pairwise ~N² term). The intercept
-/// is set first and independently, to 700 MiB, as an envelope over the 529 MB int8 weight
-/// pack plus Metal and the interpreter; the linear and quadratic terms are then scaled
-/// together until the whole estimate clears the measurement with a reserve, which lands
-/// both at exactly half their Mac values. The result at the anchor is **1.75 GB against a
-/// measured 1.4 GB — a 19% reserve**, in the same spirit as the 25% `DesignSizeGuard`
-/// carries, though not the same number: the terms were rounded to halves rather than
-/// bent to hit a target reserve exactly, because a round mechanism is easier to re-derive
-/// later than a fitted constant nobody can reconstruct. That halving is a RESULT, not an assumption,
-/// and it is consistent with the mechanism: iOS runs boltz-mlx under a phone-sized
-/// `MemoryPlanner` — a 64 MiB MLX cache against the Mac's arbitrated 256 MB — so less is
-/// retained between steps.
+/// | residues | wall  | MLX peak | peak phys_footprint |
+/// |---------:|------:|---------:|--------------------:|
+/// | 110      |  39 s |  1.38 GB |          **1.72 GB** |
+/// | 130      |  64 s |  1.75 GB |          **2.00 GB** |
+/// | 164      | 250 s |  2.00 GB |          **2.35 GB** |
+///
+/// `os_proc_available_memory()` on that device, with a session open, solves to about
+/// **3.27 GB** (back-derived from the guard's own refusal of a 200-residue input naming
+/// 180 as the largest that fit).
+///
+/// ### The units correction, which is the whole story here
+///
+/// **These constants were first fitted against MLX's high-water mark, and that was
+/// wrong.** `MLX.Memory` excludes its own buffer cache
+/// (mlx-swift/Source/MLX/Memory.swift:171-178), so it under-reports the process by
+/// 300–350 MB at these sizes. The budget it gets compared against —
+/// `os_proc_available_memory()` — is denominated in `phys_footprint`, so comparing an
+/// MLX-peak estimate to it is comparing two different quantities and quietly favouring
+/// the optimistic one.
+///
+/// Fitted against MLX peak, this curve estimated 1.68 / 1.89 / 2.26 GB — **below the
+/// measured footprint at every single point**, i.e. precisely the failure the three
+/// numbered items above describe, for a fourth time and by a new mechanism. It was caught
+/// only because the footprint was sampled rather than assumed. A single `phys_footprint`
+/// read taken after inference does NOT catch it either: that is a post-release reading,
+/// and it returned 1.05 GB for both the 110- and the 164-residue run.
+///
+/// The shipped terms are refitted to the footprint column with an **11–15% reserve** at
+/// every measured point (1.15× / 1.11× / 1.15×). Modest on purpose: three real points
+/// across the range of interest justify far less padding than one point did, and
+/// `warnFraction` already withholds a further 25% on top.
+///
+/// Note the macOS arm still fits MLX peak against `physicalMemory` — the same mismatch,
+/// but harmless there because a Mac has swap and installed RAM is a soft wall. Left alone
+/// deliberately; changing shipped macOS behaviour is not this port's business.
 ///
 /// ### What this fit does NOT know
 ///
-/// **It is one point.** The Mac fit's three recorded failures were all extrapolation past
-/// its data, and this has far less data than the Mac fit had when it failed the first
-/// time. Two consequences, both deliberate:
+/// - ``bytesPerTokenMSARow`` is still NOT rescaled — see that constant. No MSA fold has
+///   been run on device, and inventing a measurement is what all four failures were.
+/// - ``iOSMaximumTokens`` is 164: the largest input actually folded to completion here.
+///   Not the 256 the runtime's phone preset allows, and not a round 200. Note the wall
+///   time at 164 was 250 s against 99 s for the same input in an earlier run — a 2.5×
+///   spread that suggests thermal or memory-pressure throttling and is itself a reason
+///   not to treat that size as comfortable.
 ///
-/// - ``iOSMaximumTokens`` is set to the measured size and nothing above it, so the fit is
-///   never asked a question outside its single anchor.
-/// - ``bytesPerTokenMSARow`` is NOT rescaled — see that constant.
-///
-/// When a device sweep exists, refit all of it together against the table, raise
-/// ``iOSMaximumTokens`` to the largest size that actually completed, and keep the rule
-/// that has held here throughout: **never let the fit sit below a measurement.**
 enum PredictSizeGuard {
 
     // MARK: - Tunable constants
@@ -113,12 +134,12 @@ enum PredictSizeGuard {
     /// Model-resident floor. Small, because the linear and quadratic terms now carry the
     /// curve across the whole measured range instead of the intercept papering over the
     /// small end.
-    static var fixedOverheadBytes: Int { isPhone ? 700 * 1024 * 1024 : 200 * 1024 * 1024 }
+    static var fixedOverheadBytes: Int { isPhone ? 850 * 1024 * 1024 : 200 * 1024 * 1024 }
     /// Linear term, bytes per token.
-    static var bytesPerToken: Int { isPhone ? 7_250_000 : 14_500_000 }
+    static var bytesPerToken: Int { isPhone ? 7_500_000 : 14_500_000 }
     /// Quadratic term, bytes per token² — the pairwise tensors. 12.5× the original value;
     /// see the type doc for the two successive under-predictions that produced it.
-    static var bytesPerTokenSquared: Int { isPhone ? 12_500 : 25_000 }
+    static var bytesPerTokenSquared: Int { isPhone ? 21_500 : 25_000 }
     /// Bilinear term, bytes per (token × alignment row beyond the first) — the MSA
     /// module's own tensors, which are depth × tokens wide.
     ///
@@ -175,7 +196,7 @@ enum PredictSizeGuard {
     ///
     /// Raise it to the largest size that has actually completed on device, and record
     /// the run. Nothing else licenses a change here.
-    static let iOSMaximumTokens = 117
+    static let iOSMaximumTokens = 164
     /// Hard ceiling on alignment depth: the deepest actually MEASURED, which is also
     /// upstream's `const.max_msa_seqs` and `BoltzInputLimits.desktop.maximumMSADepth`.
     /// The two agreeing is a coincidence of this sweep having reached the cap, not a

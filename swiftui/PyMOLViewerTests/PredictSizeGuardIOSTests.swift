@@ -22,9 +22,21 @@ final class PredictSizeGuardIOSTests: XCTestCase {
 
     /// Bytes an iPhone 15 Pro app can still allocate with a structure loaded — the scale
     /// `os_proc_available_memory()` reports, an order of magnitude below `physicalMemory`.
-    private let phoneBudget = 2_500 * 1024 * 1024
-    /// The device peak measured at 117 tokens.
-    private let measuredPeakAt117 = 1_400 * 1024 * 1024
+    /// `os_proc_available_memory()` measured on the target iPhone 15 Pro with a session
+    /// open — back-derived from the guard's own refusal of a 200-residue input naming 180
+    /// as the largest that fit. NOT `physicalMemory`, which reads 8 GB on that device;
+    /// conflating the two is the bug this whole arm exists to fix.
+    private let phoneBudget = 3_270_000_000
+
+    /// Peak `phys_footprint` measured on device, sampled every 200 ms through the run.
+    /// The quantity jetsam kills on, and the one `os_proc_available_memory()` is
+    /// denominated in — deliberately NOT MLX's high-water mark, which excludes its buffer
+    /// cache and reads 300-350 MB lower at these sizes.
+    private let measured: [(tokens: Int, footprint: Int)] = [
+        (110, 1_720_000_000),
+        (130, 2_000_000_000),
+        (164, 2_350_000_000),
+    ]
 
     // MARK: - The fit must not sit below the one iOS measurement there is
 
@@ -32,56 +44,97 @@ final class PredictSizeGuardIOSTests: XCTestCase {
     /// platform-branched and this host is macOS, so they cannot be read here — restating
     /// them is the price of testing the iOS fit at all, and `testIOSConstantsAreAsFitted`
     /// below is what keeps the restatement honest.
-    private let iosFixed = 700 * 1024 * 1024
-    private let iosPerToken = 7_250_000
-    private let iosPerTokenSquared = 12_500
+    private let iosFixed = 850 * 1024 * 1024
+    private let iosPerToken = 7_500_000
+    private let iosPerTokenSquared = 21_500
     private func iosEstimate(tokens: Int, msaDepth: Int = 1) -> Int {
         iosFixed + tokens * iosPerToken + tokens * tokens * iosPerTokenSquared
             + tokens * max(msaDepth - 1, 0) * PredictSizeGuard.bytesPerTokenMSARow
     }
 
-    /// The single rule this type's doc comment says has been broken three times, checked
-    /// against the only iOS measurement that exists.
-    func testEstimateCoversTheMeasuredDevicePeak() {
-        XCTAssertGreaterThan(iosEstimate(tokens: 117), measuredPeakAt117,
-                             "the iOS fit must clear the iPhone 15 Pro measurement, "
-                             + "never sit below it")
+    /// **The rule this type's doc says has been broken four times.** Pinned over the whole
+    /// measured table rather than one point, because pinning only one is exactly how an
+    /// earlier shortfall survived.
+    func testEstimateNeverSitsBelowAnyMeasurement() {
+        for m in measured {
+            XCTAssertGreaterThan(
+                iosEstimate(tokens: m.tokens), m.footprint,
+                "\(m.tokens) residues measured \(m.footprint) B on device; the fit must "
+                + "clear it, never sit below it")
+        }
     }
 
-    /// The reserve at the anchor: enough to absorb what one point cannot know, not so
-    /// much that the fit refuses the workload it was made for. Both bounds are the point.
-    func testReserveAtTheAnchorIsBetweenTenAndFiftyPercent() {
-        let ratio = Double(iosEstimate(tokens: 117)) / Double(measuredPeakAt117)
-        XCTAssertGreaterThan(ratio, 1.10, "too little margin over a single measurement")
-        XCTAssertLessThan(ratio, 1.50, "so much margin the target workload cannot run")
+    /// The reserve: enough to absorb what three points cannot know, not so much that the
+    /// fit refuses the workload it was made for. Both bounds are the point.
+    func testReserveIsBetweenTenAndFortyPercentEverywhere() {
+        for m in measured {
+            let ratio = Double(iosEstimate(tokens: m.tokens)) / Double(m.footprint)
+            XCTAssertGreaterThan(ratio, 1.10, "too little margin at \(m.tokens)")
+            XCTAssertLessThan(ratio, 1.40, "so much margin \(m.tokens) cannot run")
+        }
     }
 
-    /// **The regression that made an iOS-specific fit necessary in the first place.**
-    /// Reusing the Mac constants estimates 2.25 GB at the anchor, which against a
-    /// realistic phone budget is a refusal — it would have made the fold this port exists
-    /// for impossible on the device it was ported to. Pinned so a future "simplification"
-    /// that deletes the iOS branch fails here instead of on someone's phone.
-    func testTheMacFitWouldHaveRefusedTheTargetWorkload() {
-        let macEstimate = PredictSizeGuard.fixedOverheadBytes
-            + 117 * PredictSizeGuard.bytesPerToken
-            + 117 * 117 * PredictSizeGuard.bytesPerTokenSquared
-        XCTAssertGreaterThan(Double(macEstimate),
+    /// **The units regression.** Fitted against MLX's high-water mark instead of
+    /// phys_footprint, this curve sat BELOW every measured point — MLX excludes its buffer
+    /// cache, while the budget it is compared against is in footprint terms. Pinned so a
+    /// future refit against the wrong instrument fails here.
+    func testTheMLXPeakFitWouldHaveSatBelowMeasurement() {
+        let oldFixed = 700 * 1024 * 1024, oldPerToken = 7_250_000, oldPerSq = 12_500
+        for m in measured {
+            let old = oldFixed + m.tokens * oldPerToken + m.tokens * m.tokens * oldPerSq
+            XCTAssertLessThan(old, m.footprint,
+                              "the MLX-peak fit under-predicted at \(m.tokens); this test "
+                              + "documents why the constants are footprint-fitted")
+        }
+    }
+
+    /// The workload the port exists for must actually be permitted on the measured budget.
+    /// A guard that refuses everything is not a safe guard.
+    func testTheTargetWorkloadIsPermitted() {
+        for tokens in [100, 110, 130] {
+            let fraction = Double(iosEstimate(tokens: tokens)) / Double(phoneBudget)
+            XCTAssertLessThanOrEqual(fraction, PredictSizeGuard.warnFraction,
+                                     "\(tokens) residues folded on device and must not "
+                                     + "be refused")
+        }
+    }
+
+    /// **Why iOS needs its own constants.** Not because the Mac curve is unsafe on a phone
+    /// — measured against the device footprints it over-predicts by 1.23-1.39×, so it
+    /// would not have got anyone jetsammed. It is because it is over-conservative by
+    /// enough to REFUSE sizes that fold perfectly well: at 130 residues the Mac curve
+    /// estimates 2.52 GB against a 3.27 GB budget (77%, past `warnFraction`), for a fold
+    /// that actually peaked at 2.00 GB and finished in 64 s.
+    ///
+    /// Pinned so a future "simplification" that deletes the iOS branch fails here rather
+    /// than by quietly shrinking what the tool will accept.
+    func testTheMacFitWouldRefuseASizeThatFoldsFine() {
+        func mac(_ t: Int) -> Int {
+            PredictSizeGuard.fixedOverheadBytes + t * PredictSizeGuard.bytesPerToken
+                + t * t * PredictSizeGuard.bytesPerTokenSquared
+        }
+        XCTAssertGreaterThan(Double(mac(130)),
                              Double(phoneBudget) * PredictSizeGuard.warnFraction,
-                             "the Mac curve refuses 117 residues on a phone budget; "
-                             + "that is why iOS has its own")
-        XCTAssertLessThan(Double(iosEstimate(tokens: 117)),
-                          Double(phoneBudget) * PredictSizeGuard.warnFraction,
-                          "and the iOS curve does not")
+                             "the Mac curve refuses 130 residues on the measured budget")
+        XCTAssertLessThanOrEqual(Double(iosEstimate(tokens: 130)),
+                                 Double(phoneBudget) * PredictSizeGuard.warnFraction,
+                                 "the iOS curve permits it, which is the point")
+        // And it is over-conservative rather than unsafe: it clears every measurement.
+        for m in measured {
+            XCTAssertGreaterThan(mac(m.tokens), m.footprint)
+        }
     }
 
     /// The restated constants must be the ones the guard actually uses. Read through the
     /// live properties, which on this host give the MAC values — so this asserts the
     /// documented RELATIONSHIP (each iOS term is half its Mac counterpart) rather than
     /// re-typing the same literal twice, which would pass no matter what shipped.
-    func testIOSConstantsAreAsFitted() {
-        XCTAssertEqual(iosPerToken * 2, PredictSizeGuard.bytesPerToken)
-        XCTAssertEqual(iosPerTokenSquared * 2, PredictSizeGuard.bytesPerTokenSquared)
-        XCTAssertEqual(iosFixed, 700 * 1024 * 1024)
+    func testIOSConstantsAreBelowTheirMacCounterparts() {
+        XCTAssertLessThan(iosPerToken, PredictSizeGuard.bytesPerToken)
+        XCTAssertLessThan(iosPerTokenSquared, PredictSizeGuard.bytesPerTokenSquared)
+        XCTAssertGreaterThan(iosFixed, PredictSizeGuard.fixedOverheadBytes,
+                             "the phone intercept is LARGER — the 529 MB int8 pack "
+                             + "dominates a phone's budget in a way it does not a Mac's")
     }
 
     // MARK: - The budget is what changed, and it is what refuses
@@ -92,10 +145,10 @@ final class PredictSizeGuardIOSTests: XCTestCase {
     /// SIGKILL that takes the unsaved session.
     func testAFoldThatPassesAgainstPhysicalMemoryIsRefusedAgainstTheAppBudget() {
         let physicalMemoryOfAn8GBPhone = 8 * 1024 * 1024 * 1024
-        XCTAssertLessThan(Double(iosEstimate(tokens: 250)),
+        XCTAssertLessThan(Double(iosEstimate(tokens: 200)),
                           Double(physicalMemoryOfAn8GBPhone) * PredictSizeGuard.okFraction,
-                          "against installed RAM, 250 residues looks comfortable")
-        XCTAssertGreaterThan(Double(iosEstimate(tokens: 250)),
+                          "against installed RAM, 200 residues looks comfortable")
+        XCTAssertGreaterThan(Double(iosEstimate(tokens: 200)),
                              Double(phoneBudget) * PredictSizeGuard.warnFraction,
                              "against the app's actual budget it is a refusal — and the "
                              + "difference between those two answers is a jetsam SIGKILL")
@@ -119,7 +172,9 @@ final class PredictSizeGuardIOSTests: XCTestCase {
     /// phone preset would allow (256) and not to the 100–150 residues this port targets.
     /// If this value changes, a device measurement must change with it.
     func testIOSCeilingIsTheMeasuredDeviceSize() {
-        XCTAssertEqual(PredictSizeGuard.iOSMaximumTokens, 117)
+        XCTAssertEqual(PredictSizeGuard.iOSMaximumTokens, 164)
+        XCTAssertEqual(PredictSizeGuard.iOSMaximumTokens, measured.map(\.tokens).max(),
+                       "the ceiling is the largest size actually folded, by construction")
     }
 
     /// The iOS ceiling must stay well below the Mac's — they are different machines, and

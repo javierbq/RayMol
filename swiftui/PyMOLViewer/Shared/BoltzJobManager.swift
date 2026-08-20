@@ -169,6 +169,25 @@ final class BoltzJobManager {
         /// growth against a multi-GB actual -- so this is the only honest instrument, and
         /// it is what `PredictSizeGuard`'s constants must be fitted against.
         let peakBytes: Int?
+        /// The MAXIMUM `phys_footprint` this process reached during the run, in bytes,
+        /// sampled every 200 ms (see ``FootprintSampler``). Nil until the run finishes.
+        ///
+        /// **Not a duplicate of ``peakBytes``, and the difference is the point.** MLX's
+        /// high-water mark EXCLUDES its own buffer cache
+        /// (mlx-swift/Source/MLX/Memory.swift:171-178), so it under-reports what the
+        /// system sees. `phys_footprint` is the quantity **jetsam kills on** and the one
+        /// `os_proc_available_memory()` is denominated in — so on iOS it, not `peakBytes`,
+        /// is what ``PredictSizeGuard``'s estimate is actually racing.
+        ///
+        /// The comment above about RSS being useless refers to `resident_size`, which
+        /// omits compressed and IOKit-mapped pages and therefore misses Metal allocations
+        /// entirely. `phys_footprint` includes them; the two are different instruments and
+        /// only one of them was tried.
+        ///
+        /// Recorded rather than derived because the gap between the two is not a constant:
+        /// it is whatever the cache happens to be holding, which is exactly the thing a
+        /// fitted model cannot know.
+        var footprintBytes: Int? = nil
         /// Wall time for the inference itself, excluding the one-time model load.
         let elapsedSeconds: Double?
         /// Steps completed within the CURRENT phase, and that phase's total --
@@ -185,7 +204,8 @@ final class BoltzJobManager {
 
         enum CodingKeys: String, CodingKey {
             case state, phase, fraction, error, resultPath = "result_path"
-            case peakBytes = "peak_bytes", elapsedSeconds = "elapsed_s"
+            case peakBytes = "peak_bytes", footprintBytes = "footprint_bytes"
+            case elapsedSeconds = "elapsed_s"
             case step, totalSteps = "total_steps"
         }
     }
@@ -601,12 +621,14 @@ final class BoltzJobManager {
         let statusURL = URL(fileURLWithPath: request.statusPath)
         // Captured by report() below; filled in once inference completes.
         var peak: Int? = nil
+        var footprint: Int? = nil
         var elapsed: Double? = nil
         func report(_ state: String, _ phase: String, _ fraction: Double,
                     error: String? = nil, result: String? = nil) {
             try? Self.writeStatus(Status(state: state, phase: phase, fraction: fraction,
                                          error: error, resultPath: result,
-                                         peakBytes: peak, elapsedSeconds: elapsed),
+                                         peakBytes: peak, footprintBytes: footprint,
+                                         elapsedSeconds: elapsed),
                                   to: statusURL)
         }
         func isCancelled() -> Bool {
@@ -616,13 +638,16 @@ final class BoltzJobManager {
             Self.settle(request,
                         Status(state: state, phase: phase, fraction: 0,
                                error: error, resultPath: nil,
-                               peakBytes: peak, elapsedSeconds: elapsed),
+                               peakBytes: peak, footprintBytes: footprint,
+                               elapsedSeconds: elapsed),
                         to: statusURL)
         }
 
         report("running", "featurize", 0.0)
         Self.logMemory("start", jobID: request.jobID)
-        defer { Self.logMemory("end", jobID: request.jobID) }
+        let sampler = Self.FootprintSampler()
+        sampler.start()
+        defer { sampler.stop(); Self.logMemory("end", jobID: request.jobID) }
         do {
             BoltzRuntime.configureOnce()
 
@@ -737,6 +762,9 @@ final class BoltzJobManager {
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
+            // Read at the same moment as the MLX peak, before anything is released, so
+            // the two describe the same instant.
+            footprint = max(sampler.peak, MLXRuntime.currentFootprintBytes)
 
             if isCancelled() {
                 settle("cancelled", "inference"); return
@@ -873,6 +901,45 @@ final class BoltzJobManager {
         Task { out = await body(); done.signal() }
         done.wait()
         return out
+    }
+
+    /// Samples `phys_footprint` on a timer and keeps the maximum seen.
+    ///
+    /// Exists because neither number recorded before it is the peak the OS kills on.
+    /// MLX's own high-water mark excludes its buffer cache, and a single `phys_footprint`
+    /// read taken after `memorySnapshot()` is a POST-RELEASE reading — measured at 1.05 GB
+    /// for both a 110- and a 164-residue fold whose MLX peaks were 1.38 and 2.00 GB, which
+    /// is how you can tell it is not measuring the peak of anything. Only sampling
+    /// throughout gives the quantity `os_proc_available_memory()` is denominated in, and
+    /// therefore the only quantity ``PredictSizeGuard``'s budget comparison is actually
+    /// about.
+    ///
+    /// 200 ms and a plain background thread: inference runs tens of seconds, so a few
+    /// hundred samples is ample resolution, and a `task_info` call is a syscall costing
+    /// microseconds. Deliberately not a DispatchSourceTimer on the shared queue — the
+    /// point is to keep sampling while that queue is saturated by inference.
+    final class FootprintSampler {
+        private let lock = NSLock()
+        private var _peak = 0
+        private var running = true
+
+        var peak: Int { lock.lock(); defer { lock.unlock() }; return _peak }
+
+        func start() {
+            Thread.detachNewThread { [weak self] in
+                while true {
+                    guard let self else { return }
+                    self.lock.lock()
+                    let go = self.running
+                    if go { self._peak = max(self._peak, MLXRuntime.currentFootprintBytes) }
+                    self.lock.unlock()
+                    if !go { return }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+            }
+        }
+
+        func stop() { lock.lock(); running = false; lock.unlock() }
     }
 
     /// Record the memory position around a fold, on the `com.raymol.predict` subsystem.
