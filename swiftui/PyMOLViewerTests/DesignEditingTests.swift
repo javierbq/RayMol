@@ -129,7 +129,7 @@ final class DesignEditingTests: XCTestCase {
         }
         c.injectRepack(
             repack: { _, seq in repackedSeqs.append(seq); return "PDBDATA" },
-            loadRepacked: { obj, pdb in loaded.append((obj, pdb)) })
+            loadRepacked: { obj, pdb, _ in loaded.append((obj, pdb)) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.autoRepack = false   // test manual repack path; disable auto so mutation stays dirty
         await c.applyMutationAwait(residueIndex: 0, aa: 1)
@@ -150,7 +150,7 @@ final class DesignEditingTests: XCTestCase {
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
-        c.injectRepack(repack: { _, _ in repacks += 1; return "P" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in repacks += 1; return "P" }, loadRepacked: { _, _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3)); c.autoRepack = true
         await c.applyMutationAwait(residueIndex: 0, aa: 1)
         XCTAssertEqual(repacks, 1)      // repack ran exactly once
@@ -167,7 +167,7 @@ final class DesignEditingTests: XCTestCase {
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
-        c.injectRepack(repack: { _, _ in repackCalls += 1; return "PDBDATA" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in repackCalls += 1; return "PDBDATA" }, loadRepacked: { _, _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.applyMutation(residueIndex: 0, aa: 1)     // begins session, marks dirty
         XCTAssertTrue(c.repackDirty)
@@ -221,7 +221,7 @@ final class DesignEditingTests: XCTestCase {
             snapshot: { _ in },
             restore: { })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" }, mutateDisplay: { _, _, _, _ in }, discard: { _, _ in }, compare: { _, _ in })
-        c.injectRepack(repack: { _, _ in "PDBDATA" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in "PDBDATA" }, loadRepacked: { _, _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, true, true])
 
         // Sync mutation → detached Task starts rescoreWorkingObject → dispatches to inferenceQueue → blocks

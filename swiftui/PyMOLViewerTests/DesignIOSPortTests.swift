@@ -890,7 +890,7 @@ final class DesignIOSPortTests: XCTestCase {
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.injectRepack(repack: { _, _ in throw RepError(msg: "simulated MLX failure") },
-                       loadRepacked: { _, _ in })
+                       loadRepacked: { _, _, _ in })
         // Rescore (called after repack in the new order) must succeed; inject a
         // well-formed result so it doesn't throw and erroneously set errorText from a
         // different code path. rescoreWorkingObject does not clear errorText, so the
@@ -928,7 +928,7 @@ final class DesignIOSPortTests: XCTestCase {
         // repack closure runs on the inference queue (off-main).
         c.injectRepack(
             repack: { _, _ in callOrder.append("repack"); return "ATOM  ..." },
-            loadRepacked: { _, _ in })
+            loadRepacked: { _, _, _ in })
         // score closure also runs on the inference queue (off-main); both are serial.
         c.injectScore { _, s in
             callOrder.append("score")
@@ -970,7 +970,7 @@ final class DesignIOSPortTests: XCTestCase {
         // within the block is deterministic.
         c.injectRepack(
             repack: { _, _ in "ATOM  ..." },
-            loadRepacked: { _, _ in events.append("topology-replace") })
+            loadRepacked: { _, _, _ in events.append("topology-replace") })
         c.injectScore { _, s in
             MPNNModel.ScoreResult(
                 logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),

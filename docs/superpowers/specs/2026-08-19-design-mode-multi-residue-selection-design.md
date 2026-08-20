@@ -132,12 +132,17 @@ identity). Passing `selection='sele'` is sufficient; no new mapping logic.
 **`modules/pymol/raymol_design.py`**
 
 - `design_selection_state(obj, state, src='')` — writes
-  `$TMPDIR/raymol_design_sele.json` = `{'indices': [int], 'digest': str, 'n_total': int}`.
+  `$TMPDIR/raymol_design_sele.json` =
+  `{'indices': [int], 'digest': str, 'n_off': int, 'n_total': int}`.
   `indices` is `sele ∩ scope` in guide order (same contract as
   `selected_design_indices`); `digest` is a cheap fingerprint of the selected
-  `(chain, resi)` set for change detection; `n_total` is the residue count of
-  `sele` across all objects, so the UI can tell "nothing selected" from
-  "selected, but on another structure".
+  `(model, chain, resi)` set for change detection; **`n_off`** is the number of
+  selected residues lying OUTSIDE the scope (on neither `obj` nor `src`), which is
+  what lets the UI say "selected, but on another structure". `n_total` is the count
+  of distinct `(model, chain, resi)` keys and is **not** a residue count — during an
+  edit session one residue marked on both the working copy and the original counts
+  twice in it — so `n_off` must be read directly and never reconstructed as
+  `n_total - len(indices)`.
 - `toggle_sele_residue(obj, chain, resi, src='')` — add/remove one residue in
   `sele` using the same idiom as `pick_at` (`cmd.select('sele', ..., enable=1)`),
   and `set_sele_residue(obj, chain, resi, src='')` / `clear_sele()` for the
@@ -255,13 +260,32 @@ the O(object) work off the quiet ticks.
 - **D9 — `sele` writes are scoped identically to `sele` reads.** Both sides go
   through `_scope(obj, src)`, so a residue is addressed by `(chain, resi)` identity
   across an edit session's working copy and its original, not by object membership.
-  Two consequences are deliberate: a scoped "add" marks the residue on *both*
-  objects (which is what makes it survive a repack's topology replace of the
-  working copy), and `_sele_residue_keys()` therefore folds `<src>_designNN` onto
-  `<src>` so one residue marked twice is still counted once — otherwise `n_total`
-  exceeds the in-scope count and the UI invents a "+N on another structure" badge.
   Asymmetric scoping made a region member impossible to remove mid-session and let
   every repack silently shrink the region.
+
+  A scoped "add" therefore marks the residue on **both** objects, deliberately:
+  that is what survives `load_repacked`'s topology replace of the working copy.
+  Three consequences follow, and each is handled where the information to handle it
+  exists:
+
+  - **The off-structure count is reported, never derived.** `sele_design_indices`
+    knows `obj` and `src`, so it counts the selected residues whose model is
+    neither and publishes `n_off`; Swift uses it verbatim. The digest stays keyed
+    on the RAW `(model, chain, resi)` — no canonicalisation of working-copy names —
+    because the digest guards the re-derive and must be at least as sensitive as
+    the state it guards. Folding `<src>_designNN` onto `<src>` was tried and
+    rejected: its precondition is name shape plus source existence, so two
+    independent structures named `foo` and `foo_design` collapse, and moving the
+    same residue selection from one to the other leaves the digest unchanged — the
+    poll skips, and the region never arms.
+  - **Ending a session by KEEPING the copy narrows `sele` off it**
+    (`drop_object_from_sele`). Keep clears `editSourceObject` while the copy lives
+    on, so nothing could address it again; the membership would be stuck selected
+    and pink with no way to clear it.
+  - **A repack re-asserts `sele` onto the replaced object.** `load_repacked(obj,
+    pdb, src)` captures `sele ∩ scope` before the delete and re-selects it on the
+    replacement, because the surviving membership lives on the original — which
+    `make_working_copy` disabled, so nothing visible would carry the pink pass.
 
 ## Testing
 

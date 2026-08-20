@@ -2386,7 +2386,7 @@ final class PyMOLEngine: ObservableObject {
             let model = try self.loadedMPNNModel()
             return try MPNNRuntime.withMLXErrorsAsThrows { try model.repack(residues, sequence: seq).pdb }
         },
-        loadRepacked: { [weak self] obj, pdb in
+        loadRepacked: { [weak self] obj, pdb, src in
             // Write PDB to a temp file; Python reads it back to avoid multi-line
             // escaping in the runPython string (same marshalling as applyColoring).
             let path = (NSTemporaryDirectory() as NSString)
@@ -2395,7 +2395,7 @@ final class PyMOLEngine: ObservableObject {
             self?.runPython("""
                 from pymol import raymol_design as _rd
                 with open('\(path)') as _f:
-                    _rd.load_repacked('\(obj)', _f.read())
+                    _rd.load_repacked('\(obj)', _f.read(), src='\(src ?? "")')
                 """)
         },
         showAllSidechains: { [weak self] obj, on in
@@ -2455,7 +2455,7 @@ final class PyMOLEngine: ObservableObject {
             self?._mpnnModel = nil
         },
         seleState: { [weak self] obj, src, state in
-            guard let self else { return (indices: [], digest: "", total: 0) }
+            guard let self else { return (indices: [], digest: "", off: 0) }
             let srcArg = (src?.isEmpty == false) ? src! : ""
             self.runPython("""
                 from pymol import raymol_design as _rd
@@ -2465,10 +2465,13 @@ final class PyMOLEngine: ObservableObject {
                 .appendingPathComponent("raymol_design_sele.json")
             guard let data = FileManager.default.contents(atPath: path.path),
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return (indices: [], digest: "", total: 0) }
+            else { return (indices: [], digest: "", off: 0) }
+            // n_off, never n_total - indices.count: during an edit session one
+            // residue is legitimately marked on both the working copy and the
+            // original, so any whole-session total counts it twice.
             return (indices: (root["indices"] as? [Int]) ?? [],
                     digest: (root["digest"] as? String) ?? "",
-                    total: (root["n_total"] as? Int) ?? 0)
+                    off: (root["n_off"] as? Int) ?? 0)
         },
         // `src` is passed through to Python so the WRITE resolves in the same scope
         // the read does — see raymol_design._scoped_residue_sel. Dropping it makes a
@@ -2496,6 +2499,12 @@ final class PyMOLEngine: ObservableObject {
         },
         clearSele: { [weak self] in
             self?.runPython("from pymol import raymol_design as _rd; _rd.clear_sele()")
+        },
+        dropObjectFromSele: { [weak self] obj in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.drop_object_from_sele('\(obj)')
+                """)
         }
         )
         // Propagate isCalculating into @Published isDesignCalculating so
@@ -2908,28 +2917,39 @@ final class PyMOLEngine: ObservableObject {
                 hit: hit)
     }
 
+    /// Read a hover-pick payload file and deliver the outcome — or deliver NOTHING
+    /// when the payload cannot be read (no file, non-JSON bytes, JSON that is not an
+    /// object, no `hit` key). `deliver` reaching the controller is the decision this
+    /// function exists to make: `handleViewportHit(object: "")` CLEARS 'sele', so an
+    /// unreadable payload must not be routed at all. Static, file-in, closure-out, so
+    /// the guard itself is testable without a live core.
+    static func routeDesignPick(payloadPath: String,
+                                deliver: (_ object: String, _ chain: String,
+                                          _ resi: String, _ hit: Bool) -> Void) {
+        guard let data = FileManager.default.contents(atPath: payloadPath) else { return }
+        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let out = designPickOutcome(payload: root) else { return }
+        deliver(out.object, out.chain, out.resi, out.hit)
+    }
+
     func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
         guard designMode, isReady else { return }
         runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
-        let data = FileManager.default.contents(atPath: path)
-        let root = data.flatMap {
-            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
-        } ?? nil
         // An unreadable payload must NOT reach the controller: `handleViewportHit`
         // with an empty object CLEARS 'sele', so treating "I could not read the
         // pick" as "the pick missed" would silently destroy the user's selection.
-        guard let out = PyMOLEngine.designPickOutcome(payload: root) else { return }
-        // A genuine MISS does still reach the controller: an empty-space tap clears
-        // the selection (normal-mode parity). The old early return on `hit == false`
+        // A genuine MISS does still reach it: an empty-space tap clears the
+        // selection (normal-mode parity). The old early return on `hit == false`
         // made empty taps silently inert. An empty `object` is exactly what the
         // macOS path already delivers on a miss (longPressPick builds LongPressHit
         // with obj: "" and isEmpty: true), so both platforms converge.
-        MainActor.assumeIsolated {
-            designController.handleViewportHit(object: out.object,
-                                               chain: out.chain, resi: out.resi,
-                                               hasResidue: out.hit)
+        PyMOLEngine.routeDesignPick(payloadPath: path) { obj, chain, resi, hit in
+            MainActor.assumeIsolated {
+                designController.handleViewportHit(object: obj, chain: chain,
+                                                   resi: resi, hasResidue: hit)
+            }
         }
     }
 
