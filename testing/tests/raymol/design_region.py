@@ -228,3 +228,84 @@ class TestDesignRegion(testing.PyMOLTestCase):
             self.assertEqual(payload.get('design_sele'), '')
         finally:
             rd.set_design_active(0)
+
+    # ------------------------------------------------------------------
+    # I1: Design-mode 'sele' WRITES must resolve in the same scope the READS do.
+    #
+    # Inside an edit session the focus object is the working copy while the
+    # selection still lives on the ORIGINAL's atoms. sele_design_indices reads
+    # through _scope(obj, src) -- residue IDENTITY across both objects -- so a
+    # write that only touches the focus object's atoms disagrees with the read
+    # from the first mutation onward.
+    # ------------------------------------------------------------------
+
+    def _design_session(self):
+        """m1 plus the working copy that an edit session would focus."""
+        src = self._peptide()
+        work = '%s_design01' % src
+        cmd.create(work, src, zoom=0)
+        return src, work
+
+    def testToggleInEditSessionRemovesRegionMember(self):
+        src, work = self._design_session()
+        cmd.select('sele', '%s and resi 2+3+4' % src)   # region built pre-session
+        from pymol import raymol_design as rd
+        # The user clicks residue 4 again to drop it from the region.
+        rd.toggle_sele_residue(work, '', '4', src=src)
+        rd.sele_design_indices(work, 1, src=src)
+        data = self._sele_payload()
+        self.assertEqual(data['indices'], [1, 2],
+                         'a click inside an edit session must be able to REMOVE a '
+                         'region member -- an unscoped write re-adds it instead')
+        self.assertEqual(data['n_total'], 2,
+                         'the same residue on the working copy and the original is '
+                         'ONE residue -- double counting invents an off-structure count')
+
+    def testToggleInEditSessionAddsResidueExactlyOnce(self):
+        src, work = self._design_session()
+        cmd.select('sele', '%s and resi 2+3' % src)
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(work, '', '5', src=src)   # a NEW residue, mid-session
+        rd.sele_design_indices(work, 1, src=src)
+        data = self._sele_payload()
+        self.assertEqual(data['indices'], [1, 2, 4])
+        self.assertEqual(data['n_total'], 3,
+                         'n_total must count residues, not (object, residue) pairs')
+
+    def testRepackKeepsResiduesSelectedDuringTheSession(self):
+        # autoRepack defaults ON, so every Redesign ends in load_repacked -- a
+        # topology replace of the working copy. Residues clicked DURING the session
+        # must not lose their region membership when that happens.
+        src, work = self._design_session()
+        cmd.select('sele', '%s and resi 2+3' % src)
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(work, '', '5', src=src)
+        rd.load_repacked(work, cmd.get_pdbstr(work))
+        rd.sele_design_indices(work, 1, src=src)
+        self.assertEqual(self._sele_payload()['indices'], [1, 2, 4],
+                         'a repack must not silently shrink the region')
+
+    def testSetSeleResidueInEditSessionIsVisibleToTheRead(self):
+        src, work = self._design_session()
+        from pymol import raymol_design as rd
+        rd.set_sele_residue(work, '', '3', src=src)
+        rd.sele_design_indices(work, 1, src=src)
+        data = self._sele_payload()
+        self.assertEqual(data['indices'], [2])
+        self.assertEqual(data['n_total'], 1,
+                         'one residue selected in scope must read as one residue')
+
+    def testSeleDigestAgreesWithSeleIndicesPayload(self):
+        # The poll gate compares rd.sele_digest() against the digest the Swift side
+        # recorded from sele_design_indices. If the two ever diverge the poll either
+        # never fires or fires on every 500 ms tick.
+        obj = self._peptide()
+        cmd.select('sele', '%s and resi 2+4' % obj)
+        from pymol import raymol_design as rd
+        rd.set_design_active(1)
+        try:
+            rd.sele_design_indices(obj, 1)
+            self.assertEqual(rd.sele_digest(), self._sele_payload()['digest'],
+                             'the two producers of the gating digest must agree')
+        finally:
+            rd.set_design_active(0)

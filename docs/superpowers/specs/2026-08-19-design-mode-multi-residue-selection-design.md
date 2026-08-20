@@ -138,10 +138,13 @@ identity). Passing `selection='sele'` is sufficient; no new mapping logic.
   `(chain, resi)` set for change detection; `n_total` is the residue count of
   `sele` across all objects, so the UI can tell "nothing selected" from
   "selected, but on another structure".
-- `toggle_sele_residue(obj, chain, resi)` — add/remove one residue in `sele`
-  using the same idiom as `pick_at` (`cmd.select('sele', ..., enable=1)`), and
-  `set_sele_residue(obj, chain, resi)` / `clear_sele()` for the refocus and
-  empty-space cases.
+- `toggle_sele_residue(obj, chain, resi, src='')` — add/remove one residue in
+  `sele` using the same idiom as `pick_at` (`cmd.select('sele', ..., enable=1)`),
+  and `set_sele_residue(obj, chain, resi, src='')` / `clear_sele()` for the
+  refocus and empty-space cases. The writers take `src` and resolve the residue
+  through the same `_scope(obj, src)` the readers use — a WRITE scoped to the
+  focus object alone disagrees with the residue-identity READ from the first
+  mutation of an edit session onward (see D9).
 - `set_design_active(on)` — module flag read by the poll (see Refresh).
 - `set_pinned_indicator` keeps its definition but loses every call site: nothing in
   the pin path or in `exit()` writes `sele` outward any more (see D2).
@@ -196,9 +199,23 @@ gains the `sele` digest, computed **only while design mode is active** (the
 digest differs from the last one seen.
 
 This gate matters: `poll_panel` runs on the main thread every 500 ms and is a
-previously measured hot spot (PR #270 fixed a 713 ms tick on a large `.pse`). With
-design mode off the added cost is one boolean check. With it on, the work is
-O(selected residues), which is normally a handful.
+previously measured hot spot (PR #270 fixed a 713 ms tick on a large `.pse`). Three
+tiers of cost:
+
+- **Design mode off** — one boolean check (`set_design_active`'s flag), nothing else.
+- **Design mode on, `sele` unchanged** — the digest only: one `cmd.iterate` over
+  the guide atoms of `sele`, i.e. O(selected residues), plus an md5 of the key
+  list. The digest matches, so Swift skips the re-derive.
+- **Design mode on, `sele` changed** — the re-derive runs `sele_design_indices`,
+  and that is **not** O(selected residues): it calls `_obj_residue_order(obj)`, a
+  `cmd.iterate` with a Python callback over EVERY guide residue of the focus
+  object, plus a second `iterate` over `sele ∩ scope`. So the changed-tick cost is
+  O(residues in the focus object) on the main thread — the same shape as the PR
+  #270 hot path, though bounded by one focus object rather than a whole session,
+  and it cannot recur faster than 2 Hz or without the selection actually changing.
+
+The digest gate is therefore load-bearing, not an optimisation: it is what keeps
+the O(object) work off the quiet ticks.
 
 ## Decisions
 
@@ -235,6 +252,16 @@ O(selected residues), which is normally a handful.
   "toggled twice — added then removed — a silent no-op". Deleting it also removes
   the last `#if os(macOS)` divergence in the sequence strip, which is valuable given
   this file's history of platform-only symbols leaking across targets.
+- **D9 — `sele` writes are scoped identically to `sele` reads.** Both sides go
+  through `_scope(obj, src)`, so a residue is addressed by `(chain, resi)` identity
+  across an edit session's working copy and its original, not by object membership.
+  Two consequences are deliberate: a scoped "add" marks the residue on *both*
+  objects (which is what makes it survive a repack's topology replace of the
+  working copy), and `_sele_residue_keys()` therefore folds `<src>_designNN` onto
+  `<src>` so one residue marked twice is still counted once — otherwise `n_total`
+  exceeds the in-scope count and the UI invents a "+N on another structure" badge.
+  Asymmetric scoping made a region member impossible to remove mid-session and let
+  every repack silently shrink the region.
 
 ## Testing
 

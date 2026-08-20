@@ -291,9 +291,12 @@ final class DesignRegionTests: XCTestCase {
                        selectedIndices: { _, _, _, _ in [0, 1] })
         c.setFocusForTest("m1", nativeSequence: [5, 5], validFlags: allValid(2))
         c.pickSelection("reg")
+        // Pre-condition: without this, `called == false` also holds when the region
+        // never designated at all — the assertion would pass for the wrong reason.
+        XCTAssertTrue(c.regionModeActive, "pre-condition: a region must be designated")
         for i in 0..<20 where c.paletteAllowed.contains(i) { c.togglePalette(i) }
         await c.redesignSelectionAwait()
-        XCTAssertFalse(called)
+        XCTAssertFalse(called, "an empty palette must block the run")
     }
 
     func testRevertRestoresPreRedesignAndKeepsEarlierEdits() async {
@@ -574,11 +577,11 @@ final class DesignRegionTests: XCTestCase {
                 let idx = keys.enumerated().compactMap { sele.contains($0.element) ? $0.offset : nil }
                 return (indices: idx, digest: "\(sele.sorted())", total: sele.count)
             },
-            toggleSele: { _, chain, resi in
+            toggleSele: { _, chain, resi, _ in
                 let k = "\(chain)/\(resi)"
                 if sele.contains(k) { sele.remove(k) } else { sele.insert(k) }
             },
-            setSeleResidue: { [weak c] _, chain, resi in
+            setSeleResidue: { [weak c] _, chain, resi, _ in
                 // Record WHEN the write lands relative to the refocus. This is the
                 // load-bearing assertion: every state assertion below also passes
                 // if the two steps are swapped, because `focusAwait` ends with its
@@ -687,7 +690,7 @@ final class DesignRegionTests: XCTestCase {
             dim: { _ in }, snapshot: { _ in }, restore: { })
         c.allObjects = ["m1", "m2"]
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.injectSele(setSeleResidue: { _, _, _ in wrote = true },
+        c.injectSele(setSeleResidue: { _, _, _, _ in wrote = true },
                      clearSele: { wrote = true })
 
         await c.refocusAndSelectAwait(object: "m2", chain: "A", resi: "2", hasResidue: true)
@@ -719,6 +722,230 @@ final class DesignRegionTests: XCTestCase {
         c.syncFromSele()
         XCTAssertEqual(c.lastSeleDigest, "abc123",
                        "the resolved digest must be recorded for poll gating")
+    }
+
+    // MARK: – I1: 'sele' writes are scoped like 'sele' reads
+
+    // Inside an edit session the focus is the WORKING COPY while the selection still
+    // sits on the original's atoms, and every read resolves `sele ∩ scope(obj, src)`
+    // by (chain, resi) identity. A writer that never learns the source object
+    // therefore addresses a different atom set than the reader: the toggle finds no
+    // focus-object atoms in 'sele', so it ADDS instead of removing (the region
+    // member becomes un-removable and gets counted twice), and residues clicked
+    // mid-session lose their only membership when a repack replaces the working
+    // copy's topology. Python owns the scoping (see design_region.py); what Swift
+    // must guarantee is that `editSourceObject` actually reaches both writers.
+    func testSeleWritesCarryTheEditSourceScope() async {
+        var toggleSrc: [String?] = []
+        var setSrc: [String?] = []
+        let c = makeController(); wireEdit(c)
+        c.injectSele(toggleSele: { _, _, _, src in toggleSrc.append(src) },
+                     setSeleResidue: { _, _, _, src in setSrc.append(src) })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        c.tapResidue(residueIndex: 0)
+        XCTAssertEqual(toggleSrc, [nil],
+                       "with no edit session open there is no source object to scope to")
+
+        await c.applyMutationAwait(residueIndex: 1, aa: 7)   // opens the edit session
+        XCTAssertTrue(c.editing, "pre-condition: an edit session must be open")
+        XCTAssertEqual(c.focusObject, "m1_design",
+                       "pre-condition: the focus must have moved to the working copy")
+
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(toggleSrc.last, "m1",
+                       "a toggle inside an edit session must carry the source object, "
+                     + "or it cannot remove a member selected on the original")
+
+        await c.refocusAndSelectAwait(object: "m1_design", chain: "A", resi: "3",
+                                     hasResidue: true)
+        XCTAssertEqual(setSrc.last, "m1",
+                       "the replace-with-one-residue write must be scoped too")
+    }
+
+    // MARK: – The panel-poll gate
+
+    // The gate itself, not just the digest bookkeeping: an unchanged digest must
+    // SKIP the re-derive (a quiet 500 ms tick costs nothing) and a changed one must
+    // trigger it.
+    func testPollGateReDerivesOnlyWhenTheDigestChanged() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        var reads = 0
+        c.injectSele(seleState: { _, _, _ in
+            reads += 1
+            return (indices: [0], digest: "d1", total: 1)
+        })
+
+        XCTAssertTrue(c.syncFromSeleIfChanged(digest: "d1"),
+                      "a digest never seen before must re-derive")
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(c.pinnedResidueIndex, 0)
+
+        XCTAssertFalse(c.syncFromSeleIfChanged(digest: "d1"),
+                       "an unchanged digest must skip the re-derive")
+        XCTAssertEqual(reads, 1, "a quiet tick must not read 'sele' at all")
+
+        c.injectSele(seleState: { _, _, _ in
+            reads += 1
+            return (indices: [0, 2], digest: "d2", total: 2)
+        })
+        XCTAssertTrue(c.syncFromSeleIfChanged(digest: "d2"),
+                      "a changed digest must re-derive")
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2])
+    }
+
+    // M2: Design mode on with NO focus object (2+ objects loaded, so enter() does
+    // not auto-focus) and a non-empty 'sele'. syncFromSele cannot read a digest
+    // without an object to scope the read to, so the gate must adopt the digest the
+    // poll observed — otherwise every 500 ms tick re-derives forever, republishing
+    // four @Published properties and invalidating the design bar, compact panel and
+    // sequence strip twice a second for as long as the mode is open.
+    func testPollGateDoesNotSpinWithoutAFocusObject() {
+        let c = makeController()
+        c.allObjects = ["m1", "m2"]           // enter() must not auto-focus
+        c.enter()
+        XCTAssertNil(c.focusObject, "pre-condition: nothing is focused")
+
+        XCTAssertTrue(c.syncFromSeleIfChanged(digest: "py-digest"),
+                      "the first tick after entering may re-derive once")
+        for tick in 1...4 {
+            XCTAssertFalse(c.syncFromSeleIfChanged(digest: "py-digest"),
+                           "tick \(tick): an unchanged 'sele' must not re-derive "
+                         + "just because there is no focus object")
+        }
+    }
+
+    // M3: a named selection that resolves to exactly ONE designable residue pins
+    // (no region), so the branch that consumes the lasso label never runs — and the
+    // label must not survive to mislabel the NEXT region.
+    func testOneResidueNamedRegionDoesNotLabelTheNextRegion() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5, 5], validFlags: allValid(5))
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
+                       selectedIndices: { _, _, _, _ in [2] })   // ONE residue
+
+        c.pickSelection("hotspot")
+        XCTAssertEqual(c.pinnedResidueIndex, 2,
+                       "pre-condition: one designable residue pins rather than designating")
+        XCTAssertNil(c.selectedSelectionName, "pre-condition: no region, so no label")
+
+        // A 5-residue selection now arrives from outside Design mode (`select sele,
+        // resi 1-5` at the prompt) and reaches the controller through the poll.
+        c.injectSele(seleState: { _, _, _ in
+            (indices: [0, 1, 2, 3, 4], digest: "external", total: 5)
+        })
+        c.syncFromSeleIfChanged(digest: "external")
+
+        XCTAssertEqual(c.selectedResidueIndices, [0, 1, 2, 3, 4])
+        XCTAssertEqual(c.selectedSelectionName, "sele",
+                       "a click-built region must not inherit the stale lasso name")
+    }
+
+    // M4: `refocusAndSelect` must check that the focus is still CURRENT, not merely
+    // that the object exists. Two rapid clicks on two different non-focus objects
+    // spawn two Tasks; if the loser resumes last its write lands while the winner
+    // owns the focus, leaving 'sele' on a NON-focused object — pink markers plus
+    // "nothing selected", because every read is scoped to the focus object.
+    //
+    // The interleaving is made deterministic by having the loser's own `enumerate`
+    // move the focus, which is exactly where the competing task's `focusAwait` would
+    // land: after `focusObject = object` and before the 'sele' write.
+    func testRefocusDoesNotWriteSeleWhenAnotherObjectWonTheFocus() async {
+        var writes: [String] = []
+        var ctrl: DesignController?
+        let residues = (1...3).map { i in
+            DesignResidue(chain: "B", resi: "\(100 + i)", resn: "ALA", aa: 5,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
+                                                      o: .zero, chain: 1, resSeq: 100 + i),
+                          valid: true)
+        }
+        let c = DesignController(
+            enumerate: { obj, _ in
+                if obj == "m2" { ctrl?.focusObject = "m3" }   // the winner takes over
+                return DesignResidueSet(object: obj, state: 1, residues: residues)
+            },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        ctrl = c
+        c.allObjects = ["m1", "m2", "m3"]
+        c.injectSele(setSeleResidue: { obj, _, resi, _ in writes.append("\(obj)/\(resi)") },
+                     clearSele: { writes.append("clear") })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        await c.refocusAndSelectAwait(object: "m2", chain: "B", resi: "102",
+                                     hasResidue: true)
+
+        XCTAssertEqual(c.focusObject, "m3",
+                       "pre-condition: another object must have won the focus — "
+                     + "m2's residue set DOES exist, so existence alone is not enough")
+        XCTAssertTrue(writes.isEmpty,
+                      "a superseded refocus must not write 'sele' onto an object that "
+                    + "is no longer focused: \(writes)")
+    }
+
+    // MARK: – Design mode adopts a selection made before it opened
+
+    // Goal 4's most visible consequence: an ordinary normal-mode selection is already
+    // a designated region the moment Design mode focuses a structure — no lasso, no
+    // re-clicking.
+    func testEnteringDesignModeAdoptsAPreExistingSele() async {
+        let residues = (1...5).map { i in
+            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
+                                                      o: .zero, chain: 0, resSeq: i),
+                          valid: true)
+        }
+        let c = DesignController(
+            enumerate: { obj, _ in
+                DesignResidueSet(object: obj, state: 1, residues: residues)
+            },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1"]
+        // 'sele' already holds three residues, selected in normal mode.
+        c.injectSele(seleState: { _, _, _ in
+            (indices: [1, 2, 3], digest: "pre-existing", total: 3)
+        })
+
+        c.enter()                     // single object → auto-focus
+        await c.focusAwait("m1")      // the deterministic half of what enter() starts
+
+        XCTAssertEqual(c.selectedResidueIndices, [1, 2, 3],
+                       "the pre-existing selection must arm the region immediately")
+        XCTAssertTrue(c.regionModeActive,
+                      "\"Redesign selection · 3 res\" must be armed on entry")
+        XCTAssertNil(c.pinnedResidueIndex, "3 residues is region mode, not a pin")
+        XCTAssertEqual(c.selectedSelectionName, "sele")
+    }
+
+    // MARK: – M5: an unreadable pick payload must not destroy the selection
+
+    // `handleViewportHit(object: "")` CLEARS 'sele', so "I could not read the pick"
+    // and "the pick ran and missed" cannot share an encoding: the first must be a
+    // no-op, the second must clear (normal-mode parity).
+    func testDesignPickOutcomeSeparatesAMissFromAnUnreadablePayload() {
+        XCTAssertNil(PyMOLEngine.designPickOutcome(payload: nil),
+                     "no file / unparseable JSON: the tap must be a no-op")
+        XCTAssertNil(PyMOLEngine.designPickOutcome(payload: [:]),
+                     "a payload with no 'hit' key is not a pick result")
+
+        let miss = PyMOLEngine.designPickOutcome(
+            payload: ["hit": false, "obj": "m1", "chain": "A", "resi": "2"])
+        XCTAssertEqual(miss?.hit, false)
+        XCTAssertEqual(miss?.object, "",
+                       "a genuine miss must reach the controller as an empty object "
+                     + "so the empty-space tap clears 'sele'")
+
+        let hit = PyMOLEngine.designPickOutcome(
+            payload: ["hit": true, "obj": "m1", "chain": "A", "resi": "2"])
+        XCTAssertEqual(hit?.hit, true)
+        XCTAssertEqual(hit?.object, "m1")
+        XCTAssertEqual(hit?.chain, "A")
+        XCTAssertEqual(hit?.resi, "2")
     }
 
     // The panel payload's new field must be optional so an older bundled

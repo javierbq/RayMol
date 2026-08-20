@@ -538,8 +538,9 @@ final class DesignIOSPortTests: XCTestCase {
                        "tapping any object when nothing is focused must refocus")
     }
 
-    // Same-object tap with a valid residue → pin via tapResidue (not setPinned directly,
-    // so region-edit mode is honoured consistently on both platforms).
+    // Same-object tap with a valid residue → routed through tapResidue (not
+    // setPinned directly), so the tap toggles 'sele' and the COUNT decides the mode
+    // — one residue pins — identically on both platforms.
     func testHandleViewportHitPinsOnFocusObjectWithResidue() {
         let c = makeController()
         c.setFocusForTest("obj1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
