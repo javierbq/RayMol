@@ -4,6 +4,7 @@ pattern (writes JSON to TMPDIR, returns a short marker)."""
 import hashlib
 import json
 import os
+import re
 import tempfile
 
 from pymol import cmd
@@ -111,6 +112,38 @@ def _scope(obj, src):
     return '(%s)' % obj
 
 
+def _residue_pred(chain, resi):
+    """One residue as an object-free predicate, tolerating an empty chain id.
+
+    Split out of _residue_sel so the same residue term can be intersected with
+    either a single object or the whole _scope(obj, src) — see _scoped_residue_sel.
+    """
+    if chain:
+        return 'chain %s and resi %s' % (chain, resi)
+    return 'resi %s' % resi
+
+
+def _scoped_residue_sel(obj, chain, resi, src):
+    """One residue within the READ scope: the target object plus its edit source.
+
+    Design-mode 'sele' READS resolve residues through _scope(obj, src) — by
+    (chain, resi) IDENTITY across the working copy and the original — so the
+    WRITES must use the same scope or the two disagree the moment an edit session
+    repoints the focus at the working copy while the selection still sits on the
+    original's atoms.  Writing object-scoped there made a region member impossible
+    to remove (the toggle saw no focus-object atoms in 'sele', so it ADDED them,
+    and the read deduped the result back to the same region) and let a repack's
+    topology replace silently drop residues clicked during the session, because
+    their only 'sele' membership lived on the atoms the replace annihilated.
+    """
+    return '%s and (%s)' % (_scope(obj, src), _residue_pred(chain, resi))
+
+
+#: Design working copies are named '<src>_design' / '<src>_designNN' by
+#: make_working_copy and carry IDENTICAL (chain, resi) residues.
+_WORKING_COPY_RE = re.compile(r'^(.+)_design\d*$')
+
+
 def _obj_residue_order(obj):
     """(chain, resi) for obj's polymer residues in canonical guide order —
     the same order enumerate_design_residues emits, so indices align with the
@@ -192,12 +225,31 @@ def set_design_active(on):
     return 'DESIGN_ACTIVE:%d' % (1 if _DESIGN_ACTIVE[0] else 0)
 
 
+def _canonical_model(model, objects):
+    """Collapse a Design working copy onto the source object it mirrors.
+
+    A working copy '<src>_designNN' holds the SAME residues as <src>, and every
+    Design read resolves 'sele' through _scope(obj, src), which matches a residue
+    on either object — so a scoped write legitimately marks both. Keyed on the raw
+    model name that one residue would count TWICE, making n_total exceed the
+    in-scope count and the UI report a bogus "+N on another structure".
+    Only collapse when the source object actually exists, so a user object that
+    merely happens to end in '_design' keeps its own identity.
+    """
+    m = _WORKING_COPY_RE.match(model)
+    if m and m.group(1) in objects:
+        return m.group(1)
+    return model
+
+
 def _sele_residue_keys():
-    """Sorted (model, chain, resi) of every guide residue in the active 'sele'.
+    """Sorted, de-duplicated (model, chain, resi) of the active 'sele's residues.
 
     '?sele' rather than 'sele' so a session that has never had a selection yields
     [] instead of raising. Guide atoms only, so the key set is one entry per
-    residue regardless of how many of its atoms the user picked.
+    residue regardless of how many of its atoms the user picked. Design working
+    copies are folded onto their source object (see _canonical_model) so one
+    residue marked on both never counts twice.
     """
     keys = []
     try:
@@ -205,7 +257,15 @@ def _sele_residue_keys():
                     'keys.append((model, chain, resi))', space={'keys': keys})
     except Exception:
         return []
-    return sorted(keys)
+    # get_object_list() only when a working-copy-shaped name is actually present:
+    # this runs on the 500 ms main-thread poll tick.
+    if any(_WORKING_COPY_RE.match(k[0]) for k in keys):
+        try:
+            objects = set(cmd.get_object_list())
+        except Exception:
+            objects = set()
+        keys = [(_canonical_model(m, objects), c, r) for m, c, r in keys]
+    return sorted(set(keys))
 
 
 def _digest_of(keys):
@@ -266,15 +326,21 @@ def sele_design_indices(obj, state, src=''):
     return 'DESIGN_SELE:%d' % len(indices)
 
 
-def toggle_sele_residue(obj, chain, resi):
+def toggle_sele_residue(obj, chain, resi, src=''):
     """Add or remove one residue in the active 'sele' (a Design-mode click).
 
     Deliberately mirrors metal_pick.pick_at's toggle idiom so that a click means
     the same thing in Design mode as in normal mode: already selected -> remove,
     otherwise add. Always leaves 'sele' enabled so the renderer's pink committed
-    pass draws it. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
+    pass draws it.
+
+    `src` is the edit-session source object, and it is what makes the toggle
+    ACTUALLY a toggle: the residue is resolved through _scoped_residue_sel, the
+    same scope sele_design_indices reads, so membership is tested and cleared on
+    the working copy AND the original together. See _scoped_residue_sel for what
+    an object-scoped write broke. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
     """
-    expr = '(%s)' % _residue_sel(obj, chain, resi)
+    expr = '(%s)' % _scoped_residue_sel(obj, chain, resi, src)
     try:
         already = cmd.count_atoms('(?sele) and %s' % expr) > 0
     except Exception:
@@ -286,15 +352,17 @@ def toggle_sele_residue(obj, chain, resi):
     return 'DESIGN_SELE_TOGGLE:%s' % ('off' if already else 'on')
 
 
-def set_sele_residue(obj, chain, resi):
+def set_sele_residue(obj, chain, resi, src=''):
     """Replace the active 'sele' with exactly one residue.
 
     Used when a Design-mode click lands on a DIFFERENT object than the current
     focus: design retargets to that object and the selection starts fresh there,
     so residues of the previous focus never linger in the region.
-    Returns 'DESIGN_SELE_SET:ok'.
+    Scoped through `src` for the same reason toggle_sele_residue is — the write
+    must be visible to a read that resolves by residue identity across an edit
+    session's working copy and its original. Returns 'DESIGN_SELE_SET:ok'.
     """
-    cmd.select('sele', _residue_sel(obj, chain, resi), enable=1)
+    cmd.select('sele', _scoped_residue_sel(obj, chain, resi, src), enable=1)
     return 'DESIGN_SELE_SET:ok'
 
 
@@ -313,9 +381,10 @@ def set_sele_from_selection(name):
 def clear_sele():
     """Empty the active 'sele' (a Design-mode click on empty space).
 
-    Matches metal_pick.pick_at's empty-space behaviour. enable=0 because there is
-    nothing to draw, and an enabled empty selection would still suppress other
-    selections (cmd.enable is exclusive for selections).
+    enable=0 — deliberately NOT what metal_pick.pick_at does (it leaves 'sele'
+    enabled and empty): there is nothing left to draw, and an enabled empty
+    selection would still suppress every other selection, because cmd.enable is
+    exclusive for selections.
     Returns 'DESIGN_SELE_CLEAR:ok'.
     """
     cmd.select('sele', 'none', enable=0)
@@ -580,10 +649,8 @@ _COMPARE_STATE = {}
 
 
 def _residue_sel(obj, chain, resi):
-    """Build a residue selection, tolerating an empty chain id."""
-    if chain:
-        return '(%s) and chain %s and resi %s' % (obj, chain, resi)
-    return '(%s) and resi %s' % (obj, resi)
+    """Build a residue selection on ONE object, tolerating an empty chain id."""
+    return '(%s) and %s' % (obj, _residue_pred(chain, resi))
 
 
 def set_residue_sticks(obj, chain, resi, on):

@@ -2470,16 +2470,22 @@ final class PyMOLEngine: ObservableObject {
                     digest: (root["digest"] as? String) ?? "",
                     total: (root["n_total"] as? Int) ?? 0)
         },
-        toggleSele: { [weak self] obj, chain, resi in
+        // `src` is passed through to Python so the WRITE resolves in the same scope
+        // the read does — see raymol_design._scoped_residue_sel. Dropping it makes a
+        // region member un-removable inside an edit session and lets a repack
+        // silently shrink the region.
+        toggleSele: { [weak self] obj, chain, resi, src in
+            let srcArg = (src?.isEmpty == false) ? src! : ""
             self?.runPython("""
                 from pymol import raymol_design as _rd
-                _rd.toggle_sele_residue('\(obj)', '\(chain)', '\(resi)')
+                _rd.toggle_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
                 """)
         },
-        setSeleResidue: { [weak self] obj, chain, resi in
+        setSeleResidue: { [weak self] obj, chain, resi, src in
+            let srcArg = (src?.isEmpty == false) ? src! : ""
             self?.runPython("""
                 from pymol import raymol_design as _rd
-                _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)')
+                _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
                 """)
         },
         setSeleNamed: { [weak self] name in
@@ -2882,29 +2888,48 @@ final class PyMOLEngine: ObservableObject {
     /// Runs on the main thread (UIKit tap callback); uses MainActor.assumeIsolated
     /// to satisfy Swift Concurrency's actor-isolation check (same pattern as
     /// readDesignHoverHit).
+    /// What a `hover_design_at` payload means for the controller.
+    ///
+    /// Two outcomes that a single `hit == false` cannot express, and conflating them
+    /// destroys the user's selection:
+    ///   - nil  → the payload could not be READ (missing file, unparseable JSON, no
+    ///            `hit` key). The pick told us nothing, so the tap must be a no-op.
+    ///   - hit:false → the pick RAN and missed empty space, which must clear 'sele'
+    ///            for normal-mode parity.
+    /// `hover_design_at` always writes `obj` alongside `hit`, so a decodable payload
+    /// carrying `hit` is always a genuine pick result.
+    /// Static and payload-in so the distinction is unit-testable without an engine.
+    static func designPickOutcome(payload: [String: Any]?)
+        -> (object: String, chain: String, resi: String, hit: Bool)? {
+        guard let root = payload, let hit = root["hit"] as? Bool else { return nil }
+        return (object: hit ? (root["obj"] as? String ?? "") : "",
+                chain: root["chain"] as? String ?? "",
+                resi: root["resi"] as? String ?? "",
+                hit: hit)
+    }
+
     func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
         guard designMode, isReady else { return }
         runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
-        var obj = "", chain = "", resi = ""
-        var hit = false
-        if let data = FileManager.default.contents(atPath: path),
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            hit   = (root["hit"] as? Bool) ?? false
-            obj   = root["obj"]   as? String ?? ""
-            chain = root["chain"] as? String ?? ""
-            resi  = root["resi"]  as? String ?? ""
-        }
-        // A MISS must still reach the controller: an empty-space tap clears the
-        // selection (normal-mode parity). The previous early return on `hit ==
-        // false` made empty taps silently inert. An empty `object` is exactly what
-        // the macOS path already delivers on a miss (longPressPick builds
-        // LongPressHit with obj: "" and isEmpty: true), so both platforms converge.
+        let data = FileManager.default.contents(atPath: path)
+        let root = data.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        } ?? nil
+        // An unreadable payload must NOT reach the controller: `handleViewportHit`
+        // with an empty object CLEARS 'sele', so treating "I could not read the
+        // pick" as "the pick missed" would silently destroy the user's selection.
+        guard let out = PyMOLEngine.designPickOutcome(payload: root) else { return }
+        // A genuine MISS does still reach the controller: an empty-space tap clears
+        // the selection (normal-mode parity). The old early return on `hit == false`
+        // made empty taps silently inert. An empty `object` is exactly what the
+        // macOS path already delivers on a miss (longPressPick builds LongPressHit
+        // with obj: "" and isEmpty: true), so both platforms converge.
         MainActor.assumeIsolated {
-            designController.handleViewportHit(object: hit ? obj : "",
-                                               chain: chain, resi: resi,
-                                               hasResidue: hit)
+            designController.handleViewportHit(object: out.object,
+                                               chain: out.chain, resi: out.resi,
+                                               hasResidue: out.hit)
         }
     }
 

@@ -4151,9 +4151,7 @@ extension PyMOLEngine {
         // on designMode so nothing runs when the feature is not in use.
         if let digest = payload.design_sele, !digest.isEmpty, designMode {
             MainActor.assumeIsolated {
-                if digest != designController.lastSeleDigest {
-                    designController.syncFromSele()
-                }
+                designController.syncFromSeleIfChanged(digest: digest)
             }
         }
         #endif

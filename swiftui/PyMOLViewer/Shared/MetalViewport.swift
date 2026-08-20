@@ -1042,8 +1042,9 @@ extension MetalViewport {
             #if RAYMOL_MPNN
             if engine.designMode {
                 // In Design mode a viewport tap targets a residue, mirroring the
-                // macOS long-press path. Region-edit mode makes it toggle region
-                // membership instead of pinning — see DesignController.tapResidue.
+                // macOS long-press path. The tap always TOGGLES that residue in
+                // 'sele'; the COUNT of selected residues then decides the mode
+                // (1 → pinned, 2+ → region) — see DesignController.syncFromSele.
                 engine.designPickResidue(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
                 return
             }
