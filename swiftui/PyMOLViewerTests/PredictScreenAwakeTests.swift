@@ -52,4 +52,51 @@ final class PredictScreenAwakeTests: XCTestCase {
         XCTAssertTrue(PredictScreenAwake.shouldStayAwake(predictions: jobs,
                                                           weightsFetching: false))
     }
+
+    // MARK: - The job-owned hold
+
+    override func setUp() {
+        super.setUp()
+        PredictScreenAwake.resetJobHoldsForTesting()
+    }
+
+    override func tearDown() {
+        PredictScreenAwake.resetJobHoldsForTesting()
+        super.tearDown()
+    }
+
+    /// The authoritative path: BoltzJobManager takes the hold the instant a fold starts,
+    /// not when the object-panel poll notices one. The view path was too slow — a
+    /// 110-residue run was observed freezing at diffusion step 42 of 200 because the
+    /// phone locked inside the ~500 ms gap.
+    func testAJobTakesAndReleasesTheHold() {
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 0)
+        PredictScreenAwake.setJobActive(true)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 1)
+        PredictScreenAwake.setJobActive(false)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 0)
+    }
+
+    /// Counted, not a flag: n_models > 1 and queued jobs overlap, and the display must
+    /// stay pinned until the LAST one finishes.
+    func testOverlappingJobsHoldUntilTheLastOneFinishes() {
+        PredictScreenAwake.setJobActive(true)
+        PredictScreenAwake.setJobActive(true)
+        PredictScreenAwake.setJobActive(false)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 1,
+                       "one fold finishing must not release the other's hold")
+        PredictScreenAwake.setJobActive(false)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 0)
+    }
+
+    /// An unbalanced release must not drive the count negative — that would make the next
+    /// genuine hold a no-op and silently reintroduce the freeze this fixes.
+    func testUnbalancedReleaseCannotGoNegative() {
+        PredictScreenAwake.setJobActive(false)
+        PredictScreenAwake.setJobActive(false)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 0)
+        PredictScreenAwake.setJobActive(true)
+        XCTAssertEqual(PredictScreenAwake.activeJobHolds, 1,
+                       "a real hold after stray releases must still hold")
+    }
 }

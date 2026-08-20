@@ -647,7 +647,16 @@ final class BoltzJobManager {
         Self.logMemory("start", jobID: request.jobID)
         let sampler = Self.FootprintSampler()
         sampler.start()
-        defer { sampler.stop(); Self.logMemory("end", jobID: request.jobID) }
+        // Pin the display for the whole run, taken HERE rather than left to the view
+        // layer: the view learns about a job only through the ~500 ms object-panel poll,
+        // and a fold has been observed freezing at diffusion step 42 because the phone
+        // locked inside that window. See PredictScreenAwake.setJobActive.
+        PredictScreenAwake.setJobActive(true)
+        defer {
+            PredictScreenAwake.setJobActive(false)
+            sampler.stop()
+            Self.logMemory("end", jobID: request.jobID)
+        }
         do {
             BoltzRuntime.configureOnce()
 

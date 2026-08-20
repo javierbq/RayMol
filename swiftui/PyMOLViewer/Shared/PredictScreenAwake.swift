@@ -45,8 +45,60 @@ enum PredictScreenAwake {
     /// Apply the decision. Idempotent — assigning the same value is free, so callers may
     /// drive this from an `.onChange` without tracking the previous state themselves.
     /// A no-op on macOS.
+    ///
+    /// Only ever RAISES the hold if a job is active (see ``setJobActive(_:)``): the
+    /// view-driven caller must not be able to release a hold the job owner still needs.
     @MainActor
     static func apply(_ stayAwake: Bool) {
+        install(stayAwake || jobActiveCount > 0)
+    }
+
+    // MARK: - Direct, job-owned hold
+
+    private static let jobLock = NSLock()
+    private static var jobActiveCount = 0
+
+    /// Take or release the hold directly from the code that runs the fold.
+    ///
+    /// **This is the authoritative path, and it exists because the view-driven one was
+    /// too slow.** `PredictBackgroundNotice` and ContentView's `.onChange` both key off
+    /// `engine.predictionJobs`, which is filled in by the ~500 ms OBJECT PANEL poll — a
+    /// UI-shaped feed that only learns a job exists after Python has written it and the
+    /// next tick has read it back. That leaves a window of up to a second or so between
+    /// submitting a fold and the display being pinned, and a phone whose idle timer is
+    /// already nearly expired locks inside it. Observed doing exactly that: a 110-residue
+    /// run froze at diffusion step 42 of 200 and never advanced, because iOS suspended the
+    /// app mid-inference.
+    ///
+    /// `BoltzJobManager` knows a job has started at the instant it starts one, so it takes
+    /// the hold itself. The view path is kept as well — it also covers the weight download,
+    /// which has no `BoltzJobManager` job — and the two compose through a count rather than
+    /// a boolean so neither can release the other's hold.
+    ///
+    /// Counted rather than a flag because `n_models > 1` and queued jobs mean folds can
+    /// overlap; the display must stay pinned until the LAST one finishes.
+    ///
+    /// Safe from any thread — the UIKit assignment is hopped to the main actor.
+    nonisolated static func setJobActive(_ active: Bool) {
+        jobLock.lock()
+        jobActiveCount = max(0, jobActiveCount + (active ? 1 : -1))
+        let held = jobActiveCount > 0
+        jobLock.unlock()
+        Task { @MainActor in install(held) }
+    }
+
+    /// Number of folds currently holding the display on. Exposed for tests.
+    static var activeJobHolds: Int {
+        jobLock.lock(); defer { jobLock.unlock() }; return jobActiveCount
+    }
+
+    /// Reset the counter so a test can assert from a known state.
+    static func resetJobHoldsForTesting() {
+        jobLock.lock(); jobActiveCount = 0; jobLock.unlock()
+    }
+
+    @MainActor
+    private static func install(_ stayAwake: Bool) {
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = stayAwake
         #endif
