@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
 
 // MARK: - Wire types (decoded from pymol_predict_<pid>.json; see appkit_predict.emit)
@@ -217,7 +217,15 @@ final class PredictController: ObservableObject {
         // widths and caps. Map the id → variant the same way ProtenixSizeGuard does —
         // explicitly base only for a "protenix-base*" pack, else the expensive v2
         // (which also covers the "protenix" alias for protenix-v2-int8).
+        //
+        // The Protenix branch is macOS-only because ProtenixSizeGuard is (the runtime
+        // was not ported to iOS — see PyMOLBridge.mm's RAYMOL_PREDICT_RUNTIMES). On iOS
+        // the branch is also unreachable rather than merely absent: the host advertises
+        // "boltz" alone, so check_available refuses every protenix predictor and none
+        // ever reaches `availablePredictors`. Compiling it out is therefore removing
+        // dead code, not narrowing behaviour.
         let decision: PredictSizeGuard.Decision
+        #if os(macOS)
         if predictor.hasPrefix("protenix") {
             let variant: ProtenixSizeGuard.Variant =
                 predictor.contains("protenix-base") ? .base : .v2
@@ -227,6 +235,10 @@ final class PredictController: ObservableObject {
             decision = PredictSizeGuard.decide(tokens: tokenCount, msaDepth: effectiveMSADepth,
                                                availableBytes: availableBytesProvider())
         }
+        #else
+        decision = PredictSizeGuard.decide(tokens: tokenCount, msaDepth: effectiveMSADepth,
+                                           availableBytes: availableBytesProvider())
+        #endif
         switch decision {
         case .ok:
             proceed()

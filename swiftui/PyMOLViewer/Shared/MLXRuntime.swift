@@ -1,4 +1,4 @@
-#if RAYMOL_MPNN || os(macOS)
+#if RAYMOL_MPNN || os(macOS) || os(iOS)
 import Foundation
 import MLX
 
@@ -15,9 +15,12 @@ import MLX
 ///   `MemoryPlanner.apply()` assigns `Memory.cacheLimit`/`memoryLimit` on **every**
 ///   predict call.
 ///
-/// The gate is `RAYMOL_MPNN || os(macOS)` rather than a dedicated compilation condition:
-/// structure prediction ships in every macOS build, so there is no flag to set, while the
-/// `RAYMOL_MPNN` arm keeps this type available to Design mode on iOS.
+/// The gate is `RAYMOL_MPNN || os(macOS) || os(iOS)` rather than a dedicated compilation
+/// condition: structure prediction ships unconditionally on BOTH platforms now, so there
+/// is no flag to set, and the `RAYMOL_MPNN` arm is kept only so a hypothetical
+/// third-platform Design build still gets this type. The `os(iOS)` arm is not redundant
+/// with it: `RAYMOL_MPNN` is a per-SDK build setting anyone could turn off for iOS, and
+/// prediction would then lose its MLX configuration with no compile error to say so.
 ///
 /// With both linked, whoever wrote last used to win — silently, by call order, with no
 /// way to observe or test the outcome. `MLXRuntime` arbitrates instead (see
@@ -134,6 +137,41 @@ enum MLXRuntime {
     static func resetCacheLimitRequirementsForTesting() {
         lock.lock(); defer { lock.unlock() }
         requirements.removeAll()
+    }
+
+    // MARK: – Process footprint
+
+    /// This process's `phys_footprint`, in bytes, or 0 when the kernel will not say.
+    ///
+    /// The SAME quantity jetsam kills on — deliberately not `resident_size`, which omits
+    /// compressed and IOKit-mapped pages and therefore reads low on exactly the
+    /// MLX/Metal allocations that matter here.
+    ///
+    /// Exists so `os_proc_available_memory()` (bytes *remaining*) can be turned back into
+    /// the app's absolute ceiling: `available + footprint`. See
+    /// ``BoltzRuntime/memoryLimitBytes``. Available on both platforms because
+    /// `TASK_VM_INFO` is, and because a Mac reading is useful for diagnostics even though
+    /// nothing gates on it there.
+    ///
+    /// Returns 0 rather than trapping if `task_info` fails: every caller treats 0 as
+    /// "unknown" and falls back, which is the right response to a kernel that declined to
+    /// answer.
+    static var currentFootprintBytes: Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size
+                                           / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        // phys_footprint lives past the end of the older TASK_VM_INFO layout, so a short
+        // reply means the field was not populated and must not be read.
+        guard result == KERN_SUCCESS,
+              count >= mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size
+                                              / MemoryLayout<natural_t>.size)
+        else { return 0 }
+        return Int(info.phys_footprint)
     }
 
     // MARK: – Error handling

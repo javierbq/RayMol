@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import BoltzMLX
 import Foundation
 
@@ -295,8 +295,11 @@ final class BoltzJobManager {
             }
             // Broadcast: a cancel marker carries only a job id, so there is nothing in it
             // to route on. Every manager keeps only its own ids, and a cancel for a job
-            // this one never had is a no-op.
+            // this one never had is a no-op. macOS only because Protenix is: iOS links
+            // no second manager, so there is nothing to broadcast to.
+            #if os(macOS)
             ProtenixJobManager.shared.cancel(jobID: marker.jobID)
+            #endif
         case .submit:
             let url = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
@@ -323,10 +326,18 @@ final class BoltzJobManager {
             // This manager owns the marker only because it was here first. When a third
             // runtime lands, lift the parse-and-route out into a dispatcher rather than
             // adding another branch here.
+            //
+            // macOS only, and the iOS arm needs no fallback branch: PyMOLBridge.mm
+            // advertises "boltz" alone there, so host.require_runtime refuses a protenix
+            // request in Python before any marker is printed. If one somehow arrived, it
+            // would fall through to Self.preflight below, whose runtime check refuses
+            // exactly this case with an accurate message.
+            #if os(macOS)
             if request.runtime == ProtenixJobManager.runtimeName {
                 ProtenixJobManager.shared.submit(request)
                 return
             }
+            #endif
             if let failure = Self.preflight(request) {
                 // Refused before any work: the placeholder Python just created will never
                 // be filled, so drop it rather than leaving an empty stub behind.
@@ -861,19 +872,49 @@ final class BoltzJobManager {
         return out
     }
 
+    /// The memory plan handed to `BoltzPredictor`, per platform.
+    ///
+    /// In both arms `cacheLimit` is pinned to whatever ``MLXRuntime`` has arbitrated,
+    /// because `MemoryPlanner.apply()` assigns `MLX.Memory.cacheLimit` on **every**
+    /// predict call. Passing the arbitrated value makes that assignment re-assert the
+    /// agreed ceiling rather than substitute boltz-mlx's own default and quietly
+    /// out-vote the min-wins registry.
+    ///
+    /// **macOS — `.desktop` limits.** boltz-mlx's default preset is phone-sized (256
+    /// tokens, 2 048 atoms, 1 024 MSA rows) and would refuse anything real on a Mac.
+    ///
+    /// **iOS — the phone preset, explicitly.** `BoltzInputLimits` has no `.phone`
+    /// static; the phone numbers ARE `MemoryPlanner`'s defaults, so they are written out
+    /// here rather than obtained by omitting arguments — an upstream change to those
+    /// defaults should be a visible diff, not a silent change to what an iPhone will
+    /// accept. 2 048 atoms is the binding limit in practice, not the 256 tokens: a
+    /// single-chain protein runs about 7.7 atoms per residue, so ~265 residues reaches
+    /// the atom cap first. Both sit above ``PredictSizeGuard/iOSMaximumTokens``, which is
+    /// the gate that actually decides, and this is the belt to its braces — it refuses
+    /// inside the runtime if anything ever reaches here ungated.
+    ///
+    /// `memoryLimit` is the substantive iOS change: see
+    /// ``BoltzRuntime/memoryLimitBytes`` for why a 6 GB default cannot fire on a phone.
+    private static var memoryPlanner: MemoryPlanner {
+        #if os(iOS)
+        return MemoryPlanner(
+            limits: BoltzInputLimits(maximumTokens: 256, maximumAtoms: 2_048,
+                                     maximumMSADepth: 1_024),
+            memoryLimit: BoltzRuntime.memoryLimitBytes,
+            cacheLimit: MLXRuntime.activeCacheLimitBytes)
+        #else
+        return MemoryPlanner(limits: .desktop,
+                             cacheLimit: MLXRuntime.activeCacheLimitBytes)
+        #endif
+    }
+
     /// Reuses the loaded predictor when the weights directory is unchanged.
     private func loadedPredictor(directory: String) throws -> BoltzPredictor {
         try stateQueue.sync {
             if let existing = predictor, predictorDirectory == directory { return existing }
             let built = try BoltzRuntime.withMLXErrorsAsThrows {
-                try BoltzPredictor(
-                    modelDirectory: URL(fileURLWithPath: directory),
-                    // The default preset is phone-sized (256 tokens) and would refuse
-                    // anything real. cacheLimit is pinned to whatever MLXRuntime has
-                    // arbitrated so this planner's apply() re-asserts the agreed
-                    // ceiling instead of substituting its own 64 MiB default.
-                    memoryPlanner: MemoryPlanner(limits: .desktop,
-                                                 cacheLimit: MLXRuntime.activeCacheLimitBytes))
+                try BoltzPredictor(modelDirectory: URL(fileURLWithPath: directory),
+                                   memoryPlanner: Self.memoryPlanner)
             }
             predictor = built
             predictorDirectory = directory
