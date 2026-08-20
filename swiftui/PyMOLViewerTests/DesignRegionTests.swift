@@ -225,7 +225,7 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
                        selectedIndices: { _, _, _, _ in [1, 2] })
-        c.injectRepack(repack: { _, _ in "REPACKED" }, loadRepacked: { _, _ in })
+        c.injectRepack(repack: { _, _ in "REPACKED" }, loadRepacked: { _, _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
@@ -247,7 +247,7 @@ final class DesignRegionTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
                        selectedIndices: { _, _, _, _ in [1, 2] })
         c.injectRepack(repack: { _, _ in "PDB" },
-                       loadRepacked: { [weak c] _, _ in flagDuringRepack = c?.isRedesigning })
+                       loadRepacked: { [weak c] _, _, _ in flagDuringRepack = c?.isRedesigning })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.pickSelection("reg")
         await c.redesignSelectionAwait()
@@ -348,7 +348,7 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: allValid(3))
-        c.injectSele(seleState: { _, _, _ in (indices: [1], digest: "d1", total: 1) })
+        c.injectSele(seleState: { _, _, _ in (indices: [1], digest: "d1", off: 0) })
         XCTAssertEqual(c.syncFromSele(), 1)
         XCTAssertEqual(c.pinnedResidueIndex, 1)
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
@@ -364,7 +364,7 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: allValid(3))
-        c.injectSele(seleState: { _, _, _ in (indices: [0, 2], digest: "d2", total: 2) })
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 2], digest: "d2", off: 0) })
         XCTAssertEqual(c.syncFromSele(), 2)
         XCTAssertNil(c.pinnedResidueIndex,
                      "region mode must clear the single-residue pin")
@@ -380,7 +380,7 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: [true, false, true])
-        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d3", total: 2) })
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d3", off: 0) })
         XCTAssertEqual(c.syncFromSele(), 1,
                        "index 1 is not designable and must not count")
         XCTAssertEqual(c.pinnedResidueIndex, 0)
@@ -392,18 +392,21 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: allValid(3))
-        c.injectSele(seleState: { _, _, _ in (indices: [1, 99, -1], digest: "d4", total: 3) })
+        c.injectSele(seleState: { _, _, _ in (indices: [1, 99, -1], digest: "d4", off: 0) })
         XCTAssertEqual(c.syncFromSele(), 1)
         XCTAssertEqual(c.pinnedResidueIndex, 1)
     }
 
     // Residues selected on OTHER structures are reported so the UI can say so
-    // instead of silently ignoring them.
-    func testOffFocusResiduesAreCounted() {
+    // instead of silently ignoring them. The count is taken VERBATIM from the
+    // reader (Python computes it from the model names): deriving it here as
+    // "selected - in scope" double-counted a residue that an edit session
+    // legitimately marks on BOTH the working copy and the original.
+    func testOffFocusResiduesAreReportedNotDerived() {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: allValid(3))
-        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "d5", total: 3) })
+        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "d5", off: 2) })
         c.syncFromSele()
         XCTAssertEqual(c.seleResiduesOffFocus, 2)
     }
@@ -412,7 +415,7 @@ final class DesignRegionTests: XCTestCase {
     // rather than keep stale indices.
     func testSyncWithoutFocusResets() {
         let c = makeController()
-        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d6", total: 2) })
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 1], digest: "d6", off: 2) })
         XCTAssertEqual(c.syncFromSele(), 0)
         XCTAssertTrue(c.selectedResidueIndices.isEmpty)
         XCTAssertNil(c.pinnedResidueIndex)
@@ -575,7 +578,8 @@ final class DesignRegionTests: XCTestCase {
                     ? ["B/101", "B/102", "B/103"]
                     : ["A/1", "A/2", "A/3"]
                 let idx = keys.enumerated().compactMap { sele.contains($0.element) ? $0.offset : nil }
-                return (indices: idx, digest: "\(sele.sorted())", total: sele.count)
+                return (indices: idx, digest: "\(sele.sorted())",
+                        off: max(0, sele.count - idx.count))
             },
             toggleSele: { _, chain, resi, _ in
                 let k = "\(chain)/\(resi)"
@@ -718,7 +722,7 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: [true, true, true])
-        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "abc123", total: 1) })
+        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "abc123", off: 0) })
         c.syncFromSele()
         XCTAssertEqual(c.lastSeleDigest, "abc123",
                        "the resolved digest must be recorded for poll gating")
@@ -774,7 +778,7 @@ final class DesignRegionTests: XCTestCase {
         var reads = 0
         c.injectSele(seleState: { _, _, _ in
             reads += 1
-            return (indices: [0], digest: "d1", total: 1)
+            return (indices: [0], digest: "d1", off: 0)
         })
 
         XCTAssertTrue(c.syncFromSeleIfChanged(digest: "d1"),
@@ -788,7 +792,7 @@ final class DesignRegionTests: XCTestCase {
 
         c.injectSele(seleState: { _, _, _ in
             reads += 1
-            return (indices: [0, 2], digest: "d2", total: 2)
+            return (indices: [0, 2], digest: "d2", off: 0)
         })
         XCTAssertTrue(c.syncFromSeleIfChanged(digest: "d2"),
                       "a changed digest must re-derive")
@@ -834,7 +838,7 @@ final class DesignRegionTests: XCTestCase {
         // A 5-residue selection now arrives from outside Design mode (`select sele,
         // resi 1-5` at the prompt) and reaches the controller through the poll.
         c.injectSele(seleState: { _, _, _ in
-            (indices: [0, 1, 2, 3, 4], digest: "external", total: 5)
+            (indices: [0, 1, 2, 3, 4], digest: "external", off: 0)
         })
         c.syncFromSeleIfChanged(digest: "external")
 
@@ -908,7 +912,7 @@ final class DesignRegionTests: XCTestCase {
         c.allObjects = ["m1"]
         // 'sele' already holds three residues, selected in normal mode.
         c.injectSele(seleState: { _, _, _ in
-            (indices: [1, 2, 3], digest: "pre-existing", total: 3)
+            (indices: [1, 2, 3], digest: "pre-existing", off: 0)
         })
 
         c.enter()                     // single object → auto-focus
@@ -920,6 +924,85 @@ final class DesignRegionTests: XCTestCase {
                       "\"Redesign selection · 3 res\" must be armed on entry")
         XCTAssertNil(c.pinnedResidueIndex, "3 residues is region mode, not a pin")
         XCTAssertEqual(c.selectedSelectionName, "sele")
+    }
+
+    // The OTHER no-digest path: `focusObject` non-nil with no residue set for it.
+    // `focusAwait` sets `focusObject` BEFORE `enumerate`, and its catch only records
+    // `errorText` — so a failed focus leaves exactly that state, and gating on
+    // `focusObject == nil` would let the poll re-derive on every 500 ms tick
+    // forever, which is the symptom the gate exists to prevent.
+    func testPollGateDoesNotSpinAfterAFailedFocus() async {
+        struct Boom: Error {}
+        let c = DesignController(
+            enumerate: { _, _ in throw Boom() },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1", "m2"]
+
+        await c.focusAwait("m1")
+        XCTAssertNotNil(c.errorText, "pre-condition: the focus must have failed")
+        XCTAssertEqual(c.focusObject, "m1",
+                       "pre-condition: focusObject is set even though enumerate threw")
+
+        XCTAssertTrue(c.syncFromSeleIfChanged(digest: "py-digest"),
+                      "the first tick may re-derive once")
+        for tick in 1...4 {
+            XCTAssertFalse(c.syncFromSeleIfChanged(digest: "py-digest"),
+                           "tick \(tick): an unchanged 'sele' must not re-derive just "
+                         + "because the focus object has no residue set")
+        }
+    }
+
+    // MARK: – Keeping edits must not leave an unclearable 'sele' membership
+
+    // A residue clicked mid-session is marked on BOTH the working copy and the
+    // original — that is what survives a repack. The Keep path RETAINS the copy but
+    // clears `editSourceObject`, so from then on no Design write can address the
+    // copy: without narrowing, clicking that region member off leaves it selected
+    // and pink there, with a spurious off-structure badge and no way to clear it.
+    // The Discard path needs no narrowing — deleting the copy takes its atoms with it.
+    func testKeepingEditsNarrowsSeleOffTheRetainedCopy() async {
+        for keep in [true, false] {
+            var dropped: [String] = []
+            let c = makeController(); wireEdit(c)
+            c.injectSele(dropObjectFromSele: { dropped.append($0) })
+            c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+            c.tapResidue(residueIndex: 0)
+            await c.applyMutationAwait(residueIndex: 1, aa: 7)   // opens the session
+            XCTAssertEqual(c.workingObject, "m1_design",
+                           "pre-condition: a working copy must exist")
+
+            if keep { c.keepEdits() } else { c.discardEdits() }
+
+            if keep {
+                XCTAssertEqual(dropped, ["m1_design"],
+                               "Keep retains the copy, so 'sele' must be narrowed off it")
+            } else {
+                XCTAssertTrue(dropped.isEmpty,
+                              "Discard deletes the copy — nothing to narrow: \(dropped)")
+            }
+        }
+    }
+
+    // MARK: – The repack must be able to re-assert 'sele' where it is visible
+
+    // `load_repacked` deletes and renames the object, annihilating its 'sele' atoms;
+    // it re-asserts them on the replacement, and needs the edit scope to know which
+    // residues those are (the pre-session ones were only ever marked on the
+    // original, which the session disabled). Swift's job is to pass the source.
+    func testRepackCarriesTheEditSourceToLoadRepacked() async {
+        var srcSeen: [String?] = []
+        let c = makeController(); wireEdit(c)
+        c.injectRepack(repack: { _, _ in "PDBDATA" },
+                       loadRepacked: { _, _, src in srcSeen.append(src) })
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        await c.applyMutationAwait(residueIndex: 1, aa: 7)   // opens the session
+        await c.repackNowAwait()
+
+        XCTAssertEqual(srcSeen, ["m1"],
+                       "the repack must tell load_repacked which object the region's "
+                     + "selection can also live on")
     }
 
     // MARK: – M5: an unreadable pick payload must not destroy the selection
@@ -946,6 +1029,46 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(hit?.object, "m1")
         XCTAssertEqual(hit?.chain, "A")
         XCTAssertEqual(hit?.resi, "2")
+    }
+
+    // The guard itself, at the level designPickResidue uses it: an unreadable
+    // payload file must deliver NOTHING to the controller (delivering an empty
+    // object would clear 'sele'), while a genuine miss must still be delivered.
+    func testRouteDesignPickDeliversNothingForAnUnreadablePayload() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("raymol-pick-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var delivered: [(String, String, String, Bool)] = []
+        let sink: (String, String, String, Bool) -> Void = {
+            delivered.append(($0, $1, $2, $3))
+        }
+
+        // 1. No file at all (hover_design_at never ran, or the write failed).
+        PyMOLEngine.routeDesignPick(
+            payloadPath: dir.appendingPathComponent("missing.json").path, deliver: sink)
+        XCTAssertTrue(delivered.isEmpty, "a missing payload must not reach the controller")
+
+        // 2. Present but not JSON (a truncated or clobbered write).
+        let garbage = dir.appendingPathComponent("garbage.json")
+        try Data("{not json".utf8).write(to: garbage)
+        PyMOLEngine.routeDesignPick(payloadPath: garbage.path, deliver: sink)
+        XCTAssertTrue(delivered.isEmpty, "unparseable JSON must not reach the controller")
+
+        // 3. Valid JSON that is not a pick result.
+        let wrongShape = dir.appendingPathComponent("array.json")
+        try Data("[1, 2, 3]".utf8).write(to: wrongShape)
+        PyMOLEngine.routeDesignPick(payloadPath: wrongShape.path, deliver: sink)
+        XCTAssertTrue(delivered.isEmpty, "a non-object payload must not reach the controller")
+
+        // 4. A genuine miss MUST be delivered, as an empty object, so the tap clears.
+        let miss = dir.appendingPathComponent("miss.json")
+        try Data(#"{"hit": false, "obj": "m1", "chain": "A", "resi": "2"}"#.utf8).write(to: miss)
+        PyMOLEngine.routeDesignPick(payloadPath: miss.path, deliver: sink)
+        XCTAssertEqual(delivered.count, 1, "a real miss must reach the controller")
+        XCTAssertEqual(delivered.first?.0, "")
+        XCTAssertEqual(delivered.first?.3, false)
     }
 
     // The panel payload's new field must be optional so an older bundled

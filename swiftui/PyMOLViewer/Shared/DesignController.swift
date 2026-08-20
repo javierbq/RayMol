@@ -72,7 +72,11 @@ final class DesignController: ObservableObject {
     /// Run MPNN sidechain repack off-main for the given residues + sequence; returns an all-atom PDB string.
     typealias RepackFn = ([MPNNModel.Residue], [Int]) throws -> String
     /// Load a repacked PDB string into the named working-copy object.
-    typealias LoadRepackedFn = (String, String) -> Void
+    /// Replace an object's structure from a PDB string. The third parameter is the
+    /// edit-session source: `load_repacked` re-asserts 'sele' onto the replaced
+    /// (visible) object afterwards, and needs the scope to know which residues the
+    /// region contains — the pre-session ones were only ever marked on the original.
+    typealias LoadRepackedFn = (_ obj: String, _ pdb: String, _ src: String?) -> Void
 
     /// Show or hide all sidechain sticks on `obj` (with cnc element coloring on show).
     typealias ShowAllSidechainsFn = (String, Bool) -> Void
@@ -109,9 +113,15 @@ final class DesignController: ObservableObject {
     /// Read the active 'sele' for `obj`, scoped to `obj` + its edit `src` exactly as
     /// `SelectedIndicesFn` is. Returns the full-length guide indices inside that
     /// scope, a digest of the WHOLE selection (used only for change detection), and
-    /// the total selected residue count across all objects.
+    /// the number of selected residues OUTSIDE that scope.
+    ///
+    /// `off` is reported, never derived. Python computes it from the model names it
+    /// already has; reconstructing it here as "total selected − in scope" was the
+    /// source of every wrong-badge variant, because during an edit session one
+    /// residue legitimately carries 'sele' membership on both the working copy and
+    /// the original and so appears twice in any whole-session total.
     typealias SeleStateFn = (_ obj: String, _ src: String?, _ state: Int)
-        -> (indices: [Int], digest: String, total: Int)
+        -> (indices: [Int], digest: String, off: Int)
     /// Add or remove one residue in the active 'sele'.
     ///
     /// `src` is the edit-session source object and is NOT optional decoration: the
@@ -132,6 +142,8 @@ final class DesignController: ObservableObject {
     typealias SetSeleNamedFn = (_ name: String) -> Void
     /// Empty the active 'sele'.
     typealias ClearSeleFn = () -> Void
+    /// Narrow the active 'sele' so none of `obj`'s atoms are in it.
+    typealias DropObjectFromSeleFn = (_ obj: String) -> Void
     /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
     /// never on the main thread — the model is owned by that queue.
     typealias ReleaseModelFn = () -> Void
@@ -157,7 +169,7 @@ final class DesignController: ObservableObject {
     private var compare: CompareFn = { _, _ in }
     private var resetCompareFn: ResetCompareFn = { _ in }
     private var repack: RepackFn = { _, _ in "" }
-    private var loadRepacked: LoadRepackedFn = { _, _ in }
+    private var loadRepacked: LoadRepackedFn = { _, _, _ in }
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
     private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
     private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
@@ -177,6 +189,7 @@ final class DesignController: ObservableObject {
     private var setSeleResidueFn: SetSeleResidueFn?
     private var setSeleNamedFn: SetSeleNamedFn?
     private var clearSeleFn: ClearSeleFn?
+    private var dropObjectFromSeleFn: DropObjectFromSeleFn?
 
     /// In-memory stand-in for PyMOL's 'sele' used by the fallbacks. Keys are
     /// "chain\u{1}resi" — the same encoding `stickKey` produces.
@@ -344,7 +357,7 @@ final class DesignController: ObservableObject {
                      compare: @escaping CompareFn = { _, _ in },
                      resetCompare: @escaping ResetCompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
-                     loadRepacked: @escaping LoadRepackedFn = { _, _ in },
+                     loadRepacked: @escaping LoadRepackedFn = { _, _, _ in },
                      showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in },
                      designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
@@ -354,7 +367,8 @@ final class DesignController: ObservableObject {
                      toggleSele: ToggleSeleFn? = nil,
                      setSeleResidue: SetSeleResidueFn? = nil,
                      setSeleNamed: SetSeleNamedFn? = nil,
-                     clearSele: ClearSeleFn? = nil) {
+                     clearSele: ClearSeleFn? = nil,
+                     dropObjectFromSele: DropObjectFromSeleFn? = nil) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -381,6 +395,7 @@ final class DesignController: ObservableObject {
         self.setSeleResidueFn = setSeleResidue
         self.setSeleNamedFn = setSeleNamed
         self.clearSeleFn = clearSele
+        self.dropObjectFromSeleFn = dropObjectFromSele
     }
 
     // MARK: – Public interface
@@ -774,6 +789,14 @@ final class DesignController: ObservableObject {
         } else {
             // Keep path: working copy stays; re-enable the original so both are visible.
             if let src { enableOriginalFn(src) }
+            // ...and narrow 'sele' off the retained copy. A residue clicked during
+            // the session is marked on BOTH objects (that is what survives a
+            // repack), but `editSourceObject` is cleared below, so from here on no
+            // Design write can address the copy: a click removing that region member
+            // would leave it selected and pink there, with a spurious off-structure
+            // badge and no way to clear it from the UI. Runs BEFORE the closing
+            // `syncFromSele()` so the re-derive sees the narrowed selection.
+            if let w, let fn = dropObjectFromSeleFn { fn(w) }
         }
         rescoreToken += 1; repackToken += 1
         rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
@@ -816,21 +839,22 @@ final class DesignController: ObservableObject {
 
     /// Local counterpart of `SeleStateFn`: resolve `stubSele` against the focus
     /// object's residue set, in guide order.
-    private func seleStateLocal() -> (indices: [Int], digest: String, total: Int) {
+    private func seleStateLocal() -> (indices: [Int], digest: String, off: Int) {
         guard let obj = focusObject, let set = lastSet[obj] else {
-            return (indices: [], digest: "\(stubSele.count)", total: stubSele.count)
+            return (indices: [], digest: "\(stubSele.count)", off: stubSele.count)
         }
         let idx = set.residues.enumerated().compactMap { i, r in
             stubSele.contains(stickKey(r.chain, r.resi)) ? i : nil
         }
-        return (indices: idx, digest: "\(stubSele.count):\(idx)", total: stubSele.count)
+        return (indices: idx, digest: "\(stubSele.count):\(idx)",
+                off: max(0, stubSele.count - idx.count))
     }
 
     /// Read the current 'sele' state through the injected closure, or the local
     /// fallback when none is injected. Only reached with a focus object present
     /// (`syncFromSele` guards first), so the no-focus branch just defers to the
     /// fallback rather than inventing an empty result.
-    private func readSeleState() -> (indices: [Int], digest: String, total: Int) {
+    private func readSeleState() -> (indices: [Int], digest: String, off: Int) {
         guard let obj = focusObject, let set = lastSet[obj] else { return seleStateLocal() }
         if let fn = seleStateFn { return fn(obj, editSourceObject, set.state) }
         return seleStateLocal()
@@ -864,7 +888,7 @@ final class DesignController: ObservableObject {
         lastSeleDigest = state.digest
         let inScope = state.indices.filter { $0 >= 0 && $0 < set.residues.count }
         let valid = inScope.filter { set.residues[$0].valid }.sorted()
-        seleResiduesOffFocus = max(0, state.total - inScope.count)
+        seleResiduesOffFocus = max(0, state.off)
         if valid.count >= 2 {
             selectedResidueIndices = valid
             selectedSelectionName = pickedSelectionName ?? "sele"
@@ -898,11 +922,19 @@ final class DesignController: ObservableObject {
     /// Entering Design mode with 2+ objects loaded (so `enter()` does not
     /// auto-focus) and any non-empty 'sele' is exactly that state. Adopting the
     /// digest the poll itself saw closes it.
+    ///
+    /// The condition is "did the sync actually RESOLVE a digest", not
+    /// `focusObject == nil`: there is a second no-digest path where `focusObject`
+    /// is non-nil but `lastSet[obj]` is missing. `focusAwait` sets `focusObject`
+    /// BEFORE calling `enumerate` and its catch only sets `errorText`, so after a
+    /// failed focus the controller sits in exactly that state — and the poll would
+    /// re-derive on every tick forever, which is the symptom this guard exists for.
     @discardableResult
     func syncFromSeleIfChanged(digest: String) -> Bool {
         guard digest != lastSeleDigest else { return false }
+        let before = lastSeleDigest
         syncFromSele()
-        if focusObject == nil { lastSeleDigest = digest }
+        if lastSeleDigest == before { lastSeleDigest = digest }
         return true
     }
 
@@ -1295,7 +1327,7 @@ final class DesignController: ObservableObject {
             #if DEBUG
             NSLog("[Design] loadRepacked: starting, pdb=%d chars into '%@'", pdb.count, w)
             #endif
-            loadRepacked(w, pdb)
+            loadRepacked(w, pdb, editSourceObject)
             #if DEBUG
             NSLog("[Design] loadRepacked: done")
             #endif
@@ -1484,12 +1516,14 @@ final class DesignController: ObservableObject {
                     toggleSele: ToggleSeleFn? = nil,
                     setSeleResidue: SetSeleResidueFn? = nil,
                     setSeleNamed: SetSeleNamedFn? = nil,
-                    clearSele: ClearSeleFn? = nil) {
+                    clearSele: ClearSeleFn? = nil,
+                    dropObjectFromSele: DropObjectFromSeleFn? = nil) {
         if let seleState { self.seleStateFn = seleState }
         if let toggleSele { self.toggleSeleFn = toggleSele }
         if let setSeleResidue { self.setSeleResidueFn = setSeleResidue }
         if let setSeleNamed { self.setSeleNamedFn = setSeleNamed }
         if let clearSele { self.clearSeleFn = clearSele }
+        if let dropObjectFromSele { self.dropObjectFromSeleFn = dropObjectFromSele }
     }
 
     /// Override the model-release closure for testing (Phase 2d).
