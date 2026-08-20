@@ -3854,6 +3854,13 @@ private struct DesignRegionStripView: View {
     private var controls: some View {
         HStack(spacing: 8) {
             selectionButton
+            if controller.seleResiduesOffFocus > 0 {
+                Text("+\(controller.seleResiduesOffFocus) off-structure")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                    .help("Selected residues on other structures. Design only ever "
+                          + "works on the focused structure, so these are ignored.")
+            }
             if controller.regionModeActive {
                 stripDivider
                 Text("palette \(controller.paletteAllowed.filter { $0 < 20 }.count)/20")
