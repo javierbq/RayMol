@@ -45,6 +45,18 @@ class TestCachePaths(testing.PyMOLTestCase):
         self.assertEqual(
             root, '/Users/x/Library/Application Support/RayMol/weights')
 
+    def testDefaultRootIsUnderApplicationSupportOnIOS(self):
+        # sys.platform is 'ios', not 'darwin', on the iPhone build. Before this was
+        # handled, iOS fell through to the ~/.raymol branch below -- and $HOME there is
+        # the app's data container ROOT, which is not writable, so the 529 MB weight
+        # download died at its first mkdir with EPERM. The writable, correct location is
+        # the same Library/Application Support path the sandboxed Mac build already uses.
+        from pymol.predictors import weights
+        home = '/var/mobile/Containers/Data/Application/UUID'
+        self.assertEqual(
+            weights.WeightCache.default_root(platform='ios', home=home),
+            home + '/Library/Application Support/RayMol/weights')
+
     def testDefaultRootHasADotDirElsewhere(self):
         from pymol.predictors import weights
         self.assertEqual(weights.WeightCache.default_root(platform='linux',

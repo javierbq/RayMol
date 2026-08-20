@@ -1,6 +1,7 @@
 #if os(macOS) || os(iOS)
 import BoltzMLX
 import Foundation
+import os
 
 /// Runs Boltz predictions on behalf of Python.
 ///
@@ -620,6 +621,8 @@ final class BoltzJobManager {
         }
 
         report("running", "featurize", 0.0)
+        Self.logMemory("start", jobID: request.jobID)
+        defer { Self.logMemory("end", jobID: request.jobID) }
         do {
             BoltzRuntime.configureOnce()
 
@@ -870,6 +873,31 @@ final class BoltzJobManager {
         Task { out = await body(); done.signal() }
         done.wait()
         return out
+    }
+
+    /// Record the memory position around a fold, on the `com.raymol.predict` subsystem.
+    ///
+    /// Exists because the numbers this feature is governed by cannot be obtained any other
+    /// way on a phone. `PredictSizeGuard`'s whole iOS fit is reasoned against what
+    /// `os_proc_available_memory()` actually reports on the device, and the way that
+    /// question gets answered wrongly is by nobody ever asking it — the guard's three
+    /// recorded failures were all fits nobody checked against a measurement. A jetsam kill
+    /// also leaves no crash log worth reading, so the LAST line logged before a
+    /// disappearance is frequently the only evidence of what the run was asking for.
+    ///
+    /// Logged rather than asserted: this is diagnostic, it must never change behaviour,
+    /// and `os_log` survives the process being killed where a `print` to a detached
+    /// stdout does not. Cheap enough to leave in shipping builds — twice per fold.
+    static func logMemory(_ marker: String, jobID: String) {
+        let footprint = MLXRuntime.currentFootprintBytes
+        #if os(iOS)
+        let available = os_proc_available_memory()
+        #else
+        let available = 0
+        #endif
+        let mb = { (b: Int) in b / (1024 * 1024) }
+        Logger(subsystem: "com.raymol.predict", category: "memory")
+            .log("predict \(marker, privacy: .public) job=\(jobID, privacy: .public) footprint=\(mb(footprint), privacy: .public)MiB available=\(mb(available), privacy: .public)MiB cacheLimit=\(mb(MLXRuntime.activeCacheLimitBytes), privacy: .public)MiB")
     }
 
     /// The memory plan handed to `BoltzPredictor`, per platform.

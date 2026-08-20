@@ -135,8 +135,24 @@ class WeightCache:
     def default_root(platform=None, home=None):
         platform = sys.platform if platform is None else platform
         home = os.path.expanduser('~') if home is None else home
-        if platform == 'darwin':
+        if platform in ('darwin', 'ios'):
             # Under the App Sandbox this same path resolves inside the container.
+            #
+            # 'ios' is NOT cosmetic. CPython reports sys.platform == 'ios' there, not
+            # 'darwin', so an iPhone used to fall through to the ~/.raymol branch below --
+            # and on iOS $HOME is the app's DATA CONTAINER ROOT, which is readable but not
+            # writable. The download failed at the first mkdir with
+            #   [Errno 1] Operation not permitted:
+            #   /var/mobile/Containers/Data/Application/<uuid>/.raymol
+            # after the user had already asked for a 529 MB fetch. Only Documents/,
+            # Library/ and tmp/ are writable inside the container, so the same
+            # Library/Application Support path the sandboxed Mac build uses is both the
+            # correct location here and already covered by this branch.
+            #
+            # Library/Application Support rather than Documents/ on purpose: weights are
+            # a reproducible cache, not user data, and Documents/ is surfaced in the Files
+            # app (UIFileSharingEnabled) where half a gigabyte of model shards would sit
+            # among the user's own structures inviting deletion.
             return os.path.join(home, 'Library', 'Application Support',
                                 'RayMol', 'weights')
         return os.path.join(home, '.raymol', 'weights')
