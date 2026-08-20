@@ -207,7 +207,16 @@ final class DesignController: ObservableObject {
     /// false = overlap (grey + transparent ghost behind design); true = grid (own confidence colors).
     @Published private(set) var sideBySide = false
     /// True while all sidechain sticks are shown on the design (and parent when compare is on).
-    @Published private(set) var showSidechains = false
+    /// True while all sidechain sticks are shown on the design (and parent when
+    /// compare is on). Defaults ON: designing is a sidechain-level activity, so the
+    /// target structure arrives with its sidechains visible.
+    ///
+    /// The default alone would be a REGRESSION rather than a feature —
+    /// `reconcileSticks()` early-returns while this is set, on the assumption that a
+    /// global show-all pass has already made every sidechain visible. So the flag is
+    /// only ever true in company with that pass: `focusAwait` issues it for the new
+    /// focus, and `exit()` / a focus change take it back down again.
+    @Published private(set) var showSidechains = true
     /// Mean per-residue native-fit log-probability over the valid residues of the focus object.
     /// nil until the first score result arrives. Updated after every rescore (including edits).
     /// Higher (closer to 0) = better sequence–structure fit.
@@ -385,6 +394,11 @@ final class DesignController: ObservableObject {
 
     /// Called when exiting Design mode: restore visuals and cancel any pending score.
     func exit() {
+        // Same reason the focus-change path does it: restore() below re-applies
+        // colours and transparency but NOT representation visibility, so the
+        // show-all pass has to be taken down explicitly or the user's structure is
+        // left covered in sticks after leaving Design mode.
+        if showSidechains, let obj = focusObject { showAllSidechainsFn(obj, false) }
         // Hide any sticks WE added first — restore() only re-applies colors and
         // transparency, not representation visibility, so it won't undo shown sticks.
         teardownSticks(on: focusObject)
@@ -560,6 +574,10 @@ final class DesignController: ObservableObject {
             // C1/C2: If an edit session is active when focus changes, discard it
             // (delete working copy, re-enable source) before switching focus.
             if editing { teardownEditSession(discardCopy: true) }
+            // Take the global show-all pass back down on the structure we are
+            // leaving, or every object visited in one session accumulates sticks
+            // (restore() re-applies colours and transparency, never representations).
+            if showSidechains, let prev = previous { showAllSidechainsFn(prev, false) }
             teardownSticks(on: previous)
             hoveredResidueIndex = nil
             pinnedResidueIndex = nil   // re-derived below by syncFromSele for the new scope
@@ -580,6 +598,11 @@ final class DesignController: ObservableObject {
             lastSet[object] = set
             syncFocusResidues()   // populate sequence strip as soon as residues are known
             syncFromSele()        // derive pin/region for the NEW focus's scope
+            // Sidechains are shown by default (see `showSidechains`). Issued here,
+            // after the residue set is known, so the flag and the on-screen state
+            // cannot disagree — reconcileSticks() suppresses per-residue sticks
+            // whenever the flag is set, so the flag must never be set alone.
+            if showSidechains { showAllSidechainsFn(object, true) }
 
             let key = DesignCacheKey(object: object, state: set.state, sequenceHash: set.sequenceHash)
             if let scores = cache.get(key) {

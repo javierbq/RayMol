@@ -969,6 +969,12 @@ final class DesignIOSPortTests: XCTestCase {
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        // This test is about the PER-RESIDUE reconcile path, which is only live while
+        // the global show-all is off — reconcileSticks() early-returns otherwise.
+        // Sidechains now default ON, so turn them off to reach the path under test.
+        // (The default-on path is covered by
+        // testRepackReShowsAllSidechainsWhenTheyAreOn below.)
+        c.setShowSidechains(false)
 
         // Pin residue 1 (chain "A", resi "2") — this is the residue we will mutate.
         // On iOS, pill mutations always apply to the active (pinned) residue.
@@ -989,6 +995,44 @@ final class DesignIOSPortTests: XCTestCase {
             XCTAssertTrue(showAfterRepack,
                 "the mutated residue's sidechain (resi '2') must be re-requested after " +
                 "the topology replace — reconcileSticks must add pinned sticks post-repack")
+        }
+    }
+
+    // With sidechains ON (the default), a repack replaces the object's topology and
+    // annihilates its sticks, so the GLOBAL show-all must be re-issued for the
+    // working object — the counterpart of the per-residue path above.
+    func testRepackReShowsAllSidechainsWhenTheyAreOn() async {
+        let c = makeController()
+        var showAllCalls: [(String, Bool)] = []
+        var events: [String] = []
+        c.injectShowAllSidechains { obj, on in
+            showAllCalls.append((obj, on))
+            events.append(on ? "show-all-\(obj)" : "hide-all-\(obj)")
+        }
+        c.injectSetSticks { _, _, _, on in on }
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectRepack(
+            repack: { _, _ in "ATOM  ..." },
+            loadRepacked: { _, _, _ in events.append("topology-replace") })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        XCTAssertTrue(c.showSidechains, "pre-condition: sidechains default on")
+        events.removeAll()
+
+        await c.applyMutationAwait(residueIndex: 1, aa: 9)
+
+        let ri = events.firstIndex(of: "topology-replace")
+        XCTAssertNotNil(ri, "loadRepacked (topology replace) must have been called")
+        if let ri {
+            XCTAssertTrue(events[ri...].contains { $0 == "show-all-m1_design" },
+                "after the topology replace the global show-all must be re-issued for " +
+                "the working object, or the design ends up with no sidechains visible")
         }
     }
 
