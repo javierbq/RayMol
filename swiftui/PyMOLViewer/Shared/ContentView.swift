@@ -136,32 +136,6 @@ extension View {
     }
 }
 
-/// Height of the macOS left column, i.e. the window height the console's 1/5
-/// default and its persisted fraction are measured against (#331/#332).
-struct ColumnHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// The console's REALIZED height. `VSplitView` doesn't expose its divider
-/// positions, so the only way to learn where the user dragged to is to measure
-/// the pane itself and convert that back to a fraction (#332).
-struct ConsoleHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private extension View {
-    func reportHeight<K: PreferenceKey>(_ key: K.Type) -> some View where K.Value == CGFloat {
-        background(GeometryReader { g in
-            Color.clear.preference(key: key, value: g.size.height)
-        })
-    }
-}
 
 private extension View {
     /// Tighten inter-section spacing on grouped lists (iOS 17+); no-op elsewhere.
@@ -197,14 +171,9 @@ struct ContentView: View {
     // a fifth (#331); read by both the macOS VSplitView and the iOS termH path.
     @AppStorage(PanelLayout.consoleFracKey)
     private var consoleFrac = Double(PanelLayout.defaultConsoleFrac)
-    // macOS console sizing. `macColumnH` is the left column's measured height (the
-    // window height, minus the MCP banner); `macConsoleIdeal` is the console height
-    // resolved from consoleFrac, latched exactly ONCE — the first time the column
-    // height is known. VSplitView only adopts `idealHeight` when a pane appears
-    // (hence the .id below), so latching keeps the console from snapping back to
-    // its default every time the window is resized or the fraction is rewritten.
-    @State private var macColumnH: CGFloat = 0
-    @State private var macConsoleIdeal: CGFloat? = nil
+    // The console height the current macOS drag started from, in points. nil when
+    // no drag is in flight; the committed size lives in `consoleFrac`.
+    @State private var macConsoleDragAnchor: CGFloat? = nil
 
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
@@ -454,6 +423,55 @@ struct ContentView: View {
     // macOSLayout so the type-checker can resolve each part in isolation
     // (the full inline modifier chain tripped the "unable to type-check in
     // reasonable time" limit — same pattern as macViewport above).
+    // The console at its persisted share of the window, plus the handle that
+    // resizes it. Split out of macOSLayoutBase purely so the type-checker can
+    // resolve each part in isolation — inlining it tripped "unable to type-check
+    // this expression in reasonable time", the same hazard macViewport hit.
+    @ViewBuilder
+    private func macConsoleBand(windowHeight: CGFloat) -> some View {
+        let maxH = PanelLayout.maxConsoleHeight(windowHeight: windowHeight)
+        let h = PanelLayout.consoleHeight(frac: CGFloat(consoleFrac),
+                                          windowHeight: windowHeight,
+                                          minHeight: PanelLayout.macMinConsoleHeight,
+                                          maxHeight: maxH)
+        CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: h)
+        macConsoleDivider(windowHeight: windowHeight)
+    }
+
+    // macOS: drag handle under the console that resizes it. The console is not a
+    // VSplitView pane (see macOSLayoutBase), so this is what makes it resizable —
+    // and, unlike a splitter, it can report the new size, which is how the share
+    // gets persisted (#332). Drawn as the same 1pt themed hairline the rest of the
+    // desktop chrome uses, with a taller invisible hit area and a resize cursor.
+    @ViewBuilder
+    private func macConsoleDivider(windowHeight: CGFloat) -> some View {
+        let maxH = PanelLayout.maxConsoleHeight(windowHeight: windowHeight)
+        Rectangle()
+            .fill(hairlineColor)
+            .frame(height: 1)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                #if os(macOS)
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                #endif
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { v in
+                        let start = macConsoleDragAnchor ?? PanelLayout.consoleHeight(
+                            frac: CGFloat(consoleFrac), windowHeight: windowHeight,
+                            minHeight: PanelLayout.macMinConsoleHeight, maxHeight: maxH)
+                        macConsoleDragAnchor = start
+                        let h = min(max(start + v.translation.height,
+                                        PanelLayout.macMinConsoleHeight), maxH)
+                        consoleFrac = Double(PanelLayout.consoleFrac(height: h,
+                                                                    windowHeight: windowHeight))
+                    }
+                    .onEnded { _ in macConsoleDragAnchor = nil }
+            )
+    }
+
     private var macOSLayoutBase: some View {
         // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
         // strip can't grow into the viewport. minHeight is set a few pt below the
@@ -467,7 +485,13 @@ struct ContentView: View {
         // the top row isn't clipped when several sequences are shown.
         let seqH = CGFloat(seqRows) * 30 + 30
 
-        return VStack(spacing: 0) {
+        // The window's content height, used for the console's 1/5 default and its
+        // persisted share (#331/#332). A GeometryReader is the only reliable source
+        // here: measuring the column with a preference key reported an inflated
+        // 748pt inside a 684pt window, and NSWindow isn't on screen yet at first
+        // layout. Its children are explicitly told to fill it, below.
+        return GeometryReader { winGeo in
+        VStack(spacing: 0) {
             #if !RAYMOL_MAS_RESTRICTED
             MCPDrivingBanner()
             #endif
@@ -494,27 +518,19 @@ struct ContentView: View {
                     topPaneRail(floating: false).background(themeChromeBg)
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
-            VSplitView {
+                // The console sits ABOVE the split view with a DEFINITE height and
+                // its own drag divider, rather than as a VSplitView pane. It was a
+                // pane until #331/#332: inside the split it converged on its own
+                // CONTENT height (131pt in a 684pt window) and ignored every
+                // idealHeight we gave it — verified in the VM, and re-keying either
+                // the pane or the whole split view didn't change it. A definite
+                // height is honoured, and the divider below keeps it resizable
+                // (still generously — see PanelLayout.maxConsoleHeight, which
+                // preserves #317's "drag it open to read a long log").
                 if showCommandPanel {
-                    CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                        // idealHeight is the persisted share of the window —
-                        // a fifth on a first launch (#331), whatever the user last
-                        // dragged the splitter to afterwards (#332). maxHeight is
-                        // unbounded (#317) so the splitter can still be dragged as
-                        // far as the user wants when reading a long predict/build
-                        // log. The viewport's own minHeight (360) + layoutPriority
-                        // stop it being squeezed away.
-                        .frame(minHeight: 44,
-                               idealHeight: macConsoleIdeal ?? PanelLayout.macConsoleFallback,
-                               maxHeight: .infinity)
-                        // Force ONE re-adoption of idealHeight: the first layout
-                        // pass has no column height yet, so the pane would otherwise
-                        // stay pinned at the fallback. The id flips 0 -> 1 once, on
-                        // the frame macConsoleIdeal is latched, and never again.
-                        .id(macConsoleIdeal == nil ? 0 : 1)
-                        .reportHeight(ConsoleHeightKey.self)
+                    macConsoleBand(windowHeight: winGeo.size.height)
                 }
-
+            VSplitView {
                 if engine.sequenceVisible {
                     SequencePanel()
                         // idealHeight grows with the sequence count (up to 5 rows);
@@ -547,29 +563,6 @@ struct ContentView: View {
             }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // #331/#332: measure the column (a background GeometryReader, so it
-            // can't perturb the layout), latch the console's ideal height from the
-            // persisted fraction the first time we know it, and write the fraction
-            // back whenever the realized console height moves.
-            .reportHeight(ColumnHeightKey.self)
-            .onPreferenceChange(ColumnHeightKey.self) { h in
-                guard h > 0 else { return }
-                macColumnH = h
-                if macConsoleIdeal == nil {
-                    macConsoleIdeal = PanelLayout.consoleHeight(
-                        frac: CGFloat(consoleFrac), windowHeight: h,
-                        minHeight: PanelLayout.macMinConsoleHeight)
-                }
-            }
-            .onPreferenceChange(ConsoleHeightKey.self) { h in
-                // h == 0 when the console is hidden — its visibility is recorded
-                // separately, so don't overwrite the remembered size with nothing.
-                guard h > 0, macColumnH > 0, macConsoleIdeal != nil else { return }
-                let f = Double(PanelLayout.consoleFrac(height: h, windowHeight: macColumnH))
-                // Deadband: coalesces the per-frame updates of a splitter drag into
-                // a handful of writes instead of one per pixel.
-                if abs(f - consoleFrac) > 0.005 { consoleFrac = f }
-            }
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
@@ -670,6 +663,8 @@ struct ContentView: View {
                 + "run Python, and load structures until you stop it.")
         }
         #endif
+        } // end GeometryReader (window height for the console share)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var macOSLayout: some View {
@@ -1415,7 +1410,8 @@ struct ContentView: View {
         let base = termH > 0
             ? termH
             : PanelLayout.consoleHeight(frac: CGFloat(consoleFrac), windowHeight: total,
-                                        minHeight: PanelLayout.iosMinConsoleHeight)
+                                        minHeight: PanelLayout.iosMinConsoleHeight,
+                                        maxHeight: maxTerm)
         return min(max(base, PanelLayout.iosMinConsoleHeight), maxTerm)
     }
 
