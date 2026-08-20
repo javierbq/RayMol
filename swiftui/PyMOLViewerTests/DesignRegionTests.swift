@@ -708,5 +708,27 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertFalse(cleared,
                        "exiting Design mode must leave 'sele' alone (D2)")
     }
+
+    // The poll must re-derive only when the digest actually changed, so a quiet
+    // 500 ms tick costs nothing.
+    func testSyncFromSeleRecordsTheDigestItResolved() {
+        let c = makeController()
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
+                          validFlags: [true, true, true])
+        c.injectSele(seleState: { _, _, _ in (indices: [0], digest: "abc123", total: 1) })
+        c.syncFromSele()
+        XCTAssertEqual(c.lastSeleDigest, "abc123",
+                       "the resolved digest must be recorded for poll gating")
+    }
+
+    // The panel payload's new field must be optional so an older bundled
+    // appkit_inspector.py still decodes (the whole panel would freeze otherwise).
+    func testPanelPayloadDecodesWithoutDesignSele() throws {
+        let json = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{}}
+        """.data(using: .utf8)!
+        let payload = try JSONDecoder().decode(PanelPayload.self, from: json)
+        XCTAssertNil(payload.design_sele)
+    }
 }
 #endif
