@@ -179,6 +179,13 @@ struct DesignCompactPanel: View {
     private var actionRow: some View {
         HStack(spacing: 8) {
             regionButton
+            if controller.seleResiduesOffFocus > 0 {
+                Text("+\(controller.seleResiduesOffFocus)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                    .accessibilityLabel(
+                        "\(controller.seleResiduesOffFocus) selected residues on other structures, ignored")
+            }
             if controller.regionModeActive { redesignButton }
             if controller.redesignSnapshot != nil { revertButton }
             Spacer(minLength: 0)
