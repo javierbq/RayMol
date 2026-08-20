@@ -18,6 +18,8 @@ final class MCPServerManager: ObservableObject {
     private let defaultPort = 51737
     /// The handoff this instance wrote, so shutdown removes its own and no one else's.
     private var writtenHandoff: URL?
+    /// The registry entry this instance wrote, removed on the way out.
+    private var writtenInstanceEntry: URL?
 
     /// The port to ask for, honouring `RAYMOL_MCP_PORT` when it is set.
     ///
@@ -75,7 +77,7 @@ final class MCPServerManager: ObservableObject {
         guard forced || UserDefaults.standard.bool(forKey: "raymol.mcp.enabled") else { return }
         guard let engine else { return }
         if engine.isReady {
-            start()
+            start(persist: Self.shouldPersistEnabledFlag(forcedByEnvironment: forced))
         } else if attempt < 40 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.autoStartIfEnabled(attempt: attempt + 1)
@@ -87,9 +89,17 @@ final class MCPServerManager: ObservableObject {
 
     func toggle() { isRunning ? stop() : start() }
 
-    func start() {
+    /// Pure: does starting the server also mean the user asked for it to start
+    /// every time? Only when they flipped the toggle themselves. A start forced
+    /// by RAYMOL_MCP_ENABLE — a VM test, or a broker cold-launching us for one
+    /// Claude tool call — must leave the preference untouched.
+    static func shouldPersistEnabledFlag(forcedByEnvironment: Bool) -> Bool {
+        !forcedByEnvironment
+    }
+
+    func start(persist: Bool = true) {
         guard let engine, engine.isReady, !isRunning else { return }
-        UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
+        if persist { UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled") }
         // start() returns the live port; the manager learns it from the MCP:started line.
         let b64 = Data(token.utf8).base64EncodedString()
         engine.runPython(
@@ -122,11 +132,13 @@ final class MCPServerManager: ObservableObject {
             isRunning = true
             port = Int(detail)
             writeHandoff(port: port)
+            writeInstanceEntry(port: port)
             logLine("server started on \(detail)")
         case "stopped":
             isRunning = false; port = nil; clientCount = 0; activeTool = false
             trustedThisSession = false
             removeHandoff()
+            removeInstanceEntry()
             logLine("server stopped")
         case "connect":
             clientCount += 1
@@ -191,36 +203,35 @@ final class MCPServerManager: ObservableObject {
 
     var claudeCLIPath: String? { Self.findClaude() }
 
+    /// Pure: the `claude mcp add` arguments. Stdio, so the entry stays valid
+    /// across RayMol restarts and closures — the broker is spawned on demand and
+    /// finds the live instance itself.
+    static func claudeCodeAddArgs(command: String) -> [String] {
+        ["mcp", "add", "raymol", "--scope", "user", "--", command, "--mcp-bridge"]
+    }
+
     func connectClaudeCode(completion: @escaping (String) -> Void) {
-        guard isRunning, let port = port else {
-            completion("Turn on the MCP server first.")
-            return
-        }
         // noteUserInitiatedConnect sets UI state — keep it synchronous on the main thread.
         noteUserInitiatedConnect()
-        // pushTrusted calls runPython which must run on the main thread (PyMOLBridge PAutoBlock).
-        pushTrusted()
-        // Capture values before leaving the main thread.
-        let capturedPort = port
-        let capturedToken = token
+        if isRunning {
+            // pushTrusted calls runPython which must run on the main thread.
+            pushTrusted()
+        }
+        let command = MCPDesktopInstaller.bridgeCommand()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             self.installSkillFile()
-            let url = "http://127.0.0.1:\(capturedPort)/mcp"
-            let header = "Authorization: Bearer \(capturedToken)"
-            let manual = "claude mcp add --transport http raymol \(url) "
-                + "--header \"\(header)\" --scope user"
+            let args = Self.claudeCodeAddArgs(command: command)
+            let manual = "claude " + args.joined(separator: " ")
             guard let claude = Self.findClaude() else {
                 DispatchQueue.main.async {
                     completion("Claude Code CLI not found. Run this in a terminal:\n\n\(manual)")
                 }
                 return
             }
-            _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])  // idempotent
-            let (code, out) = Self.runClaude(claude, [
-                "mcp", "add", "--transport", "http", "raymol", url,
-                "--header", header, "--scope", "user",
-            ])
+            // Idempotent, and REQUIRED: an older pinned-HTTP entry would otherwise survive.
+            _ = Self.runClaude(claude, ["mcp", "remove", "raymol", "--scope", "user"])
+            let (code, out) = Self.runClaude(claude, args)
             let msg: String
             if code == 0 {
                 msg = "Connected. In Claude Code, run /mcp (or restart it) to pick up RayMol, "
@@ -335,6 +346,24 @@ final class MCPServerManager: ObservableObject {
     private func removeHandoff() {
         if let url = writtenHandoff { try? FileManager.default.removeItem(at: url) }
         writtenHandoff = nil
+    }
+
+    /// Advertise this process in the instance registry, so a broker spawned by a
+    /// Claude client can find it without a pinned port.
+    private func writeInstanceEntry(port: Int?) {
+        guard let port else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let entry = MCPInstanceRegistry.selfEntry(
+            pid: Int(ProcessInfo.processInfo.processIdentifier), port: port,
+            token: token, bundle: .main, startedAt: stamp)
+        writtenInstanceEntry = MCPInstanceRegistry.write(entry)
+    }
+
+    private func removeInstanceEntry() {
+        if let url = writtenInstanceEntry {
+            try? FileManager.default.removeItem(at: url)
+        }
+        writtenInstanceEntry = nil
     }
 
     private static func randomHex(_ bytes: Int) -> String {
