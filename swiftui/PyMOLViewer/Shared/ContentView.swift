@@ -136,6 +136,33 @@ extension View {
     }
 }
 
+/// Height of the macOS left column, i.e. the window height the console's 1/5
+/// default and its persisted fraction are measured against (#331/#332).
+struct ColumnHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// The console's REALIZED height. `VSplitView` doesn't expose its divider
+/// positions, so the only way to learn where the user dragged to is to measure
+/// the pane itself and convert that back to a fraction (#332).
+struct ConsoleHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    func reportHeight<K: PreferenceKey>(_ key: K.Type) -> some View where K.Value == CGFloat {
+        background(GeometryReader { g in
+            Color.clear.preference(key: key, value: g.size.height)
+        })
+    }
+}
+
 private extension View {
     /// Tighten inter-section spacing on grouped lists (iOS 17+); no-op elsewhere.
     @ViewBuilder func compactListSections() -> some View {
@@ -160,8 +187,24 @@ struct ContentView: View {
     // Pending auto-minimize of the expanded mouse legend (fires ~1s after the
     // pointer leaves it); cancelled if the pointer returns.
     @State private var mouseLegendCollapseWork: DispatchWorkItem?
-    @State private var showObjectPanel = true
-    @State private var showCommandPanel = true
+    // Pane visibility persists across launches (#332) — a user who closes the
+    // console or the inspector gets it back closed, not reset. Keys live in
+    // PanelLayout so both platform layouts read the same contract.
+    @AppStorage(PanelLayout.objectsVisibleKey) private var showObjectPanel = true
+    @AppStorage(PanelLayout.consoleVisibleKey) private var showCommandPanel = true
+    // Console share of the window height, persisted as a FRACTION so restoring
+    // into a differently-sized window can't squeeze the viewport away. Defaults to
+    // a fifth (#331); read by both the macOS VSplitView and the iOS termH path.
+    @AppStorage(PanelLayout.consoleFracKey)
+    private var consoleFrac = Double(PanelLayout.defaultConsoleFrac)
+    // macOS console sizing. `macColumnH` is the left column's measured height (the
+    // window height, minus the MCP banner); `macConsoleIdeal` is the console height
+    // resolved from consoleFrac, latched exactly ONCE — the first time the column
+    // height is known. VSplitView only adopts `idealHeight` when a pane appears
+    // (hence the .id below), so latching keeps the console from snapping back to
+    // its default every time the window is resized or the fraction is rewritten.
+    @State private var macColumnH: CGFloat = 0
+    @State private var macConsoleIdeal: CGFloat? = nil
 
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
@@ -454,12 +497,22 @@ struct ContentView: View {
             VSplitView {
                 if showCommandPanel {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted)
-                        // idealHeight keeps the launch layout at a two-line
-                        // terminal; maxHeight is unbounded (#317) so the splitter
-                        // can be dragged as far as the user wants when reading a
-                        // long predict/build log. The viewport's own minHeight
-                        // (360) + layoutPriority stop it being squeezed away.
-                        .frame(minHeight: 44, idealHeight: 60, maxHeight: .infinity)
+                        // idealHeight is the persisted share of the window —
+                        // a fifth on a first launch (#331), whatever the user last
+                        // dragged the splitter to afterwards (#332). maxHeight is
+                        // unbounded (#317) so the splitter can still be dragged as
+                        // far as the user wants when reading a long predict/build
+                        // log. The viewport's own minHeight (360) + layoutPriority
+                        // stop it being squeezed away.
+                        .frame(minHeight: 44,
+                               idealHeight: macConsoleIdeal ?? PanelLayout.macConsoleFallback,
+                               maxHeight: .infinity)
+                        // Force ONE re-adoption of idealHeight: the first layout
+                        // pass has no column height yet, so the pane would otherwise
+                        // stay pinned at the fallback. The id flips 0 -> 1 once, on
+                        // the frame macConsoleIdeal is latched, and never again.
+                        .id(macConsoleIdeal == nil ? 0 : 1)
+                        .reportHeight(ConsoleHeightKey.self)
                 }
 
                 if engine.sequenceVisible {
@@ -494,6 +547,29 @@ struct ContentView: View {
             }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // #331/#332: measure the column (a background GeometryReader, so it
+            // can't perturb the layout), latch the console's ideal height from the
+            // persisted fraction the first time we know it, and write the fraction
+            // back whenever the realized console height moves.
+            .reportHeight(ColumnHeightKey.self)
+            .onPreferenceChange(ColumnHeightKey.self) { h in
+                guard h > 0 else { return }
+                macColumnH = h
+                if macConsoleIdeal == nil {
+                    macConsoleIdeal = PanelLayout.consoleHeight(
+                        frac: CGFloat(consoleFrac), windowHeight: h,
+                        minHeight: PanelLayout.macMinConsoleHeight)
+                }
+            }
+            .onPreferenceChange(ConsoleHeightKey.self) { h in
+                // h == 0 when the console is hidden — its visibility is recorded
+                // separately, so don't overwrite the remembered size with nothing.
+                guard h > 0, macColumnH > 0, macConsoleIdeal != nil else { return }
+                let f = Double(PanelLayout.consoleFrac(height: h, windowHeight: macColumnH))
+                // Deadband: coalesces the per-frame updates of a splitter drag into
+                // a handful of writes instead of one per pixel.
+                if abs(f - consoleFrac) > 0.005 { consoleFrac = f }
+            }
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
@@ -1248,7 +1324,11 @@ struct ContentView: View {
     // Panel share to return to when no detail view is open. While a detail view
     // (SCENE or an object card) is expanded the panel auto-grows to its max so
     // the options are visible; collapsing restores this remembered size.
-    @State private var collapsedFrac: CGFloat = 0.53
+    @State private var collapsedFrac: CGFloat = PanelLayout.defaultPanelFrac
+    // The remembered ("collapsed") panel share, persisted across launches (#332).
+    // Written at each drag end; read once in onAppear to seed the three @States.
+    @AppStorage(PanelLayout.panelFracKey)
+    private var storedPanelFrac = Double(PanelLayout.defaultPanelFrac)
     // Portrait per-tab "hug content" sizing: natural content height per tab tag,
     // reported via PaneHeightKey. The portrait panel sizes to the active tab's
     // content (capped). (panelFrac/committedFrac above are now iPad-only.)
@@ -1273,8 +1353,9 @@ struct ContentView: View {
     // Console + Objects OFF, showing just the viewport (+ the sequence
     // strip if the shared engine.sequenceVisible is on). They persist across
     // rotations (so a pane the user turned on stays on). iPad keeps the show* bools.
-    @State private var landConsole = false
-    @State private var landObjects = true
+    // Persisted per #332, keeping their minimal defaults for a first launch.
+    @AppStorage(PanelLayout.landscapeConsoleVisibleKey) private var landConsole = false
+    @AppStorage(PanelLayout.landscapeObjectsVisibleKey) private var landObjects = true
     // The actual right-edge window safe-area inset (the Dynamic Island only when
     // it's on the trailing side). Fed by SafeAreaReader via UIKit's
     // safeAreaInsetsDidChange — reliable across a landscapeLeft<->Right flip,
@@ -1320,8 +1401,23 @@ struct ContentView: View {
     // the viewport — matching the desktop app. `termH` is the resizable terminal
     // height (drag the divider beneath it); the sequence strip auto-sizes to its
     // row count; the right column (Objects / Raymond) has a fixed ideal width.
-    @State private var termH: CGFloat = 110
-    @State private var committedTermH: CGFloat = 110
+    // 0 means "not seeded yet": the height is resolved lazily from the persisted
+    // fraction (a fifth of the screen on a first launch, #331/#332) the first time
+    // a layout knows how tall the screen is — see iosConsoleHeight.
+    @State private var termH: CGFloat = 0
+    @State private var committedTermH: CGFloat = 0
+
+    /// The iOS console height for a screen of `total` points: the persisted share
+    /// until the user drags, then whatever they dragged to. The [60, 33%] clamp is
+    /// the iOS layout's own long-standing rule and is applied last.
+    private func iosConsoleHeight(total: CGFloat) -> CGFloat {
+        let maxTerm = max(140, total * 0.33)
+        let base = termH > 0
+            ? termH
+            : PanelLayout.consoleHeight(frac: CGFloat(consoleFrac), windowHeight: total,
+                                        minHeight: PanelLayout.iosMinConsoleHeight)
+        return min(max(base, PanelLayout.iosMinConsoleHeight), maxTerm)
+    }
 
     private var iPadOSLayout: some View {
         NavigationStack {
@@ -1529,15 +1625,22 @@ struct ContentView: View {
             // the 64pt sequence strip off — the controls are a peek to expand.
             if !didConfigForCompact {
                 didConfigForCompact = true
-                if hSize == .compact {
-                    panelCollapsed = true
-                    engine.sequenceVisible = false
-                } else {
-                    // iPad (regular): default to the mac-style arrangement with the
-                    // sequence strip visible under the terminal, so the stacked
-                    // terminal + sequence sit above the viewport like the desktop.
-                    engine.sequenceVisible = true
+                if hSize == .compact { panelCollapsed = true }
+                // Per-idiom sequence-strip default, applied ONLY on a genuine
+                // first run: iPhone (compact) starts without the 64pt strip —
+                // the controls are a peek to expand — while iPad (regular)
+                // defaults to the mac-style terminal + sequence stack above the
+                // viewport. Once the user has toggled it, the persisted choice
+                // wins (#332), so this must not run again.
+                if UserDefaults.standard.object(forKey: PanelLayout.sequenceVisibleKey) == nil {
+                    engine.sequenceVisible = (hSize != .compact)
                 }
+                // Restore the bottom-panel share (#332), clamped so a value saved
+                // on another device/orientation can't hide the viewport.
+                let frac = PanelLayout.clampPanelFrac(CGFloat(storedPanelFrac))
+                panelFrac = frac
+                committedFrac = frac
+                collapsedFrac = frac
                 // Test affordance (screenshot harness): force the panel open so
                 // the responsive layout can be captured without a tap, which
                 // simctl can't synthesize. PYMOL_AUTOPANEL=open|closed.
@@ -1753,7 +1856,7 @@ struct ContentView: View {
     private func iPhoneLayout(geo: GeometryProxy) -> some View {
         let total = geo.size.height
         let maxTerm = max(140, total * 0.33)
-        let clampedTermH = min(max(termH, 60), maxTerm)
+        let clampedTermH = iosConsoleHeight(total: geo.size.height)
         // Mirrors the iPad portrait model on the phone: the rail is pinned on top
         // (Console·Seq·Move·Measure), panes open UNDER it (Console → Seq →
         // Move/Measure bar), and the inspector docks along the bottom headed by the
@@ -1782,7 +1885,7 @@ struct ContentView: View {
                 Rectangle().fill(hairlineColor).frame(height: 1)
                 if cTerm {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: clampedTermH)
-                    termResizeDivider(maxTerm: maxTerm)
+                    termResizeDivider(maxTerm: maxTerm, current: clampedTermH, total: geo.size.height)
                 }
                 if engine.sequenceVisible {
                     SequencePanel().frame(height: ipadSequenceHeight)
@@ -1846,7 +1949,7 @@ struct ContentView: View {
         // from islandOnRight (interface orientation).
         let notch = windowTrailingInset
         let maxTerm = max(140, geo.size.height * 0.33)
-        let clampedTermH = min(max(termH, 60), maxTerm)
+        let clampedTermH = iosConsoleHeight(total: geo.size.height)
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
@@ -1865,7 +1968,7 @@ struct ContentView: View {
                     Rectangle().fill(hairlineColor).frame(height: 1)
                     if cTerm {
                         CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: clampedTermH)
-                        termResizeDivider(maxTerm: maxTerm)
+                        termResizeDivider(maxTerm: maxTerm, current: clampedTermH, total: geo.size.height)
                     }
                     if engine.sequenceVisible {
                         SequencePanel().frame(height: ipadSequenceHeight)
@@ -1973,7 +2076,7 @@ struct ContentView: View {
         let landscape = geo.size.width > geo.size.height
         let rightW: CGFloat = 440                          // landscape side column (roomy for the Movie-tab transport)
         let maxTerm = max(140, geo.size.height * 0.33)
-        let clampedTermH = min(max(termH, 60), maxTerm)
+        let clampedTermH = iosConsoleHeight(total: geo.size.height)
         // Effective pane visibility: iPhone landscape uses its minimal-default
         // land* state; iPad uses the show* bools (see consoleBinding etc.).
         let cTerm = consoleBinding.wrappedValue
@@ -2003,7 +2106,7 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                         if cTerm {
                             CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: clampedTermH)
-                            termResizeDivider(maxTerm: maxTerm)
+                            termResizeDivider(maxTerm: maxTerm, current: clampedTermH, total: geo.size.height)
                         }
                         if engine.sequenceVisible {
                             SequencePanel().frame(height: ipadSequenceHeight)
@@ -2070,7 +2173,7 @@ struct ContentView: View {
                     Rectangle().fill(hairlineColor).frame(height: 1)
                     if cTerm {
                         CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: clampedTermH)
-                        termResizeDivider(maxTerm: maxTerm)
+                        termResizeDivider(maxTerm: maxTerm, current: clampedTermH, total: geo.size.height)
                     }
                     if engine.sequenceVisible {
                         SequencePanel().frame(height: ipadSequenceHeight)
@@ -2371,7 +2474,8 @@ struct ContentView: View {
     // Horizontal drag handle under the terminal that resizes its height. Dragging
     // down grows the terminal; committed on release. Clamped to [60, maxTerm].
     @ViewBuilder
-    private func termResizeDivider(maxTerm: CGFloat) -> some View {
+    private func termResizeDivider(maxTerm: CGFloat, current: CGFloat,
+                                   total: CGFloat) -> some View {
         ZStack {
             dividerBarColor
             RoundedRectangle(cornerRadius: 2)
@@ -2384,9 +2488,22 @@ struct ContentView: View {
         .gesture(
             DragGesture(minimumDistance: 2)
                 .onChanged { v in
-                    termH = min(max(committedTermH + v.translation.height, 60), maxTerm)
+                    // First drag of the session: adopt the height currently on
+                    // screen (seeded from the persisted fraction) as the anchor,
+                    // otherwise the pane would jump to 0 + translation.
+                    if termH <= 0 { termH = current; committedTermH = current }
+                    termH = min(max(committedTermH + v.translation.height,
+                                    PanelLayout.iosMinConsoleHeight), maxTerm)
                 }
-                .onEnded { _ in committedTermH = termH }
+                .onEnded { _ in
+                    committedTermH = termH
+                    // Persist the new share (#332). Stored as a fraction of the
+                    // screen so it survives a rotation or a different device.
+                    if total > 0 {
+                        consoleFrac = Double(PanelLayout.consoleFrac(height: termH,
+                                                                    windowHeight: total))
+                    }
+                }
         )
     }
 
@@ -2546,7 +2663,13 @@ struct ContentView: View {
                 }
                 .onEnded { _ in
                     committedFrac = panelFrac
-                    if engine.expandedDetail == nil { collapsedFrac = panelFrac }
+                    if engine.expandedDetail == nil {
+                        collapsedFrac = panelFrac
+                        // Only the user's own size is remembered across launches —
+                        // never the temporary auto-grow an expanded detail forces
+                        // (#332), which is why this rides the same guard.
+                        storedPanelFrac = Double(panelFrac)
+                    }
                     // Resume live drawable sizing → exactly one reshape at the final size.
                     engine.suppressDrawableResize = false
                 }

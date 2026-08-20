@@ -129,14 +129,20 @@ final class PyMOLEngine: ObservableObject {
     /// collection here -- an unguarded 2 Hz assignment re-lays-out the tray on
     /// every tick even when nothing changed.
     @Published var predictionJobs: [PredictionJobState] = []
-    @Published var sequenceVisible = false {
+    // Restored from the last launch (#332). A session (.pse) that turns seq_view
+    // on still wins — it assigns this property after launch, like any other setter.
+    @Published var sequenceVisible = UserDefaults.standard
+        .bool(forKey: PanelLayout.sequenceVisibleKey) {
         // Showing the strip must (re)fetch the sequence data — toggling the
         // panel on (menu/toolbar) only flipped this bool, so the strip rendered
         // empty until an unrelated load/refresh happened to repopulate it (the
         // "sequence only shows when the console is open" bug). Fetch on the
         // false→true edge; fetchSequences() no-ops until the engine is ready,
         // and the load path re-fetches then.
-        didSet { if sequenceVisible && !oldValue { fetchSequences() } }
+        didSet {
+            UserDefaults.standard.set(sequenceVisible, forKey: PanelLayout.sequenceVisibleKey)
+            if sequenceVisible && !oldValue { fetchSequences() }
+        }
     }
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
