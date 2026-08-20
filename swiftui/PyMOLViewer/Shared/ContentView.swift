@@ -1643,8 +1643,13 @@ struct ContentView: View {
                             return
                         }
                         if let sel = selectionName {
-                            c.refreshSelections()
-                            c.pickSelection(sel)
+                            // Unified path: a named selection reaches Design mode by
+                            // becoming 'sele', exactly as it does from the prompt.
+                            // '?' so a name that does not exist empties 'sele' rather
+                            // than raising, and the guard below reports it.
+                            engine.runPython(
+                                "from pymol import cmd as _c; _c.select('sele', '(?\(sel))', enable=1)")
+                            c.syncFromSele()
                             guard c.regionModeActive else {
                                 NSLog("AUTODESIGN_FAIL: selection '\(sel)' matched no designable residues")
                                 return
@@ -3827,12 +3832,11 @@ struct DesignSequenceStripView: View {
 
 // MARK: – Region-redesign strip (Phase 2c)
 
-// Selection dropdown + Redesign/Revert + "Redesigning region…" spinner. Its own
-// View struct so @ObservedObject re-renders on region-state @Published changes.
+// Redesign/Revert + "Redesigning region…" spinner. Its own View struct so
+// @ObservedObject re-renders on region-state @Published changes.
 private struct DesignRegionStripView: View {
     @ObservedObject var controller: DesignController
     @ObservedObject var theme: ThemeManager
-    @State private var showPicker = false
 
     var body: some View {
         Group {
@@ -3853,7 +3857,14 @@ private struct DesignRegionStripView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            selectionButton
+            // No region picker: 'sele' IS the region, so the only way to choose one
+            // is to click residues. The hint keeps the strip from rendering as an
+            // empty band before a region exists.
+            if !controller.regionModeActive {
+                Text("Select 2 or more residues to redesign a region")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+            }
             if controller.seleResiduesOffFocus > 0 {
                 Text("+\(controller.seleResiduesOffFocus) off-structure")
                     .font(.system(size: 10, design: .monospaced))
@@ -3884,32 +3895,6 @@ private struct DesignRegionStripView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-    }
-
-    private var selectionButton: some View {
-        Button {
-            controller.refreshSelections()
-            showPicker = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "lasso").font(.system(size: 10))
-                Text(controller.selectedSelectionName ?? "Select region…")
-                    .font(.system(size: 11)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8))
-            }
-            .foregroundColor(theme.active.panelText.color.opacity(0.85))
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(theme.active.panelText.color.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $showPicker) {
-            DesignSelectionPicker(controller: controller,
-                                  fontSize: 12,
-                                  minWidth: 190,
-                                  dismiss: { showPicker = false })
-                .presentationCompactAdaptation(.popover)
-        }
     }
 
     // Prominent call-to-action: solid accent fill + icon so it clearly invites a click.

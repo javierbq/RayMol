@@ -21,13 +21,12 @@ final class DesignIOSPortTests: XCTestCase {
     // clearError() must be the way it goes away (the banner's dismiss path).
     func testClearErrorResetsErrorText() async {
         let c = makeController()
-        c.injectRegion(designRegion: { _, _, _, _, _ in [] },   // wrong length → failure
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+        c.injectRegion(designRegion: { _, _, _, _, _ in [] })   // wrong length → failure
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.errorText, "Region redesign failed",
@@ -46,14 +45,13 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.sizeDecisionProvider = { _ in .refuse(maxFittingResidues: 500) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
 
@@ -71,8 +69,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -84,7 +81,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.autosaveBeforeLargeRun = { autosaves += 1 }
         c.sizeDecisionProvider = { n in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertEqual(designCalls, 0, "warn must hold the run, not start it")
@@ -104,14 +101,13 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.sizeDecisionProvider = { _ in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNotNil(c.pendingSizeWarning)
@@ -131,8 +127,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -143,7 +138,7 @@ final class DesignIOSPortTests: XCTestCase {
         }
         c.sizeDecisionProvider = { _ in providerCalls += 1; return .ok }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning)
@@ -156,7 +151,7 @@ final class DesignIOSPortTests: XCTestCase {
     //
     // Failure scenario (pre-fix):
     // 1. Run lands in warn band → pendingSizeWarning is set.
-    // 2. User clears the region (clearSelection does NOT clear pendingSizeWarning).
+    // 2. User clears the region (clearing does NOT clear pendingSizeWarning).
     // 3. User confirms the stale warning → confirmPendingWarning() sets
     //    suppressSizeGuardOnce=true and calls redesignSelectionAwait(), which
     //    immediately hits the "guard !selectedResidueIndices.isEmpty" early return
@@ -175,8 +170,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -189,14 +183,14 @@ final class DesignIOSPortTests: XCTestCase {
         // Step 1: first redesign lands in the warn band — run is held.
         c.sizeDecisionProvider = { _ in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNotNil(c.pendingSizeWarning, "warn band must set pendingSizeWarning")
         XCTAssertEqual(designCalls, 0, "warn band must hold the run")
 
         // Step 2: user clears the region while the warning is still pending.
-        c.clearSelection()
+        c.handleViewportHit(object: "", chain: "", resi: "", hasResidue: false)
 
         // Step 3: user confirms the (now stale) warning.
         // confirmPendingWarning() sets suppressSizeGuardOnce=true and calls
@@ -206,7 +200,7 @@ final class DesignIOSPortTests: XCTestCase {
         await c.confirmPendingWarning()
 
         // Step 4: re-establish a region and switch to a refuse provider.
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
         c.sizeDecisionProvider = { _ in providerCalls += 1; return .refuse(maxFittingResidues: 0) }
 
         // Step 5: the next redesign must be refused.
@@ -303,8 +297,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            order.append("design")
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -315,7 +308,7 @@ final class DesignIOSPortTests: XCTestCase {
         }
         c.injectReleaseModel { order.append("release"); done.fulfill() }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         c.exit()
@@ -415,8 +408,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -432,7 +424,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.autoRepack = false
         c.setFocusForTest("m1", nativeSequence: Array(repeating: 5, count: count),
                           validFlags: allValid(count))
-        c.pickSelection("reg")   // selectedIndices returns [0]
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning,

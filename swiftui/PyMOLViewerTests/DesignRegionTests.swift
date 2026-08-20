@@ -16,36 +16,20 @@ final class DesignRegionTests: XCTestCase {
     }
     private func allValid(_ n: Int) -> [Bool] { Array(repeating: true, count: n) }
 
-    func testRegionModeTogglesWithSelection() {
-        let c = makeController()
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        XCTAssertFalse(c.regionModeActive)
-        c.pickSelection("reg")
-        XCTAssertTrue(c.regionModeActive)
-        XCTAssertEqual(c.selectedResidueIndices, [0, 1])
-        XCTAssertEqual(c.selectedSelectionName, "reg")
-        c.clearSelection()
-        XCTAssertFalse(c.regionModeActive)
-        XCTAssertNil(c.selectedSelectionName)
-    }
-
     func testSelectionFiltersInvalidResidues() {
         let c = makeController()
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [0, 1, 2] })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: [true, false, true])
-        c.pickSelection("reg")
+        c.injectSele(seleState: { _, _, _ in (indices: [0, 1, 2], digest: "d", off: 0) })
+        c.syncFromSele()
         XCTAssertEqual(c.selectedResidueIndices, [0, 2])   // idx 1 (invalid) dropped
     }
 
     // Click-built region under the count-driven rule: successive toggles accumulate
     // designable residues into a region, non-designable positions never count,
     // dropping back to ONE designable residue returns to single-residue pin mode
-    // (empty region), and removing the last one leaves nothing active. The label of
-    // a click-built region is "sele" — it IS the ordinary selection now, not a
-    // separate "custom" copy the controller keeps on the side.
+    // (empty region), and removing the last one leaves nothing active. The region
+    // IS the ordinary selection now, not a separate "custom" copy the controller
+    // keeps on the side.
     func testTapResidueBuildsAdHocRegion() {
         let c = makeController()
         c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) })
@@ -61,8 +45,6 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])   // kept sorted
         XCTAssertTrue(c.regionModeActive)
         XCTAssertNil(c.pinnedResidueIndex, "region mode drops the pin")
-        XCTAssertEqual(c.selectedSelectionName, "sele",
-                       "a click-built region is labelled 'sele'")
 
         c.tapResidue(residueIndex: 2)             // invalid → never counts
         XCTAssertEqual(c.selectedResidueIndices, [1, 3])
@@ -71,11 +53,9 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
                       "one designable residue leaves region mode")
         XCTAssertEqual(c.pinnedResidueIndex, 3, "the survivor is pinned")
-        XCTAssertNil(c.selectedSelectionName)
 
         c.tapResidue(residueIndex: 3)             // remove last → nothing
         XCTAssertFalse(c.regionModeActive)
-        XCTAssertNil(c.selectedSelectionName)
         XCTAssertNil(c.pinnedResidueIndex)
     }
 
@@ -90,19 +70,6 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertEqual(c.paletteAllowed.count, 20)
     }
 
-    func testRefreshSelectionsPopulatesList() {
-        let c = makeController()
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       listSelections: { _, _, _ in
-                           [DesignSelectionOption(name: "loopA", count: 12),
-                            DesignSelectionOption(name: "sele", count: 5)]
-                       })
-        c.setFocusForTest("m1", nativeSequence: [5, 5], validFlags: allValid(2))
-        c.refreshSelections()
-        XCTAssertEqual(c.availableSelections.map { $0.name }, ["loopA", "sele"])
-        XCTAssertEqual(c.availableSelections.first?.count, 12)
-    }
-
     // Stub score/edit closures used by every redesign test.
     private func wireEdit(_ c: DesignController) {
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
@@ -115,18 +82,21 @@ final class DesignRegionTests: XCTestCase {
         }
     }
 
-    // refreshSelections/pickSelection scope to the focus object AND its edit source,
-    // so selections made on the original still resolve once a working copy is focused.
-    func testSelectionScopingPassesSourceObjectWhenEditing() async {
+    // The 'sele' READ scopes to the focus object AND its edit source, so a selection
+    // made on the original still resolves once a working copy is focused. Python owns
+    // the scoping (see design_region.py); what Swift must guarantee is that
+    // `editSourceObject` actually reaches the reader.
+    func testSeleReadScopesToTheEditSourceObject() async {
         var srcSeen: [String?] = []
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       listSelections: { _, src, _ in srcSeen.append(src); return [] },
-                       selectedIndices: { _, _, _, _ in [0] })
+        c.injectSele(seleState: { _, src, _ in
+            srcSeen.append(src)
+            return (indices: [], digest: "d\(srcSeen.count)", off: 0)
+        })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.refreshSelections()                                  // pre-edit: no source
+        c.syncFromSele()                                       // pre-edit: no source
         await c.applyMutationAwait(residueIndex: 0, aa: 7)     // begins edit → editSourceObject "m1"
-        c.refreshSelections()                                  // post-edit: source is the original
+        c.syncFromSele()                                       // post-edit: source is the original
         XCTAssertEqual(srcSeen.count, 2)
         XCTAssertNil(srcSeen[0])
         XCTAssertEqual(srcSeen[1], "m1")
@@ -134,10 +104,9 @@ final class DesignRegionTests: XCTestCase {
 
     func testRedesignScattersOnlyIntoRegion() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1, 3] })
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5, 5], validFlags: allValid(5))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 3)
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.editedSequence, [5, 9, 5, 9, 5])   // only free positions changed
     }
@@ -145,10 +114,9 @@ final class DesignRegionTests: XCTestCase {
     func testFixedPartitionIsComplementOfRegion() async {
         var capturedFixed: Set<Int>?
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, fixed, native, _, _ in capturedFixed = fixed; return native },
-                       selectedIndices: { _, _, _, _ in [0, 2] })
+        c.injectRegion(designRegion: { _, fixed, native, _, _ in capturedFixed = fixed; return native })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: allValid(4))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertEqual(capturedFixed, [1, 3])               // complement of free {0,2} over L=4
     }
@@ -158,9 +126,10 @@ final class DesignRegionTests: XCTestCase {
         let c = makeController(); wireEdit(c)
         c.injectRegion(designRegion: { _, fixed, native, _, _ in
             capturedFixed = fixed; capturedNative = native; return native
-        }, selectedIndices: { _, _, _, _ in [0, 2] })       // full idx 0,2 selected; idx 1 invalid
+        })
         c.setFocusForTest("m1", nativeSequence: [5, 6, 7], validFlags: [true, false, true])
-        c.pickSelection("reg")
+        // full idx 0,2 selected; idx 1 is invalid and never counts
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         // valid residues full {0,2} → valid-projected {0,1}; both selected → free {0,1}, fixed {}.
         XCTAssertEqual(capturedFixed, [])
@@ -169,10 +138,10 @@ final class DesignRegionTests: XCTestCase {
 
     func testScatterWithInvalidGap() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, _, _, _ in [9, 8] },   // valid-projected result (L=2)
-                       selectedIndices: { _, _, _, _ in [0, 2] })   // full idx 0,2 → valid-projected 0,1
+        c.injectRegion(designRegion: { _, _, _, _, _ in [9, 8] })   // valid-projected result (L=2)
         c.setFocusForTest("m1", nativeSequence: [5, 6, 7], validFlags: [true, false, true])
-        c.pickSelection("reg")
+        // full idx 0,2 → valid-projected 0,1
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         // Both designed values must land on the correct side of the invalid gap:
         // full 0 ← result[0]==9, full 2 ← result[1]==8, and full 1 (no backbone)
@@ -183,11 +152,10 @@ final class DesignRegionTests: XCTestCase {
     func testNativeSequenceReflectsPriorEdits() async {
         var capturedNative: [Int]?
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, native, _, _ in capturedNative = native; return native },
-                       selectedIndices: { _, _, _, _ in [2, 3] })
+        c.injectRegion(designRegion: { _, _, native, _, _ in capturedNative = native; return native })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: allValid(4))
         await c.applyMutationAwait(residueIndex: 0, aa: 7)  // earlier manual edit
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 2); c.tapResidue(residueIndex: 3)
         await c.redesignSelectionAwait()
         XCTAssertEqual(capturedNative, [7, 5, 5, 5])        // manual edit carried into native
     }
@@ -195,10 +163,9 @@ final class DesignRegionTests: XCTestCase {
     func testOmitDerivedFromPalette() async {
         var capturedOmit: [Set<Int>]?
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, native, omit, _ in capturedOmit = omit; return native },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { _, _, native, omit, _ in capturedOmit = omit; return native })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         c.togglePalette(4); c.togglePalette(12)
         await c.redesignSelectionAwait()
         XCTAssertEqual(capturedOmit?.count, 3)              // one per valid residue (L=3)
@@ -209,11 +176,10 @@ final class DesignRegionTests: XCTestCase {
     func testTemperaturePassedToDesign() async {
         var capturedTemp: Float?
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, native, _, temp in capturedTemp = temp; return native },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { _, _, native, _, temp in capturedTemp = temp; return native })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
         c.designTemperature = 0.7
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertEqual(capturedTemp, 0.7)
     }
@@ -223,11 +189,10 @@ final class DesignRegionTests: XCTestCase {
     // redesign whose follow-up repack runs.
     func testBusyFlagsClearAfterSuccessfulRedesign() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
         c.injectRepack(repack: { _, _ in "REPACKED" }, loadRepacked: { _, _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.editedSequence, [5, 9, 9],
                        "the redesign must actually have run — without this the flag "
@@ -244,12 +209,11 @@ final class DesignRegionTests: XCTestCase {
     func testRedesignFlagDoesNotSpanRepackPhase() async {
         var flagDuringRepack: Bool?
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
         c.injectRepack(repack: { _, _ in "PDB" },
                        loadRepacked: { [weak c] _, _, _ in flagDuringRepack = c?.isRedesigning })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertEqual(flagDuringRepack, false,
                        "isRedesigning must already be clear once the repack phase runs — "
@@ -261,10 +225,9 @@ final class DesignRegionTests: XCTestCase {
     func testBusyFlagClearsWhenDesignThrows() async {
         struct Boom: Error {}
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, _, _, _ in throw Boom() },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { _, _, _, _, _ in throw Boom() })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertFalse(c.isRedesigning, "a failed redesign must not strand the blocking overlay")
         XCTAssertNotNil(c.errorText)
@@ -272,10 +235,9 @@ final class DesignRegionTests: XCTestCase {
 
     func testBusyFlagClearsWhenDesignReturnsWrongLength() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, _, _, _ in [1, 2, 3, 4, 5, 6, 7] },  // wrong length
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { _, _, _, _, _ in [1, 2, 3, 4, 5, 6, 7] })  // wrong length
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.errorText, "Region redesign failed",
                        "design() must actually have been called and rejected for its "
@@ -287,10 +249,9 @@ final class DesignRegionTests: XCTestCase {
     func testEmptyPaletteBlocksRedesign() async {
         var called = false
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { _, _, native, _, _ in called = true; return native },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+        c.injectRegion(designRegion: { _, _, native, _, _ in called = true; return native })
         c.setFocusForTest("m1", nativeSequence: [5, 5], validFlags: allValid(2))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
         // Pre-condition: without this, `called == false` also holds when the region
         // never designated at all — the assertion would pass for the wrong reason.
         XCTAssertTrue(c.regionModeActive, "pre-condition: a region must be designated")
@@ -301,12 +262,11 @@ final class DesignRegionTests: XCTestCase {
 
     func testRevertRestoresPreRedesignAndKeepsEarlierEdits() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [2, 3] })
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5], validFlags: allValid(4))
         await c.applyMutationAwait(residueIndex: 0, aa: 7)  // earlier manual edit
         let ec = c.editCount
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 2); c.tapResidue(residueIndex: 3)
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.editedSequence, [7, 5, 9, 9])
         XCTAssertNotNil(c.redesignSnapshot)
@@ -318,10 +278,9 @@ final class DesignRegionTests: XCTestCase {
 
     func testManualEditAfterRedesignClearsRevert() async {
         let c = makeController(); wireEdit(c)
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [1, 2] })
+        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 9, count: r.count) })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 1); c.tapResidue(residueIndex: 2)
         await c.redesignSelectionAwait()
         XCTAssertNotNil(c.redesignSnapshot)
         await c.applyMutationAwait(residueIndex: 2, aa: 3)
@@ -354,8 +313,6 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertTrue(c.selectedResidueIndices.isEmpty,
                       "a single residue must not enter region mode")
         XCTAssertFalse(c.regionModeActive)
-        XCTAssertNil(c.selectedSelectionName,
-                     "the region label belongs to region mode only")
     }
 
     // Two or more selected residues auto-designate the region and drop the pin,
@@ -370,8 +327,6 @@ final class DesignRegionTests: XCTestCase {
                      "region mode must clear the single-residue pin")
         XCTAssertEqual(c.selectedResidueIndices, [0, 2])
         XCTAssertTrue(c.regionModeActive)
-        XCTAssertEqual(c.selectedSelectionName, "sele",
-                       "a click-built region is labelled 'sele'")
     }
 
     // Non-designable positions (missing backbone) never count, so selecting one
@@ -486,32 +441,15 @@ final class DesignRegionTests: XCTestCase {
                        "an unresolvable residue must not disturb the selection")
     }
 
-    // The lasso dropdown writes 'sele' and keeps its own label.
-    func testPickSelectionWritesSeleAndKeepsItsLabel() {
-        let c = makeController()
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
-                          validFlags: allValid(3))
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [0, 2] })
-        c.pickSelection("loop")
-        XCTAssertEqual(c.selectedResidueIndices, [0, 2])
-        XCTAssertEqual(c.selectedSelectionName, "loop")
-
-        // A subsequent click detaches from the named region.
-        c.tapResidue(residueIndex: 1)
-        XCTAssertEqual(c.selectedResidueIndices, [0, 1, 2])
-        XCTAssertEqual(c.selectedSelectionName, "sele")
-    }
-
-    // clearSelection empties 'sele' rather than only the mirrored array, so a
+    // The clear path empties 'sele' rather than only the mirrored array, so a
     // following sync cannot resurrect the region.
-    func testClearSelectionEmptiesSele() {
+    func testClearingEmptiesSeleNotJustTheMirror() {
         let c = makeController()
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5],
                           validFlags: allValid(3))
         c.tapResidue(residueIndex: 0)
         c.tapResidue(residueIndex: 1)
-        c.clearSelection()
+        c.handleViewportHit(object: "", chain: "", resi: "", hasResidue: false)
         XCTAssertTrue(c.selectedResidueIndices.isEmpty)
         XCTAssertEqual(c.syncFromSele(), 0, "'sele' itself must be empty, not just the mirror")
     }
@@ -640,44 +578,7 @@ final class DesignRegionTests: XCTestCase {
             XCTAssertEqual(c.selectedResidueIndices, [0, 2],
                            "\(path): 'sele' still holds both residues, so the region must survive")
             XCTAssertTrue(c.regionModeActive, "\(path): region mode must survive the teardown")
-            XCTAssertEqual(c.selectedSelectionName, "sele", "\(path): label re-derived")
         }
-    }
-
-    // The lasso name must not outlive the region it labels. Designate a named
-    // region, leave Design mode, then re-enter with 'sele' untouched: the region
-    // re-derives from 'sele' and is now click-built, so it must carry the "sele"
-    // label, not the stale lasso name. The focus-change path shares the same reset
-    // (both go through clearRegionState), so this covers it too.
-    func testStaleLassoNameDoesNotSurviveLeavingDesignMode() async {
-        let residues = (1...3).map { i in
-            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
-                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
-                                                      o: .zero, chain: 0, resSeq: i),
-                          valid: true)
-        }
-        let c = DesignController(
-            enumerate: { obj, _ in
-                DesignResidueSet(object: obj, state: 1, residues: residues)
-            },
-            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
-            applyColoring: { _, _, _, _, _, _, _ in },
-            dim: { _ in }, snapshot: { _ in }, restore: { })
-        c.allObjects = ["m1"]
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [0, 2] })
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-
-        c.pickSelection("loop")
-        XCTAssertEqual(c.selectedSelectionName, "loop", "pre-condition: named region")
-
-        c.exit()                      // must scrub the stale name
-        await c.focusAwait("m1")      // re-enter; 'sele' still holds both residues
-
-        XCTAssertEqual(c.selectedResidueIndices, [0, 2],
-                       "pre-condition: the region still derives from 'sele'")
-        XCTAssertEqual(c.selectedSelectionName, "sele",
-                       "the lasso name must not outlive the region it labelled")
     }
 
     // A refocus whose enumerate throws must leave 'sele' untouched. Writing anyway
@@ -821,32 +722,6 @@ final class DesignRegionTests: XCTestCase {
         }
     }
 
-    // M3: a named selection that resolves to exactly ONE designable residue pins
-    // (no region), so the branch that consumes the lasso label never runs — and the
-    // label must not survive to mislabel the NEXT region.
-    func testOneResidueNamedRegionDoesNotLabelTheNextRegion() {
-        let c = makeController()
-        c.setFocusForTest("m1", nativeSequence: [5, 5, 5, 5, 5], validFlags: allValid(5))
-        c.injectRegion(designRegion: { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
-                       selectedIndices: { _, _, _, _ in [2] })   // ONE residue
-
-        c.pickSelection("hotspot")
-        XCTAssertEqual(c.pinnedResidueIndex, 2,
-                       "pre-condition: one designable residue pins rather than designating")
-        XCTAssertNil(c.selectedSelectionName, "pre-condition: no region, so no label")
-
-        // A 5-residue selection now arrives from outside Design mode (`select sele,
-        // resi 1-5` at the prompt) and reaches the controller through the poll.
-        c.injectSele(seleState: { _, _, _ in
-            (indices: [0, 1, 2, 3, 4], digest: "external", off: 0)
-        })
-        c.syncFromSeleIfChanged(digest: "external")
-
-        XCTAssertEqual(c.selectedResidueIndices, [0, 1, 2, 3, 4])
-        XCTAssertEqual(c.selectedSelectionName, "sele",
-                       "a click-built region must not inherit the stale lasso name")
-    }
-
     // M4: `refocusAndSelect` must check that the focus is still CURRENT, not merely
     // that the object exists. Two rapid clicks on two different non-focus objects
     // spawn two Tasks; if the loser resumes last its write lands while the winner
@@ -893,8 +768,8 @@ final class DesignRegionTests: XCTestCase {
     // MARK: – Design mode adopts a selection made before it opened
 
     // Goal 4's most visible consequence: an ordinary normal-mode selection is already
-    // a designated region the moment Design mode focuses a structure — no lasso, no
-    // re-clicking.
+    // a designated region the moment Design mode focuses a structure — no
+    // re-clicking, and nothing else to designate it with.
     func testEnteringDesignModeAdoptsAPreExistingSele() async {
         let residues = (1...5).map { i in
             DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
@@ -923,7 +798,6 @@ final class DesignRegionTests: XCTestCase {
         XCTAssertTrue(c.regionModeActive,
                       "\"Redesign selection · 3 res\" must be armed on entry")
         XCTAssertNil(c.pinnedResidueIndex, "3 residues is region mode, not a pin")
-        XCTAssertEqual(c.selectedSelectionName, "sele")
     }
 
     // The OTHER no-digest path: `focusObject` non-nil with no residue set for it.
