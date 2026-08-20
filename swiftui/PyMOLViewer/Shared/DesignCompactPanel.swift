@@ -180,7 +180,7 @@ struct DesignCompactPanel: View {
         HStack(spacing: 8) {
             regionButton
             if controller.seleResiduesOffFocus > 0 {
-                Text("+\(controller.seleResiduesOffFocus)")
+                Label("\(controller.seleResiduesOffFocus)", systemImage: "eye.slash")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
                     .accessibilityLabel(
