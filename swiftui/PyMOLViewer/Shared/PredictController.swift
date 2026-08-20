@@ -221,9 +221,17 @@ final class PredictController: ObservableObject {
         // The Protenix branch is macOS-only because ProtenixSizeGuard is (the runtime
         // was not ported to iOS — see PyMOLBridge.mm's RAYMOL_PREDICT_RUNTIMES). On iOS
         // the branch is also unreachable rather than merely absent: the host advertises
-        // "boltz" alone, so check_available refuses every protenix predictor and none
-        // ever reaches `availablePredictors`. Compiling it out is therefore removing
-        // dead code, not narrowing behaviour.
+        // "boltz" alone, so check_available refuses every protenix predictor, and
+        // appkit_predict._predictors() FILTERS the form list by check_available, so none
+        // reaches `availablePredictors`. Compiling it out removes dead code rather than
+        // narrowing behaviour — but note the filter is what makes that true. Before it
+        // existed the list was every REGISTERED predictor and Protenix ids did arrive
+        // here on iOS, where this branch was compiled out and they fell through to the
+        // Boltz curve: a Protenix job sized against Boltz's much smaller footprint.
+        //
+        // Also why boltz2-bf16 refuses on iOS (see Boltz2BF16Predictor.check_available):
+        // `decide` below takes no predictor, so every Boltz pack shares one curve, and
+        // that curve is fitted to measured int8 footprints.
         let decision: PredictSizeGuard.Decision
         #if os(macOS)
         if predictor.hasPrefix("protenix") {
