@@ -6,10 +6,12 @@
 //   1. The UserDefaults key namespace (`raymol.panels.*`). Both platform layouts
 //      read the SAME keys through @AppStorage, so a pane's visibility survives a
 //      relaunch — and, on a device that runs both idioms, means the same thing.
-//   2. The sizing arithmetic. Sizes are stored as FRACTIONS of the window
-//      dimension, never as absolute points: a height that was sensible in a
-//      1600pt window must not be restored into a 700pt one, where it would leave
-//      no viewport. Fractions are clamped on the way in AND on the way out.
+//   2. The sizing arithmetic. A size the USER chose is stored as a FRACTION of
+//      the window dimension, never as absolute points: a height that was sensible
+//      in a 1600pt window must not be restored into a 700pt one, where it would
+//      leave no viewport. Fractions are clamped on the way in AND on the way out.
+//      The untouched DEFAULT is the opposite — absolute points — so a console
+//      nobody has resized looks the same on a laptop and on a 6K display.
 //
 // Everything here is a pure function of its arguments so PanelLayoutTests can
 // pin the boundaries without a window.
@@ -31,7 +33,8 @@ enum PanelLayout {
     /// layout keeps starting minimal (console off, objects on) — see ContentView.
     static let landscapeConsoleVisibleKey = ns + "landscapeConsoleVisible"
     static let landscapeObjectsVisibleKey = ns + "landscapeObjectsVisible"
-    /// Console height as a fraction of the window height (#331 default 0.2).
+    /// The user's console height, as a fraction of the window height. Absent
+    /// until they resize it, which is what selects the absolute default (#331).
     static let consoleFracKey = ns + "consoleFrac"
     /// iPad bottom-panel share of the screen.
     static let panelFracKey = ns + "panelFrac"
@@ -48,8 +51,13 @@ enum PanelLayout {
 
     // MARK: - Bounds
 
-    /// #331: a fresh launch puts the console at a fifth of the window height.
-    static let defaultConsoleFrac: CGFloat = 0.2
+    /// #331: the console's height on a launch with nothing stored. ABSOLUTE
+    /// points, not a share of the window, so it matches what the app has always
+    /// shown on any display — a fifth of a large monitor is far more room than the
+    /// console needs by default. A size the user drags to IS stored as a fraction
+    /// (see `consoleFrac`); only this untouched default is fixed.
+    static let macDefaultConsoleHeight: CGFloat = 130
+    static let iosDefaultConsoleHeight: CGFloat = 110
     /// Storable band. The floor exists because a user who drags the console shut
     /// is expressing "hidden", which the visibility flag records; storing ~0 here
     /// would instead restore an unusable sliver on the next launch.
@@ -59,6 +67,10 @@ enum PanelLayout {
     /// Usable console minimums: the macOS pane vs. the iOS drag divider.
     static let macMinConsoleHeight: CGFloat = 44
     static let iosMinConsoleHeight: CGFloat = 60
+    /// Floor under the growth ceiling (see `maxConsoleHeight`): in a window too
+    /// short to satisfy the viewport minimum, the console may still take this
+    /// share rather than collapsing to nothing.
+    static let minCeilingFrac: CGFloat = 0.2
     /// The macOS viewport's own minimum. The console may grow until the viewport
     /// is down to this, which is what keeps #317 ("drag it open to read a long
     /// predict log") working while still guaranteeing a viewport.
@@ -76,38 +88,39 @@ enum PanelLayout {
     /// Normally that's "everything except the viewport's minimum" — 324pt of a
     /// 684pt window — which is generous enough to read a long log in. Two guards
     /// bracket it: never more than 85% of the window (the viewport must remain a
-    /// viewport), and never less than 20% (in a window too short to satisfy
-    /// `viewportMin` at all, the console still gets its default share rather than
-    /// collapsing to nothing).
+    /// viewport), and never less than `minCeilingFrac`.
     static func maxConsoleHeight(windowHeight: CGFloat,
                                  viewportMin: CGFloat = macViewportMinHeight) -> CGFloat {
         guard windowHeight.isFinite, windowHeight > 0 else { return 0 }
-        return min(max(windowHeight - viewportMin, windowHeight * defaultConsoleFrac),
+        return min(max(windowHeight - viewportMin, windowHeight * minCeilingFrac),
                    windowHeight * 0.85)
     }
 
-    /// The console's height in a window of `windowHeight`, from a stored fraction.
+    /// The console's height in a window of `windowHeight`.
+    ///
+    /// `frac` is the persisted share, and applies only once the user has sized the
+    /// console themselves; a missing, zero, negative or non-finite value (an unset
+    /// UserDefaults Double reads as 0) means "untouched" and yields `defaultHeight`
+    /// — an absolute size, so an untouched console looks the same on a laptop and
+    /// on a 6K display.
     ///
     /// `minHeight` is the platform's usable floor; `maxHeight` the platform's
     /// ceiling (`maxConsoleHeight` on macOS, the layout's own 33% rule on iOS).
     /// The CEILING WINS when the two cross — in a very short window, better a
     /// cramped console than no viewport.
-    ///
-    /// A missing, zero, negative or non-finite `frac` (an unset UserDefaults
-    /// Double reads as 0) falls back to `defaultConsoleFrac`.
     static func consoleHeight(frac: CGFloat, windowHeight: CGFloat,
+                              defaultHeight: CGFloat,
                               minHeight: CGFloat, maxHeight: CGFloat) -> CGFloat {
         guard windowHeight.isFinite, windowHeight > 0 else { return minHeight }
-        let f = (frac.isFinite && frac > 0) ? frac : defaultConsoleFrac
-        return min(max(f * windowHeight, minHeight), maxHeight)
+        let h = (frac.isFinite && frac > 0) ? frac * windowHeight : defaultHeight
+        return min(max(h, minHeight), maxHeight)
     }
 
-    /// The fraction to persist for a console measured at `height`. Inverse of
-    /// `consoleHeight`, clamped into the storable band so nothing unrestorable
-    /// can ever be written.
-    static func consoleFrac(height: CGFloat, windowHeight: CGFloat) -> CGFloat {
-        guard windowHeight.isFinite, windowHeight > 0,
-              height.isFinite else { return defaultConsoleFrac }
+    /// The fraction to persist for a console measured at `height`, clamped into
+    /// the storable band so nothing unrestorable can ever be written. nil for a
+    /// degenerate window — there is nothing meaningful to store, so don't write.
+    static func consoleFrac(height: CGFloat, windowHeight: CGFloat) -> CGFloat? {
+        guard windowHeight.isFinite, windowHeight > 0, height.isFinite else { return nil }
         return min(max(height / windowHeight, minStorableFrac), maxStorableFrac)
     }
 

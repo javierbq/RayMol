@@ -166,11 +166,11 @@ struct ContentView: View {
     // PanelLayout so both platform layouts read the same contract.
     @AppStorage(PanelLayout.objectsVisibleKey) private var showObjectPanel = true
     @AppStorage(PanelLayout.consoleVisibleKey) private var showCommandPanel = true
-    // Console share of the window height, persisted as a FRACTION so restoring
-    // into a differently-sized window can't squeeze the viewport away. Defaults to
-    // a fifth (#331); read by both the macOS VSplitView and the iOS termH path.
-    @AppStorage(PanelLayout.consoleFracKey)
-    private var consoleFrac = Double(PanelLayout.defaultConsoleFrac)
+    // The console height the USER chose, as a fraction of the window height, so
+    // restoring into a differently-sized window can't squeeze the viewport away
+    // (#332). 0 means "never resized", which selects the absolute per-platform
+    // default instead (#331) — read by both the macOS band and the iOS termH path.
+    @AppStorage(PanelLayout.consoleFracKey) private var consoleFrac = 0.0
     // The console height the current macOS drag started from, in points. nil when
     // no drag is in flight; the committed size lives in `consoleFrac`.
     @State private var macConsoleDragAnchor: CGFloat? = nil
@@ -432,6 +432,7 @@ struct ContentView: View {
         let maxH = PanelLayout.maxConsoleHeight(windowHeight: windowHeight)
         let h = PanelLayout.consoleHeight(frac: CGFloat(consoleFrac),
                                           windowHeight: windowHeight,
+                                          defaultHeight: PanelLayout.macDefaultConsoleHeight,
                                           minHeight: PanelLayout.macMinConsoleHeight,
                                           maxHeight: maxH)
         CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: h)
@@ -461,12 +462,14 @@ struct ContentView: View {
                     .onChanged { v in
                         let start = macConsoleDragAnchor ?? PanelLayout.consoleHeight(
                             frac: CGFloat(consoleFrac), windowHeight: windowHeight,
+                            defaultHeight: PanelLayout.macDefaultConsoleHeight,
                             minHeight: PanelLayout.macMinConsoleHeight, maxHeight: maxH)
                         macConsoleDragAnchor = start
                         let h = min(max(start + v.translation.height,
                                         PanelLayout.macMinConsoleHeight), maxH)
-                        consoleFrac = Double(PanelLayout.consoleFrac(height: h,
-                                                                    windowHeight: windowHeight))
+                        if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
+                            consoleFrac = Double(f)
+                        }
                     }
                     .onEnded { _ in macConsoleDragAnchor = nil }
             )
@@ -1410,6 +1413,7 @@ struct ContentView: View {
         let base = termH > 0
             ? termH
             : PanelLayout.consoleHeight(frac: CGFloat(consoleFrac), windowHeight: total,
+                                        defaultHeight: PanelLayout.iosDefaultConsoleHeight,
                                         minHeight: PanelLayout.iosMinConsoleHeight,
                                         maxHeight: maxTerm)
         return min(max(base, PanelLayout.iosMinConsoleHeight), maxTerm)
@@ -2495,9 +2499,8 @@ struct ContentView: View {
                     committedTermH = termH
                     // Persist the new share (#332). Stored as a fraction of the
                     // screen so it survives a rotation or a different device.
-                    if total > 0 {
-                        consoleFrac = Double(PanelLayout.consoleFrac(height: termH,
-                                                                    windowHeight: total))
+                    if let f = PanelLayout.consoleFrac(height: termH, windowHeight: total) {
+                        consoleFrac = Double(f)
                     }
                 }
         )

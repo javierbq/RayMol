@@ -7,45 +7,91 @@ final class PanelLayoutTests: XCTestCase {
     /// The macOS ceiling for the window the VM tests run at (684pt tall).
     private let macMax = PanelLayout.maxConsoleHeight(windowHeight: 684)
 
-    // MARK: - console height from a stored fraction (#331)
+    // MARK: - the untouched default (#331)
 
-    func testDefaultFracIsOneFifth() {
-        XCTAssertEqual(PanelLayout.defaultConsoleFrac, 0.2, accuracy: 1e-9)
+    /// The default is ABSOLUTE, not a share: an untouched console is the same
+    /// height on a laptop and on a 6K display, which is what the app has always
+    /// done. A fraction-based default grew to 280pt on a large monitor.
+    func testUnsetFracYieldsTheAbsoluteDefault() {
+        for window in [CGFloat(684), 900, 1400, 2400] {
+            XCTAssertEqual(
+                PanelLayout.consoleHeight(frac: 0, windowHeight: window,
+                                          defaultHeight: PanelLayout.macDefaultConsoleHeight,
+                                          minHeight: 44,
+                                          maxHeight: PanelLayout.maxConsoleHeight(windowHeight: window)),
+                PanelLayout.macDefaultConsoleHeight, accuracy: 1e-9,
+                "an untouched console must not scale with a \(window)pt window")
+        }
     }
 
-    func testDefaultFracGivesOneFifthOfTheWindow() {
-        // 900pt window -> 180pt, exactly a fifth, well inside the ceiling.
+    func testEachPlatformHasItsOwnDefault() {
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: PanelLayout.defaultConsoleFrac,
-                                      windowHeight: 900, minHeight: 44,
-                                      maxHeight: PanelLayout.maxConsoleHeight(windowHeight: 900)),
-            180, accuracy: 1e-9)
+            PanelLayout.consoleHeight(frac: 0, windowHeight: 1376,
+                                      defaultHeight: PanelLayout.iosDefaultConsoleHeight,
+                                      minHeight: PanelLayout.iosMinConsoleHeight,
+                                      maxHeight: 454),
+            110, accuracy: 1e-9)
     }
+
+    func testGarbageStoredFractionFallsBackToTheDefault() {
+        // 0 is what an unset UserDefaults Double reads as; negative or non-finite
+        // can only come from corruption.
+        for bad in [CGFloat(0), -0.5, .nan, .infinity] {
+            XCTAssertEqual(
+                PanelLayout.consoleHeight(frac: bad, windowHeight: 900, defaultHeight: 130,
+                                          minHeight: 44, maxHeight: 500),
+                130, accuracy: 1e-9,
+                "frac \(bad) should fall back to the default height")
+        }
+    }
+
+    func testDefaultIsStillClampedByThePlatformBounds() {
+        // A default taller than the ceiling (a very short window) is capped...
+        XCTAssertEqual(
+            PanelLayout.consoleHeight(frac: 0, windowHeight: 300, defaultHeight: 130,
+                                      minHeight: 44,
+                                      maxHeight: PanelLayout.maxConsoleHeight(windowHeight: 300)),
+            60, accuracy: 1e-9)
+        // ...and one below the usable floor is lifted.
+        XCTAssertEqual(
+            PanelLayout.consoleHeight(frac: 0, windowHeight: 900, defaultHeight: 20,
+                                      minHeight: 44, maxHeight: 500),
+            44, accuracy: 1e-9)
+    }
+
+    // MARK: - a size the user chose (#332)
 
     func testStoredFractionIsHonouredInsideTheBand() {
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.35, windowHeight: 1000, minHeight: 44,
+            PanelLayout.consoleHeight(frac: 0.35, windowHeight: 1000, defaultHeight: 130,
+                                      minHeight: 44,
                                       maxHeight: PanelLayout.maxConsoleHeight(windowHeight: 1000)),
             350, accuracy: 1e-9)
     }
 
+    func testStoredFractionBeatsTheDefault() {
+        // The whole point: once resized, the default no longer applies.
+        XCTAssertEqual(
+            PanelLayout.consoleHeight(frac: 0.1, windowHeight: 900, defaultHeight: 130,
+                                      minHeight: 44, maxHeight: 500),
+            90, accuracy: 1e-9)
+    }
+
     func testTooSmallFractionIsLiftedToTheMinimum() {
-        // 0.01 * 800 = 8pt, below the platform floor.
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.01, windowHeight: 800, minHeight: 44,
-                                      maxHeight: 400),
+            PanelLayout.consoleHeight(frac: 0.01, windowHeight: 800, defaultHeight: 130,
+                                      minHeight: 44, maxHeight: 400),
             44, accuracy: 1e-9)
-        // iOS carries a taller floor (60pt) for the same fraction.
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.01, windowHeight: 800, minHeight: 60,
-                                      maxHeight: 400),
+            PanelLayout.consoleHeight(frac: 0.01, windowHeight: 800, defaultHeight: 130,
+                                      minHeight: 60, maxHeight: 400),
             60, accuracy: 1e-9)
     }
 
     func testFractionAboveTheCeilingIsCapped() {
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.9, windowHeight: 684, minHeight: 44,
-                                      maxHeight: macMax),
+            PanelLayout.consoleHeight(frac: 0.9, windowHeight: 684, defaultHeight: 130,
+                                      minHeight: 44, maxHeight: macMax),
             macMax, accuracy: 1e-9)
     }
 
@@ -54,29 +100,17 @@ final class PanelLayoutTests: XCTestCase {
     /// viewport is never squeezed away entirely.
     func testCeilingOutranksTheMinimum() {
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.5, windowHeight: 100, minHeight: 44,
-                                      maxHeight: 20),
+            PanelLayout.consoleHeight(frac: 0.5, windowHeight: 100, defaultHeight: 130,
+                                      minHeight: 44, maxHeight: 20),
             20, accuracy: 1e-9)
     }
 
     func testNonPositiveWindowHeightFallsBackToTheMinimum() {
         // A GeometryReader's first pass can report 0; don't hand back 0 or NaN.
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: 0.2, windowHeight: 0, minHeight: 44,
-                                      maxHeight: 200),
+            PanelLayout.consoleHeight(frac: 0.2, windowHeight: 0, defaultHeight: 130,
+                                      minHeight: 44, maxHeight: 200),
             44, accuracy: 1e-9)
-    }
-
-    func testGarbageStoredFractionFallsBackToTheDefault() {
-        // 0 is what an unset UserDefaults Double reads as; negative or non-finite
-        // can only come from corruption.
-        for bad in [CGFloat(0), -0.5, .nan, .infinity] {
-            XCTAssertEqual(
-                PanelLayout.consoleHeight(frac: bad, windowHeight: 900, minHeight: 44,
-                                          maxHeight: 500),
-                180, accuracy: 1e-9,
-                "frac \(bad) should fall back to the 1/5 default")
-        }
     }
 
     // MARK: - the macOS ceiling (#317 must keep working)
@@ -93,9 +127,9 @@ final class PanelLayoutTests: XCTestCase {
                        3400, accuracy: 1e-9)
     }
 
-    func testCeilingNeverFallsBelowTheDefaultShare() {
-        // Shorter than the viewport minimum: the console still gets its fifth
-        // rather than a negative/zero ceiling.
+    func testCeilingNeverFallsBelowMinCeilingFrac() {
+        // Shorter than the viewport minimum: the console may still take
+        // minCeilingFrac rather than facing a negative/zero ceiling.
         XCTAssertEqual(PanelLayout.maxConsoleHeight(windowHeight: 300),
                        60, accuracy: 1e-9)
     }
@@ -106,32 +140,34 @@ final class PanelLayoutTests: XCTestCase {
 
     // MARK: - measured height back to a fraction (#332)
 
-    func testFractionRoundTripsThroughAHeight() {
+    func testFractionRoundTripsThroughAHeight() throws {
         let h = PanelLayout.consoleHeight(frac: 0.31, windowHeight: 1000,
-                                          minHeight: 44, maxHeight: 640)
-        XCTAssertEqual(PanelLayout.consoleFrac(height: h, windowHeight: 1000),
+                                          defaultHeight: 130, minHeight: 44, maxHeight: 640)
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.consoleFrac(height: h, windowHeight: 1000)),
                        0.31, accuracy: 1e-9)
     }
 
-    func testMeasuredFractionIsClampedIntoTheStorableBand() {
-        XCTAssertEqual(PanelLayout.consoleFrac(height: 2, windowHeight: 1000),
+    func testMeasuredFractionIsClampedIntoTheStorableBand() throws {
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.consoleFrac(height: 2, windowHeight: 1000)),
                        PanelLayout.minStorableFrac, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.consoleFrac(height: 990, windowHeight: 1000),
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.consoleFrac(height: 990, windowHeight: 1000)),
                        PanelLayout.maxStorableFrac, accuracy: 1e-9)
     }
 
-    func testMeasuredFractionIgnoresADegenerateWindow() {
-        XCTAssertEqual(PanelLayout.consoleFrac(height: 100, windowHeight: 0),
-                       PanelLayout.defaultConsoleFrac, accuracy: 1e-9)
+    func testNothingIsStorableForADegenerateWindow() {
+        // nil, not a made-up number: the caller must skip the write entirely.
+        XCTAssertNil(PanelLayout.consoleFrac(height: 100, windowHeight: 0))
+        XCTAssertNil(PanelLayout.consoleFrac(height: .nan, windowHeight: 800))
     }
 
     /// The whole point of storing a fraction: a console dragged to 40% of a big
     /// window comes back at 40% of a small one, not at an unusable absolute size.
-    func testAFractionRestoresProportionallyIntoASmallerWindow() {
-        let stored = PanelLayout.consoleFrac(height: 560, windowHeight: 1400)
+    func testAFractionRestoresProportionallyIntoASmallerWindow() throws {
+        let stored = try XCTUnwrap(PanelLayout.consoleFrac(height: 560, windowHeight: 1400))
         XCTAssertEqual(stored, 0.4, accuracy: 1e-9)
         XCTAssertEqual(
-            PanelLayout.consoleHeight(frac: stored, windowHeight: 700, minHeight: 44,
+            PanelLayout.consoleHeight(frac: stored, windowHeight: 700,
+                                      defaultHeight: 130, minHeight: 44,
                                       maxHeight: PanelLayout.maxConsoleHeight(windowHeight: 700)),
             280, accuracy: 1e-9)
     }
