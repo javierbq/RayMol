@@ -72,15 +72,14 @@ final class DesignController: ObservableObject {
     /// Run MPNN sidechain repack off-main for the given residues + sequence; returns an all-atom PDB string.
     typealias RepackFn = ([MPNNModel.Residue], [Int]) throws -> String
     /// Load a repacked PDB string into the named working-copy object.
-    typealias LoadRepackedFn = (String, String) -> Void
+    /// Replace an object's structure from a PDB string. The third parameter is the
+    /// edit-session source: `load_repacked` re-asserts 'sele' onto the replaced
+    /// (visible) object afterwards, and needs the scope to know which residues the
+    /// region contains — the pre-session ones were only ever marked on the original.
+    typealias LoadRepackedFn = (_ obj: String, _ pdb: String, _ src: String?) -> Void
 
     /// Show or hide all sidechain sticks on `obj` (with cnc element coloring on show).
     typealias ShowAllSidechainsFn = (String, Bool) -> Void
-
-    /// Set or clear the persistent committed 'sele' marker for the pinned residue in the
-    /// 3D viewer.  Called with (obj, chain, resi) to commit the pink indicator, or
-    /// ("", "", "") to clear it on unpin / focus-change / teardown / exit.
-    typealias PinnedIndicatorFn = (_ obj: String, _ chain: String, _ resi: String) -> Void
 
     /// Apply per-residue coloring to `objectName`.
     /// `values`: (chain, resi, scalar?) for every residue in the set order.
@@ -111,6 +110,40 @@ final class DesignController: ObservableObject {
     typealias ListSelectionsFn = (_ obj: String, _ src: String?, _ state: Int) -> [DesignSelectionOption]
     /// Map a selection → full-length residue indices in `obj`'s guide order (scoped to `obj`+`src`).
     typealias SelectedIndicesFn = (_ obj: String, _ selection: String, _ src: String?, _ state: Int) -> [Int]
+    /// Read the active 'sele' for `obj`, scoped to `obj` + its edit `src` exactly as
+    /// `SelectedIndicesFn` is. Returns the full-length guide indices inside that
+    /// scope, a digest of the WHOLE selection (used only for change detection), and
+    /// the number of selected residues OUTSIDE that scope.
+    ///
+    /// `off` is reported, never derived. Python computes it from the model names it
+    /// already has; reconstructing it here as "total selected − in scope" was the
+    /// source of every wrong-badge variant, because during an edit session one
+    /// residue legitimately carries 'sele' membership on both the working copy and
+    /// the original and so appears twice in any whole-session total.
+    typealias SeleStateFn = (_ obj: String, _ src: String?, _ state: Int)
+        -> (indices: [Int], digest: String, off: Int)
+    /// Add or remove one residue in the active 'sele'.
+    ///
+    /// `src` is the edit-session source object and is NOT optional decoration: the
+    /// write has to resolve in the same scope `SeleStateFn` reads (`obj` + `src`,
+    /// matched by residue identity). Object-scoped, a toggle inside an edit session
+    /// could never REMOVE a region member — the focus object is the working copy
+    /// while the selection sits on the original's atoms, so the toggle found
+    /// nothing to remove and added instead — and residues clicked during the
+    /// session lost their membership when a repack replaced the working copy's
+    /// topology.
+    typealias ToggleSeleFn = (_ obj: String, _ chain: String, _ resi: String,
+                              _ src: String?) -> Void
+    /// Replace the active 'sele' with exactly one residue. `src` scopes the write
+    /// exactly as it does for `ToggleSeleFn`.
+    typealias SetSeleResidueFn = (_ obj: String, _ chain: String, _ resi: String,
+                                  _ src: String?) -> Void
+    /// Replace the active 'sele' with the contents of a named selection.
+    typealias SetSeleNamedFn = (_ name: String) -> Void
+    /// Empty the active 'sele'.
+    typealias ClearSeleFn = () -> Void
+    /// Narrow the active 'sele' so none of `obj`'s atoms are in it.
+    typealias DropObjectFromSeleFn = (_ obj: String) -> Void
     /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
     /// never on the main thread — the model is owned by that queue.
     typealias ReleaseModelFn = () -> Void
@@ -136,13 +169,39 @@ final class DesignController: ObservableObject {
     private var compare: CompareFn = { _, _ in }
     private var resetCompareFn: ResetCompareFn = { _ in }
     private var repack: RepackFn = { _, _ in "" }
-    private var loadRepacked: LoadRepackedFn = { _, _ in }
+    private var loadRepacked: LoadRepackedFn = { _, _, _ in }
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
-    private var pinnedIndicatorFn: PinnedIndicatorFn = { _, _, _ in }
     private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
     private var listSelectionsFn: ListSelectionsFn = { _, _, _ in [] }
     private var selectedIndicesFn: SelectedIndicesFn = { _, _, _, _ in [] }
     private var releaseModelFn: ReleaseModelFn = { }
+
+    // MARK: – 'sele' access (single source of truth)
+    //
+    // OPTIONAL rather than defaulted closures: a stored property's default value
+    // cannot reference `self`, and the engine-free fallbacks below must read
+    // `lastSet` / `focusObject`. nil therefore means "use the local fallback",
+    // which is what unit tests get — and that matters, because
+    // `pinnedResidueIndex` is now DERIVED: against no-op stubs every existing pin
+    // assertion would read nil.
+    private var seleStateFn: SeleStateFn?
+    private var toggleSeleFn: ToggleSeleFn?
+    private var setSeleResidueFn: SetSeleResidueFn?
+    private var setSeleNamedFn: SetSeleNamedFn?
+    private var clearSeleFn: ClearSeleFn?
+    private var dropObjectFromSeleFn: DropObjectFromSeleFn?
+
+    /// In-memory stand-in for PyMOL's 'sele' used by the fallbacks. Keys are
+    /// "chain\u{1}resi" — the same encoding `stickKey` produces.
+    private var stubSele: Set<String> = []
+
+    /// Digest of the selection the last `syncFromSele()` resolved. The panel-poll
+    /// hook compares against this so it only re-derives when 'sele' really changed.
+    private(set) var lastSeleDigest: String = ""
+
+    /// Name of the last selection explicitly designated through the lasso dropdown.
+    /// Any click clears it, so a click-built region falls back to the "sele" label.
+    private var pickedSelectionName: String?
 
     // MARK: – Edit-session published state (Task 2)
 
@@ -178,6 +237,9 @@ final class DesignController: ObservableObject {
     @Published var paletteAllowed: Set<Int> = Set(0..<20)
     /// Name of the selection currently designated as the region (nil = single-residue mode).
     @Published private(set) var selectedSelectionName: String?
+    /// Residues in 'sele' that are NOT on the focus object. Design ignores them,
+    /// so the UI surfaces the count rather than silently dropping them.
+    @Published private(set) var seleResiduesOffFocus: Int = 0
     /// Selections available in the dropdown, refreshed on open.
     @Published private(set) var availableSelections: [DesignSelectionOption] = []
     /// Pre-batch sequence + editCount captured before the last region redesign (nil = nothing to revert).
@@ -222,12 +284,6 @@ final class DesignController: ObservableObject {
 
     /// Region mode = a selection is designated. Drives the pill-row hat-switch + Redesign button.
     var regionModeActive: Bool { !selectedResidueIndices.isEmpty }
-
-    /// True while the user is building an ad-hoc region by tapping positions.
-    /// Replaces shift-click, which does not exist on touch (and whose SwiftUI
-    /// modifier is unavailable on iOS). Ships on macOS too — the explicit toggle
-    /// is the discoverable path; shift-click remains as a power-user shortcut.
-    @Published var regionEditMode = false
 
     /// Label for the blocking "Calculating…" overlay while a long design inference
     /// runs (nil = not busy). Covers exactly two edit-triggered heavy ops — a region
@@ -301,13 +357,18 @@ final class DesignController: ObservableObject {
                      compare: @escaping CompareFn = { _, _ in },
                      resetCompare: @escaping ResetCompareFn = { _ in },
                      repack: @escaping RepackFn = { _, _ in "" },
-                     loadRepacked: @escaping LoadRepackedFn = { _, _ in },
+                     loadRepacked: @escaping LoadRepackedFn = { _, _, _ in },
                      showAllSidechains: @escaping ShowAllSidechainsFn = { _, _ in },
-                     pinnedIndicator: @escaping PinnedIndicatorFn = { _, _, _ in },
                      designRegion: @escaping DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) },
                      listSelections: @escaping ListSelectionsFn = { _, _, _ in [] },
                      selectedIndices: @escaping SelectedIndicesFn = { _, _, _, _ in [] },
-                     releaseModel: @escaping ReleaseModelFn = { }) {
+                     releaseModel: @escaping ReleaseModelFn = { },
+                     seleState: SeleStateFn? = nil,
+                     toggleSele: ToggleSeleFn? = nil,
+                     setSeleResidue: SetSeleResidueFn? = nil,
+                     setSeleNamed: SetSeleNamedFn? = nil,
+                     clearSele: ClearSeleFn? = nil,
+                     dropObjectFromSele: DropObjectFromSeleFn? = nil) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -325,11 +386,16 @@ final class DesignController: ObservableObject {
         self.repack = repack
         self.loadRepacked = loadRepacked
         self.showAllSidechainsFn = showAllSidechains
-        self.pinnedIndicatorFn = pinnedIndicator
         self.designRegionFn = designRegion
         self.listSelectionsFn = listSelections
         self.selectedIndicesFn = selectedIndices
         self.releaseModelFn = releaseModel
+        self.seleStateFn = seleState
+        self.toggleSeleFn = toggleSele
+        self.setSeleResidueFn = setSeleResidue
+        self.setSeleNamedFn = setSeleNamed
+        self.clearSeleFn = clearSele
+        self.dropObjectFromSeleFn = dropObjectFromSele
     }
 
     // MARK: – Public interface
@@ -359,7 +425,8 @@ final class DesignController: ObservableObject {
         errorText = nil
         hoveredResidueIndex = nil
         pinnedResidueIndex = nil
-        pinnedIndicatorFn("", "", "")   // clear any persistent 'sele' marker on exit
+        // D2: 'sele' IS the pink marker now, and it belongs to the user — leaving
+        // Design mode must not wipe their selection, so nothing is pushed outward.
         clearRegionState()
         rescoreToken += 1; repackToken += 1   // cancel any in-flight scoring or repack
         rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
@@ -379,26 +446,67 @@ final class DesignController: ObservableObject {
     /// Unified viewport-hit routing shared between iOS (`designPickResidue`) and
     /// macOS (`onChange(of: engine.longPressHit)`).
     ///
-    /// Three-way rule:
-    ///   - `object` empty → no-op (tap on empty space or non-object background)
-    ///   - `object != focusObject` → `focus(object)` (retarget design to new structure)
-    ///   - `object == focusObject && hasResidue` → `tapResidue(residueIndex:)` for the residue;
-    ///     no-op if the residue doesn't resolve (e.g. missing backbone)
-    ///   - `object == focusObject && !hasResidue` → no-op (tap on backbone/solvent patch)
-    ///
-    /// Using `tapResidue` (not `setPinned` directly) for the same-object case means
-    /// region-edit mode works on both platforms: a tap in region-edit mode toggles
-    /// region membership rather than pinning.  The previous macOS `onChange` block
-    /// called `setPinned` directly and therefore ignored region-edit mode; routing
-    /// through this shared method fixes that uniformly.
+    /// Four-way rule, matching normal-mode click semantics:
+    ///   - `object` empty (a miss) → clear 'sele'; focus is untouched
+    ///   - `object != focusObject` → refocus there AND select that residue (D4),
+    ///     so the first click on another structure is never dead
+    ///   - `object == focusObject && hasResidue` → toggle that residue in 'sele'
+    ///   - `object == focusObject && !hasResidue` → no-op (a non-residue patch)
     func handleViewportHit(object: String, chain: String, resi: String, hasResidue: Bool) {
-        guard !object.isEmpty else { return }
+        guard !object.isEmpty else {
+            // Empty-space click clears, exactly as metal_pick.pick_at does.
+            pickedSelectionName = nil
+            if let fn = clearSeleFn { fn() } else { seleClearLocal() }
+            syncFromSele()
+            return
+        }
         if object != focusObject {
-            focus(object)
+            focusThenSelect(object: object, chain: chain, resi: resi, hasResidue: hasResidue)
         } else if hasResidue, let idx = residueIndex(chain: chain, resi: resi) {
             tapResidue(residueIndex: idx)
         }
         // object == focusObject && !hasResidue → no-op
+    }
+
+    /// Fire-and-forget refocus-then-select (used by the viewport hit path). Wraps
+    /// `refocusAndSelect` in a Task, mirroring `focus` / `focusAwait`.
+    private func focusThenSelect(object: String, chain: String, resi: String,
+                                 hasResidue: Bool) {
+        Task {
+            await refocusAndSelect(object: object, chain: chain, resi: resi,
+                                   hasResidue: hasResidue)
+        }
+    }
+
+    /// Retarget design to `object`, then seed 'sele' with the clicked residue.
+    ///
+    /// The two steps cannot be reordered or collapsed: `focusAwait` is async (it
+    /// enumerates residues and may score), and until it completes `lastSet[object]`
+    /// does not exist — so a `syncFromSele()` run before it would resolve the new
+    /// selection against the OLD object's residue set and silently produce garbage
+    /// indices.
+    private func refocusAndSelect(object: String, chain: String, resi: String,
+                                  hasResidue: Bool) async {
+        await focusAwait(object)
+        // Two guards, for two different failures:
+        //  - `lastSet[object] != nil`: a failed focus (enumerate threw) leaves no
+        //    residue set, so a write would replace the user's selection with a
+        //    residue that cannot resolve — neither their old selection nor a usable
+        //    new one. Bail and leave 'sele' exactly as it was.
+        //  - `focusObject == object`: existence is not CURRENCY. Two rapid clicks on
+        //    two different non-focus objects spawn two Tasks; if the loser resumes
+        //    last its write would land while the winner owns the focus, leaving
+        //    'sele' on a NON-focused object — pink markers plus "nothing selected",
+        //    because every read is scoped to the focus object.
+        guard focusObject == object, lastSet[object] != nil else { return }
+        pickedSelectionName = nil
+        if hasResidue {
+            if let fn = setSeleResidueFn { fn(object, chain, resi, editSourceObject) }
+            else { seleSetLocal(chain, resi) }
+        } else {
+            if let fn = clearSeleFn { fn() } else { seleClearLocal() }
+        }
+        syncFromSele()
     }
 
     // MARK: – Propensity hover/pin
@@ -446,27 +554,12 @@ final class DesignController: ObservableObject {
         reconcileSticks()
     }
 
-    /// Pin or unpin a residue. Tapping the same residue again toggles the pin
-    /// off. Pinned sticks are persistent; unpinning removes them (unless the
-    /// residue is also currently hovered, in which case reconcile keeps them
-    /// as transient hover sticks).
-    /// Also sets / clears the persistent pink 'sele' committed-selection marker in
-    /// the 3D viewer so the pinned residue is always visually highlighted.
+    /// Toggle one residue addressed by (chain, resi). Retained because the sequence
+    /// strip and several tests address residues that way. The pin itself is derived
+    /// by `syncFromSele` — this method never writes `pinnedResidueIndex`.
     func setPinned(chain: String, resi: String) {
-        let idx = residueIndex(chain: chain, resi: resi)
-        pinnedResidueIndex = (idx == pinnedResidueIndex) ? nil : idx
-        // Apply or clear the persistent committed 'sele' marker in the viewer.
-        let obj = focusObject ?? ""
-        if let i = pinnedResidueIndex,
-           let focus = focusObject,
-           let set = lastSet[focus],
-           i >= 0, i < set.residues.count {
-            let r = set.residues[i]
-            pinnedIndicatorFn(obj, r.chain, r.resi)
-        } else {
-            pinnedIndicatorFn(obj, "", "")
-        }
-        reconcileSticks()
+        guard let idx = residueIndex(chain: chain, resi: resi) else { return }
+        tapResidue(residueIndex: idx)
     }
 
     /// Switch the coloring meaning and immediately recolor the focused object from cache.
@@ -494,8 +587,7 @@ final class DesignController: ObservableObject {
             if editing { teardownEditSession(discardCopy: true) }
             teardownSticks(on: previous)
             hoveredResidueIndex = nil
-            pinnedResidueIndex = nil
-            pinnedIndicatorFn("", "", "")  // clear stale 'sele' marker for the previous focus
+            pinnedResidueIndex = nil   // re-derived below by syncFromSele for the new scope
             clearRegionState()
         }
         focusObject = object
@@ -512,6 +604,7 @@ final class DesignController: ObservableObject {
             let set = try enumerate(object, currentState(object))
             lastSet[object] = set
             syncFocusResidues()   // populate sequence strip as soon as residues are known
+            syncFromSele()        // derive pin/region for the NEW focus's scope
 
             let key = DesignCacheKey(object: object, state: set.state, sequenceHash: set.sequenceHash)
             if let scores = cache.get(key) {
@@ -680,9 +773,6 @@ final class DesignController: ObservableObject {
     private func teardownEditSession(discardCopy: Bool) {
         let src = editSourceObject
         let w = workingObject
-        // Clear the persistent 'sele' indicator — the focus object is changing (working
-        // copy → source or Design mode is ending) so any stale marker must be removed.
-        pinnedIndicatorFn("", "", "")
         // Clear grid_mode and un-grey the parent BEFORE the discard/enable block so
         // grid mode never outlasts a session and the parent's confidence colors are
         // restored regardless of how the session ends (discard or keep).
@@ -699,6 +789,14 @@ final class DesignController: ObservableObject {
         } else {
             // Keep path: working copy stays; re-enable the original so both are visible.
             if let src { enableOriginalFn(src) }
+            // ...and narrow 'sele' off the retained copy. A residue clicked during
+            // the session is marked on BOTH objects (that is what survives a
+            // repack), but `editSourceObject` is cleared below, so from here on no
+            // Design write can address the copy: a click removing that region member
+            // would leave it selected and pink there, with a spurious off-structure
+            // badge and no way to clear it from the UI. Runs BEFORE the closing
+            // `syncFromSele()` so the re-derive sees the narrowed selection.
+            if let w, let fn = dropObjectFromSeleFn { fn(w) }
         }
         rescoreToken += 1; repackToken += 1
         rescoreMirror.set(rescoreToken); repackMirror.set(repackToken)
@@ -711,6 +809,133 @@ final class DesignController: ObservableObject {
         editSourceObject = nil
         clearRegionState()
         compareEnabled = false   // bare assignment — do NOT call setCompare(false)
+        // Re-derive: `clearRegionState()` above wipes the region, but 'sele' was
+        // never touched by the teardown, so without this the derived state and
+        // 'sele' silently disagree — pink markers on 2+ residues while the Redesign
+        // button and palette row are gone. The panel poll cannot repair it: it is
+        // digest-gated, and an unchanged 'sele' yields an identical digest, so the
+        // re-derive is skipped and the wrong state persists until the user happens
+        // to click a residue. Runs last, after `focusObject` has been re-pointed at
+        // the source object, so the sync resolves against the right residue set.
+        syncFromSele()
+    }
+
+    // MARK: – Engine-free 'sele' fallbacks
+    //
+    // Used when no closure is injected, so unit tests drive the REAL derivation
+    // instead of no-op stubs. Behaviourally identical to the Python helpers:
+    // toggle adds/removes, set replaces, clear empties.
+
+    private func seleToggleLocal(_ chain: String, _ resi: String) {
+        let k = stickKey(chain, resi)
+        if stubSele.contains(k) { stubSele.remove(k) } else { stubSele.insert(k) }
+    }
+
+    private func seleSetLocal(_ chain: String, _ resi: String) {
+        stubSele = [stickKey(chain, resi)]
+    }
+
+    private func seleClearLocal() { stubSele.removeAll() }
+
+    /// Local counterpart of `SeleStateFn`: resolve `stubSele` against the focus
+    /// object's residue set, in guide order.
+    private func seleStateLocal() -> (indices: [Int], digest: String, off: Int) {
+        guard let obj = focusObject, let set = lastSet[obj] else {
+            return (indices: [], digest: "\(stubSele.count)", off: stubSele.count)
+        }
+        let idx = set.residues.enumerated().compactMap { i, r in
+            stubSele.contains(stickKey(r.chain, r.resi)) ? i : nil
+        }
+        return (indices: idx, digest: "\(stubSele.count):\(idx)",
+                off: max(0, stubSele.count - idx.count))
+    }
+
+    /// Read the current 'sele' state through the injected closure, or the local
+    /// fallback when none is injected. Only reached with a focus object present
+    /// (`syncFromSele` guards first), so the no-focus branch just defers to the
+    /// fallback rather than inventing an empty result.
+    private func readSeleState() -> (indices: [Int], digest: String, off: Int) {
+        guard let obj = focusObject, let set = lastSet[obj] else { return seleStateLocal() }
+        if let fn = seleStateFn { return fn(obj, editSourceObject, set.state) }
+        return seleStateLocal()
+    }
+
+    // MARK: – Deriving the mode from 'sele'
+
+    /// Re-derive the Design-mode selection state from the active 'sele'.
+    ///
+    /// This is the ONLY writer of `pinnedResidueIndex` and
+    /// `selectedResidueIndices`. The count of DESIGNABLE residues in
+    /// `sele ∩ scope(focusObject, editSourceObject)` picks the mode:
+    ///   0  → nothing active (propensity row renders in its greyed idle form)
+    ///   1  → that residue is pinned; the region stays empty so `regionModeActive`
+    ///        is false and the propensity pills behave exactly as before
+    ///   ≥2 → the region is designated on 'sele'; the pin is cleared so the
+    ///        palette row and the Redesign button take over
+    ///
+    /// Returns the designable count, so callers and tests can assert the mode
+    /// without re-reading three properties.
+    @discardableResult
+    func syncFromSele() -> Int {
+        guard let obj = focusObject, let set = lastSet[obj] else {
+            pinnedResidueIndex = nil
+            selectedResidueIndices = []
+            selectedSelectionName = nil
+            seleResiduesOffFocus = 0
+            return 0
+        }
+        let state = readSeleState()
+        lastSeleDigest = state.digest
+        let inScope = state.indices.filter { $0 >= 0 && $0 < set.residues.count }
+        let valid = inScope.filter { set.residues[$0].valid }.sorted()
+        seleResiduesOffFocus = max(0, state.off)
+        if valid.count >= 2 {
+            selectedResidueIndices = valid
+            selectedSelectionName = pickedSelectionName ?? "sele"
+            pinnedResidueIndex = nil
+        } else {
+            selectedResidueIndices = []
+            selectedSelectionName = nil
+            // Below 2 residues there is no region for a lasso name to label, so the
+            // name must not survive to label the NEXT one. Without this, designating
+            // a selection that resolves to exactly ONE designable residue leaves
+            // `pickedSelectionName` set (the branch above never runs), and a later
+            // click-built or externally-selected region silently inherits the old
+            // name on the lasso button.
+            pickedSelectionName = nil
+            pinnedResidueIndex = valid.first
+        }
+        reconcileSticks()
+        return valid.count
+    }
+
+    /// Panel-poll entry point: re-derive only when the observed digest differs from
+    /// the last one resolved. Returns true iff a re-derive happened.
+    ///
+    /// The gate lives here rather than at the call site so it is testable without
+    /// the engine, and so the no-focus case can be handled where it is understood:
+    /// `syncFromSele()` cannot read a digest without a focus object (the read is
+    /// scoped to one), so it leaves `lastSeleDigest` untouched and the 500 ms poll
+    /// would re-derive on EVERY tick for as long as Design mode is on with no focus
+    /// — republishing four `@Published` properties and invalidating the design bar,
+    /// the compact panel and the sequence strip twice a second, indefinitely.
+    /// Entering Design mode with 2+ objects loaded (so `enter()` does not
+    /// auto-focus) and any non-empty 'sele' is exactly that state. Adopting the
+    /// digest the poll itself saw closes it.
+    ///
+    /// The condition is "did the sync actually RESOLVE a digest", not
+    /// `focusObject == nil`: there is a second no-digest path where `focusObject`
+    /// is non-nil but `lastSet[obj]` is missing. `focusAwait` sets `focusObject`
+    /// BEFORE calling `enumerate` and its catch only sets `errorText`, so after a
+    /// failed focus the controller sits in exactly that state — and the poll would
+    /// re-derive on every tick forever, which is the symptom this guard exists for.
+    @discardableResult
+    func syncFromSeleIfChanged(digest: String) -> Bool {
+        guard digest != lastSeleDigest else { return false }
+        let before = lastSeleDigest
+        syncFromSele()
+        if lastSeleDigest == before { lastSeleDigest = digest }
+        return true
     }
 
     // MARK: – Region redesign: designation + palette (Task 2)
@@ -723,48 +948,51 @@ final class DesignController: ObservableObject {
         availableSelections = listSelectionsFn(obj, editSourceObject, set.state)
     }
 
-    /// Designate `name` as the region: snapshot its designable residues (valid only)
-    /// as `selectedResidueIndices`, in full-length space. Enters region mode.
+    /// Designate `name` as the region by writing it into 'sele' (D5), so 'sele'
+    /// stays the single source of truth rather than the controller holding a
+    /// second, divergent copy. The resulting indices come back through
+    /// `syncFromSele` like every other selection change.
+    ///
+    /// `pickedSelectionName` is set BEFORE `syncFromSele()` so the label survives:
+    /// at `valid.count >= 2` the sync uses it, and a later `tapResidue` clears it.
     func pickSelection(_ name: String) {
         guard let obj = focusObject, let set = lastSet[obj] else { return }
-        let full = selectedIndicesFn(obj, name, editSourceObject, set.state)
-        let valid = full.filter { $0 >= 0 && $0 < set.residues.count && set.residues[$0].valid }
-        selectedResidueIndices = valid
-        selectedSelectionName = valid.isEmpty ? nil : name
-    }
-
-    /// Add or remove one residue (full-length index) from an ad-hoc region built by
-    /// shift-clicking positions. Only designable (valid) residues can be included.
-    /// Detaches from any named selection (the region is now user-built).
-    func toggleRegionResidue(residueIndex i: Int) {
-        guard let obj = focusObject, let set = lastSet[obj],
-              i >= 0, i < set.residues.count, set.residues[i].valid else { return }
-        if let pos = selectedResidueIndices.firstIndex(of: i) {
-            selectedResidueIndices.remove(at: pos)
+        pickedSelectionName = name
+        if let fn = setSeleNamedFn {
+            fn(name)
         } else {
-            selectedResidueIndices = (selectedResidueIndices + [i]).sorted()
+            // Engine-free fallback: resolve the name through the injected index
+            // mapper so unit tests can designate a named region with no live PyMOL.
+            let full = selectedIndicesFn(obj, name, editSourceObject, set.state)
+            stubSele = Set(full.compactMap { i in
+                (i >= 0 && i < set.residues.count)
+                    ? stickKey(set.residues[i].chain, set.residues[i].resi) : nil
+            })
         }
-        selectedSelectionName = selectedResidueIndices.isEmpty ? nil : "custom"
+        syncFromSele()
     }
 
-    /// Route a plain tap on residue `i` (full-length index). In region-edit mode a
-    /// tap toggles region membership; otherwise it pins the residue for inspection,
-    /// which is the pre-existing behaviour.
+    /// Toggle one residue (full-length index) in the active 'sele'.
+    ///
+    /// The single gesture entry point: the viewport, the sequence strip, and the
+    /// compact panel all land here, so a click means the same thing everywhere and
+    /// the same thing it means in normal mode. The resulting mode (pin vs region)
+    /// is DERIVED by `syncFromSele`, never decided here.
     func tapResidue(residueIndex i: Int) {
-        if regionEditMode {
-            toggleRegionResidue(residueIndex: i)
-            return
-        }
         guard let obj = focusObject, let set = lastSet[obj],
               i >= 0, i < set.residues.count else { return }
         let r = set.residues[i]
-        setPinned(chain: r.chain, resi: r.resi)
+        pickedSelectionName = nil        // a click detaches from any named region
+        if let fn = toggleSeleFn { fn(obj, r.chain, r.resi, editSourceObject) }
+        else { seleToggleLocal(r.chain, r.resi) }
+        syncFromSele()
     }
 
-    /// Clear the region → return to single-residue (Phase-2b) mode.
+    /// Clear the region by emptying 'sele' → back to nothing selected.
     func clearSelection() {
-        selectedResidueIndices = []
-        selectedSelectionName = nil
+        pickedSelectionName = nil
+        if let fn = clearSeleFn { fn() } else { seleClearLocal() }
+        syncFromSele()
     }
 
     /// Toggle an amino acid (0..<20) in/out of the region sampling palette.
@@ -779,13 +1007,18 @@ final class DesignController: ObservableObject {
     private func clearRegionState() {
         selectedResidueIndices = []
         selectedSelectionName = nil
+        // The lasso name must not outlive the region it labels: `syncFromSele`
+        // prefers it on every derive, so a stale one would label a click-built
+        // region after re-entering Design mode or switching focus with 2+ residues
+        // still in 'sele'. Reset here because this is the one point both `exit()`
+        // and the focus-change path go through.
+        pickedSelectionName = nil
         paletteAllowed = Set(0..<20)
         redesignSnapshot = nil
         isRedesigning = false
         availableSelections = []
         pendingSizeWarning = nil
         suppressSizeGuardOnce = false   // defence in depth: clear on focus change / mode exit
-        regionEditMode = false
         designToken += 1   // cancel any in-flight region design
         designMirror.set(designToken)
     }
@@ -1094,7 +1327,7 @@ final class DesignController: ObservableObject {
             #if DEBUG
             NSLog("[Design] loadRepacked: starting, pdb=%d chars into '%@'", pdb.count, w)
             #endif
-            loadRepacked(w, pdb)
+            loadRepacked(w, pdb, editSourceObject)
             #if DEBUG
             NSLog("[Design] loadRepacked: done")
             #endif
@@ -1277,9 +1510,38 @@ final class DesignController: ObservableObject {
         self.selectedIndicesFn = selectedIndices
     }
 
+    /// Override the 'sele' closures for testing. Any argument left nil keeps the
+    /// engine-free local fallback for that operation.
+    func injectSele(seleState: SeleStateFn? = nil,
+                    toggleSele: ToggleSeleFn? = nil,
+                    setSeleResidue: SetSeleResidueFn? = nil,
+                    setSeleNamed: SetSeleNamedFn? = nil,
+                    clearSele: ClearSeleFn? = nil,
+                    dropObjectFromSele: DropObjectFromSeleFn? = nil) {
+        if let seleState { self.seleStateFn = seleState }
+        if let toggleSele { self.toggleSeleFn = toggleSele }
+        if let setSeleResidue { self.setSeleResidueFn = setSeleResidue }
+        if let setSeleNamed { self.setSeleNamedFn = setSeleNamed }
+        if let clearSele { self.clearSeleFn = clearSele }
+        if let dropObjectFromSele { self.dropObjectFromSeleFn = dropObjectFromSele }
+    }
+
     /// Override the model-release closure for testing (Phase 2d).
     func injectReleaseModel(_ fn: @escaping ReleaseModelFn) {
         self.releaseModelFn = fn
+    }
+
+    /// Awaitable entry to the refocus-then-select path, so a test can await the
+    /// async refocus deterministically instead of polling `focusObject` through a
+    /// guessed number of `Task.yield()`s — `focusAwait` crosses a real
+    /// DispatchQueue hop, so any fixed yield count is a race. Delegates to the SAME
+    /// private method the synchronous `focusThenSelect` wraps in a Task; it does not
+    /// duplicate the body. Mirrors `focus` / `focusAwait` and
+    /// `applyMutation` / `applyMutationAwait`.
+    func refocusAndSelectAwait(object: String, chain: String, resi: String,
+                               hasResidue: Bool) async {
+        await refocusAndSelect(object: object, chain: chain, resi: resi,
+                               hasResidue: hasResidue)
     }
 
     /// Set focus + a synthetic residue set (built from `nativeSequence`) without the async

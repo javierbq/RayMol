@@ -2188,6 +2188,10 @@ final class PyMOLEngine: ObservableObject {
             setPredictMode(false)   // mutually exclusive
         }
         designMode = on
+        // Arm/disarm the Design-mode 'sele' digest that poll_panel computes. Off ⇒
+        // that 500 ms main-thread poll pays one boolean check (see raymol_design
+        // .sele_digest), which is why this must be toggled rather than always on.
+        runPython("from pymol import raymol_design as _rd; _rd.set_design_active(\(on ? 1 : 0))")
     }
 
     /// Enter/leave Predict mode. Exclusive with Move/Measure/Design, matching
@@ -2409,7 +2413,7 @@ final class PyMOLEngine: ObservableObject {
             let model = try self.loadedMPNNModel()
             return try MPNNRuntime.withMLXErrorsAsThrows { try model.repack(residues, sequence: seq).pdb }
         },
-        loadRepacked: { [weak self] obj, pdb in
+        loadRepacked: { [weak self] obj, pdb, src in
             // Write PDB to a temp file; Python reads it back to avoid multi-line
             // escaping in the runPython string (same marshalling as applyColoring).
             let path = (NSTemporaryDirectory() as NSString)
@@ -2418,23 +2422,13 @@ final class PyMOLEngine: ObservableObject {
             self?.runPython("""
                 from pymol import raymol_design as _rd
                 with open('\(path)') as _f:
-                    _rd.load_repacked('\(obj)', _f.read())
+                    _rd.load_repacked('\(obj)', _f.read(), src='\(src ?? "")')
                 """)
         },
         showAllSidechains: { [weak self] obj, on in
             self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.show_all_sidechains('\(obj)', \(on ? 1 : 0))
-                """)
-        },
-        pinnedIndicator: { [weak self] obj, chain, resi in
-            // Commit the pinned residue to 'sele' (pink committed-selection pass) or clear it.
-            // Uses the same idiom as pick_at: cmd.select('sele', ..., enable=1) for the committed
-            // pink pass, or 'none'/enable=0 to clear. Runs on the @MainActor (called from
-            // setPinned / exit / focus-change), so runPython is safe on the main thread.
-            self?.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.set_pinned_indicator('\(obj)', '\(chain)', '\(resi)')
                 """)
         },
         designRegion: { [weak self] residues, fixed, native, omit, temperature in
@@ -2486,6 +2480,58 @@ final class PyMOLEngine: ObservableObject {
             // Called on DesignController's inference queue, which is the only
             // context that touches _mpnnModel — see loadedMPNNModel().
             self?._mpnnModel = nil
+        },
+        seleState: { [weak self] obj, src, state in
+            guard let self else { return (indices: [], digest: "", off: 0) }
+            let srcArg = (src?.isEmpty == false) ? src! : ""
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.sele_design_indices('\(obj)', \(state), src='\(srcArg)')
+                """)
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_sele.json")
+            guard let data = FileManager.default.contents(atPath: path.path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return (indices: [], digest: "", off: 0) }
+            // n_off, never n_total - indices.count: during an edit session one
+            // residue is legitimately marked on both the working copy and the
+            // original, so any whole-session total counts it twice.
+            return (indices: (root["indices"] as? [Int]) ?? [],
+                    digest: (root["digest"] as? String) ?? "",
+                    off: (root["n_off"] as? Int) ?? 0)
+        },
+        // `src` is passed through to Python so the WRITE resolves in the same scope
+        // the read does — see raymol_design._scoped_residue_sel. Dropping it makes a
+        // region member un-removable inside an edit session and lets a repack
+        // silently shrink the region.
+        toggleSele: { [weak self] obj, chain, resi, src in
+            let srcArg = (src?.isEmpty == false) ? src! : ""
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.toggle_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
+                """)
+        },
+        setSeleResidue: { [weak self] obj, chain, resi, src in
+            let srcArg = (src?.isEmpty == false) ? src! : ""
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
+                """)
+        },
+        setSeleNamed: { [weak self] name in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.set_sele_from_selection('\(name)')
+                """)
+        },
+        clearSele: { [weak self] in
+            self?.runPython("from pymol import raymol_design as _rd; _rd.clear_sele()")
+        },
+        dropObjectFromSele: { [weak self] obj in
+            self?.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.drop_object_from_sele('\(obj)')
+                """)
         }
         )
         // Propagate isCalculating into @Published isDesignCalculating so
@@ -2906,23 +2952,59 @@ final class PyMOLEngine: ObservableObject {
     /// Runs on the main thread (UIKit tap callback); uses MainActor.assumeIsolated
     /// to satisfy Swift Concurrency's actor-isolation check (same pattern as
     /// readDesignHoverHit).
+    /// What a `hover_design_at` payload means for the controller.
+    ///
+    /// Two outcomes that a single `hit == false` cannot express, and conflating them
+    /// destroys the user's selection:
+    ///   - nil  → the payload could not be READ (missing file, unparseable JSON, no
+    ///            `hit` key). The pick told us nothing, so the tap must be a no-op.
+    ///   - hit:false → the pick RAN and missed empty space, which must clear 'sele'
+    ///            for normal-mode parity.
+    /// `hover_design_at` always writes `obj` alongside `hit`, so a decodable payload
+    /// carrying `hit` is always a genuine pick result.
+    /// Static and payload-in so the distinction is unit-testable without an engine.
+    static func designPickOutcome(payload: [String: Any]?)
+        -> (object: String, chain: String, resi: String, hit: Bool)? {
+        guard let root = payload, let hit = root["hit"] as? Bool else { return nil }
+        return (object: hit ? (root["obj"] as? String ?? "") : "",
+                chain: root["chain"] as? String ?? "",
+                resi: root["resi"] as? String ?? "",
+                hit: hit)
+    }
+
+    /// Read a hover-pick payload file and deliver the outcome — or deliver NOTHING
+    /// when the payload cannot be read (no file, non-JSON bytes, JSON that is not an
+    /// object, no `hit` key). `deliver` reaching the controller is the decision this
+    /// function exists to make: `handleViewportHit(object: "")` CLEARS 'sele', so an
+    /// unreadable payload must not be routed at all. Static, file-in, closure-out, so
+    /// the guard itself is testable without a live core.
+    static func routeDesignPick(payloadPath: String,
+                                deliver: (_ object: String, _ chain: String,
+                                          _ resi: String, _ hit: Bool) -> Void) {
+        guard let data = FileManager.default.contents(atPath: payloadPath) else { return }
+        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let out = designPickOutcome(payload: root) else { return }
+        deliver(out.object, out.chain, out.resi, out.hit)
+    }
+
     func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
         guard designMode, isReady else { return }
         runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
-        guard let data = FileManager.default.contents(atPath: path),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let hit = root["hit"] as? Bool, hit,
-              let chain = root["chain"] as? String,
-              let resi  = root["resi"]  as? String
-        else { return }
-        let focusObj = root["obj"] as? String ?? ""
-        MainActor.assumeIsolated {
-            designController.handleViewportHit(object: focusObj,
-                                               chain: chain,
-                                               resi: resi,
-                                               hasResidue: true)   // guard above ensures hit==true
+        // An unreadable payload must NOT reach the controller: `handleViewportHit`
+        // with an empty object CLEARS 'sele', so treating "I could not read the
+        // pick" as "the pick missed" would silently destroy the user's selection.
+        // A genuine MISS does still reach it: an empty-space tap clears the
+        // selection (normal-mode parity). The old early return on `hit == false`
+        // made empty taps silently inert. An empty `object` is exactly what the
+        // macOS path already delivers on a miss (longPressPick builds LongPressHit
+        // with obj: "" and isEmpty: true), so both platforms converge.
+        PyMOLEngine.routeDesignPick(payloadPath: path) { obj, chain, resi, hit in
+            MainActor.assumeIsolated {
+                designController.handleViewportHit(object: obj, chain: chain,
+                                                   resi: resi, hasResidue: hit)
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 """RayMol Design-mode core helpers: residue enumeration, coloring, and
 exact visual-state save/restore. Mirrors the appkit_sequence bundled-module
 pattern (writes JSON to TMPDIR, returns a short marker)."""
+import hashlib
 import json
 import os
 import tempfile
@@ -110,6 +111,34 @@ def _scope(obj, src):
     return '(%s)' % obj
 
 
+def _residue_pred(chain, resi):
+    """One residue as an object-free predicate, tolerating an empty chain id.
+
+    Split out of _residue_sel so the same residue term can be intersected with
+    either a single object or the whole _scope(obj, src) — see _scoped_residue_sel.
+    """
+    if chain:
+        return 'chain %s and resi %s' % (chain, resi)
+    return 'resi %s' % resi
+
+
+def _scoped_residue_sel(obj, chain, resi, src):
+    """One residue within the READ scope: the target object plus its edit source.
+
+    Design-mode 'sele' READS resolve residues through _scope(obj, src) — by
+    (chain, resi) IDENTITY across the working copy and the original — so the
+    WRITES must use the same scope or the two disagree the moment an edit session
+    repoints the focus at the working copy while the selection still sits on the
+    original's atoms.  Writing object-scoped there made a region member impossible
+    to remove (the toggle saw no focus-object atoms in 'sele', so it ADDED them,
+    and the read deduped the result back to the same region) and let a repack's
+    topology replace silently drop residues clicked during the session, because
+    their only 'sele' membership lived on the atoms the replace annihilated.
+    """
+    return '%s and (%s)' % (_scope(obj, src), _residue_pred(chain, resi))
+
+
+
 def _obj_residue_order(obj):
     """(chain, resi) for obj's polymer residues in canonical guide order —
     the same order enumerate_design_residues emits, so indices align with the
@@ -175,6 +204,208 @@ def selected_design_indices(obj, selection, state, src=''):
     except Exception:
         pass
     return 'DESIGN_SELECTED:%d' % len(indices)
+
+
+# Design mode active? The selection digest below is O(selected residues) and is
+# called from appkit_inspector.poll_panel, which runs on the MAIN thread every
+# 500 ms and is a measured hot spot (PR #270). Gating on this flag keeps the cost
+# at a single boolean check whenever Design mode is not on. A list rather than a
+# bare module global so the setter never needs `global`.
+_DESIGN_ACTIVE = [False]
+
+
+def set_design_active(on):
+    """Arm or disarm the Design-mode 'sele' digest computed by poll_panel."""
+    _DESIGN_ACTIVE[0] = bool(on) if isinstance(on, bool) else bool(int(on))
+    return 'DESIGN_ACTIVE:%d' % (1 if _DESIGN_ACTIVE[0] else 0)
+
+
+def _sele_residue_keys():
+    """Sorted, de-duplicated (model, chain, resi) of the active 'sele's residues.
+
+    '?sele' rather than 'sele' so a session that has never had a selection yields
+    [] instead of raising. Guide atoms only, plus set(), so the key set is one
+    entry per residue regardless of how many of its atoms (or altloc guides) the
+    user picked.
+
+    Keyed on the RAW model name, deliberately: this is what the change digest is
+    built from, so it must be at least as sensitive as the state it guards. Two
+    independent objects that merely look like a working-copy pair ('foo' and
+    'foo_design') must not collapse, or moving the same residue selection from one
+    to the other would leave the digest unchanged, the poll would skip the
+    re-derive, and the region would never arm. The consequence — one residue marked
+    on BOTH a working copy and its original counts twice here — is handled where
+    the information to handle it exists: sele_design_indices knows `obj` and `src`
+    and reports the off-scope count directly as `n_off`.
+    """
+    keys = []
+    try:
+        cmd.iterate('(?sele) and polymer and guide',
+                    'keys.append((model, chain, resi))', space={'keys': keys})
+    except Exception:
+        return []
+    return sorted(set(keys))
+
+
+def _digest_of(keys):
+    """Stable short fingerprint of a residue-key list."""
+    return '%d:%s' % (len(keys),
+                      hashlib.md5(repr(keys).encode('utf-8')).hexdigest()[:16])
+
+
+def sele_digest():
+    """Fingerprint of the active 'sele' residue set, or '' when Design is off.
+
+    Used purely for change detection: the Swift side re-derives its selection
+    state only when this value differs from the last one it saw.
+    """
+    if not _DESIGN_ACTIVE[0]:
+        return ''
+    return _digest_of(_sele_residue_keys())
+
+
+def sele_design_indices(obj, state, src=''):
+    """Map the active 'sele' -> full-length residue indices in obj's guide order.
+
+    The Design-mode counterpart of selected_design_indices, hard-wired to 'sele'
+    so the viewer's ordinary selection is the single source of truth for what
+    Design mode is working on. Scoped through _scope(obj, src) so a selection made
+    on the ORIGINAL object still maps onto a focused working copy by (chain, resi)
+    identity once an edit session has begun.
+
+    Output: $TMPDIR/raymol_design_sele.json =
+        {'indices': [int], 'digest': str, 'n_total': int}
+      indices  - 'sele' within the scope, as 0-based indices into obj's guide order
+      digest   - fingerprint of the WHOLE 'sele' residue set (all objects)
+      n_off    - residues in 'sele' that lie OUTSIDE the scope (on neither obj nor
+                 src), so the caller can say "selected, but on another structure"
+                 instead of silently ignoring them. Computed from the model names
+                 directly; do NOT reconstruct it as n_total - len(indices).
+      n_total  - count of distinct (model, chain, resi) keys in 'sele' across all
+                 objects. NOT a residue count: during an edit session one residue
+                 marked on both the working copy and the original counts twice
+                 here, which is exactly why n_off exists as its own field
+
+    `state` is accepted for signature symmetry with selected_design_indices and is
+    likewise unused: guide order is read from the current state.
+    Returns 'DESIGN_SELE:<n>'.
+    """
+    order = _obj_residue_order(obj)
+    scope = _scope(obj, src)
+    sel_res = set()
+    try:
+        cmd.iterate('%s and (?sele) and polymer and guide' % scope,
+                    'sel_res.add((chain, resi))', space={'sel_res': sel_res})
+    except Exception:
+        pass
+    indices = [i for i, cr in enumerate(order) if cr in sel_res]
+    keys = _sele_residue_keys()
+    # Off-scope count straight from the model names. A residue marked on BOTH the
+    # working copy and the original is in scope on both, so it is excluded here by
+    # construction — no de-duplication of the key set required, and none performed
+    # (the digest must stay maximally sensitive).
+    in_scope = set([obj]) | (set([src]) if src else set())
+    n_off = sum(1 for m, _c, _r in keys if m not in in_scope)
+    payload = {'indices': indices,
+               'digest': _digest_of(keys),
+               'n_off': n_off,
+               'n_total': len(keys)}
+    try:
+        with open(_tmp('raymol_design_sele.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELE:%d' % len(indices)
+
+
+def toggle_sele_residue(obj, chain, resi, src=''):
+    """Add or remove one residue in the active 'sele' (a Design-mode click).
+
+    Deliberately mirrors metal_pick.pick_at's toggle idiom so that a click means
+    the same thing in Design mode as in normal mode: already selected -> remove,
+    otherwise add. Always leaves 'sele' enabled so the renderer's pink committed
+    pass draws it.
+
+    `src` is the edit-session source object, and it is what makes the toggle
+    ACTUALLY a toggle: the residue is resolved through _scoped_residue_sel, the
+    same scope sele_design_indices reads, so membership is tested and cleared on
+    the working copy AND the original together. See _scoped_residue_sel for what
+    an object-scoped write broke. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
+    """
+    expr = '(%s)' % _scoped_residue_sel(obj, chain, resi, src)
+    try:
+        already = cmd.count_atoms('(?sele) and %s' % expr) > 0
+    except Exception:
+        already = False
+    if already:
+        cmd.select('sele', '(?sele) and not %s' % expr, enable=1)
+    else:
+        cmd.select('sele', '(?sele) or %s' % expr, enable=1)
+    return 'DESIGN_SELE_TOGGLE:%s' % ('off' if already else 'on')
+
+
+def set_sele_residue(obj, chain, resi, src=''):
+    """Replace the active 'sele' with exactly one residue.
+
+    Used when a Design-mode click lands on a DIFFERENT object than the current
+    focus: design retargets to that object and the selection starts fresh there,
+    so residues of the previous focus never linger in the region.
+    Scoped through `src` for the same reason toggle_sele_residue is — the write
+    must be visible to a read that resolves by residue identity across an edit
+    session's working copy and its original. Returns 'DESIGN_SELE_SET:ok'.
+    """
+    cmd.select('sele', _scoped_residue_sel(obj, chain, resi, src), enable=1)
+    return 'DESIGN_SELE_SET:ok'
+
+
+def drop_object_from_sele(obj):
+    """Narrow the active 'sele' so none of `obj`'s atoms are in it.
+
+    Called when an edit session ENDS by keeping the working copy. A residue added
+    during a session is deliberately marked on both the copy and the original (that
+    is what survives a repack), but the Keep path clears `editSourceObject` while
+    the copy lives on — so from then on no Design write can address the copy, and a
+    click that removes a region member would leave it selected and pink there, with
+    a spurious off-structure badge and no way to clear it from the UI. Narrowing at
+    teardown keeps the invariant that 'sele' membership only ever lives on objects
+    the current scope can address.
+
+    enable follows emptiness: an enabled EMPTY 'sele' would suppress every other
+    selection, because cmd.enable is exclusive for selections.
+    Returns 'DESIGN_SELE_DROP:<remaining atoms>'.
+    """
+    try:
+        n = cmd.select('sele', '(?sele) and not (%s)' % obj, enable=1) or 0
+    except Exception:
+        return 'DESIGN_SELE_DROP:err'
+    if not n:
+        cmd.select('sele', 'none', enable=0)
+    return 'DESIGN_SELE_DROP:%d' % n
+
+
+def set_sele_from_selection(name):
+    """Replace the active 'sele' with the contents of the named selection.
+
+    Backs the lasso dropdown: designating a named region writes it into 'sele' so
+    'sele' stays the single source of truth instead of the controller holding a
+    second, divergent copy. '?name' so a stale name empties the selection rather
+    than raising. Returns 'DESIGN_SELE_NAMED:ok'.
+    """
+    cmd.select('sele', '(?%s)' % name, enable=1)
+    return 'DESIGN_SELE_NAMED:ok'
+
+
+def clear_sele():
+    """Empty the active 'sele' (a Design-mode click on empty space).
+
+    enable=0 — deliberately NOT what metal_pick.pick_at does (it leaves 'sele'
+    enabled and empty): there is nothing left to draw, and an enabled empty
+    selection would still suppress every other selection, because cmd.enable is
+    exclusive for selections.
+    Returns 'DESIGN_SELE_CLEAR:ok'.
+    """
+    cmd.select('sele', 'none', enable=0)
+    return 'DESIGN_SELE_CLEAR:ok'
 
 
 def _record_design_metrics(obj, metric, rows, state=0):
@@ -435,10 +666,8 @@ _COMPARE_STATE = {}
 
 
 def _residue_sel(obj, chain, resi):
-    """Build a residue selection, tolerating an empty chain id."""
-    if chain:
-        return '(%s) and chain %s and resi %s' % (obj, chain, resi)
-    return '(%s) and resi %s' % (obj, resi)
+    """Build a residue selection on ONE object, tolerating an empty chain id."""
+    return '(%s) and %s' % (obj, _residue_pred(chain, resi))
 
 
 def set_residue_sticks(obj, chain, resi, on):
@@ -689,7 +918,7 @@ def mutate_residue_display(obj, chain, resi, aa_index):
     return 'DESIGN_MUTDISP:ok'
 
 
-def load_repacked(obj, pdb_str):
+def load_repacked(obj, pdb_str, src=''):
     """Replace obj's structure from an all-atom PDB string (repack output).
 
     Full topology replace: reads pdb_str into a temp object, copies the
@@ -702,11 +931,26 @@ def load_repacked(obj, pdb_str):
 
     After renaming, cartoon rep is enabled so the replaced object is visible.
     On any failure after read but before rename, the temp object is cleaned up.
-    Returns 'DESIGN_REPACKED:ok'.
+
+    The replace annihilates obj's atoms, and with them their 'sele' membership. The
+    same residues usually stay marked on the edit source, but make_working_copy
+    DISABLED that object — so the region would remain armed while the pink pass drew
+    nothing at all. Every residue Design's scope considers selected is therefore
+    re-asserted onto the replaced (visible) object afterwards; `src` is what makes
+    the pre-session residues, which were only ever marked on the original, part of
+    that set. Returns 'DESIGN_REPACKED:ok'.
     """
     # Capture the camera view BEFORE any structural replacement so the viewport
     # does not jump when load+delete+rename triggers PyMOL's auto-zoom.
     v = cmd.get_view()
+    # Which residues does Design's scope consider selected? Read BEFORE the replace:
+    # afterwards obj's own atoms are gone.
+    sele_keys = []
+    try:
+        cmd.iterate('%s and (?sele) and polymer and guide' % _scope(obj, src),
+                    'k.append((chain, resi))', space={'k': sele_keys})
+    except Exception:
+        sele_keys = []
     tmp = cmd.get_unused_name('_rp')
     renamed = False
     try:
@@ -728,6 +972,21 @@ def load_repacked(obj, pdb_str):
     finally:
         if not renamed and tmp in cmd.get_object_list():
             cmd.delete(tmp)
+    # Re-assert the region's 'sele' membership on the object the user can SEE.
+    # Grouped per chain ('resi 3+4+5') rather than one term per residue, so a large
+    # region stays a short expression.
+    if renamed and sele_keys:
+        by_chain = {}
+        for chain, resi in set(sele_keys):
+            by_chain.setdefault(chain, set()).add(resi)
+        terms = []
+        for chain, resis in by_chain.items():
+            terms.append('(%s)' % _residue_pred(chain, '+'.join(sorted(resis))))
+        try:
+            cmd.select('sele', '(?sele) or ((%s) and (%s))'
+                       % (obj, ' or '.join(terms)), enable=1)
+        except Exception:
+            pass
     # Restore the camera view exactly as it was before the replace (zoom=0 on
     # create already prevented the initial zoom; this covers the repack path).
     cmd.set_view(v)

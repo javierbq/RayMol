@@ -171,7 +171,7 @@ struct DesignCompactPanel: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
-    // Row 4: region picker · edit-mode toggle · redesign (region only) · revert (if snapshot) ·
+    // Row 4: region picker · redesign (region only) · revert (if snapshot) ·
     // spacer · repack (editing) · compare (editing) · Keep / Discard (editing).
     //
     // Decomposed into leaf properties to keep each expression short for the Swift
@@ -179,7 +179,13 @@ struct DesignCompactPanel: View {
     private var actionRow: some View {
         HStack(spacing: 8) {
             regionButton
-            regionEditButton
+            if controller.seleResiduesOffFocus > 0 {
+                Label("\(controller.seleResiduesOffFocus)", systemImage: "eye.slash")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                    .accessibilityLabel(
+                        "\(controller.seleResiduesOffFocus) selected residues on other structures, ignored")
+            }
             if controller.regionModeActive { redesignButton }
             if controller.redesignSnapshot != nil { revertButton }
             Spacer(minLength: 0)
@@ -215,24 +221,6 @@ struct DesignCompactPanel: View {
                                   dismiss: { showPicker = false })
                 .presentationCompactAdaptation(.popover)
         }
-    }
-
-    private var regionEditButton: some View {
-        Button { controller.regionEditMode.toggle() } label: {
-            Image(systemName: controller.regionEditMode ? "hand.tap.fill" : "hand.tap")
-                .font(.system(size: 13))
-                .foregroundColor(controller.regionEditMode
-                                 ? .white
-                                 : theme.active.panelText.color.opacity(0.85))
-                .padding(.horizontal, 9).padding(.vertical, 6)
-                .background(controller.regionEditMode
-                            ? theme.active.accent.color
-                            : theme.active.panelText.color.opacity(0.08),
-                            in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            "Tap to edit region, \(controller.regionEditMode ? "on" : "off")")
     }
 
     private var redesignButton: some View {
