@@ -205,3 +205,26 @@ class TestDesignRegion(testing.PyMOLTestCase):
         rd.toggle_sele_residue(obj, '', '2')
         self.assertEqual(rd.clear_sele(), 'DESIGN_SELE_CLEAR:ok')
         self.assertEqual(self._sele_resis(), [])
+
+    def testPollPanelCarriesDesignSeleDigest(self):
+        obj = self._peptide()
+        cmd.select('sele', '%s and resi 2' % obj)
+        from pymol import appkit_inspector as ai
+        from pymol import raymol_design as rd
+        rd.set_design_active(1)
+        try:
+            ai.poll_panel()
+            path = os.path.join(tempfile.gettempdir(),
+                                'pymol_objpanel_%d.json' % os.getpid())
+            with open(path) as f:
+                payload = json.load(f)
+            self.assertTrue(payload.get('design_sele'),
+                            "poll_panel must carry the digest while Design is active")
+            # And it must cost nothing once Design mode is off.
+            rd.set_design_active(0)
+            ai.poll_panel()
+            with open(path) as f:
+                payload = json.load(f)
+            self.assertEqual(payload.get('design_sele'), '')
+        finally:
+            rd.set_design_active(0)

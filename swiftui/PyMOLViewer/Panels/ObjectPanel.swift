@@ -4102,6 +4102,11 @@ struct PanelPayload: Decodable {
     // key does not cost the ALIGNMENTS section, it freezes the ENTIRE object
     // panel on its last list.
     let msa_searches: [MSASearchSummary]?
+    /// Design-mode 'sele' fingerprint, '' while Design mode is off. Optional for
+    /// the same reason as every field above: a non-optional would fail the whole
+    /// decode against an older bundled appkit_inspector.py and freeze the panel on
+    /// its last list.
+    let design_sele: String?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -4138,6 +4143,20 @@ extension PyMOLEngine {
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
             return
         }
+
+        #if RAYMOL_MPNN
+        // 'sele' is the single source of truth for Design mode, so a selection made
+        // OUTSIDE it — `select` at the prompt, a Seeker drag, the object panel —
+        // must drive it too. Gated on the digest so a quiet tick does no work, and
+        // on designMode so nothing runs when the feature is not in use.
+        if let digest = payload.design_sele, !digest.isEmpty, designMode {
+            MainActor.assumeIsolated {
+                if digest != designController.lastSeleDigest {
+                    designController.syncFromSele()
+                }
+            }
+        }
+        #endif
 
         let enabledSet = Set(payload.enabled)
         let groupSet = Set(payload.groups ?? [])

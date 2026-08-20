@@ -629,6 +629,16 @@ def poll_panel():
             # the same tick.
             'msa_searches': _search_map(),
         }
+        # Design-mode selection fingerprint. Computed inside raymol_design and
+        # GATED there on Design mode being active, so this main-thread 500 ms poll
+        # pays a single boolean check whenever Design mode is off (PR #270 made
+        # this tick's cost a standing constraint). Its own try: a failure here must
+        # not cost the panel its update.
+        try:
+            from pymol import raymol_design as _rd
+            payload['design_sele'] = _rd.sele_digest()
+        except Exception:
+            payload['design_sele'] = ''
         # Serialise BEFORE opening the file. open(..., 'w') truncates immediately, so
         # doing the dumps inside the `with` leaves a ZERO-BYTE file behind when a value
         # turns out not to be JSON-serialisable -- worse than a stale one, and it takes
