@@ -19,6 +19,12 @@ enum MCPBridge {
     private static func setSessionId(_ s: String) {
         sessionIdLock.lock(); sessionId = s; sessionIdLock.unlock()
     }
+    /// Forget the session. A session id belongs to ONE server process, so it must
+    /// not outlive the binding it came from — replaying it at a relaunched (or
+    /// different) RayMol names a session that server never issued.
+    private static func clearSessionId() {
+        sessionIdLock.lock(); sessionId = nil; sessionIdLock.unlock()
+    }
 
     /// The instance this broker session is bound to. Set on first successful
     /// resolution and reused, so a multi-instance setup is disambiguated once
@@ -29,7 +35,13 @@ enum MCPBridge {
         boundLock.lock(); defer { boundLock.unlock() }; return boundInstance
     }
     private static func setBound(_ i: MCPInstance?) {
-        boundLock.lock(); boundInstance = i; boundLock.unlock()
+        boundLock.lock()
+        let changed = boundInstance?.pid != i?.pid
+        boundInstance = i
+        boundLock.unlock()
+        // The session id was issued by the instance we are leaving; carrying it to
+        // a different pid would send a stranger's session to the new server.
+        if changed { clearSessionId() }
     }
 
     static let installedAppPath = "/Applications/RayMol.app"
@@ -203,6 +215,45 @@ enum MCPBridge {
                            installed: true, startedAt: "")
     }
 
+    // MARK: session establishment
+
+    /// The `initialize` the broker sends on the client's behalf.
+    ///
+    /// Exposed (and pure) so a test can pin that it really is an `initialize` —
+    /// the whole point is that the server sees this method, because that is what
+    /// makes it raise the "Allow" prompt.
+    static func brokerInitializeRequest() -> [String: Any] {
+        [
+            "jsonrpc": "2.0", "id": "raymol-broker-init", "method": "initialize",
+            "params": [
+                "protocolVersion": protocolVersion,
+                "capabilities": [String: Any](),
+                "clientInfo": ["name": "raymol-broker", "version": "1.0.0"],
+            ],
+        ]
+    }
+
+    /// Whether a request must be preceded by an `initialize` we send ourselves.
+    ///
+    /// We answer `initialize` locally whenever RayMol is down, so the client's own
+    /// handshake never reaches the server. A later tool call would then be the
+    /// server's FIRST request — and the server raises the approval prompt only on
+    /// `initialize`, so the user would be told to click Allow while no prompt was
+    /// ever shown, with every retry repeating the same dead end.
+    static func needsSessionHandshake(sessionId: String?, method: String) -> Bool {
+        method != "initialize" && (sessionId?.isEmpty ?? true)
+    }
+
+    /// Open a server-side session before forwarding, when we don't have one.
+    private static func ensureSession(with instance: MCPInstance, method: String) {
+        guard needsSessionHandshake(sessionId: getSessionId(), method: method),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: brokerInitializeRequest())
+        else { return }
+        // The response carries Mcp-Session-Id, which proxy() records for us.
+        _ = proxy(raw: data, to: instance)
+    }
+
     // MARK: proxy
 
     // Returns the server's JSON response bytes, or nil if the server is unreachable.
@@ -275,8 +326,11 @@ enum MCPBridge {
         case .none where mayColdLaunch(method: method):
             // A RayMol that predates the registry answers here and must not be
             // duplicated by a cold launch.
-            if let legacy = legacyHandoff(), let body = proxy(raw: forward, to: legacy) {
-                return body.isEmpty ? nil : body
+            if let legacy = legacyHandoff() {
+                ensureSession(with: legacy, method: method)
+                if let body = proxy(raw: forward, to: legacy) {
+                    return body.isEmpty ? nil : body
+                }
             }
             let outcome = coldLaunch()
             if case .launched(let launched) = outcome {
@@ -291,6 +345,7 @@ enum MCPBridge {
             instance = legacyHandoff()
         }
         if let instance {
+            ensureSession(with: instance, method: method)
             if let body = proxy(raw: forward, to: instance) {
                 return body.isEmpty ? nil : body   // empty = 202 notification ack
             }

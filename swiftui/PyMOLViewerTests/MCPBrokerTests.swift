@@ -356,4 +356,46 @@ final class MCPBrokerTests: XCTestCase {
         XCTAssertFalse(MCPServerManager.shouldPersistEnabledFlag(forcedByEnvironment: true))
         XCTAssertTrue(MCPServerManager.shouldPersistEnabledFlag(forcedByEnvironment: false))
     }
+
+    // MARK: - session handshake (the "Allow" prompt)
+
+    // RayMol raises the approval prompt ONLY when its server receives an
+    // `initialize`. The broker answers `initialize` locally whenever RayMol is
+    // down, so on the cold-launch path the server's first-ever request used to be
+    // the tool call itself: the user was told "click Allow in RayMol" while no
+    // prompt had been raised, and every retry repeated the same refusal forever.
+    // The broker therefore has to open the session itself before forwarding.
+    func testForwardingWithoutASessionHandshakesFirst() {
+        XCTAssertTrue(MCPBridge.needsSessionHandshake(sessionId: nil,
+                                                      method: "tools/call"))
+        XCTAssertTrue(MCPBridge.needsSessionHandshake(sessionId: "",
+                                                      method: "tools/call"))
+    }
+
+    // Once a session exists the client's own traffic carries it, so re-sending
+    // `initialize` would raise a second prompt for an already-approved session.
+    func testAnEstablishedSessionIsNotHandshakenAgain() {
+        XCTAssertFalse(MCPBridge.needsSessionHandshake(sessionId: "abc123",
+                                                        method: "tools/call"))
+    }
+
+    // A client `initialize` that reaches a live server IS the handshake; wrapping
+    // it in another one would open two sessions for one client.
+    func testAClientInitializeIsNotDoubleHandshaken() {
+        XCTAssertFalse(MCPBridge.needsSessionHandshake(sessionId: nil,
+                                                        method: "initialize"))
+    }
+
+    // The request the broker sends must actually be an `initialize` — that exact
+    // method is what makes the server emit the connect event behind the prompt.
+    func testBrokerHandshakeIsAnInitialize() {
+        let r = MCPBridge.brokerInitializeRequest()
+        XCTAssertEqual(r["method"] as? String, "initialize")
+        XCTAssertEqual(r["jsonrpc"] as? String, "2.0")
+        XCTAssertNotNil(r["id"], "a request without an id is a notification, "
+            + "and would get no Mcp-Session-Id back")
+        let params = r["params"] as? [String: Any]
+        XCTAssertNotNil(params?["protocolVersion"])
+        XCTAssertNotNil(params?["clientInfo"])
+    }
 }
