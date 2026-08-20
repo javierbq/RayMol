@@ -97,9 +97,17 @@ final class DesignRegionTests: XCTestCase {
         c.syncFromSele()                                       // pre-edit: no source
         await c.applyMutationAwait(residueIndex: 0, aa: 7)     // begins edit → editSourceObject "m1"
         c.syncFromSele()                                       // post-edit: source is the original
-        XCTAssertEqual(srcSeen.count, 2)
-        XCTAssertNil(srcSeen[0])
-        XCTAssertEqual(srcSeen[1], "m1")
+        // Assert the OBSERVED scopes, not how many times the reader ran: the count
+        // is an internal detail (any future syncFromSele inside the mutation path
+        // would change it) and says nothing about scoping.
+        guard let firstSrc = srcSeen.first, let lastSrc = srcSeen.last else {
+            return XCTFail("the 'sele' reader never ran, so nothing was scoped")
+        }
+        XCTAssertNil(firstSrc,
+                     "before an edit session there is no source object to scope to")
+        XCTAssertEqual(lastSrc, "m1",
+                       "once the focus moves to the working copy the read must carry "
+                     + "the original as its scope, or a selection made there is invisible")
     }
 
     func testRedesignScattersOnlyIntoRegion() async {
@@ -579,6 +587,47 @@ final class DesignRegionTests: XCTestCase {
                            "\(path): 'sele' still holds both residues, so the region must survive")
             XCTAssertTrue(c.regionModeActive, "\(path): region mode must survive the teardown")
         }
+    }
+
+    // Leaving Design mode and coming back must not lose the region: `exit()` wipes
+    // the derived state through `clearRegionState()` but deliberately does NOT touch
+    // 'sele' (D2), so the region has to be re-derived from the surviving selection on
+    // the next focus. Without that re-derive the user returns to pink markers on 2+
+    // residues with no Redesign button, and the digest-gated poll cannot rescue it —
+    // an unchanged 'sele' yields an identical digest, so the re-derive is skipped.
+    // The focus-change path shares the same reset (both go through
+    // clearRegionState), so this covers it too.
+    func testClickBuiltRegionSurvivesLeavingAndReenteringDesignMode() async {
+        let residues = (1...3).map { i in
+            DesignResidue(chain: "A", resi: "\(i)", resn: "ALA", aa: 5,
+                          backbone: MPNNModel.Residue(n: .zero, ca: .zero, c: .zero,
+                                                      o: .zero, chain: 0, resSeq: i),
+                          valid: true)
+        }
+        let c = DesignController(
+            enumerate: { obj, _ in
+                DesignResidueSet(object: obj, state: 1, residues: residues)
+            },
+            score: { _, _ in MPNNModel.ScoreResult(logProbs: [], currentAALogProb: []) },
+            applyColoring: { _, _, _, _, _, _, _ in },
+            dim: { _ in }, snapshot: { _ in }, restore: { })
+        c.allObjects = ["m1"]
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+
+        c.tapResidue(residueIndex: 0)
+        c.tapResidue(residueIndex: 2)
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2], "pre-condition: region designated")
+
+        c.exit()                      // wipes the derived state, keeps 'sele'
+        XCTAssertTrue(c.selectedResidueIndices.isEmpty,
+                      "pre-condition: exit() must actually have cleared the derived region")
+
+        await c.focusAwait("m1")      // re-enter; 'sele' still holds both residues
+
+        XCTAssertEqual(c.selectedResidueIndices, [0, 2],
+                       "the region must re-derive from the 'sele' that survived exit()")
+        XCTAssertTrue(c.regionModeActive, "2 residues means Redesign is armed again")
+        XCTAssertNil(c.pinnedResidueIndex, "a re-derived region carries no pin")
     }
 
     // A refocus whose enumerate throws must leave 'sele' untouched. Writing anyway

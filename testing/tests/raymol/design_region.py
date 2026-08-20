@@ -137,6 +137,23 @@ class TestDesignRegion(testing.PyMOLTestCase):
         self.assertEqual(rd.clear_sele(), 'DESIGN_SELE_CLEAR:ok')
         self.assertEqual(self._sele_resis(), [])
 
+    def testSelectingAMissingNameEmptiesSeleWithoutRaising(self):
+        # The '(?name)' form is how a NAMED selection reaches Design mode now that
+        # the picker is gone (the PYMOL_AUTODESIGN hook writes exactly this). A
+        # misspelled or deleted name must empty 'sele' rather than raise, because
+        # the caller reports "matched no designable residues" from the resulting
+        # empty selection — an exception would abort before that check.
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(obj, '', '2')
+        self.assertEqual(self._sele_resis(), ['2'], 'pre-condition: something selected')
+        cmd.select('sele', '(?nope)', enable=1)          # must not raise
+        self.assertEqual(self._sele_resis(), [])
+        # ...and the real thing still works through the same expression.
+        cmd.select('loop', '%s and resi 2+3' % obj)
+        cmd.select('sele', '(?loop)', enable=1)
+        self.assertEqual(self._sele_resis(), ['2', '3'])
+
     def testPollPanelCarriesDesignSeleDigest(self):
         obj = self._peptide()
         cmd.select('sele', '%s and resi 2' % obj)
