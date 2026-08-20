@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- iOS-only entitlements. Deliberately a SEPARATE file from RayMol.entitlements
+         (macOS: App Sandbox + network + user-selected files + keychain): the sandbox keys
+         there are macOS concepts, and increased-memory-limit below is an iOS one. Merging
+         them into one file would put an iOS-only key into the Mac App Store submission,
+         which is exactly the kind of thing App Review rejects for.
+
+         com.apple.developer.kernel.increased-memory-limit raises this app's jetsam
+         ceiling on devices that have the RAM to spare. It is what makes on-device folding
+         viable at a useful size: without it an iPhone 15 Pro app budget sits near 2.5 GB,
+         against which PredictSizeGuard refuses anything past ~120 residues — inside the
+         100-150 residue range this port exists to serve. It requires no capability in the
+         developer portal and no review; Apple documents it for exactly this case (large
+         on-device ML working sets).
+
+         It is a REQUEST, not a guarantee: the kernel may decline it, and it raises the
+         ceiling rather than removing it. So it changes the number PredictSizeGuard reads
+         from os_proc_available_memory() and changes nothing about the guard's logic — the
+         guard still refuses when the estimate does not fit whatever budget is actually
+         granted. Never treat this entitlement as licence to loosen the guard. -->
+    <key>com.apple.developer.kernel.increased-memory-limit</key>
+    <true/>
+</dict>
+</plist>

@@ -272,7 +272,30 @@ struct ContentView: View {
                 }
             }
             #endif
+            #if os(iOS)
+            // Hold the screen awake while a fold or a weight download is in flight.
+            // Attached at the root, and to BOTH feeds, so it does not depend on the
+            // Predict panel still being on screen — the tool can be exited (or the mode
+            // switched) while the job it started keeps running, and that is exactly when
+            // a suspended app is easiest to cause and hardest to explain. See
+            // PredictScreenAwake for why this is load-bearing rather than polish.
+            .onChange(of: engine.predictionJobs) { _ in applyScreenAwake() }
+            .onChange(of: engine.weightsFetch) { _ in applyScreenAwake() }
+            .onDisappear {
+                // Never leave the idle timer disabled behind us — that would keep the
+                // display on for the rest of the app's life.
+                PredictScreenAwake.apply(false)
+            }
+            #endif
     }
+
+    #if os(iOS)
+    private func applyScreenAwake() {
+        PredictScreenAwake.apply(
+            PredictScreenAwake.shouldStayAwake(predictions: engine.predictionJobs,
+                                               weightsFetching: engine.weightsFetch != nil))
+    }
+    #endif
 
     @ViewBuilder private var layout: some View {
         #if os(macOS)
@@ -1761,7 +1784,7 @@ struct ContentView: View {
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode)
+            || engine.designMode || engine.predictMode)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
             // RayMol title on the left, Open/Save/Export on the right. It takes the
@@ -1791,6 +1814,7 @@ struct ContentView: View {
                 if engine.interactionMode == .move { moveOverlay }
                 else if engine.measureMode != nil { measureOverlay }
                 else if engine.designMode { designModeBar }
+                else if engine.predictMode { predictModeBar }
             }
             viewportView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1850,7 +1874,7 @@ struct ContentView: View {
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode)
+            || engine.designMode || engine.predictMode)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
             // toolbar buttons floating over its top edge. The 3D viewport bleeds
@@ -1874,6 +1898,7 @@ struct ContentView: View {
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
+                    else if engine.predictMode { predictModeBar }
                 }
                 viewportView
                     .overlay(alignment: .top) {
@@ -1986,7 +2011,7 @@ struct ContentView: View {
         // floats over the full-bleed viewport. Move & Measure share the bottom slot.
         let anyTop = cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode
+            || engine.designMode || engine.predictMode
 
         if landscape {
             // LANDSCAPE (iPad + iPhone landscape): left stack (terminal/sequence/
@@ -2014,6 +2039,7 @@ struct ContentView: View {
                         if engine.interactionMode == .move { moveOverlay }
                         else if engine.measureMode != nil { measureOverlay }
                         else if engine.designMode { designModeBar }
+                        else if engine.predictMode { predictModeBar }
                     }
                     viewportView
                         // Collapsed: the rail floats over the full-bleed viewport.
@@ -2079,6 +2105,7 @@ struct ContentView: View {
                     if engine.interactionMode == .move { moveOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
+                    else if engine.predictMode { predictModeBar }
                 }
                 viewportView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2228,6 +2255,24 @@ struct ContentView: View {
         #else
         EmptyView()
         #endif
+    }
+
+    // Predict-mode docked bar for the iOS layouts, the peer of `designModeBar`.
+    //
+    // Unlike Design, this does NOT branch on `hSize`: PredictCompactPanel serves iPhone
+    // and iPad alike, because the wide alternative (`PredictBar`) is macOS-only at the
+    // API level — it uses `.toggleStyle(.checkbox)`, which does not exist on iOS — and
+    // the compact panel lays out correctly at iPad widths, it is simply roomier than it
+    // needs to be. If iPad ever earns a denser form, this is where the branch goes.
+    //
+    // No `#if` for the feature: prediction compiles on both platforms unconditionally.
+    // The runtime gate is PredictAvailability, applied at the Tools menu, so `predictMode`
+    // can never be true on a device where this would be unusable.
+    @ViewBuilder
+    private var predictModeBar: some View {
+        PredictCompactPanel(controller: engine.predictController,
+                            engine: engine,
+                            theme: themeManager)
     }
     #endif
 
@@ -3073,9 +3118,7 @@ struct ContentView: View {
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
-        #if os(macOS)
         if engine.predictMode { return ("Predict", "atom", "atom") }
-        #endif
         return nil
     }
 
@@ -3127,28 +3170,36 @@ struct ContentView: View {
             .disabled(isDesignLocked)
         }
         #endif
-        #if os(macOS)
-        Button {
-            engine.setPredictMode(!engine.predictMode)
-        } label: {
-            if engine.predictMode {
-                Label("Predict", systemImage: "checkmark")
-            } else {
-                Text("Predict")
+        // Gated on PredictAvailability for the same reason Design is gated on
+        // DesignAvailability: on iOS the tool needs 18+ and cannot run in the Simulator
+        // at all, and an item you can never enable is worse in a menu than no item.
+        // Always true on macOS.
+        if PredictAvailability.isSupported {
+            Button {
+                engine.setPredictMode(!engine.predictMode)
+            } label: {
+                if engine.predictMode {
+                    Label("Predict", systemImage: "checkmark")
+                } else {
+                    Text("Predict")
+                }
             }
+            .disabled(isDesignLocked)
         }
-        .disabled(isDesignLocked)
-        #endif
     }
 
     /// Tooltip for the Tools menu. Names only the tools this build actually has —
-    /// Design is absent from non-MPNN builds, so it must not be advertised there.
+    /// Design is absent from non-MPNN builds, and Predict from an iOS device that
+    /// PredictAvailability rules out, so neither may be advertised there. Built by
+    /// appending rather than as fixed strings so the two conditions compose; the
+    /// hardcoded variants this replaced could not express "MPNN but no Predict".
     private var toolsMenuHelp: String {
+        var parts = ["Move objects", "Measure distances"]
         #if RAYMOL_MPNN
-        let tools = "Move objects · Measure distances · Design with MPNN · Predict structures"
-        #else
-        let tools = "Move objects · Measure distances · Predict structures"
+        if DesignAvailability.isSupported { parts.append("Design with MPNN") }
         #endif
+        if PredictAvailability.isSupported { parts.append("Predict structures") }
+        let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }
         return "\(active.name) mode is active — Tools: \(tools)"
     }

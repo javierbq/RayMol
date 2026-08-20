@@ -25,7 +25,10 @@ would be a strictly closer one at identical size. Both are exportable
 (`boltz-mlx export-model --precision`); bfloat16 is offered because it is the
 width Boltz was trained in.
 """
+import sys
+
 from .boltz2 import Boltz2Predictor
+from .errors import PredictorUnavailable
 from .weights import WeightBundle
 
 
@@ -47,3 +50,37 @@ class Boltz2BF16Predictor(Boltz2Predictor):
         size=1_044_050_191,
         members=('config.json', 'manifest.json', 'model.safetensors'),
     )
+
+    def check_available(self):
+        """Available wherever Boltz is -- EXCEPT iOS.
+
+        Not a capability limit: the bf16 runtime is the same Swift `boltz` runtime the
+        int8 pack uses, so this method would load and run on a phone. It is refused
+        because the iOS memory guard cannot honestly admit it.
+
+        `PredictSizeGuard.decide` takes tokens, MSA depth and available bytes -- it does
+        NOT take a predictor, so there is one fitted curve for all Boltz packs, and that
+        curve was fitted to MEASURED int8 peak `phys_footprint` on an iPhone 15 Pro. The
+        dense pack needs materially more than int8 at the same token count (bigger
+        resident weights: 1.04 GB against 529 MB, plus wider activations). Feeding it
+        through the int8 curve therefore produces an estimate BELOW the real cost, which
+        is the one direction this guard must never err in: the failure mode is a jetsam
+        SIGKILL that no Swift handler can catch and that takes the unsaved session with
+        it. The guard's own doc comment records it having been wrong optimistically twice.
+
+        The rule that follows from that is "never let a fit sit below a measurement", and
+        no bf16 run has been measured on device. So the pack is refused rather than
+        guessed at. Lifting this needs a device sweep of bf16 peak footprints and a
+        predictor-aware `decide`, not a scaled-up int8 number.
+
+        macOS is unaffected: `availableBytes` there is real physical memory with a desktop
+        headroom budget, and the desktop has no jetsam.
+        """
+        super().check_available()
+        if sys.platform == 'ios':
+            raise PredictorUnavailable(
+                '%s is not available on iOS: the dense bfloat16 pack needs more memory '
+                'than the int8 pack the on-device size guard is calibrated against, and '
+                'no bfloat16 run has been measured on device. Use boltz2 (int8).'
+                % self.id
+            )
