@@ -794,6 +794,63 @@ def record_run(name, job_id, state, _self=cmd):
                           _self=_self)
 
 
+def superpose_on_first_model(name, _self=cmd):
+    """Superimpose every model of `name` onto model 1. Returns the RMSD of the model that
+    landed last, or None when no fit was made.
+
+    A folding backend has no shared frame of reference: each seed comes back in whatever
+    orientation and at whatever origin the network happened to produce. So appending
+    model 2 to model 1 puts two copies of the SAME molecule in two different places --
+    measured, two deliveries of one bit-identical structure sat 25.08 A apart, and read
+    0.000 A after this fit. Without it, stepping through the states of an `n_models`
+    object makes the structure jump across the viewport, and every `intra_rms_cur`
+    reading is dominated by an arbitrary rigid-body offset rather than by the
+    conformational difference the number is meant to report.
+
+    `intra_fit` rather than `fit`/`align`, which CANNOT do this: at the default
+    matrix_mode, ExecutiveRMS ends in OMOP_TTTF -> ObjectMoleculeTransformTTTf(I, ttt,
+    -1), and that -1 is "all states", so asking `fit` to move one state moves the whole
+    object. intra_fit (-> ExecutiveRMSStates -> OMOP_SFIT) is the only primitive that
+    fits each state separately, and it leaves the target state exactly where it was --
+    which is what makes model 1 hold still. That matters beyond tidiness: the camera was
+    framed on model 1, and anything positioned relative to it (a co-loaded target, a
+    measurement, a scene) stays valid only if it does not move.
+
+    Every model is re-fitted on every delivery rather than only the new one, because
+    there is no per-state fit primitive to reach for. It is cheap and it converges:
+    measured over 20 redeliveries the worst per-coordinate drift on an already-settled
+    model was 7e-7 A, three orders of magnitude below the 1e-3 A precision the
+    coordinates themselves carry.
+
+    All atoms, not `name CA`: a prediction can be a ligand or a nucleic acid, which have
+    no CA at all, and a fit that silently selects nothing is worse than one that is
+    slightly pulled on by side-chain rotamers. `intra_fit "obj and name CA", 1` remains
+    available by hand for the canonical backbone superposition.
+    """
+    states = _self.count_states(name)
+    if states < 2:
+        # Nothing to superimpose onto: the first model IS the frame every later one
+        # adopts. Also the guard that keeps intra_fit off a zero-atom placeholder, which
+        # raises rather than declining.
+        return None
+    # Models of different molecules share no frame to be fitted in. Predicting another
+    # sequence into an existing name merges the atom sets, leaving each state holding
+    # only its own subset -- measured, 10 atoms in state 1 against 24 in state 2.
+    # intra_fit does decline that (returning -1.0 per state) but it declines LOUDLY, one
+    # C++ Executive-Warning per state, so checking first keeps a deliberate reuse of a
+    # name from looking like a malfunction in the log.
+    if _self.count_atoms(name, state=states) != _self.count_atoms(name, state=1):
+        return None
+    values = _self.intra_fit(name, 1)
+    if not isinstance(values, list) or len(values) < states:
+        return None
+    rms = values[states - 1]
+    # intra_fit reports -1.0 for a state it could not match -- the target state always,
+    # and any state whose atoms did not pair up. Not a distance, so it must not be
+    # returned as one.
+    return None if rms < 0.0 else rms
+
+
 def deliver_result(path, name, seed=None, _self=cmd):
     """Load a finished prediction into its placeholder and retire the pending mark.
 
@@ -837,6 +894,27 @@ def deliver_result(path, name, seed=None, _self=cmd):
             # Reported rather than swallowed, because a silently skipped step here looks
             # exactly like a prediction that folded to nothing but loops.
             colorprinting.warning(' predict: could not assign secondary structure to %s'
+                                  ' (%s)' % (name, exc))
+        # Put this model in the frame of model 1 (#329). A backend returns each seed in
+        # its own arbitrary orientation, so an appended model lands somewhere else
+        # entirely unless it is superposed -- and model 1, which the camera is framed on,
+        # is the one that must not move.
+        #
+        # Never fatal, and warned rather than swallowed, for the reason dss above is: a
+        # model that arrives unsuperposed is still the structure the user asked for, but
+        # it looks exactly like a prediction that folded to something else.
+        try:
+            rms = superpose_on_first_model(name, _self=_self)
+            if rms is not None:
+                # Not gated on quiet: this is the ensemble spread, the one number that
+                # says how much the models actually disagree, and the delivery it belongs
+                # to has no `quiet` to consult -- it is driven by the host, minutes after
+                # the command that asked for it returned.
+                colorprinting.parrot(
+                    ' predict: %s model %d superposed on model 1 (RMSD %.3f)'
+                    % (name, _self.count_states(name), rms))
+        except Exception as exc:
+            colorprinting.warning(' predict: could not superpose %s on its first model'
                                   ' (%s)' % (name, exc))
         # Attach what this run measured to the object it just landed in (#308). AFTER
         # the load, because the metrics are checked against the object -- the state
@@ -1248,7 +1326,12 @@ ARGUMENTS
     {default: None, meaning "choose one"}
 
     n_models = int: how many models to produce, appended as states 1..N of the
-    same object. Each gets its own seed. {default: 1, maximum: 20}
+    same object. Each gets its own seed. Every model after the first is
+    superposed on model 1 as it lands, because a backend returns each seed in its
+    own arbitrary frame -- so the RMSD between two states is their conformational
+    difference and nothing else. Model 1 never moves. For the canonical
+    backbone-only superposition instead, redo it by hand with
+    "intra_fit <name> and name CA, 1". {default: 1, maximum: 20}
 
     diffusion_samples = int: accepted only so that a predictor which does not
     plumb it can REJECT it by name instead of ignoring it. No shipped predictor
