@@ -2451,37 +2451,6 @@ final class PyMOLEngine: ObservableObject {
             opts.omit = omit
             return try MPNNRuntime.withMLXErrorsAsThrows { try model.design(residues, options: opts).indices }
         },
-        listSelections: { [weak self] obj, src, state in
-            guard let self else { return [] }
-            let srcArg = (src?.isEmpty == false) ? src! : ""
-            self.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.list_design_selections('\(obj)', \(state), src='\(srcArg)')
-                """)
-            let path = FileManager.default.temporaryDirectory
-                .appendingPathComponent("raymol_design_selections.json")
-            guard let data = FileManager.default.contents(atPath: path.path),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let arr = root["selections"] as? [[String: Any]] else { return [] }
-            return arr.compactMap { d in
-                guard let name = d["name"] as? String, let n = d["n"] as? Int else { return nil }
-                return DesignSelectionOption(name: name, count: n)
-            }
-        },
-        selectedIndices: { [weak self] obj, sel, src, state in
-            guard let self else { return [] }
-            let srcArg = (src?.isEmpty == false) ? src! : ""
-            self.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.selected_design_indices('\(obj)', '\(sel)', \(state), src='\(srcArg)')
-                """)
-            let path = FileManager.default.temporaryDirectory
-                .appendingPathComponent("raymol_design_selected.json")
-            guard let data = FileManager.default.contents(atPath: path.path),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let idx = root["indices"] as? [Int] else { return [] }
-            return idx
-        },
         releaseModel: { [weak self] in
             // Called on DesignController's inference queue, which is the only
             // context that touches _mpnnModel — see loadedMPNNModel().
@@ -2522,12 +2491,6 @@ final class PyMOLEngine: ObservableObject {
             self?.runPython("""
                 from pymol import raymol_design as _rd
                 _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
-                """)
-        },
-        setSeleNamed: { [weak self] name in
-            self?.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.set_sele_from_selection('\(name)')
                 """)
         },
         clearSele: { [weak self] in
