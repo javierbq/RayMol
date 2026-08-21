@@ -3185,6 +3185,7 @@ struct ContentView: View {
                 }
             }
             .disabled(isDesignLocked)
+            .keyboardShortcut("p", modifiers: .control)
         }
     }
 
