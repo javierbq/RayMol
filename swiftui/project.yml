@@ -204,6 +204,18 @@ targets:
         Debug:
           SWIFT_OPTIMIZATION_LEVEL: -Onone
           DEBUG_INFORMATION_FORMAT: dwarf
+          # iOS Debug needs the entitlements file too. Debug otherwise carries none (the
+          # key below is under Release), and a Debug build is exactly what gets installed
+          # on a phone over cable to measure prediction memory — measuring against a
+          # jetsam ceiling the shipping build will not have would make every number
+          # collected here a lie in the pessimistic direction. macOS Debug is left alone:
+          # adding the sandbox to an unsigned local build breaks it.
+          #
+          # Commented out for the same reason as the Release pair below — see there for
+          # the portal step that has to happen first. Uncomment BOTH pairs together, or
+          # measurements from a Debug device build will not reflect the shipping ceiling.
+          # "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": PyMOLViewer/RayMolIOS.entitlements
+          # "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": PyMOLViewer/RayMolIOS.entitlements
         Release:
           SWIFT_OPTIMIZATION_LEVEL: -O
           # App Store distribution: automatic Distribution signing + App Sandbox
@@ -213,6 +225,21 @@ targets:
           ENABLE_HARDENED_RUNTIME: YES
           ENABLE_APP_SANDBOX: YES
           CODE_SIGN_ENTITLEMENTS: PyMOLViewer/RayMol.entitlements
+          # OPT-IN, not enabled: PyMOLViewer/RayMolIOS.entitlements requests the
+          # Increased Memory Limit entitlement, which roughly doubles what an on-device
+          # fold can be — see PredictSizeGuard, where an unentitled iPhone 15 Pro budget
+          # refuses past ~120 residues. It is commented out because it does NOT build
+          # without a portal change first: automatic signing fails with "Provisioning
+          # profile ... doesn't include the Increased Memory Limit capability".
+          #
+          # To turn it on: enable "Increased Memory Limit" for the io.raymol.RayMol App ID
+          # at developer.apple.com (Certificates, Identifiers & Profiles → Identifiers),
+          # let Xcode regenerate the profile, then uncomment both lines here AND the pair
+          # under Debug above. Nothing in the Swift code changes — the entitlement only
+          # moves the number os_proc_available_memory() reports, and the guard keeps
+          # refusing whatever does not fit whatever budget is actually granted.
+          # "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": PyMOLViewer/RayMolIOS.entitlements
+          # "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": PyMOLViewer/RayMolIOS.entitlements
           # iOS App Store guideline-2.5.2 fallback: if the iOS app is rejected
           # for the command line / Raymond, uncomment the next line to compile
           # them out of the iOS build (no effect on macOS — the flag is gated to
@@ -564,13 +591,19 @@ targets:
         product: MPNNKit
       - package: mlx-swift
         product: MLX
-      # boltz-mlx: structure prediction. macOS only, so the platform filter keeps
-      # BoltzMLX out of the iOS link entirely. No compilation condition: prediction
-      # ships in every macOS build, so there is no flag to forget. Must stay OUTSIDE
-      # the RAYMOL_SPARKLE_BEGIN/END markers or archive_appstore.sh strips it.
+      # boltz-mlx: structure prediction. Linked on BOTH platforms — the iOS slice
+      # was added for on-device folding on a physical iPhone. No compilation
+      # condition and no platform filter: prediction ships in every build, so there
+      # is no flag to forget, and the Swift side is gated by `#if os(macOS) ||
+      # os(iOS)` plus the RUNTIME gate in PredictAvailability (which is what keeps
+      # the iOS Simulator — where MLX cannot run at all — from offering the tool).
+      # Deliberately linked for the Simulator too, even though it can never run
+      # there: that is the only way the Simulator slice keeps COMPILING this code,
+      # and no CI job builds iOS at all.
+      # Must stay OUTSIDE the RAYMOL_SPARKLE_BEGIN/END markers or
+      # archive_appstore.sh strips it.
       - package: BoltzMLX
         product: BoltzMLX
-        platforms: [macOS]
       # protenix-mlx: the second inference runtime (#309). Same macOS-only filter and
       # the same reasoning as BoltzMLX above, and likewise outside the Sparkle markers
       # so archive_appstore.sh does not strip prediction out of the MAS build.

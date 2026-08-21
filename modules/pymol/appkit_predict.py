@@ -16,7 +16,25 @@ from pymol import cmd
 
 
 def _predictors():
-    """[{'id': str, 'msa': bool}] for every registered predictor, sorted by id.
+    """[{'id': str, 'msa': bool}] for every registered predictor that can ACTUALLY RUN
+    on this host, sorted by id.
+
+    Filtered by each predictor's own `check_available()`, not merely by what is
+    registered. The registry is the same on every platform -- it is built by
+    `_register_builtins()` with no per-OS branches -- so an unfiltered list offers
+    methods the host cannot run: on iOS the app advertises the `boltz` runtime alone
+    (see PyMOLBridge.mm's RAYMOL_PREDICT_RUNTIMES), which makes all six Protenix packs
+    refuse at submit time. Listing them anyway turns a clear "not on this platform"
+    into a menu entry that fails after the user has typed a sequence and hit Run.
+
+    An empty list is a meaningful answer, not a bug to paper over: under headless
+    `pymol -c` nothing consumes the PREDICT: marker, so every predictor is genuinely
+    unavailable and the bar must offer nothing rather than something that would hang.
+
+    Never raises: `check_available` is a predictor's own code, and one bad method must
+    not empty the whole menu. A predictor that throws anything other than a refusal is
+    treated as unavailable -- the conservative direction, since the alternative is
+    offering a method whose availability we could not establish.
 
     `msa` is the method's own `supports_msa`: the bar disables the MSA controls for
     a method (e.g. protenix) that would refuse an alignment.
@@ -26,6 +44,13 @@ def _predictors():
     for pid in registry.available():
         try:
             p = registry.get(pid)
+        except Exception:
+            continue
+        try:
+            p.check_available()
+        except Exception:
+            continue
+        try:
             supports = bool(getattr(p, 'supports_msa', False))
         except Exception:
             supports = False

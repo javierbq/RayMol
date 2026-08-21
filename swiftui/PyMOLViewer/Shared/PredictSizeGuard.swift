@@ -1,5 +1,8 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
+#if os(iOS)
+import os   // os_proc_available_memory()
+#endif
 
 /// Predicts the peak memory a Boltz run needs and decides whether to proceed, warn, or
 /// refuse.
@@ -53,6 +56,77 @@ import Foundation
 /// measurement** — that is what licenses a run which then gets jetsam-killed.
 /// `testEstimateNeverSitsBelowMeasurement` pins both tables for exactly this reason; an
 /// earlier version pinned only two points, which is how shortfall #1 survived.
+///
+/// ## iOS
+///
+/// Two things change on a phone, and only two:
+///
+/// - ``availableBytes`` becomes `os_proc_available_memory()` rather than
+///   `physicalMemory`. This is the change that matters. See that property.
+/// - ``maximumTokens`` becomes ``iOSMaximumTokens``, the largest input actually folded
+///   on device.
+///
+/// and the three fitted terms take iOS values. **Reusing the Mac constants is safe but
+/// over-conservative.** Measured against the device footprints below it over-predicts by
+/// 1.23–1.39×, so it would not have got anyone jetsam-killed — but it is cautious enough
+/// to REFUSE sizes that fold perfectly well: at 130 residues it estimates 2.52 GB against
+/// the measured 3.27 GB budget (77%, past ``warnFraction``) for a fold that actually
+/// peaked at 2.00 GB and finished in 64 s. The iOS terms buy back that headroom without
+/// giving up margin over any measurement.
+///
+/// ### How the iOS constants were derived
+///
+/// From a device sweep on the target hardware — iPhone 15 Pro, iOS 26.6, Release build,
+/// single chain, no MSA, at the shipped operating point (3 recycles / 200 diffusion
+/// steps). **Peak `phys_footprint`, sampled every 200 ms throughout the run** by
+/// `BoltzJobManager.FootprintSampler`:
+///
+/// | residues | wall  | MLX peak | peak phys_footprint |
+/// |---------:|------:|---------:|--------------------:|
+/// | 110      |  39 s |  1.38 GB |          **1.72 GB** |
+/// | 130      |  64 s |  1.75 GB |          **2.00 GB** |
+/// | 164      | 250 s |  2.00 GB |          **2.35 GB** |
+///
+/// `os_proc_available_memory()` on that device, with a session open, solves to about
+/// **3.27 GB** (back-derived from the guard's own refusal of a 200-residue input naming
+/// 180 as the largest that fit).
+///
+/// ### The units correction, which is the whole story here
+///
+/// **These constants were first fitted against MLX's high-water mark, and that was
+/// wrong.** `MLX.Memory` excludes its own buffer cache
+/// (mlx-swift/Source/MLX/Memory.swift:171-178), so it under-reports the process by
+/// 300–350 MB at these sizes. The budget it gets compared against —
+/// `os_proc_available_memory()` — is denominated in `phys_footprint`, so comparing an
+/// MLX-peak estimate to it is comparing two different quantities and quietly favouring
+/// the optimistic one.
+///
+/// Fitted against MLX peak, this curve estimated 1.68 / 1.89 / 2.26 GB — **below the
+/// measured footprint at every single point**, i.e. precisely the failure the three
+/// numbered items above describe, for a fourth time and by a new mechanism. It was caught
+/// only because the footprint was sampled rather than assumed. A single `phys_footprint`
+/// read taken after inference does NOT catch it either: that is a post-release reading,
+/// and it returned 1.05 GB for both the 110- and the 164-residue run.
+///
+/// The shipped terms are refitted to the footprint column with an **11–15% reserve** at
+/// every measured point (1.15× / 1.11× / 1.15×). Modest on purpose: three real points
+/// across the range of interest justify far less padding than one point did, and
+/// `warnFraction` already withholds a further 25% on top.
+///
+/// Note the macOS arm still fits MLX peak against `physicalMemory` — the same mismatch,
+/// but harmless there because a Mac has swap and installed RAM is a soft wall. Left alone
+/// deliberately; changing shipped macOS behaviour is not this port's business.
+///
+/// ### What this fit does NOT know
+///
+/// - ``bytesPerTokenMSARow`` is still NOT rescaled — see that constant. No MSA fold has
+///   been run on device, and inventing a measurement is what all four failures were.
+/// - ``iOSMaximumTokens`` is 164: the largest input actually folded to completion here.
+///   Not the 256 the runtime's phone preset allows, and not a round 200. Note the wall
+///   time at 164 was 250 s against 99 s for the same input in an earlier run — a 2.5×
+///   spread that suggests thermal or memory-pressure throttling and is itself a reason
+///   not to treat that size as comfortable.
+///
 enum PredictSizeGuard {
 
     // MARK: - Tunable constants
@@ -60,12 +134,12 @@ enum PredictSizeGuard {
     /// Model-resident floor. Small, because the linear and quadratic terms now carry the
     /// curve across the whole measured range instead of the intercept papering over the
     /// small end.
-    static let fixedOverheadBytes = 200 * 1024 * 1024
+    static var fixedOverheadBytes: Int { isPhone ? 850 * 1024 * 1024 : 200 * 1024 * 1024 }
     /// Linear term, bytes per token.
-    static let bytesPerToken = 14_500_000
+    static var bytesPerToken: Int { isPhone ? 7_500_000 : 14_500_000 }
     /// Quadratic term, bytes per token² — the pairwise tensors. 12.5× the original value;
     /// see the type doc for the two successive under-predictions that produced it.
-    static let bytesPerTokenSquared = 25_000
+    static var bytesPerTokenSquared: Int { isPhone ? 21_500 : 25_000 }
     /// Bilinear term, bytes per (token × alignment row beyond the first) — the MSA
     /// module's own tensors, which are depth × tokens wide.
     ///
@@ -76,22 +150,80 @@ enum PredictSizeGuard {
     /// wherever the MSA still fits inside buffers MLX was recycling anyway. So this is
     /// the WORST cell (3,763 B at 115 residues / depth 4096) plus ~20%, which is what
     /// makes one linear term safe across a relationship that is not linear.
+    ///
+    /// **Deliberately NOT halved for iOS**, unlike the three terms above. Those were
+    /// rescaled to a device measurement; this one has none — no MSA fold has ever been
+    /// run on an iPhone. Halving it "to match" would be inventing a measurement, which is
+    /// the exact move this type's three recorded failures all were. It stays at the
+    /// conservative Mac value, which on a phone budget means a deep alignment is refused
+    /// on memory well before ``iOSMaximumMSADepth`` binds — the honest place to refuse it.
     static let bytesPerTokenMSARow = 4_500
     /// At or below this fraction of available memory, proceed silently.
     static let okFraction = 0.50
     /// Above this fraction, refuse.
     static let warnFraction = 0.75
-    /// Hard ceiling regardless of memory: the largest input actually MEASURED end to end
-    /// (900 residues → 32.71 GB peak, 42 min of inference). `BoltzInputLimits.desktop`
-    /// would allow 1024, but the estimate there is ~41 GB — beyond a 36 GiB machine — and
-    /// nothing above ~384 has ever been validated for structural quality. Raise this only
-    /// alongside a measurement, never alongside an extrapolation.
-    static let maximumTokens = 900
+    /// Hard ceiling regardless of memory: the largest input actually MEASURED end to end.
+    ///
+    /// **macOS — 900.** 900 residues → 32.71 GB peak, 42 min of inference.
+    /// `BoltzInputLimits.desktop` would allow 1024, but the estimate there is ~41 GB —
+    /// beyond a 36 GiB machine — and nothing above ~384 has ever been validated for
+    /// structural quality.
+    ///
+    /// **iOS — see ``iOSMaximumTokens``.** A phone is a different machine running a
+    /// different memory plan, so it gets its own measured ceiling rather than a scaled
+    /// version of the Mac's.
+    ///
+    /// Raise either only alongside a measurement, never alongside an extrapolation.
+    static var maximumTokens: Int {
+        #if os(iOS)
+        return iOSMaximumTokens
+        #else
+        return 900
+        #endif
+    }
+
+    /// iOS hard token ceiling — the largest input actually folded to completion on a
+    /// physical iPhone.
+    ///
+    /// **Provisional: 117**, which is boltz-mlx's own published device figure
+    /// (iPhone 15 Pro, 117 tokens / 899 atoms, ~1.4 GB peak footprint —
+    /// `examples/BoltzMLXDemo/DEVICE_BENCHMARK.md`). It is deliberately NOT set to the
+    /// 256 that `BoltzInputLimits`' phone-sized default allows, and not to the
+    /// 100–150-residue range this port targets, because neither has been folded on
+    /// hardware. The type doc above records three separate occasions on which this
+    /// guard's fit was optimistic, every one of them because it extrapolated past its
+    /// data; a ceiling set to what we *hope* works would be the fourth.
+    ///
+    /// Raise it to the largest size that has actually completed on device, and record
+    /// the run. Nothing else licenses a change here.
+    static let iOSMaximumTokens = 164
     /// Hard ceiling on alignment depth: the deepest actually MEASURED, which is also
     /// upstream's `const.max_msa_seqs` and `BoltzInputLimits.desktop.maximumMSADepth`.
     /// The two agreeing is a coincidence of this sweep having reached the cap, not a
     /// reason to raise either — raise this only alongside a measurement.
-    static let maximumMSADepth = 16_384
+    static var maximumMSADepth: Int { isPhone ? iOSMaximumMSADepth : 16_384 }
+
+    /// iOS alignment-depth ceiling — boltz-mlx's own phone preset cap, which
+    /// `BoltzJobManager.memoryPlanner` independently enforces on iOS, so the two agree
+    /// and neither is a surprise. It is a backstop only: at any depth approaching it the
+    /// memory fraction refuses first (117 residues at depth 1 024 estimates ~2.3 GB
+    /// against an app budget near 2.5 GB), which is the refusal that names `msa_depth` as
+    /// the remedy. Nothing here has been measured on device; see
+    /// ``bytesPerTokenMSARow``.
+    static let iOSMaximumMSADepth = 1_024
+
+    /// Whether the fitted constants above should take their iOS values.
+    ///
+    /// A single switch rather than five `#if`s, so the two fits cannot be mixed — a
+    /// half-converted set (say, a phone intercept against a Mac quadratic) would produce
+    /// a curve nobody fitted and nobody measured.
+    private static var isPhone: Bool {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
 
     enum Decision: Equatable {
         case ok
@@ -142,9 +274,27 @@ enum PredictSizeGuard {
         return .refuse(maxFittingTokens: largestFittingTokenCount(availableBytes))
     }
 
-    /// Physical memory, as the budget the estimate is compared against.
+    /// The budget the estimate is compared against.
+    ///
+    /// **The two platforms answer genuinely different questions, and using one number
+    /// for both is what made this guard meaningless on a phone.**
+    ///
+    /// - macOS: `physicalMemory`. A Mac has swap, so RAM is a soft wall — the question
+    ///   is "will this thrash", and installed RAM is the right scale for it.
+    /// - iOS: `os_proc_available_memory()` — bytes remaining before *this app* is
+    ///   jetsammed. `physicalMemory` on an iPhone 15 Pro reports 8 GB, of which a normal
+    ///   app may use roughly a third; comparing a fold's peak against 8 GB would have
+    ///   licensed runs at ~3× the app's actual budget, and the failure mode is a SIGKILL
+    ///   that no Swift handler can catch and that takes the unsaved session with it.
+    ///   This is exactly ``DesignSizeGuard/availableBytesNow``, for exactly its reasons,
+    ///   and it is live rather than static: it already accounts for whatever structures
+    ///   are currently loaded, which a fixed cap could not.
     static var availableBytes: Int {
-        Int(ProcessInfo.processInfo.physicalMemory)
+        #if os(iOS)
+        return os_proc_available_memory()
+        #else
+        return Int(ProcessInfo.processInfo.physicalMemory)
+        #endif
     }
 
     private static func largestFittingTokenCount(_ availableBytes: Int) -> Int {

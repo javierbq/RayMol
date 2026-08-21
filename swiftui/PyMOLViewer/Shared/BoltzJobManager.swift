@@ -1,6 +1,7 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import BoltzMLX
 import Foundation
+import os
 
 /// Runs Boltz predictions on behalf of Python.
 ///
@@ -168,6 +169,25 @@ final class BoltzJobManager {
         /// growth against a multi-GB actual -- so this is the only honest instrument, and
         /// it is what `PredictSizeGuard`'s constants must be fitted against.
         let peakBytes: Int?
+        /// The MAXIMUM `phys_footprint` this process reached during the run, in bytes,
+        /// sampled every 200 ms (see ``FootprintSampler``). Nil until the run finishes.
+        ///
+        /// **Not a duplicate of ``peakBytes``, and the difference is the point.** MLX's
+        /// high-water mark EXCLUDES its own buffer cache
+        /// (mlx-swift/Source/MLX/Memory.swift:171-178), so it under-reports what the
+        /// system sees. `phys_footprint` is the quantity **jetsam kills on** and the one
+        /// `os_proc_available_memory()` is denominated in — so on iOS it, not `peakBytes`,
+        /// is what ``PredictSizeGuard``'s estimate is actually racing.
+        ///
+        /// The comment above about RSS being useless refers to `resident_size`, which
+        /// omits compressed and IOKit-mapped pages and therefore misses Metal allocations
+        /// entirely. `phys_footprint` includes them; the two are different instruments and
+        /// only one of them was tried.
+        ///
+        /// Recorded rather than derived because the gap between the two is not a constant:
+        /// it is whatever the cache happens to be holding, which is exactly the thing a
+        /// fitted model cannot know.
+        var footprintBytes: Int? = nil
         /// Wall time for the inference itself, excluding the one-time model load.
         let elapsedSeconds: Double?
         /// Steps completed within the CURRENT phase, and that phase's total --
@@ -184,7 +204,8 @@ final class BoltzJobManager {
 
         enum CodingKeys: String, CodingKey {
             case state, phase, fraction, error, resultPath = "result_path"
-            case peakBytes = "peak_bytes", elapsedSeconds = "elapsed_s"
+            case peakBytes = "peak_bytes", footprintBytes = "footprint_bytes"
+            case elapsedSeconds = "elapsed_s"
             case step, totalSteps = "total_steps"
         }
     }
@@ -295,8 +316,11 @@ final class BoltzJobManager {
             }
             // Broadcast: a cancel marker carries only a job id, so there is nothing in it
             // to route on. Every manager keeps only its own ids, and a cancel for a job
-            // this one never had is a no-op.
+            // this one never had is a no-op. macOS only because Protenix is: iOS links
+            // no second manager, so there is nothing to broadcast to.
+            #if os(macOS)
             ProtenixJobManager.shared.cancel(jobID: marker.jobID)
+            #endif
         case .submit:
             let url = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
@@ -323,10 +347,18 @@ final class BoltzJobManager {
             // This manager owns the marker only because it was here first. When a third
             // runtime lands, lift the parse-and-route out into a dispatcher rather than
             // adding another branch here.
+            //
+            // macOS only, and the iOS arm needs no fallback branch: PyMOLBridge.mm
+            // advertises "boltz" alone there, so host.require_runtime refuses a protenix
+            // request in Python before any marker is printed. If one somehow arrived, it
+            // would fall through to Self.preflight below, whose runtime check refuses
+            // exactly this case with an accurate message.
+            #if os(macOS)
             if request.runtime == ProtenixJobManager.runtimeName {
                 ProtenixJobManager.shared.submit(request)
                 return
             }
+            #endif
             if let failure = Self.preflight(request) {
                 // Refused before any work: the placeholder Python just created will never
                 // be filled, so drop it rather than leaving an empty stub behind.
@@ -589,12 +621,14 @@ final class BoltzJobManager {
         let statusURL = URL(fileURLWithPath: request.statusPath)
         // Captured by report() below; filled in once inference completes.
         var peak: Int? = nil
+        var footprint: Int? = nil
         var elapsed: Double? = nil
         func report(_ state: String, _ phase: String, _ fraction: Double,
                     error: String? = nil, result: String? = nil) {
             try? Self.writeStatus(Status(state: state, phase: phase, fraction: fraction,
                                          error: error, resultPath: result,
-                                         peakBytes: peak, elapsedSeconds: elapsed),
+                                         peakBytes: peak, footprintBytes: footprint,
+                                         elapsedSeconds: elapsed),
                                   to: statusURL)
         }
         func isCancelled() -> Bool {
@@ -604,11 +638,25 @@ final class BoltzJobManager {
             Self.settle(request,
                         Status(state: state, phase: phase, fraction: 0,
                                error: error, resultPath: nil,
-                               peakBytes: peak, elapsedSeconds: elapsed),
+                               peakBytes: peak, footprintBytes: footprint,
+                               elapsedSeconds: elapsed),
                         to: statusURL)
         }
 
         report("running", "featurize", 0.0)
+        Self.logMemory("start", jobID: request.jobID)
+        let sampler = Self.FootprintSampler()
+        sampler.start()
+        // Pin the display for the whole run, taken HERE rather than left to the view
+        // layer: the view learns about a job only through the ~500 ms object-panel poll,
+        // and a fold has been observed freezing at diffusion step 42 because the phone
+        // locked inside that window. See PredictScreenAwake.setJobActive.
+        PredictScreenAwake.setJobActive(true)
+        defer {
+            PredictScreenAwake.setJobActive(false)
+            sampler.stop()
+            Self.logMemory("end", jobID: request.jobID)
+        }
         do {
             BoltzRuntime.configureOnce()
 
@@ -723,6 +771,9 @@ final class BoltzJobManager {
             }
             elapsed = Date().timeIntervalSince(started)
             peak = Self.awaitSyncValue { await predictor.memorySnapshot().peakMemory }
+            // Read at the same moment as the MLX peak, before anything is released, so
+            // the two describe the same instant.
+            footprint = max(sampler.peak, MLXRuntime.currentFootprintBytes)
 
             if isCancelled() {
                 settle("cancelled", "inference"); return
@@ -861,19 +912,113 @@ final class BoltzJobManager {
         return out
     }
 
+    /// Samples `phys_footprint` on a timer and keeps the maximum seen.
+    ///
+    /// Exists because neither number recorded before it is the peak the OS kills on.
+    /// MLX's own high-water mark excludes its buffer cache, and a single `phys_footprint`
+    /// read taken after `memorySnapshot()` is a POST-RELEASE reading — measured at 1.05 GB
+    /// for both a 110- and a 164-residue fold whose MLX peaks were 1.38 and 2.00 GB, which
+    /// is how you can tell it is not measuring the peak of anything. Only sampling
+    /// throughout gives the quantity `os_proc_available_memory()` is denominated in, and
+    /// therefore the only quantity ``PredictSizeGuard``'s budget comparison is actually
+    /// about.
+    ///
+    /// 200 ms and a plain background thread: inference runs tens of seconds, so a few
+    /// hundred samples is ample resolution, and a `task_info` call is a syscall costing
+    /// microseconds. Deliberately not a DispatchSourceTimer on the shared queue — the
+    /// point is to keep sampling while that queue is saturated by inference.
+    final class FootprintSampler {
+        private let lock = NSLock()
+        private var _peak = 0
+        private var running = true
+
+        var peak: Int { lock.lock(); defer { lock.unlock() }; return _peak }
+
+        func start() {
+            Thread.detachNewThread { [weak self] in
+                while true {
+                    guard let self else { return }
+                    self.lock.lock()
+                    let go = self.running
+                    if go { self._peak = max(self._peak, MLXRuntime.currentFootprintBytes) }
+                    self.lock.unlock()
+                    if !go { return }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+            }
+        }
+
+        func stop() { lock.lock(); running = false; lock.unlock() }
+    }
+
+    /// Record the memory position around a fold, on the `com.raymol.predict` subsystem.
+    ///
+    /// Exists because the numbers this feature is governed by cannot be obtained any other
+    /// way on a phone. `PredictSizeGuard`'s whole iOS fit is reasoned against what
+    /// `os_proc_available_memory()` actually reports on the device, and the way that
+    /// question gets answered wrongly is by nobody ever asking it — the guard's three
+    /// recorded failures were all fits nobody checked against a measurement. A jetsam kill
+    /// also leaves no crash log worth reading, so the LAST line logged before a
+    /// disappearance is frequently the only evidence of what the run was asking for.
+    ///
+    /// Logged rather than asserted: this is diagnostic, it must never change behaviour,
+    /// and `os_log` survives the process being killed where a `print` to a detached
+    /// stdout does not. Cheap enough to leave in shipping builds — twice per fold.
+    static func logMemory(_ marker: String, jobID: String) {
+        let footprint = MLXRuntime.currentFootprintBytes
+        #if os(iOS)
+        let available = os_proc_available_memory()
+        #else
+        let available = 0
+        #endif
+        let mb = { (b: Int) in b / (1024 * 1024) }
+        Logger(subsystem: "com.raymol.predict", category: "memory")
+            .log("predict \(marker, privacy: .public) job=\(jobID, privacy: .public) footprint=\(mb(footprint), privacy: .public)MiB available=\(mb(available), privacy: .public)MiB cacheLimit=\(mb(MLXRuntime.activeCacheLimitBytes), privacy: .public)MiB")
+    }
+
+    /// The memory plan handed to `BoltzPredictor`, per platform.
+    ///
+    /// In both arms `cacheLimit` is pinned to whatever ``MLXRuntime`` has arbitrated,
+    /// because `MemoryPlanner.apply()` assigns `MLX.Memory.cacheLimit` on **every**
+    /// predict call. Passing the arbitrated value makes that assignment re-assert the
+    /// agreed ceiling rather than substitute boltz-mlx's own default and quietly
+    /// out-vote the min-wins registry.
+    ///
+    /// **macOS — `.desktop` limits.** boltz-mlx's default preset is phone-sized (256
+    /// tokens, 2 048 atoms, 1 024 MSA rows) and would refuse anything real on a Mac.
+    ///
+    /// **iOS — the phone preset, explicitly.** `BoltzInputLimits` has no `.phone`
+    /// static; the phone numbers ARE `MemoryPlanner`'s defaults, so they are written out
+    /// here rather than obtained by omitting arguments — an upstream change to those
+    /// defaults should be a visible diff, not a silent change to what an iPhone will
+    /// accept. 2 048 atoms is the binding limit in practice, not the 256 tokens: a
+    /// single-chain protein runs about 7.7 atoms per residue, so ~265 residues reaches
+    /// the atom cap first. Both sit above ``PredictSizeGuard/iOSMaximumTokens``, which is
+    /// the gate that actually decides, and this is the belt to its braces — it refuses
+    /// inside the runtime if anything ever reaches here ungated.
+    ///
+    /// `memoryLimit` is the substantive iOS change: see
+    /// ``BoltzRuntime/memoryLimitBytes`` for why a 6 GB default cannot fire on a phone.
+    private static var memoryPlanner: MemoryPlanner {
+        #if os(iOS)
+        return MemoryPlanner(
+            limits: BoltzInputLimits(maximumTokens: 256, maximumAtoms: 2_048,
+                                     maximumMSADepth: 1_024),
+            memoryLimit: BoltzRuntime.memoryLimitBytes,
+            cacheLimit: MLXRuntime.activeCacheLimitBytes)
+        #else
+        return MemoryPlanner(limits: .desktop,
+                             cacheLimit: MLXRuntime.activeCacheLimitBytes)
+        #endif
+    }
+
     /// Reuses the loaded predictor when the weights directory is unchanged.
     private func loadedPredictor(directory: String) throws -> BoltzPredictor {
         try stateQueue.sync {
             if let existing = predictor, predictorDirectory == directory { return existing }
             let built = try BoltzRuntime.withMLXErrorsAsThrows {
-                try BoltzPredictor(
-                    modelDirectory: URL(fileURLWithPath: directory),
-                    // The default preset is phone-sized (256 tokens) and would refuse
-                    // anything real. cacheLimit is pinned to whatever MLXRuntime has
-                    // arbitrated so this planner's apply() re-asserts the agreed
-                    // ceiling instead of substituting its own 64 MiB default.
-                    memoryPlanner: MemoryPlanner(limits: .desktop,
-                                                 cacheLimit: MLXRuntime.activeCacheLimitBytes))
+                try BoltzPredictor(modelDirectory: URL(fileURLWithPath: directory),
+                                   memoryPlanner: Self.memoryPlanner)
             }
             predictor = built
             predictorDirectory = directory

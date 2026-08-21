@@ -97,7 +97,14 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     PyConfig_SetBytesString(&config, &config.program_name, "PyMOL");
     PyConfig_SetBytesString(&config, &config.home, [pythonHome UTF8String]);
 
-#if TARGET_OS_OSX
+// macOS, and iOS on real hardware. The iOS SIMULATOR is deliberately excluded: MLX
+// cannot run there at all (MTLSimDevice forbids the private-storage heaps MLX's
+// allocator builds — see MLXRuntime.deviceConfigured), so a simulator that claimed a
+// host would let cmd.predict submit a job whose only possible outcome is an abort.
+// Leaving the variable unset makes host.available() False, and the predictor refuses
+// with the accurate "needs the RayMol application host" message instead. This mirrors
+// PredictAvailability on the Swift side; the two must agree.
+#if TARGET_OS_OSX || (TARGET_OS_IOS && !TARGET_OS_SIMULATOR)
     // Tells modules/pymol/predictors/host.py that a host is listening for PREDICT:
     // markers on the feedback line. There is no Python->Swift call path, so this
     // variable IS how Python knows inference is reachable; absent under headless
@@ -117,7 +124,17 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // waited out a weight download. Keep in step with BoltzJobManager.boltzRuntime and
     // ProtenixJobManager.runtimeName; add a name here only when its runtime actually
     // ships, because check_available trusts this list to decide what can run.
+    // iOS carries the Boltz runtime ONLY. Protenix is deliberately not ported: it
+    // peaks near 3.9 GB at 400 residues (modules/pymol/predictors/protenix.py), which
+    // is past an iPhone's jetsam ceiling, and ProtenixJobManager/ProtenixSizeGuard stay
+    // behind `#if os(macOS)`. Advertising "protenix" here would let check_available
+    // green-light a predictor whose Swift half does not exist in this binary, and the
+    // user would only find out after waiting out a weight download.
+#if TARGET_OS_OSX
     setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix", 1);
+#else
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
+#endif
 #endif
 
     PyStatus status = Py_InitializeFromConfig(&config);
