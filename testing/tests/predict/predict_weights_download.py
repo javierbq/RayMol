@@ -381,3 +381,105 @@ class TestEnsure(testing.PyMOLTestCase):
         self.assertEqual(seen[-1], ('extract', 1.0))
         for _, frac in seen:
             self.assertTrue(0.0 <= frac <= 1.0, seen)
+
+    # -- cancellation and progress INSIDE one archive member ------------------
+    #
+    # These pin the fix for the "stuck at Unpacking... 67%" report. Every shipping
+    # pack has the same shape -- three members, of which model.safetensors IS
+    # essentially the whole bundle -- so a check that only runs BETWEEN members
+    # runs exactly twice on something tiny and then not again for hundreds of MB.
+    # For protenix-v2-mlx-int8 (285 MB, 3 members) that pinned the progress marker
+    # at 2/3 = 67% and made Cancel do nothing at all for the whole unpack.
+
+    def testExtractProgressMovesWithinASingleMember(self):
+        """The bar must move while ONE big member is being written, not only between.
+
+        Asserted as "more extract callbacks than there are members": with a
+        per-member check the count can never exceed len(members), which is what
+        froze the tray at 67%.
+        """
+        from pymol.predictors.weights import WeightCache
+        big = ('model.bin', 'x' * (300 * 1024))
+        data, digest = make_zip((('config.json', '{}'), big))
+        bundle = bundle_for(data, digest)
+        fractions = []
+        with testing.mkdtemp() as root:
+            with patch('pymol.predictors.weights.EXTRACT_CHUNK_BYTES', 4096), \
+                 patch('pymol.predictors.weights._urlopen',
+                       return_value=FakeResponse(data)):
+                WeightCache(root).ensure(
+                    bundle,
+                    progress=lambda phase, frac: (
+                        fractions.append(frac) if phase == 'extract' else None))
+        self.assertGreater(
+            len(fractions), len(bundle.members),
+            'extract progress was only reported between members, so a bundle whose '
+            'last member is the whole payload reports nothing for the whole unpack')
+        self.assertEqual(fractions, sorted(fractions), 'fraction went backwards')
+        self.assertEqual(fractions[-1], 1.0)
+        for frac in fractions:
+            self.assertTrue(0.0 <= frac <= 1.0, fractions)
+
+    def testCancelDuringOneBigMemberDoesNotWaitForItToFinish(self):
+        """Cancel must be observed mid-member, not after the whole member lands."""
+        from pymol.predictors.errors import WeightDownloadCancelled
+        from pymol.predictors.weights import WeightCache
+        # ~75 chunks at the patched chunk size, so "finished the member anyway"
+        # is loudly distinguishable from "stopped at the first check".
+        data, digest = make_zip((('config.json', '{}'),
+                                 ('model.bin', 'x' * (300 * 1024))))
+        bundle = bundle_for(data, digest)
+        calls = []
+
+        def should_cancel():
+            calls.append(1)
+            return len(calls) > 2      # let it start, then pull the plug
+        with testing.mkdtemp() as root:
+            with patch('pymol.predictors.weights.EXTRACT_CHUNK_BYTES', 4096), \
+                 patch('pymol.predictors.weights._urlopen',
+                       return_value=FakeResponse(data)):
+                self.assertRaises(
+                    WeightDownloadCancelled,
+                    WeightCache(root).ensure, bundle, should_cancel=should_cancel)
+        self.assertLess(len(calls), 20,
+                        'cancel was not noticed until the member was fully written')
+
+    def testACancelledExtractLeavesNoCache(self):
+        from pymol.predictors.errors import WeightDownloadCancelled
+        from pymol.predictors.weights import WeightCache
+        data, digest = make_zip((('config.json', '{}'),
+                                 ('model.bin', 'x' * (64 * 1024))))
+        bundle = bundle_for(data, digest)
+        with testing.mkdtemp() as root:
+            cache = WeightCache(root)
+            with patch('pymol.predictors.weights.EXTRACT_CHUNK_BYTES', 4096), \
+                 patch('pymol.predictors.weights._urlopen',
+                       return_value=FakeResponse(data)):
+                self.assertRaises(
+                    WeightDownloadCancelled, cache.ensure, bundle,
+                    should_cancel=lambda: True)
+            self.assertFalse(cache.is_cached(bundle))
+            self.assertEqual(os.listdir(cache._incoming()), [])
+
+    def testExtractStillRejectsAMemberThatIsNotAPlainFileName(self):
+        """The chunked extract must not become a path-traversal seam.
+
+        WeightCache no longer routes through ZipFile.extract (which sanitises names
+        itself), so the guard has to be here. The layout check catches this too --
+        this asserts it is caught even if a name somehow matches the declaration.
+        """
+        import io
+        import zipfile
+        from pymol.predictors.errors import WeightBundleLayoutError
+        from pymol.predictors.weights import WeightCache
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as archive:
+            archive.writestr('../escape.bin', 'nope')
+        data = buf.getvalue()
+        digest = hashlib.sha256(data).hexdigest()
+        bundle = bundle_for(data, digest, members=('../escape.bin',))
+        with testing.mkdtemp() as root:
+            with patch('pymol.predictors.weights._urlopen',
+                       return_value=FakeResponse(data)):
+                self.assertRaises(WeightBundleLayoutError,
+                                  WeightCache(root).ensure, bundle)

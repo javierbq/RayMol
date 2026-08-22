@@ -30,7 +30,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from predict_api import StubJob, install_stub          # noqa: E402
-from predict_weights_download import make_zip          # noqa: E402
+from predict_weights_download import FakeResponse, make_zip   # noqa: E402
 
 
 class GatedResponse:
@@ -106,6 +106,22 @@ class captured_markers:
         return out
 
 
+def registry_bundle(predictor='stub'):
+    """The stub predictor's bundle, as the command path resolves it."""
+    from pymol.predictors import registry
+    return registry.get(predictor).weight_bundle
+
+
+def predicting_cache():
+    """The same WeightCache the commands use, so cache.root matches theirs.
+
+    start() only shares a fetch that lands in the SAME root, so a test that built
+    its own cache would exercise the not-shared branch by accident.
+    """
+    from pymol import predicting
+    return predicting.weight_cache()
+
+
 class AsyncFetchTest(testing.PyMOLTestCase):
 
     def setUp(self):
@@ -178,7 +194,6 @@ class AsyncFetchTest(testing.PyMOLTestCase):
     def testASettledFetchAlwaysEmitsATerminalMarker(self):
         """A dropped terminal marker would leave the app's sheet up forever."""
         from pymol.predictors import fetching
-        from predict_weights_download import FakeResponse
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             with captured_markers() as cap:
@@ -207,7 +222,6 @@ class AsyncFetchTest(testing.PyMOLTestCase):
     def testPumpSubmitsTheJobOnceTheWeightsLand(self):
         from pymol import predicting
         from pymol.predictors import fetching
-        from predict_weights_download import FakeResponse
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             job = cmd.predict('stub', 'AA', name='async_test')
@@ -326,3 +340,238 @@ class AsyncFetchTest(testing.PyMOLTestCase):
 
     def testCancelIsRegisteredAsACommandKeyword(self):
         self.assertIn('predict_weights_cancel', cmd.keyword)
+
+    # -- a fetch record must never wedge ------------------------------------
+    #
+    # Reported symptom: cancelling while the tray said "Unpacking... 67%" left the
+    # card on screen forever, `fetching.forget(<id>)` refused to drop the record,
+    # and every later `predict_weights <p>, download=1` silently did nothing --
+    # no new .incoming/.part -- because start() kept handing back the same entry.
+    # Only popping _FETCHES by hand recovered it.
+    #
+    # All three follow from ONE state: a record still reading `running`. forget()
+    # skips running records by design and start() shares them by design, so a
+    # record that stops making progress disables both retry and cleanup with no
+    # way out. These pin the escape hatches.
+
+    def _gate_inside_extract(self, member='model.bin'):
+        """(patcher, reached, gate) that holds the worker inside ONE member.
+
+        Gates on the member's own read() rather than on a chunk count, so it can
+        only ever trip during extraction -- a count would have to guess how many
+        checks the download phase made first.
+        """
+        import zipfile
+        real_open = zipfile.ZipFile.open
+        reached = threading.Event()
+        gate = threading.Event()
+
+        class _Held:
+            def __init__(self, inner):
+                self._inner = inner
+                self._reads = 0
+
+            def read(self, size=-1):
+                self._reads += 1
+                if self._reads == 2:
+                    reached.set()
+                    gate.wait(10)
+                return self._inner.read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._inner.close()
+                return False
+
+        def opener(zself, name, mode='r', *args, **kwargs):
+            handle = real_open(zself, name, mode, *args, **kwargs)
+            if getattr(name, 'filename', name) == member:
+                return _Held(handle)
+            return handle
+        return patch.object(zipfile.ZipFile, 'open', opener), reached, gate
+
+    def _big_stub(self, size=256 * 1024):
+        """Re-install the stub with a model.bin big enough to span many chunks."""
+        self.data, self.digest = make_zip(
+            (('config.json', '{}'), ('model.bin', 'x' * size)))
+        install_stub(self.root, self.digest, len(self.data))
+
+    def testCancellingDuringExtractEmitsATerminalMarker(self):
+        """THE reported bug: the tray card must resolve, not freeze on a stale %.
+
+        The card is kept while the state is running or error and dropped on any
+        terminal state, so "the card never went away" means "no terminal marker
+        ever arrived". It has to arrive from the extract phase too.
+        """
+        from pymol.predictors import fetching
+        self._big_stub()
+        patcher, reached, gate = self._gate_inside_extract()
+        with patch('pymol.predictors.weights.EXTRACT_CHUNK_BYTES', 4096), \
+                patch('pymol.predictors.weights._urlopen',
+                      return_value=FakeResponse(self.data)), patcher:
+            with captured_markers() as cap:
+                cmd.predict_weights('stub', download=1, async_=1)
+                self.assertTrue(reached.wait(10), 'never reached extract')
+                mid = fetching.get('stub').snapshot()
+                self.assertEqual(mid['phase'], 'extract')
+                cmd.predict_weights_cancel('stub')
+                gate.set()
+                fetching.join('stub', timeout=10)
+                markers = cap.markers()
+        self.assertEqual(fetching.get('stub').snapshot()['state'], 'cancelled')
+        self.assertTrue(markers, 'no markers at all')
+        self.assertEqual(markers[-1]['state'], 'cancelled',
+                         'the last marker was not terminal, so the tray card would '
+                         'sit on a stale running fraction forever')
+        self.assertEqual(markers[-1]['phase'], 'extract')
+
+    def testExtractProgressIsVisibleWhileOneBigMemberIsWritten(self):
+        """A marker has to move DURING the unpack, or the bar looks hung."""
+        from pymol.predictors import fetching
+        self._big_stub()
+        with patch('pymol.predictors.weights.EXTRACT_CHUNK_BYTES', 4096), \
+                patch('pymol.predictors.weights._urlopen',
+                      return_value=FakeResponse(self.data)):
+            with captured_markers() as cap:
+                cmd.predict_weights('stub', download=1, async_=1)
+                fetching.join('stub', timeout=10)
+                extracting = [m['fraction'] for m in cap.markers()
+                              if m['phase'] == 'extract' and m['state'] == 'running']
+        self.assertGreater(len(set(extracting)), 1,
+                           'only one extract fraction was ever published (%r), so a '
+                           'pack whose last member is the payload shows a frozen bar'
+                           % (extracting,))
+
+    def testForgetDropsALiveRecordSoARetryCanStart(self):
+        """(a) forget(<id>) must actually drop it -- that is the whole point.
+
+        It also has to cancel what it abandons: the worker owns a half-written
+        staging dir and would otherwise still publish it, racing the fresh fetch
+        that forget() exists to permit.
+        """
+        from pymol.predictors import fetching
+        held = GatedResponse(self.data)
+        # A fresh body for the retry, so this asserts the replacement transfer
+        # actually COMPLETES -- the whole point of being able to forget the old one.
+        responses = [held, FakeResponse(self.data)]
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=lambda *a, **k: responses.pop(0)):
+            first = fetching.start(registry_bundle(), predicting_cache())
+            self.assertTrue(held.serving.wait(5))
+            self.assertEqual(first.snapshot()['state'], 'running')
+            self.assertEqual(fetching.forget('stub'), ['stub'])
+            self.assertNotIn('stub', list(fetching._FETCHES),
+                             'forget() left the record in place, so every retry is '
+                             'still a silent no-op')
+            self.assertTrue(first.cancelled,
+                            'the abandoned worker was not asked to stop; it can '
+                            'still publish over the fetch that replaces it')
+            held.gate.set()
+            # Let the abandoned worker unwind before retrying: it still holds the
+            # cache lock for this bundle, and releases it as it goes.
+            if first.thread is not None:
+                first.thread.join(10)
+            self.assertEqual(first.snapshot()['state'], 'cancelled')
+            second = fetching.start(registry_bundle(), predicting_cache())
+            self.assertIsNot(second, first, 'retry rejoined the forgotten fetch')
+            fetching.join('stub', timeout=10)
+        self.assertEqual(second.snapshot()['state'], 'done')
+        self.assertTrue(predicting_cache().is_cached(registry_bundle()))
+
+    def testForgetWithNoIdStillOnlyDropsSettledRecords(self):
+        """The bulk broom must stay a broom: it may not abort live transfers."""
+        from pymol.predictors import fetching
+        response = GatedResponse(self.data)
+        with patch('pymol.predictors.weights._urlopen', return_value=response):
+            fetch = fetching.start(registry_bundle(), predicting_cache())
+            self.assertTrue(response.serving.wait(5))
+            fetching.forget()
+            self.assertIn('stub', list(fetching._FETCHES))
+            self.assertFalse(fetch.cancelled)
+            response.gate.set()
+            fetching.join('stub', timeout=10)
+        fetching.forget()
+        self.assertNotIn('stub', list(fetching._FETCHES))
+
+    def testARecordWhoseWorkerDiedDoesNotBlockEveryRetryForever(self):
+        """A 'running' record with a dead thread is wedged, not live.
+
+        This is the state the report was stuck in. Sharing it forever is what made
+        `predict_weights ..., download=1` a no-op with no .part to show for it.
+        """
+        from pymol.predictors import fetching
+        bundle, cache = registry_bundle(), predicting_cache()
+        wedged = fetching.Fetch(bundle, cache)
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        wedged.thread = dead              # ran, exited, never settled its state
+        with fetching._LOCK:
+            fetching._FETCHES[bundle.id] = wedged
+        self.assertEqual(wedged.state, 'running')
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            fresh = fetching.start(bundle, cache)
+            self.assertIsNot(fresh, wedged, 'retry rejoined a dead fetch')
+            fetching.join(bundle.id, timeout=10)
+        self.assertEqual(fetching.get(bundle.id).snapshot()['state'], 'done')
+
+    def testAWorkerThatCannotStartSettlesInsteadOfStrandingARunningRecord(self):
+        """If the thread never starts, nothing will ever settle the record."""
+        from pymol.predictors import fetching
+        bundle, cache = registry_bundle(), predicting_cache()
+        with patch.object(threading.Thread, 'start',
+                          side_effect=RuntimeError("can't start new thread")):
+            with captured_markers() as cap:
+                fetch = fetching.start(bundle, cache)
+                markers = cap.markers()
+        self.assertEqual(fetch.snapshot()['state'], 'error')
+        self.assertTrue(fetch.snapshot()['error'])
+        self.assertTrue(markers and markers[-1]['state'] == 'error',
+                        'no terminal marker, so the tray card would never clear')
+        # And the record must not block the next attempt.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            again = fetching.start(bundle, cache)
+            self.assertIsNot(again, fetch)
+            fetching.join(bundle.id, timeout=10)
+        self.assertEqual(fetching.get(bundle.id).snapshot()['state'], 'done')
+
+    def testTheWorkerSettlesEvenIfEnsureRaisesSomethingOutsideException(self):
+        """`except Exception` is not enough: a BaseException strands the record.
+
+        Nothing in ensure() raises one today. This asserts the invariant rather
+        than the current call graph, because the cost of being wrong is a record
+        that can never be forgotten and a tray card that never clears.
+        """
+        from pymol.predictors import fetching
+        from pymol.predictors.weights import WeightCache
+        bundle, cache = registry_bundle(), predicting_cache()
+        with patch.object(WeightCache, 'ensure',
+                          side_effect=KeyboardInterrupt('boom')):
+            with captured_markers() as cap:
+                fetching.start(bundle, cache)
+                fetching.join(bundle.id, timeout=10)
+                markers = cap.markers()
+        snap = fetching.get(bundle.id).snapshot()
+        self.assertEqual(snap['state'], 'error')
+        self.assertTrue(snap['error'])
+        self.assertTrue(markers and markers[-1]['state'] == 'error')
+
+    def testPredictWeightsSaysSoWhenItJoinsAFetchAlreadyInFlight(self):
+        """(c) A download=1 that starts nothing must say why, not look like a no-op."""
+        from pymol.predictors import fetching
+        response = GatedResponse(self.data)
+        with patch('pymol.predictors.weights._urlopen', return_value=response):
+            cmd.predict_weights('stub', download=1, async_=1)
+            self.assertTrue(response.serving.wait(5))
+            out = cmd.predict_weights('stub', download=1, async_=1)
+            self.assertIn('fetch', out['stub'],
+                          'the second call reported nothing about the transfer it '
+                          'silently joined')
+            self.assertEqual(out['stub']['fetch']['state'], 'running')
+            self.assertTrue(out['stub']['joined'])
+            response.gate.set()
+            fetching.join('stub', timeout=10)

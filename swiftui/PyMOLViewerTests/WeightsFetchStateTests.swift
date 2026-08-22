@@ -36,9 +36,10 @@ final class WeightsFetchStateTests: XCTestCase {
         """)
         XCTAssertTrue(state.isExtracting)
         XCTAssertTrue(state.isRunning)
-        // Bytes are deliberately zero outside the download phase: the fraction counts
-        // archive members there, so a byte count derived from it would be a lie. The
-        // overlay must fall back to its "Unpacking…" label rather than show "0 MB of".
+        // Bytes are deliberately zero outside the download phase: the extract
+        // fraction is a share of the archive's UNCOMPRESSED size, so scaling the
+        // compressed `total` by it would be a lie. The overlay must fall back to its
+        // "Unpacking…" label rather than show "0 MB of".
         XCTAssertEqual(state.received, 0)
     }
 
@@ -109,8 +110,8 @@ final class WeightsFetchStateTests: XCTestCase {
         """)
         XCTAssertNil(early.secondsRemaining)
 
-        // Extraction counts archive members, not bytes — a byte-derived ETA there
-        // would be meaningless.
+        // The extract fraction is a share of the UNCOMPRESSED archive, not of the
+        // compressed download — a byte-derived ETA there would be meaningless.
         let extracting = try decode("""
         {"id":"b","state":"running","phase":"extract","fraction":0.5,\
         "received":0,"total":524288000,"elapsed":60.0,"error":null}
@@ -125,5 +126,69 @@ final class WeightsFetchStateTests: XCTestCase {
         XCTAssertEqual(ProgressCard.formatRemaining(45), "45 sec left")
         XCTAssertEqual(ProgressCard.formatRemaining(240), "4 min left")
         XCTAssertEqual(ProgressCard.formatRemaining(9000), "over an hour left")
+    }
+
+    // -- the fetch must always reach a terminal marker ------------------------
+    //
+    // Reported bug: cancelling while the tray read "Unpacking… 67%" left the card up
+    // for good. The card is kept while the state is running or error and dropped on
+    // anything else, so a card that never goes away means a terminal marker that
+    // never arrived. The Python side now guarantees one from the extract phase too;
+    // these pin the Swift half of that contract.
+
+    func testACancelFromTheExtractPhaseIsTerminalSoTheCardIsDropped() throws {
+        let state = try decode("""
+        {"id":"protenix-v2-mlx-int8","state":"cancelled","phase":"extract",\
+        "fraction":0.6666666666666666,"received":0,"total":299351203,\
+        "elapsed":48.5,"error":null}
+        """)
+        // Exactly the predicate parseWeightsFeedback applies: neither running nor
+        // error, so `weightsFetch` is cleared and the card goes away.
+        XCTAssertFalse(state.isRunning)
+        XCTAssertFalse(state.isError)
+        XCTAssertTrue(state.isExtracting)
+    }
+
+    func testTheExtractFractionCanLandBetweenMemberBoundaries() throws {
+        // The 3-member packs used to report only 0.333/0.667/1.0, with the entire
+        // wait inside the last step. Byte-based extraction progress means the
+        // decoder has to accept anything in between, and still show no ETA.
+        let state = try decode("""
+        {"id":"protenix-v2-mlx-int8","state":"running","phase":"extract",\
+        "fraction":0.7391304347826086,"received":0,"total":299351203,\
+        "elapsed":51.0,"error":null}
+        """)
+        XCTAssertTrue(state.isRunning)
+        XCTAssertTrue(state.isExtracting)
+        XCTAssertEqual(state.fraction, 0.7391304347826086, accuracy: 1e-12)
+        XCTAssertEqual(state.received, 0)
+        XCTAssertNil(state.secondsRemaining)
+        XCTAssertEqual(WeightDownloadDetail.text(state), "Unpacking… 74%")
+    }
+
+    func testAWorkerThatEndedWithoutAResultIsReportedAsAnError() throws {
+        // The backstop marker for a worker that unwound without settling. It must
+        // read as an error -- a record left on "running" is what wedged the tray,
+        // and the card has to offer Dismiss rather than pretend work continues.
+        let state = try decode("""
+        {"id":"protenix-v2-mlx-int8","state":"error","phase":"extract",\
+        "fraction":0.6666666666666666,"received":0,"total":299351203,\
+        "elapsed":61.2,"error":"the weight fetch ended without a result"}
+        """)
+        XCTAssertTrue(state.isError)
+        XCTAssertFalse(state.isRunning)
+        // The card shows the reason, not a stale "Unpacking… 67%".
+        XCTAssertEqual(WeightDownloadDetail.text(state),
+                       "the weight fetch ended without a result")
+    }
+
+    func testAThreadThatCouldNotStartIsAnErrorNotAStalledDownload() throws {
+        let state = try decode("""
+        {"id":"stub","state":"error","phase":"download","fraction":0.0,\
+        "received":0,"total":223,"elapsed":0.001,\
+        "error":"could not start the download thread: can't start new thread"}
+        """)
+        XCTAssertTrue(state.isError)
+        XCTAssertEqual(ProgressItem.weights(state).buttonTitle, "Dismiss")
     }
 }
