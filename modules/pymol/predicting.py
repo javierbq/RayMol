@@ -353,13 +353,41 @@ def format_remaining(seconds):
     return 'over an hour left'
 
 
+def format_phase_remaining(seconds):
+    """'this phase: 4 min left'. The SCOPED spelling, for a prediction card.
+
+    Deliberately identical to ProgressCard.formatPhaseRemaining
+    (ProgressTray.swift), for the same reason format_remaining is.
+
+    The scope is stated because the number is scoped: `remaining` comes from
+    _phase_remaining, which measures the CURRENT PHASE only, while everything
+    beside it on the card -- the percentage, the bar, 'model 4 of 20' -- is the
+    whole job. Unqualified, the two read as one claim: a 1.10.0 capture shows
+    'Diffusion 19% . step 141 of 200 . model 4 of 20 . almost done', where
+    'almost done' means diffusion is seconds from step 200 but reads as if the
+    run were finishing with sixteen models still to go.
+
+    'phase' rather than 'model', which would be the friendlier word: diffusion is
+    band 0.40-0.97 of a model and 'write' follows it, so a phase estimate is not
+    a model estimate and must not be sold as one. A whole-JOB countdown is not
+    offered at all -- compose_progress's bands are layout, not time, so there is
+    nothing honest to extrapolate one from.
+
+    format_remaining stays unscoped, because its other caller is right: a weight
+    download IS the whole task, and 'almost done' there means what it says.
+    """
+    return 'this phase: %s' % (format_remaining(seconds),)
+
+
 def _format_detail(info):
-    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), 4 min left'.
+    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), this phase: 4 min left'.
 
     Short -- it is a tooltip. The percentage is the COMPOSED whole-job value, the
     same number the progress bar draws, so the two can never disagree; the
     stage-local position is said precisely by 'step 84 of 200' instead. The
-    estimate is the current phase's, which is what was actually measured.
+    estimate is the current phase's, which is what was actually measured, and it
+    SAYS so: unqualified, it read as a claim about the whole job it sits beside
+    (see format_phase_remaining).
     """
     parts = ['pending: %s' % (info['phase'],)]
     if info['fraction'] is not None and info['moving']:
@@ -373,7 +401,7 @@ def _format_detail(info):
             min(info['models_done'] + 1, info['models_total']), info['models_total'])
     remaining = info.get('remaining')
     if remaining is not None:
-        detail += ', %s' % (format_remaining(remaining),)
+        detail += ', %s' % (format_phase_remaining(remaining),)
     return detail
 
 

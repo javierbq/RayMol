@@ -89,7 +89,8 @@ final class PendingJobTests: XCTestCase {
     /// The line the user actually reads. The percentage is the COMPOSED value --
     /// the same number the bar draws, so text and bar cannot disagree -- while
     /// "step 84 of 200" says where in the phase we are, and the countdown is the
-    /// phase's own measured estimate rather than the elapsed clock.
+    /// phase's own measured estimate rather than the elapsed clock, and SAYS which
+    /// of the two it is (see formatPhaseRemaining).
     func testAMeasuredPredictionReadsAsPhasePercentStepModelAndEta() {
         let job = PredictionJobState(
             id: "p", state: "running", phase: "diffusion", fraction: 0.6394,
@@ -97,7 +98,39 @@ final class PendingJobTests: XCTestCase {
             elapsed: 412.5, error: nil, bundle: nil,
             step: 84, totalSteps: 200, remaining: 240)
         XCTAssertEqual(ProgressItem.prediction(job).detail,
-                       "Diffusion 64% · step 84 of 200 · model 1 of 3 · 4 min left")
+                       "Diffusion 64% · step 84 of 200 · model 1 of 3 · "
+                       + "this phase: 4 min left")
+    }
+
+    /// The defect the 1.10.0 hero capture shipped with: 20 models, 3 delivered,
+    /// diffusion at step 141 of 200 and seconds from ending. "almost done" sat
+    /// beside an overall 19% and "model 4 of 20", reading as if the whole run
+    /// were finishing with sixteen models still to go.
+    func testTheEtaDoesNotClaimTheWholeJobIsAlmostDone() {
+        let job = PredictionJobState(
+            id: "p", state: "running", phase: "diffusion", fraction: 0.1901,
+            moving: true, detail: "d", modelsDone: 3, modelsTotal: 20,
+            elapsed: 900, error: nil, bundle: nil,
+            step: 141, totalSteps: 200, remaining: 4)
+        XCTAssertEqual(ProgressItem.prediction(job).detail,
+                       "Diffusion 19% · step 141 of 200 · model 4 of 20 · "
+                       + "this phase: almost done")
+    }
+
+    /// The scoped spelling wraps the buckets rather than replacing them, so the
+    /// weight-download card -- which measures a WHOLE task and reads correctly
+    /// unqualified -- keeps the wording it has.
+    func testOnlyThePredictionCardScopesItsEtaToThePhase() {
+        XCTAssertEqual(ProgressCard.formatPhaseRemaining(4), "this phase: almost done")
+        XCTAssertEqual(ProgressCard.formatPhaseRemaining(240), "this phase: 4 min left")
+        XCTAssertEqual(ProgressCard.formatRemaining(4), "almost done")
+        // 950 of 1000 bytes in 95 s -> 10 B/s -> 5 s left.
+        let fetch = WeightsFetchState(
+            id: "boltz2-mlx-int8", state: "running", phase: "download",
+            fraction: 0.95, received: 950, total: 1000, elapsed: 95, error: nil)
+        let detail = WeightDownloadDetail.text(fetch)
+        XCTAssertTrue(detail.hasSuffix("almost done"), detail)
+        XCTAssertFalse(detail.contains("this phase"), detail)
     }
 
     /// With no measured rate yet, the card falls back to the elapsed clock it
