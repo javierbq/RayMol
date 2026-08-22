@@ -1706,6 +1706,17 @@ NOTES
     the application's progress sheet. Stop a running fetch with
     "predict_weights_cancel".
 
+    A bundle is fetched ONCE however many callers ask for it, so download=1 while a
+    transfer is already in flight joins that transfer instead of starting a second
+    one. It says so on the console and reports it as joined=True rather than looking
+    like a call that did nothing.
+
+RETURNS
+
+    dict: predictor id -> {'cached', 'path', 'bundle', 'joined', 'fetch'}, where
+    'fetch' is the live transfer's state (or None) and 'joined' says whether this
+    call attached to a transfer that was already running.
+
 SEE ALSO
 
     predict, predict_weights_cancel
@@ -1722,7 +1733,8 @@ SEE ALSO
         predictor_obj = registry.get(pid)
         bundle = predictor_obj.weight_bundle
         if bundle is None:
-            out[pid] = {'cached': True, 'path': None, 'bundle': None}
+            out[pid] = {'cached': True, 'path': None, 'bundle': None,
+                        'joined': False, 'fetch': None}
             continue
         # A BULK fetch downloads only what this build could actually run. Asking for one
         # predictor BY NAME still downloads it -- that is someone pre-warming a cache
@@ -1734,19 +1746,48 @@ SEE ALSO
         if int(download) and not predictor and not _can_run(predictor_obj):
             out[pid] = {'cached': bool(cache.is_cached(bundle)),
                         'path': cache.path_for(bundle),
-                        'bundle': bundle.id}
+                        'bundle': bundle.id,
+                        'joined': False, 'fetch': None}
             if not int(quiet):
                 colorprinting.parrot(
                     ' predict: %s cannot run in this build; not fetching its weights'
                     % pid)
             continue
+        joined = False
         if int(download) and not cache.is_cached(bundle):
-            fetching.start(bundle, cache)
+            # Identity, not a flag from start(): start() joins an in-flight transfer
+            # on purpose (one bundle, one download, however many callers), and the
+            # only way to tell "joined" from "began" is that it handed back the
+            # record that was already there.
+            before = fetching.get(bundle.id)
+            started = fetching.start(bundle, cache)
+            joined = started is before and before is not None
+            if joined and started.state == 'running':
+                snap = started.snapshot()
+                # Warned regardless of `quiet`, for the same reason predict() warns
+                # when it defers: this call deliberately started nothing, and saying
+                # nothing about it is indistinguishable from "download=1 is broken".
+                # That silence is what sent the reported bug looking for a .part file
+                # that was never going to appear.
+                colorprinting.warning(
+                    ' predict: a fetch of %s weights is already in flight (%s %d%%);'
+                    ' this call joined it rather than starting a second download.'
+                    ' Stop it with "predict_weights_cancel %s".'
+                    % (bundle.id, snap['phase'],
+                       int(round(snap['fraction'] * 100)), pid))
             if wait:
                 _wait_for_fetch(bundle, quiet)
+        live = fetching.get(bundle.id)
         out[pid] = {'cached': bool(cache.is_cached(bundle)),
                     'path': cache.path_for(bundle),
-                    'bundle': bundle.id}
+                    'bundle': bundle.id,
+                    # Whether this call joined a transfer already running rather than
+                    # starting one, and what that transfer is doing. Reported in the
+                    # return value as well as on the console so a script can tell a
+                    # deliberate join from a failure instead of reading cached=False
+                    # as "nothing happened".
+                    'joined': joined,
+                    'fetch': live.snapshot() if live is not None else None}
         if not int(quiet):
             colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))

@@ -49,9 +49,10 @@ struct WeightsFetchState: Codable, Equatable {
     /// download | extract | cached
     let phase: String
     let fraction: Double
-    /// Bytes so far, and the bundle's total. Both 0 outside the download phase:
-    /// during extraction the fraction counts archive members, and a byte count
-    /// derived from it would be a plausible-looking lie.
+    /// Bytes so far, and the bundle's total. `received` is 0 outside the download
+    /// phase: the extract fraction is a share of the archive's UNCOMPRESSED size,
+    /// so scaling `total` -- the compressed download's size -- by it would be a
+    /// plausible-looking lie.
     let received: Int
     let total: Int
     /// Seconds since the transfer began. Optional so a payload from an older Python
