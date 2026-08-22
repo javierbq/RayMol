@@ -28,9 +28,17 @@ packages:
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
     from: 0.31.6
-  # boltz-mlx: on-device Boltz-2 structure prediction (#224). macOS only -- MLX
-  # cannot run in the iOS Simulator at all, and no boltz run above ~115 tokens has
-  # ever completed on a physical device because iOS suspends the app mid-run.
+  # boltz-mlx: on-device Boltz-2 structure prediction (#224). Linked on BOTH
+  # platforms as of #328, which ported Predict to iPhone; it is the only inference
+  # runtime iOS carries (Protenix stays macOS-only -- see ProtenixMLX below).
+  #
+  # Linked, but not always runnable: MLX cannot run in the iOS Simulator at all, so
+  # PredictAvailability refuses there at RUNTIME while the slice keeps compiling.
+  # The older note here -- that no run above ~115 tokens had ever finished on device
+  # because iOS suspended the app mid-fold -- is fixed and obsolete: the screen hold
+  # is now taken by BoltzJobManager itself rather than the ~500 ms panel poll, and an
+  # iPhone 15 Pro has since folded 130 residues in 64 s and 164 in 250 s.
+  # PredictSizeGuard.iOSMaximumTokens (164) is the measured ceiling.
   #
   # boltz-mlx pins mlx-swift exact 0.31.6, identical to MPNNKit's pin, so
   # resolution is unaffected and this entry never needs bumping in lockstep.
@@ -169,8 +177,8 @@ targets:
         # AppIcon.appiconset fallback. Applies to both macOS + iOS.
         ASSETCATALOG_COMPILER_APPICON_NAME: RayMol
         INFOPLIST_GENERATION_MODE: GeneratedFile
-        MARKETING_VERSION: "1.9.1"
-        CURRENT_PROJECT_VERSION: 26
+        MARKETING_VERSION: "1.10.0"
+        CURRENT_PROJECT_VERSION: 27
         # Human-readable beta label, e.g. "1.9.1-beta27". EMPTY on purpose in the
         # committed file: empty means "this is not a beta", and the postBuildScript
         # below then leaves RayMolBetaLabel out of the Info.plist entirely. Only

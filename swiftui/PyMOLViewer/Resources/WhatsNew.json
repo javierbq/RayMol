@@ -1,5 +1,35 @@
 [
   {
+    "version": "1.10.0",
+    "pages": [
+      {
+        "title": "Predict a structure",
+        "body": "Fold a sequence right in RayMol, on-device — Tools ▸ Predict (⌃P) runs Boltz-2 or Protenix with no server round-trip. Now on iPhone too.",
+        "imageName": "whatsnew-1100-predict"
+      },
+      {
+        "title": "Watch it fold",
+        "body": "A live progress tray stacks weight downloads and running folds as dismissible cards with a per-phase ETA. Failed jobs stay put so you can retry.",
+        "videoName": "whatsnew-1100-predict-progress"
+      },
+      {
+        "title": "Search for an MSA",
+        "body": "Search a ColabFold server, public or private, without leaving RayMol. Alignments land as named, session-stored objects beside your structures.",
+        "imageName": "whatsnew-1100-msa"
+      },
+      {
+        "title": "Metrics that travel",
+        "body": "The numbers a tool measures stay with the object — color by Boltz's pLDDT or PAE straight from the panel with metrics_color.",
+        "imageName": "whatsnew-1100-metrics"
+      },
+      {
+        "title": "One Tools menu",
+        "body": "Move, Measure and Design share one Tools menu, object groups render as a tree, and your console + inspector layout persists across launches.",
+        "imageName": "whatsnew-1100-interface"
+      }
+    ]
+  },
+  {
     "version": "1.9.0",
     "pages": [
       {
