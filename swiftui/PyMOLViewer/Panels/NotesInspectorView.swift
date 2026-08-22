@@ -236,10 +236,15 @@ final class AnalysisNotesStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Register a view bookmark. `insertsMarkdown: false` records the bookmark
+    /// without writing the bare text link, so the caller can compose a richer
+    /// marker instead — a thumbnail bound to the link, via addScreenshot's
+    /// `linkedBookmarkID`.
     @discardableResult
     func addViewBookmark(id: UUID = UUID(), title: String, view: [Float],
                          kind: BookmarkKind = .camera,
-                         sceneName: String? = nil) -> ViewBookmark? {
+                         sceneName: String? = nil,
+                         insertsMarkdown: Bool = true) -> ViewBookmark? {
         guard view.count == 25 else { return nil }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let bookmark = ViewBookmark(id: id,
@@ -248,15 +253,30 @@ final class AnalysisNotesStore: ObservableObject {
                                     createdAt: portableTimestamp(), kind: kind,
                                     sceneName: sceneName)
         viewBookmarks.append(bookmark)
+        if insertsMarkdown {
+            appendViewLink(bookmark)
+        } else {
+            saveState = .pending
+            scheduleSave()
+        }
+        return bookmark
+    }
+
+    /// Append the bare text marker for an already registered bookmark.
+    func appendViewLink(_ bookmark: ViewBookmark) {
         let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
         text += "\(separator)[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))"
         saveState = .pending
         scheduleSave()
-        return bookmark
     }
 
+    /// Copy a rendered PNG into the note's asset store and insert its marker.
+    /// With `linkedBookmarkID` the marker is a linked image —
+    /// `[![title](raymol-asset://asset)](raymol-view://bookmark)` — so the
+    /// preview's thumbnail restores that camera or scene when clicked.
     @discardableResult
-    func addScreenshot(title: String, from sourceURL: URL) -> ScreenshotAsset? {
+    func addScreenshot(title: String, from sourceURL: URL,
+                       linkedBookmarkID: UUID? = nil) -> ScreenshotAsset? {
         let id = UUID()
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let asset = ScreenshotAsset(id: id,
@@ -270,7 +290,12 @@ final class AnalysisNotesStore: ObservableObject {
             try fileManager.copyItem(at: sourceURL, to: destination)
             screenshots.append(asset)
             let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
-            text += "\(separator)![\(asset.title)](raymol-asset://\(asset.id.uuidString))"
+            let image = "![\(asset.title)](raymol-asset://\(asset.id.uuidString))"
+            if let linkedBookmarkID {
+                text += "\(separator)[\(image)](raymol-view://\(linkedBookmarkID.uuidString))"
+            } else {
+                text += separator + image
+            }
             saveState = .pending
             scheduleSave()
             return asset
@@ -324,6 +349,12 @@ final class AnalysisNotesStore: ObservableObject {
     var cleanMarkdown: String {
         var result = text
         for bookmark in viewBookmarks {
+            // Thumbnails bound to this link collapse first: their marker wraps
+            // the image markdown, so the bare-link replacement below misses it.
+            result = result.replacingOccurrences(
+                of: AnalysisNoteMarkers.linkedImagePattern(bookmarkID: bookmark.id),
+                with: "**\(bookmark.resolvedKind.label) view:** \(bookmark.title)",
+                options: .regularExpression)
             let source = "[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))"
             result = result.replacingOccurrences(of: source,
                 with: "**\(bookmark.resolvedKind.label) view:** \(bookmark.title)")
@@ -647,6 +678,10 @@ private enum AnalysisNotesExporter {
                                  screenshots: [AnalysisNotesStore.ScreenshotAsset]) -> String {
         var result = line
         for bookmark in bookmarks {
+            result = result.replacingOccurrences(
+                of: AnalysisNoteMarkers.linkedImagePattern(bookmarkID: bookmark.id),
+                with: "\(bookmark.resolvedKind.label) view: \(bookmark.title)",
+                options: .regularExpression)
             result = result.replacingOccurrences(of: "[\(bookmark.title)](raymol-view://\(bookmark.id.uuidString))",
                                                   with: "\(bookmark.resolvedKind.label) view: \(bookmark.title)")
         }
@@ -679,13 +714,29 @@ private enum AnalysisNotesExporter {
     }
 }
 
+/// Shared regular-expression fragments for RayMol's private note markers.
+enum AnalysisNoteMarkers {
+    static let uuid = "[0-9A-Fa-f-]{36}"
+
+    /// A thumbnail bound to a specific view link.
+    static func linkedImagePattern(bookmarkID: UUID) -> String {
+        #"\[!\[[^\]]*\]\(raymol-asset://\#(uuid)\)\]\(raymol-view://\#(bookmarkID.uuidString)\)"#
+    }
+}
+
 enum AnalysisNotePreviewBlock: Equatable {
     case markdown(String)
     case image(UUID)
+    /// A thumbnail (first id) that restores a view bookmark (second id) on tap.
+    case linkedImage(UUID, UUID)
 }
 
 enum AnalysisNotePreviewParser {
-    private static let imagePattern = #"!\[[^\]]*\]\(raymol-asset://([0-9A-Fa-f-]{36})\)"#
+    // The linked alternative comes first so a wrapped thumbnail is never split
+    // into a stray "[" plus a bare image.
+    private static let imagePattern =
+        #"\[!\[[^\]]*\]\(raymol-asset://(\#(AnalysisNoteMarkers.uuid))\)\]\(raymol-view://(\#(AnalysisNoteMarkers.uuid))\)"#
+        + #"|!\[[^\]]*\]\(raymol-asset://(\#(AnalysisNoteMarkers.uuid))\)"#
 
     /// Split the note into display blocks while preserving the position of each
     /// linked RayMol image. A single structural newline around a standalone image
@@ -707,8 +758,7 @@ enum AnalysisNotePreviewParser {
 
         for match in matches {
             guard let markerRange = Range(match.range, in: markdown),
-                  let idRange = Range(match.range(at: 1), in: markdown),
-                  let id = UUID(uuidString: String(markdown[idRange])) else { continue }
+                  let block = imageBlock(match, in: markdown) else { continue }
 
             let startsLine = markerRange.lowerBound == markdown.startIndex
                 || markdown[markdown.index(before: markerRange.lowerBound)] == "\n"
@@ -725,7 +775,7 @@ enum AnalysisNotePreviewParser {
                 blocks.append(.markdown(String(markdown[cursor..<textEnd])))
             }
 
-            blocks.append(.image(id))
+            blocks.append(block)
             cursor = markerRange.upperBound
             if standalone, cursor < markdown.endIndex, markdown[cursor] == "\n" {
                 cursor = markdown.index(after: cursor)
@@ -736,6 +786,17 @@ enum AnalysisNotePreviewParser {
             blocks.append(.markdown(String(markdown[cursor...])))
         }
         return blocks
+    }
+
+    private static func imageBlock(_ match: NSTextCheckingResult,
+                                   in markdown: String) -> AnalysisNotePreviewBlock? {
+        func id(_ group: Int) -> UUID? {
+            guard let range = Range(match.range(at: group), in: markdown) else { return nil }
+            return UUID(uuidString: String(markdown[range]))
+        }
+        if let asset = id(1), let bookmark = id(2) { return .linkedImage(asset, bookmark) }
+        if let asset = id(3) { return .image(asset) }
+        return nil
     }
 }
 
@@ -748,6 +809,7 @@ struct NotesInspectorView: View {
     @State private var viewName = ""
     @State private var pendingView: [Float]?
     @State private var pendingKind: AnalysisNotesStore.BookmarkKind = .camera
+    @AppStorage("analysisNotesViewLinkThumbnail") private var includeViewThumbnail = true
     @State private var searchText = ""
     @State private var showingExporter = false
     @State private var exportData = Data()
@@ -938,15 +1000,7 @@ struct NotesInspectorView: View {
         .padding(.vertical, compactLayout ? 8 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { notes.flush() }
-        .alert("Insert View Link", isPresented: $showingViewNamePrompt) {
-            TextField("Link name", text: $viewName)
-            Button("Insert") { insertPendingView() }
-            Button("Cancel", role: .cancel) { pendingView = nil }
-        } message: {
-            Text(pendingKind == .camera
-                 ? "Camera links restore orientation, zoom, and clipping."
-                 : "Scene links restore the full PyMOL scene. Save the .pse after adding one so the scene travels with the session.")
-        }
+        .sheet(isPresented: $showingViewNamePrompt) { viewLinkPrompt }
         .alert("Nothing to Insert", isPresented: Binding(
             get: { insertionNotice != nil },
             set: { if !$0 { insertionNotice = nil } }
@@ -1070,11 +1124,30 @@ struct NotesInspectorView: View {
                 screenshotView(asset)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Label("Linked image unavailable", systemImage: "photo.badge.exclamationmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                missingImageLabel
+            }
+        case .linkedImage(let assetID, let bookmarkID):
+            if let asset = notes.screenshots.first(where: { $0.id == assetID }) {
+                let bookmark = notes.viewBookmarks.first { $0.id == bookmarkID }
+                Button { if let bookmark { restore(bookmark) } } label: {
+                    VStack(alignment: .leading, spacing: 4) { screenshotView(asset) }
+                }
+                .buttonStyle(.plain)
+                .disabled(bookmark == nil)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(bookmark.map { "Restore \($0.resolvedKind.label.lowercased()) view: \($0.title)" }
+                      ?? "Linked view unavailable")
+                .accessibilityLabel(bookmark.map { "Restore view \($0.title)" } ?? asset.title)
+            } else {
+                missingImageLabel
             }
         }
+    }
+
+    private var missingImageLabel: some View {
+        Label("Linked image unavailable", systemImage: "photo.badge.exclamationmark")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     private func renderMarkdown(_ source: String) -> AttributedString {
@@ -1110,6 +1183,45 @@ struct NotesInspectorView: View {
         }
     }
 
+    /// A sheet rather than an alert: alerts accept only text fields and buttons,
+    /// and the thumbnail option needs a real Toggle.
+    private var viewLinkPrompt: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Insert View Link").font(.headline)
+            Text(pendingKind == .camera
+                 ? "Camera links restore orientation, zoom, and clipping."
+                 : "Scene links restore the full PyMOL scene. Save the .pse after adding one so the scene travels with the session.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Link name", text: $viewName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { commitViewLinkPrompt() }
+
+            Toggle("Include image of the view", isOn: $includeViewThumbnail)
+                .help("Insert a thumbnail of the current view; clicking it in the preview restores this view")
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    pendingView = nil
+                    showingViewNamePrompt = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Insert") { commitViewLinkPrompt() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 320)
+    }
+
+    private func commitViewLinkPrompt() {
+        showingViewNamePrompt = false
+        insertPendingView()
+    }
+
     private func beginViewLink(_ kind: AnalysisNotesStore.BookmarkKind) {
         guard let view = engine.captureView() else { return }
         pendingView = view
@@ -1120,13 +1232,35 @@ struct NotesInspectorView: View {
 
     private func insertPendingView() {
         guard let view = pendingView else { return }
+        pendingView = nil
         let id = UUID()
+        let title = markdownSafe(viewName)
         let sceneName = pendingKind == .scene ? "__raymol_note_\(id.uuidString.replacingOccurrences(of: "-", with: ""))" : nil
         if let sceneName { engine.runCommand("scene \(sceneName), store") }
-        _ = notes.addViewBookmark(id: id, title: markdownSafe(viewName), view: view,
-                                  kind: pendingKind, sceneName: sceneName)
-        pendingView = nil
-        isPreviewing = true
+        let thumbnail = includeViewThumbnail ? renderNoteScreenshot() : nil
+        guard let bookmark = notes.addViewBookmark(id: id, title: title, view: view,
+                                                  kind: pendingKind, sceneName: sceneName,
+                                                  insertsMarkdown: thumbnail == nil) else {
+            if let thumbnail { try? FileManager.default.removeItem(at: thumbnail) }
+            return
+        }
+        if let thumbnail {
+            // Fall back to the bare link if the render could not be filed, so the
+            // bookmark never ends up with no marker in the note.
+            if notes.addScreenshot(title: title, from: thumbnail, linkedBookmarkID: id) == nil {
+                notes.appendViewLink(bookmark)
+            }
+            try? FileManager.default.removeItem(at: thumbnail)
+        }
+    }
+
+    /// Render the live view to a temporary PNG. The caller owns the file.
+    private func renderNoteScreenshot() -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-note-\(UUID().uuidString).png")
+        engine.renderHiResPNG(url.path, width: 1600, height: 1200)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     private func restore(_ bookmark: AnalysisNotesStore.ViewBookmark) {
@@ -1138,13 +1272,9 @@ struct NotesInspectorView: View {
     }
 
     private func insertMetalScreenshot() {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("raymol-note-\(UUID().uuidString).png")
-        engine.renderHiResPNG(url.path, width: 1600, height: 1200)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let url = renderNoteScreenshot() else { return }
         _ = notes.addScreenshot(title: "Molecular view \(notes.screenshots.count + 1)", from: url)
         try? FileManager.default.removeItem(at: url)
-        isPreviewing = true
     }
 
     private func insertResidueSummary(contacts: Bool) {
@@ -1164,7 +1294,6 @@ struct NotesInspectorView: View {
             return "- [\(label)](\(residueURL(object: object, chain: chain, resi: resi)))"
         }
         appendMarkdown(lines.joined(separator: "\n") + "\n")
-        isPreviewing = true
     }
 
     private func insertMeasurementSummary() {
@@ -1183,7 +1312,6 @@ struct NotesInspectorView: View {
             return "- **\(name)** (\(kind)): \(String(format: kind == "distance" ? "%.2f" : "%.1f", value)) \(unit) — \(picks)"
         }
         appendMarkdown(lines.joined(separator: "\n") + "\n")
-        isPreviewing = true
     }
 
     private func appendMarkdown(_ value: String) {
