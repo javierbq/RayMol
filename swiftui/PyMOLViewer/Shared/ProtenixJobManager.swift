@@ -52,9 +52,8 @@ final class ProtenixJobManager {
     /// Refuse or accept a submitted request. Runs on the MAIN thread.
     func submit(_ request: BoltzJobManager.Request) {
         if let failure = Self.preflight(request) {
-            BoltzJobManager.discardPlaceholder(request)
-            try? BoltzJobManager.writeStatus(
-                failure, to: URL(fileURLWithPath: request.statusPath))
+            BoltzJobManager.settle(request, failure,
+                                   to: URL(fileURLWithPath: request.statusPath))
             return
         }
         queue.async { self.run(request) }
@@ -114,6 +113,23 @@ final class ProtenixJobManager {
         func isCancelled() -> Bool {
             stateQueue.sync { cancelled.contains(request.jobID) }
         }
+        /// A TERMINAL status, written before the placeholder comes down.
+        ///
+        /// Not `report` with a different state: the two differ in ORDER, not in payload.
+        /// `report` only writes; this writes and then discards, and the sequence is what
+        /// matters -- `discard_pending` re-reads the status file to decide whether to
+        /// retain a failure card, so a discard that lands first strands the failure where
+        /// nothing can observe it. Mirrors `BoltzJobManager.run`'s own local `settle`, and
+        /// routes through the shared `BoltzJobManager.settle` so there is one
+        /// implementation of the ordering rather than two.
+        func settle(_ state: String, _ phase: String, error: String? = nil) {
+            BoltzJobManager.settle(
+                request,
+                BoltzJobManager.Status(state: state, phase: phase, fraction: 0,
+                                       error: error, resultPath: nil,
+                                       peakBytes: peak, elapsedSeconds: elapsed),
+                to: statusURL)
+        }
 
         report("running", "featurize", 0.0)
         do {
@@ -130,8 +146,7 @@ final class ProtenixJobManager {
                 name: request.objectName ?? "prediction")
 
             if isCancelled() {
-                BoltzJobManager.discardPlaceholder(request)
-                report("cancelled", "featurize", 0); return
+                settle("cancelled", "featurize"); return
             }
 
             report("running", "load", 0.05)
@@ -188,11 +203,9 @@ final class ProtenixJobManager {
             BoltzJobManager.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch ProtenixError.cancelled {
-            BoltzJobManager.discardPlaceholder(request)
-            report("cancelled", "inference", 0)
+            settle("cancelled", "inference")
         } catch {
-            BoltzJobManager.discardPlaceholder(request)
-            report("failed", "inference", 0,
+            settle("failed", "inference",
                    error: (error as? LocalizedError)?.errorDescription
                        ?? error.localizedDescription)
         }

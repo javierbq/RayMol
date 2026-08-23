@@ -285,7 +285,11 @@ final class BoltzJobManager {
     /// run that failed used to just make its object vanish.
     ///
     /// One function rather than six call-pairs so a seventh exit cannot get it wrong.
-    private static func settle(_ request: Request, _ status: Status, to url: URL) {
+    /// Internal rather than private: `ProtenixJobManager` settles its own jobs and must use
+    /// THIS function rather than a second copy of the ordering. That is the whole point --
+    /// a second copy is a second chance to get it backwards, which is exactly what had
+    /// happened at all four of that manager's terminal paths.
+    static func settle(_ request: Request, _ status: Status, to url: URL) {
         try? writeStatus(status, to: url)
         #if DEBUG
         settleTap?("write")
