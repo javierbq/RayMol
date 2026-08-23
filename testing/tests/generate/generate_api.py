@@ -1,0 +1,289 @@
+"""End-to-end flow through cmd.design_backbone with a stub generator. No Swift, no network.
+
+    pymol -ckqy testing/testing.py --run testing/tests/generate/generate_api.py
+"""
+import os
+import sys
+from unittest.mock import patch
+
+from pymol import cmd
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from generate_harness import (FakeResponse, GeneratorTestCase,  # noqa: E402
+                             deliver, install_stub, make_zip, settle)
+
+
+class DesignBackboneTest(GeneratorTestCase):
+
+    def setUp(self):
+        GeneratorTestCase.setUp(self)
+        import tempfile
+        self.data, self.digest = make_zip()
+        self.root = tempfile.mkdtemp()
+        os.environ['RAYMOL_WEIGHTS_DIR'] = self.root
+        install_stub(self.digest, len(self.data))
+        self.declareHost('stubruntime')
+        self.helix()
+
+    # -- The happy path ------------------------------------------------------
+
+    def testADesignLandsAsOneObjectHoldingTargetAndDesignedChain(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5+8+11', length=12)
+            settle()
+        deliver(job)
+        name = job.spec.name
+        self.assertIn(name, cmd.get_names('objects'))
+        # The PAIR, not the design alone. Splitting them here would make the refold step
+        # re-derive the complex, which is the thing this data model exists to avoid.
+        self.assertEqual(sorted(cmd.get_chains(name)), ['A', 'B'])
+        self.assertEqual(cmd.count_atoms('%s and chain B and name CA' % name), 12)
+        self.assertEqual(cmd.count_atoms('%s and chain A and name CA' % name), 20)
+
+    def testTheTargetIsUnmovedInTheEmittedObject(self):
+        # The contract is that the target is held fixed, so the emitted copy must sit on
+        # the source atom for atom. Asserted as a real distance rather than a chain count.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        deliver(job)
+        name = job.spec.name
+        source = cmd.get_coords('tgt and name CA')
+        landed = cmd.get_coords('%s and chain A and name CA' % name)
+        self.assertEqual(len(source), len(landed))
+        worst = max(sum((a - b) ** 2 for a, b in zip(p, q)) ** 0.5
+                    for p, q in zip(source, landed))
+        self.assertLess(worst, 1e-3, 'target drifted by %.4f A' % worst)
+
+    def testTheObjectNameIsDerivedFromTheDesignKey(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=3)
+            settle()
+        from pymol.designing import default_object_name
+        key = job.spec.design_key(job.options, weights_version='stubgen v1')
+        self.assertEqual(job.spec.name, default_object_name(key, 'stubgen'))
+        self.assertTrue(job.spec.name.startswith('stubgen_design_'), job.spec.name)
+
+    def testTwoSeedsAreTwoObjectsNotTwoStates(self):
+        # A design is a molecule, not a sample of one distribution over one input, so two
+        # seeds must not stack as states of one object -- there would be one metric row per
+        # state with nothing saying which sequence each described.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=3, seed=1)
+            settle()
+        deliver(jobs)
+        names = {job.spec.name for job in jobs}
+        self.assertEqual(len(names), 3, names)
+        for name in names:
+            self.assertEqual(cmd.count_states(name), 1)
+        self.assertEqual(len({job.options.seed for job in jobs}), 3,
+                         'each design needs its own seed or they are the same molecule')
+
+    def testAnIdenticalRerunLandsInTheSameObject(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            first = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                        seed=42)
+            settle()
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            second = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                         seed=42)
+            settle()
+        self.assertEqual(first.spec.name, second.spec.name)
+
+    def testAnExplicitNameIsHonouredAndIndexedForSeveral(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                      name='mine')
+            settle()
+        self.assertEqual(job.spec.name, 'mine')
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       name='several', n_designs=2)
+            settle()
+        self.assertEqual([job.spec.name for job in jobs], ['several_01', 'several_02'])
+
+    # -- Placeholders, weights, cancellation ---------------------------------
+
+    def testThePlaceholderExistsBeforeTheDesignDoes(self):
+        from pymol import designing
+        # Seventeen minutes is a long time to look at nothing. The placeholder is a real
+        # zero-atom object, so the design appears in the object panel immediately.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            self.assertIn(job.spec.name, designing.pending_objects())
+            self.assertEqual(cmd.count_atoms(job.spec.name), 0)
+            settle()
+            # Still pending: the fetch has landed and the job is submitted, but nothing has
+            # DELIVERED it. That is the real mid-flight state, and it is what the progress
+            # tray renders for the whole seventeen minutes.
+            self.assertIn(job.spec.name, designing.pending_objects())
+        deliver(job)
+        self.assertNotIn(job.spec.name, designing.pending_objects())
+        self.assertGreater(cmd.count_atoms(job.spec.name), 0)
+
+    def testWeightsAreFetchedLazilyAndOnlyOnce(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)) as opener:
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+            self.assertEqual(opener.call_count, 1)
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=99)
+            settle()
+
+    def testAPendingPlaceholderIsKeptOutOfASavedSession(self):
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            # Mid-flight: the placeholder exists and is empty, and a .pse carrying it
+            # would hold an object that can never fill -- the job is gone on reload.
+            session = {'names': [[job.spec.name, 1], ['tgt', 1]]}
+            designing.session_save(session)
+            self.assertEqual([entry[0] for entry in session['names']], ['tgt'])
+            settle()
+        # Once it has landed and has atoms it is saved like anything else -- only the
+        # BOTH-pending-and-empty case is dropped, so a job that finished between submit and
+        # save is never lost.
+        deliver(job)
+        session = {'names': [[job.spec.name, 1]]}
+        designing.session_save(session)
+        self.assertEqual([entry[0] for entry in session['names']], [job.spec.name])
+
+    def testCancelReachesTheJobHandle(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        cmd.design_cancel(job.job_id)
+        # The handle the command returned is the DEFERRED wrapper -- its job id is its own,
+        # not the host's -- so the cancel has to reach the real job it forwards to.
+        self.assertTrue((getattr(job, '_real', None) or job).cancelled)
+
+    def testStatusReportsEveryJobThisSession(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        status = cmd.design_status()
+        self.assertIn(job.job_id, status)
+        self.assertEqual(status[job.job_id]['state'], 'done')
+        self.assertEqual(cmd.design_status(job.job_id)[job.job_id]['state'], 'done')
+
+    def testWeightsSurfaceReportsTheBundleWithoutFetchingIt(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not fetch')):
+            report = cmd.design_weights('stubgen')
+        self.assertEqual(report['stubgen']['bundle'], 'stubgen')
+        self.assertFalse(report['stubgen']['cached'])
+        self.assertTrue(report['stubgen']['runnable'])
+
+    def testAGeneratorWhoseRuntimeIsAbsentIsReportedButNotFetched(self):
+        # A bulk `download=1` must not pull hundreds of megabytes for a method whose Swift
+        # half is not in this build. Reported, not fetched.
+        self.declareHost('boltz')
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not fetch what cannot run')):
+            report = cmd.design_weights('stubgen', download=1)
+        self.assertFalse(report['stubgen']['runnable'])
+        self.assertNotIn('fetching', report['stubgen'])
+
+    def testARefusalCostsNoDownload(self):
+        # Every input check runs before the fetch starts, so a bad target never costs a
+        # user a 625 MB transfer. That ordering is the point of the test, not the message.
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not fetch for a refused design')):
+            self.assertRaises(Exception, cmd.design_backbone,
+                              'stubgen', 'tgt', 'tgt and resi 999', length=6)
+            self.assertRaises(Exception, cmd.design_backbone,
+                              'stubgen', 'tgt', 'tgt and resi 5', length=0)
+            self.assertRaises(Exception, cmd.design_backbone,
+                              'stubgen', 'nosuchobject', 'tgt and resi 5')
+
+    def testAnUnknownGeneratorIsRefusedByName(self):
+        from pymol.predictors.errors import PredictorNotFound
+        self.assertRaises(PredictorNotFound, cmd.design_backbone,
+                          'nosuchgenerator', 'tgt', 'tgt and resi 5')
+
+    def testHeadlessRefusesRatherThanHanging(self):
+        # Without a host nothing consumes the marker, so a submitted job would wait
+        # forever. Refused by name instead.
+        from pymol.predictors.errors import PredictorUnavailable
+        os.environ.pop('RAYMOL_PREDICT_HOST', None)
+        self.assertRaises(PredictorUnavailable, cmd.design_backbone,
+                          'stubgen', 'tgt', 'tgt and resi 5')
+
+    def testNDesignsIsBounded(self):
+        from pymol.predictors.errors import PredictionOptionError
+        self.assertRaises(PredictionOptionError, cmd.design_backbone,
+                          'stubgen', 'tgt', 'tgt and resi 5', n_designs=0)
+        self.assertRaises(PredictionOptionError, cmd.design_backbone,
+                          'stubgen', 'tgt', 'tgt and resi 5', n_designs=1000)
+
+    # -- quiet=0 is the COMMAND-LINE default ---------------------------------
+    #
+    # parsing.py:417-420 sets quiet=0 for any command-line invocation whose argspec
+    # contains `quiet`, while the Python API defaults to quiet=1. A suite that only
+    # exercises quiet=1 never takes a single message-emitting branch -- the first cut of
+    # the prediction backend was 48/48 green while every one of those branches raised
+    # AttributeError on a colorprinting helper that does not exist.
+
+    def testTheWholeSurfaceIsVerboseWithoutRaising(self):
+        import io
+        from contextlib import redirect_stdout
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data, chunk=4)):
+            with redirect_stdout(io.StringIO()):
+                job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5+8',
+                                          length=6, quiet=0)
+                settle()
+        with redirect_stdout(io.StringIO()):
+            cmd.design_status(quiet=0)
+            cmd.design_status(job.job_id, quiet=0)
+            cmd.design_weights('stubgen', quiet=0)
+            cmd.design_weights(quiet=0)
+            deliver(job)
+            cmd.design_result(job.job_id, name='byhand', quiet=0)
+            cmd.design_cancel(job.job_id, quiet=0)
+            cmd.design_weights_cancel('stubgen', quiet=0)
+            cmd.design_dismiss(quiet=0)
+        self.assertIn('byhand', cmd.get_names('objects'))
+
+    def testRefusalsAreReportedAtBothVerbosities(self):
+        import io
+        from contextlib import redirect_stdout
+        for quiet in (0, 1):
+            with redirect_stdout(io.StringIO()):
+                self.assertRaises(Exception, cmd.design_backbone, 'stubgen', 'tgt', '',
+                                  quiet=quiet)
+
+    def testEveryMessageHelperUsedByDesigningExists(self):
+        """Guards the whole class of bug: a message helper that is not there.
+
+        colorprinting exposes error/warning/suggest/parrot -- there is no info(). Every
+        name designing.py reaches for must resolve, or a branch no test happens to take
+        crashes in front of a user. The prediction suite has the same guard for the same
+        reason, and it is there because that bug actually shipped.
+        """
+        import re
+        from pymol import colorprinting, designing
+        with open(designing.__file__) as handle:
+            used = set(re.findall(r'colorprinting\.(\w+)', handle.read()))
+        self.assertTrue(used, 'expected designing.py to emit messages')
+        for helper in sorted(used):
+            self.assertTrue(hasattr(colorprinting, helper),
+                            'colorprinting has no %r' % helper)

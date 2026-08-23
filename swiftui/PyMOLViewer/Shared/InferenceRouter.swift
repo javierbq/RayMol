@@ -30,7 +30,8 @@ protocol InferenceRuntime: AnyObject {
     func cancel(jobID: String)
 }
 
-/// Turns a `PREDICT:` feedback marker into a job on the runtime that owns it.
+/// Turns a `PREDICT:` feedback marker into a job on the runtime that owns it — a
+/// prediction and a backbone design alike, since both share the marker.
 ///
 /// ``handle(marker:)`` is the only entry point, and `PyMOLEngine.pollFeedback()` is its
 /// only caller — once per `PREDICT:` line, on the main thread. There are two verbs:
@@ -82,7 +83,8 @@ enum InferenceRouter {
     ///
     /// Adding an entry registers a runtime for both, in the same line. **Keep it that
     /// way:** a second list beside this one is how a runtime ends up startable but not
-    /// stoppable — a running job the user has no way to cancel.
+    /// stoppable — a running job the user has no way to cancel, which for a backbone design
+    /// is seventeen minutes of it.
     ///
     /// A runtime is claimed by exactly one entry, because weights and featurizer are
     /// method-specific: running one method's request on another's backend does not fail —
@@ -94,6 +96,7 @@ enum InferenceRouter {
         var table: [any InferenceRuntime] = [BoltzJobManager.shared]
         #if os(macOS)
         table.append(ProtenixJobManager.shared)
+        table.append(RFD3JobManager.shared)
         #endif
         return table
     }()

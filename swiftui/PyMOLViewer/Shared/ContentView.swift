@@ -157,6 +157,10 @@ struct ContentView: View {
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
+    #if os(macOS)
+    // Backbone design (#342). A SHEET, not a mode -- see DesignBackboneSheet for why.
+    @State private var showDesignBackbone = false
+    #endif
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
     // Pending auto-minimize of the expanded mouse legend (fires ~1s after the
     // pointer leaves it); cancelled if the pointer returns.
@@ -330,7 +334,8 @@ struct ContentView: View {
         // stays ABOVE the busy scrim -- `predict` is not in heavyLabel, so a fetch
         // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
-                                              predictions: engine.predictionJobs)) { item in
+                                              predictions: engine.predictionJobs,
+                                              designs: engine.designJobs)) { item in
             switch item.action {
             case .command(let cmd):   engine.runCommand(cmd)
             case .python(let src):    engine.runPython(src)
@@ -675,6 +680,11 @@ struct ContentView: View {
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
         }
+        #if os(macOS)
+        .sheet(isPresented: $showDesignBackbone) {
+            DesignBackboneSheet()
+        }
+        #endif
         #if !RAYMOL_MAS_RESTRICTED
         .sheet(isPresented: $showConnectSheet) {
             MCPConnectSheet().environmentObject(mcpManager)
@@ -3314,6 +3324,18 @@ struct ContentView: View {
             .disabled(isDesignLocked)
             .keyboardShortcut("p", modifiers: .control)
         }
+        #if os(macOS)
+        // Backbone design (#342). macOS only, because RFD3Kit is: one design against a
+        // full-length target peaks near half a 36 GiB Mac.
+        //
+        // No checkmark and no toggle, unlike every item above: this opens a sheet rather
+        // than entering an interaction mode, because the picking it needs is the ordinary
+        // selection and a fifth mutually-exclusive mode would buy nothing. The trailing
+        // ellipsis is the platform's way of saying so.
+        Divider()
+        Button("Design Backbone…") { showDesignBackbone = true }
+            .disabled(isDesignLocked)
+        #endif
     }
 
     /// Tooltip for the Tools menu. Names only the tools this build actually has —
@@ -3327,6 +3349,9 @@ struct ContentView: View {
         if DesignAvailability.isSupported { parts.append("Design with MPNN") }
         #endif
         if PredictAvailability.isSupported { parts.append("Predict structures") }
+        #if os(macOS)
+        parts.append("Design backbones")
+        #endif
         let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }
         return "\(active.name) mode is active — Tools: \(tools)"

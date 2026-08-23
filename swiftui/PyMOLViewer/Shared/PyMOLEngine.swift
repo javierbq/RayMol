@@ -130,6 +130,12 @@ final class PyMOLEngine: ObservableObject {
     /// collection here -- an unguarded 2 Hz assignment re-lays-out the tray on
     /// every tick even when nothing changed.
     @Published var predictionJobs: [PredictionJobState] = []
+    /// Running backbone designs (#342), refreshed by the same poll. A separate array from
+    /// `predictionJobs`, not a merged one: they are separate job tables with separate
+    /// cancel commands, and the tray renders them with different words. Same record type,
+    /// because `designing.pending_info` publishes the same keys as
+    /// `predicting.pending_info` deliberately. Guarded on assignment for the same reason.
+    @Published var designJobs: [PredictionJobState] = []
     // Restored from the last launch (#332). A session (.pse) that turns seq_view
     // on still wins — it assigns this property after launch, like any other setter.
     @Published var sequenceVisible = UserDefaults.standard

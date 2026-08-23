@@ -10,7 +10,8 @@ import XCTest
 ///
 /// * **Routable implies cancellable.** `submit` and `cancel` read the SAME table, so a
 ///   runtime cannot be added to one path and forgotten in the other. A runtime that is
-///   routable but not cancellable is a job the user cannot stop.
+///   routable but not cancellable is a job the user cannot stop — seventeen minutes of it
+///   for a design.
 /// * **An unrouted runtime is refused BY NAME**, not silently accepted and not left
 ///   reporting `queued` forever. That is how a Python side offering a method this build did
 ///   not link gets a real error.
@@ -61,7 +62,7 @@ final class InferenceRouterTests: XCTestCase {
     /// not to the table — the state in which it is neither routable nor cancellable.
     func testTheTableCarriesEveryRuntimeThisBuildLinks() {
         XCTAssertEqual(Set(InferenceRouter.runtimes.map(name(of:))),
-                       ["boltz", "protenix"])
+                       ["boltz", "protenix", "rfd3"])
     }
 
     // MARK: Cancel reaches the whole table
@@ -69,15 +70,19 @@ final class InferenceRouterTests: XCTestCase {
     /// A cancel marker carries only a job id, so there is nothing in it to route on: it
     /// must reach EVERY runtime, not just the first or the default.
     ///
-    /// Asserted through `protenix`, which is neither — so a broadcast that stopped after
-    /// the default would fail here.
-    func testACancelMarkerReachesARuntimeThatIsNotTheDefault() {
+    /// Asserted through `protenix` AND `rfd3`, neither of which is the first entry or the
+    /// default — so a broadcast that stopped early would fail here. `rfd3` is the one that
+    /// matters most: a design the user cannot cancel is seventeen minutes of it.
+    func testACancelMarkerReachesEveryRuntimeNotJustTheDefault() {
         let jobID = "router-cancel-\(UUID().uuidString.prefix(8))"
         XCTAssertFalse(ProtenixJobManager.shared.cancelRequestedForTesting.contains(jobID))
+        XCTAssertFalse(RFD3JobManager.shared.cancelRequestedForTesting.contains(jobID))
 
         InferenceRouter.handle(marker: "PREDICT:cancel:\(jobID)")
 
         XCTAssertTrue(ProtenixJobManager.shared.cancelRequestedForTesting.contains(jobID),
+                      "the cancel broadcast stopped before reaching every runtime")
+        XCTAssertTrue(RFD3JobManager.shared.cancelRequestedForTesting.contains(jobID),
                       "the cancel broadcast stopped before reaching every runtime")
         // ...and the default saw it too, from the same one loop.
         XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))

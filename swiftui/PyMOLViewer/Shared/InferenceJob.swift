@@ -5,10 +5,11 @@ import Foundation
 /// and the file-based plumbing that carries a job from a marker to a settled status.
 ///
 /// RayMol has no Python→Swift call path: `PyMOLBridge.h` is one-directional and no Swift
-/// function carries a C symbol. So `cmd.predict` writes a request JSON and prints a
-/// `PREDICT:` marker, which `PyMOLEngine.pollFeedback()` already scans on a 100 ms timer
-/// — exactly how `OBJPANEL:` and `SETTINGS:ready` work. Payloads travel as tempfiles
-/// because the feedback line caps at ~1 KB.
+/// function carries a C symbol. So `cmd.predict` — and `cmd.design_backbone`, which shares
+/// the marker — writes a request JSON and prints a `PREDICT:` marker, which
+/// `PyMOLEngine.pollFeedback()` already scans on a 100 ms timer, exactly how `OBJPANEL:`
+/// and `SETTINGS:ready` work. Payloads travel as tempfiles because the feedback line caps
+/// at ~1 KB.
 ///
 /// Because the Python API is a job handle, nothing here needs to return a value to Python:
 /// status and result are files that Python polls. That is what makes the missing bridge
@@ -16,8 +17,10 @@ import Foundation
 ///
 /// **Neutral by construction, and it must stay that way.** Nothing in here knows a method:
 /// no featurizer, no weights, no size model, and no `import` of any inference package. That
-/// is what lets every runtime share it without depending on any other runtime. Anything
-/// method-specific belongs in the manager that claims the runtime — see ``InferenceRuntime``.
+/// is what lets every runtime share it without depending on any other runtime — a design
+/// request's `target` sits here beside a prediction's `chains`, owned by neither manager.
+/// Anything method-specific belongs in the manager that claims the runtime — see
+/// ``InferenceRuntime``.
 enum InferenceJob {
 
     // MARK: - Wire format (must match modules/pymol/predictors/host.py)
@@ -36,6 +39,35 @@ enum InferenceJob {
         let a3mPath: String
 
         enum CodingKeys: String, CodingKey { case chain, a3mPath = "a3m_path" }
+    }
+
+    /// One atom of a design target, as `pymol.generators` ships it.
+    ///
+    /// A GENERATOR's input is a structure, not a sequence, so it cannot travel in
+    /// `chains`. It travels as data rather than as PDB text on purpose: RFD3Kit's
+    /// `designBinder(targetPDB:)` does not design against the PDB it is given -- it routes
+    /// through `autoTarget`, which substitutes its own most-compact 95-residue window and
+    /// its own hotspots -- and its PDB reader merges insertion codes. One parse, on the
+    /// Python side, is one chance to disagree instead of two.
+    struct DesignAtom: Codable {
+        let name: String
+        /// [x, y, z] in Angstrom, in the session's own frame.
+        let xyz: [Double]
+    }
+
+    /// One residue of a design target. ORDER IS THE CONTRACT: the featurizer assigns
+    /// tokens in exactly the order these arrive and resolves `hotspots` as positions in
+    /// it, so nothing may reorder, filter or deduplicate the array.
+    ///
+    /// `chain` and `resi` are RayMol's own bookkeeping -- the featurizer ignores both and
+    /// identifies a residue purely by its position. They are what lets the finished object
+    /// be written with the target's real chain id and numbering rather than the engine's
+    /// renumbered 1..N.
+    struct DesignResidue: Codable {
+        let chain: String
+        let resi: String
+        let resn: String
+        let atoms: [DesignAtom]
     }
 
     /// One job, as Python wrote it.
@@ -96,12 +128,38 @@ enum InferenceJob {
         /// predates this and records the run without them, rather than the whole request
         /// failing to decode.
         let metricsPath: String?
+        /// The target structure a BACKBONE GENERATOR designs against, in token order.
+        ///
+        /// Optional for the same reason every field above it is: absent simply means this
+        /// is a prediction, and a non-optional field would turn any Python/Swift skew into
+        /// "malformed prediction request" instead of the request decoding and being routed
+        /// to a manager that can say what is missing. Every predictor request has it
+        /// absent, and every generator request has it present -- which is checked, not
+        /// assumed, by the manager that claims the runtime.
+        let target: [DesignResidue]?
+        /// POSITIONS in `target` of the interface residues to engage. Positions, not
+        /// residue numbers: the featurizer tests membership against a residue's index in
+        /// the array it was handed and never reads a residue number at all, so a hotspot
+        /// given as "45" would condition the design on the 46th residue.
+        let hotspots: [Int]?
+        /// Residues to generate.
+        let designLength: Int?
+        /// Chain id the generated chain gets in the finished object. Chosen on the Python
+        /// side, where "free" is known: the object is the target plus the design.
+        let designChain: String?
+        /// Stable identity of this design -- generator, weight pack, target coordinates,
+        /// hotspots, length, seed and schedule, hashed. Written into the finished
+        /// structure as a REMARK so the identity survives an export, which is what a later
+        /// refold is keyed to.
+        let designKey: String?
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
             case objectName = "object_name", metricsPath = "metrics_path"
             case alignments, msaDepth = "msa_depth"
+            case target, hotspots, designLength = "design_length"
+            case designChain = "design_chain", designKey = "design_key"
         }
     }
 
@@ -269,12 +327,18 @@ enum InferenceJob {
     /// Internal rather than private: it moved out of the manager that used to own it, so
     /// every runtime now reaches it from outside. The ordering is the whole point of the
     /// function, and a second copy of it is a second chance to get it backwards.
-    static func settle(_ request: Request, _ status: Status, to url: URL) {
+    ///
+    /// `pythonModule` names the surface that owns the placeholder -- `predicting` for a
+    /// prediction, `designing` for a generated design. Defaulted, so every existing call
+    /// site is unchanged, and parameterised rather than duplicated for the same reason
+    /// the function exists at all.
+    static func settle(_ request: Request, _ status: Status, to url: URL,
+                       pythonModule: String = "predicting") {
         try? writeStatus(status, to: url)
         #if DEBUG
         settleTap?("write")
         #endif
-        discardPlaceholder(request)
+        discardPlaceholder(request, pythonModule: pythonModule)
         #if DEBUG
         settleTap?("discard")
         #endif
@@ -289,24 +353,25 @@ enum InferenceJob {
     /// marked pending after a successful load would be stripped from every subsequent
     /// session save. `deliver_result` also pins `zoom=0` -- a prediction can land many
     /// minutes after submit, and moving the camera then would interrupt the user.
-    static func loadResult(_ request: Request) {
+    static func loadResult(_ request: Request, pythonModule: String = "predicting") {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         let path = pythonLiteral(request.outPath)
         let name = pythonLiteral(objectName)
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(
-                "from pymol import predicting as _p; "
+                "from pymol import \(pythonModule) as _p; "
                 + "_p.deliver_result(\(path), \(name), seed=\(request.seed))")
         }
     }
 
     /// Drops the placeholder when a job will never produce a structure. Python only
     /// deletes it if it is still empty, so this cannot destroy a completed result.
-    static func discardPlaceholder(_ request: Request) {
+    static func discardPlaceholder(_ request: Request,
+                                   pythonModule: String = "predicting") {
         guard let objectName = request.objectName, !objectName.isEmpty else { return }
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(
-                "from pymol import predicting as _p; "
+                "from pymol import \(pythonModule) as _p; "
                 + "_p.discard_pending(\(pythonLiteral(objectName)))")
         }
     }

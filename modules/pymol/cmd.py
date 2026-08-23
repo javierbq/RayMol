@@ -60,6 +60,13 @@ def _deferred_init_pymol_internals(_pymol):
     if predicting.session_save not in _pymol._session_save_tasks:
         _pymol._session_save_tasks.append(predicting.session_save)
 
+    # Backbone generation (#342): the same job for design placeholders. Its own task
+    # rather than a shared one, because the two keep separate pending tables -- see
+    # designing.py's module docstring.
+    from . import designing
+    if designing.session_save not in _pymol._session_save_tasks:
+        _pymol._session_save_tasks.append(designing.session_save)
+
     # RayMol: per-scene render-settings snapshot (DOF/lighting/metal_* look).
     # Imported here (deferred) to avoid a circular import at cmd.py load time.
     # Wrapped so a fork-module problem can never break core PyMOL startup.

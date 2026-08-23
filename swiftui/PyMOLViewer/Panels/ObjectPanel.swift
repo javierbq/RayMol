@@ -4107,6 +4107,16 @@ struct PanelPayload: Decodable {
     /// decode against an older bundled appkit_inspector.py and freeze the panel on
     /// its last list.
     let design_sele: String?
+    /// Running and recently-failed BACKBONE DESIGNS (#342), keyed by object name.
+    ///
+    /// The same record type as `pending_jobs` -- `designing.pending_info` publishes the
+    /// same keys as `predicting.pending_info`, deliberately, so one decoder serves both --
+    /// but a separate key, because the two are separate job tables with separate cancel
+    /// commands. Merging them would send a design's object name to `predict_cancel`, which
+    /// has never heard of it.
+    ///
+    /// Optional, like every field above, and for the same single-`guard let` reason.
+    let design_jobs: [String: PredictionJobState]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -4190,6 +4200,11 @@ extension PyMOLEngine {
         let jobs = (payload.pending_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Backbone designs (#342), same record type, separate array -- see the payload's
+        // `design_jobs` comment for why they are not merged.
+        let designs = (payload.design_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -4211,6 +4226,7 @@ extension PyMOLEngine {
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
+            if self.designJobs != designs { self.designJobs = designs }
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

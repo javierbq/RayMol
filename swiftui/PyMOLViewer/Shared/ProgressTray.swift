@@ -147,6 +147,75 @@ struct ProgressItem: Identifiable, Equatable {
             bundle: job.bundle)
     }
 
+    /// A running or finished BACKBONE DESIGN.
+    ///
+    /// A sibling of `prediction(_:)` rather than a parameter on it. The wire record is the
+    /// same shape -- `designing.pending_info` produces the same keys as
+    /// `predicting.pending_info`, deliberately, so one decoder serves both -- but every
+    /// user-visible word differs, and a design's numbers differ in kind: there is one
+    /// design per object, so there is no "model k of N", and it takes MINUTES rather than
+    /// seconds, which makes the elapsed clock the useful half rather than the fallback.
+    ///
+    /// The word "binder" appears nowhere. A generated chain is a designed backbone until it
+    /// has been refolded and passed an interface gate, and this card is seen long before
+    /// either.
+    static func design(_ job: PredictionJobState) -> ProgressItem {
+        var parts: [String] = []
+        // Diffusion step k of N. On a real target each step is seconds, so this is the
+        // line that says the job is alive at all.
+        if let step = job.step, let total = job.totalSteps, total > 0 {
+            parts.append("step \(step) of \(total)")
+        }
+        let elapsed = "\(ProgressCard.formatElapsed(job.elapsed)) elapsed"
+        // BOTH, unlike a prediction's card. A design is minutes long and its phase estimate
+        // covers only the current phase, so the elapsed clock is the number a user actually
+        // tracks -- dropping it in favour of a scoped countdown would hide the one honest
+        // measure of a seventeen-minute run.
+        if let remaining = job.remaining {
+            parts.append(ProgressCard.formatPhaseRemaining(remaining))
+        }
+        parts.append(elapsed)
+
+        let icon: String
+        let title: String
+        let detail: String
+        if job.isCancelled {
+            icon = "xmark.circle"
+            title = "Design cancelled: \(job.id)"
+            detail = elapsed
+        } else if job.isError {
+            icon = "exclamationmark.triangle.fill"
+            title = "Design failed: \(job.id)"
+            detail = job.error ?? "Unknown error"
+        } else {
+            // Not "atom": a design is not a fold, and the tray may show both at once.
+            icon = "wand.and.stars"
+            title = "Designing \(job.id)"
+            var head = job.phase.capitalized
+            if job.moving, let fraction = job.fraction {
+                head += " \(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+            }
+            detail = ([head] + parts).joined(separator: " · ")
+        }
+
+        return ProgressItem(
+            id: "design:\(job.id)",
+            icon: icon,
+            title: title,
+            detail: detail,
+            fraction: job.fraction,
+            moving: job.moving && !job.isError,
+            isError: job.isError,
+            isCancelled: job.isCancelled,
+            buttonTitle: job.isError ? "Dismiss" : "Cancel",
+            // `design_*`, not `predict_*`: the two surfaces keep separate job tables, so a
+            // design's object name means nothing to predict_cancel. The `.python` channel
+            // and the import are load-bearing for the reasons `prediction(_:)` gives.
+            action: job.isError ? .python(pythonCall("design_dismiss", job.id))
+                                : .python(pythonCall("design_cancel", job.id)),
+            bundle: job.bundle)
+    }
+
     /// A self-contained Python statement calling `cmd.<function>(<name>)`.
     ///
     /// `_c` rather than `cmd`: the name is bound in `__main__` for the duration of
@@ -169,19 +238,25 @@ struct ProgressItem: Identifiable, Equatable {
     ///
     /// A static rather than a computed property on ContentView so the merge, the
     /// filter and the sort are unit-testable without instantiating a View.
+    /// `designs` is defaulted, so every existing call site and test is unchanged and the
+    /// tray degrades to exactly its previous behaviour when nothing is designing.
     static func tray(weights: WeightsFetchState?,
-                     predictions: [PredictionJobState]) -> [ProgressItem] {
+                     predictions: [PredictionJobState],
+                     designs: [PredictionJobState] = []) -> [ProgressItem] {
         var items: [ProgressItem] = []
         if let weights { items.append(.weights(weights)) }
         // While a bundle is fetching, its OWN card is the measured one; a
         // prediction merely waiting on it would show the same transfer again at a
-        // different number.
+        // different number. A design waiting on a bundle is hidden for the same
+        // reason -- and it is the same `bundle` field, so the same filter covers it.
         let fetching = Set(items.compactMap(\.bundle))
-        items += predictions
-            .map(ProgressItem.prediction)
+        items += (predictions.map(ProgressItem.prediction)
+                  + designs.map(ProgressItem.design))
             .filter { item in item.bundle.map { !fetching.contains($0) } ?? true }
         // Running first, so a live job is never pushed below the fold by a stale
-        // error card the user has not dismissed.
+        // error card the user has not dismissed. Within a tier by id, which puts
+        // "design:" before "predict:" -- arbitrary but STABLE, which is what stops
+        // the rows reordering under the pointer on every poll.
         return items.sorted { lhs, rhs in
             lhs.isError == rhs.isError ? lhs.id < rhs.id : !lhs.isError
         }

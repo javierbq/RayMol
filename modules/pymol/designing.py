@@ -1,0 +1,1286 @@
+"""Backbone design: cmd.design_backbone and friends.
+
+The sibling of `predicting.py`, and thin in the same way: argument marshalling and
+session interaction only. The registry lives in `pymol.generators`, and the weight cache,
+the non-blocking fetcher and the request/status transport are `pymol.predictors`' --
+shared by import, because none of them is sequence-shaped.
+
+WHY NOT `predict`. Every predictor maps chain sequences to a structure. A generator is
+handed a target STRUCTURE and returns a chain that did not exist, so there is no sequence
+to type and nothing to put in `PredictionSpec.chains`. Routing it through `predict` would
+mean a method whose only honest `parse_spec` raises, offered by Tab-completion at the
+prompt of the command that cannot run it. See docs/generators.md.
+
+WHAT IS DELIBERATELY SHARED ANYWAY. The ETA arithmetic, the tooltip wording and the
+progress composition are imported from `predicting` rather than reimplemented. Those
+carry real traps -- a NaN fraction poisons a monotone floor permanently, a phase change
+has to restart the clock, the tooltip has to word an estimate at the scope it was measured
+-- and two copies of that policy would drift. What is NOT shared is the job bookkeeping:
+a design's jobs are its own, because a design and a prediction are not interchangeable
+rows in one list, and because `predicting`'s progress lookup resolves a job's method
+through the predictor registry, which by construction does not know a generator.
+
+Every function ends its signature with _self=cmd. That is load-bearing: pymol2/cmd2.py
+binds _self only when it appears in the argspec, and otherwise copies the function
+verbatim so it silently drives the GLOBAL instance.
+"""
+import sys
+
+from . import colorprinting
+from . import predicting
+from .generators import registry
+from .generators.base import (KEPT_ALTLOCS, STANDARD_AA3, TargetResidue,
+                              TargetStructure, looks_like_bare_residue_list)
+from .generators.metrics import STATS_FIELDS
+from .predictors import fetching
+from .predictors.errors import PredictionInputError, PredictionOptionError
+
+cmd = sys.modules["pymol.cmd"]
+
+#: Reused verbatim from `predicting`, on purpose -- see the module docstring. These are
+#: pure functions of a status dict with no predictor knowledge in them.
+_as_float = predicting._as_float
+_as_int = predicting._as_int
+_format_detail = predicting._format_detail
+_phase_remaining = predicting._phase_remaining
+format_remaining = predicting.format_remaining
+
+_JOBS = {}
+
+#: Upper bound for a randomly chosen seed. Below 2**53 so the value survives a JSON
+#: round-trip through a Double on the Swift side.
+RANDOM_SEED_BOUND = 2 ** 32
+
+#: Hex digits of the design key used in a derived object name.
+OBJECT_NAME_DIGEST_CHARS = 8
+
+#: name -> LIST of outstanding job ids. A list for shape-compatibility with the panel
+#: payload `predicting` already publishes, never for several designs: EACH DESIGN IS ITS
+#: OWN OBJECT, which is the data-model decision this module makes and the reason is worth
+#: stating. `n_models` of a prediction are samples of one distribution over one input, so
+#: they belong in one object as states. Two designs at two seeds are not that -- they are
+#: different molecules with different sequences, different geometry and separate
+#: identities, and stacking them as states of one object would give them one metric row
+#: per state with nothing saying which sequence each described.
+_PENDING = {}
+
+#: name -> progress bookkeeping the job handles cannot supply. Same shape as
+#: `predicting._TRACK`, because `_format_detail` and the panel payload read it.
+_TRACK = {}
+
+#: name -> the last record of a job that ended badly, held so the card can say WHY a
+#: seventeen-minute run produced nothing. Success is not retained: the loaded object is
+#: its own confirmation.
+_RECENT = {}
+
+#: How many terminal records to hold.
+MAX_RECENT = 16
+
+#: name -> the most recent pending_info() result. A FALLBACK only, for a name that left
+#: _PENDING before the discard reached it.
+_LAST_INFO = {}
+
+
+def weight_cache():
+    """The process-wide WeightCache -- `predicting`'s, not a second one.
+
+    One cache, because a bundle is identified by id and version and the cache root is a
+    property of the machine, not of the method that wants it. Two caches would put the
+    same bytes in the same place through two lock namespaces, which is exactly the
+    concurrent-download hazard `WeightCache._acquire_lock` exists to prevent.
+    """
+    return predicting.weight_cache()
+
+
+def job_ids():
+    """Ids of every design job submitted this session, newest last."""
+    return list(_JOBS)
+
+
+def pending_objects():
+    """Copy of the pending map: object name -> list of outstanding job ids."""
+    return {name: list(ids) for name, ids in _PENDING.items()}
+
+
+def recent_objects():
+    """Names whose job ended badly and whose card is still waiting to be seen."""
+    return list(_RECENT)
+
+
+def default_object_name(design_key, generator_id=''):
+    """The object name a design lands in when the caller does not pick one.
+
+    Shaped `<generator>_design_<key>`, e.g. `rfd3_design_1f4c9e02`. Derived from the
+    DESIGN KEY rather than from the target alone, so two seeds against one target are
+    two objects automatically and re-running an identical design lands back in the same
+    one -- and so the name a user sees is a prefix of the identity a later refold is
+    matched against.
+    """
+    method = ''.join(ch for ch in str(generator_id) if ch.isalnum() or ch == '_')
+    stem = 'design_%s' % str(design_key)[:OBJECT_NAME_DIGEST_CHARS]
+    return '%s_%s' % (method, stem) if method else stem
+
+
+# -- Reading the target out of the session ------------------------------------
+
+
+def resolve_target(target, hotspots, quiet=1, _self=cmd):
+    """Selection + hotspot selection -> TargetStructure. The only session read here.
+
+    Resolved ONCE, up front: the design key, the size checks and the coordinates the
+    engine sees must all describe the same residues, and re-reading later could see a
+    target the user has since edited.
+
+    `hotspots` is a selection expression, not a residue list. That is the PyMOL-native
+    spelling, it composes with everything else that selects atoms -- including `sele`,
+    which is what Design mode's picking writes -- and it makes "the residues I clicked"
+    expressible without a second syntax.
+    """
+    if not str(target).strip():
+        raise PredictionInputError('no target selection given')
+    if _self.count_atoms(target) == 0:
+        raise PredictionInputError(
+            'the target selection %r selects no atoms' % (target,))
+
+    # One object, refused explicitly rather than left to the duplicate-residue check in
+    # `parse_target`. Two objects can both have a chain A, and residues are grouped by
+    # adjacency, so the failure would otherwise surface as "residue A/12 appears twice" --
+    # true, but not the thing to fix.
+    objects = _self.get_object_list('(%s)' % target)
+    if len(objects) > 1:
+        raise PredictionInputError(
+            'the target selection spans %d objects (%s). A design is generated against'
+            ' one structure; select within one object, or "create" a single object from'
+            ' what you want first.' % (len(objects), ', '.join(sorted(objects))))
+
+    # The state is resolved and RECORDED rather than left as -1: state 3 of an NMR
+    # ensemble is a different target from state 1, and the design key has to say which.
+    state = int(_self.get_state())
+
+    # Read straight out of the session. No PDB round trip -- see TargetResidue for why
+    # (RFD3Kit's PDB entry point substitutes its own auto-picked target, and its reader
+    # merges insertion codes).
+    #
+    # Hydrogens are excluded here rather than filtered later: the engine's dense atom
+    # templates are heavy-atom only, so a hydrogen is wire weight that reaches nothing.
+    rows = []
+    _self.iterate_state(state, '(%s) and not hydro' % target,
+                        'rows.append((chain, resi, resn, name, alt, x, y, z))',
+                        space={'rows': rows})
+
+    # THE OBJECT MATRIX HAS TO BE APPLIED BY HAND, and forgetting it is a silent
+    # wrong-answer rather than an error. `iterate_state` reports an atom's STORED
+    # coordinates; `get_coords` and `get_pdbstr` both apply the object's TTT matrix and
+    # `iterate_state` does not. Measured: after `translate [10,0,0], object=t`,
+    # get_coords reads 9.999 for an atom iterate_state still reads as -0.001.
+    #
+    # RayMol ships Move mode, which is exactly a TTT matrix (#204), so a user CAN move a
+    # target and then design against it. Without this the design would be generated against
+    # where the target used to be and land ten Angstrom off the structure on screen -- a
+    # design that looks fine in isolation and is nowhere near its target.
+    rows = _apply_object_matrix(objects[0], rows, state, _self=_self)
+
+    residues = []
+    key = None
+    for chain, resi, resn, name, alt, x, y, z in rows:
+        # A second modelled conformer of the same atom, which has one slot. Keeping 'A'
+        # and the blank is what every structure pipeline does with an altloc.
+        if alt not in KEPT_ALTLOCS:
+            continue
+        if resn not in STANDARD_AA3:
+            continue
+        if (chain, resi, resn) != key:
+            residues.append(TargetResidue(chain, resi, resn))
+            key = (chain, resi, resn)
+        residues[-1].atoms.append((name, (x, y, z)))
+    residues = tuple(residues)
+
+    _report_excluded(target, residues, state, _self=_self)
+
+    hotspot_indices = _resolve_hotspots(target, hotspots, residues, _self=_self)
+    if not int(quiet):
+        colorprinting.parrot(
+            ' design: target %s -- %d residues, chain %s, state %d, %d hotspot(s): %s'
+            % (target, len(residues), residues[0].chain if residues else '?', state,
+               len(hotspot_indices),
+               ', '.join('%s/%s' % (residues[i].chain, residues[i].resi)
+                         for i in hotspot_indices[:8])))
+    return TargetStructure(residues, hotspot_indices, source=str(target), state=state)
+
+
+#: A 4x4 that changes nothing, row-major, as `get_object_matrix` returns it.
+_IDENTITY_MATRIX = (1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0)
+
+
+def _apply_object_matrix(obj, rows, state, _self=cmd):
+    """Put `rows`' coordinates where the object actually IS. See the caller for why.
+
+    Compared against the identity rather than applied unconditionally, so the overwhelmingly
+    common case -- an object nobody has moved -- costs one comparison and cannot introduce
+    float noise into coordinates the design key hashes.
+    """
+    try:
+        matrix = _self.get_object_matrix(obj, state)
+    except Exception:
+        # An object with no matrix at all. Nothing to apply, and a diagnostic failure here
+        # must not take a design down.
+        return rows
+    if not matrix or len(matrix) != 16:
+        return rows
+    matrix = tuple(float(value) for value in matrix)
+    if all(abs(a - b) < 1e-9 for a, b in zip(matrix, _IDENTITY_MATRIX)):
+        return rows
+    moved = []
+    for chain, resi, resn, name, alt, x, y, z in rows:
+        moved.append((
+            chain, resi, resn, name, alt,
+            matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3],
+            matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7],
+            matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11]))
+    return moved
+
+
+def _report_excluded(target, residues, state, _self=cmd):
+    """Say which PROTEIN residues of the selection the engine will not see.
+
+    Unconditional, not gated on `quiet`, and the distinction is the point. Waters,
+    ions, ligands and nucleic acids are not part of a protein target by anyone's
+    definition and are dropped in silence. A residue inside the protein chain that the
+    reader cannot represent -- a selenomethionine, a phosphoserine, anything not in the
+    standard twenty -- is different: it leaves a HOLE in the target, the residues on
+    either side are then numbered as neighbours, and nothing in the result would say so.
+    A user who is not told cannot know to fix it.
+    """
+    kept = set((residue.chain, residue.resi) for residue in residues)
+    protein = set()
+    try:
+        # `iterate`, not `iterate_state`, and NO state argument: `cmd.iterate` does not take
+        # one. Passing it raises TypeError straight into the except below, which is exactly
+        # how this diagnostic was silently doing nothing when it was first written. Residue
+        # identity does not vary by state anyway -- only coordinates do.
+        _self.iterate('(%s) and polymer.protein' % target,
+                      'protein.add((chain, resi))',
+                      space={'protein': protein})
+    except Exception:
+        # A selection language failure here must not take the command down: the checks
+        # that matter are in parse_target, and this is a diagnostic.
+        return
+    missing = sorted(protein - kept)
+    if not missing:
+        return
+    shown = ', '.join('%s/%s' % pair for pair in missing[:6])
+    colorprinting.warning(
+        ' design: %d protein residue(s) of the target cannot be read by this method and'
+        ' are EXCLUDED from it: %s%s. The residues on either side of each gap are then'
+        ' presented to the network as neighbours. Only the standard twenty amino acids'
+        ' are readable, from ATOM records.'
+        % (len(missing), shown, ', ...' if len(missing) > 6 else ''))
+
+
+def _resolve_hotspots(target, hotspots, residues, _self=cmd):
+    """The hotspot selection, as indices into `residues`.
+
+    Every named hotspot must land inside the target. A hotspot outside it is not
+    ignorable: hotspots set the sampler's origin, so dropping one silently aims the
+    design somewhere else -- which looks exactly like a bad design.
+    """
+    text = str(hotspots or '').strip()
+    if not text:
+        raise PredictionInputError(
+            'no hotspots given. They are required rather than optional: the interface'
+            ' residues set the sampler origin, so without them the design is aimed at'
+            ' the centre of mass of the whole target. Give a selection, e.g.'
+            ' hotspots="chain A and resi 45+48+52", or hotspots=sele after picking'
+            ' them in the viewer.')
+    if looks_like_bare_residue_list(text):
+        raise PredictionInputError(
+            'hotspots is a SELECTION, not a residue list: %r selects nothing. Write it'
+            ' as hotspots="resi %s".' % (text, text.replace(' ', '')))
+
+    index_of = {}
+    for index, residue in enumerate(residues):
+        index_of.setdefault((residue.chain, residue.resi), index)
+
+    picked = set()
+    _self.iterate('(%s)' % text, 'picked.add((chain, resi))',
+                  space={'picked': picked})
+    if not picked:
+        raise PredictionInputError(
+            'the hotspot selection %r selects no atoms' % (text,))
+
+    outside = sorted(pair for pair in picked if pair not in index_of)
+    if outside:
+        shown = ', '.join('%s/%s' % pair for pair in outside[:6])
+        raise PredictionInputError(
+            '%d hotspot residue(s) are not inside the target: %s%s. A hotspot outside'
+            ' the target cannot be conditioned on, and dropping it silently would aim'
+            ' the design somewhere other than where it was pointed. Either extend the'
+            ' target to include them or drop them from the hotspot selection.'
+            % (len(outside), shown, ', ...' if len(outside) > 6 else ''))
+    return sorted(index_of[pair] for pair in picked)
+
+
+# -- Deferred submit: designs waiting on a weight download ---------------------
+
+
+class _DeferredDesignJob:
+    """A design that is waiting for its weights.
+
+    Presents the same surface as a real job -- job_id, status(), cancel(), spec, options
+    -- so `design_status`, `design_cancel` and the panel need to know nothing about
+    deferral. The mirror of `predicting._DeferredJob`, and a separate class rather than a
+    reuse because that one stores a `predictor_id` and is advanced by a pump that walks
+    the prediction job table.
+    """
+
+    __slots__ = ('job_id', 'spec', 'options', 'object_name', 'generator_id',
+                 '_generator', '_bundle', '_real', '_error', '_cancelled', '_reaped')
+
+    def __init__(self, spec, options, generator, bundle, object_name):
+        import uuid
+        # This handle's own id, NOT the host's: the host allocates its id inside
+        # submit(), which has not run yet at the point the caller needs something to
+        # hold. The two never need to agree -- every host-side path is keyed by the
+        # host's id and every session-side path by the object name.
+        self.job_id = 'pending-%s' % uuid.uuid4().hex[:12]
+        self.spec = spec
+        self.options = options
+        self.object_name = object_name
+        self.generator_id = generator.id
+        self._generator = generator
+        self._bundle = bundle
+        self._real = None
+        self._error = None
+        self._cancelled = False
+        self._reaped = False
+
+    @property
+    def submitted(self):
+        return self._real is not None
+
+    def status(self):
+        if self._real is not None:
+            return self._real.status()
+        base = {'state': 'running', 'phase': 'weights', 'fraction': 0.0,
+                'error': None, 'result_path': None,
+                'peak_bytes': None, 'elapsed_s': None}
+        if self._error is not None:
+            base.update(state='error', error=self._error)
+            return base
+        if self._cancelled:
+            base.update(state='cancelled')
+            return base
+        fetch = fetching.get(self._bundle.id)
+        if fetch is not None:
+            snap = fetch.snapshot()
+            # The fetch's own phase (download/extract) rather than a flat "weights", so
+            # the tray and `design_status` say which half is slow.
+            base.update(phase=snap['phase'], fraction=snap['fraction'])
+        return base
+
+    def cancel(self):
+        """Cancel the design, or -- if it has not started -- the download itself.
+
+        Cancelling the fetch cancels it for every job waiting on the same bundle, which
+        is correct: there is one transfer. Each waiting job is then settled by pump().
+        """
+        if self._real is not None:
+            self._real.cancel()
+        else:
+            self._cancelled = True
+            fetching.cancel(self._bundle.id)
+
+    def advance(self, _self=cmd):
+        """Main-thread half: submit once the weights are there, or clean up.
+
+        Returns True when this job is fully reaped. Every line here touches the session,
+        which is precisely why the fetch worker cannot do any of it.
+        """
+        if self._reaped:
+            return True
+        if self._cancelled or self._error is not None:
+            self._reaped = True
+            discard_pending(self.object_name, _self=_self)
+            return True
+        fetch = fetching.get(self._bundle.id)
+        if fetch is None:
+            self._error = 'weight fetch for %s disappeared' % self._bundle.id
+            self._reaped = True
+            discard_pending(self.object_name, _self=_self)
+            return True
+        snap = fetch.snapshot()
+        if snap['state'] == 'running':
+            return False
+        self._reaped = True
+        if snap['state'] in ('cancelled', 'error'):
+            if snap['state'] == 'cancelled':
+                self._cancelled = True
+            else:
+                self._error = snap['error'] or 'weight fetch failed'
+            discard_pending(self.object_name, _self=_self)
+            return True
+        self._real = self._generator.submit(self.spec, self.options, fetch.path)
+        return True
+
+
+def pump(_self=cmd):
+    """Advance every deferred design. MAIN THREAD ONLY -- it creates session objects.
+
+    Cheap and idempotent: it is called from the object panel's 500 ms poll, so it must
+    stay a few dict lookups when there is nothing to do. Never raises; a failure here
+    would break the poll that drives the whole panel.
+    """
+    settled = 0
+    for job in list(_JOBS.values()):
+        if not isinstance(job, _DeferredDesignJob) or job._reaped:
+            continue
+        try:
+            if job.advance(_self=_self):
+                settled += 1
+        except Exception as exc:
+            colorprinting.warning(' design: could not start job %s (%s)'
+                                  % (job.job_id, exc))
+    return settled
+
+
+# -- Placeholders and progress -------------------------------------------------
+
+
+def register_pending(name, job_id, _self=cmd):
+    """Create the empty placeholder (if new) and remember what it is waiting for.
+
+    The placeholder is a real, zero-atom object, so the design appears in the object
+    panel the moment the command returns rather than seventeen minutes later, and
+    loading into it lands at state 1.
+    """
+    if name not in _self.get_names('objects'):
+        _self.create(name, 'none')
+    _PENDING.setdefault(name, []).append(job_id)
+    import time
+    track = _TRACK.setdefault(
+        name, {'total': 0, 'done': 0, 'started': time.monotonic(), 'floor': 0.0})
+    track['total'] += 1
+
+
+def discard_pending(name, _self=cmd):
+    """Forget a placeholder, deleting the object only if it never received atoms.
+
+    The atom check is the important part: cleanup can race a job that just finished, and
+    deleting a completed design would destroy the very thing that took seventeen minutes.
+    """
+    fresh = None
+    try:
+        fresh = pending_info(name, _self=_self)
+    except Exception:
+        pass
+    last = fresh or _LAST_INFO.get(name)
+    _LAST_INFO.pop(name, None)
+    if last is not None and last.get('state') in ('error', 'failed', 'cancelled'):
+        while len(_RECENT) >= MAX_RECENT:
+            _RECENT.pop(next(iter(_RECENT)))
+        _RECENT[name] = last
+    _PENDING.pop(name, None)
+    _TRACK.pop(name, None)
+    try:
+        if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
+            _self.delete(name)
+    except Exception:
+        pass
+
+
+def clear_pending(_self=cmd):
+    """Drop every placeholder, and anything that would create another."""
+    for job_id, job in list(_JOBS.items()):
+        if isinstance(job, _DeferredDesignJob):
+            _JOBS.pop(job_id, None)
+    for name in list(_PENDING):
+        discard_pending(name, _self=_self)
+    _TRACK.clear()
+    _RECENT.clear()
+    _LAST_INFO.clear()
+
+
+def pending_info(name, _self=cmd):
+    """Structured progress for a placeholder, or None if it is not pending.
+
+    Same keys as `predicting.pending_info`, and that is a contract rather than a
+    coincidence: the object panel's payload and the progress tray decode one shape, so a
+    design row and a prediction row have to be the same record.
+
+    Never raises. The whole body is inside one try, because the caller writes no panel
+    file at all if this throws, which freezes the object panel on a stale list.
+    """
+    import time
+    job_ids_for_name = _PENDING.get(name)
+    if not job_ids_for_name:
+        return _RECENT.get(name)
+    track = _TRACK.setdefault(name, {'total': len(job_ids_for_name), 'done': 0,
+                                     'started': time.monotonic(), 'floor': 0.0})
+    info = {'state': 'running', 'phase': 'pending', 'fraction': None,
+            'moving': False, 'models_done': 0, 'models_total': 1,
+            'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None,
+            'step': None, 'total_steps': None, 'remaining': None}
+    try:
+        info['models_done'] = track['done']
+        info['models_total'] = max(track['total'], 1)
+        info['elapsed'] = max(time.monotonic() - track['started'], 0.0)
+        job = _JOBS.get(job_ids_for_name[0])
+        if job is not None:
+            bundle = getattr(job, '_bundle', None)
+            if bundle is not None and getattr(job, '_real', None) is None:
+                info['bundle'] = getattr(bundle, 'id', None)
+            status = job.status()
+            # Coerced, not trusted: every value here crosses json.dumps into a
+            # strongly-typed Swift decoder that does no coercion of its own, and one
+            # wrong type fails the WHOLE panel payload and takes the object list down.
+            info['state'] = str(status.get('state') or 'running')
+            info['phase'] = str(status.get('phase') or 'pending')
+            error = status.get('error')
+            info['error'] = None if error is None else str(error)
+            info['step'] = _as_int(status.get('step'))
+            info['total_steps'] = _as_int(status.get('total_steps'))
+            local = _as_float(status.get('fraction'))
+            if (track.get('phase') != info['phase']
+                    or local is None
+                    or local < track.get('phase_fraction', 0.0)):
+                track['phase'] = info['phase']
+                track['phase_started'] = time.monotonic()
+            track['phase_fraction'] = 0.0 if local is None else local
+            phase_elapsed = max(
+                time.monotonic() - track.get('phase_started', time.monotonic()), 0.0)
+            if info['state'] == 'running':
+                info['remaining'] = _phase_remaining(local, phase_elapsed)
+            fraction, moving = _job_progress(job, status)
+            if fraction is not None:
+                whole = (track['done'] + fraction) / info['models_total']
+                whole = max(whole, track.get('floor', 0.0))
+                track['floor'] = whole
+                info['fraction'] = whole
+                info['moving'] = bool(moving)
+            elif track.get('floor'):
+                info['fraction'] = track['floor']
+        info['detail'] = _format_detail(info)
+    except Exception:
+        pass
+    _LAST_INFO[name] = info
+    return info
+
+
+def _job_progress(job, status):
+    """(fraction, moving) from the job's own generator, or (None, False).
+
+    Resolved through the GENERATOR registry, which is the whole reason this is not
+    `predicting._job_progress`: that one asks the predictor registry, where a generator
+    id is correctly absent, and would silently drop every fraction.
+    """
+    try:
+        import math
+        generator_id = getattr(job, 'generator_id', '') or ''
+        if generator_id:
+            generator = registry.get(generator_id)
+        else:
+            generator = getattr(job, '_generator', None)
+        if generator is None:
+            return None, False
+        fraction, moving = generator.progress(status)
+        if fraction is not None:
+            if (not isinstance(fraction, (int, float))
+                    or isinstance(fraction, bool)
+                    or not math.isfinite(float(fraction))):
+                return None, False
+        return fraction, bool(moving)
+    except Exception:
+        return None, False
+
+
+def pending_detail(name, _self=cmd):
+    """One-line description of the job a placeholder is waiting on, or None."""
+    info = pending_info(name, _self=_self)
+    return None if info is None else info['detail']
+
+
+def session_save(session, _self=cmd):
+    """Session-save task: keep pending placeholders out of the .pse.
+
+    A placeholder is a real zero-atom object and DOES survive a session round-trip, so a
+    session saved mid-design would carry an object that can never fill. Only objects that
+    are BOTH pending and still empty are dropped.
+    """
+    names = session.get('names')
+    if not names or not _PENDING:
+        return 1
+    keep = []
+    for entry in names:
+        if entry and entry[0] in _PENDING:
+            try:
+                if _self.count_atoms(entry[0]) == 0:
+                    continue
+            except Exception:
+                continue
+        keep.append(entry)
+    session['names'] = keep
+    return 1
+
+
+# -- Delivery: the finished design, and what it measured ----------------------
+
+
+def record_run(name, job_id, state, _self=cmd):
+    """Record what this design measured, against the object it landed in (#308).
+
+    Returns the MetricRun, or None when there is nothing to attach. Never raises into the
+    delivery path: a design that took seventeen minutes must not fail to appear because
+    its metrics could not be filed.
+
+    Two halves, from two places, and neither could supply the other's:
+
+    * The GEOMETRY is measured inside the runtime, because that is the only process the
+      coordinates exist in while it runs. It arrives as a metric document at
+      `job.metrics_path` -- the same channel `BoltzJobManager.writeMetrics` uses.
+    * The IDENTITY and the input facts are known only here: which selection was the
+      target, how many hotspots, the design key. The runtime is told the key so it can
+      stamp it, but the length, the target size and the source selection are this side's.
+    """
+    from pymol.metrics import binding
+    job = _JOBS.get(job_id)
+    if job is None:
+        return None
+    generator_id = getattr(job, 'generator_id', '') or ''
+    if not generator_id:
+        return None
+    try:
+        status = job.status()
+    except Exception:
+        status = {}
+
+    values = _run_values(job, status, state, generator_id)
+    try:
+        values.extend(_document_values(job, generator_id, state, name))
+    except Exception as exc:
+        # The runtime's numbers are the valuable half, so a malformed document is worth a
+        # warning -- but the run is still recorded with what this side knows.
+        colorprinting.warning(
+            ' design: could not read the metrics %s wrote for job %s (%s)'
+            % (generator_id, job_id, exc))
+    if not values:
+        return None
+    return binding.record(name, generator_id, values,
+                          tool_version=_weight_version(generator_id),
+                          inputs=_run_inputs(job), _self=_self)
+
+
+def _run_values(job, status, state, generator_id):
+    """The metrics THIS side knows, without asking the runtime for anything.
+
+    Deliberately independent of the metrics document: a runtime that never writes one
+    still leaves a run carrying what the design was and what it cost.
+    """
+    from pymol.metrics import store as metric_store
+    from pymol.metrics.errors import MetricSchemaError
+    spec = getattr(job, 'spec', None)
+    options = getattr(job, 'options', None)
+    values = []
+
+    def _add(key, **kwargs):
+        # A generator declares the subset it can produce, so a key it never declared is
+        # simply not written -- the capability contract working, not a failure. ONLY that:
+        # a scope or type error is a bug here and must not be swallowed into a silently
+        # incomplete run.
+        try:
+            values.append(metric_store.value(generator_id, key, **kwargs))
+        except MetricSchemaError:
+            pass
+
+    if spec is not None:
+        _add('n_residues', value=spec.total_residues)
+        # Two: the target and the designed chain. The pair IS the object, which is the
+        # whole point of emitting them together.
+        _add('n_chains', value=2)
+        _add('design_length', value=spec.length)
+        _add('design_target_residues', value=spec.target.n_residues)
+        _add('design_hotspots', value=len(spec.target.hotspots))
+        _add('design_chain', value=spec.design_chain)
+        if options is not None:
+            _add('design_key',
+                 value=spec.design_key(options,
+                                       weights_version=_weight_version(generator_id)))
+    for key in ('elapsed_s', 'peak_bytes'):
+        # Absent stays absent: a runtime that reported no timing gets no `elapsed_s`,
+        # rather than a zero that reads as an instantaneous design.
+        if status.get(key) is not None:
+            _add(key, value=status[key], state=state)
+    return values
+
+
+def _run_inputs(job):
+    """The provenance half of a run: what this design was ASKED to do.
+
+    Inputs, not metrics -- they are not measurements. But a metric without them is not
+    evidence of anything: the same target at a different seed, or against a different
+    weight pack, is a different design with the same schema.
+    """
+    spec = getattr(job, 'spec', None)
+    options = getattr(job, 'options', None)
+    inputs = {'generator': getattr(job, 'generator_id', '') or ''}
+    if options is not None:
+        inputs['options'] = options.as_dict()
+        inputs['seed'] = options.seed
+    if spec is not None:
+        inputs['target'] = spec.target.source
+        inputs['target_state'] = spec.target.state
+        inputs['target_residues'] = spec.target.n_residues
+        inputs['design_length'] = spec.length
+        inputs['design_chain'] = spec.design_chain
+        inputs['hotspots'] = ['%s/%s' % (entry['chain'], entry['resi'])
+                              for entry in spec.hotspot_ids()]
+    return inputs
+
+
+def _document_values(job, generator_id, state, object_name):
+    """What the RUNTIME measured: the geometry, which exists only inside it."""
+    import json
+    import os
+    from pymol.metrics import document
+
+    handle = getattr(job, '_real', None) or job
+    path = getattr(handle, 'metrics_path', '')
+    if not path or not os.path.exists(path):
+        return []
+    with open(path) as stream:
+        payload = json.load(stream)
+    # The document's own `tool` is overridden with the generator that ran. The runtime
+    # knows its RUNTIME name, not which generator selected it -- the same reason
+    # `predicting` overrides it for a prediction.
+    payload['tool'] = generator_id
+    # A document may name its own state, but the state a design actually landed in is
+    # known only here, so it is stamped on the way in over anything the file claims.
+    for entry in payload.get('values') or []:
+        if 'state' in entry or entry.get('index') is not None:
+            entry['state'] = state
+    # The object is named here too rather than trusted from the file: the runtime wrote it
+    # at submit time, and a rename in between would leave the document naming an object
+    # that no longer exists.
+    parsed = document.parse(payload, object=object_name)
+    return parsed['values']
+
+
+def _weight_version(generator_id):
+    """Which weights produced this run, as `bundle-id vN`, or '' for a method with none."""
+    try:
+        bundle = registry.get(generator_id).weight_bundle
+    except Exception:
+        return ''
+    if bundle is None:
+        return ''
+    version = getattr(bundle, 'version', '')
+    return ('%s %s' % (bundle.id, version)).strip()
+
+
+def deliver_result(path, name, seed=None, _self=cmd):
+    """Load a finished design into its placeholder and retire the pending mark.
+
+    Called BY THE RUNTIME, which is why it is one entry point rather than a load plus a
+    bookkeeping call: a name left pending after a successful load would be stripped from
+    every subsequent session save.
+
+    `zoom=0` on purpose. A design can land seventeen minutes after submit, and pulling the
+    camera onto it while the user is working elsewhere is hostile. The placeholder has
+    been visible in the object panel since the command returned.
+    """
+    landing = (_PENDING.get(name) or [None])[0]
+    try:
+        _self.load(path, name, zoom=0)
+        if seed is not None:
+            # In the state title, so a design says which seed produced it -- and it
+            # survives into a saved .pse, which is what makes a run reproducible after
+            # the fact.
+            try:
+                _self.set_title(name, _self.count_states(name), 'seed=%d' % int(seed))
+            except Exception:
+                pass
+        # Secondary structure explicitly: `auto_dss` does NOT fire when loading into a
+        # PRE-EXISTING object, which is exactly what the placeholder makes this, and
+        # without it cartoon renders every design as featureless loops. A generated
+        # backbone carries no HELIX/SHEET records to fall back on either -- and unlike a
+        # prediction, judging a design by eye IS looking at its secondary structure.
+        try:
+            _self.dss(name)
+        except Exception as exc:
+            colorprinting.warning(' design: could not assign secondary structure to %s'
+                                  ' (%s)' % (name, exc))
+        try:
+            record_run(name, landing, _self.count_states(name), _self=_self)
+        except Exception as exc:
+            colorprinting.warning(' design: could not record metrics for %s (%s)'
+                                  % (name, exc))
+    finally:
+        remaining = _PENDING.get(name)
+        if remaining:
+            remaining.pop(0)
+            track = _TRACK.get(name)
+            if track is not None:
+                track['done'] += 1
+            if not remaining:
+                _PENDING.pop(name, None)
+                _TRACK.pop(name, None)
+                _LAST_INFO.pop(name, None)
+                _RECENT.pop(name, None)
+
+
+# -- The command surface -------------------------------------------------------
+
+
+def design_backbone(generator, target, hotspots, length=60, name='', n_designs=1,
+                    diffusion_steps=200, recycling_steps=2, seed=None, quiet=1,
+                    _self=cmd):
+    """
+DESCRIPTION
+
+    "design_backbone" generates a new protein backbone against a target structure,
+    with a registered backbone generator. It returns a job handle; poll it with
+    "design_status".
+
+    Each design lands in its own object holding the TARGET AND THE DESIGNED CHAIN
+    together, with the target exactly where it already was. That pair is what a
+    later refold takes as input, so nothing has to re-derive it.
+
+    WHAT COMES BACK IS A BACKBONE, NOT A BINDER. Generation does not establish that
+    the chain binds anything: the geometry metrics say whether it is sane and where
+    it sits, and confirming it needs a refold of the pair and an interface gate,
+    neither of which this command does.
+
+USAGE
+
+    design_backbone generator, target, hotspots [, length [, name [, n_designs
+        [, diffusion_steps [, recycling_steps [, seed ]]]]]]
+
+ARGUMENTS
+
+    generator = str: id of a registered generator, e.g. rfd3
+
+    target = str: atom selection for the structure to design against. One object,
+    one chain. Only the standard twenty amino acids are read; anything else in the
+    selection is excluded and, if it is inside the protein chain, reported.
+
+    hotspots = str: atom selection for the interface residues to engage. A
+    SELECTION, not a residue list -- so "resi 45+48+52", or "sele" after picking
+    them in the viewer. Required: hotspots set the sampler origin, so without them
+    the design is aimed at the whole target's centre of mass. Every residue named
+    must be inside the target.
+
+    length = int: residues in the generated chain {default: 60}
+
+    name = str: object name for the result {default: <generator>_design_<key>}. With
+    n_designs > 1 an index is appended.
+
+    n_designs = int: how many independent designs to generate. Each is a FULL run --
+    see NOTES. {default: 1}
+
+    diffusion_steps = int: reverse-diffusion steps {default: 200}
+
+    recycling_steps = int: recycling iterations {default: 2}
+
+    seed = int: random seed. Drawn FRESH PER DESIGN when omitted, so two designs are
+    genuinely different rather than identical duplicates. The value used is printed,
+    written into the state title, and part of the design key.
+    {default: None, meaning "choose one"}
+
+EXAMPLES
+
+    fetch 1ao6
+    design_backbone rfd3, 1ao6 and chain A and resi 100-200, \\
+        hotspots=1ao6 and chain A and resi 142+145+149
+
+    # pick the hotspots in the viewer, then:
+    design_backbone rfd3, my_target, sele, length=75, n_designs=5
+
+NOTES
+
+    THIS TAKES MINUTES PER DESIGN. On an M3 Pro at 200 steps, a 578-residue target
+    with a 60-residue design measured 821-1321 s each -- about 17 minutes. Cost grows
+    quadratically with the number of atoms, so a small epitope is far cheaper than a
+    whole protein. n_designs COSTS N FULL RUNS: there is no shared trunk to amortise,
+    so five designs against a large target is well over an hour. The runs are
+    sequential, so peak memory is that of ONE design.
+
+    Cancel a running design with "design_cancel". It stops within one diffusion step.
+
+    THE FIRST CALL DOWNLOADS WEIGHTS, in the background -- ~625 MB for rfd3. That runs
+    on its own thread and this command returns immediately; each job sits in phase
+    "download"/"extract" and is submitted automatically once the bundle lands. Watch it
+    with design_status, stop it with design_weights_cancel, or pre-warm the cache with:
+
+        design_weights rfd3, download=1
+
+    THE TARGET IS HELD FIXED, and that is checked rather than assumed: the
+    "target_drift_max" metric on each result is the largest distance any target atom
+    moved, and it is 0.000 on a correct run.
+
+    Every design carries a "design_key" metric -- the generator, weight pack, target
+    residues and coordinates, hotspots, length, seed and schedule. A later refold of
+    the same design can be keyed to it, which is what makes refold-versus-design
+    comparison possible without guessing which design a prediction came from.
+
+SEE ALSO
+
+    design_status, design_cancel, design_result, design_weights
+    """
+    generator_obj = registry.get(generator)
+    generator_obj.check_available()
+
+    count = int(n_designs)
+    if not 1 <= count <= _max_designs(generator_obj):
+        raise PredictionOptionError(
+            'n_designs must be between 1 and %d' % _max_designs(generator_obj))
+
+    # Universal, so it holds for every generator rather than for whichever ones remembered
+    # to check: a zero-length generated chain is nonsense for any method, and letting it
+    # through would start a several-hundred-megabyte download for a design that cannot
+    # exist. A method's own upper bound is its business and lives in `parse_target`.
+    if int(length) < 1:
+        raise PredictionOptionError(
+            'length must be at least 1 residue, got %d' % int(length))
+
+    structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
+
+    if seed is None:
+        import random
+        seed = random.randrange(RANDOM_SEED_BOUND)
+
+    requested = dict(recycling_steps=int(recycling_steps),
+                     diffusion_steps=int(diffusion_steps),
+                     seed=int(seed))
+    options = generator_obj.validate_options(requested)
+
+    # Validated BEFORE the weight fetch starts and before anything is submitted: a refused
+    # target must cost nothing, and every check in parse_target is one the runtime would
+    # otherwise make after a 625 MB download.
+    spec = generator_obj.parse_target(structure, length, name=name)
+
+    bundle = generator_obj.weight_bundle
+    weights_path = None
+    fetch = None
+    if bundle is not None:
+        # One entry point for all three cases -- cached, bundled in the app, or needs
+        # downloading -- so this cannot drift from what fetching.start() knows.
+        started = fetching.start(bundle, weight_cache())
+        if started.state == 'done':
+            weights_path = started.path
+        else:
+            fetch = started
+            # Regardless of `quiet`: nothing else tells a command-line user why their
+            # design has not started, and the app's tray is driven by the marker rather
+            # than by this line.
+            colorprinting.warning(
+                ' design: fetching %s weights (%.0f MB) in the background; the design'
+                ' starts on its own when they land. Cancel with'
+                ' "design_weights_cancel %s".'
+                % (generator_obj.id, (bundle.size or 0) / 1e6, generator_obj.id))
+
+    jobs = []
+    for index in range(count):
+        # A distinct seed per design, or every one would be the same molecule. The first
+        # uses the seed resolved above, so `seed=N` still reproduces exactly and
+        # `n_designs` extends that run rather than replacing it.
+        if index == 0:
+            design_options = options
+        else:
+            import random
+            design_options = generator_obj.validate_options(
+                dict(requested, seed=random.randrange(RANDOM_SEED_BOUND)))
+        # Named per design, from that design's own key: two seeds are two objects, and an
+        # identical re-run lands back in the same one.
+        key = spec.design_key(design_options,
+                              weights_version=_weight_version(generator_obj.id))
+        if name:
+            object_name = str(name) if count == 1 else '%s_%02d' % (name, index + 1)
+        else:
+            object_name = default_object_name(key, generator_obj.id)
+        # DesignSpec is a __slots__ class, not a namedtuple: assign, don't _replace. A
+        # copy per design, because each names its own object.
+        design_spec = type(spec)(spec.target, spec.length, name=object_name,
+                                 generator_id=spec.generator_id,
+                                 design_chain=spec.design_chain)
+        if fetch is not None:
+            job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
+                                     object_name)
+        else:
+            job = generator_obj.submit(design_spec, design_options, weights_path)
+        # Stamped here rather than passed into submit(): the handle a generator returns is
+        # its own type, and the registry id is the one fact the command layer knows and
+        # the transport does not. Progress and metric recording read it back off the
+        # handle.
+        try:
+            job.generator_id = generator_obj.id
+        except AttributeError:
+            pass          # __slots__ handle with no room: it simply gets the spinner
+        _JOBS[job.job_id] = job
+        register_pending(object_name, job.job_id, _self=_self)
+        jobs.append(job)
+        if not int(quiet):
+            colorprinting.parrot(
+                ' design: job %s %s, will load as %s (%d residues, seed %d)'
+                % (job.job_id,
+                   'waiting on weights' if fetch is not None else 'submitted',
+                   object_name, design_spec.length, design_options.seed))
+
+    return jobs[0] if count == 1 else jobs
+
+
+def _max_designs(generator_obj):
+    """The generator's own ceiling on designs per command, or a conservative default.
+
+    Read off the module rather than hardcoded here, because "how many is too many" is a
+    property of how long one design takes -- which is a property of the method.
+    """
+    import sys as _sys
+    module = _sys.modules.get(type(generator_obj).__module__)
+    return int(getattr(module, 'MAX_DESIGNS', 5))
+
+
+def design_status(job_id='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_status" reports the state of one design job, or of all of them.
+
+USAGE
+
+    design_status [ job_id ]
+
+SEE ALSO
+
+    design_backbone
+    """
+    # Polling design_status is what a script does while it waits, so it doubles as the
+    # main-thread pump that submits jobs whose weights have arrived. The app also pumps
+    # from the object panel's poll, so neither environment depends on the other.
+    pump(_self=_self)
+    if job_id:
+        jobs = {job_id: _job(job_id)}
+    else:
+        jobs = dict(_JOBS)
+    out = {}
+    for key, job in jobs.items():
+        out[key] = job.status()
+    if not int(quiet):
+        if not out:
+            colorprinting.parrot(' design: no jobs this session')
+        for key, status in out.items():
+            colorprinting.parrot(
+                ' design: %s %s (%s%s)%s'
+                % (key, status.get('state', '?'), status.get('phase', '?'),
+                   '' if status.get('fraction') is None
+                   else ' %d%%' % int(float(status['fraction']) * 100),
+                   '' if not status.get('error') else ': ' + str(status['error'])))
+    return out
+
+
+def design_cancel(job_id, quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_cancel" stops a running design.
+
+    It stops within one diffusion step: the rollout polls for cancellation once per
+    step, which is the finest granularity available for a synchronous sampler. During
+    the one-time setup -- the phase that holds the memory peak -- it is observed at
+    the phase boundary instead.
+
+    Cancelling a design whose WEIGHTS are still downloading cancels the transfer, and
+    that transfer is shared: any other job waiting on the same bundle is cancelled
+    with it. There is one download, and no way to abandon it for one caller while
+    another still needs it.
+
+USAGE
+
+    design_cancel job_id
+
+SEE ALSO
+
+    design_backbone, design_status
+    """
+    job = _job(job_id)
+    job.cancel()
+    if not int(quiet):
+        colorprinting.parrot(' design: cancel requested for %s' % job_id)
+    # The placeholder comes down on the next pump for a deferred job, and when the
+    # runtime writes its terminal status for a running one.
+    pump(_self=_self)
+    return job_id
+
+
+def design_result(job_id, name='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_result" loads a finished design by hand.
+
+    Rarely needed: a design is loaded into its placeholder automatically as soon as
+    it finishes. This exists for a script that wants the object under a different
+    name, or after a placeholder was dismissed.
+
+USAGE
+
+    design_result job_id [, name ]
+
+SEE ALSO
+
+    design_backbone, design_status
+    """
+    job = _job(job_id)
+    status = job.status()
+    path = status.get('result_path')
+    if status.get('state') != 'done' or not path:
+        raise PredictionInputError(
+            'job %s is %s, not done' % (job_id, status.get('state', 'unknown')))
+    object_name = str(name) or getattr(job, 'object_name', '') or \
+        getattr(getattr(job, 'spec', None), 'name', '') or job_id
+    _self.load(path, object_name, zoom=0)
+    try:
+        _self.dss(object_name)
+    except Exception:
+        pass
+    if not int(quiet):
+        colorprinting.parrot(' design: loaded %s as %s' % (job_id, object_name))
+    return object_name
+
+
+def design_dismiss(name='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_dismiss" clears the card of a design that failed or was cancelled, and
+    removes its empty placeholder. With no name, clears all of them.
+
+USAGE
+
+    design_dismiss [ name ]
+
+SEE ALSO
+
+    design_backbone
+    """
+    names = [str(name)] if name else list(_RECENT) + list(_PENDING)
+    for entry in names:
+        _RECENT.pop(entry, None)
+        discard_pending(entry, _self=_self)
+    if not int(quiet):
+        colorprinting.parrot(' design: dismissed %s'
+                             % (', '.join(names) if names else 'nothing'))
+    return names
+
+
+def design_weights(generator='', download=0, quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_weights" reports which generator weight packs are cached, and can fetch
+    them ahead of time.
+
+    Worth doing before the first design: the rfd3 pack is ~625 MB, and fetching it
+    up front means the design itself starts immediately.
+
+USAGE
+
+    design_weights [ generator [, download ]]
+
+ARGUMENTS
+
+    generator = str: which generator, or '' for all of them {default: ''}
+
+    download = 0/1: fetch what is missing, in the background {default: 0}
+
+SEE ALSO
+
+    design_backbone, design_weights_cancel
+    """
+    cache = weight_cache()
+    ids = [str(generator)] if generator else registry.available()
+    out = {}
+    for generator_id in ids:
+        generator_obj = registry.get(generator_id)
+        bundle = generator_obj.weight_bundle
+        if bundle is None:
+            out[generator_id] = {'bundle': None, 'cached': True, 'path': None}
+            continue
+        # Asked BEFORE any fetch: a generator that cannot run in this build is reported
+        # but never downloaded, so a bulk `download=1` does not pull half a gigabyte for
+        # a method whose runtime is not linked.
+        runnable, why = _can_run(generator_obj)
+        cached = cache.is_cached(bundle)
+        record = {'bundle': bundle.id, 'version': bundle.version,
+                  'cached': bool(cached), 'size': bundle.size,
+                  'runnable': runnable,
+                  'path': cache.path_for(bundle) if cached else None}
+        out[generator_id] = record
+        if not int(quiet):
+            colorprinting.parrot(
+                ' design: %s -- %s %s, %.0f MB, %s%s'
+                % (generator_id, bundle.id, bundle.version, (bundle.size or 0) / 1e6,
+                   'cached' if cached else 'not cached',
+                   '' if runnable else ' (cannot run in this build: %s)' % why))
+        if int(download) and not cached:
+            if not runnable:
+                continue
+            started = fetching.start(bundle, cache)
+            record['fetching'] = started.state != 'done'
+            if not int(quiet):
+                colorprinting.parrot(
+                    ' design: fetching %s in the background' % bundle.id)
+    return out
+
+
+def _can_run(generator_obj):
+    """(runnable, why-not) for a generator, without touching the weight cache."""
+    try:
+        generator_obj.check_available()
+    except Exception as exc:
+        return False, str(exc)
+    return True, ''
+
+
+def design_weights_cancel(generator='', quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "design_weights_cancel" stops a generator weight download in progress.
+
+    Every design waiting on that bundle is cancelled with it: there is one transfer,
+    and no way to abandon it for one caller while another still needs it.
+
+USAGE
+
+    design_weights_cancel [ generator ]
+
+SEE ALSO
+
+    design_weights
+    """
+    ids = [str(generator)] if generator else registry.available()
+    stopped = []
+    for generator_id in ids:
+        bundle = registry.get(generator_id).weight_bundle
+        if bundle is None:
+            continue
+        # By ID, never bare. `fetching.cancel()` with no argument stops every transfer in
+        # the process, predictions included -- one process-wide table keyed by bundle id.
+        fetching.cancel(bundle.id)
+        stopped.append(bundle.id)
+    pump(_self=_self)
+    if not int(quiet):
+        colorprinting.parrot(' design: cancelled %s'
+                             % (', '.join(stopped) if stopped else 'nothing'))
+    return stopped
+
+
+def _job(job_id):
+    try:
+        return _JOBS[str(job_id)]
+    except KeyError:
+        raise PredictionInputError(
+            'unknown design job %r; this session has: %s'
+            % (job_id, ', '.join(_JOBS) or '(none)'))

@@ -18,7 +18,7 @@ import tempfile
 import uuid
 
 from .base import PredictionOptions
-from .errors import PredictorUnavailable
+from .errors import PredictionError, PredictorUnavailable
 
 #: Set by the Swift host next to PYMOL_PATH so Python can tell it is present.
 HOST_ENV = 'RAYMOL_PREDICT_HOST'
@@ -156,13 +156,26 @@ def _write(path, text):
     os.replace(temp, path)
 
 
-def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None):
+def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None,
+           extra=None):
     """Write the request, print the marker, return the handle. Never blocks.
 
     `runtime` names the backend the host must dispatch to. `knobs` is the option names to
     put on the wire -- pass the predictor's own `option_defaults`, so the request carries
     exactly what that method declared it honours and nothing else. Both default to what
     the only predictor before them wanted, so an existing call site is unaffected.
+
+    `extra` is METHOD-SPECIFIC INPUT that is not a sequence and not a knob, merged into
+    the request as-is. It exists for `pymol.generators`, whose methods are handed a target
+    STRUCTURE rather than chain sequences: a backbone generator has nothing to put in
+    `chains`, and its target coordinates, hotspots and design length have nowhere else to
+    go. Nothing that ships uses it for a prediction, and it defaults to None, so a
+    predictor's request is byte-for-byte what it was.
+
+    Keys that would overwrite the request's own are REFUSED rather than merged. This is a
+    contract with the Swift `Request` decoder, and a caller silently replacing `out_path`
+    or `runtime` would produce a job that reports to the wrong file or runs on the wrong
+    backend -- neither of which fails, both of which return something plausible.
     """
     job_id = uuid.uuid4().hex[:12]
     job = HostJob(job_id, spec, options)
@@ -228,6 +241,14 @@ def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None):
         knobs = PredictionOptions.__slots__
     for knob in knobs:
         request[knob] = getattr(options, knob)
+    # Method-specific input, last, and never over a key this function owns -- see the
+    # docstring. Sorted so the refusal names the first collision deterministically
+    # rather than whichever the dict happened to yield.
+    for key in sorted(extra or {}):
+        if key in request:
+            raise PredictionError(
+                'a method may not override the request key %r' % key)
+        request[key] = extra[key]
     # Write completely before announcing it: the host reads on the next 100 ms
     # tick and must never see a partial request.
     _write(job.request_path, json.dumps(request))
