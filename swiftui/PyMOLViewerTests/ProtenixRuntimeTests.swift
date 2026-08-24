@@ -27,7 +27,7 @@ final class ProtenixRuntimeTests: XCTestCase {
     }
 
     private func writeRequest(job: String, chains: [(String, String)],
-                              runtime: String?) throws -> BoltzJobManager.Request {
+                              runtime: String?) throws -> InferenceJob.Request {
         let url = dir.appendingPathComponent("raymol_predict_req_\(job).json")
         var payload: [String: Any] = [
             "job_id": job,
@@ -41,7 +41,7 @@ final class ProtenixRuntimeTests: XCTestCase {
         ]
         if let runtime { payload["runtime"] = runtime }
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
-        return try BoltzJobManager.parseRequest(at: url)
+        return try InferenceJob.parseRequest(at: url)
     }
 
     // MARK: - Wire format

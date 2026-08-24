@@ -527,7 +527,7 @@ class SwiftWireContractTest(MSAEndToEndTestCase):
 
     #: The struct whose CodingKeys must cover the request Python writes.
     SWIFT_SOURCE = os.path.join('swiftui', 'PyMOLViewer', 'Shared',
-                                'BoltzJobManager.swift')
+                                'InferenceJob.swift')
 
     def swift_wire_names(self, after):
         """Wire names in the first `enum CodingKeys` following `after` in the source."""

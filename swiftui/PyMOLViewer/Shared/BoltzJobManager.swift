@@ -3,18 +3,19 @@ import BoltzMLX
 import Foundation
 import os
 
-/// Runs Boltz predictions on behalf of Python.
+/// Runs the `boltz` inference runtime: Boltz predictions on behalf of Python, and the
+/// runtime a request that names none is routed to.
 ///
-/// RayMol has no Python→Swift call path: `PyMOLBridge.h` is one-directional and no Swift
-/// function carries a C symbol. So `cmd.predict` writes a request JSON and prints a
-/// `PREDICT:` marker, which `PyMOLEngine.pollFeedback()` already scans on a 100 ms timer
-/// — exactly how `OBJPANEL:` and `SETTINGS:ready` work. Payloads travel as tempfiles
-/// because the feedback line caps at ~1 KB.
+/// The job SHELL — the wire format, atomic status writes, the write-then-discard settle
+/// ordering, placeholder discard and result autoload — is ``InferenceJob``, and the
+/// `PREDICT:` marker is ``InferenceRouter``'s. Both used to live in here, which made the
+/// other manager a dependent of this one for nothing it needed from it. What remains is
+/// only what is Boltz's: its featurizer, its weights, its size model and its metrics.
 ///
 /// Because the Python API is a job handle, nothing here needs to return a value to
 /// Python: status and result are files that Python polls. That is what makes the missing
-/// bridge direction unnecessary rather than something to build.
-final class BoltzJobManager {
+/// Python→Swift bridge direction unnecessary rather than something to build.
+final class BoltzJobManager: InferenceRuntime {
 
     static let shared = BoltzJobManager()
 
@@ -23,7 +24,7 @@ final class BoltzJobManager {
     /// `PyMOLBridge` advertises in `RAYMOL_PREDICT_RUNTIMES` — that variable is what lets
     /// a predictor whose backend is NOT linked here refuse in `check_available` instead
     /// of submitting a job that only gets refused after a weight download.
-    static let boltzRuntime = "boltz"
+    static let runtimeName = "boltz"
 
     /// MLX must never run on the main thread. `cmd.predict` from the console arrives ON
     /// the main thread, which is exactly why submit is fire-and-forget.
@@ -66,336 +67,62 @@ final class BoltzJobManager {
         stateQueue.sync { cancelled.removeAll(); runningTasks.removeAll() }
     }
 
-    // MARK: - Marker parsing
+    // MARK: - InferenceRuntime
 
-    enum Verb: String { case submit, cancel }
-    struct Marker: Equatable { let verb: Verb; let jobID: String }
-
-    static func parseMarker(_ line: String) -> Marker? {
-        guard line.hasPrefix("PREDICT:") else { return nil }
-        let body = line.dropFirst("PREDICT:".count)
-        let parts = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2,
-              let verb = Verb(rawValue: String(parts[0])),
-              !parts[1].isEmpty else { return nil }
-        return Marker(verb: verb, jobID: String(parts[1]))
-    }
-
-    // MARK: - Wire format (must match modules/pymol/predictors/host.py)
-
-    struct Chain: Codable { let chain: String; let sequence: String }
-
-    /// One chain's multiple-sequence alignment, as a PATH to an a3m.
+    /// Refuse or accept a submitted request. Runs on the MAIN thread, called by
+    /// ``InferenceRouter``.
     ///
-    /// A path rather than inline text because an alignment is megabytes — the barnase
-    /// one boltz-mlx tests against is ~1.3 MB — and base64 inside a JSON this decodes in
-    /// one gulp buys nothing over a file that is read once and dropped. Python writes
-    /// each file BEFORE the request that names it, so a request that decodes has its
-    /// alignments already complete on disk.
-    struct Alignment: Codable {
-        let chain: String
-        let a3mPath: String
-
-        enum CodingKeys: String, CodingKey { case chain, a3mPath = "a3m_path" }
+    /// Nothing here decides which runtime a request belongs to any more: the router does
+    /// that, and reaching this method means either the request named `boltz`, named nothing
+    /// (which means `boltz`), or named a runtime this build does not carry. `preflight`
+    /// still refuses the third case BY NAME — that is how a Python side offering a method
+    /// this build did not link gets a real error instead of a job that never reports.
+    func submit(_ request: InferenceJob.Request) {
+        if let failure = Self.preflight(request) {
+            // Refused before any work: the placeholder Python just created will never
+            // be filled, so drop it rather than leaving an empty stub behind.
+            InferenceJob.settle(request, failure,
+                                to: URL(fileURLWithPath: request.statusPath))
+            return
+        }
+        queue.async { self.run(request) }
     }
 
-    struct Request: Codable {
-        let jobID: String
-        let weightsDir: String
-        let chains: [Chain]
-        /// Which backend must run this job. OPTIONAL, absent meaning ``boltzRuntime`` —
-        /// every Python side that predates a second runtime wrote no such key, and the
-        /// only runtime that existed then was this one. A request naming a runtime this
-        /// build does not carry is REFUSED in `preflight`, never run here: the weights and
-        /// the featurizer are method-specific, so running one method's request on
-        /// another's backend would not fail, it would return a confident wrong answer.
-        let runtime: String?
-        let recyclingSteps: Int
-        let diffusionSteps: Int
-        let seed: UInt64
-        let outPath: String
-        let statusPath: String
-        /// Per-chain alignments. OPTIONAL, so a request written by a Python side that
-        /// predates #297 still decodes — the same reasoning as `objectName` below.
-        ///
-        /// PARTIAL by design: a chain that is absent gets upstream's depth-1 dummy MSA
-        /// (`BoltzFeaturizer` falls back to `MSAAlignment.singleSequence`), which is
-        /// exactly the designed-binder case — a real alignment for the target, none for
-        /// the binder, because a designed binder has no homologs to align.
-        let alignments: [Alignment]?
-        /// Rows to read from each a3m, from the top. Optional for the same reason.
-        let msaDepth: Int?
-        /// Object the finished structure is loaded into. Python creates an empty
-        /// placeholder under this name at submit time; loading into it lands at state 1,
-        /// and a repeat prediction of the same sequence appends model 2, 3, ...
-        ///
-        /// OPTIONAL on purpose. Absent means "do not auto-load" — a legitimate state, and
-        /// it keeps the wire backward compatible: a non-optional field would turn any
-        /// Python/Swift skew into a hard "malformed request" failure instead of simply
-        /// falling back to the explicit `predict_result` flow. Same reasoning as the
-        /// object panel's optional `groups`/`pending` fields.
-        let objectName: String?
-        /// Where to write what this run MEASURED, as a `pymol.metrics` document (#308).
-        ///
-        /// The confidence numbers exist only in here: pLDDT rounded into a B-factor
-        /// column was the only one that used to survive, and `ScoredStructure.pae` and
-        /// `interfaceScores()` were computed on every run and thrown away. A PAE matrix
-        /// is per residue PAIR and an interface score is per run, so neither fits in
-        /// the PDB — hence a second file rather than more columns.
-        ///
-        /// Optional for the reason `objectName` is: absent simply means the Python side
-        /// predates this and records the run without them, rather than the whole request
-        /// failing to decode.
-        let metricsPath: String?
-
-        enum CodingKeys: String, CodingKey {
-            case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
-            case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
-            case seed, outPath = "out_path", statusPath = "status_path"
-            case objectName = "object_name", metricsPath = "metrics_path"
-            case alignments, msaDepth = "msa_depth"
+    /// Note a cancel. Idempotent, and safe for a job id this manager never had — the
+    /// marker carries no runtime, so cancels are broadcast to every runtime and each
+    /// keeps only its own.
+    ///
+    /// Cancels the live TASK, because that is what actually interrupts compute, and
+    /// records the request for the coarse phase checks (a cancel can arrive before the
+    /// task is registered). Cancels for jobs already in a terminal state are ignored, so
+    /// `cancelled` cannot grow without bound from stray or post-completion markers.
+    func cancel(jobID: String) {
+        stateQueue.sync {
+            if let task = runningTasks[jobID] {
+                cancelled.insert(jobID)
+                task.cancel()
+            } else if !InferenceJob.hasTerminalStatus(jobID: jobID) {
+                cancelled.insert(jobID)
+            }
         }
     }
 
-    struct Status: Codable {
-        let state: String        // queued | running | done | failed | cancelled
-        let phase: String
-        let fraction: Double
-        let error: String?
-        let resultPath: String?
-        /// MLX's peak-memory high-water mark for THIS prediction, in bytes. Nil until the
-        /// run finishes. Reported because process RSS does not attribute MLX's Metal
-        /// allocations at all -- sampling RSS during a 250-residue run showed ~9 MB of
-        /// growth against a multi-GB actual -- so this is the only honest instrument, and
-        /// it is what `PredictSizeGuard`'s constants must be fitted against.
-        let peakBytes: Int?
-        /// The MAXIMUM `phys_footprint` this process reached during the run, in bytes,
-        /// sampled every 200 ms (see ``FootprintSampler``). Nil until the run finishes.
-        ///
-        /// **Not a duplicate of ``peakBytes``, and the difference is the point.** MLX's
-        /// high-water mark EXCLUDES its own buffer cache
-        /// (mlx-swift/Source/MLX/Memory.swift:171-178), so it under-reports what the
-        /// system sees. `phys_footprint` is the quantity **jetsam kills on** and the one
-        /// `os_proc_available_memory()` is denominated in — so on iOS it, not `peakBytes`,
-        /// is what ``PredictSizeGuard``'s estimate is actually racing.
-        ///
-        /// The comment above about RSS being useless refers to `resident_size`, which
-        /// omits compressed and IOKit-mapped pages and therefore misses Metal allocations
-        /// entirely. `phys_footprint` includes them; the two are different instruments and
-        /// only one of them was tried.
-        ///
-        /// Recorded rather than derived because the gap between the two is not a constant:
-        /// it is whatever the cache happens to be holding, which is exactly the thing a
-        /// fitted model cannot know.
-        var footprintBytes: Int? = nil
-        /// Wall time for the inference itself, excluding the one-time model load.
-        let elapsedSeconds: Double?
-        /// Steps completed within the CURRENT phase, and that phase's total --
-        /// e.g. diffusion step 84 of 200. `fraction` is the same thing as a ratio;
-        /// these are carried as well because "step 84 of 200" is a far more
-        /// legible sentence than "42%", and because the ETA wants the raw counts.
-        ///
-        /// `var … = nil` rather than `let`: a default keeps the memberwise
-        /// initialiser's existing call sites (and their tests) compiling, and
-        /// Optional keeps a status file written before this field existed -- or by
-        /// any phase that reports no steps at all -- decoding cleanly.
-        var step: Int? = nil
-        var totalSteps: Int? = nil
+    // MARK: - Preflight
 
-        enum CodingKeys: String, CodingKey {
-            case state, phase, fraction, error, resultPath = "result_path"
-            case peakBytes = "peak_bytes", footprintBytes = "footprint_bytes"
-            case elapsedSeconds = "elapsed_s"
-            case step, totalSteps = "total_steps"
-        }
-    }
-
-    /// Rate-limits the status writes driven by boltz-mlx's per-step callback.
-    ///
-    /// Same policy, and the same two constants, as the weight fetcher's marker
-    /// throttle (`modules/pymol/predictors/fetching.py:38-41` --
-    /// `MARKER_INTERVAL = 0.15`, `MARKER_FRACTION_STEP = 0.01`, applied in `_emit`
-    /// at `:261-276`): skip a write only when BOTH too little time has passed AND
-    /// the bar would not visibly move, and never skip a stage's final step. A
-    /// 200-step run on a small input steps in milliseconds, and one status file
-    /// per step would be 200 atomic writes in a burst.
-    ///
-    /// `@unchecked Sendable` with its own lock, and pointedly NOT `stateQueue`:
-    /// the callback runs synchronously inside the sampling loop on the actor's
-    /// executor, while `stateQueue` is entered from the MAIN thread on every
-    /// cancel and is held for the ~10 s model build. Blocking the sampling loop
-    /// behind that would stall inference itself.
-    final class StepThrottle: @unchecked Sendable {
-        /// Floor on the gap between two writes.
-        static let interval: Double = 0.15
-        /// ...but always write when the bar would visibly move.
-        static let fractionStep: Double = 0.01
-
-        private let lock = NSLock()
-        private var lastStage = ""
-        private var lastTime: Double = 0
-        private var lastFraction: Double = 0
-
-        /// `now` is injected rather than read here so the policy is testable
-        /// without sleeping. Callers pass a MONOTONIC clock
-        /// (`ProcessInfo.processInfo.systemUptime`), not wall time.
-        func shouldEmit(stage: String, fraction: Double, isFinal: Bool,
-                        now: Double) -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            // A stage change is itself news: the phase NAME the card shows
-            // changes, which no fraction comparison would catch.
-            let forced = isFinal || stage != lastStage
-            if !forced,
-               now - lastTime < Self.interval,
-               abs(fraction - lastFraction) < Self.fractionStep {
-                return false
-            }
-            lastStage = stage
-            lastTime = now
-            lastFraction = fraction
-            return true
-        }
-    }
-
-    static func parseRequest(at url: URL) throws -> Request {
-        try JSONDecoder().decode(Request.self, from: try Data(contentsOf: url))
-    }
-
-    /// Atomic, so a poller never reads a half-written status.
-    static func writeStatus(_ status: Status, to url: URL) throws {
-        let data = try JSONEncoder().encode(status)
-        let temp = url.appendingPathExtension("tmp")
-        try data.write(to: temp)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
-    }
-
-    #if DEBUG
-    /// Test seam: receives "write" then "discard" for each terminal settle. Same
-    /// pattern as PyMOLEngine's pythonTap -- `settle`'s ordering is the whole point
-    /// of the function and is otherwise invisible, because discardPlaceholder is a
-    /// main-queue hop into PyMOLEngine.shared that a unit test cannot observe.
-    static var settleTap: ((String) -> Void)?
-    #endif
-
-    /// Record a terminal status, THEN take the placeholder down. Order is
-    /// load-bearing: `discard_pending` pops `_PENDING`, the map every Python-derived
-    /// progress view is built from, so discarding first records the failure after the
-    /// only thing that could observe it has been deleted -- which is why an 11-minute
-    /// run that failed used to just make its object vanish.
-    ///
-    /// One function rather than six call-pairs so a seventh exit cannot get it wrong.
-    private static func settle(_ request: Request, _ status: Status, to url: URL) {
-        try? writeStatus(status, to: url)
-        #if DEBUG
-        settleTap?("write")
-        #endif
-        discardPlaceholder(request)
-        #if DEBUG
-        settleTap?("discard")
-        #endif
-    }
-
-    // MARK: - Entry point from pollFeedback()
-
-    func handle(marker line: String) {
-        guard let marker = Self.parseMarker(line) else { return }
-        switch marker.verb {
-        case .cancel:
-            // Cancel the live task so compute actually stops, and record the request for
-            // the coarse phase checks (a cancel can arrive before the task is registered).
-            // Ignore cancels for jobs already in a terminal state, so `cancelled` cannot
-            // grow without bound from stray or post-completion markers.
-            stateQueue.sync {
-                if let task = runningTasks[marker.jobID] {
-                    cancelled.insert(marker.jobID)
-                    task.cancel()
-                } else if !Self.hasTerminalStatus(jobID: marker.jobID) {
-                    cancelled.insert(marker.jobID)
-                }
-            }
-            // Broadcast: a cancel marker carries only a job id, so there is nothing in it
-            // to route on. Every manager keeps only its own ids, and a cancel for a job
-            // this one never had is a no-op. macOS only because Protenix is: iOS links
-            // no second manager, so there is nothing to broadcast to.
-            #if os(macOS)
-            ProtenixJobManager.shared.cancel(jobID: marker.jobID)
-            #endif
-        case .submit:
-            let url = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("raymol_predict_req_\(marker.jobID).json")
-            let request: Request
-            do {
-                request = try Self.parseRequest(at: url)
-            } catch {
-                // Without this, an unparseable request returns silently and Python polls
-                // `queued` forever — asymmetric with preflight, which does write `failed`.
-                // The status path follows host.py's naming convention, so it is derivable
-                // even when the payload is not.
-                try? Self.writeStatus(
-                    Status(state: "failed", phase: "request", fraction: 0,
-                           error: "malformed prediction request: "
-                                + error.localizedDescription,
-                           resultPath: nil, peakBytes: nil, elapsedSeconds: nil),
-                    to: Self.statusURL(jobID: marker.jobID))
-                return
-            }
-            // Routed BEFORE preflight, because preflight below is Boltz's: its size model
-            // is fitted to Boltz's peaks, and its runtime check exists to refuse backends
-            // nothing implements. A protenix request is not that -- it has a manager.
-            //
-            // This manager owns the marker only because it was here first. When a third
-            // runtime lands, lift the parse-and-route out into a dispatcher rather than
-            // adding another branch here.
-            //
-            // macOS only, and the iOS arm needs no fallback branch: PyMOLBridge.mm
-            // advertises "boltz" alone there, so host.require_runtime refuses a protenix
-            // request in Python before any marker is printed. If one somehow arrived, it
-            // would fall through to Self.preflight below, whose runtime check refuses
-            // exactly this case with an accurate message.
-            #if os(macOS)
-            if request.runtime == ProtenixJobManager.runtimeName {
-                ProtenixJobManager.shared.submit(request)
-                return
-            }
-            #endif
-            if let failure = Self.preflight(request) {
-                // Refused before any work: the placeholder Python just created will never
-                // be filled, so drop it rather than leaving an empty stub behind.
-                Self.settle(request, failure, to: URL(fileURLWithPath: request.statusPath))
-                return
-            }
-            queue.async { self.run(request) }
-        }
-    }
-
-    /// host.py's naming convention, so a status can be reported even for a request that
-    /// could not be decoded.
-    static func statusURL(jobID: String) -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("raymol_predict_status_\(jobID).json")
-    }
-
-    /// True when a status file already records a terminal state, i.e. cancelling is moot.
-    static func hasTerminalStatus(jobID: String) -> Bool {
-        guard let data = try? Data(contentsOf: statusURL(jobID: jobID)),
-              let status = try? JSONDecoder().decode(Status.self, from: data)
-        else { return false }
-        return ["done", "failed", "cancelled"].contains(status.state)
-    }
 
     /// Refuse before allocating anything. Returns nil when the run may proceed.
     ///
     /// Sees only what the REQUEST says, because it runs on the main thread from
     /// `pollFeedback`: the alignment's real depth costs a parse of the a3m, which
     /// belongs on the inference queue. `alignmentPreflight` makes that second check.
-    static func preflight(_ request: Request) -> Status? {
+    static func preflight(_ request: InferenceJob.Request) -> InferenceJob.Status? {
         // Runtime first, before any sizing: the size model below is Boltz's, fitted to
         // Boltz's measured peaks, so applying it to another method's request would be
-        // meaningless even as a refusal. Absent means Boltz, per `Request.runtime`.
-        if let runtime = request.runtime, runtime != boltzRuntime {
-            return refusal("this build of RayMol does not carry the '\(runtime)' "
-                         + "inference runtime")
+        // meaningless even as a refusal. Absent means Boltz, per
+        // `InferenceJob.Request.runtime`.
+        if let runtime = request.runtime, runtime != runtimeName {
+            return InferenceJob.refusal(
+                "this build of RayMol does not carry the '\(runtime)' inference runtime")
         }
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         switch PredictSizeGuard.decide(tokens: tokens,
@@ -404,7 +131,7 @@ final class BoltzJobManager {
             // Unreachable: this call passes no depth, so it defaults to 1. Handled
             // rather than defaulted away so that adding a depth here cannot silently
             // become "proceed".
-            return refusal("the alignment is too large for this machine")
+            return InferenceJob.refusal("the alignment is too large for this machine")
         case .ok, .warn:
             // `.warn` deliberately proceeds, so `okFraction` has no effect on this path
             // today — the tier is not yet surfaced anywhere. It is kept rather than
@@ -415,8 +142,9 @@ final class BoltzJobManager {
             // `.warn` there rather than reviving it here.
             return nil
         case let .refuse(maxFittingTokens):
-            return refusal("input of \(tokens) residues is too large for this machine; "
-                         + "at most about \(maxFittingTokens) fit")
+            return InferenceJob.refusal(
+                "input of \(tokens) residues is too large for this machine; "
+                + "at most about \(maxFittingTokens) fit")
         }
     }
 
@@ -427,8 +155,10 @@ final class BoltzJobManager {
     /// deep alignment is charged as though both chains carried it — and it is the one
     /// that cannot license a run that then dies, which is the only direction that
     /// matters here.
-    static func alignmentPreflight(_ request: Request,
-                                   alignments: [String: MSAAlignment]) -> Status? {
+    static func alignmentPreflight(_ request: InferenceJob.Request,
+                                   alignments: [String: MSAAlignment])
+        -> InferenceJob.Status?
+    {
         guard let deepest = alignments.values.map(\.depth).max(), deepest > 1 else {
             return nil
         }
@@ -438,43 +168,20 @@ final class BoltzJobManager {
         case .ok, .warn:
             return nil
         case let .refuseDepth(maxFittingDepth):
-            return refusal(
+            return InferenceJob.refusal(
                 maxFittingDepth >= 1
                     ? "an alignment \(deepest) rows deep is too large for this machine "
                     + "at \(tokens) residues; retry with msa_depth=\(maxFittingDepth)"
                     : "\(tokens) residues with an alignment is too large for this "
                     + "machine")
         case let .refuse(maxFittingTokens):
-            return refusal("input of \(tokens) residues is too large for this machine; "
-                         + "at most about \(maxFittingTokens) fit")
+            return InferenceJob.refusal(
+                "input of \(tokens) residues is too large for this machine; "
+                + "at most about \(maxFittingTokens) fit")
         }
     }
 
-    /// Both refusals read the same to a caller; only the advice differs.
-    static func refusal(_ message: String) -> Status {
-        Status(state: "failed", phase: "preflight", fraction: 0, error: message,
-               resultPath: nil, peakBytes: nil, elapsedSeconds: nil)
-    }
-
-    // MARK: - Handing the result back to Python
-
-    /// Hands the finished structure to Python, which loads it into the placeholder and
-    /// retires the pending mark in one step.
-    ///
-    /// One Python entry point rather than a load plus a bookkeeping call: a name left
-    /// marked pending after a successful load would be stripped from every subsequent
-    /// session save. `deliver_result` also pins `zoom=0` -- a prediction can land many
-    /// minutes after submit, and moving the camera then would interrupt the user.
-    static func loadResult(_ request: Request) {
-        guard let objectName = request.objectName, !objectName.isEmpty else { return }
-        let path = pythonLiteral(request.outPath)
-        let name = pythonLiteral(objectName)
-        DispatchQueue.main.async {
-            PyMOLEngine.shared.runPython(
-                "from pymol import predicting as _p; "
-                + "_p.deliver_result(\(path), \(name), seed=\(request.seed))")
-        }
-    }
+    // MARK: - Metrics
 
     /// (chain, resi) for every residue, numbered exactly as the PDB written beside it.
     ///
@@ -505,7 +212,8 @@ final class BoltzJobManager {
     /// Best effort by construction. A prediction that folded must not be reported as
     /// failed because its metrics could not be serialized, so every failure here is
     /// swallowed and the run is simply recorded without them.
-    private static func writeMetrics(request: Request, scored: ScoredStructure,
+    private static func writeMetrics(request: InferenceJob.Request,
+                                     scored: ScoredStructure,
                                      canonical: CanonicalStructure) {
         guard let path = request.metricsPath, !path.isEmpty else { return }
         let index = residueIndex(canonical)
@@ -576,26 +284,6 @@ final class BoltzJobManager {
         _ = try? FileManager.default.replaceItemAt(url, withItemAt: temp)
     }
 
-    /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
-    /// but building source text without quoting is how injection bugs start.
-    private static func pythonLiteral(_ value: String) -> String {
-        "'" + value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "") + "'"
-    }
-
-    /// Drops the placeholder when a job will never produce a structure. Python only
-    /// deletes it if it is still empty, so this cannot destroy a completed result.
-    static func discardPlaceholder(_ request: Request) {
-        guard let objectName = request.objectName, !objectName.isEmpty else { return }
-        DispatchQueue.main.async {
-            PyMOLEngine.shared.runPython(
-                "from pymol import predicting as _p; "
-                + "_p.discard_pending(\(pythonLiteral(objectName)))")
-        }
-    }
-
     // MARK: - Inference
 
     /// Records one step of a running phase, from inside boltz-mlx's callback.
@@ -610,14 +298,15 @@ final class BoltzJobManager {
     /// loop, so everything it does is on inference's critical path.
     private static func reportStep(to url: URL, phase: String, fraction: Double,
                                    step: Int, totalSteps: Int) {
-        try? writeStatus(Status(state: "running", phase: phase, fraction: fraction,
+        try? InferenceJob.writeStatus(
+            InferenceJob.Status(state: "running", phase: phase, fraction: fraction,
                                 error: nil, resultPath: nil, peakBytes: nil,
                                 elapsedSeconds: nil,
                                 step: step, totalSteps: totalSteps),
-                         to: url)
+            to: url)
     }
 
-    private func run(_ request: Request) {
+    private func run(_ request: InferenceJob.Request) {
         let statusURL = URL(fileURLWithPath: request.statusPath)
         // Captured by report() below; filled in once inference completes.
         var peak: Int? = nil
@@ -625,22 +314,24 @@ final class BoltzJobManager {
         var elapsed: Double? = nil
         func report(_ state: String, _ phase: String, _ fraction: Double,
                     error: String? = nil, result: String? = nil) {
-            try? Self.writeStatus(Status(state: state, phase: phase, fraction: fraction,
-                                         error: error, resultPath: result,
-                                         peakBytes: peak, footprintBytes: footprint,
-                                         elapsedSeconds: elapsed),
-                                  to: statusURL)
+            try? InferenceJob.writeStatus(
+                InferenceJob.Status(state: state, phase: phase, fraction: fraction,
+                                    error: error, resultPath: result,
+                                    peakBytes: peak, footprintBytes: footprint,
+                                    elapsedSeconds: elapsed),
+                to: statusURL)
         }
         func isCancelled() -> Bool {
             stateQueue.sync { cancelled.contains(request.jobID) }
         }
         func settle(_ state: String, _ phase: String, error: String? = nil) {
-            Self.settle(request,
-                        Status(state: state, phase: phase, fraction: 0,
-                               error: error, resultPath: nil,
-                               peakBytes: peak, footprintBytes: footprint,
-                               elapsedSeconds: elapsed),
-                        to: statusURL)
+            InferenceJob.settle(
+                request,
+                InferenceJob.Status(state: state, phase: phase, fraction: 0,
+                                    error: error, resultPath: nil,
+                                    peakBytes: peak, footprintBytes: footprint,
+                                    elapsedSeconds: elapsed),
+                to: statusURL)
         }
 
         report("running", "featurize", 0.0)
@@ -684,7 +375,7 @@ final class BoltzJobManager {
                 // settle, not discard-then-write: discard_pending pops _PENDING, the map
                 // every progress view reads, so discarding first records the refusal
                 // after the only thing that could show it is gone.
-                Self.settle(request, failure, to: statusURL)
+                InferenceJob.settle(request, failure, to: statusURL)
                 return
             }
             let features = try BoltzFeaturizer().featurize(canonical,
@@ -726,7 +417,7 @@ final class BoltzJobManager {
             // recycling and diffusion sampling -- so a reported step is a step that
             // has genuinely been computed, not one merely queued into MLX's lazy
             // graph.
-            let throttle = StepThrottle()
+            let throttle = InferenceJob.StepThrottle()
             let onProgress: @Sendable (BoltzProgress) -> Void = { progress in
                 // "trunk" / "diffusion" EXACTLY: predictors/boltz2.py declares a
                 // band under each of those names. Spelled out here rather than
@@ -793,7 +484,7 @@ final class BoltzJobManager {
             // Load BEFORE reporting done: predict_status returning done should already
             // imply the object is populated, or a script that polls then reads the object
             // races the load.
-            Self.loadResult(request)
+            InferenceJob.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch is CancellationError {
             settle("cancelled", "inference")
@@ -826,7 +517,9 @@ final class BoltzJobManager {
     /// inert for locally generated files. Marking a multimer's rows as paired without
     /// one would assert co-evolution across the very interface an interface score
     /// measures — and that fails by reading HIGH rather than by crashing.
-    static func loadAlignments(_ request: Request) throws -> [String: MSAAlignment] {
+    static func loadAlignments(_ request: InferenceJob.Request) throws
+        -> [String: MSAAlignment]
+    {
         guard let entries = request.alignments, !entries.isEmpty else { return [:] }
         // Nil only for a request written before #297, which also carries no alignments —
         // so this fallback is for a hand-written request, and it is upstream's own cap.
