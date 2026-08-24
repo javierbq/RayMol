@@ -3216,7 +3216,9 @@ final class PyMOLEngine: ObservableObject {
                 } else if line.hasPrefix("PREDICT:") {
                     // Structure prediction (#224). cmd.predict writes a request JSON to
                     // the temp dir and prints this marker; there is no Python->Swift call
-                    // path, so this poll IS the invocation. Deliberately NOT inside the
+                    // path, so this poll IS the invocation. The ROUTER picks the runtime
+                    // from the request, so no manager sees a job that is not its own.
+                    // Deliberately NOT inside the
                     // MAS-restricted #if used for MCP: below -- prediction ships in every
                     // build, on both platforms. No #if at all now: on iOS the marker can
                     // only be printed if cmd.predict got past host.available(), which is
@@ -3224,7 +3226,7 @@ final class PyMOLEngine: ObservableObject {
                     // does not in the Simulator. The platform gate lives there and in
                     // PredictAvailability, so a guard here would only be a third place to
                     // forget.
-                    BoltzJobManager.shared.handle(marker: line)
+                    InferenceRouter.handle(marker: line)
                 } else if line.hasPrefix("PREDICT_FORM:ready") {
                     parsePredictFormFeedback()
                 } else if line.hasPrefix("PREDICT_FORM:err") {

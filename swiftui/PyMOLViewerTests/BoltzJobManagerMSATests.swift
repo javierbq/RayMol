@@ -71,7 +71,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
     /// request" failure instead of a single-sequence run.
     func testARequestWithoutAlignmentsStillDecodes() throws {
         let url = try writeRequest(job: "old", chains: [("A", "MKTAY")])
-        let parsed = try BoltzJobManager.parseRequest(at: url)
+        let parsed = try InferenceJob.parseRequest(at: url)
         XCTAssertNil(parsed.alignments)
         XCTAssertNil(parsed.msaDepth)
     }
@@ -81,7 +81,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
         let url = try writeRequest(job: "a1", chains: [("A", "MKTAY")],
                                    alignments: [["chain": "A", "a3m_path": path]],
                                    msaDepth: 16_384)
-        let parsed = try BoltzJobManager.parseRequest(at: url)
+        let parsed = try InferenceJob.parseRequest(at: url)
         XCTAssertEqual(parsed.alignments?.map(\.chain), ["A"])
         XCTAssertEqual(parsed.alignments?.first?.a3mPath, path)
         XCTAssertEqual(parsed.msaDepth, 16_384)
@@ -96,7 +96,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
                                    alignments: [["chain": "A", "a3m_path": a],
                                                 ["chain": "B", "a3m_path": b]])
         let loaded = try BoltzJobManager.loadAlignments(
-            try BoltzJobManager.parseRequest(at: url))
+            try InferenceJob.parseRequest(at: url))
         XCTAssertEqual(Set(loaded.keys), ["A", "B"])
         XCTAssertEqual(loaded["A"]?.depth, 3)
         XCTAssertEqual(loaded["B"]?.depth, 5)
@@ -110,14 +110,14 @@ final class BoltzJobManagerMSATests: XCTestCase {
         let url = try writeRequest(job: "a3", chains: [("A", "MKTAY"), ("B", "GSHMA")],
                                    alignments: [["chain": "A", "a3m_path": a]])
         let loaded = try BoltzJobManager.loadAlignments(
-            try BoltzJobManager.parseRequest(at: url))
+            try InferenceJob.parseRequest(at: url))
         XCTAssertEqual(Array(loaded.keys), ["A"])
     }
 
     func testNoAlignmentsMeansAnEmptyMapNotAFailure() throws {
         let url = try writeRequest(job: "a4", chains: [("A", "MKTAY")])
         XCTAssertEqual(try BoltzJobManager.loadAlignments(
-            try BoltzJobManager.parseRequest(at: url)).count, 0)
+            try InferenceJob.parseRequest(at: url)).count, 0)
     }
 
     /// The depth lever is applied by the PARSER, which counts rows after deduplication
@@ -129,7 +129,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
                                    alignments: [["chain": "A", "a3m_path": path]],
                                    msaDepth: 4)
         let loaded = try BoltzJobManager.loadAlignments(
-            try BoltzJobManager.parseRequest(at: url))
+            try InferenceJob.parseRequest(at: url))
         XCTAssertEqual(loaded["A"]?.depth, 4)
     }
 
@@ -138,7 +138,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
             job: "a6", chains: [("A", "MKTAY")],
             alignments: [["chain": "A",
                           "a3m_path": dir.appendingPathComponent("gone.a3m").path]])
-        let request = try BoltzJobManager.parseRequest(at: url)
+        let request = try InferenceJob.parseRequest(at: url)
         XCTAssertThrowsError(try BoltzJobManager.loadAlignments(request))
     }
 
@@ -150,7 +150,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
         let url = try writeRequest(job: "a7", chains: [("A", "MKTAY")],
                                    alignments: [["chain": "A", "a3m_path": path]])
         let loaded = try BoltzJobManager.loadAlignments(
-            try BoltzJobManager.parseRequest(at: url))
+            try InferenceJob.parseRequest(at: url))
         XCTAssertEqual(loaded["A"]?.depth, 3)
         XCTAssertEqual(BoltzInputLimits.desktop.maximumMSADepth, 16_384)
     }
@@ -238,13 +238,13 @@ final class BoltzJobManagerMSATests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: requestURL)
 
-        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(job)")
+        InferenceRouter.handle(marker: "PREDICT:submit:\(job)")
 
         let settled = expectation(description: "job settles")
         let poll = DispatchQueue(label: "poll")
         func check(_ attempt: Int) {
             if let data = try? Data(contentsOf: statusURL),
-               let status = try? JSONDecoder().decode(BoltzJobManager.Status.self,
+               let status = try? JSONDecoder().decode(InferenceJob.Status.self,
                                                       from: data),
                status.state != "queued" {
                 return settled.fulfill()
@@ -256,7 +256,7 @@ final class BoltzJobManagerMSATests: XCTestCase {
         wait(for: [settled], timeout: 40)
 
         let data = try Data(contentsOf: statusURL)
-        let status = try JSONDecoder().decode(BoltzJobManager.Status.self, from: data)
+        let status = try JSONDecoder().decode(InferenceJob.Status.self, from: data)
         XCTAssertEqual(status.state, "failed")
         let error = try XCTUnwrap(status.error)
         XCTAssertTrue(error.contains("chain A"), error)

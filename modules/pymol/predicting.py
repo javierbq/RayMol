@@ -448,7 +448,7 @@ def discard_pending(name, _self=cmd):
     # background queue -> settle() writes the terminal status file -> the discard is
     # hopped to the main queue and runs within milliseconds, LONG before the next
     # poll. Trusting the cache therefore retains nothing on the only path that
-    # matters. Nothing deletes the status file (BoltzJobManager has no removeItem
+    # matters. Nothing deletes the status file (InferenceJob has no removeItem
     # on statusPath), so re-reading it here is what actually sees the failure;
     # _LAST_INFO stays as the fallback for a job that vanished from _PENDING first.
     #

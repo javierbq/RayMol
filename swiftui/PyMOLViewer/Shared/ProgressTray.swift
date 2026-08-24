@@ -157,7 +157,7 @@ struct ProgressItem: Identifiable, Equatable {
     }
 
     /// A Python single-quoted string literal for an arbitrary object name.
-    /// Matches the escaping in BoltzJobManager.pythonLiteral(_:).
+    /// Matches the escaping in InferenceJob.pythonLiteral(_:).
     private static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")

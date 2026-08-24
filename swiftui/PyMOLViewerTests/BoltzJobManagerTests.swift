@@ -68,7 +68,7 @@ final class BoltzJobManagerTests: XCTestCase {
 
     func testDecodesARequestWrittenInHostPysFormat() throws {
         let url = try writeRequest(job: "j1", chains: [("A", "AG"), ("B", "W")])
-        let parsed = try BoltzJobManager.parseRequest(at: url)
+        let parsed = try InferenceJob.parseRequest(at: url)
         XCTAssertEqual(parsed.jobID, "j1")
         XCTAssertEqual(parsed.chains.map(\.chain), ["A", "B"])
         XCTAssertEqual(parsed.chains.map(\.sequence), ["AG", "W"])
@@ -91,7 +91,7 @@ final class BoltzJobManagerTests: XCTestCase {
             "object_name": "prediction_deadbeef",
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
-        XCTAssertEqual(try BoltzJobManager.parseRequest(at: url).objectName,
+        XCTAssertEqual(try InferenceJob.parseRequest(at: url).objectName,
                        "prediction_deadbeef")
     }
 
@@ -99,7 +99,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// a strict field would turn Python/Swift skew into a hard failure.
     func testRequestWithoutAnObjectNameStillDecodes() throws {
         let url = try writeRequest(job: "noname", chains: [("A", "AG")])
-        let parsed = try BoltzJobManager.parseRequest(at: url)
+        let parsed = try InferenceJob.parseRequest(at: url)
         XCTAssertNil(parsed.objectName)
     }
 
@@ -114,12 +114,12 @@ final class BoltzJobManagerTests: XCTestCase {
             "out_path": "/tmp/o.pdb", "status_path": "/tmp/s.json",
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
-        XCTAssertThrowsError(try BoltzJobManager.parseRequest(at: url))
+        XCTAssertThrowsError(try InferenceJob.parseRequest(at: url))
     }
 
     func testStatusRoundTripsWithSnakeCaseKeys() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j2.json")
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "running", phase: "inference", fraction: 0.5,
                   error: nil, resultPath: "/tmp/x.pdb", peakBytes: nil,
                   elapsedSeconds: nil), to: path)
@@ -128,14 +128,14 @@ final class BoltzJobManagerTests: XCTestCase {
             with: try Data(contentsOf: path)) as? [String: Any]
         XCTAssertEqual(raw?["state"] as? String, "running")
         XCTAssertEqual(raw?["result_path"] as? String, "/tmp/x.pdb")
-        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+        let decoded = try JSONDecoder().decode(InferenceJob.Status.self,
                                                from: try Data(contentsOf: path))
         XCTAssertEqual(decoded.fraction, 0.5)
     }
 
     func testStatusCarriesPeakMemoryAndElapsedWithSnakeCaseKeys() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j6.json")
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "done", phase: "done", fraction: 1.0, error: nil,
                   resultPath: "/tmp/x.pdb", peakBytes: 4_294_967_296,
                   elapsedSeconds: 65.3), to: path)
@@ -143,7 +143,7 @@ final class BoltzJobManagerTests: XCTestCase {
             with: try Data(contentsOf: path)) as? [String: Any]
         XCTAssertEqual(raw?["peak_bytes"] as? Int, 4_294_967_296)
         XCTAssertEqual(raw?["elapsed_s"] as? Double, 65.3)
-        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+        let decoded = try JSONDecoder().decode(InferenceJob.Status.self,
                                                from: try Data(contentsOf: path))
         XCTAssertEqual(decoded.peakBytes, 4_294_967_296)
     }
@@ -151,10 +151,10 @@ final class BoltzJobManagerTests: XCTestCase {
     /// Absent while a job is still running -- Python's queued fallback mirrors that.
     func testPeakMemoryIsNilBeforeCompletion() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j7.json")
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "running", phase: "inference", fraction: 0.2, error: nil,
                   resultPath: nil, peakBytes: nil, elapsedSeconds: nil), to: path)
-        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+        let decoded = try JSONDecoder().decode(InferenceJob.Status.self,
                                                from: try Data(contentsOf: path))
         XCTAssertNil(decoded.peakBytes)
         XCTAssertNil(decoded.elapsedSeconds)
@@ -165,7 +165,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// spelling is the contract, not the Swift property name.
     func testStatusCarriesStepCountsWithSnakeCaseKeys() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j8.json")
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "running", phase: "diffusion", fraction: 0.42, error: nil,
                   resultPath: nil, peakBytes: nil, elapsedSeconds: nil,
                   step: 84, totalSteps: 200), to: path)
@@ -174,7 +174,7 @@ final class BoltzJobManagerTests: XCTestCase {
         XCTAssertEqual(raw?["phase"] as? String, "diffusion")
         XCTAssertEqual(raw?["step"] as? Int, 84)
         XCTAssertEqual(raw?["total_steps"] as? Int, 200)
-        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+        let decoded = try JSONDecoder().decode(InferenceJob.Status.self,
                                                from: try Data(contentsOf: path))
         XCTAssertEqual(decoded.step, 84)
         XCTAssertEqual(decoded.totalSteps, 200)
@@ -189,7 +189,7 @@ final class BoltzJobManagerTests: XCTestCase {
         {"state":"running","phase":"load","fraction":0.1,"error":null,
          "result_path":null,"peak_bytes":null,"elapsed_s":null}
         """.utf8).write(to: path)
-        let decoded = try JSONDecoder().decode(BoltzJobManager.Status.self,
+        let decoded = try JSONDecoder().decode(InferenceJob.Status.self,
                                                from: try Data(contentsOf: path))
         XCTAssertEqual(decoded.phase, "load")
         XCTAssertNil(decoded.step)
@@ -201,7 +201,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// A 200-step run on a small input steps in milliseconds. Unthrottled that is
     /// 200 atomic status writes in a burst, on inference's own critical path.
     func testTheThrottleSkipsStepsThatAreNeitherTimelyNorVisible() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         XCTAssertTrue(throttle.shouldEmit(stage: "diffusion", fraction: 0.0,
                                           isFinal: false, now: 0),
                       "the first step of a stage is always news")
@@ -213,14 +213,14 @@ final class BoltzJobManagerTests: XCTestCase {
     /// Either threshold alone is enough — the same OR that fetching.py's `_emit`
     /// applies to the WEIGHTS: marker.
     func testTheThrottleEmitsOnAOnePercentMoveEvenWhenNoTimeHasPassed() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         _ = throttle.shouldEmit(stage: "diffusion", fraction: 0.0, isFinal: false, now: 0)
         XCTAssertTrue(throttle.shouldEmit(stage: "diffusion", fraction: 0.01,
                                           isFinal: false, now: 0.001))
     }
 
     func testTheThrottleEmitsOnTheIntervalEvenWhenTheBarHasNotMoved() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         _ = throttle.shouldEmit(stage: "diffusion", fraction: 0.5, isFinal: false, now: 0)
         XCTAssertFalse(throttle.shouldEmit(stage: "diffusion", fraction: 0.5,
                                            isFinal: false, now: 0.14))
@@ -231,7 +231,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// A dropped final step would leave the card parked one step short forever,
     /// because nothing follows it inside the stage.
     func testTheThrottleAlwaysEmitsAStagesFinalStep() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         _ = throttle.shouldEmit(stage: "diffusion", fraction: 0.995, isFinal: false, now: 0)
         XCTAssertTrue(throttle.shouldEmit(stage: "diffusion", fraction: 1.0,
                                           isFinal: true, now: 0.001),
@@ -243,7 +243,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// would catch: trunk ends at 1.0 and diffusion's first step can also be 1.0
     /// of 1 in the degenerate case.
     func testTheThrottleAlwaysEmitsTheFirstStepOfANewStage() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         _ = throttle.shouldEmit(stage: "trunk", fraction: 0.75, isFinal: false, now: 0)
         XCTAssertTrue(throttle.shouldEmit(stage: "diffusion", fraction: 0.75,
                                           isFinal: false, now: 0.001))
@@ -254,7 +254,7 @@ final class BoltzJobManagerTests: XCTestCase {
     /// is the deliberate floor: it is the rate at which the bar visibly moves,
     /// and it is exactly the ceiling fetching.py accepts for the WEIGHTS: marker.
     func testAFastTwoHundredStepRunIsThrottledBelowOneWritePerStep() {
-        let throttle = BoltzJobManager.StepThrottle()
+        let throttle = InferenceJob.StepThrottle()
         var emitted = 0
         for step in 1...200 {
             // 200 steps in 100 ms: every step is well inside the interval, and
@@ -272,7 +272,7 @@ final class BoltzJobManagerTests: XCTestCase {
 
     func testStatusWriteIsAtomicLeavingNoTempBehind() throws {
         let path = dir.appendingPathComponent("raymol_predict_status_j5.json")
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "done", phase: "done", fraction: 1.0,
                   error: nil, resultPath: nil, peakBytes: nil,
                   elapsedSeconds: nil), to: path)
@@ -285,27 +285,27 @@ final class BoltzJobManagerTests: XCTestCase {
     // MARK: - Marker parsing
 
     func testParsesSubmitAndCancelVerbs() {
-        XCTAssertEqual(BoltzJobManager.parseMarker("PREDICT:submit:j1")?.verb, .submit)
-        XCTAssertEqual(BoltzJobManager.parseMarker("PREDICT:cancel:j1")?.verb, .cancel)
-        XCTAssertEqual(BoltzJobManager.parseMarker("PREDICT:submit:j1")?.jobID, "j1")
+        XCTAssertEqual(InferenceRouter.parseMarker("PREDICT:submit:j1")?.verb, .submit)
+        XCTAssertEqual(InferenceRouter.parseMarker("PREDICT:cancel:j1")?.verb, .cancel)
+        XCTAssertEqual(InferenceRouter.parseMarker("PREDICT:submit:j1")?.jobID, "j1")
     }
 
     func testRejectsUnknownVerbsAndForeignPrefixes() {
-        XCTAssertNil(BoltzJobManager.parseMarker("PREDICT:frobnicate:j1"))
-        XCTAssertNil(BoltzJobManager.parseMarker("OBJPANEL:ready"))
-        XCTAssertNil(BoltzJobManager.parseMarker("PREDICT:submit:"))
-        XCTAssertNil(BoltzJobManager.parseMarker("PREDICT:submit"))
-        XCTAssertNil(BoltzJobManager.parseMarker(""))
+        XCTAssertNil(InferenceRouter.parseMarker("PREDICT:frobnicate:j1"))
+        XCTAssertNil(InferenceRouter.parseMarker("OBJPANEL:ready"))
+        XCTAssertNil(InferenceRouter.parseMarker("PREDICT:submit:"))
+        XCTAssertNil(InferenceRouter.parseMarker("PREDICT:submit"))
+        XCTAssertNil(InferenceRouter.parseMarker(""))
     }
 
     /// A job id containing a colon must survive, since maxSplits caps the split at one.
     func testJobIdMayContainAColon() {
-        XCTAssertEqual(BoltzJobManager.parseMarker("PREDICT:cancel:a:b")?.jobID, "a:b")
+        XCTAssertEqual(InferenceRouter.parseMarker("PREDICT:cancel:a:b")?.jobID, "a:b")
     }
 
     func testAMarkerWithNoRequestFileIsIgnored() {
         // Must not crash or throw out of the feedback pump.
-        BoltzJobManager.shared.handle(marker: "PREDICT:submit:definitely-missing")
+        InferenceRouter.handle(marker: "PREDICT:submit:definitely-missing")
     }
 
     // MARK: - Preflight
@@ -313,7 +313,7 @@ final class BoltzJobManagerTests: XCTestCase {
     func testOversizedInputIsRefusedBeforeAnyAllocation() throws {
         let long = String(repeating: "A", count: PredictSizeGuard.maximumTokens + 10)
         let url = try writeRequest(job: "j3", chains: [("A", long)])
-        let request = try BoltzJobManager.parseRequest(at: url)
+        let request = try InferenceJob.parseRequest(at: url)
         let status = BoltzJobManager.preflight(request)
         XCTAssertEqual(status?.state, "failed")
         XCTAssertEqual(status?.phase, "preflight")
@@ -322,7 +322,7 @@ final class BoltzJobManagerTests: XCTestCase {
 
     func testReasonableInputPassesPreflight() throws {
         let url = try writeRequest(job: "j4", chains: [("A", String(repeating: "A", count: 40))])
-        let request = try BoltzJobManager.parseRequest(at: url)
+        let request = try InferenceJob.parseRequest(at: url)
         XCTAssertNil(BoltzJobManager.preflight(request),
                      "a 40-residue chain must not be refused on any supported Mac")
     }
@@ -343,7 +343,7 @@ final class BoltzJobManagerTests: XCTestCase {
         BoltzJobManager.shared.registerTaskForTesting(task, jobID: "cx1")
         wait(for: [started], timeout: 5)
 
-        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:cx1")
+        InferenceRouter.handle(marker: "PREDICT:cancel:cx1")
 
         wait(for: [observed], timeout: 5)
         XCTAssertTrue(task.isCancelled)
@@ -353,20 +353,20 @@ final class BoltzJobManagerTests: XCTestCase {
     /// A cancel can legitimately arrive before the task is registered, so the flag must
     /// still be recorded for the coarse phase checks in run().
     func testCancelBeforeRegistrationIsStillRecorded() {
-        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:cx2")
+        InferenceRouter.handle(marker: "PREDICT:cancel:cx2")
         XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains("cx2"))
     }
 
     /// ...but a cancel for a job that already finished is moot and must NOT accumulate.
     func testCancelForATerminalJobIsIgnoredSoTheSetStaysBounded() throws {
         let jobID = "cx3"
-        try BoltzJobManager.writeStatus(
+        try InferenceJob.writeStatus(
             .init(state: "done", phase: "done", fraction: 1.0, error: nil,
                   resultPath: "/tmp/x.pdb", peakBytes: 1, elapsedSeconds: 1),
-            to: BoltzJobManager.statusURL(jobID: jobID))
-        defer { try? FileManager.default.removeItem(at: BoltzJobManager.statusURL(jobID: jobID)) }
+            to: InferenceJob.statusURL(jobID: jobID))
+        defer { try? FileManager.default.removeItem(at: InferenceJob.statusURL(jobID: jobID)) }
 
-        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:\(jobID)")
+        InferenceRouter.handle(marker: "PREDICT:cancel:\(jobID)")
         XCTAssertFalse(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))
     }
 
@@ -379,16 +379,16 @@ final class BoltzJobManagerTests: XCTestCase {
         let req = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("raymol_predict_req_\(jobID).json")
         try Data("{ not json at all".utf8).write(to: req)
-        let statusPath = BoltzJobManager.statusURL(jobID: jobID)
+        let statusPath = InferenceJob.statusURL(jobID: jobID)
         defer {
             try? FileManager.default.removeItem(at: req)
             try? FileManager.default.removeItem(at: statusPath)
         }
 
-        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+        InferenceRouter.handle(marker: "PREDICT:submit:\(jobID)")
 
         let decoded = try JSONDecoder().decode(
-            BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
+            InferenceJob.Status.self, from: try Data(contentsOf: statusPath))
         XCTAssertEqual(decoded.state, "failed")
         XCTAssertEqual(decoded.phase, "request")
         XCTAssertNotNil(decoded.error)
@@ -403,18 +403,18 @@ final class BoltzJobManagerTests: XCTestCase {
         try Data("""
         {"job_id":"\(jobID)","weights_dir":"/tmp","chains":[{"chain":"A","sequence":"AG"}],
          "recycling_steps":3,"diffusion_steps":1000000000000000000000000000000,"seed":0,
-         "out_path":"/tmp/o.pdb","status_path":"\(BoltzJobManager.statusURL(jobID: jobID).path)"}
+         "out_path":"/tmp/o.pdb","status_path":"\(InferenceJob.statusURL(jobID: jobID).path)"}
         """.utf8).write(to: req)
-        let statusPath = BoltzJobManager.statusURL(jobID: jobID)
+        let statusPath = InferenceJob.statusURL(jobID: jobID)
         defer {
             try? FileManager.default.removeItem(at: req)
             try? FileManager.default.removeItem(at: statusPath)
         }
 
-        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+        InferenceRouter.handle(marker: "PREDICT:submit:\(jobID)")
 
         let decoded = try JSONDecoder().decode(
-            BoltzJobManager.Status.self, from: try Data(contentsOf: statusPath))
+            InferenceJob.Status.self, from: try Data(contentsOf: statusPath))
         XCTAssertEqual(decoded.state, "failed")
     }
     // MARK: - settle ordering
@@ -424,8 +424,8 @@ final class BoltzJobManagerTests: XCTestCase {
     /// discarding first strands the error where nothing can observe it.
     func testPreflightRefusalWritesStatusBeforeDiscardingPlaceholder() throws {
         var order: [String] = []
-        BoltzJobManager.settleTap = { order.append($0) }
-        defer { BoltzJobManager.settleTap = nil }
+        InferenceJob.settleTap = { order.append($0) }
+        defer { InferenceJob.settleTap = nil }
 
         // 100k residues: far past any machine's fitting size, so preflight refuses
         // without touching MLX.
@@ -433,7 +433,7 @@ final class BoltzJobManagerTests: XCTestCase {
         try writeRequest(job: jobID,
                          chains: [("A", String(repeating: "A", count: 100_000))],
                          diffusionSteps: 200)
-        BoltzJobManager.shared.handle(marker: "PREDICT:submit:\(jobID)")
+        InferenceRouter.handle(marker: "PREDICT:submit:\(jobID)")
 
         XCTAssertEqual(order, ["write", "discard"],
                        "status must be written before the placeholder is discarded")
@@ -441,7 +441,7 @@ final class BoltzJobManagerTests: XCTestCase {
         let statusURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("raymol_predict_status_\(jobID).json")
         let status = try JSONDecoder().decode(
-            BoltzJobManager.Status.self, from: Data(contentsOf: statusURL))
+            InferenceJob.Status.self, from: Data(contentsOf: statusURL))
         XCTAssertEqual(status.state, "failed")
         XCTAssertNotNil(status.error)
     }
@@ -454,7 +454,7 @@ final class BoltzJobManagerTests: XCTestCase {
     func testCancelArrivingBeforeRegistrationStillCancelsTheTask() {
         let jobID = "prereg"
         // Cancel first — no task exists yet, so only the flag is recorded.
-        BoltzJobManager.shared.handle(marker: "PREDICT:cancel:\(jobID)")
+        InferenceRouter.handle(marker: "PREDICT:cancel:\(jobID)")
         XCTAssertTrue(BoltzJobManager.shared.cancelRequestedForTesting.contains(jobID))
 
         let observed = expectation(description: "task saw the cancellation")

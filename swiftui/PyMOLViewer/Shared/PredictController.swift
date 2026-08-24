@@ -38,7 +38,7 @@ struct PredictSizeWarning: Equatable {
 
 extension PredictController {
 
-    /// A Python single-quoted string literal. Matches BoltzJobManager.pythonLiteral.
+    /// A Python single-quoted string literal. Matches InferenceJob.pythonLiteral.
     nonisolated static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
