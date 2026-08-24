@@ -6,51 +6,81 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.9.1</title>
+      <title>RayMol 1.10.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.9.1
+## RayMol 1.10.0
 
-A fix release, led by one long-standing gap: **keyboard shortcuts now work**.
+A feature release: on-device structure prediction, MSA search, per-tool
+metrics, and a reworked Design mode selection model — plus a batch of
+interface fixes.
 
-### Keyboard shortcuts
+### Predict
 
-- **`set_key` remapping works again.** Bindings in your startup script — or typed
-  at the command line — now actually fire. If you have carried a `~/.pymolrc`
-  full of `cmd.set_key` bindings from desktop PyMOL for years, copy it to
-  `~/.raymolrc.py` and it will do what it always did. Function keys, arrows,
-  Page Up/Down, Home/End, and `⌃`/`⌥` combinations are all delivered.
-- **PyMOL's own built-in shortcuts are live too.** All 125 of them, for the
-  first time in RayMol: `←`/`→` step movie frames, `Page Up`/`Page Down` change
-  scenes, `Home` zooms to fit.
-- **Typing still wins.** While you are editing a command, the command line keeps
-  the arrows, Home/End and the usual `⌃A`/`⌃E`/`⌃H` text-editing keys — they
-  only trigger PyMOL bindings once the prompt is empty. Page Up/Down and the
-  function keys always work, so a binding is never out of reach.
-- **Your bindings beat the app's.** If your script binds a key RayMol also uses
-  as a menu shortcut (`⌃M`, `⌃D`), yours wins and RayMol tells you so at
-  startup. The menu item still works by click.
+- **Predict a structure right in RayMol.** *Tools ▸ Predict* (or `⌃P`) opens
+  a bar where you type or select a sequence and fold it on-device with
+  Boltz-2 or Protenix — no server round-trip, no export/import.
+- **A live progress tray** shows weight downloads and running predictions as
+  stacked, dismissible cards, with a per-phase ETA.
+- **Feed an MSA to a predictor** as a declared capability; results load into
+  a pending placeholder object you can inspect as it fills in.
+- **Failed jobs stay on screen** so you can see why, and retry.
 
-Two notes. **`⌥`-key bindings only fire when the command line does not have
-focus** — click the viewport first. On macOS, Option is the character-composition
-key (`⌥L` types `@` on a German layout), so RayMol cannot safely treat it as a
-shortcut while you are typing. And keyboard shortcuts are macOS-only for now.
+### Sequence search
+
+- **Search a ColabFold MSA server**, public or private, from inside RayMol —
+  alignments come back as named, session-stored objects you can browse
+  alongside your structures.
+
+### Metrics
+
+- **Numbers a tool measures are kept with the object it measured.**
+  `metrics_get` / `metrics_color` surface per-chain and whole-object values
+  (Boltz's pLDDT/PAE, for example) without leaving the object panel.
+
+### Design mode
+
+- **Selection is now driven by `sele`**, the same selection every other
+  RayMol tool uses — pick residues in Design mode the same way you would
+  anywhere else, and the two stay in sync.
+- **Sidechains show by default** on the design target, and the mode reports
+  how many selected residues it's ignoring.
+- The old named-selection picker is gone — one selection model, not two.
+
+### Interface
+
+- **Move, Measure and Design now live under one Tools menu.**
+- **Object groups render as a tree** in the panel, instead of a flat list.
+- **The console remembers its size.** It now defaults to 1/5 of the window
+  height, and your panel layout (console + inspector) persists across
+  launches.
+- **Cycle the selection mode with `Tab` / `Shift+Tab`.**
+
+### Notes
+
+- **Inserting no longer kicks you into Preview.** Adding an image, view link
+  or snippet leaves the editor in whichever mode you were working in.
+- **View links show a thumbnail**, so you can see where a link goes before
+  following it.
 
 ### Fixes
 
-- **Fixed: the camera jumped when showing dots, surface or mesh.** Turning on
-  one of these representations could re-frame the scene; your view is now
-  preserved.
-- **Fixed: console spam from the object panel.** The panel probed non-molecular
-  objects — maps, groups, CGOs — and filled the log with warnings.
-- **The sequence toggles are labeled "Seq"**, which is what they actually do.
+- Label backgrounds, outlines and connectors render correctly again.
+- The object panel no longer stalls on large sessions with many objects.
+- A text selection wins over the viewport image on `⌘C`.
+- **Fixed: cancelling a weight download during unpacking wedged the card.**
+  The tray could stick at "Unpacking… 67%" forever, and every later download
+  of that pack silently did nothing.
+- **The prediction countdown says what it measures.** A fold's estimate covers
+  the current phase, so it now reads "this phase: 2 min left" instead of a
+  bare "almost done" that looked like it described the whole run.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Tue, 11 Aug 2026 04:33:36 +0000</pubDate>
-      <sparkle:version>26</sparkle:version>
-      <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
+      <pubDate>Mon, 24 Aug 2026 19:07:31 +0000</pubDate>
+      <sparkle:version>27</sparkle:version>
+      <sparkle:shortVersionString>1.10.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.9.1/RayMol-1.9.1.dmg" type="application/octet-stream" sparkle:edSignature="iDcpgrsgZKBjqJVAjJaiTKIply0NEtJIfgZPULuMamWtbWAhC2QQmzZDJzv5cvzp6JnpuICln+tKKtNp6FlMCw==" length="88097324" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.10.0/RayMol-1.10.0.dmg" type="application/octet-stream" sparkle:edSignature="r6eHkgBMeHITDTj/bKlrZiC8s3PIvQ9BxSpHkmTBr8VBk6ugAy4QTg3sQlqXGC3XplAF3lMgWvvbLbB5vHPSAA==" length="90896559" />
     </item>
   </channel>
 </rss>
