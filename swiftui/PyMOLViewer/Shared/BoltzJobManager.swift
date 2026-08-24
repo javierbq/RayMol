@@ -8,9 +8,8 @@ import os
 ///
 /// The job SHELL — the wire format, atomic status writes, the write-then-discard settle
 /// ordering, placeholder discard and result autoload — is ``InferenceJob``, and the
-/// `PREDICT:` marker is ``InferenceRouter``'s. Both used to live in here, which made the
-/// other manager a dependent of this one for nothing it needed from it. What remains is
-/// only what is Boltz's: its featurizer, its weights, its size model and its metrics.
+/// `PREDICT:` marker is ``InferenceRouter``'s. What is here is only what is Boltz's: its
+/// featurizer, its weights, its size model and its metrics.
 ///
 /// Because the Python API is a job handle, nothing here needs to return a value to
 /// Python: status and result are files that Python polls. That is what makes the missing
