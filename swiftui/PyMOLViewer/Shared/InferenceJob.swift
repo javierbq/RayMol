@@ -14,11 +14,10 @@ import Foundation
 /// status and result are files that Python polls. That is what makes the missing bridge
 /// direction unnecessary rather than something to build.
 ///
-/// **Neutral by construction.** Nothing in here knows a method: no featurizer, no weights,
-/// no size model, and no `import` of any inference package. That is the point — this used
-/// to live inside ``BoltzJobManager``, which made every other runtime a dependent of the
-/// runtime that happened to be written first. A runtime added tomorrow uses this shell
-/// without acquiring that dependency.
+/// **Neutral by construction, and it must stay that way.** Nothing in here knows a method:
+/// no featurizer, no weights, no size model, and no `import` of any inference package. That
+/// is what lets every runtime share it without depending on any other runtime. Anything
+/// method-specific belongs in the manager that claims the runtime — see ``InferenceRuntime``.
 enum InferenceJob {
 
     // MARK: - Wire format (must match modules/pymol/predictors/host.py)

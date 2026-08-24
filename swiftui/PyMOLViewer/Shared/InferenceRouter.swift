@@ -1,18 +1,16 @@
 #if os(macOS) || os(iOS)
 import Foundation
 
-/// What a manager must be for the router to reach it.
+/// A backend that runs inference jobs for one method — its featurizer, its weights, its
+/// model — behind the three members ``InferenceRouter`` needs to reach it.
 ///
-/// Exists to kill a naming drift that had already started: the first manager called its
-/// wire name `boltzRuntime`, the second called its `runtimeName`, and nothing enforced a
-/// shape because each new runtime was wired in by hand at the call site. A protocol makes
-/// the table uniform, which is what lets ``InferenceRouter`` dispatch by loop instead of by
-/// a branch per runtime — and a branch per runtime is exactly how a runtime ends up
-/// routable but not cancellable.
+/// **To add a runtime:** conform your manager, then add its singleton to
+/// ``InferenceRouter/runtimes``. That one entry is the whole registration, and it makes the
+/// runtime routable and cancellable together.
 ///
-/// Deliberately three members and no more. Everything method-specific — the featurizer, the
-/// weights, the size model, the result writer — is the conformer's own business; the router
-/// only needs to know a runtime's name and how to start and stop a job.
+/// Nothing method-specific belongs here. The featurizer, the weights, the size model and
+/// the result writer stay the conformer's own; the router needs only a runtime's name and
+/// how to start and stop a job.
 protocol InferenceRuntime: AnyObject {
     /// This runtime's name as it appears on the wire, in `Request.runtime`. Kept in step
     /// with the Python side's `RUNTIME` constant and with what `PyMOLBridge` advertises in
@@ -32,16 +30,27 @@ protocol InferenceRuntime: AnyObject {
     func cancel(jobID: String)
 }
 
-/// Owns the `PREDICT:` marker and the table of runtimes it can reach.
+/// Turns a `PREDICT:` feedback marker into a job on the runtime that owns it.
 ///
-/// The dispatcher lives here rather than inside one of its own targets. It used to be a
-/// branch inside ``BoltzJobManager/handle(marker:)``, which made the two managers a cycle:
-/// Protenix reached in for the wire types and the shell, and Boltz reached back out to
-/// route and to broadcast cancels. Boltz owned the marker only because it was written
-/// first, and the note at that branch asked for exactly this — "when a third runtime
-/// lands, lift the parse-and-route out into a dispatcher rather than adding another branch
-/// here". Doing it now rather than then means the third runtime arrives as a peer instead
-/// of being added to a cycle.
+/// ``handle(marker:)`` is the only entry point, and `PyMOLEngine.pollFeedback()` is its
+/// only caller — once per `PREDICT:` line, on the main thread. There are two verbs:
+///
+/// * `PREDICT:submit:<jobID>` decodes `raymol_predict_req_<jobID>.json` out of the temp
+///   dir and hands the request to one runtime.
+/// * `PREDICT:cancel:<jobID>` carries no runtime — a marker holds only a job id — so it
+///   goes to every entry in ``runtimes``, and each keeps only its own ids.
+///
+/// A submit is routed by `Request.runtime`, and all three of these are normal:
+///
+/// * a name matching a ``runtimes`` entry goes there;
+/// * NO name means ``defaultRuntime``, because every Python side that predates a second
+///   runtime wrote no such key;
+/// * a name this build does not carry ALSO reaches ``defaultRuntime``, whose `preflight`
+///   refuses it BY NAME — which is how a Python side offering a method that was never
+///   linked gets a real error instead of a job that never reports.
+///
+/// A request that will not decode gets a `failed` status written straight to its derived
+/// status path: without one, Python polls `queued` forever.
 enum InferenceRouter {
 
     // MARK: - Marker parsing
@@ -61,31 +70,26 @@ enum InferenceRouter {
 
     // MARK: - The table
 
-    /// The runtime a request that names NO runtime is handed to.
+    /// Where a request naming no runtime goes — and where one naming an unknown runtime
+    /// goes too, to be refused by name.
     ///
-    /// `nil` means Boltz, per ``InferenceJob/Request/runtime``: every Python side that
-    /// predates a second runtime wrote no such key, and the only runtime that existed then
-    /// was this one.
-    ///
-    /// It is also where a request naming a runtime this build does not carry lands — see
-    /// ``runtime(for:)``.
+    /// It must ALSO appear in ``runtimes``. Otherwise a cancel for the commonest kind of
+    /// job — one that named no runtime at all — would never reach the manager running it.
+    /// `InferenceRouterTests` pins that.
     static let defaultRuntime: any InferenceRuntime = BoltzJobManager.shared
 
-    /// Every runtime this build links.
+    /// Every runtime this build links, and the ONE table both `submit` and `cancel` read.
     ///
-    /// ONE list, read by both `submit` and `cancel`. That is the point of it: when the two
-    /// were written out separately, keeping them in step was a thing a human had to
-    /// remember, and a runtime that is routable but not cancellable is a job the user
-    /// cannot stop. Adding a third runtime is now one line, and it cannot be added to one
-    /// path and forgotten in the other.
+    /// Adding an entry registers a runtime for both, in the same line. **Keep it that
+    /// way:** a second list beside this one is how a runtime ends up startable but not
+    /// stoppable — a running job the user has no way to cancel.
     ///
-    /// A runtime is claimed by exactly one entry because the weights and the featurizer are
-    /// method-specific: running one method's request on another's backend does not fail, it
-    /// tokenizes with the wrong featurizer and returns a confident wrong answer.
+    /// A runtime is claimed by exactly one entry, because weights and featurizer are
+    /// method-specific: running one method's request on another's backend does not fail —
+    /// it tokenizes with the wrong featurizer and returns a confident wrong answer.
     ///
-    /// iOS carries the Boltz runtime alone (see PyMOLBridge.mm), so nothing else is linked
-    /// there and a foreign runtime must reach Boltz's refusal rather than be silently
-    /// accepted.
+    /// iOS links Boltz alone (see PyMOLBridge.mm), so a foreign runtime there reaches
+    /// Boltz's refusal rather than being silently accepted.
     static let runtimes: [any InferenceRuntime] = {
         var table: [any InferenceRuntime] = [BoltzJobManager.shared]
         #if os(macOS)
@@ -94,11 +98,7 @@ enum InferenceRouter {
         return table
     }()
 
-    /// The runtime that claims `name`, or the default.
-    ///
-    /// An unclaimed runtime deliberately falls through to the default, whose `preflight`
-    /// refuses it BY NAME. That is how a Python side offering a method this build did not
-    /// link gets a real error instead of a job that never reports.
+    /// The runtime that claims `name`, or ``defaultRuntime`` when nothing does.
     private static func runtime(for name: String?) -> any InferenceRuntime {
         guard let name else { return defaultRuntime }
         return runtimes.first { type(of: $0).runtimeName == name } ?? defaultRuntime
@@ -106,8 +106,8 @@ enum InferenceRouter {
 
     // MARK: - Entry point from pollFeedback()
 
-    /// Dispatch one `PREDICT:` marker. The single entry point `PyMOLEngine.pollFeedback()`
-    /// calls, for every job.
+    /// Dispatch one `PREDICT:` marker. See the type's documentation for the verbs and the
+    /// routing rules.
     static func handle(marker line: String) {
         guard let marker = parseMarker(line) else { return }
         switch marker.verb {
