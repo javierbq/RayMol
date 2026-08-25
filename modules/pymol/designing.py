@@ -779,6 +779,67 @@ def _weight_version(generator_id):
     return ('%s %s' % (bundle.id, version)).strip()
 
 
+# -- The live trajectory object ------------------------------------------------
+#
+# A design takes minutes and shows nothing until it ends. With `live_view=1` the runtime
+# streams the rollout here, one state per captured frame, into an object BESIDE the result
+# rather than into the result itself.
+#
+# Beside, not into, for a reason worth keeping: two behaviours key off a pending
+# placeholder being EMPTY -- session_save drops it from a .pse only if it has no atoms, and
+# discard_pending deletes it only if it has no atoms. Populating the placeholder live would
+# silently change both, so a cancelled run would leave a half-diffused structure behind and
+# a mid-run save would persist one. A separate object needs neither weakened.
+
+
+def trajectory_seed(name, pdb, _self=cmd):
+    """Create the trajectory object from a poly-ALA backbone. Called once, on frame 1.
+
+    Never raises: live view is a nicety, and a design that would have succeeded must not
+    fail because a frame could not be drawn. A failure here simply leaves no object, and
+    the frames that follow find nothing to append to and are dropped for the same reason.
+    """
+    try:
+        if name in _self.get_names('objects'):
+            _self.delete(name)
+        _self.read_pdbstr(str(pdb), str(name))
+        # Not zoomed and not enabled-exclusively: the run is minutes long and the user is
+        # looking at the target. The object appears in the panel; that is enough.
+        return True
+    except Exception as exc:
+        colorprinting.warning(' design: could not start the live view (%s)' % exc)
+        return False
+
+
+def trajectory_frame(name, coords, _self=cmd):
+    """Append one captured frame as a new state of `name`.
+
+    `coords` is a FLAT list of floats, three per atom, in the object's original atom
+    order -- which is why `load_coordset` is the primitive here rather than `load_coords`:
+    it is documented to load in the order the file had, and that order is the one
+    `RFD3Trajectory.seedPDB` wrote.
+
+    Never raises, for the reason `trajectory_seed` does not. An unknown object is a no-op
+    rather than an error: the user may have deleted it mid-run, which is legitimate.
+    """
+    try:
+        if name not in _self.get_names('objects'):
+            return False
+        values = list(coords)
+        if not values or len(values) % 3:
+            return False
+        atoms = len(values) // 3
+        if atoms != _self.count_atoms(name):
+            # A frame whose atom count does not match the object cannot be a state of it.
+            # Dropped rather than coerced: a partial frame would silently misplace atoms.
+            return False
+        frame = [values[i * 3:i * 3 + 3] for i in range(atoms)]
+        _self.load_coordset(frame, str(name), _self.count_states(name) + 1)
+        return True
+    except Exception:
+        return False
+
+
 def deliver_result(path, name, seed=None, _self=cmd):
     """Load a finished design into its placeholder and retire the pending mark.
 
