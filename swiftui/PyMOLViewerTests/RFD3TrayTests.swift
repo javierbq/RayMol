@@ -17,6 +17,11 @@ final class RFD3TrayTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
     }
 
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
+        super.tearDown()
+    }
+
     private func job(id: String = "rfd3_design_ab12cd34", state: String = "running",
                      phase: String = "diffusion", fraction: Double? = 0.42,
                      moving: Bool = true, elapsed: Double = 512,

@@ -43,7 +43,7 @@ final class DesignBackboneController: ObservableObject {
     /// Persisted and OFF by default: it leaves an extra ~50-state object behind and costs a
     /// little main-thread work per frame, which is a reasonable thing to opt into and an
     /// unreasonable thing to be given.
-    @Published var liveView = UserDefaults.standard.bool(forKey: "designBackboneLiveView") {
+    @Published var liveView = UserDefaults.standard.bool(forKey: DesignBackboneController.liveViewKey) {
         didSet { UserDefaults.standard.set(liveView, forKey: Self.liveViewKey) }
     }
 
