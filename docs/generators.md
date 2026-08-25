@@ -259,6 +259,30 @@ Note that `onProgress`'s `total` is `numTimesteps - 1` — the EDM schedule has 
 sigma levels and one fewer transition between them. Drive a bar from the reported `total`,
 never from the requested step count, or it stops one step short of the end forever.
 
+## Watching a design diffuse
+
+`design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- streams the
+rollout into a second object, `<result>_traj`, holding the designed chain only, one state
+per captured frame. Scrub it with the frame slider or play it with `mplay`.
+
+It is a recording, not a result. It carries no metrics and no design key: the result object
+owns the identity, and a poly-ALA backbone claiming to be that design would put a second
+thing in the session answering to it. The residues are poly-ALA because states of one
+object share a single atom set and the sequence head's argmax changes during the rollout,
+so per-state residue names are not representable.
+
+Frames are captured every `RFD3JobManager.trajectoryStepInterval` (4) steps -- 51 states
+from the default 200-step run (a seed state plus 50 frames, since the schedule has
+`numTimesteps - 1` transitions). The object survives the run, including a cancelled one,
+and is an ordinary object you can delete. Off by default: an extra 51-state object is a
+reasonable thing to opt into and an unreasonable thing to be given.
+
+Every failure in this path degrades to "no live view" and never fails the design. Frames
+that carry a non-finite or astronomical coordinate -- possible during an early-rollout
+blowup -- are dropped whole rather than loaded, because a coordinate near the float
+maximum propagates into PyMOL's session-global view matrix and breaks the camera for the
+rest of the session.
+
 ## Measured cost
 
 fp32, 200 diffusion steps × 2 recycles, M3 Pro, against full human serum albumin (578 target
