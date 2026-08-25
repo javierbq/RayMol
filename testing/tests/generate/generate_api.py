@@ -114,6 +114,34 @@ class DesignBackboneTest(GeneratorTestCase):
             settle()
         self.assertEqual([job.spec.name for job in jobs], ['several_01', 'several_02'])
 
+    # -- Live view -----------------------------------------------------------
+
+    def testLiveViewRidesFromTheCommandOntoEveryDesignsSpec(self):
+        # NOTHING else in the suite joins the command parameter to the spec field: with
+        # the one line in design_backbone that carries it deleted, 82 of 82 tests still
+        # passed. This is also the only place the Python KWARG NAME is pinned -- it is
+        # what a user types, and renaming it broke nothing.
+        #
+        # n_designs=2 on purpose: the per-design spec is rebuilt field by field, so a new
+        # field that is not carried explicitly silently defaults to off for every design.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=2, live_view=1)
+            settle()
+        self.assertEqual(len(jobs), 2)
+        for job in jobs:
+            self.assertIs(job.spec.live_view, True, job.spec.name)
+
+    def testADesignIsNotWatchedUnlessItIsAskedFor(self):
+        # Off by default, and a bool rather than the 0 that was passed in: the runtime
+        # tests the flag with `== true`, and the wire carries whatever this holds.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        self.assertIs(job.spec.live_view, False)
+
     # -- Placeholders, weights, cancellation ---------------------------------
 
     def testThePlaceholderExistsBeforeTheDesignDoes(self):

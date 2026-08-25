@@ -39,7 +39,8 @@ final class RFD3RuntimeTests: XCTestCase {
                               hotspots: [Int]? = [0],
                               designLength: Int? = 30,
                               designChain: String? = "B",
-                              designKey: String? = "deadbeefdeadbeef") throws
+                              designKey: String? = "deadbeefdeadbeef",
+                              liveView: Bool? = true) throws
         -> InferenceJob.Request
     {
         var payload: [String: Any] = [
@@ -60,6 +61,7 @@ final class RFD3RuntimeTests: XCTestCase {
         if let designLength { payload["design_length"] = designLength }
         if let designChain { payload["design_chain"] = designChain }
         if let designKey { payload["design_key"] = designKey }
+        if let liveView { payload["live_view"] = liveView }
         let url = dir.appendingPathComponent("raymol_predict_req_\(job).json")
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
         return try InferenceJob.parseRequest(at: url)
@@ -80,9 +82,22 @@ final class RFD3RuntimeTests: XCTestCase {
         XCTAssertEqual(request.designLength, 30)
         XCTAssertEqual(request.designChain, "B")
         XCTAssertEqual(request.designKey, "deadbeefdeadbeef")
+        // The live-view flag is decoded off the wire like the rest. Asserted here rather
+        // than assumed: without a payload carrying the key, this test named "every field
+        // it adds" silently did not cover the field this branch added, and the whole
+        // Swift half of the live view is gated on it.
+        XCTAssertEqual(request.liveView, true)
         // And a generator has no sequences at all, which is the whole reason it needed
         // fields of its own.
         XCTAssertTrue(request.chains.isEmpty)
+    }
+
+    func testAnAbsentLiveViewFlagMeansOff() throws {
+        // Absent-is-off is the contract that keeps an ordinary design byte-for-byte what
+        // it was: `RFD3JobManager` installs the coordinate stream only on `== true`.
+        let request = try writeRequest(job: "g1b", liveView: nil)
+        XCTAssertNil(request.liveView)
+        XCTAssertNotEqual(request.liveView, true)
     }
 
     func testAPredictionRequestStillDecodesWithNoneOfThem() throws {
