@@ -136,6 +136,13 @@ final class PyMOLEngine: ObservableObject {
     /// because `designing.pending_info` publishes the same keys as
     /// `predicting.pending_info` deliberately. Guarded on assignment for the same reason.
     @Published var designJobs: [PredictionJobState] = []
+    #if os(macOS)
+    /// Design Backbone mode (#342). macOS only, and GATED rather than merely unused: the
+    /// controller it drives lives behind `#if os(macOS)` because RFD3Kit is macOS-only,
+    /// and this file compiles on both platforms. An ungated reference here is exactly the
+    /// leak that has broken the iOS slice three times (#174, #226/#238).
+    @Published var designBackboneMode = false
+    #endif
     // Restored from the last launch (#332). A session (.pse) that turns seq_view
     // on still wins — it assigns this property after launch, like any other setter.
     @Published var sequenceVisible = UserDefaults.standard
@@ -2210,6 +2217,39 @@ final class PyMOLEngine: ObservableObject {
     /// Enter/leave Predict mode. Exclusive with Move/Measure/Design, matching
     /// setDesignMode's entering-branch clears. On entry, refresh the form (loads the
     /// predictor list); on exit, reset any in-flight search/predict tracking.
+    #if os(macOS)
+    /// Design Backbone (#342) is on. macOS only, like the runtime behind it.
+    ///
+    /// A MODE with a docked bar rather than a sheet, because that is what every other tool
+    /// here is -- Predict takes a selection plus options and a Run button in exactly this
+    /// shape. Mutually exclusive with the others for the same reason they are with each
+    /// other: two docked bars would fight for the same strip above the viewport.
+    func setDesignBackboneMode(_ on: Bool) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
+        if on {
+            if interactionMode == .move { setInteractionMode(.viewing) }
+            if measureMode != nil { setMeasureMode(nil) }
+            setDesignMode(false)
+            setPredictMode(false)
+            designBackboneMode = true
+            MainActor.assumeIsolated {
+                // Seed the target with a loaded structure before resolving, so the bar
+                // opens describing something real. Only fills an EMPTY field, so it never
+                // clobbers a target the user typed and left.
+                designBackboneController.prepare(
+                    defaultTarget: objects.first { !$0.isSelection }?.name ?? "")
+                designBackboneController.refresh()
+            }
+        } else {
+            MainActor.assumeIsolated { designBackboneController.cancel() }
+            designBackboneMode = false
+        }
+    }
+
+    #endif
+
     func setPredictMode(_ on: Bool) {
         #if RAYMOL_MPNN
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
@@ -2218,6 +2258,15 @@ final class PyMOLEngine: ObservableObject {
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
             setDesignMode(false)
+            // Not setDesignBackboneMode(false): that would recurse back into this
+            // function. Clearing the flag and the controller directly is what the other
+            // exclusive setters do to each other.
+            #if os(macOS)
+            if designBackboneMode {
+                MainActor.assumeIsolated { designBackboneController.cancel() }
+                designBackboneMode = false
+            }
+            #endif
             predictMode = true
             MainActor.assumeIsolated { predictController.refresh() }
         } else {
@@ -2528,6 +2577,30 @@ final class PyMOLEngine: ObservableObject {
         return dc
     }()
 #endif
+
+    #if os(macOS)
+    /// Form state for the Design Backbone bar (#342), wired to this engine's seams.
+    /// The peer of ``predictController``; same two seams, same reasons.
+    @MainActor
+    lazy var designBackboneController: DesignBackboneController = {
+        let dc = DesignBackboneController()
+        // The COMMAND channel, not runPython: a design_backbone lands in the console
+        // history like anything typed there, which is what lets a user adapt and re-run
+        // it -- and it is how every refusal `pymol.designing` raises gets reported the
+        // way every other command's is, instead of duplicated into a second surface.
+        dc.runCommandSeam = { [weak self] command in self?.runCommand(command) }
+        // Trigger the tempfile-JSON feed; DESIGN_FORM:ready routes back in pollFeedback.
+        dc.refreshTrigger = { [weak self] target, hotspots, generator in
+            let t = DesignBackboneController.pythonLiteral(target)
+            let h = DesignBackboneController.pythonLiteral(hotspots)
+            let g = DesignBackboneController.pythonLiteral(generator)
+            self?.runPython("from pymol import appkit_design as _ad\n"
+                            + "_ad.emit(\(t), \(h), \(g))")
+        }
+        return dc
+    }()
+
+    #endif
 
     lazy var predictController: PredictController = {
         // PredictController is @MainActor; lazy vars run in a nonisolated context.
@@ -3233,6 +3306,15 @@ final class PyMOLEngine: ObservableObject {
                     // PredictAvailability, so a guard here would only be a third place to
                     // forget.
                     InferenceRouter.handle(marker: line)
+                } else if line.hasPrefix("DESIGN_FORM:ready") {
+                    #if os(macOS)
+                    parseDesignFormFeedback()
+                    #endif
+                } else if line.hasPrefix("DESIGN_FORM:err") {
+                    // Swallowed for the reason PREDICT_FORM:err is: a resolve error is
+                    // already carried in the payload's `error` field on a normal `ready`,
+                    // so this only fires if the WRITE failed, which the bar surfaces as a
+                    // stale form rather than as a second error channel.
                 } else if line.hasPrefix("PREDICT_FORM:ready") {
                     parsePredictFormFeedback()
                 } else if line.hasPrefix("PREDICT_FORM:err") {
@@ -3329,6 +3411,27 @@ final class PyMOLEngine: ObservableObject {
         let pyList = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }.joined(separator: ", ")
         runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
     }
+
+    #if os(macOS)
+    /// The Design Backbone bar's resolved target. The peer of
+    /// ``parsePredictFormFeedback()``, and file-based for the same reason: the payload can
+    /// exceed PyMOL's ~1KB feedback-line cap, so only the marker rides the line.
+    ///
+    /// A missing or undecodable file returns silently and leaves the bar showing its last
+    /// resolve. That is deliberate: this runs off a 100 ms poll, and a throw here would
+    /// take the whole feedback drain down.
+    func parseDesignFormFeedback() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_design_\(ProcessInfo.processInfo.processIdentifier).json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let payload = try? JSONDecoder().decode(DesignFormPayload.self, from: data)
+        else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.designBackboneController.loadFormPayload(payload)
+        }
+    }
+
+    #endif
 
     func parsePredictFormFeedback() {
         let path = (NSTemporaryDirectory() as NSString)

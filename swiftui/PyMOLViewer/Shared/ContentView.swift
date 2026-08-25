@@ -157,10 +157,7 @@ struct ContentView: View {
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
-    #if os(macOS)
-    // Backbone design (#342). A SHEET, not a mode -- see DesignBackboneSheet for why.
-    @State private var showDesignBackbone = false
-    #endif
+
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
     // Pending auto-minimize of the expanded mouse legend (fires ~1s after the
     // pointer leaves it); cancelled if the pointer returns.
@@ -680,11 +677,7 @@ struct ContentView: View {
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
         }
-        #if os(macOS)
-        .sheet(isPresented: $showDesignBackbone) {
-            DesignBackboneSheet()
-        }
-        #endif
+
         #if !RAYMOL_MAS_RESTRICTED
         .sheet(isPresented: $showConnectSheet) {
             MCPConnectSheet().environmentObject(mcpManager)
@@ -758,6 +751,13 @@ struct ContentView: View {
         PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
     }
 
+    // Design Backbone bar (#342), docked in the same strip and declared here for the same
+    // scoping reason as predictBar.
+    @ViewBuilder private var designBackboneBar: some View {
+        DesignBackboneBar(controller: engine.designBackboneController,
+                          engine: engine, theme: themeManager)
+    }
+
     // Is anything docked at the top of the left column? Mirrors the iOS layouts'
     // `anyTop`: the rail sits on a chrome band above the panes when one is open and
     // floats over the viewport otherwise. Move / Measure / Design are included even
@@ -767,7 +767,7 @@ struct ContentView: View {
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode
+            || engine.designMode || engine.designBackboneMode
     }
 
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
@@ -777,6 +777,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if engine.predictMode {
                 predictBar
+                Divider()
+            }
+            if engine.designBackboneMode {
+                designBackboneBar
                 Divider()
             }
             macViewport
@@ -3256,6 +3260,11 @@ struct ContentView: View {
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
         if engine.predictMode { return ("Predict", "atom", "atom") }
+        #if os(macOS)
+        if engine.designBackboneMode {
+            return ("Design Backbone", "wand.and.stars", "wand.and.stars")
+        }
+        #endif
         return nil
     }
 
@@ -3328,13 +3337,18 @@ struct ContentView: View {
         // Backbone design (#342). macOS only, because RFD3Kit is: one design against a
         // full-length target peaks near half a 36 GiB Mac.
         //
-        // No checkmark and no toggle, unlike every item above: this opens a sheet rather
-        // than entering an interaction mode, because the picking it needs is the ordinary
-        // selection and a fifth mutually-exclusive mode would buy nothing. The trailing
-        // ellipsis is the platform's way of saying so.
-        Divider()
-        Button("Design Backbone…") { showDesignBackbone = true }
-            .disabled(isDesignLocked)
+        // A toggling MODE with a docked bar, exactly like every item above -- it takes a
+        // selection plus options and a Run button, which is the shape Predict already has.
+        Button {
+            engine.setDesignBackboneMode(!engine.designBackboneMode)
+        } label: {
+            if engine.designBackboneMode {
+                Label("Design Backbone", systemImage: "checkmark")
+            } else {
+                Text("Design Backbone")
+            }
+        }
+        .disabled(isDesignLocked)
         #endif
     }
 

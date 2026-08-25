@@ -307,6 +307,59 @@ class DesignBackboneTest(GeneratorTestCase):
                 self.assertRaises(Exception, cmd.design_backbone, 'stubgen', 'tgt', '',
                                   quiet=quiet)
 
+    def testTheBarsFormFeedResolvesATargetTheSameWayTheCommandDoes(self):
+        """appkit_design.emit is what the Design Backbone bar reads.
+
+        It must resolve through `designing.resolve_target` and the generator's own
+        `parse_target`, so the bar reports exactly what a run would design against --
+        including a refusal, BEFORE a run that takes minutes. A second resolver here
+        would be a second set of rules, and the bar would disagree with the command.
+        """
+        import json
+        import os
+        import tempfile
+        from pymol import appkit_design
+        appkit_design.emit('tgt', 'tgt and resi 5+8+11', 'stubgen')
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_design_%d.json' % os.getpid())
+        with open(path) as handle:
+            payload = json.load(handle)
+        self.assertIsNone(payload['error'])
+        self.assertEqual(payload['target']['residues'], 20)
+        self.assertEqual(payload['target']['hotspots'], 3)
+        self.assertEqual(payload['target']['chain'], 'A')
+        self.assertIn({'id': 'stubgen'}, payload['generators'])
+
+    def testTheFormFeedReportsARefusalInsteadOfRaising(self):
+        # A bad selection is a message in the bar, not a crash in the poll -- a throw here
+        # would also leave a stale or zero-byte payload behind.
+        import json
+        import os
+        import tempfile
+        from pymol import appkit_design
+        appkit_design.emit('tgt', 'tgt and resi 999', 'stubgen')
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_design_%d.json' % os.getpid())
+        with open(path) as handle:
+            payload = json.load(handle)
+        self.assertIsNone(payload['target'])
+        self.assertTrue(payload['error'])
+
+    def testTheFormFeedOffersNoGeneratorItCannotRun(self):
+        # The registry is platform-independent; the runtime is not. Offering a method the
+        # host cannot run turns "not in this build" into a menu entry that fails at submit.
+        import json
+        import os
+        import tempfile
+        from pymol import appkit_design
+        self.declareHost('boltz')          # stubgen needs 'stubruntime'
+        appkit_design.emit('tgt', 'tgt and resi 5', '')
+        path = os.path.join(tempfile.gettempdir(),
+                            'pymol_design_%d.json' % os.getpid())
+        with open(path) as handle:
+            payload = json.load(handle)
+        self.assertNotIn({'id': 'stubgen'}, payload['generators'])
+
     def testEveryMessageHelperUsedByDesigningExists(self):
         """Guards the whole class of bug: a message helper that is not there.
 

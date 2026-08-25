@@ -204,40 +204,164 @@ final class RFD3TrayTests: XCTestCase {
         XCTAssertNil(decoded.design_jobs)
     }
 
-    // MARK: The sheet's command
+    // MARK: The bar's command
 
-    func testTheSheetBuildsARunnableCommand() {
-        XCTAssertEqual(
-            DesignBackboneSheet.command(target: "sele", hotspots: "sele", length: 60,
-                                        count: 1, seedText: ""),
-            "design_backbone rfd3, sele, sele, length=60")
+    @MainActor
+    private func controller() -> DesignBackboneController {
+        let c = DesignBackboneController()
+        c.generator = "rfd3"
+        c.targetText = "target"
+        c.target = DesignTargetInfo(residues: 40, chain: "A", state: 1, hotspots: 3)
+        return c
     }
 
-    func testCountAndSeedAppearOnlyWhenAskedFor() {
-        XCTAssertEqual(
-            DesignBackboneSheet.command(target: "t", hotspots: "sele", length: 75,
-                                        count: 5, seedText: "42"),
-            "design_backbone rfd3, t, sele, length=75, n_designs=5, seed=42")
-        // A non-numeric seed is dropped rather than passed through, so the command stays
-        // runnable and the default -- a fresh random seed -- applies.
-        XCTAssertEqual(
-            DesignBackboneSheet.command(target: "t", hotspots: "sele", length: 60,
-                                        count: 1, seedText: "abc"),
-            "design_backbone rfd3, t, sele, length=60")
+    @MainActor
+    func testTheBarBuildsARunnableCommand() {
+        XCTAssertEqual(controller().command,
+                       "design_backbone rfd3, target, sele, length=60")
     }
 
+    @MainActor
+    func testOnlyNonDefaultOptionsAppear() {
+        // The command is read back by a human and re-run from the console, so it carries
+        // what was CHANGED rather than every knob at its default.
+        let c = controller()
+        c.nDesigns = 5
+        c.diffusionSteps = 30
+        c.recyclingSteps = 3
+        c.seedText = "42"
+        c.resultName = "mine"
+        XCTAssertEqual(c.command,
+                       "design_backbone rfd3, target, sele, length=60, n_designs=5, "
+                       + "diffusion_steps=30, recycling_steps=3, seed=42, name=mine")
+    }
+
+    @MainActor
+    func testANonNumericSeedIsDroppedRatherThanPassedThrough() {
+        // Dropped keeps the command runnable and the default -- a fresh random seed --
+        // applies. Passing it through would make Generate fail on a typo.
+        let c = controller()
+        c.seedText = "abc"
+        XCTAssertFalse(c.command.contains("seed"))
+    }
+
+    @MainActor
     func testASelectionWithSpacesNeedsNoQuotingButACommaIsRemoved() {
-        // PyMOL's parser splits arguments on COMMAS, so a selection with spaces is one
-        // argument and needs no quotes -- while a comma inside one cannot be passed at all
-        // and would silently truncate the selection. Stripped, because half a selection is
-        // a design against the wrong structure.
-        XCTAssertEqual(
-            DesignBackboneSheet.command(target: "1ao6 and chain A and resi 100-200",
-                                        hotspots: "sele", length: 60, count: 1,
-                                        seedText: ""),
-            "design_backbone rfd3, 1ao6 and chain A and resi 100-200, sele, length=60")
-        XCTAssertEqual(DesignBackboneSheet.sanitise("resi 45,48"), "resi 45 48")
-        XCTAssertEqual(DesignBackboneSheet.sanitise("  sele\n"), "sele")
+        // PyMOL splits arguments on COMMAS, so a selection with spaces is one argument and
+        // needs no quotes -- while a comma inside one cannot be passed at all and would
+        // silently truncate it. Half a selection is a design against the wrong structure.
+        let c = controller()
+        c.targetText = "1ao6 and chain A and resi 100-200"
+        XCTAssertTrue(c.command.contains("1ao6 and chain A and resi 100-200"))
+        XCTAssertEqual(DesignBackboneController.sanitise("resi 45,48"), "resi 45 48")
+        XCTAssertEqual(DesignBackboneController.sanitise("  sele\n"), "sele")
+    }
+
+    @MainActor
+    func testTheTargetDefaultsToALoadedObjectNotToSele() {
+        // Both fields defaulting to `sele` made the target BE the hotspots: the bar opened
+        // reading "3 res · 3 hotspots" against a 40-residue structure. Target is the thing
+        // the interface is part of, so it is seeded from a loaded object; hotspots stay
+        // `sele`, which is what the viewport writes.
+        let c = DesignBackboneController()
+        XCTAssertEqual(c.targetText, "")
+        XCTAssertEqual(c.hotspotsText, "sele")
+        c.prepare(defaultTarget: "1ao6")
+        XCTAssertEqual(c.targetText, "1ao6")
+        XCTAssertEqual(c.hotspotsText, "sele")
+    }
+
+    @MainActor
+    func testSeedingNeverClobbersATargetTheUserTyped() {
+        let c = DesignBackboneController()
+        c.targetText = "chain A and resi 100-200"
+        c.prepare(defaultTarget: "1ao6")
+        XCTAssertEqual(c.targetText, "chain A and resi 100-200")
+    }
+
+    @MainActor
+    func testGenerateIsRefusedUntilATargetHasResolved() {
+        // `canRun` gates on the RESOLVED target, not on the text being non-empty: the
+        // fields are prefilled with "sele", so gating on text alone would offer Generate
+        // before anything had been picked.
+        let c = DesignBackboneController()
+        c.generator = "rfd3"
+        c.targetText = "target"
+        XCTAssertNil(c.target)
+        XCTAssertFalse(c.canRun)
+        c.target = DesignTargetInfo(residues: 40, chain: "A", state: 1, hotspots: 3)
+        XCTAssertTrue(c.canRun)
+        // A resolve error re-closes it even with a target in hand: the bar must not offer
+        // a run the command layer has already said it will refuse.
+        c.resolveError = "hotspots are not inside the target"
+        XCTAssertFalse(c.canRun)
+    }
+
+    @MainActor
+    func testRunWithNothingResolvedReportsInTheBarRatherThanSilently() {
+        let c = DesignBackboneController()
+        c.generator = "rfd3"
+        var ran: [String] = []
+        c.runCommandSeam = { ran.append($0) }
+        c.run()
+        XCTAssertTrue(ran.isEmpty, "nothing may be submitted")
+        XCTAssertNotNil(c.runError)
+    }
+
+    @MainActor
+    func testRunSubmitsThroughTheCommandChannel() {
+        let c = controller()
+        var ran: [String] = []
+        c.runCommandSeam = { ran.append($0) }
+        c.run()
+        XCTAssertEqual(ran, [c.command])
+    }
+
+    @MainActor
+    func testTheFormPayloadDecodesFromWhatPythonWrites() throws {
+        // Verbatim from the shape appkit_design.emit writes.
+        let json = """
+        {"generators":[{"id":"rfd3"}],
+         "target":{"residues":40,"chain":"A","state":1,"hotspots":3},
+         "error":null}
+        """
+        let payload = try JSONDecoder().decode(DesignFormPayload.self,
+                                               from: Data(json.utf8))
+        let c = DesignBackboneController()
+        c.targetText = "target"
+        c.loadFormPayload(payload)
+        XCTAssertEqual(c.generator, "rfd3", "the only generator is selected for you")
+        XCTAssertEqual(c.target?.residues, 40)
+        XCTAssertEqual(c.target?.hotspots, 3)
+        XCTAssertNil(c.resolveError)
+        XCTAssertTrue(c.canRun)
+    }
+
+    @MainActor
+    func testAResolveErrorPayloadClosesGenerate() throws {
+        let json = """
+        {"generators":[{"id":"rfd3"}],"target":null,
+         "error":"the hotspot selection 'sele' selects no atoms"}
+        """
+        let payload = try JSONDecoder().decode(DesignFormPayload.self,
+                                               from: Data(json.utf8))
+        let c = DesignBackboneController()
+        c.loadFormPayload(payload)
+        XCTAssertEqual(c.resolveError, "the hotspot selection 'sele' selects no atoms")
+        XCTAssertFalse(c.canRun)
+    }
+
+    @MainActor
+    func testAHostWithNoRunnableGeneratorOffersNothing() throws {
+        // Under headless PyMOL, or a build without the runtime, `_generators()` is empty
+        // and the bar must offer nothing rather than something that refuses at submit.
+        let payload = try JSONDecoder().decode(
+            DesignFormPayload.self,
+            from: Data("{\"generators\":[],\"target\":null,\"error\":null}".utf8))
+        let c = DesignBackboneController()
+        c.loadFormPayload(payload)
+        XCTAssertEqual(c.generator, "")
+        XCTAssertFalse(c.canRun)
     }
 }
 #endif

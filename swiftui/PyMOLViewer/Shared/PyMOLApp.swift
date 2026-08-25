@@ -280,6 +280,19 @@ struct PyMOLApp: App {
                     .disabled(isDesignLocked)
                     .keyboardShortcut("p", modifiers: .control)
                 }
+                #if os(macOS)
+                // Design Backbone (#342): the same shape as Predict above, and a REAL
+                // menu command rather than the Tools-pill button's shortcut, so it fires
+                // reliably. ⌃B for backbone — ⌃D and ⌃P are taken by Design and Predict.
+                CommandMenu("Backbone") {
+                    Button(engine.designBackboneMode ? "Exit Design Backbone"
+                                                     : "Design Backbone…") {
+                        engine.setDesignBackboneMode(!engine.designBackboneMode)
+                    }
+                    .disabled(isDesignLocked)
+                    .keyboardShortcut("b", modifiers: .control)
+                }
+                #endif
             }
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
