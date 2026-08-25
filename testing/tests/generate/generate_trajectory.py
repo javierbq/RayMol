@@ -53,11 +53,20 @@ class TrajectoryTest(GeneratorTestCase):
         self.assertEqual(cmd.count_atoms('traj'), 10)
 
     def testAFrameActuallyMovesTheAtoms(self):
+        # Coordinates are intentionally distinct per atom: load_coordset loads in the
+        # original atom order the seed PDB wrote, and a uniform frame (all atoms identical)
+        # would make the assertions order-blind -- they would pass even if atoms were
+        # silently permuted.  With range(15), atom 0 expects [0,1,2] and atom 2 (an
+        # interior atom) expects [6,7,8]; a misordering yields a wrong value, not a
+        # coincidentally-right one.
         self.designing.trajectory_seed('traj', _seed_pdb(length=1))
-        self.designing.trajectory_frame('traj', [7.0, 8.0, 9.0] * 5)
+        self.designing.trajectory_frame('traj', [float(i) for i in range(15)])
         model = cmd.get_model('traj', state=2)
-        self.assertAlmostEqual(model.atom[0].coord[0], 7.0, places=3)
-        self.assertAlmostEqual(model.atom[0].coord[2], 9.0, places=3)
+        self.assertAlmostEqual(model.atom[0].coord[0], 0.0, places=3)
+        self.assertAlmostEqual(model.atom[0].coord[2], 2.0, places=3)
+        # Interior atom -- the load order contract is violated if this is wrong.
+        self.assertAlmostEqual(model.atom[2].coord[0], 6.0, places=3)
+        self.assertAlmostEqual(model.atom[2].coord[2], 8.0, places=3)
 
     def testAFrameForAnUnknownObjectIsANoOpNotAnError(self):
         # The user may delete the object mid-run, which is legitimate. Live view must
