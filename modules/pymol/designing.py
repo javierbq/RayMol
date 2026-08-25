@@ -792,6 +792,25 @@ def _weight_version(generator_id):
 # a mid-run save would persist one. A separate object needs neither weakened.
 
 
+def _trajectory_object_name(name, _self=cmd):
+    """The object name PyMOL will actually use for `name`.
+
+    Creating an object LEGALISES its name -- an apostrophe, a space and a forward slash
+    all become underscores -- and the caller never learns that happened. A design named
+    `my design` seeds `my_design_traj` while every frame that follows addresses
+    `my design_traj`, misses the object, and is dropped; both functions here swallow their
+    failures by design, so the run shows a seeded object that never moves and prints
+    nothing. Routing seed and frame through this one function is what makes them agree.
+
+    `cmd.get_legal_name` rather than a local rewrite: it is the same C++ rule
+    (`ObjectMakeValidName`) that creation itself applies, so the two cannot drift. That
+    rule is subtler than replacing three characters -- it strips a trailing `)`, yields one
+    underscore per BYTE of a multi-byte character, and leaves `+`, `-` and `.` alone -- and
+    any reimplementation of it here or in Swift would be a copy waiting to fall out of step.
+    """
+    return _self.get_legal_name(str(name))
+
+
 def trajectory_seed(name, pdb, _self=cmd):
     """Create the trajectory object from the FIRST captured frame. Called once.
 
@@ -805,6 +824,7 @@ def trajectory_seed(name, pdb, _self=cmd):
     the frames that follow find nothing to append to and are dropped for the same reason.
     """
     try:
+        name = _trajectory_object_name(name, _self=_self)
         if name in _self.get_names('objects'):
             # Replace rather than append. `read_pdbstr` into an EXISTING object appends
             # states, so re-running a named design with Live on would splice the previous
@@ -822,7 +842,7 @@ def trajectory_seed(name, pdb, _self=cmd):
         # a BLANK viewport for the rest of a multi-minute run. The run is minutes long and
         # the user is looking at the target; the object appearing in the panel is enough.
         # Same reason `deliver_result` loads with zoom=0.
-        _self.read_pdbstr(str(pdb), str(name), zoom=0)
+        _self.read_pdbstr(str(pdb), name, zoom=0)
         return True
     except Exception as exc:
         colorprinting.warning(' design: could not start the live view (%s)' % exc)
@@ -841,6 +861,7 @@ def trajectory_frame(name, coords, _self=cmd):
     rather than an error: the user may have deleted it mid-run, which is legitimate.
     """
     try:
+        name = _trajectory_object_name(name, _self=_self)
         if name not in _self.get_names('objects'):
             return False
         values = list(coords)
@@ -852,7 +873,7 @@ def trajectory_frame(name, coords, _self=cmd):
             # Dropped rather than coerced: a partial frame would silently misplace atoms.
             return False
         frame = [values[i * 3:i * 3 + 3] for i in range(atoms)]
-        _self.load_coordset(frame, str(name), _self.count_states(name) + 1)
+        _self.load_coordset(frame, name, _self.count_states(name) + 1)
         return True
     except Exception:
         return False

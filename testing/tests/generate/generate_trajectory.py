@@ -246,3 +246,45 @@ class TrajectoryTest(GeneratorTestCase):
         self.designing.trajectory_seed('traj', _seed_pdb(length=2))
         self.assertEqual(cmd.count_states('traj'), 1)
         self.assertEqual(cmd.count_atoms('traj'), 10)
+    # -- The name the caller uses vs. the name PyMOL creates -------------------
+    #
+    # PyMOL legalises an object name on creation: an apostrophe, a space and a forward
+    # slash all become underscores. The caller does not see that happen -- it holds the
+    # name it asked for, and every frame addresses THAT. Seeding under one name while
+    # framing under another leaves a seeded object that never moves, and because both
+    # functions swallow their failures by design, nothing is printed anywhere.
+
+    def testAFrameLandsWhenPyMOLRewroteTheSeededName(self):
+        # The regression. Each of these names is rewritten on creation, so the frame's
+        # own lookup is the thing under test: it must find the object the seed made.
+        for raw in ("it's_a_traj", 'my design_traj', 'a/b_traj'):
+            cmd.delete('all')
+            self.assertTrue(self.designing.trajectory_seed(raw, _seed_pdb(length=2)))
+            created = cmd.get_names('objects')
+            self.assertEqual(len(created), 1)
+            # Precondition: this name really is one PyMOL rewrites. If PyMOL ever stopped
+            # rewriting it the test would still pass below for the wrong reason.
+            self.assertNotEqual(created[0], raw)
+            self.assertTrue(self.designing.trajectory_frame(raw, [1.0] * 30))
+            self.assertEqual(cmd.count_states(created[0]), 2)
+
+    def testTheRewrittenObjectActuallyReceivesTheCoordinates(self):
+        # Not just "a state appeared" -- the atoms of the object the seed created must be
+        # the ones that moved.
+        cmd.delete('all')
+        self.designing.trajectory_seed('my design_traj', _seed_pdb(length=1))
+        created = cmd.get_names('objects')[0]
+        self.designing.trajectory_frame('my design_traj', [float(i) for i in range(15)])
+        model = cmd.get_model(created, state=2)
+        self.assertAlmostEqual(model.atom[0].coord[2], 2.0, places=3)
+        self.assertAlmostEqual(model.atom[2].coord[0], 6.0, places=3)
+
+    def testReseedingARewrittenNameReplacesRatherThanDuplicates(self):
+        # trajectory_seed deletes an existing object before reading. That delete addresses
+        # the caller's name too, so a re-seed under a rewritten name must not leave the
+        # first object behind next to a second.
+        cmd.delete('all')
+        self.designing.trajectory_seed('my design_traj', _seed_pdb(length=2))
+        self.designing.trajectory_seed('my design_traj', _seed_pdb(length=3))
+        self.assertEqual(len(cmd.get_names('objects')), 1)
+        self.assertEqual(cmd.count_atoms(cmd.get_names('objects')[0]), 15)
