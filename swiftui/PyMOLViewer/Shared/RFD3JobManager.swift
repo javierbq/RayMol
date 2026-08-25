@@ -296,10 +296,19 @@ final class RFD3JobManager: InferenceRuntime {
                                                       length: length, origin: origin)
                     guard !coords.isEmpty else { return }
                     if !seeded {
-                        seeded = true
+                        // The first captured frame IS state 1, and it is seeded with its
+                        // own real coordinates: PyMOL infers bonds once, at read time,
+                        // from the seed's coordinates, and a seed of coincident atoms
+                        // refuses every bond for the life of the object. Seeded and
+                        // RETURNED, never also appended, or this frame would be state 1
+                        // and state 2 both.
                         let pdb = RFD3Trajectory.seedPDB(
-                            length: length, chain: request.designChain ?? "B")
+                            length: length, chain: request.designChain ?? "B",
+                            coords: coords)
+                        guard !pdb.isEmpty else { return }
+                        seeded = true
                         self.runPythonOnMain(Self.seedPython(name: trajectory, pdb: pdb))
+                        return
                     }
                     self.runPythonOnMain(Self.framePython(name: trajectory,
                                                           coords: coords))
@@ -382,9 +391,9 @@ final class RFD3JobManager: InferenceRuntime {
     /// `InferenceJob.loadResult` follows.
     ///
     /// Each call enqueues rather than blocks; the rollout never waits for a frame to
-    /// render. The queue is FIFO, so the seed always precedes its first frame. At most
-    /// `diffusionSteps / trajectoryStepInterval + 1` items accumulate — roughly 50 for a
-    /// 200-step run — which is acceptable without a drop policy.
+    /// render. The queue is FIFO, so the seed always precedes the frames. At most
+    /// `diffusionSteps / trajectoryStepInterval` items accumulate — one seed plus 49
+    /// frames for a 200-step run — which is acceptable without a drop policy.
     private func runPythonOnMain(_ source: String) {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)

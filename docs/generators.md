@@ -271,11 +271,29 @@ thing in the session answering to it. The residues are poly-ALA because states o
 object share a single atom set and the sequence head's argmax changes during the rollout,
 so per-state residue names are not representable.
 
-Frames are captured every `RFD3JobManager.trajectoryStepInterval` (4) steps -- 51 states
-from the default 200-step run (a seed state plus 50 frames, since the schedule has
-`numTimesteps - 1` transitions). The object survives the run, including a cancelled one,
-and is an ordinary object you can delete. Off by default: an extra 51-state object is a
-reasonable thing to opt into and an unreasonable thing to be given.
+Frames are captured every `RFD3JobManager.trajectoryStepInterval` (4) steps -- **50 states
+from the default 200-step run**, one per captured frame and no more. The schedule has
+`numTimesteps - 1` = 199 transitions, of which steps 4, 8, ... 196 and the final 199 are
+captured: 50 frames. The FIRST of them is the object's state 1, not an extra state after
+an empty placeholder -- an all-origin state 1 was a state no step of the rollout ever
+produced, and it dragged every framing of the object.
+
+The seed carries **CONECT records**, and that is load-bearing rather than tidy. PyMOL
+decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and never
+re-bonds them. Distance inference cannot do the job here because the coordinates streamed
+out of the sampler are the raw EDM iterate, whose schedule starts at `sigma_data` (16) x
+`s_max` (160) = 2560 A: in a measured 24-residue run state 1 spans 153,687 A and contracts
+to 443 A by state 20, 65 A by state 30 and 18.7 A by state 50. Without stated bonds the
+object has **zero** of them for its whole life -- rendering every state, including the
+converged one you scrub to, as disconnected crosses -- and into any `.pse` saved from it.
+Note the corollary: the early states are far larger than the viewport, so a trajectory
+only becomes legible around state 30.
+
+Seeding does not move the camera, deliberately: a design is minutes long and the user is
+looking at the target, so `<result>_traj` appearing in the object panel is all the
+announcement it gets. The object survives the run, including a cancelled one, and is an
+ordinary object you can delete. Off by default: an extra 50-state object is a reasonable
+thing to opt into and an unreasonable thing to be given.
 
 Every failure in this path degrades to "no live view" and never fails the design. Frames
 that carry a non-finite or astronomical coordinate -- possible during an early-rollout
