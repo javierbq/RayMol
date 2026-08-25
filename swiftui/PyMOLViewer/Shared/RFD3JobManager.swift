@@ -48,10 +48,14 @@ final class RFD3JobManager: InferenceRuntime {
     }
 
     /// The statement that creates the trajectory object.
+    ///
+    /// The PDB argument is a multi-line string — `pythonMultilineLiteral` rather than
+    /// `pythonLiteral`, which silently deletes newlines and would produce a single joined
+    /// line that PyMOL's line-oriented PDB reader would parse as exactly one atom.
     static func seedPython(name: String, pdb: String) -> String {
         "from pymol import designing as _d\n"
         + "_d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
-        + "\(InferenceJob.pythonLiteral(pdb)))"
+        + "\(InferenceJob.pythonMultilineLiteral(pdb)))"
     }
 
     /// The statement that appends one frame.
@@ -235,6 +239,10 @@ final class RFD3JobManager: InferenceRuntime {
             // price already paid to keep the refusal weight-free.
             let featSet = try RFD3Model.preflight(target: target, options: options,
                                                   budgetBytes: RFD3SizeGuard.budgetBytes)
+            // Extract origin immediately so the FeatSet's tensors (tens of MB on a large
+            // target) can be released as soon as ARC sees no more uses of featSet, rather
+            // than staying reachable across the entire rollout.
+            let origin = featSet.origin
 
             if isCancelled() {
                 settle(cancelledStatus(phase: "featurize")); return
@@ -275,7 +283,6 @@ final class RFD3JobManager: InferenceRuntime {
             if request.liveView == true, let objectName = request.objectName,
                !objectName.isEmpty {
                 let trajectory = Self.trajectoryObjectName(for: objectName)
-                let origin = featSet.origin
                 let interval = Self.trajectoryStepInterval
                 var seeded = false
                 options.onStepCoords = { [weak self] step, materialise in
@@ -373,6 +380,11 @@ final class RFD3JobManager: InferenceRuntime {
     /// Session work, hopped to the main thread. The rollout runs on a background queue and
     /// PyMOL's session may only be touched from the main one — the same rule
     /// `InferenceJob.loadResult` follows.
+    ///
+    /// Each call enqueues rather than blocks; the rollout never waits for a frame to
+    /// render. The queue is FIFO, so the seed always precedes its first frame. At most
+    /// `diffusionSteps / trajectoryStepInterval + 1` items accumulate — roughly 50 for a
+    /// 200-step run — which is acceptable without a drop policy.
     private func runPythonOnMain(_ source: String) {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)

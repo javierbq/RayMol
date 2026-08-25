@@ -32,9 +32,15 @@ enum RFD3Trajectory {
             for slot in 0 ..< emittedSlots.count {
                 let atom = residue * slotsPerDesignResidue + slot
                 let base = atom * 3
-                out.append(SIMD3(Double(flat[base] + origin.x),
-                                 Double(flat[base + 1] + origin.y),
-                                 Double(flat[base + 2] + origin.z)))
+                let c = SIMD3(Double(flat[base] + origin.x),
+                               Double(flat[base + 1] + origin.y),
+                               Double(flat[base + 2] + origin.z))
+                // NaN or Inf early in a rollout is possible. `String(format: "%.3f",
+                // NaN)` emits bare `nan`, an undefined name in Python — the NameError
+                // fires in the argument list before trajectory_frame's own guard, producing
+                // a traceback per frame instead of the promised silent degrade.
+                guard c.x.isFinite && c.y.isFinite && c.z.isFinite else { return [] }
+                out.append(c)
             }
         }
         return out

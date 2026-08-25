@@ -98,5 +98,40 @@ final class RFD3TrajectoryTests: XCTestCase {
     func testTheCaptureIntervalIsAConstantNotALiteral() {
         XCTAssertEqual(RFD3JobManager.trajectoryStepInterval, 4)
     }
+
+    func testSeedPythonPreservesNewlinesInThePDBPayload() {
+        // pythonLiteral deletes newlines (single-line token contract). seedPython must
+        // use pythonMultilineLiteral so PyMOL's line-oriented PDB reader sees record
+        // separators and can parse more than the first atom.
+        let pdb = RFD3Trajectory.seedPDB(length: 2, chain: "B")
+        // The PDB has multiple ATOM records separated by real newlines.
+        XCTAssertTrue(pdb.contains("\n"), "seedPDB must produce a multi-line string")
+        let source = RFD3JobManager.seedPython(name: "traj", pdb: pdb)
+        // The two-character escape sequence must be in the source, not a joined line.
+        XCTAssertTrue(source.contains("\\n"), source)
+        // No line was silently joined: the ATOM keyword appears more than once.
+        let atomCount = source.components(separatedBy: "ATOM").count - 1
+        XCTAssertGreaterThan(atomCount, 1, "each ATOM record must be present in source")
+    }
+
+    func testANonFiniteCoordinateYieldsNoFrameRatherThanCrashing() {
+        // NaN from the rollout would produce bare `nan` in the Python source -- an
+        // undefined name. The frame must degrade to empty before reaching framePython.
+        var rawNaN = flat(atoms: 14)
+        rawNaN[1] = Float.nan   // CA of residue 0
+        let f = RFD3Trajectory.frame(flat: rawNaN, length: 1, origin: SIMD3(0, 0, 0))
+        XCTAssertTrue(f.isEmpty)
+    }
+
+    func testFramePythonContainsNoBareNaNOrInfToken() {
+        // Sanity check on a finite frame: the formatted output must not contain the
+        // undefined Python names `nan`, `inf`, or `-inf`.
+        let source = RFD3JobManager.framePython(
+            name: "t", coords: [SIMD3(1.5, -2.0, 0.0), SIMD3(3.333, 100.0, -0.5)])
+        XCTAssertFalse(source.contains(" nan") || source.contains(",nan")
+                       || source.contains("[nan"), source)
+        XCTAssertFalse(source.contains(" inf") || source.contains(",inf")
+                       || source.contains("[inf") || source.contains("-inf"), source)
+    }
 }
 #endif

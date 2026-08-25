@@ -381,17 +381,35 @@ enum InferenceJob {
         }
     }
 
-    /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
-    /// but building source text without quoting is how injection bugs start.
-    /// PyMOL's text parser does not strip quotes from a `"..."` token, so an object name
-    /// has to be escaped exactly this way or a name with an apostrophe breaks the call.
-    /// Internal rather than private: every surface that hands a name to `runPython` needs
-    /// this exact escaping, and a second copy of it would drift.
+    /// A Python string literal for a single-line token: object names, file paths.
+    ///
+    /// ⚠️ This escaper SILENTLY DELETES newlines (`\n` → `""`). It exists for names and
+    /// paths, which must stay on one line; using it for multi-line content (PDB blocks,
+    /// embedded source) produces a joined line that will be parsed incorrectly on the
+    /// Python side. For multi-line payloads use `pythonMultilineLiteral` instead.
+    ///
+    /// Internal rather than private: `RFD3JobManager` needs it for helpers that feed
+    /// `runPython`. Duplicate copies in `PredictController`, `DesignBackboneController`,
+    /// and `ProgressTray` are known and tracked for a separate dedup.
     static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
             .replacingOccurrences(of: "\n", with: "") + "'"
+    }
+
+    /// A Python string literal for multi-line payloads such as PDB blocks.
+    ///
+    /// Unlike `pythonLiteral`, which deletes newlines so a name stays a single token,
+    /// this escaper preserves them as the two-character escape sequence `\n`. PyMOL's
+    /// PDB reader is line-oriented (`nextline` in `ObjectMoleculePDBStr2CoordSetPASS1`),
+    /// so a PDB string with all its newlines joined into one line would yield exactly one
+    /// atom regardless of how many ATOM records were written.
+    static func pythonMultilineLiteral(_ value: String) -> String {
+        "'" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n") + "'"
     }
 }
 #endif
