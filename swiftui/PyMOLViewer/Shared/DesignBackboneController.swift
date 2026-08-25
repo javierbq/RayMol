@@ -38,6 +38,17 @@ final class DesignBackboneController: ObservableObject {
     @Published var recyclingSteps = 2
     @Published var resultName = ""
 
+    /// Stream the rollout into a scrubbable `<result>_traj` object.
+    ///
+    /// Persisted and OFF by default: it leaves an extra ~50-state object behind and costs a
+    /// little main-thread work per frame, which is a reasonable thing to opt into and an
+    /// unreasonable thing to be given.
+    @Published var liveView = UserDefaults.standard.bool(forKey: "designBackboneLiveView") {
+        didSet { UserDefaults.standard.set(liveView, forKey: Self.liveViewKey) }
+    }
+
+    static let liveViewKey = "designBackboneLiveView"
+
     // MARK: Resolved state, from the Python round trip
 
     @Published var availableGenerators: [DesignGeneratorInfo] = []
@@ -135,6 +146,7 @@ final class DesignBackboneController: ObservableObject {
         if nDesigns != 1 { parts.append("n_designs=\(nDesigns)") }
         if diffusionSteps != 200 { parts.append("diffusion_steps=\(diffusionSteps)") }
         if recyclingSteps != 2 { parts.append("recycling_steps=\(recyclingSteps)") }
+        if liveView { parts.append("live_view=1") }
         if let seed = Int(seedText.trimmingCharacters(in: .whitespaces)) {
             parts.append("seed=\(seed)")
         }

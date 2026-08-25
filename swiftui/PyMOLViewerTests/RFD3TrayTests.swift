@@ -8,6 +8,15 @@ import XCTest
 /// Everything here is about what the user reads and what the buttons actually do.
 final class RFD3TrayTests: XCTestCase {
 
+    override func setUp() {
+        super.setUp()
+        // Clear persisted live-view preference so each test starts from the published
+        // default (false). Without this, testLiveViewAppearsInTheCommandWhenOn sets the
+        // key to true and subsequent tests that create a fresh controller read true from
+        // UserDefaults instead of the intended default.
+        UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
+    }
+
     private func job(id: String = "rfd3_design_ab12cd34", state: String = "running",
                      phase: String = "diffusion", fraction: Double? = 0.42,
                      moving: Bool = true, elapsed: Double = 512,
@@ -335,6 +344,23 @@ final class RFD3TrayTests: XCTestCase {
         XCTAssertEqual(c.target?.hotspots, 3)
         XCTAssertNil(c.resolveError)
         XCTAssertTrue(c.canRun)
+    }
+
+    @MainActor
+    func testLiveViewIsOffByDefaultAndAbsentFromTheCommand() {
+        // A 50-state object is a reasonable thing to opt into and an unreasonable thing to
+        // be given, so the command carries the flag only when it is on.
+        let c = controller()
+        XCTAssertFalse(c.liveView)
+        XCTAssertFalse(c.command.contains("live_view"))
+    }
+
+    @MainActor
+    func testLiveViewAppearsInTheCommandWhenOn() {
+        let c = controller()
+        c.liveView = true
+        XCTAssertEqual(c.command,
+                       "design_backbone rfd3, target, sele, length=60, live_view=1")
     }
 
     @MainActor
