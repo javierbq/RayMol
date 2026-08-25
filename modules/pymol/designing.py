@@ -793,7 +793,12 @@ def _weight_version(generator_id):
 
 
 def trajectory_seed(name, pdb, _self=cmd):
-    """Create the trajectory object from a poly-ALA backbone. Called once, on frame 1.
+    """Create the trajectory object from the FIRST captured frame. Called once.
+
+    The seed is state 1, not a placeholder before it: PyMOL infers connectivity ONCE, at
+    read time, from the coordinates in this string, and `load_coordset` moves atoms without
+    ever re-bonding them. A seed whose atoms all sat at the origin therefore refused every
+    bond for the life of the object -- and into any .pse saved from it.
 
     Never raises: live view is a nicety, and a design that would have succeeded must not
     fail because a frame could not be drawn. A failure here simply leaves no object, and
@@ -801,10 +806,23 @@ def trajectory_seed(name, pdb, _self=cmd):
     """
     try:
         if name in _self.get_names('objects'):
+            # Replace rather than append. `read_pdbstr` into an EXISTING object appends
+            # states, so re-running a named design with Live on would splice the previous
+            # run's trajectory onto the front of the new one.
             _self.delete(name)
-        _self.read_pdbstr(str(pdb), str(name))
-        # Not zoomed and not enabled-exclusively: the run is minutes long and the user is
-        # looking at the target. The object appears in the panel; that is enough.
+        # `zoom=0` is LOAD-BEARING, not tidiness -- and it is why the comment that used to
+        # sit here claiming "not zoomed" was false. Without it `read_pdbstr` inherits
+        # zoom=-1 -> `auto_zoom`, which is on by default and which the app never overrides,
+        # and the object is brand new every time because of the delete above, so auto-zoom
+        # fires on EVERY live run. It reframes the camera on a chain that is still noise,
+        # dragging the origin off the target and shrinking the clipping slab until the
+        # target the user was looking at is outside it: measured, origin (122.58, 109.47,
+        # 81.77) clip 108.14/166.19 -> origin (0, 0, 0) clip 11.18/17.18, target centre
+        # depth 136.82 against a 11.18-17.18 slab. Nothing zooms back, so the user watches
+        # a BLANK viewport for the rest of a multi-minute run. The run is minutes long and
+        # the user is looking at the target; the object appearing in the panel is enough.
+        # Same reason `deliver_result` loads with zoom=0.
+        _self.read_pdbstr(str(pdb), str(name), zoom=0)
         return True
     except Exception as exc:
         colorprinting.warning(' design: could not start the live view (%s)' % exc)
