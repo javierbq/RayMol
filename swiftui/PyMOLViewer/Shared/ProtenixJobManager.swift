@@ -58,9 +58,8 @@ final class ProtenixJobManager: InferenceRuntime {
     /// Refuse or accept a submitted request. Runs on the MAIN thread.
     func submit(_ request: InferenceJob.Request) {
         if let failure = Self.preflight(request) {
-            InferenceJob.discardPlaceholder(request)
-            try? InferenceJob.writeStatus(
-                failure, to: URL(fileURLWithPath: request.statusPath))
+            InferenceJob.settle(request, failure,
+                                to: URL(fileURLWithPath: request.statusPath))
             return
         }
         queue.async { self.run(request) }
@@ -117,6 +116,26 @@ final class ProtenixJobManager: InferenceRuntime {
                                     peakBytes: peak, elapsedSeconds: elapsed),
                 to: statusURL)
         }
+        /// A TERMINAL status, written BEFORE the placeholder comes down.
+        ///
+        /// Not `report` with a terminal state: the two differ in ORDER, not in payload.
+        /// `report` only writes; this writes and then discards, and the sequence is the
+        /// whole point -- `discard_pending` re-reads the status file to decide whether to
+        /// retain a failure card, so a discard that lands first strands the failure where
+        /// nothing can observe it and an eleven-minute run that died explains nothing.
+        ///
+        /// Mirrors `BoltzJobManager.run`'s own local `settle` and routes through the shared
+        /// `InferenceJob.settle`, so there is ONE implementation of the ordering rather than
+        /// a hand-rolled copy per manager -- which is exactly what this manager had, and
+        /// what got it backwards at all four of its terminal paths.
+        func settle(_ state: String, _ phase: String, error: String? = nil) {
+            InferenceJob.settle(
+                request,
+                InferenceJob.Status(state: state, phase: phase, fraction: 0,
+                                    error: error, resultPath: nil,
+                                    peakBytes: peak, elapsedSeconds: elapsed),
+                to: statusURL)
+        }
         func isCancelled() -> Bool {
             stateQueue.sync { cancelled.contains(request.jobID) }
         }
@@ -136,8 +155,7 @@ final class ProtenixJobManager: InferenceRuntime {
                 name: request.objectName ?? "prediction")
 
             if isCancelled() {
-                InferenceJob.discardPlaceholder(request)
-                report("cancelled", "featurize", 0); return
+                settle("cancelled", "featurize"); return
             }
 
             report("running", "load", 0.05)
@@ -194,11 +212,9 @@ final class ProtenixJobManager: InferenceRuntime {
             InferenceJob.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch ProtenixError.cancelled {
-            InferenceJob.discardPlaceholder(request)
-            report("cancelled", "inference", 0)
+            settle("cancelled", "inference")
         } catch {
-            InferenceJob.discardPlaceholder(request)
-            report("failed", "inference", 0,
+            settle("failed", "inference",
                    error: (error as? LocalizedError)?.errorDescription
                        ?? error.localizedDescription)
         }
