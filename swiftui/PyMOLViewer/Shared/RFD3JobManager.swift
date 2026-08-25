@@ -35,6 +35,40 @@ final class RFD3JobManager: InferenceRuntime {
     /// The Python surface that owns this runtime's placeholders and metric records.
     static let pythonModule = "designing"
 
+    /// Capture one frame in this many diffusion steps when live view is on.
+    ///
+    /// Four gives ~50 frames from a 199-step run — about 1.7 s at 30 fps, enough to read
+    /// as motion — against 199 round trips that would put roughly 1.2 MB of Python source
+    /// through the main thread during a run that is already GPU-saturated.
+    static let trajectoryStepInterval = 4
+
+    /// The object a live run streams into: the result's name plus `_traj`.
+    static func trajectoryObjectName(for resultName: String) -> String {
+        "\(resultName)_traj"
+    }
+
+    /// The statement that creates the trajectory object.
+    static func seedPython(name: String, pdb: String) -> String {
+        "from pymol import designing as _d\n"
+        + "_d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
+        + "\(InferenceJob.pythonLiteral(pdb)))"
+    }
+
+    /// The statement that appends one frame.
+    ///
+    /// Flat, three floats per atom, at millimetre precision — a trajectory is watched, not
+    /// measured, and %.3f keeps a 300-atom frame around 7 KB of source instead of 15.
+    static func framePython(name: String, coords: [SIMD3<Double>]) -> String {
+        var body = ""
+        body.reserveCapacity(coords.count * 24)
+        for (index, xyz) in coords.enumerated() {
+            if index > 0 { body += "," }
+            body += String(format: "%.3f,%.3f,%.3f", xyz.x, xyz.y, xyz.z)
+        }
+        return "from pymol import designing as _d\n"
+             + "_d.trajectory_frame(\(InferenceJob.pythonLiteral(name)), [\(body)])"
+    }
+
     /// MLX must never run on the main thread; the command arrives ON it. Serial, so two
     /// designs cannot both hold the peak transient — the guard sizes one design, not two.
     private let queue = DispatchQueue(label: "io.raymol.design.rfd3", qos: .userInitiated)
@@ -193,10 +227,14 @@ final class RFD3JobManager: InferenceRuntime {
             // a `std::terminate` from a Metal completion handler that no `catch` can
             // intercept, and on macOS it takes the unsaved session with it.
             //
-            // The feature set it returns is discarded: `designBinder` re-featurizes. That
-            // is one duplicated CPU array assembly, paid to keep the refusal weight-free.
-            _ = try RFD3Model.preflight(target: target, options: options,
-                                        budgetBytes: RFD3SizeGuard.budgetBytes)
+            // `designBinder` re-featurizes internally and discards this `FeatSet`, so it is
+            // fair to ask whether its `origin` is the one the run actually uses. It is: the
+            // featurizer is deterministic in (target, hotspots, binderLength), all three of
+            // which are identical between the two calls, and `origin` is derived from the
+            // target and hotspot coordinates alone. The duplicated CPU featurization is the
+            // price already paid to keep the refusal weight-free.
+            let featSet = try RFD3Model.preflight(target: target, options: options,
+                                                  budgetBytes: RFD3SizeGuard.budgetBytes)
 
             if isCancelled() {
                 settle(cancelledStatus(phase: "featurize")); return
@@ -228,6 +266,37 @@ final class RFD3JobManager: InferenceRuntime {
             options.shouldCancel = { [weak self] in
                 guard let self else { return false }
                 return self.stateQueue.sync { self.cancelled.contains(request.jobID) }
+            }
+
+            // Live view (#342). Installed only when asked for, so an ordinary run makes no
+            // callback at all and pays nothing. Every failure here degrades to "no live
+            // view": a design that would have succeeded must not fail because a frame
+            // could not be drawn.
+            if request.liveView == true, let objectName = request.objectName,
+               !objectName.isEmpty {
+                let trajectory = Self.trajectoryObjectName(for: objectName)
+                let origin = featSet.origin
+                let interval = Self.trajectoryStepInterval
+                var seeded = false
+                options.onStepCoords = { [weak self] step, materialise in
+                    guard let self else { return }
+                    // `total` is not passed to this callback, so the final-step rule uses
+                    // the requested schedule's last transition: numTimesteps - 1.
+                    guard RFD3Trajectory.shouldCapture(
+                        step: step, interval: interval,
+                        total: max(request.diffusionSteps - 1, 1)) else { return }
+                    let coords = RFD3Trajectory.frame(flat: materialise(),
+                                                      length: length, origin: origin)
+                    guard !coords.isEmpty else { return }
+                    if !seeded {
+                        seeded = true
+                        let pdb = RFD3Trajectory.seedPDB(
+                            length: length, chain: request.designChain ?? "B")
+                        self.runPythonOnMain(Self.seedPython(name: trajectory, pdb: pdb))
+                    }
+                    self.runPythonOnMain(Self.framePython(name: trajectory,
+                                                          coords: coords))
+                }
             }
 
             let design = try RFD3Runtime.withMLXErrorsAsThrows {
@@ -299,6 +368,15 @@ final class RFD3JobManager: InferenceRuntime {
         InferenceJob.Status(state: "cancelled", phase: phase, fraction: 0,
                             error: nil, resultPath: nil, peakBytes: nil,
                             elapsedSeconds: nil)
+    }
+
+    /// Session work, hopped to the main thread. The rollout runs on a background queue and
+    /// PyMOL's session may only be touched from the main one — the same rule
+    /// `InferenceJob.loadResult` follows.
+    private func runPythonOnMain(_ source: String) {
+        DispatchQueue.main.async {
+            PyMOLEngine.shared.runPython(source)
+        }
     }
 
     /// Provenance written into the structure itself, so it survives an export.

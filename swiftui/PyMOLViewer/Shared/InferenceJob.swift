@@ -385,8 +385,9 @@ enum InferenceJob {
     /// but building source text without quoting is how injection bugs start.
     /// PyMOL's text parser does not strip quotes from a `"..."` token, so an object name
     /// has to be escaped exactly this way or a name with an apostrophe breaks the call.
-    /// Private: both callers are right here.
-    private static func pythonLiteral(_ value: String) -> String {
+    /// Internal rather than private: every surface that hands a name to `runPython` needs
+    /// this exact escaping, and a second copy of it would drift.
+    static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")

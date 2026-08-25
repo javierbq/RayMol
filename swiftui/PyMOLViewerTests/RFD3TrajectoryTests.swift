@@ -70,5 +70,33 @@ final class RFD3TrajectoryTests: XCTestCase {
         XCTAssertEqual(kept.last, 199)
         XCTAssertEqual(kept.count, 50)
     }
+
+    func testTheTrajectoryObjectIsNamedAfterTheResult() {
+        XCTAssertEqual(RFD3JobManager.trajectoryObjectName(for: "rfd3_design_ab12cd34"),
+                       "rfd3_design_ab12cd34_traj")
+    }
+
+    func testTheFrameStatementImportsAndEscapesTheName() {
+        // runPython lands in a __main__ that is EMPTY in this embedding, so a bare
+        // designing.trajectory_frame(...) is a silent NameError -- the same trap the tray's
+        // Cancel button hit.
+        let source = RFD3JobManager.framePython(name: "it's_a_traj",
+                                                coords: [SIMD3(1, 2, 3)])
+        XCTAssertTrue(source.contains("from pymol import designing as _d"), source)
+        XCTAssertTrue(source.contains("'it\\'s_a_traj'"), source)
+        XCTAssertTrue(source.contains("1.000"), source)
+    }
+
+    func testAFrameStatementIsFlatAndThreePerAtom() {
+        let source = RFD3JobManager.framePython(
+            name: "t", coords: [SIMD3(1, 2, 3), SIMD3(4, 5, 6)])
+        // Flat, because trajectory_frame takes a flat list and reshapes -- one list of six
+        // is cheaper to parse than two lists of three.
+        XCTAssertTrue(source.contains("[1.000,2.000,3.000,4.000,5.000,6.000]"), source)
+    }
+
+    func testTheCaptureIntervalIsAConstantNotALiteral() {
+        XCTAssertEqual(RFD3JobManager.trajectoryStepInterval, 4)
+    }
 }
 #endif
