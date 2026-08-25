@@ -265,6 +265,7 @@ class RFD3Generator(Generator):
                 # than being re-derived by whoever reads them later.
                 'design_key': spec.design_key(
                     options, weights_version=_bundle_version(self)),
+                'live_view': spec.live_view,
             })
 
 

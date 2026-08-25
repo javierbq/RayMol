@@ -152,6 +152,10 @@ enum InferenceJob {
         /// structure as a REMARK so the identity survives an export, which is what a later
         /// refold is keyed to.
         let designKey: String?
+        /// Stream this run's coordinates so it can be watched (#342 live view). OPTIONAL
+        /// like every field around it: absent means off, which is what every Python side
+        /// that predates it writes.
+        let liveView: Bool?
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
@@ -160,6 +164,7 @@ enum InferenceJob {
             case alignments, msaDepth = "msa_depth"
             case target, hotspots, designLength = "design_length"
             case designChain = "design_chain", designKey = "design_key"
+            case liveView = "live_view"
         }
     }
 

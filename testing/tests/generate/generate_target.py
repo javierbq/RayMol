@@ -276,3 +276,11 @@ class DesignKeyTest(GeneratorTestCase):
         self.assertEqual(self.key(),
                          renamed.design_key(self.options,
                                             weights_version='rfd3-mlx-fp32 v1'))
+
+    def testWatchingADesignDoesNotChangeItsIdentity(self):
+        # live_view is presentation: the same design watched and unwatched is the SAME
+        # design and must key the same, or a refold could not be matched back to it and
+        # two identical runs would land in two objects.
+        before = self.key()
+        self.spec.live_view = True
+        self.assertEqual(before, self.key())

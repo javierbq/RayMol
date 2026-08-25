@@ -91,11 +91,9 @@ packages:
   # all. Bump them together and re-tag.
   RFD3MLX:
     url: https://github.com/javierbq/rfd3-mlx.git
-    # 0.1.1 is a FLOOR, not a preference: `Options.shouldCancel` only exists from there,
-    # and without it a design cannot be stopped at all -- `designBinder` is synchronous,
-    # so there is no Task to cancel, and a full-length target is seventeen minutes.
-    # RFD3JobManager does not compile against 0.1.0.
-    from: 0.1.1
+    # 0.1.2 is a FLOOR: `Options.onStepCoords` and `FeatSet.origin` only exist from there,
+    # and RFD3JobManager's live-trajectory path does not compile against 0.1.1.
+    from: 0.1.2
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh

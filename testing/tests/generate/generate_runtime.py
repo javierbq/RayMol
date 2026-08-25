@@ -26,7 +26,7 @@ class RuntimeSeamTest(GeneratorTestCase):
         GeneratorTestCase.setUp(self)
         self.declareHost('boltz,protenix,rfd3')
 
-    def submitted(self, generator_id, length=20):
+    def submitted(self, generator_id, length=20, live_view=False):
         """The request dict a generator actually writes, read back off disk."""
         import io
         from contextlib import redirect_stdout
@@ -36,6 +36,7 @@ class RuntimeSeamTest(GeneratorTestCase):
         structure = designing.resolve_target('t', 't and resi 4+6')
         generator = registry.get(generator_id)
         spec = generator.parse_target(structure, length, name='obj')
+        spec.live_view = live_view
         options = generator.validate_options({})
         with redirect_stdout(io.StringIO()):
             job = generator.submit(spec, options, weights_path='/nonexistent')
@@ -225,6 +226,18 @@ class RuntimeSeamTest(GeneratorTestCase):
         for gid in registry.available():
             for knob in registry.get(gid).option_defaults:
                 self.assertIn(knob, parameters, '%s declares %r' % (gid, knob))
+
+    def testLiveViewRidesTheWireOnlyWhenAskedFor(self):
+        # A presentation flag, not a sampler knob: it changes nothing about the design,
+        # so it is a named command parameter like `name` and `n_designs` rather than an
+        # entry in option_defaults, and it must be ABSENT-or-false by default so an
+        # ordinary run is byte-for-byte what it was.
+        request = self.submitted('rfd3')
+        self.assertFalse(request.get('live_view', False))
+
+    def testLiveViewIsOnTheWireWhenRequested(self):
+        request = self.submitted('rfd3', live_view=True)
+        self.assertIs(request['live_view'], True)
 
 
 class RFD3PackTest(GeneratorTestCase):

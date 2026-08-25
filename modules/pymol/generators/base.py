@@ -193,9 +193,10 @@ class DesignSpec:
     as `extra` (see `rfd3.py`), which is the one addition the shared transport needed.
     """
 
-    __slots__ = ('target', 'length', 'name', 'generator_id', 'design_chain')
+    __slots__ = ('target', 'length', 'name', 'generator_id', 'design_chain', 'live_view')
 
-    def __init__(self, target, length, name='', generator_id='', design_chain='B'):
+    def __init__(self, target, length, name='', generator_id='', design_chain='B',
+                 live_view=False):
         self.target = target
         self.length = int(length)
         self.name = name
@@ -206,6 +207,11 @@ class DesignSpec:
         #: runtime has no reason to re-derive it. Recorded as a metric, because computing
         #: refold-vs-design RMSD later means knowing which chain the design is.
         self.design_chain = design_chain
+        #: Stream the rollout's coordinates so the run can be watched. PRESENTATION only:
+        #: it changes nothing about the design, which is why it is not a sampler knob and
+        #: is deliberately absent from `design_key` -- the same design watched and unwatched
+        #: is the same design and must key the same.
+        self.live_view = bool(live_view)
 
     #: No sequence input. Present because the shared transport writes `spec.chains` into
     #: every request; an empty list is what a generator genuinely has, and the far end's

@@ -834,8 +834,8 @@ def deliver_result(path, name, seed=None, _self=cmd):
 
 
 def design_backbone(generator, target, hotspots, length=60, name='', n_designs=1,
-                    diffusion_steps=200, recycling_steps=2, seed=None, quiet=1,
-                    _self=cmd):
+                    diffusion_steps=200, recycling_steps=2, seed=None, live_view=0,
+                    quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -887,6 +887,11 @@ ARGUMENTS
     genuinely different rather than identical duplicates. The value used is printed,
     written into the state title, and part of the design key.
     {default: None, meaning "choose one"}
+
+    live_view = 0/1: stream the rollout into a scrubbable object named
+        <result>_traj, one state per captured frame, so the design can be watched
+        as it diffuses. Costs a little main-thread work per frame and leaves an
+        extra object behind. {default: 0}
 
 EXAMPLES
 
@@ -1004,6 +1009,7 @@ SEE ALSO
         design_spec = type(spec)(spec.target, spec.length, name=object_name,
                                  generator_id=spec.generator_id,
                                  design_chain=spec.design_chain)
+        design_spec.live_view = bool(int(live_view))
         if fetch is not None:
             job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
                                      object_name)

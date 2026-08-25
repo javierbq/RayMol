@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/javierbq/rfd3-mlx.git",
       "state" : {
-        "revision" : "cf85443bbbb6e74a2e5001ae2e7dbc3f62021598",
-        "version" : "0.1.1"
+        "revision" : "4070706881f1f6277a3817ef54b329f85727a1dc",
+        "version" : "0.1.2"
       }
     },
     {
