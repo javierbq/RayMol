@@ -1099,10 +1099,37 @@ USAGE
 
     design_cancel job_id
 
+ARGUMENTS
+
+    job_id = string: the job to cancel, or the name of a pending object -- which
+        cancels the design outstanding for it.
+
 SEE ALSO
 
     design_backbone, design_status
     """
+    # A pending OBJECT name cancels the design registered against it, exactly as
+    # `predict_cancel` accepts one. That is not a convenience: the progress tray's
+    # Cancel button is per OBJECT and passes the object name, because that is the id
+    # a card is keyed by. Accepting only a job id made that button raise KeyError --
+    # found by pressing it, not by a test, because the Swift side asserted the
+    # command STRING and the Python side asserted the job-id path, and nothing
+    # checked that one accepts what the other sends.
+    #
+    # Job ids are 'pending-<12 hex>' or the host's own hex and never collide with an
+    # object name, so this cannot shadow a real id.
+    ids = _PENDING.get(job_id)
+    if ids:
+        for one in list(ids):
+            try:
+                _job(one).cancel()
+            except Exception as exc:
+                colorprinting.warning(' design_cancel: %s (%s)' % (one, exc))
+        if not int(quiet):
+            colorprinting.parrot(' design: cancel requested for %s (%d job(s))'
+                                 % (job_id, len(ids)))
+        pump(_self=_self)
+        return job_id
     job = _job(job_id)
     job.cancel()
     if not int(quiet):

@@ -174,6 +174,42 @@ class DesignBackboneTest(GeneratorTestCase):
         # not the host's -- so the cancel has to reach the real job it forwards to.
         self.assertTrue((getattr(job, '_real', None) or job).cancelled)
 
+    def testCancelAcceptsThePendingOBJECTNameTheTrayActuallySends(self):
+        """The progress tray's Cancel is keyed by OBJECT, not by job id.
+
+        `ProgressItem.design` builds `design_cancel('<object name>')`, because a card's
+        id IS the object name. Accepting only a job id made that button raise KeyError in
+        front of a user -- and neither side's tests caught it: the Swift test asserted the
+        command STRING carried the object name, this suite asserted the job-id path, and
+        nothing checked that one accepts what the other sends. `predict_cancel` has taken
+        an object name since #291 for exactly this reason.
+        """
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        real = getattr(job, '_real', None) or job
+        self.assertFalse(real.cancelled)
+        # The exact string the tray sends: the object name, not job.job_id.
+        cmd.design_cancel(job.spec.name)
+        self.assertTrue(real.cancelled,
+                        'cancelling by object name must reach the running job')
+
+    def testCancelStillAcceptsAJobId(self):
+        # The scripted path, which a user typing at the prompt takes. Both spellings work,
+        # and job ids never collide with object names.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        real = getattr(job, '_real', None) or job
+        cmd.design_cancel(job.job_id)
+        self.assertTrue(real.cancelled)
+
+    def testCancellingAnUnknownNameStillRaises(self):
+        # The object-name path must not swallow a genuine typo into silence.
+        self.assertRaises(Exception, cmd.design_cancel, 'no_such_object_or_job')
+
     def testStatusReportsEveryJobThisSession(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
