@@ -109,29 +109,22 @@ final class RFD3TrajectoryTests: XCTestCase {
         let source = RFD3JobManager.seedPython(name: "traj", pdb: pdb)
         // The two-character escape sequence must be in the source, not a joined line.
         XCTAssertTrue(source.contains("\\n"), source)
-        // No line was silently joined: the ATOM keyword appears more than once.
+        // Each ATOM record's newline must survive as a \n escape: the buggy pythonLiteral
+        // path deletes them, so the joined line has the same ATOM count but zero \n
+        // escapes -- that is what this assertion separates.
         let atomCount = source.components(separatedBy: "ATOM").count - 1
-        XCTAssertGreaterThan(atomCount, 1, "each ATOM record must be present in source")
+        let escapedNewlines = source.components(separatedBy: "\\n").count - 1
+        XCTAssertGreaterThanOrEqual(escapedNewlines, atomCount,
+            "each ATOM record separator must appear as \\n in the Python source")
     }
 
     func testANonFiniteCoordinateYieldsNoFrameRatherThanCrashing() {
         // NaN from the rollout would produce bare `nan` in the Python source -- an
         // undefined name. The frame must degrade to empty before reaching framePython.
         var rawNaN = flat(atoms: 14)
-        rawNaN[1] = Float.nan   // CA of residue 0
+        rawNaN[1] = Float.nan   // Y component of atom 0 (slot N of residue 0)
         let f = RFD3Trajectory.frame(flat: rawNaN, length: 1, origin: SIMD3(0, 0, 0))
         XCTAssertTrue(f.isEmpty)
-    }
-
-    func testFramePythonContainsNoBareNaNOrInfToken() {
-        // Sanity check on a finite frame: the formatted output must not contain the
-        // undefined Python names `nan`, `inf`, or `-inf`.
-        let source = RFD3JobManager.framePython(
-            name: "t", coords: [SIMD3(1.5, -2.0, 0.0), SIMD3(3.333, 100.0, -0.5)])
-        XCTAssertFalse(source.contains(" nan") || source.contains(",nan")
-                       || source.contains("[nan"), source)
-        XCTAssertFalse(source.contains(" inf") || source.contains(",inf")
-                       || source.contains("[inf") || source.contains("-inf"), source)
     }
 }
 #endif

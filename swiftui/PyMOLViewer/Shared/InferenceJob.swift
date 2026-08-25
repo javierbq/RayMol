@@ -383,7 +383,7 @@ enum InferenceJob {
 
     /// A Python string literal for a single-line token: object names, file paths.
     ///
-    /// ⚠️ This escaper SILENTLY DELETES newlines (`\n` → `""`). It exists for names and
+    /// WARNING: This escaper SILENTLY DELETES newlines (`\n` → `""`). It exists for names and
     /// paths, which must stay on one line; using it for multi-line content (PDB blocks,
     /// embedded source) produces a joined line that will be parsed incorrectly on the
     /// Python side. For multi-line payloads use `pythonMultilineLiteral` instead.

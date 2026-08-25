@@ -39,7 +39,15 @@ enum RFD3Trajectory {
                 // NaN)` emits bare `nan`, an undefined name in Python — the NameError
                 // fires in the argument list before trajectory_frame's own guard, producing
                 // a traceback per frame instead of the promised silent degrade.
-                guard c.x.isFinite && c.y.isFinite && c.z.isFinite else { return [] }
+                //
+                // The magnitude cap catches finite-but-enormous values (e.g. 3.4e38 from a
+                // diffusion blowup passing through 1e30 on its way to Inf). A coordinate
+                // that large is accepted by the atom store but corrupts the session's global
+                // view matrix on the next zoom — view[9..16] go non-finite and the user's
+                // camera is broken for the rest of the session. That is worse than "no live
+                // view". 1e6 Å is generous by any physical measure.
+                guard c.x.isFinite && c.y.isFinite && c.z.isFinite,
+                      abs(c.x) < 1e6 && abs(c.y) < 1e6 && abs(c.z) < 1e6 else { return [] }
                 out.append(c)
             }
         }
