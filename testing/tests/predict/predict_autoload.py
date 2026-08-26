@@ -234,6 +234,35 @@ class TestPlaceholder(testing.PyMOLTestCase):
         self.assertNotIn('my_test', cmd.get_names('objects'))
         self.assertNotIn('my_test', predicting.pending_objects())
 
+    # -- Names PyMOL rewrites on creation ------------------------------------
+    #
+    # `cmd.create` LEGALISES an object name: an apostrophe, a space and a forward slash
+    # all become underscores, and nothing tells the caller. A placeholder keyed on the
+    # name that was asked for therefore names an object that does not exist.
+
+    def testAPlaceholderIsKeyedUnderTheNameTheObjectActuallyHas(self):
+        from pymol import predicting
+        self._submit(name='my structure')
+        real = cmd.get_legal_name('my structure')
+        self.assertNotEqual(real, 'my structure', 'pre-condition: PyMOL rewrites this')
+        self.assertIn(real, cmd.get_names('objects'))
+        # The invariant session_save and the discard both depend on.
+        self.assertIn(real, predicting.pending_objects())
+
+    def testCleanupRemovesARewrittenNamePlaceholder(self):
+        # The leak: discard deletes the object only if it can find it. Keyed on the raw
+        # name it finds nothing, drops the record, and leaves a zero-atom object behind
+        # with no job and no card to dismiss it from.
+        from pymol import predicting
+        self._submit(name='my structure')
+        real = cmd.get_legal_name('my structure')
+        self.assertEqual(cmd.count_atoms(real), 0, 'pre-condition: an empty placeholder')
+        predicting.discard_pending(real)
+        self.assertNotIn(real, cmd.get_names('objects'))
+        # The WHOLE table: keyed otherwise the record is orphaned rather than removed,
+        # and the object stays listed as pending for the rest of the session.
+        self.assertEqual(predicting.pending_objects(), {})
+
     def testCleanupKeepsAnObjectThatAlreadyHasAtoms(self):
         """A completed job's object must never be deleted by late cleanup."""
         self._submit(name='my_test')
@@ -359,6 +388,24 @@ class TestSessionExclusion(testing.PyMOLTestCase):
         names = [e[0] for e in session['names'] if e]
         self.assertIn('keep_me', names)
         self.assertNotIn('pending_one', names)
+
+    def testARewrittenNamePlaceholderIsAlsoStrippedFromTheSession(self):
+        """session_save matches on the name the SESSION carries -- the object's real one.
+
+        Keyed on anything else it never matches, so the zero-atom placeholder this
+        function exists to drop is written into the .pse and reloads as an object that
+        can never fill.
+        """
+        from pymol import predicting
+        cmd.pseudoatom('keep_me')
+        predicting.register_pending('pending one', 'jobX')
+        real = cmd.get_legal_name('pending one')
+        self.assertNotEqual(real, 'pending one', 'pre-condition: PyMOL rewrites this')
+        session = cmd.get_session()
+        predicting.session_save(session)
+        names = [e[0] for e in session['names'] if e]
+        self.assertIn('keep_me', names)
+        self.assertNotIn(real, names)
 
     def testStructuralNoneEntriesArePreserved(self):
         """PyMOL's names list carries None entries; dropping them corrupts the session."""
