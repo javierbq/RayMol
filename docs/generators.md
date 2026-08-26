@@ -263,8 +263,8 @@ never from the requested step count, or it stops one step short of the end forev
 
 `design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
 design's own object as the rollout runs, one state per captured frame, and advances the
-displayed state as each lands. Scrub the states afterwards to replay it, or play them with
-`mplay`.
+displayed state as each lands. Replay it afterwards from the object panel's per-object state
+control (see "Which state is on show" below for why it is that rather than the frame slider).
 
 **There is one object, not two.** It is the result's object, under the result's own name,
 holding what the result holds: the target as supplied, plus the generated chain. A live run
@@ -301,7 +301,26 @@ the generated chain and how many are in it -- both reported by the writer that e
 seed, from `RFD3ResultWriter.Composed`, never counted or guessed on the Python side -- and
 `trajectory_frame` splices each frame onto the target's coordinates from state 1. The
 atom-count guard therefore compares against the GENERATED CHAIN's atom count, not the
-object's; a frame sized for the whole object is refused.
+object's; a frame sized for the whole object is refused. The seed also stamps a token for
+that recording into state 1's title and every frame checks it, so a frame cannot land on an
+object that merely shares the name -- yesterday's `.pse` of the same design, reopened
+mid-run, matches on atom count exactly.
+
+### Which state is on show
+
+Through the OBJECT's own `state` setting, never `cmd.frame`. `cmd.frame` writes the global
+MOVIE frame, and `CObject::getCurrentState` prefers an object's own `state` setting and only
+falls back to the global -- so in any session that already carries an `mset` (a Timeline the
+user built, a movie, a reopened `.pse`) `cmd.frame` maps through the movie and the object
+never moves. Measured with `mset '1 x10'`: states grew 2, 3, 4, 5 while the displayed state
+stayed 1, 1, 1, 1, and after delivery the object showed **state 1** -- the step-4 poly-ALA
+seed wearing the designed residue names, which `cmd.save` at its default `state=-1` would
+have exported as the design.
+
+The cost, stated rather than papered over: a delivered live object is **pinned** to its final
+state. To replay the rollout afterwards, move that setting -- the object panel's per-object
+state control does exactly this -- or `unset state, <name>` to hand the object back to the
+global frame.
 
 ### What is streamed: px0, not the iterate
 
@@ -350,17 +369,44 @@ and PyMOL bonds them -- permanently. Measured on a real 24-residue design agains
 40-residue target: an early frame produced **34** inter-chain bonds where the finished
 structure has **0**, drawn as sticks joining the design to the target in every state. So
 `trajectory_seed` unbonds the target from the generated chain immediately after reading,
-addressing both by INDEX from the recorded layout rather than by chain id -- the target may
-legitimately use the same chain letter the design was given. Nothing legitimate is lost: the
-result path produces no inter-chain bonds either.
+addressing both by **rank** from the recorded layout. Nothing legitimate is lost: the result
+path produces no inter-chain bonds either.
 
 One consequence to expect rather than debug: a live object and a `live_view=0` object of the
-same design can differ by a couple of bonds. Measured on the 24-residue design above, 460
-against 462 -- the live object has the generated chain's **119** stated backbone bonds,
-where loading the settled result lets inference add 2 more from close contacts. 119 is the
-chain's actual backbone (4 per residue plus 23 peptide bonds), so the live object is if
-anything the tidier of the two, but the two are not identical and cannot be: connectivity is
-decided from a different frame in each case.
+same design differ by **two bonds per glycine in the designed sequence**. Measured on the
+24-residue design above, whose sequence has one: 460 against 462.
+
+The cause is a phantom CB, not a subtlety of live view. The engine allocates five atoms for
+every designed residue including glycine, which has no CB, and the unused slot comes back
+**coincident with the CA** -- measured 0.01 A from it, against 1.52 A for every other
+residue in the same design. At that position it is also 1.47 A from its own N and 1.52 A
+from its own C, so distance inference bonds it to both. The seed's CONECT records state
+CA-CB and nothing else, so the live object does not pick those up; a plain `cmd.load` of the
+result does. Scale accordingly: a 60-residue design with eight or nine glycines is a
+~17-bond difference, not two. The residue NAME is irrelevant -- renaming the chain to
+poly-ALA and back changes nothing, because the bonds come from where the atom is.
+
+The phantom CB itself is upstream of this branch and is tracked separately; it is identical
+with and without live view.
+
+### Two orders, and which one addresses what
+
+PyMOL keeps atoms in a SORTED order -- `AtomInfoCompare` orders by chain before residue
+number, and `retain_order` is 0 -- which is **not** the order the writer emitted them in.
+`rank` is the file position; `index` is the sorted position. They coincide only when the
+target's chain letter sorts before the generated chain's, and `_free_chain_id` hands the
+generated chain `'B'` for every target except a chain-B one, so for 24 of the 26 letters the
+generated chain sorts **first** and `index 1-<offset>` spans both chains. Measured on a
+target/design pair of H/B: `rank 0-19` is `{H}`, `index 1-20` is `{H, B}`.
+
+So everything on this path is addressed by rank: the unbond, the order proof, and the
+residue rename at delivery. `load_coordset` is rank-keyed too, which is why it is the
+primitive the frames go through -- measured by pushing the design's file-order slice 500 A
+and watching chain B, and only chain B, move.
+
+Note what is *not* a reason: the target cannot share the generated chain's letter.
+`_free_chain_id` picks one the target does not use, over a target `require_single_chain` has
+already reduced to a single chain.
 
 ### Coordinates come from PDB text, never from `cmd.get_coordset`
 
@@ -403,7 +449,11 @@ Every failure in this path degrades to "no live view" and never fails the design
 seed cannot be composed or read there is simply no recording, and the design loads at the
 end exactly as it would without `live_view`. If a recording cannot be completed into the
 result -- an object the user edited, a result that no longer lines up -- it is thrown away
-and the result is loaded plainly. A frame is dropped WHOLE, never half-loaded, when its
+and the result is loaded plainly, with a warning saying so. Every refusal on this path is
+audible: a seed that cannot be used says why, once, and puts the empty placeholder back so
+the design keeps its row in the object panel for the rest of the run.
+
+A frame is dropped WHOLE, never half-loaded, when its
 atom count is not the generated chain's, when it is not three floats per atom, when any
 coordinate is non-finite, or when one falls outside what a PDB ATOM record can represent
 (`RFD3ResultWriter.coordinateRange`, -999.999 to 9999.999 A). The last of those is the same
