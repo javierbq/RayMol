@@ -58,11 +58,20 @@ final class RFD3JobManager: InferenceRuntime {
     /// The PDB argument is a multi-line string — `pythonMultilineLiteral` rather than
     /// `pythonLiteral`, which silently deletes newlines and would produce a single joined
     /// line that PyMOL's line-oriented PDB reader would parse as exactly one atom.
-    static func seedPython(name: String, seed: RFD3ResultWriter.Composed) -> String {
+    ///
+    /// `receiptPath` is how the answer comes back. `PyMOLEngine.runPython` returns Void —
+    /// the bridge is one-directional — so the statement writes `trajectory_seed`'s own
+    /// boolean to a file the caller reads. Without it the rollout cannot know the seed was
+    /// refused and sends 49 more frames, each ~7 KB of source through the main thread, for
+    /// a recording that does not exist.
+    static func seedPython(name: String, seed: RFD3ResultWriter.Composed,
+                           receiptPath: String) -> String {
         "from pymol import designing as _d\n"
-        + "_d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
+        + "_ok = _d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
         + "\(InferenceJob.pythonMultilineLiteral(seed.pdb)), "
-        + "\(seed.targetAtomCount), \(seed.designAtomCount))"
+        + "\(seed.targetAtomCount), \(seed.designAtomCount))\n"
+        + "open(\(InferenceJob.pythonLiteral(receiptPath)), 'w')"
+        + ".write('1' if _ok else '0')"
     }
 
     /// The statement that appends one frame.
@@ -291,6 +300,9 @@ final class RFD3JobManager: InferenceRuntime {
                !objectName.isEmpty {
                 let interval = Self.trajectoryStepInterval
                 var seeded = false
+                // Cleared when Python refuses the seed; every later frame is then skipped
+                // rather than emitted into a recording that does not exist.
+                var live = true
                 // `onStepDenoised` streams px0 -- the denoiser's prediction of the CLEAN
                 // structure at that step -- not the raw EDM iterate. It is the hook that
                 // makes this feature watchable: the iterate's schedule starts at
@@ -301,7 +313,7 @@ final class RFD3JobManager: InferenceRuntime {
                 // 33.9 A at step 1 against 6904.6 A for the iterate at the same step, and
                 // 35.8 / 36.1 / 35.2 / 39.2 / 38.9 A at steps 1 / 10 / 20 / 30 / 49.
                 options.onStepDenoised = { [weak self] step, materialise in
-                    guard let self else { return }
+                    guard let self, live else { return }
                     // `total` is not passed to this callback, so the final-step rule uses
                     // the requested schedule's last transition: numTimesteps - 1.
                     guard RFD3Trajectory.shouldCapture(
@@ -325,9 +337,19 @@ final class RFD3JobManager: InferenceRuntime {
                             target: wireTarget, length: length,
                             chain: request.designChain ?? "B",
                             coords: coords) else { return }
+                        // Latched from what Python REPORTED, not from having asked. A
+                        // refused seed leaves no recording, and sending 49 frames into
+                        // one is 350 KB of source through the main thread to be dropped
+                        // one `return False` at a time. `seeded` also latches on refusal
+                        // so the seed is not retried every fourth step.
+                        let receipt = request.statusPath + ".seed"
                         seeded = true
-                        self.runPythonOnMain(Self.seedPython(name: objectName,
-                                                             seed: seed))
+                        if !self.runSeedOnMain(Self.seedPython(name: objectName,
+                                                               seed: seed,
+                                                               receiptPath: receipt),
+                                               receiptPath: receipt) {
+                            live = false
+                        }
                         return
                     }
                     self.runPythonOnMain(Self.framePython(name: objectName,
@@ -418,6 +440,28 @@ final class RFD3JobManager: InferenceRuntime {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)
         }
+    }
+
+    /// The seed, run to completion, reporting whether Python accepted it.
+    ///
+    /// Synchronous, and only this one statement is. The frames stay `async` because the
+    /// rollout must never wait to draw — but the seed's answer decides whether there is
+    /// anything to draw at all, and getting it wrong costs 49 futile round trips. One hop
+    /// of a few tens of milliseconds, once per live run, against a rollout whose steps are
+    /// seconds each.
+    ///
+    /// Safe to block on: `run` is already on the background `queue`, `submit` returned to
+    /// the main thread long ago, and nothing on main waits for this queue.
+    ///
+    /// A missing or unreadable receipt reads as "refused", which is the safe direction:
+    /// the run continues without a live view rather than streaming into nothing.
+    private func runSeedOnMain(_ source: String, receiptPath: String) -> Bool {
+        DispatchQueue.main.sync {
+            PyMOLEngine.shared.runPython(source)
+        }
+        defer { try? FileManager.default.removeItem(atPath: receiptPath) }
+        return (try? String(contentsOfFile: receiptPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "1"
     }
 
     /// Provenance written into the structure itself, so it survives an export.

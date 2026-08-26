@@ -212,11 +212,27 @@ final class RFD3TrajectoryTests: XCTestCase {
         let seed = RFD3Trajectory.seed(target: target(residues: 3), length: 2,
                                        chain: "B", coords: seedCoords(length: 2))
         let source = RFD3JobManager.seedPython(name: "rfd3_design_ab12cd34",
-                                               seed: XCTUnwrap2(seed))
+                                               seed: XCTUnwrap2(seed),
+                                               receiptPath: "/tmp/r.seed")
         XCTAssertTrue(source.contains("'rfd3_design_ab12cd34'"), source)
         XCTAssertFalse(source.contains("_traj"), source)
         // 12 target atoms before the generated chain, 10 atoms in it.
-        XCTAssertTrue(source.hasSuffix(", 12, 10)"), source)
+        XCTAssertTrue(source.contains(", 12, 10)"), source)
+    }
+
+    func testTheSeedStatementReportsWhetherPythonAcceptedIt() {
+        // `PyMOLEngine.runPython` returns Void -- the bridge is one-directional -- so the
+        // only way the rollout can learn that the seed was REFUSED is for the statement to
+        // write the answer somewhere. Without it, 49 more frames go through the main
+        // thread at ~7 KB of source each, into a recording that does not exist.
+        let seed = XCTUnwrap2(RFD3Trajectory.seed(target: target(residues: 3), length: 2,
+                                                  chain: "B",
+                                                  coords: seedCoords(length: 2)))
+        let source = RFD3JobManager.seedPython(name: "d", seed: seed,
+                                               receiptPath: "/tmp/x.seed")
+        XCTAssertTrue(source.contains("_ok = _d.trajectory_seed("), source)
+        XCTAssertTrue(source.contains("open('/tmp/x.seed', 'w')"), source)
+        XCTAssertTrue(source.contains("'1' if _ok else '0'"), source)
     }
 
     /// `XCTUnwrap` throws, and these tests are not `throws`. One helper rather than a
@@ -262,7 +278,8 @@ final class RFD3TrajectoryTests: XCTestCase {
                                                   coords: seedCoords(length: 2)))
         // The PDB has multiple ATOM records separated by real newlines.
         XCTAssertTrue(seed.pdb.contains("\n"), "the seed must be a multi-line string")
-        let source = RFD3JobManager.seedPython(name: "traj", seed: seed)
+        let source = RFD3JobManager.seedPython(name: "traj", seed: seed,
+                                               receiptPath: "/tmp/t.seed")
         // The two-character escape sequence must be in the source, not a joined line.
         XCTAssertTrue(source.contains("\\n"), source)
         // Each ATOM record's newline must survive as a \n escape: the buggy pythonLiteral
