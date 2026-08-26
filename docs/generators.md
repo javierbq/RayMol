@@ -261,22 +261,47 @@ never from the requested step count, or it stops one step short of the end forev
 
 ## Watching a design diffuse
 
-`design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- streams the
-rollout into a second object, `<result>_traj`, holding the designed chain only, one state
-per captured frame. Scrub it with the frame slider or play it with `mplay`.
+`design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
+design's own object as the rollout runs, one state per captured frame, and advances the
+displayed state as each lands. Scrub the states afterwards to replay it, or play them with
+`mplay`.
 
-It is a recording, not a result. It carries no metrics and no design key: the result object
-owns the identity, and a poly-ALA backbone claiming to be that design would put a second
-thing in the session answering to it. The residues are poly-ALA because states of one
-object share a single atom set and the sequence head's argmax changes during the rollout,
-so per-state residue names are not representable.
+**There is one object, not two.** It is the result's object, under the result's own name,
+holding what the result holds: the target as supplied, plus the generated chain. A live run
+and a plain one leave the same single thing in the session -- live view changes when you
+see it, not what you get. When the design lands it is appended as one more state and left
+showing.
 
-Frames are captured every `RFD3JobManager.trajectoryStepInterval` (4) steps -- **50 states
-from the default 200-step run**, one per captured frame and no more. The schedule has
-`numTimesteps - 1` = 199 transitions, of which steps 4, 8, ... 196 and the final 199 are
-captured: 50 frames. The FIRST of them is the object's state 1, not an extra state after
-an empty placeholder -- an all-origin state 1 was a state no step of the rollout ever
-produced, and it dragged every framing of the object.
+That is possible because both come out of ONE writer, `RFD3ResultWriter.emit`. The finished
+design is appended with `load_coordset`, which matches coordinates to atoms by POSITION and
+checks nothing, so the seed and the result have to be the same atoms in the same order. Two
+builders that must agree eventually disagree; one builder cannot. (`cmd.load` into the
+existing object is not an option and not a shortcut: mismatched residue names make PyMOL
+treat the incoming atoms as new ones -- measured, a 450-atom object became 530.)
+
+While it runs, two things differ from the delivered result and both are repaired at
+delivery:
+
+* the generated chain's coordinates are a rollout frame rather than the answer;
+* its residues are named **ALA**, because states of one object share a single atom set and
+  the sequence head's argmax churns during the rollout -- a residue is LEU at step 40 and
+  VAL at step 80. Delivery renames the chain to the design's real sequence, read out of the
+  result. Residue names in PyMOL are per-OBJECT rather than per-state, so every state then
+  shows the designed sequence; the target's names are untouched.
+
+Frames are captured every `RFD3JobManager.trajectoryStepInterval` (4) steps -- **50 captured
+frames from the default 200-step run, so 51 states**: the schedule has `numTimesteps - 1` =
+199 transitions, of which steps 4, 8, ... 196 and the final 199 are captured, and the
+delivered design is the 51st. The FIRST captured frame is the object's state 1, not an extra
+state after an empty placeholder.
+
+Each frame on the wire carries the **generated chain only**. Resending the static target
+fifty times would be pointless traffic, so `trajectory_seed` records how many atoms precede
+the generated chain and how many are in it -- both reported by the writer that emitted the
+seed, from `RFD3ResultWriter.Composed`, never counted or guessed on the Python side -- and
+`trajectory_frame` splices each frame onto the target's coordinates from state 1. The
+atom-count guard therefore compares against the GENERATED CHAIN's atom count, not the
+object's; a frame sized for the whole object is refused.
 
 ### What is streamed: px0, not the iterate
 
@@ -300,38 +325,69 @@ corrupted -- just less tidy to watch.
 Requires rfd3-mlx **>= 0.1.3**; 0.1.3 removed the older `onStepCoords` hook rather than
 deprecating it.
 
-### Why the seed states its bonds
+### Why the seed states its bonds -- and unbonds the two chains
 
-The seed carries **CONECT records**, and that is load-bearing rather than tidy. PyMOL
-decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and never
-re-bonds them. So the object's bonds for its whole life -- including the converged state
-you scrub to, and into any `.pse` saved from it -- are whatever PyMOL made of the FIRST
-captured frame, which is step 4 of 199 and is not a settled backbone.
+PyMOL decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and
+never re-bonds them. So the object's bonds for its whole life -- including the delivered
+state you end on, and into any `.pse` saved from it -- are whatever PyMOL made of the FIRST
+captured frame, which is step 4 of 199 and is not a settled backbone. Two consequences, and
+they pull in opposite directions.
 
-That is why inference is not good enough even at px0's protein scale. It does not fail
-loudly, it degrades. Measured on a 24-residue poly-ALA chain that needs **119** bonds
-(4 per residue plus 23 peptide bonds), seeded without CONECT: 89 / 54 / 37 bonds at 1 / 2 /
-3 A of per-atom jitter, and 5 from a protein-scale cloud. With CONECT it is 119 in every
-one of those cases -- and 119, not 238, from settled geometry, because PyMOL MERGES stated
-bonds with what it would have inferred. The topology is known a priori anyway: this object
-is poly-ALA with a fixed atom set, so re-deriving it from an early guess buys nothing.
+**The generated chain needs bonds stated.** The seed carries **CONECT records** for it,
+numbered from `Composed.designFirstSerial` -- the generated chain no longer starts at serial
+1, and a record naming serial 1 would bond two atoms of the target. Inference is not good
+enough here even at px0's protein scale: it does not fail loudly, it degrades. Measured on a
+24-residue poly-ALA chain that needs **119** bonds (4 per residue plus 23 peptide bonds),
+seeded without CONECT: 89 / 54 / 37 bonds at 1 / 2 / 3 A of per-atom jitter, and 5 from a
+protein-scale cloud. With CONECT it is 119 in every one of those cases -- and 119, not 238,
+from settled geometry, because PyMOL MERGES stated bonds with what it would have inferred.
+The topology is known a priori anyway: this chain is poly-ALA with a fixed atom set.
+
+**The two chains need bonds REMOVED.** That merge is also why the seed cannot simply be
+read and left alone. A generated chain is *meant* to sit against the target, so an early,
+unsettled frame routinely puts some of its atoms within bonding distance of target atoms,
+and PyMOL bonds them -- permanently. Measured on a real 24-residue design against a
+40-residue target: an early frame produced **34** inter-chain bonds where the finished
+structure has **0**, drawn as sticks joining the design to the target in every state. So
+`trajectory_seed` unbonds the target from the generated chain immediately after reading,
+addressing both by INDEX from the recorded layout rather than by chain id -- the target may
+legitimately use the same chain letter the design was given. Nothing legitimate is lost: the
+result path produces no inter-chain bonds either.
 
 ### Camera, lifetime and failure
 
-Seeding does not move the camera, deliberately: a design is minutes long and the user is
-looking at the target, so `<result>_traj` appearing in the object panel is all the
-announcement it gets. The object survives the run, including a cancelled one, and is an
-ordinary object you can delete. Off by default: an extra 50-state object is a reasonable
-thing to opt into and an unreasonable thing to be given.
+Seeding does not move the camera, and neither does any frame or the delivery: a design is
+minutes long and the user is looking at the target, so the object appearing in the object
+panel is all the announcement it gets. Off by default -- turning a one-state result into a
+51-state one is a reasonable thing to opt into and an unreasonable thing to be given.
 
-Every failure in this path degrades to "no live view" and never fails the design. A frame
-is dropped WHOLE -- never half-loaded -- when any coordinate is non-finite, or falls
-outside what a PDB ATOM record can represent (`RFD3ResultWriter.coordinateRange`,
--999.999 to 9999.999 A). Both cases are the same guard for the same reason: the writer's
-coordinate columns are eight characters wide and `%8.3f` widens rather than truncates, so
-a value needing nine would shift every later field on the line and be read back as
-different coordinates entirely -- silently, since the line still parses. The guard and the
-formatter share one definition of the range so they cannot drift apart.
+**A run that does not finish leaves nothing.** The object bears the design's own name, so a
+rollout frozen at step 84 must not be left under it: it would be indistinguishable from a
+finished design in the object panel, carry no metrics and no design key, and survive into a
+saved session. `discard_pending` -- what the runtime calls on cancel or failure -- therefore
+deletes it, and `session_save` drops it from a `.pse` saved mid-run, both keyed on the same
+record that says every atom in there came from the recording. Once the design has landed the
+record is gone and the object is an ordinary result that neither will touch. This is a
+change from the earlier two-object model, where a cancelled run left its `<result>_traj`
+recording behind.
+
+Metrics are unaffected: `record_run` still files once, from `deliver_result`, against the
+object name, with the state it landed in -- which is `count_states`, the last state for a
+live run and the only one for a plain one, in both cases the finished coordinates.
+
+Every failure in this path degrades to "no live view" and never fails the design. If the
+seed cannot be composed or read there is simply no recording, and the design loads at the
+end exactly as it would without `live_view`. If a recording cannot be completed into the
+result -- an object the user edited, a result that no longer lines up -- it is thrown away
+and the result is loaded plainly. A frame is dropped WHOLE, never half-loaded, when its
+atom count is not the generated chain's, when it is not three floats per atom, when any
+coordinate is non-finite, or when one falls outside what a PDB ATOM record can represent
+(`RFD3ResultWriter.coordinateRange`, -999.999 to 9999.999 A). The last of those is the same
+guard for the same reason: the writer's coordinate columns are eight characters wide and
+`%8.3f` widens rather than truncates, so a value needing nine would shift every later field
+on the line and be read back as different coordinates entirely -- silently, since the line
+still parses. The guard and the formatter share one definition of the range so they cannot
+drift apart.
 
 ## Measured cost
 
