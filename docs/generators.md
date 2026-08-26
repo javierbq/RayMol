@@ -354,6 +354,30 @@ addressing both by INDEX from the recorded layout rather than by chain id -- the
 legitimately use the same chain letter the design was given. Nothing legitimate is lost: the
 result path produces no inter-chain bonds either.
 
+One consequence to expect rather than debug: a live object and a `live_view=0` object of the
+same design can differ by a couple of bonds. Measured on the 24-residue design above, 460
+against 462 -- the live object has the generated chain's **119** stated backbone bonds,
+where loading the settled result lets inference add 2 more from close contacts. 119 is the
+chain's actual backbone (4 per residue plus 23 peptide bonds), so the live object is if
+anything the tidier of the two, but the two are not identical and cannot be: connectivity is
+decided from a different frame in each case.
+
+### Coordinates come from PDB text, never from `cmd.get_coordset`
+
+Worth knowing before extending any of this. `cmd.get_coordset` is numpy-backed and returns
+**None** in the packaged macOS app, while returning a real array under the headless PyMOL
+the test suite runs on. Built on it, live view failed on every real design and passed every
+test: the seed threw on the None and left no record, all fifty frames were dropped, and
+delivery fell back to `cmd.load` on top of the seeded object -- 450 atoms became 530.
+
+Both coordinate reads therefore slice the fixed columns of PDB TEXT (`_pdb_atom_records`):
+the seed string in `trajectory_seed`, the result file in `_finish_trajectory`. That is also
+the order `load_coordset` wants -- "the original atom order (order from PDB file)", not the
+property-sorted order `iterate` and `load_coords` use -- and the file is the only thing that
+has it. The seed then PROVES the two orders agree, once, by checking every atom PyMOL holds
+against the atom the string wrote at that position; a reader that sorted would otherwise put
+target coordinates on the generated chain for a whole run, silently.
+
 ### Camera, lifetime and failure
 
 Seeding does not move the camera, and neither does any frame or the delivery: a design is
