@@ -96,11 +96,15 @@ final class RFD3TrajectoryTests: XCTestCase {
     }
 
     func testTheSeedStatesItsBondsInsteadOfLeavingThemToBeInferred() {
-        // Measured, on a real 24-residue run: the first captured frame is the raw EDM
-        // iterate and spans 153,687 A, so PyMOL's distance inference bonds NOTHING -- and
-        // connectivity is decided once, at read time, so the object then renders as
-        // disconnected crosses in every state including the converged one. The CONECT
-        // records are what make a backbone appear at all.
+        // Connectivity is decided ONCE, at read time, from the FIRST captured frame --
+        // step 4 of 199, which px0 makes protein-scale but not a settled backbone. What
+        // distance inference makes of it is a function of how unsettled it happens to be:
+        // measured on a 24-residue chain needing 119 bonds, seeded without CONECT, 89 / 54
+        // / 37 bonds at 1 / 2 / 3 A of per-atom jitter and 5 from a protein-scale cloud.
+        // Whatever it decides is then the object's connectivity for life, including the
+        // converged state the user scrubs to and into any saved session. The CONECT
+        // records make the answer 119 regardless -- and 119, not 238, from settled
+        // geometry, because PyMOL merges them with what it would have inferred.
         let pdb = RFD3Trajectory.seedPDB(length: 4, chain: "B",
                                          coords: seedCoords(length: 4))
         let conect = pdb.split(separator: "\n").filter { $0.hasPrefix("CONECT") }

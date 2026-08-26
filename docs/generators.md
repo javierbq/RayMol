@@ -278,16 +278,37 @@ captured: 50 frames. The FIRST of them is the object's state 1, not an extra sta
 an empty placeholder -- an all-origin state 1 was a state no step of the rollout ever
 produced, and it dragged every framing of the object.
 
+### What is streamed: px0, not the iterate
+
+The stream is `RFD3Model.Options.onStepDenoised`, which carries **px0** -- the denoiser's
+prediction of the CLEAN structure at that step -- and not the raw EDM iterate. That choice
+is what makes the feature watchable rather than merely correct. The iterate's schedule
+starts at `sigma_data` (16) x `s_max` (160) = 2560 A, so its early states are an off-screen
+cloud; px0 is protein-scale at every step, because the EDM output preconditioning scales
+the network's output by `sigma_data` rather than by sigma. Measured upstream on a 50-step
+albumin rollout: **33.9 A at step 1**, against 6,904.6 A for the iterate at the same step,
+and 35.8 / 36.1 / 35.2 / 39.2 / 38.9 A at steps 1 / 10 / 20 / 30 / 49. You see a structure
+wriggling into shape from the first captured frame, not a cloud collapsing into the
+viewport half way through the run. Requires rfd3-mlx **>= 0.1.3**; 0.1.3 removed the older
+`onStepCoords` hook rather than deprecating it.
+
+### Why the seed states its bonds
+
 The seed carries **CONECT records**, and that is load-bearing rather than tidy. PyMOL
 decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and never
-re-bonds them. Distance inference cannot do the job here because the coordinates streamed
-out of the sampler are the raw EDM iterate, whose schedule starts at `sigma_data` (16) x
-`s_max` (160) = 2560 A: in a measured 24-residue run state 1 spans 153,687 A and contracts
-to 443 A by state 20, 65 A by state 30 and 18.7 A by state 50. Without stated bonds the
-object has **zero** of them for its whole life -- rendering every state, including the
-converged one you scrub to, as disconnected crosses -- and into any `.pse` saved from it.
-Note the corollary: the early states are far larger than the viewport, so a trajectory
-only becomes legible around state 30.
+re-bonds them. So the object's bonds for its whole life -- including the converged state
+you scrub to, and into any `.pse` saved from it -- are whatever PyMOL made of the FIRST
+captured frame, which is step 4 of 199 and is not a settled backbone.
+
+That is why inference is not good enough even at px0's protein scale. It does not fail
+loudly, it degrades. Measured on a 24-residue poly-ALA chain that needs **119** bonds
+(4 per residue plus 23 peptide bonds), seeded without CONECT: 89 / 54 / 37 bonds at 1 / 2 /
+3 A of per-atom jitter, and 5 from a protein-scale cloud. With CONECT it is 119 in every
+one of those cases -- and 119, not 238, from settled geometry, because PyMOL MERGES stated
+bonds with what it would have inferred. The topology is known a priori anyway: this object
+is poly-ALA with a fixed atom set, so re-deriving it from an early guess buys nothing.
+
+### Camera, lifetime and failure
 
 Seeding does not move the camera, deliberately: a design is minutes long and the user is
 looking at the target, so `<result>_traj` appearing in the object panel is all the
@@ -295,11 +316,14 @@ announcement it gets. The object survives the run, including a cancelled one, an
 ordinary object you can delete. Off by default: an extra 50-state object is a reasonable
 thing to opt into and an unreasonable thing to be given.
 
-Every failure in this path degrades to "no live view" and never fails the design. Frames
-that carry a non-finite or astronomical coordinate -- possible during an early-rollout
-blowup -- are dropped whole rather than loaded, because a coordinate near the float
-maximum propagates into PyMOL's session-global view matrix and breaks the camera for the
-rest of the session.
+Every failure in this path degrades to "no live view" and never fails the design. A frame
+is dropped WHOLE -- never half-loaded -- when any coordinate is non-finite, or falls
+outside what a PDB ATOM record can represent (`RFD3ResultWriter.coordinateRange`,
+-999.999 to 9999.999 A). Both cases are the same guard for the same reason: the writer's
+coordinate columns are eight characters wide and `%8.3f` widens rather than truncates, so
+a value needing nine would shift every later field on the line and be read back as
+different coordinates entirely -- silently, since the line still parses. The guard and the
+formatter share one definition of the range so they cannot drift apart.
 
 ## Measured cost
 

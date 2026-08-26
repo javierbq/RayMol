@@ -45,13 +45,25 @@ def _backbone(length, offset=(0.0, 0.0, 0.0)):
     return coords
 
 
-def _noise(length, scale, seed=3):
-    """What an EARLY captured frame actually looks like: a cloud, not a backbone.
+def _jittered(length, sigma, seed=11):
+    """What an EARLY captured frame actually looks like: protein-scale, but not settled.
 
-    The rollout's coordinates are the raw EDM iterate, whose schedule starts at
-    `sigma_data` (16) x `s_max` (160) = 2560 A. A measured 24-residue live run put state 1
-    across 153,687 A. Nothing at that scale is within bonding distance of anything.
+    The stream is px0 -- the denoiser's prediction of the CLEAN structure at that step --
+    so every captured frame is protein-scale (measured upstream: 33.9 A at step 1 of a
+    50-step albumin rollout, against 6,904.6 A for the raw EDM iterate at the same step).
+    What an early frame is NOT is a valid backbone, and that is the case these fixtures
+    exist for: real geometry displaced atom-by-atom, so bond lengths are wrong by a
+    plausible amount rather than by four orders of magnitude.
     """
+    import random
+    rng = random.Random(seed)
+    return [tuple(value + rng.gauss(0, sigma) for value in point)
+            for point in _backbone(length)]
+
+
+def _cloud(length, scale, seed=3):
+    """A protein-scale frame with no backbone left in it at all -- the limiting case of
+    `_jittered`, kept because it is where distance inference degrades furthest."""
     import random
     rng = random.Random(seed)
     return [tuple(rng.gauss(0, scale) for _ in range(3))
@@ -164,6 +176,72 @@ class TrajectoryTest(GeneratorTestCase):
             'a frame with the wrong atom count must be refused')
         self.assertEqual(cmd.count_states('traj'), 1)
 
+    def testARaggedFrameIsRefusedEvenWhenItsAtomCountWouldPass(self):
+        # ISOLATES the multiple-of-three guard, which nothing else covers. The case above
+        # uses [1.0, 2.0]: 2 // 3 == 0, which the ATOM-COUNT guard on the next line already
+        # refuses, so deleting the multiple-of-three guard alone leaves this suite green.
+        #
+        # 31 floats against a 10-atom object is the input that separates them: 31 % 3 == 1
+        # so the multiple-of-three guard refuses it, but 31 // 3 == 10 so the atom-count
+        # guard does NOT -- and without the first guard the trailing float is silently
+        # dropped and a truncated frame is loaded as a state.
+        self.designing.trajectory_seed('traj', _seed_pdb(length=2))
+        self.assertEqual(cmd.count_atoms('traj'), 10)
+        self.assertFalse(
+            self.designing.trajectory_frame('traj', [1.0] * 31),
+            'a ragged frame must be refused even when it rounds to the right atom count')
+        self.assertEqual(cmd.count_states('traj'), 1)
+
+    # -- What was written is what is read back --------------------------------
+
+    def testStateOneReadsBackExactlyTheCoordinatesTheSeedWrote(self):
+        # The assertion no test on this branch made, and the reason a nine-column
+        # coordinate survived two review rounds: every earlier test checked the object's
+        # SHAPE -- atom count, state count, bond count -- and none checked its NUMBERS.
+        #
+        # The PDB is fixed-column and `%8.3f` has a width minimum, not a maximum, so a
+        # value needing nine characters shifts every field after it and is read back as
+        # something else entirely. Extremes on purpose: these are the widest values the
+        # format can hold, so a writer that is one character off fails here.
+        coords = _backbone(4, offset=(-995.0, 9995.0, -995.0))
+        self.designing.trajectory_seed('traj', _seed_pdb(length=4, coords=coords))
+        model = cmd.get_model('traj', state=1)
+        self.assertEqual(len(model.atom), 20)
+        for index, atom in enumerate(model.atom):
+            for axis in range(3):
+                self.assertAlmostEqual(
+                    atom.coord[axis], coords[index][axis], places=2,
+                    msg='atom %d axis %d: wrote %r, read %r'
+                        % (index, axis, coords[index][axis], atom.coord[axis]))
+
+    def testANineColumnCoordinateIsReadBackAsSomethingElse(self):
+        # The negative control for the round trip above, and the whole reason
+        # RFD3ResultWriter.atomRecord refuses a coordinate outside -999.999..9999.999
+        # rather than writing it: nothing raises, the line still looks like a PDB record,
+        # and y and z are simply gone. Measured here rather than asserted from memory.
+        self.assertEqual(len('%8.3f' % -1000.0), 9,
+                         'the fixture must actually overflow the eight-column field')
+        line = ('ATOM      1  N   ALA B   1    %8.3f%8.3f%8.3f  1.00  0.00           N'
+                % (-1000.0, 1.0, 2.0))
+        cmd.read_pdbstr(line + '\nTER\nEND\n', 'bad', zoom=0)
+        read = list(cmd.get_model('bad').atom[0].coord)
+        self.assertAlmostEqual(read[0], -1000.0, places=3)
+        # y and z were pushed out of their columns and read as zero.
+        self.assertAlmostEqual(read[1], 0.0, places=3)
+        self.assertAlmostEqual(read[2], 0.0, places=3)
+
+    def testAnAppendedFrameReadsBackExactlyWhatWasSent(self):
+        # Same property for `load_coordset` rather than the PDB reader, at the same
+        # extremes: a live view whose later states drifted from what the rollout produced
+        # would be a recording of nothing.
+        coords = _backbone(4, offset=(-995.0, 9995.0, -995.0))
+        self.designing.trajectory_seed('traj', _seed_pdb(length=4))
+        self.assertTrue(self.designing.trajectory_frame('traj', _flat(coords)))
+        model = cmd.get_model('traj', state=2)
+        for index, atom in enumerate(model.atom):
+            for axis in range(3):
+                self.assertAlmostEqual(atom.coord[axis], coords[index][axis], places=2)
+
     # -- What the user actually sees -----------------------------------------
 
     def testSeedingLeavesTheCameraExactlyWhereTheUserPutIt(self):
@@ -209,29 +287,71 @@ class TrajectoryTest(GeneratorTestCase):
         self.assertEqual(len(cmd.get_model('traj').bond), bonds)
 
     def testAnEarlyFrameStillBondsBecauseTheSeedSaysSo(self):
-        # THE case that matters, and the one real coordinates alone do not cover: the
-        # first captured frame is step 4 of 199 of a schedule that starts at 2560 A, and a
-        # measured live run put state 1 across 153,687 A. Distance inference bonds nothing
-        # at that scale -- the CONECT records in the seed are the only reason the object
-        # ever has a backbone.
+        # THE case that matters. The seed is the FIRST captured frame -- step 4 of 199 --
+        # and connectivity is decided from it once, for the life of the object. px0 makes
+        # that frame protein-scale but not a settled backbone, so what distance inference
+        # returns from it is a function of how unsettled it happens to be. The CONECT
+        # records make the answer 119 regardless.
+        for sigma in (1.0, 2.0, 3.0):
+            cmd.delete('all')
+            self.designing.trajectory_seed(
+                'traj', _seed_pdb(length=24, coords=_jittered(24, sigma)))
+            self.assertEqual(len(cmd.get_model('traj').bond), 119,
+                             'stated bonds must not depend on how settled the frame is')
+        cmd.delete('all')
         self.designing.trajectory_seed('traj',
-                                       _seed_pdb(length=24, coords=_noise(24, 5000.0)))
+                                       _seed_pdb(length=24, coords=_cloud(24, 9.0)))
         self.assertEqual(len(cmd.get_model('traj').bond), 119)
 
-    def testWithoutStatedBondsAnEarlyFrameHasNoneAtAll(self):
-        # The negative control for the two tests above: same atoms, same coordinates, no
+    def testWithoutStatedBondsAnEarlyFrameGetsWhateverInferenceMakesOfIt(self):
+        # The negative control for the test above: same atoms, same coordinates, no
         # CONECT. Kept so "119" is known to be a property of what the seed SAYS rather
-        # than something PyMOL would have produced from the coordinates anyway.
+        # than something PyMOL would have produced from the coordinates anyway -- and the
+        # numbers here are the honest reason to state connectivity. Inference does not
+        # fail loudly at px0 scale, it degrades: measured 92 / 67 / 31 of the 119 backbone
+        # bonds at 1 / 2 / 3 A of per-atom jitter, and 5 for a protein-scale cloud. The
+        # object then renders with most of its backbone missing, in every state including
+        # the converged one, and into any .pse saved from it. Measured with this fixture:
+        # 89 / 54 / 37 of 119 at 1 / 2 / 3 A of jitter, and 5 for a protein-scale cloud.
+        #
+        # The COUNTS are not asserted, because they are properties of PyMOL's bonding
+        # heuristic rather than of this feature. What is asserted is the property those
+        # counts demonstrate: inference is short of the backbone and depends on how
+        # settled the frame is, where the stated records are 119 regardless.
+        inferred = {}
+        for sigma in (1.0, 2.0, 3.0):
+            cmd.delete('all')
+            self.designing.trajectory_seed(
+                'traj', _seed_pdb(length=24, coords=_jittered(24, sigma), conect=False))
+            inferred[sigma] = len(cmd.get_model('traj').bond)
+        for sigma, count in inferred.items():
+            self.assertLess(count, 119,
+                            'inference at %.1f A of jitter must fall short of the '
+                            'backbone (got %d)' % (sigma, count))
+        self.assertGreater(len(set(inferred.values())), 1,
+                           'inferred connectivity must depend on how settled the frame '
+                           'is -- that dependence is why it is stated instead')
+        cmd.delete('all')
         self.designing.trajectory_seed(
-            'cloud', _seed_pdb(length=24, coords=_noise(24, 5000.0), conect=False))
+            'cloud', _seed_pdb(length=24, coords=_cloud(24, 9.0), conect=False))
         self.assertEqual(cmd.count_atoms('cloud'), 120)
-        self.assertEqual(len(cmd.get_model('cloud').bond), 0)
+        self.assertLess(len(cmd.get_model('cloud').bond), 20)
         # And the defect this replaced: every atom at the origin, which refuses every bond
         # whether or not the coordinates are real.
         zeros = [(0.0, 0.0, 0.0)] * (24 * len(_SLOTS))
         self.designing.trajectory_seed('zeros',
                                        _seed_pdb(length=24, coords=zeros, conect=False))
         self.assertEqual(len(cmd.get_model('zeros').bond), 0)
+
+    def testSettledGeometryIsNotDoubleBondedByTheStatedRecords(self):
+        # CONECT is MERGED with what PyMOL would have inferred, not added to it. Worth
+        # pinning, because the converged states are the ones the user looks at longest and
+        # a doubled bond set would render as thickened, mis-ordered sticks.
+        self.designing.trajectory_seed('stated', _seed_pdb(length=24))
+        self.designing.trajectory_seed('inferred',
+                                       _seed_pdb(length=24, conect=False))
+        self.assertEqual(len(cmd.get_model('stated').bond), 119)
+        self.assertEqual(len(cmd.get_model('inferred').bond), 119)
 
     def testReseedingReplacesThePreviousRunRatherThanAppendingToIt(self):
         # Re-running a named design with Live on hits this: read_pdbstr into an EXISTING
