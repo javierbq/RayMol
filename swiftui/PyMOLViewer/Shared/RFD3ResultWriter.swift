@@ -48,12 +48,46 @@ enum RFD3ResultWriter {
     /// only these can contribute to the offset estimate.
     static let emittedAtomNames: Set<String> = ["N", "CA", "C", "O", "CB"]
 
+    /// Every coordinate a PDB ATOM record can represent, in Angstrom.
+    ///
+    /// The PDB is FIXED-COLUMN: x, y and z occupy columns 31-38, 39-46 and 47-54, eight
+    /// characters each, written `%8.3f`. Three decimals plus a point leaves four
+    /// characters for the integer part and the sign, so `-999.999` is the most negative
+    /// and `9999.999` the most positive value that fits. One character more and `%8.3f`
+    /// widens the field instead of truncating it -- `printf` has no width CLAMP, only a
+    /// width MINIMUM -- and every column after it on that line shifts right. A reader
+    /// then takes eight characters from column 39 and gets whatever the overflow pushed
+    /// there, which for a single overflowing x is the leading spaces of y: measured,
+    /// `(-1000.0, 1.0, 2.0)` written and read back by PyMOL as `(-1000.0, 0.0, 0.0)`.
+    /// Silently. There is no parse error to catch, because the line is still 80 columns
+    /// of plausible-looking text.
+    ///
+    /// So this is not a policy choice, it is the format's own limit, and it is stated
+    /// ONCE here because two things depend on it: ``atomRecord``, which refuses to write
+    /// what it cannot write, and ``RFD3Trajectory/frame(flat:length:origin:)``, whose
+    /// magnitude guard drops a frame BEFORE it reaches the writer. A guard and a
+    /// formatter that disagree about the representable range is exactly the bug this
+    /// closes -- the guard used to admit anything under 1e6.
+    ///
+    /// The bounds are compared against the UNROUNDED value on purpose, so 9999.9996 --
+    /// which `%8.3f` would round up to the nine-character `10000.000` -- is refused
+    /// rather than written.
+    static let coordinateRange: ClosedRange<Double> = (-999.999) ... 9999.999
+
+    /// Whether every component of `xyz` fits the PDB's eight-column coordinate fields.
+    static func isRepresentable(_ xyz: SIMD3<Double>) -> Bool {
+        [xyz.x, xyz.y, xyz.z].allSatisfy {
+            $0.isFinite && coordinateRange.contains($0)
+        }
+    }
+
     enum ComposeError: Error, CustomStringConvertible, LocalizedError {
         case noTargetAtoms
         case noDesignAtoms(expected: Int)
         case designLengthMismatch(expected: Int, found: Int)
         case unmatchedTargetAtoms
         case targetDeformed(byAngstrom: Double, tolerance: Double)
+        case coordinateOutOfRange(atom: String, resi: String, xyz: SIMD3<Double>)
 
         var description: String {
             switch self {
@@ -77,6 +111,15 @@ enum RFD3ResultWriter {
                     + " distances between its own atoms is not -- the designed chain was"
                     + " built against a target that is not the one being written beside"
                     + " it. Refused rather than emitted.", by, tolerance)
+            case .coordinateOutOfRange(let atom, let resi, let xyz):
+                return String(format:
+                    "atom %@ of residue %@ is at (%.3f, %.3f, %.3f), which the PDB's"
+                    + " eight-column coordinate fields cannot represent (%.3f to %.3f A)."
+                    + " Written anyway it would shift every later field on that line and"
+                    + " be read back as different coordinates entirely, so it is refused."
+                    + " Move the target nearer the origin and design again.",
+                    atom, resi, xyz.x, xyz.y, xyz.z,
+                    coordinateRange.lowerBound, coordinateRange.upperBound)
             }
         }
 
@@ -208,12 +251,24 @@ enum RFD3ResultWriter {
 
         var lines: [String] = remarks.map { "REMARK 300 " + $0 }
         var serial = 1
+        // A record the PDB's columns cannot hold is a REFUSAL here, not a clamp: the whole
+        // point of this type is that the emitted object superposes atom-for-atom on the
+        // structure it was designed against, and a coordinate silently rewritten to fit
+        // breaks exactly that. See `coordinateRange`.
+        func record(serial: Int, name: String, resName: String, chain: String,
+                    resi: String, xyz: SIMD3<Double>) throws -> String {
+            guard let line = atomRecord(serial: serial, name: name, resName: resName,
+                                        chain: chain, resi: resi, xyz: xyz) else {
+                throw ComposeError.coordinateOutOfRange(atom: name, resi: resi, xyz: xyz)
+            }
+            return line
+        }
         // The target, verbatim: original coordinates, original chain id, original residue
         // numbering and insertion codes, original residue names, and every atom including
         // the sidechains the engine's output drops.
         for residue in target {
             for atom in residue.atoms where atom.xyz.count == 3 {
-                lines.append(atomRecord(serial: serial, name: atom.name,
+                lines.append(try record(serial: serial, name: atom.name,
                                         resName: residue.resn, chain: residue.chain,
                                         resi: residue.resi,
                                         xyz: SIMD3(atom.xyz[0], atom.xyz[1], atom.xyz[2])))
@@ -227,7 +282,7 @@ enum RFD3ResultWriter {
         for (index, number) in designOut.order.enumerated() {
             let resName = index < letters.count ? threeLetter(letters[index]) : "UNK"
             for atom in designOut.residues[number] ?? [] {
-                lines.append(atomRecord(serial: serial, name: atom.name,
+                lines.append(try record(serial: serial, name: atom.name,
                                         resName: resName, chain: designChain,
                                         resi: String(index + 1),
                                         xyz: atom.xyz + offset))
@@ -256,8 +311,22 @@ enum RFD3ResultWriter {
         return (digits.isEmpty ? "0" : digits, String(rest.prefix(1)))
     }
 
+    /// One ATOM record, or `nil` when `xyz` cannot be written in the PDB's fixed columns.
+    ///
+    /// OPTIONAL deliberately, rather than clamping or writing a wider field. A clamped
+    /// coordinate is a wrong coordinate that looks right, and a wider field is a line
+    /// every reader mis-parses; both are the silent-wrong-answer this whole type exists
+    /// to prevent. Returning nil makes the compiler ask each caller what it wants
+    /// instead, and the two callers want different things: ``compose`` throws, because a
+    /// result that cannot be written must not be half-written, and
+    /// ``RFD3Trajectory/seedPDB(length:chain:coords:)`` yields an empty string, because
+    /// live view degrades to nothing and never fails a design.
+    ///
+    /// See ``coordinateRange`` for what the limit is and why it is the format's rather
+    /// than ours.
     static func atomRecord(serial: Int, name: String, resName: String, chain: String,
-                           resi: String, xyz: SIMD3<Double>) -> String {
+                           resi: String, xyz: SIMD3<Double>) -> String? {
+        guard isRepresentable(xyz) else { return nil }
         let (number, insertion) = splitResi(resi)
         // Columns 13-16. A name of four characters starts at 13; a shorter one is indented
         // by one, which is what puts the element letter in column 14 where readers expect

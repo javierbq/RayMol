@@ -40,14 +40,25 @@ enum RFD3Trajectory {
                 // fires in the argument list before trajectory_frame's own guard, producing
                 // a traceback per frame instead of the promised silent degrade.
                 //
-                // The magnitude cap catches finite-but-enormous values (e.g. 3.4e38 from a
-                // diffusion blowup passing through 1e30 on its way to Inf). A coordinate
-                // that large is accepted by the atom store but corrupts the session's global
-                // view matrix on the next zoom — view[9..16] go non-finite and the user's
-                // camera is broken for the rest of the session. That is worse than "no live
-                // view". 1e6 Å is generous by any physical measure.
-                guard c.x.isFinite && c.y.isFinite && c.z.isFinite,
-                      abs(c.x) < 1e6 && abs(c.y) < 1e6 && abs(c.z) < 1e6 else { return [] }
+                // The same guard also bounds the MAGNITUDE, and it uses the PDB writer's
+                // own range rather than a number of its own. Two reasons, and the second is
+                // why it is this range and not a rounder one:
+                //
+                // 1. A finite-but-enormous coordinate (3.4e38 from a diffusion blowup on
+                //    its way to Inf) is accepted by the atom store but takes the session's
+                //    GLOBAL view matrix non-finite on the next zoom, breaking the user's
+                //    camera for the rest of the session. Worse than "no live view".
+                // 2. The first accepted frame is written as a PDB by `seedPDB`, and the
+                //    PDB's coordinate columns are eight characters wide. A guard that
+                //    admits more than the formatter can represent hands the formatter a
+                //    value it cannot write — which, before this, it wrote anyway, nine
+                //    characters wide, shifting every later field on the line. Sharing
+                //    `RFD3ResultWriter.coordinateRange` is what makes the two incapable of
+                //    disagreeing.
+                //
+                // A frame carrying one is dropped WHOLE, exactly as a non-finite one is:
+                // half a frame would misplace atoms rather than skip them.
+                guard RFD3ResultWriter.isRepresentable(c) else { return [] }
                 out.append(c)
             }
         }
@@ -66,10 +77,13 @@ enum RFD3Trajectory {
     /// against -23.39 on the first real one).
     ///
     /// Connectivity rides along as CONECT records rather than being left to the
-    /// coordinates; see ``conectRecords(length:)`` for why inference cannot do it.
+    /// coordinates; see ``conectRecords(length:)`` for why inference is not good enough
+    /// even at px0's protein scale.
     ///
-    /// Returns `""` when `coords` is not exactly one entry per emitted slot, so a
-    /// mismatch degrades to "no live view" rather than to a mis-shaped object.
+    /// Returns `""` when `coords` is not exactly one entry per emitted slot, or when any
+    /// coordinate falls outside `RFD3ResultWriter.coordinateRange` and so cannot be
+    /// written in the PDB's eight-column fields. Either way the mismatch degrades to "no
+    /// live view" rather than to a mis-shaped or mis-columned object.
     ///
     /// Poly-ALA is forced, not lazy: states of one object share a single atom set
     /// including residue names, and the sequence head's argmax changes during the rollout
@@ -82,10 +96,15 @@ enum RFD3Trajectory {
         var serial = 1
         for residue in 0 ..< length {
             for (slot, name) in emittedSlots.enumerated() {
-                lines.append(RFD3ResultWriter.atomRecord(
+                // nil means the coordinate does not fit the PDB's eight-column fields.
+                // `frame` already rejects those, so reaching this is a caller passing
+                // coordinates it did not get from `frame` — still "no live view" rather
+                // than a mis-columned object, because a design must never fail here.
+                guard let line = RFD3ResultWriter.atomRecord(
                     serial: serial, name: name, resName: "ALA",
                     chain: chain, resi: String(residue + 1),
-                    xyz: coords[residue * emittedSlots.count + slot]))
+                    xyz: coords[residue * emittedSlots.count + slot]) else { return "" }
+                lines.append(line)
                 serial += 1
             }
         }
@@ -97,15 +116,25 @@ enum RFD3Trajectory {
 
     /// The designed chain's bonds, stated rather than inferred.
     ///
-    /// Distance inference cannot do this job here, which is why the coordinates alone are
-    /// not enough. The first captured frame is the RAW EDM iterate, and that schedule
-    /// starts at `sigmaData` (16) x `sMax` (160) = 2560 Å: in a measured 24-residue live
-    /// run, state 1 spanned 153,687 Å and PyMOL bonded nothing at all. The chain contracts
-    /// as the rollout proceeds — 443 Å by state 20, 18.7 Å by state 50 — but connectivity
-    /// is decided ONCE, when this string is read, and `load_coordset` never re-bonds. An
-    /// unbonded seed therefore renders every state, including the converged final one the
-    /// user scrubs to, as 120 disconnected crosses with no backbone trace, for the life of
-    /// the object and into any saved session.
+    /// Connectivity is decided ONCE, when this string is read, and `load_coordset` never
+    /// re-bonds. So the object's bonds for its entire life — including the converged
+    /// final state the user scrubs to, and into any saved session — are whatever PyMOL
+    /// made of the FIRST captured frame, which is step 4 of 199 and is not a settled
+    /// backbone.
+    ///
+    /// That is why inference is not good enough even now that the stream is px0 and
+    /// protein-scale. What distance inference returns depends on how unsettled that one
+    /// early frame happens to be, and it degrades smoothly rather than failing loudly.
+    /// Measured on a 24-residue poly-ALA chain that needs 119 bonds, seeded WITHOUT
+    /// CONECT: 119 bonds from settled geometry, 92 with 1 Å of per-atom jitter, 67 with
+    /// 2 Å, 31 with 3 Å, and 5 from a protein-scale (54 Å) cloud. With CONECT it is 119
+    /// in every one of those cases — and 119, not 238, from settled geometry, because
+    /// PyMOL MERGES stated bonds with what it would have inferred rather than adding to
+    /// them.
+    ///
+    /// The topology is known a priori anyway: this object is poly-ALA with a fixed atom
+    /// set, so re-deriving it from a guess buys nothing and risks the whole trajectory
+    /// rendering as loose crosses.
     ///
     /// Poly-ALA backbone topology: N-CA, CA-C, C-O and CA-CB within a residue, and
     /// C(i)-N(i+1) between them — `4 * length + (length - 1)` records. PyMOL merges these

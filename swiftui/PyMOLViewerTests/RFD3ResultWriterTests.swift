@@ -29,8 +29,12 @@ final class RFD3ResultWriterTests: XCTestCase {
 
     /// A target with FULL sidechains and its own numbering, including an insertion code --
     /// everything the engine's output throws away.
-    private func target() -> [InferenceJob.DesignResidue] {
-        [
+    /// `shift` moves the WHOLE input target along x. Not a deformation and not a
+    /// different origin: it is what a target the user translated -- or one deposited far
+    /// from the origin -- looks like, and it is the only way a coordinate the PDB cannot
+    /// write reaches `compose`, because the target half is emitted verbatim.
+    private func target(shift: Double = 0) -> [InferenceJob.DesignResidue] {
+        let residues: [InferenceJob.DesignResidue] = [
             InferenceJob.DesignResidue(
                 chain: "H", resi: "45", resn: "TRP",
                 atoms: [atom("N", 1, 0, 0), atom("CA", 2, 0, 0), atom("C", 3, 0, 0),
@@ -46,6 +50,15 @@ final class RFD3ResultWriterTests: XCTestCase {
                 atoms: [atom("N", 9, 0, 0), atom("CA", 10, 0, 0), atom("C", 11, 0, 0),
                         atom("O", 11, 1, 0)]),
         ]
+        guard shift != 0 else { return residues }
+        return residues.map { residue in
+            InferenceJob.DesignResidue(
+                chain: residue.chain, resi: residue.resi, resn: residue.resn,
+                atoms: residue.atoms.map {
+                    InferenceJob.DesignAtom(name: $0.name,
+                                            xyz: [$0.xyz[0] + shift, $0.xyz[1], $0.xyz[2]])
+                })
+        }
     }
 
     /// The engine's output for that target plus a 2-residue design, in the engine's frame.
@@ -96,11 +109,19 @@ final class RFD3ResultWriterTests: XCTestCase {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// `targetShift` moves the INPUT target only, leaving the engine's output where it
+    /// was -- which is exactly what a target far from the session origin looks like from
+    /// the engine's side, since the featurizer works in a frame translated by that very
+    /// distance. The recovered offset absorbs it and the residual stays zero, so nothing
+    /// upstream refuses first, and what lands out of range is the coordinates this type
+    /// EMITS.
     private func compose(rigidShift: Double = 0, deform: Double = 0,
                          designLength: Int = 2,
-                         designSequence: String = "GW") throws -> String {
+                         designSequence: String = "GW",
+                         targetShift: Double = 0) throws -> String {
         try RFD3ResultWriter.compose(
-            target: target(), designChain: "D", designLength: designLength,
+            target: target(shift: targetShift), designChain: "D",
+            designLength: designLength,
             designSequence: designSequence,
             resultPDB: engineOutput(rigidShift: rigidShift, deform: deform),
             remarks: ["DESIGN KEY abc123"])
@@ -157,17 +178,87 @@ final class RFD3ResultWriterTests: XCTestCase {
         XCTAssertEqual(Set(emitted.map(\.resi)), ["45", "45A", "46"])
     }
 
-    func testTheInsertionCodeLandsInItsOwnColumn() {
+    func testTheInsertionCodeLandsInItsOwnColumn() throws {
         XCTAssertEqual(RFD3ResultWriter.splitResi("45A").number, "45")
         XCTAssertEqual(RFD3ResultWriter.splitResi("45A").insertionCode, "A")
         XCTAssertEqual(RFD3ResultWriter.splitResi("46").insertionCode, "")
         XCTAssertEqual(RFD3ResultWriter.splitResi("-3").number, "-3")
         // Column 27 exactly, or every reader mis-parses the residue number.
-        let record = RFD3ResultWriter.atomRecord(
+        let record = try XCTUnwrap(RFD3ResultWriter.atomRecord(
             serial: 1, name: "CA", resName: "SER", chain: "H", resi: "45A",
-            xyz: SIMD3(1, 2, 3))
+            xyz: SIMD3(1, 2, 3)))
         let index = record.index(record.startIndex, offsetBy: 26)
         XCTAssertEqual(record[index], "A")
+    }
+
+    // MARK: The PDB's fixed columns
+
+    /// Columns 31-38, 39-46 and 47-54 of an ATOM record, as a reader takes them.
+    private func coordinateColumns(_ record: String) -> (String, String, String) {
+        let characters = Array(record)
+        func field(_ start: Int) -> String {
+            String(characters[(start - 1) ..< (start + 7)])
+        }
+        return (field(31), field(39), field(47))
+    }
+
+    func testACoordinateTooWideForItsColumnsIsRefusedRatherThanWritten() throws {
+        // `%8.3f` has a width MINIMUM, not a width maximum: one character more and the
+        // field widens, pushing every later field right. The line stays 80-ish columns of
+        // plausible text, so nothing raises -- a reader simply takes eight characters
+        // from column 39 and gets the spaces the overflow pushed there. Measured against
+        // PyMOL: (-1000.0, 1.0, 2.0) written, (-1000.0, 0.0, 0.0) read back.
+        //
+        // Each component separately, because a guard that only checked x would pass a
+        // test that only overflowed x.
+        for bad in [SIMD3<Double>(-1000, 1, 2), SIMD3(1, -1000, 2), SIMD3(1, 2, -1000),
+                    SIMD3(10000, 1, 2), SIMD3(1, 10000, 2), SIMD3(1, 2, 10000),
+                    // Rounds UP to the nine-character 10000.000, so the bound has to be
+                    // checked before the formatting, not after.
+                    SIMD3(9999.9996, 1, 2),
+                    SIMD3(.nan, 1, 2), SIMD3(1, .infinity, 2)] {
+            XCTAssertNil(RFD3ResultWriter.atomRecord(
+                serial: 1, name: "N", resName: "ALA", chain: "B", resi: "1", xyz: bad),
+                "\(bad) is not representable in 8 columns and must be refused")
+        }
+    }
+
+    func testTheExtremesThatDoFitAreStillWrittenAndStayInTheirColumns() throws {
+        // The bounds are inclusive, and the point of stating them exactly is that the
+        // widest values the format CAN hold are not thrown away with the ones it cannot.
+        let extreme = SIMD3<Double>(-999.999, 9999.999, -999.999)
+        let record = try XCTUnwrap(RFD3ResultWriter.atomRecord(
+            serial: 1, name: "CA", resName: "ALA", chain: "B", resi: "1", xyz: extreme))
+        let (x, y, z) = coordinateColumns(record)
+        XCTAssertEqual(x, "-999.999")
+        XCTAssertEqual(y, "9999.999")
+        XCTAssertEqual(z, "-999.999")
+        // And the fields after them are untouched -- occupancy at columns 55-60.
+        let characters = Array(record)
+        XCTAssertEqual(String(characters[54 ..< 60]), "  1.00")
+    }
+
+    func testAResultWithAnUnwritableCoordinateIsRefusedNotHalfWritten() {
+        // The trajectory degrades to "no live view"; a RESULT does not get that option.
+        // A design silently placed at coordinates it was not built at is worse than a
+        // design that failed with a message saying why.
+        XCTAssertThrowsError(try compose(targetShift: 12000)) { error in
+            guard case RFD3ResultWriter.ComposeError.coordinateOutOfRange = error else {
+                return XCTFail("expected .coordinateOutOfRange, got \(error)")
+            }
+            XCTAssertTrue("\(error)".contains("eight-column"), "\(error)")
+        }
+    }
+
+    func testATargetFarFromTheOriginButStillWritableComposes() throws {
+        // The positive control for the refusal above: the same fixture, shifted to just
+        // inside the range instead of past it. Without this, a guard that refused
+        // EVERYTHING would pass the test above.
+        let out = try compose(targetShift: 900)
+        let emitted = rows(out).filter { $0.chain == "H" }
+        XCTAssertEqual(emitted.count, 17)
+        let first = try XCTUnwrap(emitted.first { $0.resi == "45" && $0.name == "N" })
+        XCTAssertEqual(first.xyz.x, 901, accuracy: 1e-3)
     }
 
     func testTheDesignedChainIsNamedFromTheSequenceNotThePDB() throws {

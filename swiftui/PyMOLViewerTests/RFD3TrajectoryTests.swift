@@ -206,6 +206,76 @@ final class RFD3TrajectoryTests: XCTestCase {
             "each ATOM record separator must appear as \\n in the Python source")
     }
 
+    // MARK: The guard and the formatter agree about what can be written
+
+    func testAFrameIsDroppedWhenACoordinateCannotBeWrittenInEightColumns() {
+        // The guard used to admit anything under 1e6 while the PDB writer downstream of it
+        // could only represent -999.999...9999.999 -- so a value in between was accepted
+        // here and then written NINE characters wide, shifting every later field on the
+        // line. Measured against PyMOL: (-1000.0, 1.0, 2.0) in, (-1000.0, 0.0, 0.0) out.
+        //
+        // Whole frame, not one atom: half a frame would misplace atoms rather than skip
+        // them, and the object's atom count would stop matching.
+        for (component, value) in [(0, -1000.0), (1, -1000.0), (2, -1000.0),
+                                   (0, 10000.0), (1, 10000.0), (2, 10000.0)] {
+            var raw = flat(atoms: 14)
+            raw[component] = Float(value)
+            XCTAssertTrue(
+                RFD3Trajectory.frame(flat: raw, length: 1, origin: SIMD3(0, 0, 0)).isEmpty,
+                "component \(component) at \(value) must drop the frame")
+        }
+        // The origin is added BEFORE the check, so a frame that is fine on its own and
+        // lands out of range once placed beside the target is caught too.
+        XCTAssertTrue(RFD3Trajectory.frame(flat: flat(atoms: 14), length: 1,
+                                           origin: SIMD3(-1000, 0, 0)).isEmpty)
+    }
+
+    func testAFrameAtTheWritableExtremeIsStillKept() {
+        // The positive control. A guard that dropped everything would pass the test above,
+        // and dropping legitimate frames is the failure mode the user actually notices --
+        // a live view that never appears.
+        //
+        // Just inside the bound rather than exactly on it, on purpose: these arrive as
+        // Float32, whose spacing near 1000 is ~6e-5, so a value written as the exact
+        // bound can land a hair outside it once rounded. Conservative in the safe
+        // direction, but not something to hang a test on.
+        let raw: [Float] = [-999.9, 9999.9, -999.9]
+            + [Float](repeating: 0, count: (14 - 1) * 3)
+        let f = RFD3Trajectory.frame(flat: raw, length: 1, origin: SIMD3(0, 0, 0))
+        XCTAssertEqual(f.count, 5)
+        XCTAssertEqual(f[0].x, -999.9, accuracy: 1e-2)
+        XCTAssertEqual(f[0].y, 9999.9, accuracy: 1e-2)
+    }
+
+    func testASeedIsRefusedRatherThanWrittenWithShiftedColumns() {
+        // `frame` already rejects these, so this is the writer's own belt-and-braces: a
+        // caller passing coordinates it did not get from `frame` still gets "no live
+        // view" rather than an object whose y and z were silently read as zero.
+        var coords = seedCoords(length: 2)
+        coords[3] = SIMD3(-1000, 1, 2)
+        XCTAssertTrue(RFD3Trajectory.seedPDB(length: 2, chain: "B", coords: coords)
+                        .isEmpty)
+    }
+
+    func testEverySeedRecordKeepsItsCoordinatesInTheirOwnColumns() {
+        // The structural invariant, asserted on the whole seed rather than one record:
+        // columns 31-38, 39-46 and 47-54 must each parse as the number that was written.
+        let coords = seedCoords(length: 3)
+        let pdb = RFD3Trajectory.seedPDB(length: 3, chain: "B", coords: coords)
+        let atoms = pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }
+        XCTAssertEqual(atoms.count, 15)
+        for (index, line) in atoms.enumerated() {
+            let characters = Array(line)
+            func field(_ start: Int) -> Double? {
+                Double(String(characters[(start - 1) ..< (start + 7)])
+                    .trimmingCharacters(in: .whitespaces))
+            }
+            XCTAssertEqual(field(31) ?? .nan, coords[index].x, accuracy: 1e-3, String(line))
+            XCTAssertEqual(field(39) ?? .nan, coords[index].y, accuracy: 1e-3, String(line))
+            XCTAssertEqual(field(47) ?? .nan, coords[index].z, accuracy: 1e-3, String(line))
+        }
+    }
+
     func testANonFiniteCoordinateYieldsNoFrameRatherThanCrashing() {
         // NaN from the rollout would produce bare `nan` in the Python source -- an
         // undefined name. The frame must degrade to empty before reaching framePython.
