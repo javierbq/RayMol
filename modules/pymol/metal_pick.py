@@ -54,6 +54,53 @@ _DRAWN_REPS = ('rep spheres or rep sticks or rep lines or rep nb_spheres or '
 # committed color always wins on overlap.
 _PRESELECT = '_preselect'
 
+# Payload file the top-right hover readout (issue #359) reads back: the identity
+# of whatever sits under the cursor, at the CURRENT mouse_selection_mode. The
+# hover pick already computes this to build the '_preselect' highlight — the
+# readout just keeps it instead of discarding it. Swift formats the text (see
+# HoverReadout.text); Python stays a dumb reporter so the formatting rules are
+# unit-testable without a live core.
+_HOVER_INFO_JSON = 'pymol_hover_info.json'
+
+
+def _hover_info_path():
+    import os, tempfile
+    return os.path.join(tempfile.gettempdir(), _HOVER_INFO_JSON)
+
+
+def _write_hover_info(out):
+    """Write the hover-readout payload. The reader (Swift) calls this through a
+    SYNCHRONOUS runPython on its own thread and reads the file immediately after,
+    so there is no writer/reader race to guard against — same contract as
+    hover_design_at's payload."""
+    import json
+    try:
+        with open(_hover_info_path(), 'w') as f:
+            json.dump(out, f)
+    except Exception:
+        pass
+
+
+def _hover_payload(best, mode):
+    """Identity of a _pick_atom hit, plus the selection level it was picked at.
+
+    `nstates` lets the readout drop the state component for the single-state
+    objects that are the common case; `state` is the DISPLAYED state, which is
+    also the one _pick_atom projected against."""
+    from pymol import cmd
+    _, obj, chain, resi, resn, segi, name, _sx, _sy = best
+    try:
+        nstates = int(cmd.count_states(obj))
+    except Exception:
+        nstates = 1
+    try:
+        state = int(cmd.get_state())
+    except Exception:
+        state = 1
+    return {"hit": True, "obj": obj, "chain": chain, "resi": resi, "resn": resn,
+            "segi": segi, "name": name, "mode": int(mode),
+            "state": state, "nstates": nstates}
+
 
 def _pickdbg(ndc_x, ndc_y, aspect, best, ncand):
     """Append a pick diagnostic line to PYMOL_PICKDEBUG (debug harness only).
@@ -570,7 +617,7 @@ def pick_info_at(ndc_x, ndc_y, aspect):
         pass
 
 
-def hover_preview_at(ndc_x, ndc_y, aspect):
+def hover_preview_at(ndc_x, ndc_y, aspect, preview=1, info=0):
     """Hover PREVIEW (issue #165): highlight what a click WOULD select, without
     committing anything. Runs the same pick + mouse_selection_mode expansion as
     pick_at, but writes the result to the transient '_preselect' selection
@@ -579,10 +626,23 @@ def hover_preview_at(ndc_x, ndc_y, aspect):
     Deliberately touches ONLY '_preselect' — never 'sele' or 'pk1' — so the
     committed selection is untouched as the pointer moves. The renderer draws
     '_preselect' in a distinct color/size BEFORE the committed pink pass, so an
-    already-selected residue keeps its committed color under the cursor."""
+    already-selected residue keeps its committed color under the cursor.
+
+    Two independently toggleable features ride on this ONE pick (the projection
+    over every drawn atom is the expensive part, so it must not run twice):
+      preview=1  update the '_preselect' highlight   (Mouse / Hover)
+      info=1     write the top-right readout payload (issue #359) to
+                 <tmpdir>/pymol_hover_info.json for Swift to format
+    The caller passes whichever its user has left on; with both off it should not
+    call at all.
+    """
     from pymol import cmd
     try:
         best = _pick_atom(ndc_x, ndc_y, aspect)
+        try:
+            mode = int(cmd.get_setting_int('mouse_selection_mode'))
+        except Exception:
+            mode = 1
         if best is None:
             # Empty space: clear the preview (leave 'sele' untouched). enable=0:
             # NEVER enable '_preselect' — cmd.enable is exclusive for selections
@@ -590,18 +650,25 @@ def hover_preview_at(ndc_x, ndc_y, aspect):
             # (the atoms stay in 'sele', which is why a click still appended).
             # The renderer draws '_preselect' by atom membership regardless of
             # its enabled flag, so the cyan preview still shows.
-            cmd.select(_PRESELECT, 'none', enable=0)
+            if preview:
+                cmd.select(_PRESELECT, 'none', enable=0)
+            if info:
+                _write_hover_info({"hit": False})
             return
 
-        try:
-            mode = int(cmd.get_setting_int('mouse_selection_mode'))
-        except Exception:
-            mode = 1
         # enable=0 and NO cmd.enable — see the note above: enabling '_preselect'
         # would deselect the committed 'sele'. The C++ preselect pass renders it
         # by name/membership regardless of enabled state.
-        cmd.select(_PRESELECT, _mode_expr(best, mode), enable=0)
+        if preview:
+            cmd.select(_PRESELECT, _mode_expr(best, mode), enable=0)
+        if info:
+            _write_hover_info(_hover_payload(best, mode))
     except Exception as e:
+        # A failed pick must not leave the LAST hit's payload on disk: the reader
+        # cannot tell a stale file from a fresh one, so the chip would keep naming
+        # a residue the cursor left long ago.
+        if info:
+            _write_hover_info({"hit": False})
         print('metal_pick hover error: %s' % e)
 
 

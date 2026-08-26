@@ -97,6 +97,7 @@
 		68AB212502F00E7E297F8208 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */; };
+		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
 		6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */; };
 		6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		6D67CAB3F655837D48E68AF3 /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
@@ -127,11 +128,13 @@
 		86F8E58F4BAA9E8B03380DBB /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
 		8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
+		12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
+		32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1304C662D9011F7C4505FC /* MCPStatusView.swift */; };
 		917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */; };
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
@@ -320,6 +323,7 @@
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
+		80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadout.swift; sourceTree = "<group>"; };
 		AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouterTests.swift; sourceTree = "<group>"; };
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
@@ -330,6 +334,7 @@
 		B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDrivingBanner.swift; sourceTree = "<group>"; };
 		BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = RayMol.icon; sourceTree = "<group>"; };
 		BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyRoutingTests.swift; sourceTree = "<group>"; };
+		3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadoutTests.swift; sourceTree = "<group>"; };
 		C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictCompactPanel.swift; sourceTree = "<group>"; };
 		C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVersionFooter.swift; sourceTree = "<group>"; };
 		C562306A5AD1EEDDBA931B98 /* TransportBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBar.swift; sourceTree = "<group>"; };
@@ -504,6 +509,7 @@
 				EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */,
 				9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */,
 				AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */,
+				80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */,
 				87825A30DE5C455B6270187F /* InferenceJob.swift */,
 				71574A2074A14803B91ED695 /* InferenceRouter.swift */,
 				3697F74BD2283492B5A7790C /* KeyRouting.swift */,
@@ -546,6 +552,7 @@
 				1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */,
 				193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */,
 				BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */,
+				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
@@ -1273,6 +1280,7 @@
 				238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */,
 				6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */,
 				6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */,
+				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
 				B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
@@ -1325,6 +1333,7 @@
 				2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */,
 				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
+				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
 				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
@@ -1390,6 +1399,7 @@
 				6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */,
 				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
+				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
 				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,

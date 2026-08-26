@@ -261,6 +261,22 @@ final class PyMOLEngine: ObservableObject {
         didSet { UserDefaults.standard.set(hoverPreviewEnabled, forKey: PyMOLEngine.hoverDefaultsKey) }
     }
     static let hoverDefaultsKey = "raymol.hoverPreviewEnabled"
+    // Hover READOUT (issue #359): a chip in the viewport's top-trailing corner
+    // naming whatever is under the cursor, at the current selection level. Rides
+    // on the SAME hover pick as the preview above but is independently
+    // toggleable — some users want the highlight without the text, or the text
+    // without the highlight. Persisted across launches; default on.
+    @Published var hoverReadoutEnabled: Bool =
+        (UserDefaults.standard.object(forKey: PyMOLEngine.hoverReadoutDefaultsKey) as? Bool ?? true) {
+        didSet {
+            UserDefaults.standard.set(hoverReadoutEnabled, forKey: PyMOLEngine.hoverReadoutDefaultsKey)
+            if !hoverReadoutEnabled { hoverReadout = nil }
+        }
+    }
+    static let hoverReadoutDefaultsKey = "raymol.hoverReadoutEnabled"
+    // The formatted chip text, or nil when the pointer is over empty space (or
+    // the readout is off) — so the chip never lingers with a stale identity.
+    @Published var hoverReadout: String? = nil
     // Full settings catalog for the searchable Settings panel (loaded on demand).
     @Published var settingsCatalog: [SettingItem] = []
     // The single detail view that is currently open (accordion: at most one).
@@ -2837,7 +2853,10 @@ final class PyMOLEngine: ObservableObject {
     /// tracks CONTINUOUSLY while the pointer sweeps — a pure trailing debounce
     /// only fired once the pointer paused, which read as "hover doesn't work".
     func hoverPreview(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
-        guard isReady, hoverPreviewEnabled else { return }
+        // Either output is reason enough to pick: the highlight (#165) and the
+        // top-right readout (#359) are separately toggleable but share this one
+        // pick, so only BOTH being off makes hovering free.
+        guard isReady, hoverPreviewEnabled || hoverReadoutEnabled else { return }
         if let last = lastHoverNDC {
             let dx = ndcX - last.0, dy = ndcY - last.1
             if abs(dx) < kHoverMinNDC && abs(dy) < kHoverMinNDC { return }
@@ -2847,9 +2866,13 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self = self else { return }
             self.lastHoverFire = Date()
+            let wantsPreview = self.hoverPreviewEnabled
+            let wantsInfo = self.hoverReadoutEnabled
             self.runPython(
                 "from pymol import metal_pick as _mp; "
-                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect))")
+                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
+                + "\(wantsPreview ? 1 : 0), \(wantsInfo ? 1 : 0))")
+            if wantsInfo { self.readHoverInfo() }
         }
         let elapsed = Date().timeIntervalSince(lastHoverFire)
         if elapsed >= kHoverInterval {
@@ -2869,6 +2892,11 @@ final class PyMOLEngine: ObservableObject {
         hoverWork?.cancel()
         hoverWork = nil
         lastHoverNDC = nil
+        // Drop the readout here too (not only when a pick reports empty space):
+        // this is the mouse-exit / drag-start path, where no further pick runs
+        // and the chip would otherwise keep naming whatever was last under the
+        // cursor.
+        if hoverReadout != nil { hoverReadout = nil }
         #if RAYMOL_MPNN
         designHoverWork?.cancel()
         designHoverWork = nil
@@ -2880,6 +2908,24 @@ final class PyMOLEngine: ObservableObject {
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
         runPython("from pymol import cmd as _c; _c.select('_preselect', 'none', enable=0)")
+    }
+
+    /// Read back the payload the hover pick just wrote and publish the formatted
+    /// chip text. Called immediately after the pick on the same thread —
+    /// `runPython` runs the interpreter inline, so the file on disk is this
+    /// hover's result, not the previous one (same contract readDesignHoverHit
+    /// relies on).
+    ///
+    /// An unreadable payload resolves to nil (chip hidden) rather than being
+    /// ignored: keeping the last text on screen would name a residue the cursor
+    /// has already left, which is worse than showing nothing.
+    private func readHoverInfo() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_info.json")
+        let data = FileManager.default.contents(atPath: path)
+        let root = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+        let text = HoverReadout.text(payload: root)
+        if hoverReadout != text { hoverReadout = text }
     }
 
     #if RAYMOL_MPNN

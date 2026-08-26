@@ -382,6 +382,20 @@ struct ContentView: View {
         .allowsHitTesting(true)
     }
 
+    // Live hover readout chip (issue #359): names whatever the cursor is over, at
+    // the current selection level. Shared by the macOS and iOS viewports. Empty
+    // space (or the setting off) publishes nil, so the chip disappears rather
+    // than going stale. Animated so a sweep across the structure reads as the
+    // text updating, not as flicker.
+    @ViewBuilder private var hoverReadoutOverlay: some View {
+        if let readout = engine.hoverReadout, engine.hoverReadoutEnabled {
+            HoverReadoutChip(text: readout)
+                .padding(10)
+                .transition(.opacity)
+                .animation(.easeOut(duration: 0.12), value: readout)
+        }
+    }
+
     // MARK: - macOS: HSplitView with sidebar
 
     #if os(macOS)
@@ -965,6 +979,11 @@ struct ContentView: View {
                                          hovered: engine.hoveredHandle)
                 }
             }
+            // Live hover readout (issue #359), top-trailing. Only ever populated
+            // in viewing mode — the hover pick bails out under move/measure and
+            // Design mode runs its own hover path — so it can never collide with
+            // the mode bars that occupy the top edge above.
+            .overlay(alignment: .topTrailing) { hoverReadoutOverlay }
             // Mouse-mode legend as a compact floating card at the bottom-trailing
             // corner, so it's reachable even when the right column is collapsed
             // (where MousePanel used to live). Minimizable to free up the view.
@@ -2648,6 +2667,13 @@ struct ContentView: View {
                 // Keep the help button clear of the floating transport (timeline mode
                 // docks the panel elsewhere, so the viewport is clear then).
                 .padding(.bottom, 0)
+            }
+            // Live hover readout (issue #359). iOS only ever populates this from a
+            // trackpad / Apple Pencil hover (UIHoverGestureRecognizer never fires
+            // for a finger), so pure-touch use never sees the chip. Pushed clear
+            // of the floating top rail, which owns the same corner.
+            .overlay(alignment: .topTrailing) {
+                hoverReadoutOverlay.padding(.top, 44)
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible

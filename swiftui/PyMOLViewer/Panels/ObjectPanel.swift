@@ -272,6 +272,9 @@ enum SceneCatalog {
         // special-case) and persisted across launches. Same control as Mouse ▸ Hover.
         SceneParam(setting: "hover_indicator", label: "Hover indicator", kind: .toggle, group: "Canvas",
                    help: "Highlight the residue under the cursor (nearest Cα) before you click, in a distinct cyan — without changing the selection. Also on the Mouse panel; persists across launches."),
+        // Also not a PyMOL setting — bound to engine.hoverReadoutEnabled (#359).
+        SceneParam(setting: "hover_readout", label: "Hover readout", kind: .toggle, group: "Canvas",
+                   help: "Name whatever the cursor is over in the viewport's top-right corner, at the current selection level — object, chain, segment, residue or atom. Persists across launches."),
 
         // --- Camera: viewpoint + lens ---
         SceneParam(setting: "field_of_view", label: "Lens (mm)", kind: .slider, min: 12, max: 135, step: 0.5, decimals: 0, group: "Camera",
@@ -3069,6 +3072,13 @@ struct SceneParamRow: View {
                     ToggleSetting(value: engine.hoverPreviewEnabled ? 1 : 0) { on in
                         engine.hoverPreviewEnabled = on
                         if !on { engine.clearHoverPreview() }
+                    }
+                } else if p.setting == "hover_readout" {
+                    // Likewise app-level (#359): gates the top-right identity chip.
+                    // Turning it off clears the chip via the property's didSet; the
+                    // hover pick itself keeps running only if the indicator is on.
+                    ToggleSetting(value: engine.hoverReadoutEnabled ? 1 : 0) { on in
+                        engine.hoverReadoutEnabled = on
                     }
                 } else {
                     ToggleSetting(value: v) { on in engine.runCommand("set \(p.setting), \(on ? 1 : 0)") }
