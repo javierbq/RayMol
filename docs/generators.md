@@ -284,13 +284,21 @@ The stream is `RFD3Model.Options.onStepDenoised`, which carries **px0** -- the d
 prediction of the CLEAN structure at that step -- and not the raw EDM iterate. That choice
 is what makes the feature watchable rather than merely correct. The iterate's schedule
 starts at `sigma_data` (16) x `s_max` (160) = 2560 A, so its early states are an off-screen
-cloud; px0 is protein-scale at every step, because the EDM output preconditioning scales
-the network's output by `sigma_data` rather than by sigma. Measured upstream on a 50-step
+cloud; px0 stays protein-scale, because the EDM output preconditioning scales the
+network's output by `sigma_data` rather than by sigma. Measured upstream on a 50-step
 albumin rollout: **33.9 A at step 1**, against 6,904.6 A for the iterate at the same step,
 and 35.8 / 36.1 / 35.2 / 39.2 / 38.9 A at steps 1 / 10 / 20 / 30 / 49. You see a structure
 wriggling into shape from the first captured frame, not a cloud collapsing into the
-viewport half way through the run. Requires rfd3-mlx **>= 0.1.3**; 0.1.3 removed the older
-`onStepCoords` hook rather than deprecating it.
+viewport half way through the run.
+
+That holds comfortably at the default 200 steps. `diffusion_steps` is user-settable,
+though, and a very short schedule gives the model fewer, coarser steps to work with: at
+`diffusion_steps=6` a captured px0 frame was measured at 156 A by step 4 and 335 A by
+step 5. Still well inside the writer's representable range, so nothing is dropped or
+corrupted -- just less tidy to watch.
+
+Requires rfd3-mlx **>= 0.1.3**; 0.1.3 removed the older `onStepCoords` hook rather than
+deprecating it.
 
 ### Why the seed states its bonds
 

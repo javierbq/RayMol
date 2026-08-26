@@ -74,8 +74,9 @@ def _seed_pdb(length=3, chain='B', coords=None, conect=True):
     """The shape RFD3Trajectory.seedPDB emits: the FIRST captured frame, plus CONECT.
 
     `coords=None` means real backbone geometry. Pass explicit coordinates (a block of
-    zeros, or `_noise(...)`) to reproduce what a degenerate or early seed does, and
-    `conect=False` to reproduce what leaving connectivity to distance inference does.
+    zeros, or `_jittered(...)` / `_cloud(...)`) to reproduce what a degenerate or early
+    seed does, and `conect=False` to reproduce what leaving connectivity to distance
+    inference does.
     """
     if coords is None:
         coords = _backbone(length)
@@ -308,11 +309,10 @@ class TrajectoryTest(GeneratorTestCase):
         # CONECT. Kept so "119" is known to be a property of what the seed SAYS rather
         # than something PyMOL would have produced from the coordinates anyway -- and the
         # numbers here are the honest reason to state connectivity. Inference does not
-        # fail loudly at px0 scale, it degrades: measured 92 / 67 / 31 of the 119 backbone
-        # bonds at 1 / 2 / 3 A of per-atom jitter, and 5 for a protein-scale cloud. The
-        # object then renders with most of its backbone missing, in every state including
-        # the converged one, and into any .pse saved from it. Measured with this fixture:
-        # 89 / 54 / 37 of 119 at 1 / 2 / 3 A of jitter, and 5 for a protein-scale cloud.
+        # fail loudly at px0 scale, it degrades. Measured with this fixture: 89 / 54 / 37
+        # of the 119 backbone bonds at 1 / 2 / 3 A of per-atom jitter, and 5 for a
+        # protein-scale cloud. The object then renders with most of its backbone missing,
+        # in every state including the converged one, and into any .pse saved from it.
         #
         # The COUNTS are not asserted, because they are properties of PyMOL's bonding
         # heuristic rather than of this feature. What is asserted is the property those

@@ -126,8 +126,8 @@ enum RFD3Trajectory {
     /// protein-scale. What distance inference returns depends on how unsettled that one
     /// early frame happens to be, and it degrades smoothly rather than failing loudly.
     /// Measured on a 24-residue poly-ALA chain that needs 119 bonds, seeded WITHOUT
-    /// CONECT: 119 bonds from settled geometry, 92 with 1 Å of per-atom jitter, 67 with
-    /// 2 Å, 31 with 3 Å, and 5 from a protein-scale (54 Å) cloud. With CONECT it is 119
+    /// CONECT: 119 bonds from settled geometry, 89 with 1 Å of per-atom jitter, 54 with
+    /// 2 Å, 37 with 3 Å, and 5 from a protein-scale (54 Å) cloud. With CONECT it is 119
     /// in every one of those cases — and 119, not 238, from settled geometry, because
     /// PyMOL MERGES stated bonds with what it would have inferred rather than adding to
     /// them.
