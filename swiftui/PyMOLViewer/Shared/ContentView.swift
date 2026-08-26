@@ -202,6 +202,9 @@ struct ContentView: View {
     // Local key-down monitor token for Tab / Shift+Tab → cycle the selection
     // mode (#319). Same rationale and lifecycle as the two monitors above.
     @State private var selectionModeKeyMonitor: Any?
+    // Local key-down monitor token for Return → accept the Box Select rectangle
+    // (#358). Same rationale and lifecycle as the three monitors above.
+    @State private var boxSelectKeyMonitor: Any?
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -627,6 +630,7 @@ struct ContentView: View {
                 installEscKeyMonitor()
                 installPyMOLKeyMonitor()
                 installSelectionModeKeyMonitor()
+                installBoxSelectKeyMonitor()
             }
             .onDisappear {
                 if let token = escKeyMonitor {
@@ -640,6 +644,10 @@ struct ContentView: View {
                 if let token = selectionModeKeyMonitor {
                     NSEvent.removeMonitor(token)
                     selectionModeKeyMonitor = nil
+                }
+                if let token = boxSelectKeyMonitor {
+                    NSEvent.removeMonitor(token)
+                    boxSelectKeyMonitor = nil
                 }
             }
     }
@@ -659,7 +667,8 @@ struct ContentView: View {
     // docks inside macViewportStack, ABOVE the rail's overlay.
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
+            || engine.measureMode != nil
             || engine.designMode
     }
 
@@ -810,6 +819,25 @@ struct ContentView: View {
     // modal/sheet/panel guard stays here alongside the other monitors', and as
     // with the Esc monitor the event is consumed only when the shortcut
     // actually fires; otherwise it falls through to normal focus navigation.
+    // Return / ⌤ → accept the Box Select rectangle (#358); Shift adds and Option
+    // subtracts, matching the overlay's Replace/Add/Subtract control. Esc already
+    // cancels via the mode-exit ladder in installEscKeyMonitor, so only accept
+    // needs its own monitor. All of the policy lives in KeyRouting.boxAcceptMode
+    // so it stays testable without pressing a key.
+    private func installBoxSelectKeyMonitor() {
+        guard boxSelectKeyMonitor == nil else { return }
+        boxSelectKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if secondaryWindowOwnsKeys() { return event }
+            guard let mode = KeyRouting.boxAcceptMode(
+                    keyCode: event.keyCode,
+                    modifiers: event.modifierFlags,
+                    boxSelectActive: engine.interactionMode == .boxSelect,
+                    textFieldFocused: textFocusFlags().focused) else { return event }
+            engine.acceptBoxSelection(mode: mode)
+            return nil  // consume — Return must not also ring / insert a newline
+        }
+    }
+
     private func installSelectionModeKeyMonitor() {
         guard selectionModeKeyMonitor == nil else { return }
         selectionModeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -835,6 +863,7 @@ struct ContentView: View {
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
+                else if engine.interactionMode == .boxSelect { boxSelectOverlay }
             }
             #if RAYMOL_MPNN
             // Design mode overlay: a separate overlay so the #if guard does not
@@ -853,6 +882,15 @@ struct ContentView: View {
                 }
             }
             #endif
+            // Box Select rubber band (#358). Unlike the Move gizmo (a 3D CGO in
+            // the Metal scene) the box is pure 2D screen furniture, so SwiftUI
+            // draws it; MetalViewport hit-tests the same rectangle in NDC.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color)
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
             // scene by metal_move.py; no SwiftUI overlay is needed. Input is
             // hit-tested against the projected geometry in MetalViewport.)
@@ -1760,7 +1798,8 @@ struct ContentView: View {
         // RayMol title. Collapsed → the rail floats over the full-bleed viewport.
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
+            || engine.measureMode != nil
             || engine.designMode)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
@@ -1789,6 +1828,7 @@ struct ContentView: View {
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
                 if engine.interactionMode == .move { moveOverlay }
+                else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                 else if engine.measureMode != nil { measureOverlay }
                 else if engine.designMode { designModeBar }
             }
@@ -1849,7 +1889,8 @@ struct ContentView: View {
         let clampedTermH = min(max(termH, 60), maxTerm)
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
+            || engine.measureMode != nil
             || engine.designMode)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
@@ -1872,6 +1913,7 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
+                    else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                 }
@@ -1985,7 +2027,8 @@ struct ContentView: View {
         // Any top pane open? The rail docks on chrome above the panes; else it
         // floats over the full-bleed viewport. Move & Measure share the bottom slot.
         let anyTop = cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
+            || engine.measureMode != nil
             || engine.designMode
 
         if landscape {
@@ -2012,6 +2055,7 @@ struct ContentView: View {
                         // Move / Measure bar — bottom of the top stack, mutually
                         // exclusive, on matching chrome.
                         if engine.interactionMode == .move { moveOverlay }
+                        else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                         else if engine.measureMode != nil { measureOverlay }
                         else if engine.designMode { designModeBar }
                     }
@@ -2077,6 +2121,7 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
+                    else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                 }
@@ -2442,6 +2487,14 @@ struct ContentView: View {
                 #endif
             }
             .animation(.easeOut(duration: 0.35), value: hasRestoreSnapshot)
+            // Box Select rubber band (#358) — see the macOS site for why this one
+            // is SwiftUI and the Move gizmo is not.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color)
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal scene
             // by metal_move.py; no SwiftUI overlay is needed.)
             // (The floating viewport transport was removed: movie playback lives in
@@ -3069,6 +3122,7 @@ struct ContentView: View {
     /// Design, the iOS rail used outline variants and `wand.and.stars`.
     private var activeInteractionTool: (name: String, macIcon: String, railIcon: String)? {
         if engine.interactionMode == .move { return ("Move", "move.3d", "move.3d") }
+        if engine.interactionMode == .boxSelect { return ("Box Select", "square.dashed", "square.dashed") }
         if engine.measureMode != nil { return ("Measure", "ruler.fill", "ruler") }
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
@@ -3095,6 +3149,17 @@ struct ContentView: View {
                 Label("Move", systemImage: "checkmark")
             } else {
                 Text("Move")
+            }
+        }
+        .disabled(isDesignLocked)
+
+        Button {
+            engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
+        } label: {
+            if engine.interactionMode == .boxSelect {
+                Label("Box Select", systemImage: "checkmark")
+            } else {
+                Text("Box Select")
             }
         }
         .disabled(isDesignLocked)
@@ -3448,6 +3513,59 @@ struct ContentView: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(themeManager.active.panelBackground.color)
         .tint(themeManager.active.accent.color)
+    }
+
+    // Box Select overlay bar (mirrors moveOverlay): how Accept combines with
+    // 'sele', a live count of what the box holds, then Accept and Cancel. The
+    // count comes from the same preview that lights the atoms up, so Accept is
+    // never a blind commit.
+    private var boxSelectOverlay: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.dashed")
+                .foregroundColor(themeManager.active.accent.color)
+
+            Picker("Combine", selection: $engine.boxSelectMode) {
+                ForEach(BoxSelectMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 240)
+
+            Text(boxSelectStatus)
+                .font(.system(size: 12))
+                .foregroundColor(themeManager.active.panelText.color.opacity(0.8))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Button { engine.acceptBoxSelection() } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.boxRect == nil)
+            .help("Select the atoms in the box (Return — hold Shift to add, Option to subtract)")
+            .accessibilityLabel("Accept box selection")
+
+            Button { engine.cancelBoxSelection() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .help("Discard the box and leave Box Select (Esc)")
+            .accessibilityLabel("Exit box select mode")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(themeManager.active.panelBackground.color)
+        .tint(themeManager.active.accent.color)
+    }
+
+    private var boxSelectStatus: String {
+        guard engine.boxRect != nil else { return "Drag to draw a box" }
+        guard let n = engine.boxPreviewCount else { return "…" }
+        return n == 1 ? "1 atom" : "\(n) atoms"
     }
 
     // Move-mode overlay bar (mirrors measureOverlay): Move/Rotate tool toggle,
@@ -4553,5 +4671,54 @@ struct CalculatingOverlay: View {
             .padding(28)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+/// The Box Select rubber band (#358): the rectangle, its eight grab handles, and
+/// a dim wash over everything outside it so the box reads as "this is what you
+/// are about to grab".
+///
+/// Pure chrome — `allowsHitTesting(false)` — because the drag routing lives in
+/// MetalViewport, which hit-tests the SAME rectangle in NDC (BoxRect.edges). Two
+/// hit-testers over one rectangle would be two chances to disagree; here the
+/// SwiftUI layer only ever draws.
+struct BoxSelectRectOverlay: View {
+    let rect: BoxRect?
+    let accent: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            if let rect = rect {
+                let r = rect.inPoints(geo.size)
+                ZStack {
+                    // Even-odd fill of (whole viewport + box) = everything but the box.
+                    Path { p in
+                        p.addRect(CGRect(origin: .zero, size: geo.size))
+                        p.addRect(r)
+                    }
+                    .fill(Color.black.opacity(0.22), style: FillStyle(eoFill: true))
+
+                    Path { $0.addRect(r) }
+                        .stroke(accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+
+                    ForEach(Array(Self.handleCenters(r).enumerated()), id: \.offset) { _, c in
+                        Circle()
+                            .fill(accent)
+                            .frame(width: 8, height: 8)
+                            .position(c)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// The eight resize handles: every corner and edge midpoint (the centre is
+    /// the translate area, which needs no dot).
+    static func handleCenters(_ r: CGRect) -> [CGPoint] {
+        [r.minX, r.midX, r.maxX].flatMap { x in
+            [r.minY, r.midY, r.maxY].map { CGPoint(x: x, y: $0) }
+        }
+        .filter { !($0.x == r.midX && $0.y == r.midY) }
     }
 }

@@ -214,6 +214,18 @@ final class PyMOLEngine: ObservableObject {
     #endif
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
+    // Box Select (#358): the rubber-band rectangle, in viewport NDC. nil = the
+    // mode is on but no box has been drawn yet. interactionMode == .boxSelect
+    // gates gesture routing in MetalViewport (which freezes the camera while it
+    // is on); boxDrag is the in-flight grab, live only between press and release.
+    @Published var boxRect: BoxRect? = nil
+    var boxDrag: BoxDrag? = nil
+    // How Accept combines the box with 'sele'. Set from the overlay's segmented
+    // control (both platforms) and from the Shift/Option modifiers on macOS.
+    @Published var boxSelectMode: BoxSelectMode = .replace
+    // Atoms the current box would catch, from the live preview (nil = not yet
+    // counted). Shown on the overlay so Accept is never a blind commit.
+    @Published var boxPreviewCount: Int? = nil
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
     // inclination) instead of moving the structure — for precise custom pivots.
     // Active when the overlay toggle is on OR Shift is held (macOS). The gizmo
@@ -2245,6 +2257,9 @@ final class PyMOLEngine: ObservableObject {
         // Esc must not be consumed as if the exit succeeded (Part 3 fix).
         if designMode     { setDesignMode(false);       exited = exited || !designMode }
         if interactionMode == .move { setInteractionMode(.viewing); exited = exited || interactionMode != .move }
+        if interactionMode == .boxSelect {
+            setInteractionMode(.viewing); exited = exited || interactionMode != .boxSelect
+        }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         #if os(macOS)
         if predictMode { setPredictMode(false); exited = exited || !predictMode }
@@ -2590,6 +2605,96 @@ final class PyMOLEngine: ObservableObject {
     private var predictCancellables = Set<AnyCancellable>()
     #endif
 
+    // MARK: - Box Select (rubber-band selection, #358)
+
+    // Leading-edge throttle for the live preview, mirroring hoverPreview: a drag
+    // produces a new rectangle every frame, and each preview projects EVERY drawn
+    // atom, so an unthrottled drag would queue Python faster than it can run.
+    private var boxWork: DispatchWorkItem?
+    private var lastBoxFire = Date.distantPast
+    private let kBoxPreviewInterval = 0.045     // <= ~22 previews/s
+    // Whether '_preselect' currently holds a box preview. Tracked so leaving a
+    // mode only pays for the clearing round-trip when there is something to
+    // clear — setInteractionMode runs on every Move/Measure toggle too.
+    private var boxPreviewActive = false
+
+    /// Update the rubber-band rectangle and refresh the preview highlight.
+    /// Passing nil (or a rectangle too small to be intentional) drops both.
+    func setBoxRect(_ rect: BoxRect?) {
+        boxRect = rect
+        guard let rect = rect, !rect.isDegenerate else {
+            clearBoxPreview()
+            return
+        }
+        previewBoxRect(rect)
+    }
+
+    /// Highlight what the box would catch, in '_preselect', and report the count
+    /// back as BOXSEL:<n>. Never touches 'sele' — that only happens on Accept.
+    private func previewBoxRect(_ rect: BoxRect) {
+        let aspect = gizmoAspect
+        boxWork?.cancel()
+        let fire: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            self.lastBoxFire = Date()
+            self.boxPreviewActive = true
+            self.runPython(
+                "from pymol import metal_pick as _mp\n"
+                + "print('BOXSEL:%d' % _mp.box_preview_ndc("
+                + "\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), \(aspect)))")
+        }
+        let elapsed = Date().timeIntervalSince(lastBoxFire)
+        if elapsed >= kBoxPreviewInterval {
+            fire()                                   // leading edge — track the drag
+        } else {
+            let work = DispatchWorkItem(block: fire) // trailing — final rest position
+            boxWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (kBoxPreviewInterval - elapsed), execute: work)
+        }
+    }
+
+    /// Drop the preview highlight (and any pending preview), leaving 'sele' alone.
+    private func clearBoxPreview() {
+        boxWork?.cancel()
+        boxWork = nil
+        boxPreviewCount = nil
+        guard boxPreviewActive else { return }
+        boxPreviewActive = false
+        runPython("from pymol import metal_pick as _mp\n_mp.box_preview_clear()")
+    }
+
+    /// Forget the rectangle, the in-flight drag and the preview. Called whenever
+    /// the mode is left, from either the Accept path or a cancel.
+    private func clearBoxState() {
+        boxDrag = nil
+        boxRect = nil
+        boxSelectMode = .replace
+        // Reset the throttle clock too, so the FIRST rectangle of the next box
+        // always previews on the leading edge instead of waiting out a window
+        // left over from the previous one.
+        lastBoxFire = .distantPast
+        clearBoxPreview()
+    }
+
+    /// Commit the current box into 'sele' and leave the mode. `mode` overrides
+    /// the overlay's setting for this commit (macOS Shift-/Option-Accept).
+    /// An empty or never-drawn box commits nothing — it just exits.
+    func acceptBoxSelection(mode: BoxSelectMode? = nil) {
+        defer { setInteractionMode(.viewing) }   // also clears the box + preview
+        guard let rect = boxRect, !rect.isDegenerate else { return }
+        let m = mode ?? boxSelectMode
+        runPython(
+            "from pymol import metal_pick as _mp\n"
+            + "_mp.box_select_ndc(\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), "
+            + "\(gizmoAspect), name='sele', mode='\(m.pyName)')")
+    }
+
+    /// Abandon the box without changing 'sele' and leave the mode.
+    func cancelBoxSelection() {
+        setInteractionMode(.viewing)
+    }
+
     // MARK: - Move mode (rigid-body object gizmo)
 
     /// Viewport aspect (width / height) for the gizmo projection. Falls back to
@@ -2604,12 +2709,20 @@ final class PyMOLEngine: ObservableObject {
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
         #endif
         interactionMode = mode
-        if mode == .move {
+        // Leaving Box Select (for viewing OR for another tool) must drop the
+        // rectangle and its preview highlight, or the cyan atoms stay lit with no
+        // box on screen to explain them.
+        if mode != .boxSelect { clearBoxState() }
+        // Both viewport tools are exclusive with the other modes; .viewing is not
+        // a tool and leaves them alone (Esc unwinds them via their own setters).
+        if mode == .move || mode == .boxSelect {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
             #if os(macOS)
             setPredictMode(false)   // mutually exclusive
             #endif
+        }
+        if mode == .move {
             refreshGizmo()
         } else {
             armedAxis = nil
@@ -3223,6 +3336,9 @@ final class PyMOLEngine: ObservableObject {
                     parsePlaybackFeedback(line)
                 } else if line.hasPrefix("PLAYBACK_ERR:") {
                     // swallow (don't flood the log with poll errors)
+                } else if line.hasPrefix("BOXSEL:") {
+                    let count = Int(line.dropFirst("BOXSEL:".count))
+                    DispatchQueue.main.async { self.boxPreviewCount = count }
                 } else if line.hasPrefix("SELPREVIEW:") {
                     let v = String(line.dropFirst("SELPREVIEW:".count))
                     let count = Int(v)

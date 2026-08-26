@@ -173,6 +173,77 @@ ARGUMENTS
             return _cmd.select_list(_self._COb, name, object, id_list,
                                     int(state) - 1, int(mode), int(quiet))
 
+    box_mode_sc = Shortcut(['replace', 'add', 'subtract'])
+
+    def box_select(x1, y1, x2, y2, name="sele", mode="replace",
+                   selection="all", state=-1, quiet=1, _self=cmd):
+        '''
+DESCRIPTION
+
+    "box_select" selects every visible atom whose projection on screen falls
+    inside a rectangle given in viewport pixels -- the command form of the
+    interactive rubber-band Box Select tool.
+
+    Only atoms that are actually DRAWN are considered, atoms outside the clip
+    slab are skipped, and coordinates come from the displayed state, so a box
+    catches what the user can see and nothing behind it.
+
+    Returns the number of atoms the box caught.
+
+USAGE
+
+    box_select x1, y1, x2, y2 [, name [, mode [, selection [, state ]]]]
+
+ARGUMENTS
+
+    x1, y1, x2, y2 = float: opposite corners of the rectangle, in viewport
+    pixels with the ORIGIN AT THE BOTTOM-LEFT (the same convention as
+    cmd.get_viewport). Any corner order works.
+
+    name = str: selection to write {default: sele}
+
+    mode = replace|add|subtract: how to combine the box contents with what
+    "name" already holds {default: replace}
+
+    selection = str: narrows the candidate atoms before projection
+    {default: all}
+
+    state = int: state to take coordinates from, -1 = displayed state
+    {default: -1}
+
+EXAMPLES
+
+    box_select 100, 100, 400, 300
+    box_select 100, 100, 400, 300, mode=add
+    box_select 0, 0, 640, 480, name=front, selection=polymer
+
+PYMOL API
+
+    cmd.box_select(float x1, float y1, float x2, float y2, string name,
+                   string mode, string selection, int state)
+
+SEE ALSO
+
+    select, get_viewport
+        '''
+        from pymol import metal_pick
+        mode = box_mode_sc.auto_err(mode, 'box mode')
+        # _cmd.get_viewport directly, not cmd.get_viewport: the wrapper emits a
+        # "viewport W, H" line into an open log file, and reading the size to
+        # convert pixels is no reason to pollute the user's log.
+        with _self.lockcm:
+            width, height = _cmd.get_viewport(_self._COb)
+        if width <= 0 or height <= 0:
+            raise pymol.CmdException("viewport has no size")
+        n = metal_pick.box_select_ndc(
+            2.0 * float(x1) / width - 1.0, 2.0 * float(y1) / height - 1.0,
+            2.0 * float(x2) / width - 1.0, 2.0 * float(y2) / height - 1.0,
+            float(width) / float(height), name=str(name), mode=mode,
+            selection=str(selection), state=int(state))
+        if not int(quiet):
+            print(' box_select: %d atoms selected as "%s".' % (n, name))
+        return n
+
     def indicate(selection="(all)",_self=cmd):
         '''
 DESCRIPTION

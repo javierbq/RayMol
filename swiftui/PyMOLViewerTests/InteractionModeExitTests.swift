@@ -122,3 +122,144 @@ final class InteractionModeExitTests: XCTestCase {
         XCTAssertNil(engine.measureMode)
     }
 }
+
+/// Coverage for the Box Select tool's engine-side contract (#358): entering and
+/// leaving the mode, and what Accept / Cancel actually emit.
+///
+/// The gestures and the Return key can't be driven from a test, so this pins
+/// down the layer both of them funnel through — `setBoxRect`,
+/// `acceptBoxSelection`, `cancelBoxSelection` — using the DEBUG `pythonTap`
+/// seam to read the Python the engine intended to run.
+@MainActor
+final class BoxSelectModeTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+
+    override func setUp() {
+        super.setUp()
+        reset()
+    }
+
+    override func tearDown() {
+        reset()
+        super.tearDown()
+    }
+
+    private func reset() {
+        engine.pythonTap = nil
+        engine.setDesignMode(false)
+        engine.setMeasureMode(nil)
+        engine.setInteractionMode(.viewing)
+    }
+
+    /// Enter the mode with `rect` already drawn, with the tap installed AFTER the
+    /// seeding so only the action under test is captured.
+    private func armed(_ rect: BoxRect, capturing: inout [String]) {
+        engine.setInteractionMode(.boxSelect)
+        engine.setBoxRect(rect)
+        let box = CaptureBox()
+        engine.pythonTap = { box.lines.append($0) }
+        self.capture = box
+        capturing = []
+    }
+
+    private final class CaptureBox { var lines: [String] = [] }
+    private var capture: CaptureBox?
+
+    private let rect = BoxRect(minX: -0.4, minY: -0.3, maxX: 0.5, maxY: 0.6)
+
+    // MARK: - Mode plumbing
+
+    func testEnteringBoxSelectLeavesTheOtherTools() {
+        engine.setInteractionMode(.move)
+        engine.setInteractionMode(.boxSelect)
+        XCTAssertEqual(engine.interactionMode, .boxSelect)
+
+        engine.setMeasureMode(.distance)
+        engine.setInteractionMode(.boxSelect)
+        XCTAssertNil(engine.measureMode,
+                     "Box Select is exclusive with Measure, like Move is")
+    }
+
+    func testLeavingTheModeForgetsTheBox() {
+        engine.setInteractionMode(.boxSelect)
+        engine.setBoxRect(rect)
+        XCTAssertEqual(engine.boxRect, rect)
+        engine.setInteractionMode(.viewing)
+        XCTAssertNil(engine.boxRect,
+                     "a rectangle left behind would have no mode to explain it")
+    }
+
+    func testEscExitsBoxSelect() {
+        engine.setInteractionMode(.boxSelect)
+        XCTAssertTrue(engine.exitActiveInteractionMode(),
+                      "Esc must back out of Box Select like every other tool")
+        XCTAssertEqual(engine.interactionMode, .viewing)
+    }
+
+    func testDegenerateRectIsNotWorthPreviewing() {
+        engine.setInteractionMode(.boxSelect)
+        var _ignored: [String] = []
+        armed(rect, capturing: &_ignored)
+        engine.setBoxRect(BoxRect(minX: 0, minY: 0, maxX: 0.001, maxY: 0.001))
+        XCTAssertFalse(capture?.lines.contains { $0.contains("box_preview_ndc") } ?? true,
+                       "a stray click must not fire a preview over every atom")
+    }
+
+    // MARK: - Accept / Cancel
+
+    func testAcceptCommitsTheBoxAndExits() {
+        var lines: [String] = []
+        armed(rect, capturing: &lines)
+        engine.acceptBoxSelection()
+
+        let emitted = capture?.lines.joined(separator: "\n") ?? ""
+        XCTAssertTrue(emitted.contains("box_select_ndc(-0.4, -0.3, 0.5, 0.6"),
+                      "expected the drawn rectangle, got: \(emitted)")
+        XCTAssertTrue(emitted.contains("name='sele'"))
+        XCTAssertTrue(emitted.contains("mode='replace'"))
+        XCTAssertEqual(engine.interactionMode, .viewing, "accept leaves the mode")
+    }
+
+    func testAcceptHonorsAnOverriddenMode() {
+        var lines: [String] = []
+        armed(rect, capturing: &lines)
+        engine.acceptBoxSelection(mode: .subtract)
+        XCTAssertTrue((capture?.lines.joined() ?? "").contains("mode='subtract'"))
+    }
+
+    func testAcceptUsesTheOverlaySettingWhenNotOverridden() {
+        engine.setInteractionMode(.boxSelect)
+        engine.setBoxRect(rect)
+        engine.boxSelectMode = .add
+        let box = CaptureBox()
+        engine.pythonTap = { box.lines.append($0) }
+        engine.acceptBoxSelection()
+        XCTAssertTrue(box.lines.joined().contains("mode='add'"))
+    }
+
+    func testAcceptWithNoBoxCommitsNothing() {
+        engine.setInteractionMode(.boxSelect)
+        let box = CaptureBox()
+        engine.pythonTap = { box.lines.append($0) }
+        engine.acceptBoxSelection()
+        XCTAssertFalse(box.lines.joined().contains("box_select_ndc"),
+                       "entering and immediately accepting must not touch 'sele'")
+        XCTAssertEqual(engine.interactionMode, .viewing)
+    }
+
+    func testCancelNeverCommits() {
+        var lines: [String] = []
+        armed(rect, capturing: &lines)
+        engine.cancelBoxSelection()
+        XCTAssertFalse((capture?.lines.joined() ?? "").contains("box_select_ndc"))
+        XCTAssertEqual(engine.interactionMode, .viewing)
+    }
+
+    func testLeavingClearsThePreviewHighlight() {
+        var lines: [String] = []
+        armed(rect, capturing: &lines)
+        engine.cancelBoxSelection()
+        XCTAssertTrue((capture?.lines.joined() ?? "").contains("box_preview_clear"),
+                      "the cyan preview atoms must not outlive the box")
+    }
+}
