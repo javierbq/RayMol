@@ -872,6 +872,37 @@ def _weight_version(generator_id):
 # them rather than anything assuming the generated chain is simply "the last atoms".
 
 
+def _pdb_atom_records(text):
+    """`(resn, chain, resi, [x, y, z])` per ATOM record of `text`, in FILE order.
+
+    The PDB is fixed-column, so this is a slice rather than a parse. It exists because
+    both places that need coordinates need them in the FILE's order -- which is what
+    `load_coordset` is documented to load in ("the original atom order (order from PDB
+    file)"), as opposed to the property-sorted order `iterate` and `load_coords` use.
+
+    Reading them back out of the session instead is not an option, and that is a
+    measurement rather than a preference: `cmd.get_coordset` is numpy-backed and returns
+    **None** in the shipped macOS app. It returns a real array under the headless PyMOL
+    the test suite runs on, so the difference is invisible to every test.
+
+    Malformed lines are skipped rather than raising; the callers check the count they
+    ended up with, which is the only thing that makes the result usable.
+    """
+    records = []
+    for line in text.splitlines():
+        if not (line.startswith('ATOM') or line.startswith('HETATM')):
+            continue
+        if len(line) < 54:
+            continue
+        try:
+            xyz = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+        except ValueError:
+            continue
+        records.append((line[17:20].strip(), line[21:22].strip(),
+                        line[22:27].strip(), xyz))
+    return records
+
+
 def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
     """Create the design's object from the FIRST captured frame. Called once.
 
@@ -941,14 +972,36 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         if offset:
             _self.unbond('%s and index 1-%d' % (name, offset),
                          '%s and index %d-%d' % (name, offset + 1, offset + atoms))
-        # The target's half of every state, taken from the object as PyMOL actually holds
-        # it rather than re-parsed out of the string. It never changes: the target is held
-        # fixed by contract for the whole run, and every frame is spliced onto this.
+        # The target's half of every state, read out of the STRING rather than back out
+        # of the session. It never changes -- the target is held fixed by contract for
+        # the whole run -- and every frame is spliced onto it.
+        #
+        # Out of the string for two reasons. It is the order `load_coordset` wants, which
+        # is documented as "the original atom order (order from PDB file)" and not
+        # PyMOL's sorted order; and `cmd.get_coordset` returns **None** in the shipped
+        # app, which has no numpy-backed path in its `_cmd`. That returned None silently:
+        # the seed threw, left no record, and every frame of every live run was dropped,
+        # with a headless test suite that has numpy passing throughout.
+        written = _pdb_atom_records(str(pdb))
+        if len(written) != offset + atoms:
+            _self.delete(name)
+            return False
+        # And PROVE the order rather than trusting it, once, here: every atom PyMOL holds
+        # must be the atom the string wrote at that position. A reader that sorted the
+        # atoms would put the target's coordinates on the generated chain for the whole
+        # run, silently, and nothing downstream would notice.
+        held = _self.get_model(name, state=1).atom
+        if len(held) != len(written):
+            _self.delete(name)
+            return False
+        for atom, record in zip(held, written):
+            if max(abs(a - b) for a, b in zip(atom.coord, record[3])) > 0.01:
+                _self.delete(name)
+                return False
         _TRAJECTORY[name] = {
             'offset': offset,
             'atoms': atoms,
-            'target': [[float(value) for value in row]
-                       for row in _self.get_coordset(name, 1)[:offset]],
+            'target': [record[3] for record in written[:offset]],
         }
         return True
     except Exception as exc:
@@ -1020,44 +1073,40 @@ def _finish_trajectory(path, name, record, _self=cmd):
 
     Not `cmd.load(path, name)`, which does not merge: mismatched residue names make PyMOL
     treat the incoming atoms as new ones, and the object goes from 450 atoms to 530.
-    Renaming first and appending with `load_coordset` keeps it at 450 atoms and 462 bonds,
-    with the last state 0.000000 A from the result.
+    Renaming first and appending with `load_coordset` keeps it at 450 atoms, its bonds
+    unchanged, and the last state 0.000000 A from the result.
 
-    The result file is read through PyMOL rather than parsed here, and positionally rather
-    than by chain: the result and the recording came out of ONE writer, so atom i of one is
-    atom i of the other, and nothing has to agree about which chain id the generated chain
-    got.
+    The result is read as TEXT rather than loaded into a scratch object. `load_coordset`
+    wants the file's own atom order and the file is the only place that has it -- reading
+    it back out of a loaded object would mean `cmd.get_coordset`, which returns None in
+    the shipped app. The rename is scoped to the generated chain by INDEX, from the layout
+    the seed recorded, and keyed within it by residue number, so nothing has to agree
+    about which chain id the generated chain got or whether the target reuses it.
 
     Returns False rather than raising if the two do not line up, and the caller then loads
     the result plainly.
     """
-    scratch = _self.get_unused_name('_design_result')
     try:
-        _self.load(path, scratch, zoom=0)
-        expected = len(record['target']) + record['atoms']
-        if _self.count_atoms(scratch) != expected:
+        with open(path) as handle:
+            written = _pdb_atom_records(handle.read())
+        offset = len(record['target'])
+        expected = offset + record['atoms']
+        if len(written) != expected:
             return False
         if _self.count_atoms(name) != expected:
             return False
-        names = []
-        _self.iterate(scratch, 'L.append(resn)', space={'L': names})
-        if len(names) != expected:
-            return False
-        source = iter(names)
-        _self.alter(name, 'resn = next(_names)',
-                    space={'_names': source, 'next': next})
-        _self.load_coordset(_self.get_coordset(scratch, 1), name,
+        sequence = {}
+        for resn, _chain, resi, _xyz in written[offset:]:
+            sequence[resi] = resn
+        _self.alter('%s and index %d-%d' % (name, offset + 1, expected),
+                    'resn = _seq.get(resi, resn)', space={'_seq': sequence})
+        _self.load_coordset([entry[3] for entry in written], name,
                             _self.count_states(name) + 1)
         return True
     except Exception as exc:
         colorprinting.warning(' design: could not complete the live view for %s (%s)'
                               % (name, exc))
         return False
-    finally:
-        try:
-            _self.delete(scratch)
-        except Exception:
-            pass
 
 
 def deliver_result(path, name, seed=None, _self=cmd):

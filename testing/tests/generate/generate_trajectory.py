@@ -169,7 +169,32 @@ def _result_pdb(length=3, chain='B', coords=None, target=0):
                          target=target, sequence=sequence)
 
 
-def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target=0):
+class NoCoordsetCmd(object):
+    """The `cmd` the SHIPPED APP has: `get_coordset` returns None.
+
+    Not a hypothetical. `cmd.get_coordset` is numpy-backed, and in the packaged macOS app
+    its `_cmd` has no such path and it returns None -- while the headless PyMOL this suite
+    runs on returns a real array. A live run built on it therefore failed on every real
+    design and passed every test: the seed threw, left no record, every frame was dropped,
+    and delivery fell back to `cmd.load` ON TOP of the seeded object, taking a real 450-atom
+    design to 530.
+
+    Everything else proxies to the real `cmd`, so a test using this exercises the shipped
+    code against the shipped app's one relevant difference.
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, attribute):
+        return getattr(self._real, attribute)
+
+    def get_coordset(self, *args, **kwargs):
+        return None
+
+
+def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target=0,
+          _self=None):
     """`trajectory_seed` with the layout the writer would have reported.
 
     The offset and the atom count are arguments on the wire because the Python side must
@@ -179,7 +204,8 @@ def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target
     return designing.trajectory_seed(
         name, _seed_pdb(length=length, chain=chain, coords=coords, conect=conect,
                         target=target),
-        target * len(_SLOTS), length * len(_SLOTS))
+        target * len(_SLOTS), length * len(_SLOTS),
+        **({'_self': _self} if _self is not None else {}))
 
 
 def _flat(coords):
@@ -728,6 +754,46 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertEqual(cmd.count_atoms(self.name),
                          self.target_atoms + self.design_atoms)
         self.assertNotIn(self.name, self.designing.pending_objects())
+
+    def testTheWholeRunWorksWithoutTheNumpyBackedCoordinateReader(self):
+        # THE regression, and the reason a live run can fail while every test passes:
+        # `cmd.get_coordset` returns None in the packaged app and an array under the
+        # headless PyMOL this suite runs on. Built on it, the seed threw, left no record,
+        # dropped all fifty frames, and delivery fell back to `cmd.load` on top of the
+        # seeded object -- measured on a real design, 450 atoms became 530.
+        #
+        # So the whole flow runs here against a `cmd` that behaves like the app's.
+        fake = NoCoordsetCmd(cmd)
+        self.assertIsNone(fake.get_coordset(self.name, 1), 'the fake must be faithful')
+
+        self.assertTrue(_seed(self.designing, self.name, length=self.LENGTH,
+                              target=self.TARGET, _self=fake))
+        for _ in range(3):
+            self.assertTrue(
+                self.designing.trajectory_frame(self.name,
+                                                _flat(_backbone(self.LENGTH)),
+                                                _self=fake))
+        self.assertEqual(cmd.count_states(self.name), 4)
+
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        self.designing.deliver_result(self.result_path(coords=final), self.name,
+                                      _self=fake)
+        self.assertEqual(cmd.count_states(self.name), 5)
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms)
+        for atom, expected in zip(self.chain_coords('B', 5), final):
+            for axis in range(3):
+                self.assertAlmostEqual(atom[axis], expected[axis], places=3)
+
+    def testASeedWhosePDBDoesNotMatchTheStatedLayoutLeavesNothing(self):
+        # The layout is the writer's word; if the string does not back it up there is no
+        # live view AND no half-seeded object under the design's name -- the same rule a
+        # cancelled run follows, for the same reason.
+        self.assertFalse(self.designing.trajectory_seed(
+            self.name, _seed_pdb(length=self.LENGTH, target=self.TARGET),
+            self.target_atoms, self.design_atoms + 5))
+        self.assertNotIn(self.name, cmd.get_names('objects'))
+        self.assertNotIn(self.name, self.designing._TRAJECTORY)
 
     # -- What a run that never finishes leaves behind --------------------------
 
