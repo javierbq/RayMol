@@ -939,6 +939,11 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "deselect":           cmd = "deselect"
     case "hide_everything":    cmd = "hide everything, \(n)"
     case "reset_view":         cmd = "reset"
+    // Moves the objects, not the camera: every object is shifted so their
+    // centers coincide, so switching between unrelated PDBs stops requiring a
+    // re-zoom. Non-destructive (object matrix) — `matrix_reset` puts it back.
+    case "center_all":         cmd = "center_all"
+    case "center_all_reset":   cmd = "python\nfor _o in cmd.get_names('objects'):\n    cmd.matrix_reset(_o, mode=1)\npython end"
     default:                   return
     }
     engine.runCommand(cmd)
@@ -949,10 +954,19 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
 /// omits per-object items (Rename / Duplicate / Delete) and adds global ones
 /// (Deselect, Hide everything, Reset camera).
 private let allActionMenuItems: [ActionMenuItem] = [
-    .action(label: "Zoom",          key: "zoom"),
-    .action(label: "Orient",        key: "orient"),
-    .action(label: "Center",        key: "center"),
-    .action(label: "Reset camera",  key: "reset_view"),
+    .action(label: "Zoom",           key: "zoom"),
+    .action(label: "Orient",         key: "orient"),
+    .action(label: "Center camera",  key: "center"),
+    .action(label: "Reset camera",   key: "reset_view"),
+    .separator,
+    // "Center all" moves the objects onto a shared center; "Center camera"
+    // above only aims the camera. The labels have to carry that distinction —
+    // they sit two rows apart in the same menu.
+    .submenu(label: "Center all objects", children: [
+        .action(label: "stack on first object", key: "center_all"),
+        .separator,
+        .action(label: "undo (reset matrices)", key: "center_all_reset"),
+    ]),
     .separator,
     .action(label: "Deselect",      key: "deselect"),
     .action(label: "Hide everything", key: "hide_everything"),

@@ -2472,6 +2472,154 @@ SEE ALSO
                 raise pymol.CmdException
         return r
 
+    # Shifts smaller than this are no-ops: an object already on the anchor
+    # should not get a spurious matrix that "matrix_reset" then has to undo.
+    _CENTER_ALL_EPSILON = 1e-4
+
+    center_all_method_sc = Shortcut(['extent', 'com'])
+
+    def center_all(target='', method='extent', coords=0, enabled_only=0,
+                   quiet=1, _self=cmd):
+
+        '''
+DESCRIPTION
+
+    "center_all" moves objects so that they all share a common center,
+    stacking them on top of each other in space.
+
+    Unlike "center", which aims the camera, this moves the objects
+    themselves relative to each other. It is meant for sessions holding
+    many unrelated structures -- each deposited about a different origin
+    -- where toggling between them otherwise means re-zooming every time.
+
+USAGE
+
+    center_all [ target [, method [, coords [, enabled_only ]]]]
+
+ARGUMENTS
+
+    target = string: name of the object everything is centered on, or
+    blank to use the first object in the list {default: }
+
+    method = extent or com: measure each object's center as the middle of
+    its bounding box (extent) or as its center of mass (com)
+    {default: extent}
+
+    coords = 0 or 1: 0 applies the shift to the object's display matrix,
+    which leaves the coordinates untouched and can be undone with
+    "matrix_reset"; 1 rewrites the atomic coordinates in every state
+    {default: 0}
+
+    enabled_only = 0 or 1: restrict to enabled objects {default: 0}
+
+EXAMPLES
+
+    center_all
+    center_all 1ubq
+    center_all method=com, coords=1
+
+NOTES
+
+    Groups are skipped -- a group's matrix already propagates to its
+    members, so moving both would shift them twice.
+
+    With coords=0 the move is a display transformation: exported
+    coordinates are unchanged, and "matrix_reset <name>, mode=1" puts an
+    object back. Use coords=1 when the new positions need to survive a
+    "save".
+
+SEE ALSO
+
+    center, matrix_reset, translate, align
+
+PYMOL API
+
+    cmd.center_all(string target, string method, int coords,
+                   int enabled_only, int quiet)
+
+        '''
+        if is_string(method):
+            method = center_all_method_sc.auto_err(method, "method")
+        coords, enabled_only, quiet = int(coords), int(enabled_only), int(quiet)
+
+        names = [
+            name for name in _self.get_names('objects', enabled_only=enabled_only)
+            if _self.get_type(name) != 'object:group'
+        ]
+
+        if not names:
+            if not quiet:
+                print(" center_all: no objects to center.")
+            return DEFAULT_SUCCESS
+
+        target = str(target).strip()
+        if not target:
+            target = names[0]
+        elif target not in names:
+            # Also the path for a disabled target under enabled_only=1, and for
+            # a group -- neither is in the list being centered.
+            raise pymol.CmdException(
+                "center_all: '%s' is not among the objects being centered."
+                % target)
+
+        def measure(name):
+            sele = '%' + name  # an object called "b" is otherwise a b-factor
+            # Both paths report the center as currently *displayed*, i.e. with
+            # any object matrix already applied, so a single shift lands the
+            # object where we want it no matter what moved it before.
+            if _self.get_type(name) == 'object:molecule' \
+                    and not _self.count_atoms(sele):
+                # get_extent invents a unit box for an empty object; centering
+                # on that would fling it somewhere arbitrary.
+                return None
+            if method == 'com':
+                # centerofmass needs masses. Pseudoatoms carry a symbol that
+                # isn't in the mass table, and non-molecule objects have no
+                # atoms at all -- fall back to the bounding box rather than
+                # leaving such an object stranded where it was.
+                try:
+                    return _self.centerofmass(sele, state=ALL_STATES)
+                except (KeyError, pymol.CmdException):
+                    pass
+            mn, mx = _self.get_extent(sele, state=ALL_STATES)
+            return cpv.scale(cpv.add(mn, mx), 0.5)
+
+        anchor = measure(target)
+        if anchor is None:
+            raise pymol.CmdException(
+                "center_all: cannot measure a center for '%s'." % target)
+
+        moved = 0
+        for name in names:
+            if name == target:
+                continue
+
+            center = measure(name)
+            if center is None:
+                if not quiet:
+                    print(" center_all: skipping %s (no center to measure)." % name)
+                continue
+
+            shift = cpv.sub(anchor, center)
+            if cpv.length(shift) < _CENTER_ALL_EPSILON:
+                continue
+
+            if coords:
+                # transform_selection (under translate) already maps the vector
+                # through the object's matrix, so a world-space shift lands
+                # correctly even on an object rotated by a previous align.
+                _self.translate(shift, selection='%' + name,
+                                state=ALL_STATES, camera=0)
+            else:
+                _self.translate(shift, object=name, camera=0, object_mode=0)
+
+            moved += 1
+
+        if not quiet:
+            print(" center_all: centered %d object(s) on %s." % (moved, target))
+
+        return DEFAULT_SUCCESS
+
     def matrix_reset(name, state=1, mode=-1, log=0, quiet=1,_self=cmd):
         '''
 
