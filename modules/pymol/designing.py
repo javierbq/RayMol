@@ -681,11 +681,11 @@ def session_save(session, _self=cmd):
     holds the name for exactly as long as that is true.
     """
     names = session.get('names')
-    if not names or not _PENDING:
+    if not names or not (_PENDING or _TRAJECTORY):
         return 1
     keep = []
     for entry in names:
-        if entry and entry[0] in _PENDING:
+        if entry and (entry[0] in _PENDING or entry[0] in _TRAJECTORY):
             try:
                 if entry[0] in _TRAJECTORY or _self.count_atoms(entry[0]) == 0:
                     continue
@@ -903,6 +903,31 @@ def _pdb_atom_records(text):
     return records
 
 
+def _refuse_seed(name, reason, _self=cmd):
+    """Abandon a seed: say why, leave no object, record nothing. Always False.
+
+    Audible on purpose. Each of these branches used to `return False` in silence, and the
+    user's experience of one was a design whose row VANISHED from the object panel -- the
+    placeholder is deleted here along with the half-seeded object -- for the seventeen
+    minutes until the result loaded. Nothing anywhere said the live view had been refused.
+    """
+    try:
+        _TRAJECTORY.pop(name, None)
+        if name in _self.get_names('objects'):
+            _self.delete(name)
+        # Put the placeholder back. `register_pending` made a zero-atom object so the
+        # design has a row in the object panel from the moment the command returns, and
+        # the seed replaced it; abandoning the seed must not cost the user that row for
+        # the rest of a seventeen-minute run.
+        if name in _PENDING and name not in _self.get_names('objects'):
+            _self.create(name, 'none')
+    except Exception:
+        pass
+    colorprinting.warning(' design: no live view for %s -- %s. The design itself is'
+                          ' unaffected and will load when it finishes.' % (name, reason))
+    return False
+
+
 def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
     """Create the design's object from the FIRST captured frame. Called once.
 
@@ -922,12 +947,17 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
     the frames that follow find no record to splice into and are dropped for the same
     reason -- and delivery then loads the result plainly, exactly as a non-live run does.
     """
+    import uuid
     try:
         name = _legal_object_name(name, _self=_self)
         offset = int(design_offset)
         atoms = int(design_atoms)
         if atoms <= 0 or offset < 0:
+            colorprinting.warning(' design: no live view for %s -- the layout the writer'
+                                  ' reported is not usable (%d + %d atoms)'
+                                  % (name, offset, atoms))
             return False
+        token = 'raymol-live:%s' % uuid.uuid4().hex
         _TRAJECTORY.pop(name, None)
         if name in _self.get_names('objects'):
             # Replace rather than append. `read_pdbstr` into an EXISTING object appends
@@ -951,8 +981,9 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         if _self.count_atoms(name) != offset + atoms:
             # The string did not contain the object the writer said it did. No live view,
             # and no half-seeded object left under the design's name either.
-            _self.delete(name)
-            return False
+            return _refuse_seed(name, 'the seed produced %d atoms, not the %d the writer'
+                                ' reported' % (_self.count_atoms(name), offset + atoms),
+                                _self=_self)
         # No covalent bonds between the target and the generated chain, ever.
         #
         # This is the one hazard the target and the design sharing an object introduces,
@@ -965,13 +996,26 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         # as sticks joining the design to the target in every state including the
         # delivered one, and saved into any .pse.
         #
-        # By INDEX, from the layout the writer reported, rather than by chain id: the
-        # target may legitimately use the same chain letter the design was given.
+        # By RANK, from the layout the writer reported. `rank` is the atom's position in
+        # the FILE; `index` is its position in PyMOL's SORTED order, and those are not the
+        # same thing here. `AtomInfoCompare` orders by chain before residue number and
+        # `retain_order` is 0, so for a target on any chain that sorts after the design's
+        # -- which `_free_chain_id` makes every target letter except A and B -- the design
+        # sorts FIRST and `index 1-<offset>` spans both chains. Measured on a target/design
+        # pair of H/B: `rank 0-19` is {H}, `index 1-20` is {H, B}.
+        #
+        # Not by chain id either, but for a different reason than the comment that used to
+        # sit here claimed: it said the target might share the design's letter, and it
+        # cannot -- `_free_chain_id` picks a letter the target does not use, over a target
+        # `require_single_chain` has already reduced to one chain. Rank is used because it
+        # is the layout the writer reported and needs no lookup, not because chain is
+        # ambiguous.
+        #
         # Nothing legitimate is removed -- a generated backbone is a separate chain and
         # the result path produces no inter-chain bonds either (measured 0).
         if offset:
-            _self.unbond('%s and index 1-%d' % (name, offset),
-                         '%s and index %d-%d' % (name, offset + 1, offset + atoms))
+            _self.unbond('%s and rank 0-%d' % (name, offset - 1),
+                         '%s and rank %d-%d' % (name, offset, offset + atoms - 1))
         # The target's half of every state, read out of the STRING rather than back out
         # of the session. It never changes -- the target is held fixed by contract for
         # the whole run -- and every frame is spliced onto it.
@@ -984,25 +1028,42 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         # with a headless test suite that has numpy passing throughout.
         written = _pdb_atom_records(str(pdb))
         if len(written) != offset + atoms:
-            _self.delete(name)
-            return False
+            return _refuse_seed(name, 'the seed PDB carries %d atoms, not the %d the'
+                                ' writer reported' % (len(written), offset + atoms),
+                                _self=_self)
         # And PROVE the order rather than trusting it, once, here: every atom PyMOL holds
-        # must be the atom the string wrote at that position. A reader that sorted the
+        # must be the atom the string wrote at that position. A reader that reordered the
         # atoms would put the target's coordinates on the generated chain for the whole
         # run, silently, and nothing downstream would notice.
-        held = _self.get_model(name, state=1).atom
+        #
+        # In RANK order, which is the file's. An earlier version of this compared against
+        # `get_model`, whose order is the SORTED one, and so refused every design whose
+        # target chain sorts after the generated chain's -- 24 of the 26 letters
+        # `_free_chain_id` can hand out. It was a pure false negative: `load_coordset` is
+        # rank-keyed (measured -- pushing the design's file-order slice 500 A moves chain
+        # B and only chain B), so the splice this guards was correct all along.
+        held = []
+        _self.iterate_state(1, name, 'L.append((rank, x, y, z))', space={'L': held})
         if len(held) != len(written):
-            _self.delete(name)
-            return False
-        for atom, record in zip(held, written):
-            if max(abs(a - b) for a, b in zip(atom.coord, record[3])) > 0.01:
-                _self.delete(name)
-                return False
+            return _refuse_seed(name, 'the object holds %d atoms, not the %d the seed'
+                                ' PDB wrote' % (len(held), len(written)), _self=_self)
+        for position, entry in enumerate(sorted(held)):
+            if max(abs(a - b) for a, b in zip(entry[1:], written[position][3])) > 0.01:
+                return _refuse_seed(
+                    name, 'the object does not hold the seed PDB in the order it was'
+                    ' written (atom %d differs)' % position, _self=_self)
         _TRAJECTORY[name] = {
             'offset': offset,
             'atoms': atoms,
             'target': [record[3] for record in written[:offset]],
+            # A token for THIS recording, so a frame cannot land on an object that merely
+            # shares the name -- yesterday's design reopened from a .pse under a reused
+            # name would otherwise be handed this run's rollout states, and the per-object
+            # rename would rewrite its residue names too. Carried in state 1's title,
+            # which nothing else on this path uses and which delivery clears.
+            'token': token,
         }
+        _self.set_title(name, 1, token)
         return True
     except Exception as exc:
         _TRAJECTORY.pop(name, None)
@@ -1021,8 +1082,10 @@ def trajectory_frame(name, coords, _self=cmd):
     `load_coordset` rather than `load_coords`: it is documented to load in the order the
     file had, and that order is the one `RFD3ResultWriter.emit` wrote.
 
-    The new state is then made the displayed one, so the user watches the design progress
-    rather than having to scrub for it.
+    The new state is then made the displayed one -- through the OBJECT's `state` setting,
+    not `cmd.frame`, which is the global MOVIE frame and is only a fallback for what an
+    object displays -- so the user watches the design progress rather than having to
+    scrub for it.
 
     Never raises, for the reason `trajectory_seed` does not. A name with no record -- an
     object the user deleted mid-run, or a run whose seed failed -- is a no-op rather than
@@ -1049,10 +1112,24 @@ def trajectory_frame(name, coords, _self=cmd):
             # The object is no longer the one the record describes -- atoms removed or
             # added under it. Refused rather than spliced into a shape that has changed.
             return False
+        if _self.get_title(name, 1) != record['token']:
+            # Same NAME, different object. The atom count cannot tell those apart: open
+            # yesterday's .pse of this very design mid-run and it matches exactly, and
+            # the user's saved design would then be handed this run's rollout states --
+            # and, at delivery, a rename of its residues, because residue names are
+            # per-object. The token is stamped on state 1 by the seed and belongs to this
+            # recording alone.
+            return False
         frame = record['target'] + [values[i * 3:i * 3 + 3] for i in range(atoms)]
         state = _self.count_states(name) + 1
         _self.load_coordset(frame, name, state)
-        _self.frame(state)
+        # The OBJECT's state, not `cmd.frame`. `cmd.frame` writes the global MOVIE frame,
+        # and `CObject::getCurrentState` prefers the object's own `state` setting and only
+        # falls back to the global -- so in any session that already has an `mset` (a
+        # Timeline the user built, a movie, a reopened .pse carrying one) `cmd.frame` maps
+        # through the movie and the object never moves. Measured with `mset '1 x10'`:
+        # states grew 2, 3, 4, 5 while the displayed state stayed 1, 1, 1, 1.
+        _self.set('state', state, name)
         return True
     except Exception:
         return False
@@ -1092,13 +1169,26 @@ def _finish_trajectory(path, name, record, _self=cmd):
         offset = len(record['target'])
         expected = offset + record['atoms']
         if len(written) != expected:
+            colorprinting.warning(
+                ' design: the live view for %s could not be completed -- the result has'
+                ' %d atoms and the recording has %d, so it is being loaded as a fresh'
+                ' object instead.' % (name, len(written), expected))
             return False
         if _self.count_atoms(name) != expected:
+            colorprinting.warning(
+                ' design: the live view for %s could not be completed -- the object now'
+                ' holds %d atoms and the recording has %d, so the result is being loaded'
+                ' as a fresh object instead.'
+                % (name, _self.count_atoms(name), expected))
             return False
         sequence = {}
         for resn, _chain, resi, _xyz in written[offset:]:
             sequence[resi] = resn
-        _self.alter('%s and index %d-%d' % (name, offset + 1, expected),
+        # By RANK, which is the file order the layout was reported in; `index` is PyMOL's
+        # sorted order and spans both chains whenever the target's chain sorts after the
+        # generated chain's. Keyed by residue number WITHIN that range, so the rename
+        # cannot depend on atom order at all.
+        _self.alter('%s and rank %d-%d' % (name, offset, expected - 1),
                     'resn = _seq.get(resi, resn)', space={'_seq': sequence})
         _self.load_coordset([entry[3] for entry in written], name,
                             _self.count_states(name) + 1)
@@ -1126,6 +1216,12 @@ def deliver_result(path, name, seed=None, _self=cmd):
     object does not merge, it adds atoms. If that cannot be done for any reason the
     recording is thrown away and the result is loaded exactly as a non-live run loads it,
     so the worst case is losing the recording rather than losing the design.
+
+    A delivered live object is left PINNED to its final state through the object's own
+    `state` setting, which is the only way to be sure it shows the design in a session
+    that has a movie. To replay the rollout afterwards, move that setting -- the object
+    panel's per-object state control, or `unset state, <name>` to hand the object back to
+    the global frame.
     """
     name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
@@ -1168,10 +1264,22 @@ def deliver_result(path, name, seed=None, _self=cmd):
             colorprinting.warning(' design: could not assign secondary structure to %s'
                                   ' (%s)' % (name, exc))
         if live is not None:
-            # Leave the object showing the finished design rather than whichever frame
-            # the last append happened to advance to.
             try:
-                _self.frame(_self.count_states(name))
+                # The recording's token goes with the recording. What is left is a
+                # delivered design, and its state 1 title should say nothing.
+                _self.set_title(name, 1, '')
+                # PINNED to the final state, via the OBJECT's own `state` setting rather
+                # than `cmd.frame`. `cmd.frame` writes the global movie frame, which
+                # `CObject::getCurrentState` only consults as a fallback -- in a session
+                # that already has an `mset` it leaves the object showing state 1, i.e.
+                # the step-4 poly-ALA seed wearing the DESIGNED residue names, which a
+                # `cmd.save` at its default `state=-1` would then export as the design.
+                #
+                # The cost, and it is documented rather than hidden: the object stays on
+                # that state. Replaying the rollout means moving that setting -- the
+                # object panel's per-object state control does exactly this, or
+                # `unset state, <name>` hands the object back to the global frame.
+                _self.set('state', _self.count_states(name), name)
             except Exception:
                 pass
         try:

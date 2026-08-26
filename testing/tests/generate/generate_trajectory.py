@@ -91,7 +91,7 @@ def _atom_record(serial, name, resn, chain, resi, xyz):
             % (serial, name, resn, chain, resi, x, y, z, name[0]))
 
 
-def _target_records(residues, serial):
+def _target_records(residues, serial, chain='A'):
     """The target half of a composed object: real geometry, its own chain and numbering.
 
     Five atoms a residue, the same slots the generated chain has -- a real target has
@@ -104,14 +104,14 @@ def _target_records(residues, serial):
     coords = _backbone(residues, offset=_TARGET_OFFSET)
     for residue in range(residues):
         for slot, name in enumerate(_SLOTS):
-            lines.append(_atom_record(serial, name, _TARGET_RESN, 'A', residue + 41,
+            lines.append(_atom_record(serial, name, _TARGET_RESN, chain, residue + 41,
                                       coords[residue * len(_SLOTS) + slot]))
             serial += 1
     return lines, serial
 
 
 def _composed_pdb(length=3, chain='B', coords=None, conect=True, target=0,
-                  sequence=None):
+                  sequence=None, target_chain='A'):
     """What `RFD3ResultWriter.emit` writes: target, TER, generated chain, TER, END.
 
     ONE builder for the seed and for the result, because that is the property the feature
@@ -126,7 +126,7 @@ def _composed_pdb(length=3, chain='B', coords=None, conect=True, target=0,
     """
     if coords is None:
         coords = _backbone(length)
-    lines, serial = _target_records(target, 1)
+    lines, serial = _target_records(target, 1, chain=target_chain)
     lines.append('TER   %5d' % serial)
     serial += 1
     design_first = serial
@@ -150,10 +150,11 @@ def _composed_pdb(length=3, chain='B', coords=None, conect=True, target=0,
     return '\n'.join(lines) + '\n'
 
 
-def _seed_pdb(length=3, chain='B', coords=None, conect=True, target=0):
+def _seed_pdb(length=3, chain='B', coords=None, conect=True, target=0,
+              target_chain='A'):
     """The seed: the same object, with the generated chain poly-ALA."""
     return _composed_pdb(length=length, chain=chain, coords=coords, conect=conect,
-                         target=target)
+                         target=target, target_chain=target_chain)
 
 
 #: The three-letter names a fixture design comes back with -- anything but ALA, so
@@ -161,12 +162,12 @@ def _seed_pdb(length=3, chain='B', coords=None, conect=True, target=0):
 _DESIGNED = ('LEU', 'GLY', 'THR', 'VAL', 'PHE', 'SER', 'GLN', 'TYR')
 
 
-def _result_pdb(length=3, chain='B', coords=None, target=0):
+def _result_pdb(length=3, chain='B', coords=None, target=0, target_chain='A'):
     """What the runtime writes at the end: the same object, real sequence, real
     coordinates, and no CONECT -- a result is loaded from a file PyMOL bonds itself."""
     sequence = [_DESIGNED[index % len(_DESIGNED)] for index in range(length)]
     return _composed_pdb(length=length, chain=chain, coords=coords, conect=False,
-                         target=target, sequence=sequence)
+                         target=target, sequence=sequence, target_chain=target_chain)
 
 
 class NoCoordsetCmd(object):
@@ -194,7 +195,7 @@ class NoCoordsetCmd(object):
 
 
 def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target=0,
-          _self=None):
+          _self=None, target_chain='A'):
     """`trajectory_seed` with the layout the writer would have reported.
 
     The offset and the atom count are arguments on the wire because the Python side must
@@ -203,7 +204,7 @@ def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target
     """
     return designing.trajectory_seed(
         name, _seed_pdb(length=length, chain=chain, coords=coords, conect=conect,
-                        target=target),
+                        target=target, target_chain=target_chain),
         target * len(_SLOTS), length * len(_SLOTS),
         **({'_self': _self} if _self is not None else {}))
 
@@ -560,6 +561,16 @@ class LiveObjectTest(GeneratorTestCase):
     def design_atoms(self):
         return self.LENGTH * len(_SLOTS)
 
+    def displayed_state(self, name=None):
+        """Which state the OBJECT shows -- `CObject::getCurrentState`'s own precedence.
+
+        Not `cmd.get_state()`. That is the global movie frame, which an object consults
+        only as a fallback, so it agrees with reality exactly until the session has an
+        `mset` -- and then stops, silently. Asserting on it is what let a live view that
+        never moved pass every test.
+        """
+        return int(cmd.get('state', name or self.name))
+
     def chain_coords(self, chain, state):
         return [tuple(atom.coord)
                 for atom in cmd.get_model('%s and chain %s' % (self.name, chain),
@@ -598,21 +609,35 @@ class LiveObjectTest(GeneratorTestCase):
         # drawn in every state, including the delivered one, and saved into any .pse.
         overlapping = _backbone(self.LENGTH, offset=_TARGET_OFFSET)
 
-        # PRECONDITION, so this test can fail: the same string read WITHOUT the fix does
-        # produce inter-chain bonds. Without this the assertion below would pass on a
-        # fixture that simply never overlapped.
-        raw = _seed_pdb(length=self.LENGTH, coords=overlapping, target=self.TARGET)
-        cmd.read_pdbstr(raw, 'unfixed', zoom=0)
-        self.assertGreater(self._inter_chain_bonds('unfixed'), 0,
-                           'the fixture must actually put the two chains in contact')
-        cmd.delete('unfixed')
+        # Across BOTH orderings. 'A'/'B' is the pairing where PyMOL's sorted order happens
+        # to agree with the file's; 'H'/'B' is the one where the design sorts FIRST, so an
+        # unbond addressed by `index` takes a slice that spans both chains and misses the
+        # bonds it was aimed at. Only the second can tell `rank` from `index`.
+        for target_chain, design_chain in (('A', 'B'), ('H', 'B')):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            label = 'target %s / design %s' % (target_chain, design_chain)
 
-        self.assertTrue(self.seed(coords=overlapping))
-        self.assertEqual(self._inter_chain_bonds(self.name), 0)
-        # And the generated chain still has its own backbone: the unbond must take the
-        # inter-chain bonds and nothing else.
-        self.assertEqual(len(cmd.get_model('%s and chain B' % self.name).bond),
-                         4 * self.LENGTH + (self.LENGTH - 1))
+            # PRECONDITION, so this test can fail: the same string read WITHOUT the fix
+            # does produce inter-chain bonds. Without this the assertion below would pass
+            # on a fixture that simply never overlapped.
+            raw = _seed_pdb(length=self.LENGTH, chain=design_chain, coords=overlapping,
+                            target=self.TARGET, target_chain=target_chain)
+            cmd.read_pdbstr(raw, 'unfixed', zoom=0)
+            self.assertGreater(self._inter_chain_bonds('unfixed'), 0,
+                               '%s: the fixture must put the chains in contact' % label)
+            cmd.delete('unfixed')
+
+            self.assertTrue(_seed(self.designing, self.name, length=self.LENGTH,
+                                  chain=design_chain, coords=overlapping,
+                                  target=self.TARGET, target_chain=target_chain), label)
+            self.assertEqual(self._inter_chain_bonds(self.name), 0, label)
+            # And the generated chain still has its own backbone: the unbond must take the
+            # inter-chain bonds and nothing else.
+            self.assertEqual(
+                len(cmd.get_model('%s and chain %s'
+                                  % (self.name, design_chain)).bond),
+                4 * self.LENGTH + (self.LENGTH - 1), label)
 
     def _inter_chain_bonds(self, obj):
         model = cmd.get_model(obj)
@@ -645,7 +670,7 @@ class LiveObjectTest(GeneratorTestCase):
             self.assertTrue(
                 self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH))))
             self.assertEqual(cmd.count_states(self.name), expected)
-            self.assertEqual(cmd.get_state(), expected,
+            self.assertEqual(self.displayed_state(), expected,
                              'the displayed state must follow the frame that just landed')
 
     def testAFrameSizedForTheWHOLEObjectIsRefused(self):
@@ -693,7 +718,7 @@ class LiveObjectTest(GeneratorTestCase):
         # changing under it, it took a 450-atom object to 530. This is that regression.
         self.assertEqual(cmd.count_atoms(self.name), atoms)
         self.assertEqual(len(cmd.get_model(self.name).bond), bonds)
-        self.assertEqual(cmd.get_state(), cmd.count_states(self.name),
+        self.assertEqual(self.displayed_state(), cmd.count_states(self.name),
                          'the finished design must be the state on show')
         for atom, expected in zip(self.chain_coords('B', cmd.count_states(self.name)),
                                   final):
@@ -842,6 +867,26 @@ class LiveObjectTest(GeneratorTestCase):
         self.designing.session_save(session)
         self.assertEqual([entry[0] for entry in session['names']], ['something_else'])
 
+    def testASessionSaveDropsARecordingThatHasLeftThePendingTable(self):
+        # `session_save` used to be gated on `_PENDING` alone. Two jobs can share an object
+        # name, and job A's `discard_pending` pops the WHOLE list -- queued job B included.
+        # B then seeds live under a name `_PENDING` no longer knows, and a `cmd.save`
+        # mid-run persists a half-diffused poly-ALA rollout into the .pse: exactly the
+        # artefact the cancellation rule exists to prevent.
+        self.designing.register_pending(self.name, 'job-A')
+        self.assertTrue(self.seed())
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)))
+        # A sibling job's discard takes the name out of _PENDING, but the recording is
+        # still running.
+        self.designing._PENDING.pop(self.name, None)
+        self.assertIn(self.name, self.designing._TRAJECTORY)
+
+        session = {'names': [[self.name, 0], ['something_else', 0]]}
+        self.designing.session_save(session)
+        self.assertEqual([entry[0] for entry in session['names']], ['something_else'],
+                         'an unfinished recording must not reach the .pse just because '
+                         'its name left the pending table')
+
     def testAFinishedDesignIsKeptByASessionSave(self):
         # The negative control: same object, after delivery.
         self.designing.register_pending(self.name, 'job-1')
@@ -851,6 +896,172 @@ class LiveObjectTest(GeneratorTestCase):
         self.designing.session_save(session)
         self.assertEqual([entry[0] for entry in session['names']],
                          [self.name, 'something_else'])
+
+    # -- The two orders PyMOL keeps, and the one the writer wrote in ------------
+
+    def testALiveRunSurvivesEveryTargetChainLetter(self):
+        # THE regression. PyMOL keeps atoms in a SORTED order (`AtomInfoCompare` orders by
+        # chain before residue number, and `retain_order` is 0) which is not the file order
+        # the writer emitted. `_free_chain_id` gives the generated chain 'B' for every
+        # target except a chain-B one, so for 24 of 26 target letters the DESIGN sorts
+        # first and `index 1-<offset>` spans both chains.
+        #
+        # Every earlier test used target 'A' + design 'B' -- the one pairing where the two
+        # orders agree -- so 120 of them stayed green while a design against, say, an
+        # antibody heavy chain got no live view at all and lost its row in the object
+        # panel for the whole run. `rank` is the file order and is what the layout is
+        # addressed in.
+        for target_chain, design_chain in (('A', 'B'), ('B', 'C'), ('H', 'B'),
+                                           ('C', 'B'), ('L', 'B')):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            label = 'target %s / design %s' % (target_chain, design_chain)
+
+            self.assertTrue(
+                _seed(self.designing, self.name, length=self.LENGTH,
+                      chain=design_chain, target=self.TARGET,
+                      target_chain=target_chain),
+                '%s: the seed must be accepted' % label)
+            self.assertIn(self.name, cmd.get_names('objects'), label)
+            self.assertEqual(cmd.count_atoms(self.name),
+                             self.target_atoms + self.design_atoms, label)
+
+            target_before = self.chain_coords(target_chain, 1)
+            self.assertEqual(len(target_before), self.target_atoms, label)
+            for step in range(3):
+                # A marker the target could never carry: the design pushed far along x.
+                moved = _backbone(self.LENGTH, offset=(500.0 + step, 0.0, 0.0))
+                self.assertTrue(
+                    self.designing.trajectory_frame(self.name, _flat(moved)), label)
+                state = cmd.count_states(self.name)
+                self.assertEqual(state, step + 2, label)
+                self.assertEqual(self.displayed_state(), state, label)
+                # The target's half is bit-identical to state 1 ...
+                self.assertEqual(self.chain_coords(target_chain, state), target_before,
+                                 '%s: the target moved' % label)
+                # ... and the marker landed on the DESIGN, not on the target.
+                for atom, expected in zip(self.chain_coords(design_chain, state), moved):
+                    for axis in range(3):
+                        self.assertAlmostEqual(atom[axis], expected[axis], places=3,
+                                               msg=label)
+
+            final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+            path = self.tempfile()
+            with open(path, 'w') as handle:
+                handle.write(_result_pdb(length=self.LENGTH, chain=design_chain,
+                                         target=self.TARGET, coords=final,
+                                         target_chain=target_chain))
+            self.designing.deliver_result(path, self.name)
+
+            self.assertEqual(cmd.get_names('objects'), [self.name], label)
+            self.assertEqual(cmd.count_atoms(self.name),
+                             self.target_atoms + self.design_atoms, label)
+            self.assertEqual(cmd.count_states(self.name), 5, label)
+            self.assertEqual(self.displayed_state(), 5, label)
+            # The rename hit the generated chain and left the target alone -- which is the
+            # `alter` range, and it is addressed in the same order as the unbond.
+            designed = []
+            cmd.iterate('%s and chain %s and name CA' % (self.name, design_chain),
+                        'L.append(resn)', space={'L': designed})
+            self.assertEqual(
+                designed, [_DESIGNED[i % len(_DESIGNED)] for i in range(self.LENGTH)],
+                label)
+            target_names = set()
+            cmd.iterate('%s and chain %s' % (self.name, target_chain), 'S.add(resn)',
+                        space={'S': target_names})
+            self.assertEqual(target_names, {_TARGET_RESN}, label)
+
+    def testTheSeedRefusesAudiblyAndGivesThePlaceholderBack(self):
+        # Every refusal branch used to `return False` in silence, and the object it had
+        # already created was deleted -- so the design's row vanished from the object panel
+        # for the rest of a seventeen-minute run with nothing said anywhere.
+        self.designing.register_pending(self.name, 'job-1')
+        warned = []
+        original = self.designing.colorprinting.warning
+        self.designing.colorprinting.warning = lambda text: warned.append(text)
+        try:
+            self.assertFalse(self.designing.trajectory_seed(
+                self.name, _seed_pdb(length=self.LENGTH, target=self.TARGET),
+                self.target_atoms, self.design_atoms + 5))
+        finally:
+            self.designing.colorprinting.warning = original
+        self.assertTrue(warned, 'a refused seed must say so')
+        self.assertIn('no live view', warned[0])
+        self.assertIn(self.name, warned[0])
+        # And the placeholder is back, so the row stays.
+        self.assertIn(self.name, cmd.get_names('objects'))
+        self.assertEqual(cmd.count_atoms(self.name), 0)
+        self.assertNotIn(self.name, self.designing._TRAJECTORY)
+
+    # -- A session that already has a movie -------------------------------------
+
+    def testTheObjectStillAdvancesWhenTheSessionHasAMovie(self):
+        # `cmd.frame` writes the GLOBAL movie frame, and `CObject::getCurrentState` prefers
+        # the object's own `state` setting and only falls back to the global. So in any
+        # session carrying an `mset` -- a Timeline the user built, a movie, a reopened .pse
+        # -- driving the view with `cmd.frame` leaves the object on state 1 for the whole
+        # run, and after delivery shows the step-4 poly-ALA seed wearing the DESIGNED
+        # residue names. `cmd.save` at its default state=-1 would export that as the design.
+        cmd.mset('1 x10')
+        self.assertEqual(cmd.count_frames(), 10, 'the fixture must really have a movie')
+        self.assertTrue(self.seed())
+        for step in range(4):
+            self.assertTrue(
+                self.designing.trajectory_frame(self.name,
+                                                _flat(_backbone(self.LENGTH))))
+            self.assertEqual(self.displayed_state(), cmd.count_states(self.name),
+                             'the object must advance even with a movie in the session')
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        self.designing.deliver_result(self.result_path(coords=final), self.name)
+        self.assertEqual(cmd.count_states(self.name), 6)
+        self.assertEqual(self.displayed_state(), 6,
+                         'the delivered design must be what the object shows')
+        # And the state it shows really is the design, not the seed.
+        for atom, expected in zip(self.chain_coords('B', self.displayed_state()), final):
+            for axis in range(3):
+                self.assertAlmostEqual(atom[axis], expected[axis], places=3)
+
+    def testAFrameCannotLandOnADifferentObjectOfTheSameName(self):
+        # Open yesterday's .pse of this very design mid-run and the atom count matches
+        # exactly, so counting cannot tell the two apart. The user's saved design would be
+        # handed this run's rollout states -- and at delivery a rename of its residues,
+        # because residue names are per-object.
+        self.assertTrue(self.seed())
+        self.assertTrue(self.designing.trajectory_frame(self.name,
+                                                        _flat(_backbone(self.LENGTH))))
+        # Same name, same atoms, different object.
+        cmd.delete(self.name)
+        cmd.read_pdbstr(_seed_pdb(length=self.LENGTH, target=self.TARGET),
+                        self.name, zoom=0)
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms,
+                         'the impostor must be indistinguishable by atom count')
+        self.assertFalse(
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH))),
+            'a frame must not land on an object this recording did not seed')
+        self.assertEqual(cmd.count_states(self.name), 1)
+
+    def testDeliveryAssignsSecondaryStructureFromTheDESIGNNotTheRollout(self):
+        # `dss`'s default is state 0 = ALL states, and a live object's earlier states are
+        # unsettled rollout frames. Letting step 4 vote is the "every design renders as
+        # featureless loops" failure the explicit state exists to prevent.
+        helix = _backbone(20)                       # cmd.fab(..., ss=1) is a helix
+        self.assertTrue(_seed(self.designing, self.name, length=20,
+                              target=self.TARGET, coords=_cloud(20, 9.0)))
+        for _ in range(4):
+            self.designing.trajectory_frame(self.name, _flat(_cloud(20, 9.0)))
+        path = self.tempfile()
+        with open(path, 'w') as handle:
+            handle.write(_result_pdb(length=20, target=self.TARGET, coords=helix))
+        self.designing.deliver_result(path, self.name)
+
+        assigned = []
+        cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(ss)',
+                    space={'L': assigned})
+        self.assertEqual(len(assigned), 20)
+        self.assertIn('H', assigned,
+                      'secondary structure must come from the delivered design, not from '
+                      'the noise states in front of it (got %r)' % ''.join(assigned))
 
     # -- The camera, across the whole run --------------------------------------
 
