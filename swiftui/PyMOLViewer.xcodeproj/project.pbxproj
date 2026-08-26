@@ -397,7 +397,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_154EE8C0-7D97-4112-B771-CB10BA95C0C6" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_F3F316DE-0987-41B7-9ECF-8C063E861C7F" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -647,10 +647,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_CDEDEB55-88BC-48C2-A104-4BB10D2322D5" /* swiftui */ = {
+		"TEMP_303BE09A-9D43-493B-AAEE-D3C942A3C3C4" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_154EE8C0-7D97-4112-B771-CB10BA95C0C6" /* PyMOLBridge.xcconfig */,
+				"TEMP_F3F316DE-0987-41B7-9ECF-8C063E861C7F" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1685,7 +1685,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_154EE8C0-7D97-4112-B771-CB10BA95C0C6" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_F3F316DE-0987-41B7-9ECF-8C063E861C7F" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1792,7 +1792,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_154EE8C0-7D97-4112-B771-CB10BA95C0C6" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_F3F316DE-0987-41B7-9ECF-8C063E861C7F" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1926,7 +1926,7 @@
 			repositoryURL = "https://github.com/javierbq/rfd3-mlx.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.2;
+				minimumVersion = 0.1.3;
 			};
 		};
 		58A6BB52C9446E5F8EFF49B1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {

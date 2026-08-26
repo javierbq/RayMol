@@ -285,7 +285,16 @@ final class RFD3JobManager: InferenceRuntime {
                 let trajectory = Self.trajectoryObjectName(for: objectName)
                 let interval = Self.trajectoryStepInterval
                 var seeded = false
-                options.onStepCoords = { [weak self] step, materialise in
+                // `onStepDenoised` streams px0 -- the denoiser's prediction of the CLEAN
+                // structure at that step -- not the raw EDM iterate. It is the hook that
+                // makes this feature watchable: the iterate's schedule starts at
+                // `sigmaData`(16) x `sMax`(160) = 2560 A, so its early states are an
+                // off-screen cloud, while px0 is protein-scale at every step because the
+                // EDM output preconditioning scales the network's output by `sigmaData`
+                // rather than by sigma. Measured upstream on a 50-step albumin rollout:
+                // 33.9 A at step 1 against 6904.6 A for the iterate at the same step, and
+                // 35.8 / 36.1 / 35.2 / 39.2 / 38.9 A at steps 1 / 10 / 20 / 30 / 49.
+                options.onStepDenoised = { [weak self] step, materialise in
                     guard let self else { return }
                     // `total` is not passed to this callback, so the final-step rule uses
                     // the requested schedule's last transition: numTimesteps - 1.

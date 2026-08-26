@@ -91,9 +91,14 @@ packages:
   # all. Bump them together and re-tag.
   RFD3MLX:
     url: https://github.com/javierbq/rfd3-mlx.git
-    # 0.1.2 is a FLOOR: `Options.onStepCoords` and `FeatSet.origin` only exist from there,
-    # and RFD3JobManager's live-trajectory path does not compile against 0.1.1.
-    from: 0.1.2
+    # 0.1.3 is a FLOOR, and `from:` means >=0.1.3 <1.0.0, so it is also the only version
+    # this branch can resolve to today. 0.1.3 REPLACED the trajectory hook -- 0.1.2's
+    # `Options.onStepCoords` was removed, not deprecated, in favour of
+    # `Options.onStepDenoised` (same shape, same 1-based step, same lazy closure) -- so a
+    # `from: 0.1.2` pin would resolve to 0.1.3 anyway and fail to compile the moment
+    # Package.resolved was regenerated. `FeatSet.origin`, which the live path also needs,
+    # arrived in 0.1.2 and is still there.
+    from: 0.1.3
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
