@@ -106,8 +106,8 @@ struct DesignBackboneBar: View {
             Toggle("Live", isOn: $controller.liveView)
                 .toggleStyle(.checkbox)
                 .accessibilityIdentifier("designBackbone.liveView")
-                .help("Watch the chain diffuse: builds a scrubbable "
-                      + "<result>_traj object, one state per frame")
+                .help("Watch the chain diffuse: the result object is built up one "
+                      + "state per frame and ends on the finished design")
 
             Button { showAdvanced.toggle() } label: { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(.plain).help("Advanced options")

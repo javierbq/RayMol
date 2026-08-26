@@ -19,11 +19,37 @@ final class RFD3TrajectoryTests: XCTestCase {
     }
 
     /// One entry per emitted slot, distinct in all three components, in the order
-    /// `frame(flat:length:origin:)` returns and `seedPDB` consumes.
+    /// `frame(flat:length:origin:)` returns and `seed` consumes.
     private func seedCoords(length: Int) -> [SIMD3<Double>] {
         (0 ..< length * RFD3Trajectory.emittedSlots.count).map {
             SIMD3(Double($0), Double($0) + 0.5, Double($0) + 0.25)
         }
+    }
+
+    /// A target as the wire carries one: `residues` residues of `atomsEach` atoms, far
+    /// enough from the generated chain's fixture coordinates to tell the two apart in a
+    /// written record.
+    private func target(residues: Int,
+                        atomsEach: Int = 4) -> [InferenceJob.DesignResidue] {
+        let names = ["N", "CA", "C", "O", "CB"]
+        return (0 ..< residues).map { residue in
+            InferenceJob.DesignResidue(
+                chain: "A", resi: String(residue + 41), resn: "GLY",
+                atoms: (0 ..< atomsEach).map { slot in
+                    InferenceJob.DesignAtom(
+                        name: names[slot % names.count],
+                        xyz: [-100 - Double(residue), Double(slot), 50])
+                })
+        }
+    }
+
+    /// The seed's PDB text for a DESIGN-ONLY object -- no target -- which is what most
+    /// of the assertions below are about. `seed` returns nil on refusal, and a test that
+    /// wants the refusal asserts on that instead.
+    private func seedPDB(length: Int, chain: String,
+                         coords: [SIMD3<Double>]) -> String {
+        RFD3Trajectory.seed(target: [], length: length, chain: chain,
+                            coords: coords)?.pdb ?? ""
     }
 
     func testAFrameKeepsFiveAtomsPerDesignedResidue() {
@@ -66,7 +92,7 @@ final class RFD3TrajectoryTests: XCTestCase {
     }
 
     func testTheSeedPDBHasOneResidueOfFiveAtomsPerDesignedResidue() {
-        let pdb = RFD3Trajectory.seedPDB(length: 4, chain: "B",
+        let pdb = seedPDB(length: 4, chain: "B",
                                          coords: seedCoords(length: 4))
         let atoms = pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }
         XCTAssertEqual(atoms.count, 20)
@@ -83,7 +109,7 @@ final class RFD3TrajectoryTests: XCTestCase {
         // atoms refuses every bond permanently, so the object renders as unbonded crosses
         // with no backbone for its entire life — measured, 0 bonds vs 119 from a seed
         // carrying real coordinates for a 24-residue design.
-        let pdb = RFD3Trajectory.seedPDB(length: 2, chain: "B",
+        let pdb = seedPDB(length: 2, chain: "B",
                                          coords: seedCoords(length: 2))
         let atoms = pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }
         XCTAssertEqual(atoms.count, 10)
@@ -105,16 +131,34 @@ final class RFD3TrajectoryTests: XCTestCase {
         // converged state the user scrubs to and into any saved session. The CONECT
         // records make the answer 119 regardless -- and 119, not 238, from settled
         // geometry, because PyMOL merges them with what it would have inferred.
-        let pdb = RFD3Trajectory.seedPDB(length: 4, chain: "B",
-                                         coords: seedCoords(length: 4))
+        //
+        // With a TARGET in front of it, which is what production seeds: the generated
+        // chain no longer starts at serial 1, so a record naming serial 1 would bond two
+        // atoms of the TARGET to each other.
+        let seed = XCTUnwrap2(RFD3Trajectory.seed(target: target(residues: 3), length: 4,
+                                                  chain: "B",
+                                                  coords: seedCoords(length: 4)))
+        let pdb = seed.pdb
         let conect = pdb.split(separator: "\n").filter { $0.hasPrefix("CONECT") }
+            .map(String.init)
         // 4 within each residue (N-CA, CA-C, C-O, CA-CB) + 3 peptide bonds.
         XCTAssertEqual(conect.count, 4 * 4 + 3)
-        // Residue 0 is serials 1...5 in emittedSlots order, so N-CA is 1-2 and CA-CB
-        // is 2-5; the peptide bond joins residue 0's C (3) to residue 1's N (6).
-        XCTAssertTrue(conect.contains("CONECT    1    2"), conect.joined(separator: "|"))
-        XCTAssertTrue(conect.contains("CONECT    2    5"), conect.joined(separator: "|"))
-        XCTAssertTrue(conect.contains("CONECT    3    6"), conect.joined(separator: "|"))
+        // 12 target atoms, then a TER, so the generated chain starts at serial 14.
+        XCTAssertEqual(seed.designFirstSerial, 14)
+        let first = seed.designFirstSerial
+        // Residue 0 is `first ..< first + 5` in emittedSlots order, so N-CA is 14-15 and
+        // CA-CB is 15-18; the peptide bond joins residue 0's C (16) to residue 1's N (19).
+        func record(_ a: Int, _ b: Int) -> String {
+            String(format: "CONECT%5d%5d", a, b)
+        }
+        XCTAssertTrue(conect.contains(record(first, first + 1)),
+                      conect.joined(separator: "|"))
+        XCTAssertTrue(conect.contains(record(first + 1, first + 4)),
+                      conect.joined(separator: "|"))
+        XCTAssertTrue(conect.contains(record(first + 2, first + 5)),
+                      conect.joined(separator: "|"))
+        // And nothing pointing into the target.
+        XCTAssertFalse(conect.contains(record(1, 2)), conect.joined(separator: "|"))
         // After the chain terminator and before END, where a PDB reader expects them.
         let lines = pdb.split(separator: "\n")
         XCTAssertLessThan(lines.firstIndex(where: { $0.hasPrefix("TER") }) ?? .max,
@@ -123,19 +167,19 @@ final class RFD3TrajectoryTests: XCTestCase {
     }
 
     func testAOneResidueSeedHasNoPeptideBondToInvent() {
-        let conect = RFD3Trajectory.conectRecords(length: 1)
+        let conect = RFD3Trajectory.conectRecords(length: 1, firstSerial: 1)
         XCTAssertEqual(conect.count, 4)
-        XCTAssertTrue(RFD3Trajectory.conectRecords(length: 0).isEmpty)
+        XCTAssertTrue(RFD3Trajectory.conectRecords(length: 0, firstSerial: 1).isEmpty)
     }
 
     func testASeedWithTheWrongCoordinateCountIsRefused() {
         // Degrades to "no live view" (an empty string the caller skips) rather than to a
         // half-filled object that every later frame would then fail the atom-count guard
         // against.
-        XCTAssertTrue(RFD3Trajectory.seedPDB(length: 4, chain: "B", coords: []).isEmpty)
-        XCTAssertTrue(RFD3Trajectory.seedPDB(length: 4, chain: "B",
+        XCTAssertTrue(seedPDB(length: 4, chain: "B", coords: []).isEmpty)
+        XCTAssertTrue(seedPDB(length: 4, chain: "B",
                                              coords: seedCoords(length: 3)).isEmpty)
-        XCTAssertTrue(RFD3Trajectory.seedPDB(length: 0, chain: "B", coords: []).isEmpty)
+        XCTAssertTrue(seedPDB(length: 0, chain: "B", coords: []).isEmpty)
     }
 
     func testTheSeedAcceptsExactlyWhatAFrameProduces() {
@@ -145,7 +189,7 @@ final class RFD3TrajectoryTests: XCTestCase {
         // not show up anywhere else without a 672 MB pack and a real rollout.
         let f = RFD3Trajectory.frame(flat: flat(atoms: 14 * 6 + 40), length: 6,
                                      origin: SIMD3(1, 2, 3))
-        let pdb = RFD3Trajectory.seedPDB(length: 6, chain: "B", coords: f)
+        let pdb = seedPDB(length: 6, chain: "B", coords: f)
         XCTAssertFalse(pdb.isEmpty, "seedPDB rejected a frame that frame() produced")
         XCTAssertEqual(pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }.count,
                        30)
@@ -162,9 +206,29 @@ final class RFD3TrajectoryTests: XCTestCase {
         XCTAssertEqual(kept.count, 50)
     }
 
-    func testTheTrajectoryObjectIsNamedAfterTheResult() {
-        XCTAssertEqual(RFD3JobManager.trajectoryObjectName(for: "rfd3_design_ab12cd34"),
-                       "rfd3_design_ab12cd34_traj")
+    func testTheSeedStatementNamesTheResultObjectAndItsLayout() {
+        // The live object IS the result object -- no `_traj` suffix, no second object --
+        // and the statement carries the layout the frame path needs to splice into it.
+        let seed = RFD3Trajectory.seed(target: target(residues: 3), length: 2,
+                                       chain: "B", coords: seedCoords(length: 2))
+        let source = RFD3JobManager.seedPython(name: "rfd3_design_ab12cd34",
+                                               seed: XCTUnwrap2(seed))
+        XCTAssertTrue(source.contains("'rfd3_design_ab12cd34'"), source)
+        XCTAssertFalse(source.contains("_traj"), source)
+        // 12 target atoms before the generated chain, 10 atoms in it.
+        XCTAssertTrue(source.hasSuffix(", 12, 10)"), source)
+    }
+
+    /// `XCTUnwrap` throws, and these tests are not `throws`. One helper rather than a
+    /// `try!` per call site.
+    private func XCTUnwrap2<T>(_ value: T?,
+                               file: StaticString = #filePath,
+                               line: UInt = #line) -> T {
+        guard let value else {
+            XCTFail("expected a value", file: file, line: line)
+            fatalError("unreachable")
+        }
+        return value
     }
 
     func testTheFrameStatementImportsAndEscapesTheName() {
@@ -194,11 +258,11 @@ final class RFD3TrajectoryTests: XCTestCase {
         // pythonLiteral deletes newlines (single-line token contract). seedPython must
         // use pythonMultilineLiteral so PyMOL's line-oriented PDB reader sees record
         // separators and can parse more than the first atom.
-        let pdb = RFD3Trajectory.seedPDB(length: 2, chain: "B",
-                                         coords: seedCoords(length: 2))
+        let seed = XCTUnwrap2(RFD3Trajectory.seed(target: [], length: 2, chain: "B",
+                                                  coords: seedCoords(length: 2)))
         // The PDB has multiple ATOM records separated by real newlines.
-        XCTAssertTrue(pdb.contains("\n"), "seedPDB must produce a multi-line string")
-        let source = RFD3JobManager.seedPython(name: "traj", pdb: pdb)
+        XCTAssertTrue(seed.pdb.contains("\n"), "the seed must be a multi-line string")
+        let source = RFD3JobManager.seedPython(name: "traj", seed: seed)
         // The two-character escape sequence must be in the source, not a joined line.
         XCTAssertTrue(source.contains("\\n"), source)
         // Each ATOM record's newline must survive as a \n escape: the buggy pythonLiteral
@@ -257,7 +321,7 @@ final class RFD3TrajectoryTests: XCTestCase {
         // view" rather than an object whose y and z were silently read as zero.
         var coords = seedCoords(length: 2)
         coords[3] = SIMD3(-1000, 1, 2)
-        XCTAssertTrue(RFD3Trajectory.seedPDB(length: 2, chain: "B", coords: coords)
+        XCTAssertTrue(seedPDB(length: 2, chain: "B", coords: coords)
                         .isEmpty)
     }
 
@@ -265,7 +329,7 @@ final class RFD3TrajectoryTests: XCTestCase {
         // The structural invariant, asserted on the whole seed rather than one record:
         // columns 31-38, 39-46 and 47-54 must each parse as the number that was written.
         let coords = seedCoords(length: 3)
-        let pdb = RFD3Trajectory.seedPDB(length: 3, chain: "B", coords: coords)
+        let pdb = seedPDB(length: 3, chain: "B", coords: coords)
         let atoms = pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }
         XCTAssertEqual(atoms.count, 15)
         for (index, line) in atoms.enumerated() {

@@ -80,6 +80,18 @@ MAX_RECENT = 16
 #: _PENDING before the discard reached it.
 _LAST_INFO = {}
 
+#: name -> the layout of a live design's object, while its run is still going.
+#:
+#: `{'offset': atoms before the generated chain, 'atoms': atoms in it,
+#:   'target': the target's coordinates, as a list of [x, y, z]}`
+#:
+#: Written by `trajectory_seed`, read by `trajectory_frame`, and REMOVED by whichever of
+#: `deliver_result` / `discard_pending` gets there first. Its presence is what says "every
+#: atom of this object came from the live view, not from a delivered design" -- which is
+#: what `discard_pending` and `session_save` need in order to keep treating a run that
+#: never finished as though the object were still the empty placeholder it replaced.
+_TRAJECTORY = {}
+
 
 def weight_cache():
     """The process-wide WeightCache -- `predicting`'s, not a second one.
@@ -495,12 +507,22 @@ def register_pending(name, job_id, _self=cmd):
 
 
 def discard_pending(name, _self=cmd):
-    """Forget a placeholder, deleting the object only if it never received atoms.
+    """Forget a placeholder, deleting the object only if it never received a design.
 
     The atom check is the important part: cleanup can race a job that just finished, and
     deleting a completed design would destroy the very thing that took seventeen minutes.
+
+    A live run makes "no atoms" the wrong question, so it is not the only one asked. Live
+    view builds the design's own object as it goes, so a run that is cancelled or fails
+    leaves an object full of atoms that are NOT a design -- a half-diffused poly-ALA
+    backbone under a name that says `rfd3_design_<key>`, indistinguishable from a finished
+    one in the object panel and in any .pse saved afterwards. `_TRAJECTORY` says every
+    atom in there came from the recording, and while it does, the object counts as empty
+    for this purpose and goes with the placeholder. The name means the finished design or
+    nothing.
     """
     name = _legal_object_name(name, _self=_self)
+    recording = _TRAJECTORY.pop(name, None)
     fresh = None
     try:
         fresh = pending_info(name, _self=_self)
@@ -515,7 +537,8 @@ def discard_pending(name, _self=cmd):
     _PENDING.pop(name, None)
     _TRACK.pop(name, None)
     try:
-        if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
+        if name in _self.get_names('objects') and (
+                recording is not None or _self.count_atoms(name) == 0):
             _self.delete(name)
     except Exception:
         pass
@@ -527,6 +550,10 @@ def clear_pending(_self=cmd):
         if isinstance(job, _DeferredDesignJob):
             _JOBS.pop(job_id, None)
     for name in list(_PENDING):
+        discard_pending(name, _self=_self)
+    # After the loop: discard_pending removes its own entry, and this catches a recording
+    # whose name has already left _PENDING.
+    for name in list(_TRAJECTORY):
         discard_pending(name, _self=_self)
     _TRACK.clear()
     _RECENT.clear()
@@ -640,11 +667,18 @@ def pending_detail(name, _self=cmd):
 
 
 def session_save(session, _self=cmd):
-    """Session-save task: keep pending placeholders out of the .pse.
+    """Session-save task: keep unfinished designs out of the .pse.
 
     A placeholder is a real zero-atom object and DOES survive a session round-trip, so a
     session saved mid-design would carry an object that can never fill. Only objects that
-    are BOTH pending and still empty are dropped.
+    are BOTH pending and unfinished are dropped.
+
+    Unfinished means one of two things, not one. An empty placeholder is the ordinary
+    case. A LIVE design is the other: its object has atoms from the first captured frame
+    onwards, but they are a half-diffused poly-ALA backbone rather than a design, and it
+    is sitting under the design's own name -- reopened tomorrow, nothing would say that
+    the thing called `rfd3_design_<key>` is a rollout frozen at step 84. `_TRAJECTORY`
+    holds the name for exactly as long as that is true.
     """
     names = session.get('names')
     if not names or not _PENDING:
@@ -653,7 +687,7 @@ def session_save(session, _self=cmd):
     for entry in names:
         if entry and entry[0] in _PENDING:
             try:
-                if _self.count_atoms(entry[0]) == 0:
+                if entry[0] in _TRAJECTORY or _self.count_atoms(entry[0]) == 0:
                     continue
             except Exception:
                 continue
@@ -816,21 +850,36 @@ def _weight_version(generator_id):
     return ('%s %s' % (bundle.id, version)).strip()
 
 
-# -- The live trajectory object ------------------------------------------------
+# -- Building the design's object live ----------------------------------------
 #
 # A design takes minutes and shows nothing until it ends. With `live_view=1` the runtime
-# streams the rollout here, one state per captured frame, into an object BESIDE the result
-# rather than into the result itself.
+# streams the rollout here, one state per captured frame, into THE DESIGN'S OWN OBJECT --
+# the same name, the same contents and the same writer as a run without it. There is no
+# second object: the finished design arrives as one more state of the one the user has
+# been watching, and the object is left showing it.
 #
-# Beside, not into, for a reason worth keeping: two behaviours key off a pending
-# placeholder being EMPTY -- session_save drops it from a .pse only if it has no atoms, and
-# discard_pending deletes it only if it has no atoms. Populating the placeholder live would
-# silently change both, so a cancelled run would leave a half-diffused structure behind and
-# a mid-run save would persist one. A separate object needs neither weakened.
+# The object holds the target as well as the generated chain, which is what makes that
+# possible: it is what `RFD3ResultWriter.compose` emits for the result, atom for atom, so
+# the result's coordinates can simply be appended. Only two things differ while the run is
+# going -- the generated chain's coordinates are a rollout frame rather than the answer,
+# and its residues are named ALA because the sequence is not settled yet. Delivery fixes
+# both.
+#
+# Each frame carries the generated chain ONLY. Resending the target's coordinates fifty
+# times would be pointless traffic, so the target's half of every state is copied from
+# the seed and the frame is spliced onto it here. That needs to know where the generated
+# chain starts and how long it is, which is why `trajectory_seed` takes both and records
+# them rather than anything assuming the generated chain is simply "the last atoms".
 
 
-def trajectory_seed(name, pdb, _self=cmd):
-    """Create the trajectory object from the FIRST captured frame. Called once.
+def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
+    """Create the design's object from the FIRST captured frame. Called once.
+
+    `pdb` is the whole object -- target chain plus a poly-ALA generated chain -- as
+    `RFD3Trajectory.seed` composed it. `design_offset` is how many atoms precede the
+    generated chain in it and `design_atoms` how many are in it; both are reported by the
+    writer that emitted the string, not counted here, and they are recorded so
+    `trajectory_frame` can splice into the right slice.
 
     The seed is state 1, not a placeholder before it: PyMOL infers connectivity ONCE, at
     read time, from the coordinates in this string, and `load_coordset` moves atoms without
@@ -838,15 +887,22 @@ def trajectory_seed(name, pdb, _self=cmd):
     bond for the life of the object -- and into any .pse saved from it.
 
     Never raises: live view is a nicety, and a design that would have succeeded must not
-    fail because a frame could not be drawn. A failure here simply leaves no object, and
-    the frames that follow find nothing to append to and are dropped for the same reason.
+    fail because a frame could not be drawn. A failure here simply leaves no recording, and
+    the frames that follow find no record to splice into and are dropped for the same
+    reason -- and delivery then loads the result plainly, exactly as a non-live run does.
     """
     try:
         name = _legal_object_name(name, _self=_self)
+        offset = int(design_offset)
+        atoms = int(design_atoms)
+        if atoms <= 0 or offset < 0:
+            return False
+        _TRAJECTORY.pop(name, None)
         if name in _self.get_names('objects'):
             # Replace rather than append. `read_pdbstr` into an EXISTING object appends
             # states, so re-running a named design with Live on would splice the previous
-            # run's trajectory onto the front of the new one.
+            # run's recording onto the front of the new one. It is also what replaces the
+            # zero-atom placeholder `register_pending` created.
             _self.delete(name)
         # `zoom=0` is LOAD-BEARING, not tidiness -- and it is why the comment that used to
         # sit here claiming "not zoomed" was false. Without it `read_pdbstr` inherits
@@ -861,40 +917,147 @@ def trajectory_seed(name, pdb, _self=cmd):
         # the user is looking at the target; the object appearing in the panel is enough.
         # Same reason `deliver_result` loads with zoom=0.
         _self.read_pdbstr(str(pdb), name, zoom=0)
+        if _self.count_atoms(name) != offset + atoms:
+            # The string did not contain the object the writer said it did. No live view,
+            # and no half-seeded object left under the design's name either.
+            _self.delete(name)
+            return False
+        # No covalent bonds between the target and the generated chain, ever.
+        #
+        # This is the one hazard the target and the design sharing an object introduces,
+        # and it is permanent when it fires: PyMOL infers connectivity ONCE, from the
+        # FIRST captured frame, and that frame is step 4 of 199. A generated chain is
+        # MEANT to sit against the target, so an early, unsettled frame routinely puts
+        # some of its atoms within bonding distance of target atoms -- measured on a real
+        # 24-residue design against a 40-residue target, an early frame produced 34
+        # inter-chain bonds where the finished structure has 0. They would then be drawn
+        # as sticks joining the design to the target in every state including the
+        # delivered one, and saved into any .pse.
+        #
+        # By INDEX, from the layout the writer reported, rather than by chain id: the
+        # target may legitimately use the same chain letter the design was given.
+        # Nothing legitimate is removed -- a generated backbone is a separate chain and
+        # the result path produces no inter-chain bonds either (measured 0).
+        if offset:
+            _self.unbond('%s and index 1-%d' % (name, offset),
+                         '%s and index %d-%d' % (name, offset + 1, offset + atoms))
+        # The target's half of every state, taken from the object as PyMOL actually holds
+        # it rather than re-parsed out of the string. It never changes: the target is held
+        # fixed by contract for the whole run, and every frame is spliced onto this.
+        _TRAJECTORY[name] = {
+            'offset': offset,
+            'atoms': atoms,
+            'target': [[float(value) for value in row]
+                       for row in _self.get_coordset(name, 1)[:offset]],
+        }
         return True
     except Exception as exc:
+        _TRAJECTORY.pop(name, None)
         colorprinting.warning(' design: could not start the live view (%s)' % exc)
         return False
 
 
 def trajectory_frame(name, coords, _self=cmd):
-    """Append one captured frame as a new state of `name`.
+    """Append one captured frame as a new state of `name`, and show it.
 
-    `coords` is a FLAT list of floats, three per atom, in the object's original atom
-    order -- which is why `load_coordset` is the primitive here rather than `load_coords`:
-    it is documented to load in the order the file had, and that order is the one
-    `RFD3Trajectory.seedPDB` wrote.
+    `coords` is a FLAT list of floats, three per atom, covering the GENERATED CHAIN ONLY,
+    in the order the seed wrote it. The target's coordinates are spliced in front of it
+    from the record `trajectory_seed` made, so the object grows a state whose target half
+    is exactly the target half of state 1.
 
-    Never raises, for the reason `trajectory_seed` does not. An unknown object is a no-op
-    rather than an error: the user may have deleted it mid-run, which is legitimate.
+    `load_coordset` rather than `load_coords`: it is documented to load in the order the
+    file had, and that order is the one `RFD3ResultWriter.emit` wrote.
+
+    The new state is then made the displayed one, so the user watches the design progress
+    rather than having to scrub for it.
+
+    Never raises, for the reason `trajectory_seed` does not. A name with no record -- an
+    object the user deleted mid-run, or a run whose seed failed -- is a no-op rather than
+    an error.
     """
     try:
         name = _legal_object_name(name, _self=_self)
-        if name not in _self.get_names('objects'):
+        record = _TRAJECTORY.get(name)
+        if record is None or name not in _self.get_names('objects'):
             return False
         values = list(coords)
         if not values or len(values) % 3:
             return False
         atoms = len(values) // 3
-        if atoms != _self.count_atoms(name):
-            # A frame whose atom count does not match the object cannot be a state of it.
-            # Dropped rather than coerced: a partial frame would silently misplace atoms.
+        if atoms != record['atoms']:
+            # A frame whose atom count is not the GENERATED CHAIN's cannot be a state of
+            # it. The comparison is against the recorded length rather than against the
+            # whole object, which now holds the target too: measured against
+            # `count_atoms`, every frame of every live run would be short by the target
+            # and none would ever land. Dropped rather than coerced: a partial frame
+            # would silently misplace atoms.
             return False
-        frame = [values[i * 3:i * 3 + 3] for i in range(atoms)]
-        _self.load_coordset(frame, name, _self.count_states(name) + 1)
+        if len(record['target']) + record['atoms'] != _self.count_atoms(name):
+            # The object is no longer the one the record describes -- atoms removed or
+            # added under it. Refused rather than spliced into a shape that has changed.
+            return False
+        frame = record['target'] + [values[i * 3:i * 3 + 3] for i in range(atoms)]
+        state = _self.count_states(name) + 1
+        _self.load_coordset(frame, name, state)
+        _self.frame(state)
         return True
     except Exception:
         return False
+
+
+def _finish_trajectory(path, name, record, _self=cmd):
+    """Turn a live recording into the finished design. True if it did.
+
+    Two steps, and the ORDER of them is the whole function.
+
+    1. Rename the generated chain's residues to the sequence the design actually produced.
+       Residue names in PyMOL are per-OBJECT, not per-state, so this is not a property of
+       the last state -- every state of the recording ends up showing the designed
+       sequence. That is fine, and better than leaving poly-ALA behind: the alternative is
+       an object whose residues are named after a placeholder identity the design does not
+       have.
+    2. THEN append the result's coordinates as one more state.
+
+    Not `cmd.load(path, name)`, which does not merge: mismatched residue names make PyMOL
+    treat the incoming atoms as new ones, and the object goes from 450 atoms to 530.
+    Renaming first and appending with `load_coordset` keeps it at 450 atoms and 462 bonds,
+    with the last state 0.000000 A from the result.
+
+    The result file is read through PyMOL rather than parsed here, and positionally rather
+    than by chain: the result and the recording came out of ONE writer, so atom i of one is
+    atom i of the other, and nothing has to agree about which chain id the generated chain
+    got.
+
+    Returns False rather than raising if the two do not line up, and the caller then loads
+    the result plainly.
+    """
+    scratch = _self.get_unused_name('_design_result')
+    try:
+        _self.load(path, scratch, zoom=0)
+        expected = len(record['target']) + record['atoms']
+        if _self.count_atoms(scratch) != expected:
+            return False
+        if _self.count_atoms(name) != expected:
+            return False
+        names = []
+        _self.iterate(scratch, 'L.append(resn)', space={'L': names})
+        if len(names) != expected:
+            return False
+        source = iter(names)
+        _self.alter(name, 'resn = next(_names)',
+                    space={'_names': source, 'next': next})
+        _self.load_coordset(_self.get_coordset(scratch, 1), name,
+                            _self.count_states(name) + 1)
+        return True
+    except Exception as exc:
+        colorprinting.warning(' design: could not complete the live view for %s (%s)'
+                              % (name, exc))
+        return False
+    finally:
+        try:
+            _self.delete(scratch)
+        except Exception:
+            pass
 
 
 def deliver_result(path, name, seed=None, _self=cmd):
@@ -907,11 +1070,27 @@ def deliver_result(path, name, seed=None, _self=cmd):
     `zoom=0` on purpose. A design can land seventeen minutes after submit, and pulling the
     camera onto it while the user is working elsewhere is hostile. The placeholder has
     been visible in the object panel since the command returned.
+
+    A LIVE run lands differently and in one object, not two. Its object already exists and
+    already holds this design's target and generated chain, so the result is appended to
+    it as one more state instead of being loaded over it -- `cmd.load` into an existing
+    object does not merge, it adds atoms. If that cannot be done for any reason the
+    recording is thrown away and the result is loaded exactly as a non-live run loads it,
+    so the worst case is losing the recording rather than losing the design.
     """
     name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
+    # Popped before anything else can fail: from here on this object is a delivered design
+    # rather than a recording, and `discard_pending` must never delete it.
+    live = _TRAJECTORY.pop(name, None)
     try:
-        _self.load(path, name, zoom=0)
+        if live is not None and not _finish_trajectory(path, name, live, _self=_self):
+            # Half-finished is not an option: the recording is not the design, and
+            # `cmd.load` on top of it would silently double atoms. Start clean.
+            _self.delete(name)
+            live = None
+        if live is None:
+            _self.load(path, name, zoom=0)
         if seed is not None:
             # In the state title, so a design says which seed produced it -- and it
             # survives into a saved .pse, which is what makes a run reproducible after
@@ -925,12 +1104,33 @@ def deliver_result(path, name, seed=None, _self=cmd):
         # without it cartoon renders every design as featureless loops. A generated
         # backbone carries no HELIX/SHEET records to fall back on either -- and unlike a
         # prediction, judging a design by eye IS looking at its secondary structure.
+        #
+        # A live object needs the state said. `dss`'s default is state 0, meaning ALL
+        # states, and a live object's earlier states are unsettled rollout frames whose
+        # geometry is not the design's -- assigning from them would let step 4 decide
+        # what the finished backbone is called. Secondary structure is per-ATOM in PyMOL,
+        # so there is one assignment to get right and the last state is the design.
         try:
-            _self.dss(name)
+            if live is not None:
+                _self.dss(name, state=_self.count_states(name))
+            else:
+                _self.dss(name)
         except Exception as exc:
             colorprinting.warning(' design: could not assign secondary structure to %s'
                                   ' (%s)' % (name, exc))
+        if live is not None:
+            # Leave the object showing the finished design rather than whichever frame
+            # the last append happened to advance to.
+            try:
+                _self.frame(_self.count_states(name))
+            except Exception:
+                pass
         try:
+            # `count_states` IS the state the design landed in, and it is the last one for
+            # a live run as well as the only one for a plain one -- the metrics describe
+            # the finished coordinates, which are the final state either way. Filed once,
+            # from here, whether or not the object existed before this call: nothing in
+            # the live path records anything.
             record_run(name, landing, _self.count_states(name), _self=_self)
         except Exception as exc:
             colorprinting.warning(' design: could not record metrics for %s (%s)'
@@ -1007,10 +1207,13 @@ ARGUMENTS
     written into the state title, and part of the design key.
     {default: None, meaning "choose one"}
 
-    live_view = 0/1: stream the rollout into a scrubbable object named
-        <result>_traj, one state per captured frame, so the design can be watched
-        as it diffuses. Costs a little main-thread work per frame and leaves an
-        extra object behind. {default: 0}
+    live_view = 0/1: build the design's object up as it diffuses, one state per
+        captured frame, advancing the displayed state as each lands. The SAME single
+        object either way -- the finished design is appended as its last state and
+        left showing, so a live run and a plain one leave the same thing in the
+        session. Scrub the states afterwards to replay the rollout. A run that is
+        cancelled or fails leaves no object at all, as it does without this.
+        {default: 0}
 
 EXAMPLES
 

@@ -65,53 +65,62 @@ enum RFD3Trajectory {
         return out
     }
 
-    /// A poly-ALA backbone for the designed chain, used ONCE to give the trajectory
-    /// object its atoms — and, just as importantly, its BONDS.
+    /// The object a live run streams into: the TARGET at its real coordinates plus a
+    /// poly-ALA generated chain seeded from the FIRST captured frame.
     ///
-    /// `coords` is the FIRST captured frame, exactly as ``frame(flat:length:origin:)``
+    /// Emitted by ``RFD3ResultWriter/emit(target:designChain:designResidues:designSequence:remarks:extraRecords:)``,
+    /// the same function that writes the finished result, and that is the load-bearing
+    /// part. The live object IS the result object: when the run ends, the design's real
+    /// coordinates are appended to it as one more state instead of a second object being
+    /// created. Appending only works while the two are the same atoms in the same order,
+    /// so they are built by one function rather than by two that have to agree.
+    ///
+    /// `coords` is the first captured frame, exactly as ``frame(flat:length:origin:)``
     /// returns it: residue-major, ``emittedSlots`` order within a residue. That frame
     /// becomes state 1 rather than an extra state after a placeholder — so the caller must
-    /// NOT also append it — and the zeros this used to write are gone: an all-origin state
-    /// 1 was a state of the trajectory that no step of the rollout ever produced, and it
-    /// dragged every framing of the object (`zoom` gave z = -318.66 across all states
-    /// against -23.39 on the first real one).
+    /// NOT also append it — and it carries real coordinates rather than zeros: an
+    /// all-origin state 1 was a state no step of the rollout ever produced, and PyMOL
+    /// infers the generated chain's bonds from it once and for all.
     ///
-    /// Connectivity rides along as CONECT records rather than being left to the
-    /// coordinates; see ``conectRecords(length:)`` for why inference is not good enough
-    /// even at px0's protein scale.
+    /// Connectivity for the generated chain rides along as CONECT records rather than
+    /// being left to the coordinates; see ``conectRecords(length:firstSerial:)`` for why
+    /// inference is not good enough even at px0's protein scale. The TARGET needs none:
+    /// its coordinates are the real, settled structure, which PyMOL bonds correctly.
     ///
-    /// Returns `""` when `coords` is not exactly one entry per emitted slot, or when any
-    /// coordinate falls outside `RFD3ResultWriter.coordinateRange` and so cannot be
-    /// written in the PDB's eight-column fields. Either way the mismatch degrades to "no
-    /// live view" rather than to a mis-shaped or mis-columned object.
+    /// Returns `nil` when `coords` is not exactly one entry per emitted slot, or when any
+    /// coordinate — of the frame OR of the target — falls outside
+    /// `RFD3ResultWriter.coordinateRange` and so cannot be written in the PDB's
+    /// eight-column fields. Either way the mismatch degrades to "no live view" rather
+    /// than to a mis-shaped or mis-columned object.
     ///
     /// Poly-ALA is forced, not lazy: states of one object share a single atom set
     /// including residue names, and the sequence head's argmax changes during the rollout
     /// — a residue is LEU at step 40 and VAL at step 80. A fixed identity is also the
-    /// honest rendering of "the sequence is not settled yet". The engine allocates CB for
-    /// every designed residue, so ALA fits the atom set exactly.
-    static func seedPDB(length: Int, chain: String, coords: [SIMD3<Double>]) -> String {
-        guard length > 0, coords.count == length * emittedSlots.count else { return "" }
-        var lines: [String] = []
-        var serial = 1
-        for residue in 0 ..< length {
-            for (slot, name) in emittedSlots.enumerated() {
-                // nil means the coordinate does not fit the PDB's eight-column fields.
-                // `frame` already rejects those, so reaching this is a caller passing
-                // coordinates it did not get from `frame` — still "no live view" rather
-                // than a mis-columned object, because a design must never fail here.
-                guard let line = RFD3ResultWriter.atomRecord(
-                    serial: serial, name: name, resName: "ALA",
-                    chain: chain, resi: String(residue + 1),
-                    xyz: coords[residue * emittedSlots.count + slot]) else { return "" }
-                lines.append(line)
-                serial += 1
+    /// honest rendering of "the sequence is not settled yet". It is not the identity the
+    /// user is left with: delivery renames the chain to the design's real sequence before
+    /// appending the final state, and residue names in PyMOL are per-OBJECT rather than
+    /// per-state, so the finished object shows the designed sequence in every state.
+    static func seed(target: [InferenceJob.DesignResidue], length: Int, chain: String,
+                     coords: [SIMD3<Double>]) -> RFD3ResultWriter.Composed? {
+        guard length > 0, coords.count == length * emittedSlots.count else { return nil }
+        let residues: [[RFD3ResultWriter.Atom]] = (0 ..< length).map { residue in
+            emittedSlots.enumerated().map { slot, name in
+                RFD3ResultWriter.Atom(
+                    name: name, xyz: coords[residue * emittedSlots.count + slot])
             }
         }
-        lines.append(RFD3ResultWriter.terRecord(serial: serial))
-        lines.append(contentsOf: conectRecords(length: length))
-        lines.append("END")
-        return lines.joined(separator: "\n") + "\n"
+        // Numbered before emitting rather than after: the CONECT records have to name the
+        // serials the generated chain will get, and those start after the target and its
+        // TER. `Composed.designFirstSerial` reports the same number back, which is what
+        // lets a test hold the prediction against the emission.
+        let firstSerial = RFD3ResultWriter.designFirstSerial(target: target)
+        // `try?` rather than `try`: a target or a frame the PDB's columns cannot hold is
+        // "no live view", never a thrown error into a running rollout.
+        return try? RFD3ResultWriter.emit(
+            target: target, designChain: chain, designResidues: residues,
+            designSequence: String(repeating: "A", count: length),
+            remarks: [],
+            extraRecords: conectRecords(length: length, firstSerial: firstSerial))
     }
 
     /// The designed chain's bonds, stated rather than inferred.
@@ -139,11 +148,17 @@ enum RFD3Trajectory {
     /// Poly-ALA backbone topology: N-CA, CA-C, C-O and CA-CB within a residue, and
     /// C(i)-N(i+1) between them — `4 * length + (length - 1)` records. PyMOL merges these
     /// with anything it would have inferred, so a converged frame is not double-bonded.
-    static func conectRecords(length: Int) -> [String] {
+    ///
+    /// `firstSerial` is the PDB serial of the generated chain's first atom. It is a
+    /// parameter rather than 1 because the generated chain no longer starts the file: the
+    /// target is written before it, and a CONECT record naming serial 1 would bond two
+    /// atoms of the TARGET instead. Take it from
+    /// ``RFD3ResultWriter/designFirstSerial(target:)``.
+    static func conectRecords(length: Int, firstSerial: Int) -> [String] {
         guard length > 0 else { return [] }
         let slots = emittedSlots.count
         func serial(_ residue: Int, _ name: String) -> Int {
-            residue * slots + (emittedSlots.firstIndex(of: name) ?? 0) + 1
+            firstSerial + residue * slots + (emittedSlots.firstIndex(of: name) ?? 0)
         }
         var records: [String] = []
         for residue in 0 ..< length {

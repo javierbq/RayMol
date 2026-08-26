@@ -38,11 +38,13 @@ final class DesignBackboneController: ObservableObject {
     @Published var recyclingSteps = 2
     @Published var resultName = ""
 
-    /// Stream the rollout into a scrubbable `<result>_traj` object.
+    /// Build the result object live, one state per captured frame, instead of only at the
+    /// end.
     ///
-    /// Persisted and OFF by default: it leaves an extra ~50-state object behind and costs a
-    /// little main-thread work per frame, which is a reasonable thing to opt into and an
-    /// unreasonable thing to be given.
+    /// The same single object either way -- there is no second object, and the finished
+    /// design is its last state. Persisted and OFF by default: it turns a one-state result
+    /// into a ~51-state one and costs a little main-thread work per frame, which is a
+    /// reasonable thing to opt into and an unreasonable thing to be given.
     @Published var liveView = UserDefaults.standard.bool(forKey: DesignBackboneController.liveViewKey) {
         didSet { UserDefaults.standard.set(liveView, forKey: Self.liveViewKey) }
     }

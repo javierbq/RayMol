@@ -367,5 +367,99 @@ final class RFD3ResultWriterTests: XCTestCase {
         XCTAssertEqual(lines.filter { $0.hasPrefix("TER") }.count, 2,
                        "one TER per chain, unlike the engine's single trailing one")
     }
+
+    // MARK: One emitter, so the live seed and the result are the same atoms
+
+    /// The frame a rollout would produce for this fixture's 2-residue design, in the
+    /// order `RFD3Trajectory.frame` returns it.
+    private func liveFrame() -> [SIMD3<Double>] {
+        (0 ..< 10).map { SIMD3(Double($0) * 1.5, 60, -20) }
+    }
+
+    func testTheLiveSeedIsTheSameAtomsInTheSameOrderAsTheResult() throws {
+        // THE contract this refactor exists for. A live run seeds its object from
+        // `RFD3Trajectory.seed` and, when the design lands, appends the result's
+        // coordinates to that same object with `load_coordset` -- which matches
+        // coordinates to atoms BY POSITION and checks nothing. If the two ever emitted a
+        // different atom order, every atom of the finished design would be silently
+        // placed on a different atom, and nothing anywhere would say so.
+        //
+        // They cannot, because there is one emitter. This is the assertion that keeps it
+        // that way: identity (name, chain, residue number) atom by atom, over the whole
+        // object rather than over the generated chain, because the target is half of it.
+        let seed = try XCTUnwrap(RFD3Trajectory.seed(target: target(), length: 2,
+                                                     chain: "D", coords: liveFrame()))
+        let result = rows(try compose())
+        let live = rows(seed.pdb)
+        XCTAssertEqual(live.count, result.count)
+        XCTAssertEqual(live.count, 27, "17 target atoms + 2 residues x 5")
+        for (index, (a, b)) in zip(live, result).enumerated() {
+            XCTAssertEqual(a.name, b.name, "atom \(index) name")
+            XCTAssertEqual(a.chain, b.chain, "atom \(index) chain")
+            XCTAssertEqual(a.resi, b.resi, "atom \(index) resi")
+        }
+    }
+
+    func testTheLiveSeedCarriesTheTargetAtItsRealCoordinates() throws {
+        // The seed is not the generated chain alone any more. The target has to be in it,
+        // verbatim, or the object the user watches is not the object the design lands in
+        // -- and the first thing they would see is the target vanishing.
+        let seed = try XCTUnwrap(RFD3Trajectory.seed(target: target(), length: 2,
+                                                     chain: "D", coords: liveFrame()))
+        let live = rows(seed.pdb)
+        let composed = rows(try compose())
+        for index in 0 ..< seed.targetAtomCount {
+            XCTAssertEqual(live[index].xyz.x, composed[index].xyz.x, accuracy: 1e-3)
+            XCTAssertEqual(live[index].xyz.y, composed[index].xyz.y, accuracy: 1e-3)
+            XCTAssertEqual(live[index].xyz.z, composed[index].xyz.z, accuracy: 1e-3)
+            XCTAssertEqual(live[index].resn, composed[index].resn)
+        }
+    }
+
+    func testOnlyTheGeneratedChainDiffersBetweenTheSeedAndTheResult() throws {
+        // What the seed does NOT have: the answer. Its generated chain carries a rollout
+        // frame under poly-ALA names, and the delivered result carries the real
+        // coordinates under the real sequence. Both differences are expected and both are
+        // repaired at delivery -- the coordinates by appending a state, the names by
+        // renaming the chain once.
+        let seed = try XCTUnwrap(RFD3Trajectory.seed(target: target(), length: 2,
+                                                     chain: "D", coords: liveFrame()))
+        let live = rows(seed.pdb)
+        let composed = rows(try compose(designSequence: "GW"))
+        for index in seed.targetAtomCount ..< live.count {
+            XCTAssertEqual(live[index].resn, "ALA", "the seed's names must be poly-ALA")
+        }
+        XCTAssertEqual(composed[seed.targetAtomCount].resn, "GLY")
+        XCTAssertEqual(composed[live.count - 1].resn, "TRP")
+    }
+
+    func testTheEmittedLayoutIsTheLayoutTheRecordsActuallyHave() throws {
+        // The numbers the seed hands Python are the emitter's own account of what it
+        // wrote. If they were counted anywhere else they could disagree with the string,
+        // and the frame path would splice into the wrong slice for the whole run.
+        let seed = try XCTUnwrap(RFD3Trajectory.seed(target: target(), length: 2,
+                                                     chain: "D", coords: liveFrame()))
+        XCTAssertEqual(seed.targetAtomCount, 17)
+        XCTAssertEqual(seed.designAtomCount, 10)
+        XCTAssertEqual(seed.designFirstSerial,
+                       RFD3ResultWriter.designFirstSerial(target: target()))
+        let atoms = seed.pdb.split(separator: "\n").filter { $0.hasPrefix("ATOM") }
+        XCTAssertEqual(atoms.count, seed.targetAtomCount + seed.designAtomCount)
+        // The record at that serial really is the generated chain's first atom.
+        func serial(_ line: Substring) -> Int {
+            Int(String(line.dropFirst(6).prefix(5)).trimmingCharacters(in: .whitespaces))
+                ?? -1
+        }
+        XCTAssertEqual(serial(atoms[seed.targetAtomCount]), seed.designFirstSerial)
+        XCTAssertEqual(rows(seed.pdb)[seed.targetAtomCount].chain, "D")
+    }
+
+    func testAnUnwritableTargetLeavesNoSeedRatherThanAMisColumnedOne() throws {
+        // `emit` throws on a coordinate the PDB's eight columns cannot hold, and the
+        // result path lets that fail the design. The LIVE path may not: it degrades to
+        // no live view, which is why `seed` returns an optional rather than propagating.
+        XCTAssertNil(RFD3Trajectory.seed(target: target(shift: 12000), length: 2,
+                                         chain: "D", coords: liveFrame()))
+    }
 }
 #endif

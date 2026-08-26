@@ -42,20 +42,27 @@ final class RFD3JobManager: InferenceRuntime {
     /// through the main thread during a run that is already GPU-saturated.
     static let trajectoryStepInterval = 4
 
-    /// The object a live run streams into: the result's name plus `_traj`.
-    static func trajectoryObjectName(for resultName: String) -> String {
-        "\(resultName)_traj"
-    }
-
-    /// The statement that creates the trajectory object.
+    /// The statement that creates the live object.
+    ///
+    /// It is created UNDER THE RESULT'S OWN NAME: a live run and a plain one leave the
+    /// same single object in the session, built from the same writer, and the finished
+    /// design arrives as one more state of it rather than as a second object beside it.
+    ///
+    /// The layout is passed rather than left to be guessed. Each frame carries the
+    /// generated chain only — resending the static target fifty times would be pointless
+    /// traffic — so the Python side splices it into the object, and to do that it has to
+    /// know how many atoms precede the generated chain and how many are in it. Both come
+    /// from `RFD3ResultWriter.Composed`, which is the emitter reporting its own layout;
+    /// nothing here counts atoms on its own.
     ///
     /// The PDB argument is a multi-line string — `pythonMultilineLiteral` rather than
     /// `pythonLiteral`, which silently deletes newlines and would produce a single joined
     /// line that PyMOL's line-oriented PDB reader would parse as exactly one atom.
-    static func seedPython(name: String, pdb: String) -> String {
+    static func seedPython(name: String, seed: RFD3ResultWriter.Composed) -> String {
         "from pymol import designing as _d\n"
         + "_d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
-        + "\(InferenceJob.pythonMultilineLiteral(pdb)))"
+        + "\(InferenceJob.pythonMultilineLiteral(seed.pdb)), "
+        + "\(seed.targetAtomCount), \(seed.designAtomCount))"
     }
 
     /// The statement that appends one frame.
@@ -282,7 +289,6 @@ final class RFD3JobManager: InferenceRuntime {
             // could not be drawn.
             if request.liveView == true, let objectName = request.objectName,
                !objectName.isEmpty {
-                let trajectory = Self.trajectoryObjectName(for: objectName)
                 let interval = Self.trajectoryStepInterval
                 var seeded = false
                 // `onStepDenoised` streams px0 -- the denoiser's prediction of the CLEAN
@@ -311,15 +317,20 @@ final class RFD3JobManager: InferenceRuntime {
                         // refuses every bond for the life of the object. Seeded and
                         // RETURNED, never also appended, or this frame would be state 1
                         // and state 2 both.
-                        let pdb = RFD3Trajectory.seedPDB(
-                            length: length, chain: request.designChain ?? "B",
-                            coords: coords)
-                        guard !pdb.isEmpty else { return }
+                        //
+                        // The seed carries the TARGET too, from the same writer the
+                        // result comes out of, so the object the user watches is already
+                        // the object the design lands in.
+                        guard let seed = RFD3Trajectory.seed(
+                            target: wireTarget, length: length,
+                            chain: request.designChain ?? "B",
+                            coords: coords) else { return }
                         seeded = true
-                        self.runPythonOnMain(Self.seedPython(name: trajectory, pdb: pdb))
+                        self.runPythonOnMain(Self.seedPython(name: objectName,
+                                                             seed: seed))
                         return
                     }
-                    self.runPythonOnMain(Self.framePython(name: trajectory,
+                    self.runPythonOnMain(Self.framePython(name: objectName,
                                                           coords: coords))
                 }
             }
