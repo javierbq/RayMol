@@ -121,6 +121,31 @@ def default_object_name(design_key, generator_id=''):
     return '%s_%s' % (method, stem) if method else stem
 
 
+def _legal_object_name(name, _self=cmd):
+    """The object name PyMOL will actually use for `name`.
+
+    Creating an object LEGALISES its name -- an apostrophe, a space and a forward slash
+    all become underscores -- and nothing tells the caller. So a name chosen here and the
+    object that actually exists are two different strings, and every table keyed on the
+    chosen one then addresses an object that is not there. Passed through this on the way
+    in, the placeholder map, the metric record and the live trajectory all key on the one
+    string that names a real object.
+
+    `cmd.get_legal_name` rather than a local rewrite: it is the same C++ rule
+    (`ObjectMakeValidName`) that creation itself applies, so the two cannot drift. That
+    rule is subtler than replacing three characters -- it strips a trailing `)`, yields one
+    underscore per BYTE of a multi-byte character, and leaves `+`, `-` and `.` alone -- and
+    any reimplementation of it here or in Swift would be a copy waiting to fall out of step.
+    It is idempotent, so applying it twice on one path is harmless.
+
+    NOT applied in `pending_info`: its callers pass keys that came out of these very
+    tables, and it runs for every placeholder on the 500 ms panel poll, where an extra
+    locked call per object per tick is a cost with nothing to buy.
+    """
+    return _self.get_legal_name(str(name))
+
+
+
 # -- Reading the target out of the session ------------------------------------
 
 
@@ -456,6 +481,7 @@ def register_pending(name, job_id, _self=cmd):
     panel the moment the command returns rather than seventeen minutes later, and
     loading into it lands at state 1.
     """
+    name = _legal_object_name(name, _self=_self)
     if name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
@@ -471,6 +497,7 @@ def discard_pending(name, _self=cmd):
     The atom check is the important part: cleanup can race a job that just finished, and
     deleting a completed design would destroy the very thing that took seventeen minutes.
     """
+    name = _legal_object_name(name, _self=_self)
     fresh = None
     try:
         fresh = pending_info(name, _self=_self)
@@ -792,25 +819,6 @@ def _weight_version(generator_id):
 # a mid-run save would persist one. A separate object needs neither weakened.
 
 
-def _trajectory_object_name(name, _self=cmd):
-    """The object name PyMOL will actually use for `name`.
-
-    Creating an object LEGALISES its name -- an apostrophe, a space and a forward slash
-    all become underscores -- and the caller never learns that happened. A design named
-    `my design` seeds `my_design_traj` while every frame that follows addresses
-    `my design_traj`, misses the object, and is dropped; both functions here swallow their
-    failures by design, so the run shows a seeded object that never moves and prints
-    nothing. Routing seed and frame through this one function is what makes them agree.
-
-    `cmd.get_legal_name` rather than a local rewrite: it is the same C++ rule
-    (`ObjectMakeValidName`) that creation itself applies, so the two cannot drift. That
-    rule is subtler than replacing three characters -- it strips a trailing `)`, yields one
-    underscore per BYTE of a multi-byte character, and leaves `+`, `-` and `.` alone -- and
-    any reimplementation of it here or in Swift would be a copy waiting to fall out of step.
-    """
-    return _self.get_legal_name(str(name))
-
-
 def trajectory_seed(name, pdb, _self=cmd):
     """Create the trajectory object from the FIRST captured frame. Called once.
 
@@ -824,7 +832,7 @@ def trajectory_seed(name, pdb, _self=cmd):
     the frames that follow find nothing to append to and are dropped for the same reason.
     """
     try:
-        name = _trajectory_object_name(name, _self=_self)
+        name = _legal_object_name(name, _self=_self)
         if name in _self.get_names('objects'):
             # Replace rather than append. `read_pdbstr` into an EXISTING object appends
             # states, so re-running a named design with Live on would splice the previous
@@ -861,7 +869,7 @@ def trajectory_frame(name, coords, _self=cmd):
     rather than an error: the user may have deleted it mid-run, which is legitimate.
     """
     try:
-        name = _trajectory_object_name(name, _self=_self)
+        name = _legal_object_name(name, _self=_self)
         if name not in _self.get_names('objects'):
             return False
         values = list(coords)
@@ -890,6 +898,7 @@ def deliver_result(path, name, seed=None, _self=cmd):
     camera onto it while the user is working elsewhere is hostile. The placeholder has
     been visible in the object panel since the command returned.
     """
+    name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
     try:
         _self.load(path, name, zoom=0)
@@ -1104,6 +1113,12 @@ SEE ALSO
             object_name = str(name) if count == 1 else '%s_%02d' % (name, index + 1)
         else:
             object_name = default_object_name(key, generator_obj.id)
+        # Legalised HERE, once, rather than left for `create` to do silently: this string
+        # becomes the placeholder's key, the name the runtime is handed and echoes back on
+        # delivery, the object the metric run is filed against, and what the message below
+        # tells the user to look for. Any of those differing from the object that actually
+        # exists is a silent no-op somewhere downstream.
+        object_name = _legal_object_name(object_name, _self=_self)
         # DesignSpec is a __slots__ class, not a namedtuple: assign, don't _replace. A
         # copy per design, because each names its own object.
         design_spec = type(spec)(spec.target, spec.length, name=object_name,
@@ -1272,6 +1287,10 @@ SEE ALSO
             'job %s is %s, not done' % (job_id, status.get('state', 'unknown')))
     object_name = str(name) or getattr(job, 'object_name', '') or \
         getattr(getattr(job, 'spec', None), 'name', '') or job_id
+    # `load` would legalise this for itself, but the name is also dss'd, printed and
+    # RETURNED -- a script that loads under a name of its own and then uses the return
+    # value must get the object that now exists, not the string it asked for.
+    object_name = _legal_object_name(object_name, _self=_self)
     _self.load(path, object_name, zoom=0)
     try:
         _self.dss(object_name)
@@ -1297,7 +1316,9 @@ SEE ALSO
 
     design_backbone
     """
-    names = [str(name)] if name else list(_RECENT) + list(_PENDING)
+    # The explicit name only: the list branches are already table keys.
+    names = ([_legal_object_name(name, _self=_self)] if name
+             else list(_RECENT) + list(_PENDING))
     for entry in names:
         _RECENT.pop(entry, None)
         discard_pending(entry, _self=_self)

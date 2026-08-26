@@ -404,3 +404,91 @@ class DesignBackboneTest(GeneratorTestCase):
         for helper in sorted(used):
             self.assertTrue(hasattr(colorprinting, helper),
                             'colorprinting has no %r' % helper)
+
+    # -- Object names PyMOL rewrites -----------------------------------------
+    #
+    # Creating an object LEGALISES its name: an apostrophe, a space and a forward slash
+    # all become underscores. Nothing tells the caller, so a name chosen here and the
+    # object that actually exists can be two different strings -- and every table keyed on
+    # the chosen one then addresses an object that is not there.
+
+    def testAPlaceholderIsKeyedUnderTheNameTheObjectActuallyHas(self):
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+                                      length=6, name='my design')
+            # The invariant everything else here depends on: the pending key IS the
+            # object. session_save looks the placeholder up by the object's real name,
+            # and discard deletes by it.
+            self.assertIn(job.spec.name, cmd.get_names('objects'))
+            self.assertIn(job.spec.name, designing.pending_objects())
+            settle()
+
+    def testAPendingPlaceholderWithARewrittenNameIsKeptOutOfASavedSession(self):
+        # session_save drops an object only if it is BOTH pending and empty, and it tests
+        # membership with the name the SESSION carries -- which is the object's real one.
+        # Keyed under anything else, a zero-atom placeholder that can never fill is
+        # written into the .pse.
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+                                      length=6, name='my design')
+            real = cmd.get_legal_name('my design')
+            self.assertEqual(job.spec.name, real)
+            session = {'names': [[real, 1], ['tgt', 1]]}
+            designing.session_save(session)
+            self.assertEqual([entry[0] for entry in session['names']], ['tgt'])
+            settle()
+
+    def testDismissingARewrittenNameActuallyRemovesThePlaceholder(self):
+        # The leak: discard_pending deletes the object only if it can find it. Keyed under
+        # the raw name it finds nothing, drops the record, and leaves a zero-atom object
+        # in the session with no job behind it and no card to dismiss it from.
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+                                length=6, name='my design')
+            settle()
+        real = cmd.get_legal_name('my design')
+        self.assertIn(real, cmd.get_names('objects'))
+        self.assertEqual(cmd.count_atoms(real), 0, 'must still be an empty placeholder')
+        designing.discard_pending(real)
+        self.assertNotIn(real, cmd.get_names('objects'))
+        # The WHOLE table, not just this key: keyed under the raw name the record is
+        # orphaned rather than removed, and `assertNotIn(real, ...)` would pass while a
+        # dead entry kept the object listed as pending for the rest of the session.
+        self.assertEqual(designing.pending_objects(), {})
+
+    def testDismissingByTheNameTheUserTypedAlsoWorks(self):
+        # design_dismiss is user-facing: the name typed at the prompt is the raw one, not
+        # the rewritten one the object ended up with.
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+                                length=6, name='my design')
+            settle()
+        cmd.design_dismiss('my design')
+        self.assertNotIn(cmd.get_legal_name('my design'), cmd.get_names('objects'))
+        self.assertEqual(designing.pending_objects(), {})
+
+    def testAResultStillLandsInTheRewrittenPlaceholder(self):
+        # Delivery must fill the SAME object the placeholder created rather than making a
+        # second one, and must retire the pending mark that session_save keys off.
+        from pymol import designing
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+                                      length=6, name='my design')
+            settle()
+        before = len(cmd.get_names('objects'))
+        deliver(job)
+        real = cmd.get_legal_name('my design')
+        self.assertEqual(len(cmd.get_names('objects')), before, 'delivery made a 2nd object')
+        self.assertGreater(cmd.count_atoms(real), 0)
+        # Same reason as above: a record left under the raw name would keep this finished
+        # design pending forever, and session_save strips a pending object from the .pse.
+        self.assertEqual(designing.pending_objects(), {})
