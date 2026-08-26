@@ -393,11 +393,12 @@ enum RFD3ResultWriter {
     /// OPTIONAL deliberately, rather than clamping or writing a wider field. A clamped
     /// coordinate is a wrong coordinate that looks right, and a wider field is a line
     /// every reader mis-parses; both are the silent-wrong-answer this whole type exists
-    /// to prevent. Returning nil makes the compiler ask each caller what it wants
-    /// instead, and the two callers want different things: ``compose`` throws, because a
-    /// result that cannot be written must not be half-written, and
-    /// ``RFD3Trajectory/seedPDB(length:chain:coords:)`` yields an empty string, because
-    /// live view degrades to nothing and never fails a design.
+    /// to prevent. Returning nil makes the compiler ask its caller what it wants instead.
+    /// There is one now — ``emit`` — and it throws, because an object that cannot be
+    /// written must not be half-written. What differs is what the two callers of `emit`
+    /// do with that: the result path lets it fail the design, while
+    /// ``RFD3Trajectory/seed(target:length:chain:coords:)`` swallows it into `nil`,
+    /// because live view degrades to nothing and never fails a design.
     ///
     /// See ``coordinateRange`` for what the limit is and why it is the format's rather
     /// than ours.

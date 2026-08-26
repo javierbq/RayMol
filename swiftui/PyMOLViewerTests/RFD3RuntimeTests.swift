@@ -270,8 +270,13 @@ final class RFD3RuntimeTests: XCTestCase {
             .appendingPathComponent("PyMOLViewer/Shared")
         let upstreamSymbols = ["designBinder", "binderSequence", "binderLength",
                                "binderCACAmeanA", "binderToHotspotMinA"]
+        // The two UI files are in here because they are where the rule is easiest to
+        // break: a help string and a doc comment are exactly the "what the product SAYS"
+        // this test is about, and neither was scanned.
         for name in ["RFD3JobManager.swift", "RFD3ResultWriter.swift",
-                     "RFD3SizeGuard.swift", "RFD3Runtime.swift"] {
+                     "RFD3SizeGuard.swift", "RFD3Runtime.swift",
+                     "RFD3Trajectory.swift", "DesignBackboneBar.swift",
+                     "DesignBackboneController.swift"] {
             let text = try String(contentsOf: root.appendingPathComponent(name),
                                   encoding: .utf8)
             for (number, line) in text.split(separator: "\n").enumerated() {

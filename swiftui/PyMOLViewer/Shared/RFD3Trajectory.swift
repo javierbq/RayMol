@@ -48,7 +48,7 @@ enum RFD3Trajectory {
                 //    its way to Inf) is accepted by the atom store but takes the session's
                 //    GLOBAL view matrix non-finite on the next zoom, breaking the user's
                 //    camera for the rest of the session. Worse than "no live view".
-                // 2. The first accepted frame is written as a PDB by `seedPDB`, and the
+                // 2. The first accepted frame is written as a PDB by `seed`, and the
                 //    PDB's coordinate columns are eight characters wide. A guard that
                 //    admits more than the formatter can represent hands the formatter a
                 //    value it cannot write — which, before this, it wrote anyway, nine
