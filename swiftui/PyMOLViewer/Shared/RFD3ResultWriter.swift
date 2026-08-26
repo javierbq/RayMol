@@ -150,6 +150,39 @@ enum RFD3ResultWriter {
         let xyz: SIMD3<Double>
     }
 
+    /// An emitted object, plus WHERE the generated chain sits inside it.
+    ///
+    /// The layout is returned rather than inferred by whoever reads the string. Live
+    /// view splices one chain of this object per frame, and "the generated chain is the
+    /// last N atoms" is true only because ``emit`` writes it last -- a fact of this
+    /// function, not of PDB files. Stated here, it travels with the object to the one
+    /// place that needs it and cannot fall out of step with the writer.
+    struct Composed {
+        let pdb: String
+        /// Atoms written BEFORE the generated chain: the target's, in target order.
+        let targetAtomCount: Int
+        /// Atoms of the generated chain.
+        let designAtomCount: Int
+        /// PDB serial of the generated chain's first atom. Not `targetAtomCount + 1`:
+        /// a `TER` record consumes a serial between the two chains.
+        let designFirstSerial: Int
+    }
+
+    /// Atoms ``emit`` will write for `target` -- every atom with a three-component
+    /// position, which is the same filter the emission loop applies.
+    static func targetAtomCount(_ target: [InferenceJob.DesignResidue]) -> Int {
+        target.reduce(0) { $0 + $1.atoms.filter { $0.xyz.count == 3 }.count }
+    }
+
+    /// The serial ``emit`` will give the generated chain's first atom.
+    ///
+    /// Exposed so a caller that must number CONECT records can do it BEFORE emitting,
+    /// rather than emitting twice or parsing the string back. `Composed.designFirstSerial`
+    /// carries the same number afterwards, so a test can hold the two against each other.
+    static func designFirstSerial(target: [InferenceJob.DesignResidue]) -> Int {
+        targetAtomCount(target) + 2       // + 1 for the atom, + 1 for the TER between
+    }
+
     /// One parsed chain of the engine's output: residue number -> atoms, in file order.
     struct ParsedChain {
         /// Residue numbers in the order they first appear -- the engine numbers 1..N per
@@ -248,7 +281,43 @@ enum RFD3ResultWriter {
             throw ComposeError.targetDeformed(byAngstrom: residual,
                                               tolerance: driftToleranceAngstrom)
         }
+        // Translated back into the session's frame, then handed to the one emitter.
+        let designResidues = designOut.order.map { number in
+            (designOut.residues[number] ?? []).map {
+                Atom(name: $0.name, xyz: $0.xyz + offset)
+            }
+        }
+        return try emit(target: target, designChain: designChain,
+                        designResidues: designResidues,
+                        designSequence: designSequence, remarks: remarks).pdb
+    }
 
+    /// THE emitter: target chain then generated chain, in that order, and the only place
+    /// either is written.
+    ///
+    /// Shared with live view rather than paralleled by it, and that is the point. A live
+    /// run seeds its object from this and then splices ONE chain of it per frame, which
+    /// works only while the atom ORDER of the seed and of the finished result are the
+    /// same string of atoms. Two builders that must agree eventually disagree; one
+    /// builder cannot. So the live path differs from the result path in exactly two
+    /// arguments -- the coordinates it has (a rollout frame, not the engine's output) and
+    /// the names it gives them (poly-ALA, because the sequence is not settled yet) -- and
+    /// in nothing else.
+    ///
+    /// `designResidues` is already in the SESSION's frame: `compose` translates the
+    /// engine's output back, `RFD3Trajectory` adds the featurizer's origin. Neither
+    /// translation belongs here, because they are different translations.
+    ///
+    /// `extraRecords` is written after the closing `TER` and before `END`, which is where
+    /// a PDB reader expects CONECT. Empty for the result -- adding records there would
+    /// change what a non-live run produces -- and the seed's stated connectivity for a
+    /// live run.
+    static func emit(target: [InferenceJob.DesignResidue],
+                     designChain: String,
+                     designResidues: [[Atom]],
+                     designSequence: String,
+                     remarks: [String],
+                     extraRecords: [String] = []) throws -> Composed {
         var lines: [String] = remarks.map { "REMARK 300 " + $0 }
         var serial = 1
         // A record the PDB's columns cannot hold is a REFUSAL here, not a clamp: the whole
@@ -266,6 +335,7 @@ enum RFD3ResultWriter {
         // The target, verbatim: original coordinates, original chain id, original residue
         // numbering and insertion codes, original residue names, and every atom including
         // the sidechains the engine's output drops.
+        var targetAtoms = 0
         for residue in target {
             for atom in residue.atoms where atom.xyz.count == 3 {
                 lines.append(try record(serial: serial, name: atom.name,
@@ -273,25 +343,32 @@ enum RFD3ResultWriter {
                                         resi: residue.resi,
                                         xyz: SIMD3(atom.xyz[0], atom.xyz[1], atom.xyz[2])))
                 serial += 1
+                targetAtoms += 1
             }
         }
         lines.append(terRecord(serial: serial))
         serial += 1
-        // The generated chain, translated back into the session's frame.
+        let designFirstSerial = serial
+        // The generated chain.
+        var designAtoms = 0
         let letters = Array(designSequence)
-        for (index, number) in designOut.order.enumerated() {
+        for (index, atoms) in designResidues.enumerated() {
             let resName = index < letters.count ? threeLetter(letters[index]) : "UNK"
-            for atom in designOut.residues[number] ?? [] {
+            for atom in atoms {
                 lines.append(try record(serial: serial, name: atom.name,
                                         resName: resName, chain: designChain,
-                                        resi: String(index + 1),
-                                        xyz: atom.xyz + offset))
+                                        resi: String(index + 1), xyz: atom.xyz))
                 serial += 1
+                designAtoms += 1
             }
         }
         lines.append(terRecord(serial: serial))
+        lines.append(contentsOf: extraRecords)
         lines.append("END")
-        return lines.joined(separator: "\n") + "\n"
+        return Composed(pdb: lines.joined(separator: "\n") + "\n",
+                        targetAtomCount: targetAtoms,
+                        designAtomCount: designAtoms,
+                        designFirstSerial: designFirstSerial)
     }
 
     // MARK: - PDB record formatting
