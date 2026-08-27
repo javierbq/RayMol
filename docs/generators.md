@@ -278,13 +278,12 @@ What is IDENTICAL between a live run and a plain one, and what is not, precisely
 | result file on disk | **byte-identical** | **byte-identical** |
 | the design's coordinates | **0.000 A** apart | **0.000 A** apart |
 | design key, metrics, metric count | the same | the same |
+| bonds, orders included | **identical** (462 vs 462 measured) | **identical** |
 | states | 51 (the rollout, then the design) | 1 |
-| bonds | 119 stated on the generated chain | 119 + 2 per glycine, inferred |
 | object `state` setting | pinned to the final state | unset |
 
-The last two are the ones to know about: a live object is not a drop-in substitute for a
-plain one inside a movie, because it is pinned, and its connectivity is decided from the
-first captured frame rather than from the finished structure. Both are explained below.
+The remaining difference that matters is the pin: a live object is not a drop-in substitute
+for a plain one inside a movie. It is explained under "Which state is on show".
 
 That is possible because both come out of ONE writer, `RFD3ResultWriter.emit`. The finished
 design is appended with `load_coordset`, which matches coordinates to atoms by POSITION and
@@ -366,10 +365,11 @@ deprecating it.
 ### Why the seed states its bonds -- and unbonds the two chains
 
 PyMOL decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and
-never re-bonds them. So the object's bonds for its whole life -- including the delivered
-state you end on, and into any `.pse` saved from it -- are whatever PyMOL made of the FIRST
-captured frame, which is step 4 of 199 and is not a settled backbone. Two consequences, and
-they pull in opposite directions.
+never re-bonds them. So the bonds you are watching for the whole rollout are whatever PyMOL
+made of the FIRST captured frame, which is step 4 of 199 and is not a settled backbone.
+(Only for the rollout: delivery re-derives them from the finished structure -- see below.
+Before it did, that step-4 guess was the object's connectivity for life, and went into every
+saved session.) Two consequences, and they pull in opposite directions.
 
 **The generated chain needs bonds stated.** The seed carries **CONECT records** for it,
 numbered from `Composed.designFirstSerial` -- the generated chain no longer starts at serial
@@ -391,22 +391,32 @@ structure has **0**, drawn as sticks joining the design to the target in every s
 addressing both by **rank** from the recorded layout. Nothing legitimate is lost: the result
 path produces no inter-chain bonds either.
 
-One consequence to expect rather than debug: a live object and a `live_view=0` object of the
-same design differ by **two bonds per glycine in the designed sequence**. Measured on the
-24-residue design above, whose sequence has one: 460 against 462.
+### Delivery re-derives the bonds, and why it must
 
-The cause is a phantom CB, not a subtlety of live view. The engine allocates five atoms for
-every designed residue including glycine, which has no CB, and the unused slot comes back
-**coincident with the CA** -- measured 0.01 A from it, against 1.52 A for every other
-residue in the same design. At that position it is also 1.47 A from its own N and 1.52 A
-from its own C, so distance inference bonds it to both. The seed's CONECT records state
-CA-CB and nothing else, so the live object does not pick those up; a plain `cmd.load` of the
-result does. Scale accordingly: a 60-residue design with eight or nine glycines is a
-~17-bond difference, not two. The residue NAME is irrelevant -- renaming the chain to
-poly-ALA and back changes nothing, because the bonds come from where the atom is.
+The seed's connectivity is for the RECORDING, and it is not the connectivity the delivered
+design should have. Two reasons, and each on its own is enough:
 
-The phantom CB itself is upstream of this branch and is tracked separately; it is identical
-with and without live view.
+* **A plain `CONECT` is order ONE.** The result file carries no CONECT, so a plain run
+  INFERS the generated chain's carbonyls as DOUBLE bonds. Without re-deriving, the same
+  design came out with C=O order 2 without `live_view` and order 1 with it -- measured on
+  an 8-residue design, 8 double bonds on the generated chain against 0. That is visible,
+  not bookkeeping: `valence` is on by default and both the wire and cylinder renderers
+  branch on bond order. It persisted into any saved session.
+* **The seed is bonded from step 4 of 199**, which is why it needs stated records at all,
+  and why the two chains have to be unbonded from each other there. The finished structure
+  deserves neither crutch.
+
+So `_finish_trajectory` calls `rebond` on the FINAL state -- the delivered design, which is
+exactly what a plain run bonds from. Measured on the real 450-atom design: **462 bonds
+against 462, identical including orders, zero differing bonds**, and identical again after a
+`.pse` round trip. A delivered design's chemistry does not depend on a view-only checkbox.
+
+An oddity worth knowing while reading those numbers, though it is no longer a live/plain
+difference: the engine allocates five atoms for every designed residue including glycine,
+which has no CB, and the unused slot comes back **coincident with the CA** -- measured 0.01 A
+from it against 1.52 A for every other residue in the same design, which puts it 1.47 A from
+its own N and 1.52 A from its own C, so inference bonds it to both. That is upstream of this
+branch, is tracked separately, and is now identical with and without live view.
 
 ### Two orders, and which one addresses what
 
