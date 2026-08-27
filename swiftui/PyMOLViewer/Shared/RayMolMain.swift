@@ -24,6 +24,10 @@ enum RayMolMain {
             return
         }
         #endif
+        // Diagnostic instrumentation (trace build only — see RMTrace.swift).
+        // Started before the SwiftUI app so engine init and the launch-time
+        // file open are inside the trace.
+        RMTrace.shared.start()
         PyMOLApp.main()
     }
 }

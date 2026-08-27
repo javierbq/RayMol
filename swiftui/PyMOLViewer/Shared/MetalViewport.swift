@@ -32,6 +32,79 @@ struct MetalViewport: NSViewRepresentable {
         // no-op — mouse rotate/zoom/pan never reach PyMOL.
         view.coordinator = context.coordinator
 
+        // Diagnostic: register a 1 Hz health probe for this view. Weak refs, so if
+        // SwiftUI drops the coordinator (MTKView.delegate is weak — a dropped
+        // coordinator silently ends the draw callbacks) the probe reports that
+        // rather than disappearing with it. The creation counters catch the case
+        // where the whole representable is rebuilt behind our back.
+        MetalViewport.viewsCreated += 1
+        MetalViewport.latestView = view
+        MetalViewport.latestCoordinator = context.coordinator
+        RMTrace.shared.viewportProbe = {
+            let v = MetalViewport.latestView
+            let c = MetalViewport.latestCoordinator
+            var f: [String: Any] = [
+                "views_created": MetalViewport.viewsCreated,
+                "coords_created": MetalViewport.coordsCreated,
+                "coord_alive": c != nil,
+                "view_alive": v != nil,
+            ]
+            f["draws"] = MetalViewport.drawCounter
+            guard let v = v else { return f }
+            f["delegate_ok"] = (v.delegate === c)
+
+            // Starvation experiment: if draw(in:) has not been entered since the
+            // last probe while the view is unpaused, in a visible window and has a
+            // real drawable, then nothing is driving the render loop. Toggling
+            // isPaused makes MTKView tear down and rebuild its display link — if
+            // frames resume after that, the link was never running, which is a very
+            // different bug from "the frames are slow".
+            let drew = MetalViewport.drawCounter != MetalViewport.lastSeenDrawCounter
+            MetalViewport.lastSeenDrawCounter = MetalViewport.drawCounter
+            let healthy = !v.isPaused && v.window != nil && (v.window?.isVisible ?? false)
+                && v.drawableSize.width > 0
+            if !drew && healthy {
+                MetalViewport.starvedProbes += 1
+                f["starved_probes"] = MetalViewport.starvedProbes
+                if MetalViewport.starvedProbes >= 2 && MetalViewport.kicks < 3 {
+                    MetalViewport.kicks += 1
+                    switch MetalViewport.kicks {
+                    case 1:
+                        // Does MetalKit restart its own loop when asked?
+                        f["kick"] = "isPaused-toggle"
+                        v.isPaused = true
+                        v.isPaused = false
+                    default:
+                        // It does not. Drive the view ourselves.
+                        if let pv = v as? PyMOLMTKView, pv.installFallbackDisplayLink() {
+                            f["kick"] = "own-CADisplayLink"
+                        } else {
+                            f["kick"] = "already-installed"
+                        }
+                    }
+                }
+            } else if drew {
+                MetalViewport.starvedProbes = 0
+            }
+            f["kicks"] = MetalViewport.kicks
+            f["paused"] = v.isPaused
+            f["pfps"] = v.preferredFramesPerSecond
+            f["bounds"] = "\(Int(v.bounds.width))x\(Int(v.bounds.height))"
+            f["drawable"] = "\(Int(v.drawableSize.width))x\(Int(v.drawableSize.height))"
+            f["in_window"] = (v.window != nil)
+            f["superview"] = (v.superview != nil)
+            f["device"] = (v.device != nil)
+            if let w = v.window {
+                f["win_visible"] = w.isVisible
+                f["win_miniaturized"] = w.isMiniaturized
+                f["win_occluded"] = !w.occlusionState.contains(.visible)
+                f["win_key"] = w.isKeyWindow
+                f["screen"] = w.screen?.localizedName ?? "none"
+                f["win_origin"] = "\(Int(w.frame.origin.x)),\(Int(w.frame.origin.y))"
+            }
+            return f
+        }
+
         // Repaint when the app re-activates or the system wakes from sleep: the
         // display can discard the drawable's contents while asleep/locked, and
         // the on-demand gate (a static scene flags no redisplay) would otherwise
@@ -116,6 +189,65 @@ class PyMOLMTKView: MTKView {
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    // Diagnostic: MTKView creates its CVDisplayLink in viewDidMoveToWindow, using
+    // the window's screen. If the window has no screen yet at that moment, there
+    // is nothing to drive draw(in:) and the view only ever paints when something
+    // calls draw() by hand. Record the exact state at each transition.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        RMTrace.shared.mark("view.movedToWindow", [
+            "has_window": window != nil,
+            "has_screen": window?.screen != nil,
+            "screen": window?.screen?.localizedName ?? "nil",
+            "win_visible": window?.isVisible ?? false,
+            "win_onscreen": window?.isOnActiveSpace ?? false,
+            "bounds": "\(Int(bounds.width))x\(Int(bounds.height))",
+            "paused": isPaused,
+        ])
+        guard window != nil else {
+            fallbackLink?.invalidate()
+            fallbackLink = nil
+            isPaused = false          // hand the loop back to MetalKit
+            return
+        }
+        // Own the render loop (see installFallbackDisplayLink). MetalKit's own
+        // loop is only paused once ours is actually running, so if the display
+        // link could not be created we degrade to the previous behaviour instead
+        // of to a black window.
+        if installFallbackDisplayLink() {
+            isPaused = true
+            RMTrace.shared.mark("view.ownRenderLoop", ["screen": window?.screen?.localizedName ?? "nil"])
+        }
+    }
+
+    // Fallback render loop. MetalKit only starts its CVDisplayLink for a window
+    // that is already visible; when SwiftUI attaches this view to a not-yet-visible
+    // window (a cold launch that restores a saved frame, especially on a secondary
+    // display) the loop never starts and never retries, so draw(in:) is only ever
+    // reached by a manual draw(). A CADisplayLink owned by the view is immune to
+    // that ordering: it ticks off the screen's refresh, and the on-demand gate in
+    // draw(in:) keeps a static scene as cheap as it was before.
+    private var fallbackLink: CADisplayLink?
+
+    func installFallbackDisplayLink() -> Bool {
+        guard fallbackLink == nil else { return false }
+        let link = displayLink(target: self, selector: #selector(fallbackTick))
+        link.add(to: .main, forMode: .common)
+        fallbackLink = link
+        return true
+    }
+
+    @objc private func fallbackTick() { draw() }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        RMTrace.shared.mark("view.movedToSuperview", [
+            "has_superview": superview != nil,
+            "has_window": window != nil,
+            "has_screen": window?.screen != nil,
+        ])
+    }
+
     // Track pointer motion over the viewport so the hover pre-selection preview
     // (issue #165) can update as the mouse moves WITHOUT any button held. A
     // tracking area is required for mouseMoved/mouseExited to fire; recreate it
@@ -135,21 +267,31 @@ class PyMOLMTKView: MTKView {
         hoverTrackingArea = area
     }
 
+    // Diagnostic: how long an event sat between the window server stamping it and
+    // us handling it (queue latency = "feels laggy"), plus what the handler cost.
+    // Both are no-ops unless the trace build is running with tracing on.
+    @inline(__always)
+    private func traced(_ kind: String, _ event: NSEvent, _ body: () -> Void) {
+        guard RMTrace.shared.enabled else { body(); return }
+        RMTrace.shared.input(kind, latency: (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1000.0)
+        RMTrace.shared.span("input.\(kind)") { body() }
+    }
+
     override func mouseMoved(with event: NSEvent) {
-        coordinator?.handleMouseMoved(event, in: self)
+        traced("moved", event) { coordinator?.handleMouseMoved(event, in: self) }
     }
     override func mouseExited(with event: NSEvent) {
         coordinator?.handleMouseExited(event, in: self)
     }
 
     override func mouseDown(with event: NSEvent) {
-        coordinator?.handleMouseDown(event, in: self)
+        traced("down", event) { coordinator?.handleMouseDown(event, in: self) }
     }
     override func mouseUp(with event: NSEvent) {
-        coordinator?.handleMouseUp(event, in: self)
+        traced("up", event) { coordinator?.handleMouseUp(event, in: self) }
     }
     override func mouseDragged(with event: NSEvent) {
-        coordinator?.handleMouseDragged(event, in: self)
+        traced("drag", event) { coordinator?.handleMouseDragged(event, in: self) }
     }
     override func rightMouseDown(with event: NSEvent) {
         coordinator?.handleRightMouseDown(event, in: self)
@@ -170,7 +312,7 @@ class PyMOLMTKView: MTKView {
         coordinator?.handleOtherMouseDragged(event, in: self)
     }
     override func scrollWheel(with event: NSEvent) {
-        coordinator?.handleScrollWheel(event, in: self)
+        traced("scroll", event) { coordinator?.handleScrollWheel(event, in: self) }
     }
 }
 
@@ -267,9 +409,29 @@ struct MetalViewport: UIViewRepresentable {
 // MARK: - Shared Coordinator (MTKViewDelegate + input handling)
 
 extension MetalViewport {
+    // Diagnostics (trace build): how many views/coordinators SwiftUI has built,
+    // and weak handles to the current pair, so RMTrace's 1 Hz probe can report
+    // whether the delegate link that drives draw(in:) is still intact.
+    static var viewsCreated = 0
+    static var coordsCreated = 0
+    static weak var latestView: MTKView?
+    static weak var latestCoordinator: Coordinator?
+    /// Every entry into draw(in:), from any source (display link OR a manual
+    /// draw()). The probe watches this to tell a running render loop from a view
+    /// that only paints when poked.
+    static var drawCounter = 0
+    static var lastSeenDrawCounter = -1
+    static var starvedProbes = 0
+    static var kicks = 0
+
     class Coordinator: NSObject, MTKViewDelegate {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
+
+        override init() {
+            super.init()
+            MetalViewport.coordsCreated += 1
+        }
         private var viewportSize: CGSize = .zero
         // Set when the app/display wakes (unlock, system wake, re-activate). The
         // next draw(in:) then renders unconditionally, bypassing the on-demand
@@ -403,12 +565,19 @@ extension MetalViewport {
         private var moveSyncCounter = 0
 
         func draw(in view: MTKView) {
-            guard let engine = engine, engine.isReady else { return }
+            // Counted BEFORE any guard: separates "MTKView stopped calling us" from
+            // "we were called and bailed out early".
+            RMTrace.shared.bump("draw.entered")
+            MetalViewport.drawCounter += 1
+            guard let engine = engine, engine.isReady else {
+                RMTrace.shared.bump(self.engine == nil ? "draw.no_engine" : "draw.not_ready")
+                return
+            }
             // A movie export renders frames off the main thread and owns the core
             // exclusively (it reshapes global state per frame). Skip the live
             // render meanwhile so we never race it; the exporter restores the
             // scene + clears this flag when done, and the next tick redraws. (#58 L-59)
-            if engine.exportRenderActive { return }
+            if engine.exportRenderActive { RMTrace.shared.bump("draw.export_active"); return }
             // Keep the Move gizmo's 2D hit-geometry (+ debug bullseye overlay)
             // continuously in sync with the camera — not just on mouse-move — so a
             // cursor parked after an orbit/zoom still sees current targets and the
@@ -452,8 +621,11 @@ extension MetalViewport {
             }
             // Build RendererMetal on the first frame (bridge no-ops thereafter),
             // then hand off this frame's drawable + pass descriptor and render.
+            let tFrame0 = ProcessInfo.processInfo.systemUptime
             engine.setupMetalRenderer(view: view)
+            let tIdle0 = ProcessInfo.processInfo.systemUptime
             engine.idle()
+            let tIdle1 = ProcessInfo.processInfo.systemUptime
             // On-demand rendering: after idle() (which advances movies/animations
             // and sets PyMOL's redisplay flag), skip the GPU-expensive frame when
             // nothing needs redrawing — a static structure then costs only a cheap
@@ -468,13 +640,30 @@ extension MetalViewport {
             // actually renders below, so a not-yet-ready drawable doesn't drop it.
             if !forceRedraw, hasRenderedOnce, let inst = engine.instance,
                PyMOLBridge_GetRedisplay(inst, 1) == 0 {
+                RMTrace.shared.frame(total: (tIdle1 - tFrame0) * 1000,
+                                     idle: (tIdle1 - tIdle0) * 1000,
+                                     drawableWait: 0, render: 0, rendered: false)
                 return
             }
+            // currentDrawable blocks when the GPU (or the compositor) is behind —
+            // this wait is how a GPU-bound viewport announces itself.
+            let tDraw0 = ProcessInfo.processInfo.systemUptime
             guard let drawable = view.currentDrawable,
-                  let passDesc = view.currentRenderPassDescriptor else { return }
+                  let passDesc = view.currentRenderPassDescriptor else {
+                RMTrace.shared.mark("frame.no_drawable",
+                    ["wait_ms": (ProcessInfo.processInfo.systemUptime - tDraw0) * 1000])
+                return
+            }
+            let tDraw1 = ProcessInfo.processInfo.systemUptime
             let size = view.drawableSize
             engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
                                     width: Int(size.width), height: Int(size.height))
+            let tRender1 = ProcessInfo.processInfo.systemUptime
+            RMTrace.shared.frame(total: (tRender1 - tFrame0) * 1000,
+                                 idle: (tIdle1 - tIdle0) * 1000,
+                                 drawableWait: (tDraw1 - tDraw0) * 1000,
+                                 render: (tRender1 - tDraw1) * 1000,
+                                 rendered: true)
             hasRenderedOnce = true
             forceRedraw = false
             // This frame built any deferred rep geometry (e.g. a surface mesh);

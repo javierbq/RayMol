@@ -29,6 +29,9 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
 // receive every file; macOS therefore routes OS opens here instead of .onOpenURL.
 final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
+        RMTrace.shared.mark("open.event", ["n": urls.count,
+                                           "first": urls.first?.lastPathComponent ?? "",
+                                           "ready": PyMOLEngine.shared.isReady])
         // Called on the main thread; hop to the main actor to reach loadOpenedFile
         // (@MainActor), mirroring ContentView's drag-drop handler.
         Task { @MainActor in handleOpenedURLs(urls, into: PyMOLEngine.shared) }
@@ -373,12 +376,14 @@ struct PyMOLApp: App {
 @MainActor
 func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     guard engine.isReady else {
-        guard attempt < 40 else { return }   // ~10s cap (40 × 250ms)
+        guard attempt < 40 else { RMTrace.shared.mark("open.gave_up"); return }   // ~10s cap (40 × 250ms)
+        if attempt == 0 { RMTrace.shared.mark("open.waiting_for_engine") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             loadOpenedFile(url, into: engine, attempt: attempt + 1)
         }
         return
     }
+    RMTrace.shared.mark("open.begin", ["file": url.lastPathComponent, "attempt": attempt])
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
     let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
@@ -394,10 +399,15 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     let raw = url.deletingPathExtension().lastPathComponent
     var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
     if name.isEmpty { name = "mol" }
-    engine.loadStructure(path: path, name: name)
+    RMTrace.shared.span("open.loadStructure", url.lastPathComponent) {
+        engine.loadStructure(path: path, name: name)
+    }
     // Publish the original document URL only after PyMOL has restored the PSE,
     // so observers read the newly restored embedded Analysis Notes payload.
-    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
+    RMTrace.shared.span("open.publishURL") {
+        engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
+    }
+    RMTrace.shared.mark("open.done", ["file": url.lastPathComponent])
 }
 
 // Load EVERY URL the OS handed us in one open (multi-file Terminal `open`, Finder

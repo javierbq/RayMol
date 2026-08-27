@@ -3616,6 +3616,9 @@ struct ContentView: View {
     // and re-asserting the theme here would clobber it (the theme apply fires on
     // the isReady onChange, i.e. AFTER the synchronous autosave restore).
     private func applyPersistedTheme() {
+        // Diagnostic: this fires on the isReady transition and races the
+        // launch-time file open — the trace records which one landed first.
+        RMTrace.shared.mark("theme.apply.begin", ["objects": engine.objects.count])
         themeManager.apply(engine: engine,
                            applyRenderToggles: !engine.suppressLaunchThemeRenderToggles)
         // Outline is off by default in RayMol 1.6.1 and no theme enables it.
@@ -3631,8 +3634,9 @@ struct ContentView: View {
         // defaults are set. macOS-only (RayMol#225 left iOS as an open
         // question): there is no user-visible ~ on iOS to author an rc file in.
         #if os(macOS)
-        loadRaymolrcOrOfferMigration()
+        RMTrace.shared.span("theme.raymolrc") { loadRaymolrcOrOfferMigration() }
         #endif
+        RMTrace.shared.mark("theme.apply.end")
     }
 
     // This native app never goes through pymol.invocation's CLI argument

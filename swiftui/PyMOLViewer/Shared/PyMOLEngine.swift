@@ -423,10 +423,12 @@ final class PyMOLEngine: ObservableObject {
             setenv("SSL_CERT_FILE", ca, 1)
         }
 
-        PyMOLBridge_InitPython(inst, resourcePath)
-        PyMOLBridge_Start(inst)
+        RMTrace.shared.mark("engine.init.begin")
+        RMTrace.shared.span("engine.initPython") { PyMOLBridge_InitPython(inst, resourcePath) }
+        RMTrace.shared.span("engine.start") { PyMOLBridge_Start(inst) }
 
         isReady = true
+        RMTrace.shared.mark("engine.ready")
 
         // Build marker — lets us confirm the device is running THIS binary (not a
         // cached/stale install) when verifying gesture-direction fixes. Bump the
@@ -703,14 +705,15 @@ final class PyMOLEngine: ObservableObject {
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            self.pollFeedback()
-            self.drainMCPMainQueue()
-            self.pollObjects()
+            RMTrace.shared.span("tick.feedback") { self.pollFeedback() }
+            RMTrace.shared.span("tick.mcpDrain") { self.drainMCPMainQueue() }
+            RMTrace.shared.span("tick.objects") { self.pollObjects() }
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
             // When idle, the cheaper 500ms pollObjects() discovery suffices.
             if self.playback.isPlaying { self.pollPlayback() }
         }
+        RMTrace.shared.mark("engine.init.end")
     }
 
     // Ask the core for the current frame / length / play state. Cheap (a few
@@ -939,7 +942,7 @@ final class PyMOLEngine: ObservableObject {
     // coreQueue (heavy commands): it calls only direct bridge/runPython helpers,
     // never runCommand, so it can't re-enter the heavy-dispatch path.
     private func runCommandCore(_ command: String) {
-        PyMOLBridge_RunCommand(command)
+        RMTrace.shared.span("cmd", command) { PyMOLBridge_RunCommand(command) }
         handleSessionViewport(for: command)
         maybeWidenClipForSurface(for: command)
         // A per-object `set state, N, obj` (and the related all_states / unset
@@ -1203,7 +1206,7 @@ final class PyMOLEngine: ObservableObject {
         pythonTap?(code)
 #endif
         guard isReady else { return }
-        PyMOLBridge_RunPython(code)
+        RMTrace.shared.span("py", code) { PyMOLBridge_RunPython(code) }
     }
 
     /// Two-stage "clear selection" used by both the selection-chip X and the Esc
@@ -3287,7 +3290,7 @@ final class PyMOLEngine: ObservableObject {
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
         if sequenceVisible {
-            fetchSequenceSelection()
+            RMTrace.shared.span("poll.seqSelection") { fetchSequenceSelection() }
         }
 
         // Run via runPython (raw PyRun), NOT runCommand/cmd.do — cmd.do echoes
@@ -3296,12 +3299,14 @@ final class PyMOLEngine: ObservableObject {
         // the feedback buffer (parsed by pollFeedback); only the echo is avoided.
         // poll_panel writes the list to a temp file and prints just that marker,
         // so the payload can't overflow the ~1KB feedback-line cap (#231).
-        runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
+        RMTrace.shared.span("poll.panel") {
+            runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
+        }
 
-        pollDetails()
+        RMTrace.shared.span("poll.details") { pollDetails() }
         // Discover/refresh the timeline length + frame (cheap). Fast updates
         // during playback are handled by pollPlayback() on the 100ms tick.
-        pollPlayback()
+        RMTrace.shared.span("poll.playback") { pollPlayback() }
     }
 
     // Query active reps + per-rep settings + scene globals for the currently
