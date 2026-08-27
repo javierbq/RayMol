@@ -559,9 +559,11 @@ final class RFD3JobManager: InferenceRuntime {
     /// once a movie exists the redisplay flag can be consumed before the viewport's
     /// on-demand gate checks it).
     ///
-    /// Python skips the coordinate load when the gap has already run out and the next
-    /// frame has not landed, so a stalled rollout costs one no-op call per tick rather
-    /// than a reload and a repaint.
+    /// Python skips the coordinate load — and the identity check that guards it — when
+    /// the gap has already run out and the next frame has not landed, so a stalled
+    /// rollout costs 0.004 ms per tick against 0.182 ms for a working one. The REPAINT is
+    /// not skipped: it is forced unconditionally three lines below, as the paragraph
+    /// above says, because this side cannot know whether Python moved anything.
     private func playbackTick() {
         guard !playbackObject.isEmpty else { return }
         PyMOLEngine.shared.runPython(Self.displayPython(name: playbackObject))

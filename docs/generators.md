@@ -393,8 +393,10 @@ instead — but **it does not add states to do it**.
 
 The object holds exactly one state per captured model frame, as it always has. Alongside
 them sits **one extra state, the display**, whose coordinates are rewritten
-`designing.PLAYBACK_DISPLAY_RATE` (30) times a second with a position interpolated between
-the last two captured frames. So:
+`RFD3Trajectory.playbackTicksPerSecond` (30) times a second with a position interpolated
+between the last two captured frames. That constant is the only definition of the rate:
+`display_fraction` is a function of elapsed TIME rather than of tick count, so the Python
+side gives the right answer at any rate and at irregular ticks. So:
 
 * every state in the object is model output, and nothing has to be labelled or explained;
 * the display state is overwritten by the next captured frame as soon as it lands, so no
@@ -413,12 +415,24 @@ endpoints **by copy rather than by arithmetic**, because `a + (b - a) * t` is no
 `a` at t=0 nor `b` at t=1 in floating point, and the model's own coordinates are never
 approximated.
 
-**Cost.** One `load_coordset` and one forced repaint per tick, on the main thread, while a
-GPU rollout runs. Measured on the real 450-atom design: **0.041 ms per tick, 0.12% of one
-main thread at 30 Hz** (1.2 ms of work per second). A tick whose gap has already run out
-early-outs at 0.004 ms rather than reloading coordinates for a position that has not changed.
-The forced repaint is a real GPU frame, but that is what showing motion costs and it is not
-specific to this approach.
+**Cost.** Per tick, on the main thread, while a GPU rollout runs. Measured on the real
+450-atom design:
+
+| | |
+|---|---|
+| working tick (interpolate + identity check + load) | **0.182 ms** |
+| — of which the identity check | 0.132 ms |
+| idle tick (gap run out, next frame not yet landed) | **0.004 ms** |
+| at 30 Hz | **0.55% of one main thread**, 5.5 ms/s |
+
+The identity check dominates, and it earns it: it is the only thing between this loop and
+someone else's coordinates. It sits *after* the fraction early-out on purpose — a tick that
+writes nothing needs no guard on a write, which is what keeps an idle tick at 0.004 ms rather
+than paying the check to discover it has nothing to do.
+
+The forced repaint is a real GPU frame and is **not** conditional — the coordinates change on
+nearly every tick, which is what smooth motion is, so there is no cheaper condition to test.
+That is what showing motion costs and it is not specific to this approach.
 
 **If the user moves the object** — the panel's state control, a typed `set state`, a scrubbed
 slider — the object is no longer showing the display state, which is the only thing the
