@@ -202,9 +202,6 @@ struct ContentView: View {
     // Local key-down monitor token for Tab / Shift+Tab → cycle the selection
     // mode (#319). Same rationale and lifecycle as the two monitors above.
     @State private var selectionModeKeyMonitor: Any?
-    // Local key-down monitor token for Return → accept the Box Select rectangle
-    // (#358). Same rationale and lifecycle as the three monitors above.
-    @State private var boxSelectKeyMonitor: Any?
     #endif
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @EnvironmentObject private var mcpManager: MCPServerManager
@@ -630,7 +627,6 @@ struct ContentView: View {
                 installEscKeyMonitor()
                 installPyMOLKeyMonitor()
                 installSelectionModeKeyMonitor()
-                installBoxSelectKeyMonitor()
             }
             .onDisappear {
                 if let token = escKeyMonitor {
@@ -644,10 +640,6 @@ struct ContentView: View {
                 if let token = selectionModeKeyMonitor {
                     NSEvent.removeMonitor(token)
                     selectionModeKeyMonitor = nil
-                }
-                if let token = boxSelectKeyMonitor {
-                    NSEvent.removeMonitor(token)
-                    boxSelectKeyMonitor = nil
                 }
             }
     }
@@ -819,25 +811,6 @@ struct ContentView: View {
     // modal/sheet/panel guard stays here alongside the other monitors', and as
     // with the Esc monitor the event is consumed only when the shortcut
     // actually fires; otherwise it falls through to normal focus navigation.
-    // Return / ⌤ → accept the Box Select rectangle (#358); Shift adds and Option
-    // subtracts, matching the overlay's Replace/Add/Subtract control. Esc already
-    // cancels via the mode-exit ladder in installEscKeyMonitor, so only accept
-    // needs its own monitor. All of the policy lives in KeyRouting.boxAcceptMode
-    // so it stays testable without pressing a key.
-    private func installBoxSelectKeyMonitor() {
-        guard boxSelectKeyMonitor == nil else { return }
-        boxSelectKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if secondaryWindowOwnsKeys() { return event }
-            guard let mode = KeyRouting.boxAcceptMode(
-                    keyCode: event.keyCode,
-                    modifiers: event.modifierFlags,
-                    boxSelectActive: engine.interactionMode == .boxSelect,
-                    textFieldFocused: textFocusFlags().focused) else { return event }
-            engine.acceptBoxSelection(mode: mode)
-            return nil  // consume — Return must not also ring / insert a newline
-        }
-    }
-
     private func installSelectionModeKeyMonitor() {
         guard selectionModeKeyMonitor == nil else { return }
         selectionModeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -3515,10 +3488,13 @@ struct ContentView: View {
         .tint(themeManager.active.accent.color)
     }
 
-    // Box Select overlay bar (mirrors moveOverlay): how Accept combines with
-    // 'sele', a live count of what the box holds, then Accept and Cancel. The
-    // count comes from the same preview that lights the atoms up, so Accept is
-    // never a blind commit.
+    // Box Select overlay bar (mirrors moveOverlay): how the box composes with the
+    // selection, what it has selected so far, and Done.
+    //
+    // There is deliberately no Accept control. The box commits as it is dragged,
+    // so the bar REPORTS a result rather than asking for confirmation — which is
+    // what stops the commit affordance from being something the user has to hunt
+    // for in the corner of a wide bar.
     private var boxSelectOverlay: some View {
         HStack(spacing: 10) {
             Image(systemName: "square.dashed")
@@ -3531,31 +3507,27 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 240)
+            .fixedSize()
+            .help("How the box combines with the current selection "
+                  + "(or hold Shift to add / Option to subtract as you drag)")
 
             Text(boxSelectStatus)
-                .font(.system(size: 12))
-                .foregroundColor(themeManager.active.panelText.color.opacity(0.8))
+                .font(.system(size: 12, weight: engine.boxRect == nil ? .regular : .semibold))
+                .foregroundColor(engine.boxRect == nil
+                    ? themeManager.active.panelText.color.opacity(0.7)
+                    : themeManager.active.panelText.color)
                 .lineLimit(1)
+                .fixedSize()
 
             Spacer(minLength: 0)
 
-            Button { engine.acceptBoxSelection() } label: {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(themeManager.active.accent.color)
+            Button { engine.endBoxSelection() } label: {
+                Text("Done").font(.system(size: 12, weight: .medium))
             }
-            .buttonStyle(.plain)
-            .disabled(engine.boxRect == nil)
-            .help("Select the atoms in the box (Return — hold Shift to add, Option to subtract)")
-            .accessibilityLabel("Accept box selection")
-
-            Button { engine.cancelBoxSelection() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
-            }
-            .buttonStyle(.plain)
-            .help("Discard the box and leave Box Select (Esc)")
-            .accessibilityLabel("Exit box select mode")
+            // No .defaultAction shortcut: Return belongs to the command line, and
+            // there is nothing here to confirm anyway. Esc leaves via the shared
+            // mode-exit ladder like every other tool.
+            .help("Leave Box Select — the selection is already made (Esc)")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(themeManager.active.panelBackground.color)
@@ -3563,9 +3535,9 @@ struct ContentView: View {
     }
 
     private var boxSelectStatus: String {
-        guard engine.boxRect != nil else { return "Drag to draw a box" }
-        guard let n = engine.boxPreviewCount else { return "…" }
-        return n == 1 ? "1 atom" : "\(n) atoms"
+        guard engine.boxRect != nil else { return "Drag over the structure to select" }
+        guard let n = engine.boxSelectionCount else { return "…" }
+        return n == 1 ? "1 atom selected" : "\(n) atoms selected"
     }
 
     // Move-mode overlay bar (mirrors measureOverlay): Move/Rotate tool toggle,

@@ -239,44 +239,92 @@ class TestBoxSelect(BoxSelectBase):
         self.assertEqual(cmd.box_select(*left, state=1), 1)
 
 
-class TestBoxPreview(BoxSelectBase):
-    '''The NDC entry points the macOS/iPadOS Box Select tool calls directly.
+class TestBoxSession(BoxSelectBase):
+    '''The session entry points the macOS/iPadOS Box Select tool calls directly.
 
-    The Swift side is unit-tested for emitting exactly these calls (see
-    BoxSelectModeTests); this is the other half of that contract -- what they do
-    when they arrive.
+    The tool commits on every drag rather than behind an Accept button, so each
+    commit has to compose against the box_begin snapshot instead of against its
+    own previous result. The Swift side is unit-tested for emitting exactly these
+    calls (see BoxSelectModeTests); this is the other half of that contract.
     '''
 
-    def testPreviewHighlightsWithoutTouchingSele(self):
+    def commit(self, model_x0, model_y0, model_x1, model_y1, mode='replace'):
+        '''Commit a box given by two model-space points at z = 0.'''
+        from pymol import metal_pick
+        x0, y0 = self.ndc(model_x0, model_y0)
+        x1, y1 = self.ndc(model_x1, model_y1)
+        return metal_pick.box_commit_ndc(x0, y0, x1, y1, self.aspect(),
+                                         name='sele', mode=mode)
+
+    def testCommitReturnsTheResultingSelectionSize(self):
+        from pymol import metal_pick
+        self.atoms([(-20, 0, 0), (-5, 0, 0), (5, 0, 0), (20, 0, 0)])
+        metal_pick.box_begin('sele')
+        self.assertEqual(self.commit(-25, -10, 0, 10), 2)
+        self.assertEqual(self.selected_names(), ['a0', 'a1'])
+
+    def testRedraggingTheSameBoxDoesNotRatchet(self):
+        # The regression that makes the snapshot necessary: with add mode
+        # composing against the LIVE selection, shrinking the box would keep
+        # everything it had ever swept over.
+        from pymol import metal_pick
+        self.atoms([(-20, 0, 0), (-5, 0, 0), (5, 0, 0), (20, 0, 0)])
+        cmd.select('sele', 'name a3')
+        metal_pick.box_begin('sele')
+
+        self.commit(-25, -10, 10, 10, mode='add')          # sweeps a0..a2
+        self.assertEqual(self.selected_names(), ['a0', 'a1', 'a2', 'a3'])
+        self.commit(-25, -10, -10, 10, mode='add')         # dragged back to a0
+        self.assertEqual(self.selected_names(), ['a0', 'a3'],
+                         'shrinking an add-mode box must give the atoms back')
+
+    def testSubtractComposesAgainstTheSnapshotToo(self):
+        from pymol import metal_pick
+        self.atoms([(-20, 0, 0), (-5, 0, 0), (5, 0, 0), (20, 0, 0)])
+        cmd.select('sele', 'all')
+        metal_pick.box_begin('sele')
+
+        self.commit(-25, -10, 0, 10, mode='subtract')      # removes a0, a1
+        self.assertEqual(self.selected_names(), ['a2', 'a3'])
+        self.commit(-25, -10, -10, 10, mode='subtract')    # now only a0
+        self.assertEqual(self.selected_names(), ['a1', 'a2', 'a3'],
+                         'shrinking a subtract-mode box must put atoms back')
+
+    def testModeCanChangeUnderTheSameBox(self):
+        # What the overlay's Replace/Add/Subtract control does to a drawn box.
+        from pymol import metal_pick
+        self.atoms([(-20, 0, 0), (-5, 0, 0), (5, 0, 0), (20, 0, 0)])
+        cmd.select('sele', 'name a3')
+        metal_pick.box_begin('sele')
+
+        self.assertEqual(self.selected_names('sele'), ['a3'])
+        self.commit(-25, -10, 0, 10, mode='add')
+        self.assertEqual(self.selected_names(), ['a0', 'a1', 'a3'])
+        self.commit(-25, -10, 0, 10, mode='replace')
+        self.assertEqual(self.selected_names(), ['a0', 'a1'])
+
+    def testFinishDropsTheSnapshot(self):
+        from pymol import metal_pick
+        self.atoms([(0, 0, 0)])
+        metal_pick.box_begin('sele')
+        self.assertTrue('_box_select_base' in cmd.get_names('all'))
+        metal_pick.box_finish()
+        self.assertFalse('_box_select_base' in cmd.get_names('all'))
+
+    def testBeginOnAnEmptySelectionIsFine(self):
         from pymol import metal_pick
         self.atoms([(-20, 0, 0), (5, 0, 0)])
+        metal_pick.box_begin('sele')          # 'sele' does not exist yet
+        self.assertEqual(self.commit(-25, -10, 0, 10, mode='add'), 1)
+        self.assertEqual(self.selected_names(), ['a0'])
+
+    def testScriptedCommandStillComposesAgainstTheLiveSelection(self):
+        # cmd.box_select is a one-shot: with no session open it must add to
+        # whatever 'sele' holds now, not to a stale snapshot.
+        self.atoms([(-20, 0, 0), (5, 0, 0)])
         cmd.select('sele', 'name a1')
-
-        n = metal_pick.box_preview_ndc(-1.0, -1.0, 0.0, 1.0, self.aspect())
-        self.assertEqual(n, 1)
-        self.assertEqual(self.selected_names('_preselect'), ['a0'])
-        # The committed selection is untouched -- the preview is a preview.
-        self.assertEqual(self.selected_names('sele'), ['a1'])
-
-    def testPreviewNeverEnablesItself(self):
-        # cmd.enable is exclusive for selections, so enabling '_preselect' would
-        # switch OFF the committed 'sele' and hide its markers.
-        from pymol import metal_pick
-        self.atoms([(0, 0, 0)])
-        cmd.select('sele', 'all')
-        cmd.enable('sele')
-        metal_pick.box_preview_ndc(-1.0, -1.0, 1.0, 1.0, self.aspect())
-        enabled = cmd.get_names('all', enabled_only=1)
-        self.assertFalse('_preselect' in enabled)
-        self.assertTrue('sele' in enabled)
-
-    def testPreviewClearEmptiesTheHighlight(self):
-        from pymol import metal_pick
-        self.atoms([(0, 0, 0)])
-        metal_pick.box_preview_ndc(-1.0, -1.0, 1.0, 1.0, self.aspect())
-        self.assertEqual(cmd.count_atoms('_preselect'), 1)
-        metal_pick.box_preview_clear()
-        self.assertEqual(cmd.count_atoms('_preselect'), 0)
+        cmd.box_select(0, 0, self.width // 2, self.height, mode='add')
+        self.assertEqual(self.selected_names(), ['a0', 'a1'])
 
     def testNdcAndPixelFormsAgree(self):
         from pymol import metal_pick

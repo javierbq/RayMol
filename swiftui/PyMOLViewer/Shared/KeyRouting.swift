@@ -33,25 +33,15 @@ enum KeyRouting {
     private static let textEditingCtrlChars: Set<Character> =
         ["a", "b", "d", "e", "f", "h", "k", "l", "n", "o", "p", "t", "v", "y"]
 
-    /// Box Select accept (#358). Return / keypad-Enter commits the rubber-band
-    /// box; the modifier picks how it combines with `sele`. Returns nil when the
-    /// event is not a Box Select accept, meaning "pass it through".
+    /// How a Box Select drag (#358) should compose with the selection it started
+    /// from, given the modifiers held when the drag began.
     ///
-    /// - Option → subtract, Shift → add, otherwise replace. Option wins when
-    ///   both are held: removing atoms is the destructive choice, so an
-    ///   ambiguous chord must not silently add them instead.
-    /// - Yields to a focused text field unconditionally: Return submits the
-    ///   command line, and stealing it would make the console unusable while the
-    ///   tool is on. (Esc, by contrast, deliberately ignores focus — see
-    ///   installEscKeyMonitor.)
-    /// - Yields to ⌘: those belong to the menus.
-    static func boxAcceptMode(keyCode: UInt16,
-                              modifiers: NSEvent.ModifierFlags,
-                              boxSelectActive: Bool,
-                              textFieldFocused: Bool) -> BoxSelectMode? {
-        guard boxSelectActive, !textFieldFocused else { return nil }
-        guard !modifiers.contains(.command) else { return nil }
-        guard keyCode == 36 || keyCode == 76 else { return nil }   // Return, ⌤
+    /// Option → subtract, Shift → add, otherwise replace. Option wins when both
+    /// are held: removing atoms is the destructive reading, so an ambiguous
+    /// chord must not silently add them instead. Read at drag START, not at
+    /// release — the modifier is a statement of intent about the drag, and
+    /// changing it mid-drag should not silently change what the drag did.
+    static func boxDragMode(_ modifiers: NSEvent.ModifierFlags) -> BoxSelectMode {
         if modifiers.contains(.option) { return .subtract }
         if modifiers.contains(.shift) { return .add }
         return .replace

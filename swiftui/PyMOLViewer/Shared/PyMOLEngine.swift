@@ -220,12 +220,15 @@ final class PyMOLEngine: ObservableObject {
     // is on); boxDrag is the in-flight grab, live only between press and release.
     @Published var boxRect: BoxRect? = nil
     var boxDrag: BoxDrag? = nil
-    // How Accept combines the box with 'sele'. Set from the overlay's segmented
-    // control (both platforms) and from the Shift/Option modifiers on macOS.
-    @Published var boxSelectMode: BoxSelectMode = .replace
-    // Atoms the current box would catch, from the live preview (nil = not yet
-    // counted). Shown on the overlay so Accept is never a blind commit.
-    @Published var boxPreviewCount: Int? = nil
+    // How the box composes with the selection it started from. Driven by the
+    // overlay's segmented control on both platforms, and by the Shift/Option
+    // modifiers held at drag start on macOS. Changing it re-commits, so the
+    // selection always matches what the control says.
+    @Published var boxSelectMode: BoxSelectMode = .replace { didSet { recommitBox() } }
+    // Size of the target selection after the last commit (nil = nothing
+    // committed yet). The overlay shows it, since there is no Accept step to
+    // report a result.
+    @Published var boxSelectionCount: Int? = nil
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
     // inclination) instead of moving the structure — for precise custom pivots.
     // Active when the overlay toggle is on OR Shift is held (macOS). The gizmo
@@ -2607,91 +2610,95 @@ final class PyMOLEngine: ObservableObject {
 
     // MARK: - Box Select (rubber-band selection, #358)
 
-    // Leading-edge throttle for the live preview, mirroring hoverPreview: a drag
-    // produces a new rectangle every frame, and each preview projects EVERY drawn
+    // Leading-edge throttle for the live commit, mirroring hoverPreview: a drag
+    // produces a new rectangle every frame, and each commit projects EVERY drawn
     // atom, so an unthrottled drag would queue Python faster than it can run.
     private var boxWork: DispatchWorkItem?
     private var lastBoxFire = Date.distantPast
-    private let kBoxPreviewInterval = 0.045     // <= ~22 previews/s
-    // Whether '_preselect' currently holds a box preview. Tracked so leaving a
-    // mode only pays for the clearing round-trip when there is something to
-    // clear — setInteractionMode runs on every Move/Measure toggle too.
-    private var boxPreviewActive = false
+    private let kBoxCommitInterval = 0.045     // <= ~22 commits/s
+    // Whether a box session is open (box_begin has run, so the pre-box snapshot
+    // exists). Tracked so leaving the mode only pays for the teardown round-trip
+    // when there is something to tear down — setInteractionMode runs on every
+    // Move/Measure toggle too.
+    private var boxSessionActive = false
 
-    /// Update the rubber-band rectangle and refresh the preview highlight.
-    /// Passing nil (or a rectangle too small to be intentional) drops both.
-    func setBoxRect(_ rect: BoxRect?) {
-        boxRect = rect
-        guard let rect = rect, !rect.isDegenerate else {
-            clearBoxPreview()
-            return
-        }
-        previewBoxRect(rect)
+    /// Begin a new box: snapshot the selection so that every re-commit of THIS
+    /// box composes against what was there before it, not against its own
+    /// previous commit. Called when a drag starts a fresh rectangle, not when
+    /// one adjusts the existing one.
+    func beginBoxSession() {
+        boxSessionActive = true
+        runPython("from pymol import metal_pick as _mp\n_mp.box_begin('sele')")
     }
 
-    /// Highlight what the box would catch, in '_preselect', and report the count
-    /// back as BOXSEL:<n>. Never touches 'sele' — that only happens on Accept.
-    private func previewBoxRect(_ rect: BoxRect) {
+    /// Update the rectangle and commit it. There is no preview/accept split: the
+    /// committed selection IS the feedback, which is what makes the tool usable
+    /// without hunting for a confirm button.
+    func setBoxRect(_ rect: BoxRect?) {
+        boxRect = rect
+        guard let rect = rect, !rect.isDegenerate else { return }
+        commitBoxRect(rect)
+    }
+
+    /// Re-commit the current rectangle — used when the Replace/Add/Subtract
+    /// control changes under a box that is already drawn.
+    ///
+    /// Not throttled: a picker click is one discrete act, not a stream of drag
+    /// frames, and making the user watch the selection catch up 45 ms later
+    /// would read as the control not working.
+    private func recommitBox() {
+        guard interactionMode == .boxSelect, let rect = boxRect,
+              !rect.isDegenerate else { return }
+        commitBoxRect(rect, immediate: true)
+    }
+
+    private func commitBoxRect(_ rect: BoxRect, immediate: Bool = false) {
         let aspect = gizmoAspect
+        let mode = boxSelectMode.pyName
         boxWork?.cancel()
         let fire: () -> Void = { [weak self] in
             guard let self = self else { return }
             self.lastBoxFire = Date()
-            self.boxPreviewActive = true
             self.runPython(
                 "from pymol import metal_pick as _mp\n"
-                + "print('BOXSEL:%d' % _mp.box_preview_ndc("
-                + "\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), \(aspect)))")
+                + "print('BOXCOMMIT:%d' % _mp.box_commit_ndc("
+                + "\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), \(aspect), "
+                + "name='sele', mode='\(mode)'))")
         }
         let elapsed = Date().timeIntervalSince(lastBoxFire)
-        if elapsed >= kBoxPreviewInterval {
+        if immediate || elapsed >= kBoxCommitInterval {
             fire()                                   // leading edge — track the drag
         } else {
             let work = DispatchWorkItem(block: fire) // trailing — final rest position
             boxWork = work
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + (kBoxPreviewInterval - elapsed), execute: work)
+                deadline: .now() + (kBoxCommitInterval - elapsed), execute: work)
         }
     }
 
-    /// Drop the preview highlight (and any pending preview), leaving 'sele' alone.
-    private func clearBoxPreview() {
+    /// Forget the rectangle and close the session. The last commit STAYS — the
+    /// tool has no cancel, because with commit-on-drag there is no uncommitted
+    /// state left to throw away.
+    private func clearBoxState() {
         boxWork?.cancel()
         boxWork = nil
-        boxPreviewCount = nil
-        guard boxPreviewActive else { return }
-        boxPreviewActive = false
-        runPython("from pymol import metal_pick as _mp\n_mp.box_preview_clear()")
-    }
-
-    /// Forget the rectangle, the in-flight drag and the preview. Called whenever
-    /// the mode is left, from either the Accept path or a cancel.
-    private func clearBoxState() {
         boxDrag = nil
         boxRect = nil
-        boxSelectMode = .replace
+        boxSelectionCount = nil
         // Reset the throttle clock too, so the FIRST rectangle of the next box
-        // always previews on the leading edge instead of waiting out a window
+        // always commits on the leading edge instead of waiting out a window
         // left over from the previous one.
         lastBoxFire = .distantPast
-        clearBoxPreview()
+        // Assign directly, not through boxSelectMode's didSet -> recommitBox:
+        // the rectangle is already gone, and recommit would be a no-op anyway.
+        if boxSelectMode != .replace { boxSelectMode = .replace }
+        guard boxSessionActive else { return }
+        boxSessionActive = false
+        runPython("from pymol import metal_pick as _mp\n_mp.box_finish()")
     }
 
-    /// Commit the current box into 'sele' and leave the mode. `mode` overrides
-    /// the overlay's setting for this commit (macOS Shift-/Option-Accept).
-    /// An empty or never-drawn box commits nothing — it just exits.
-    func acceptBoxSelection(mode: BoxSelectMode? = nil) {
-        defer { setInteractionMode(.viewing) }   // also clears the box + preview
-        guard let rect = boxRect, !rect.isDegenerate else { return }
-        let m = mode ?? boxSelectMode
-        runPython(
-            "from pymol import metal_pick as _mp\n"
-            + "_mp.box_select_ndc(\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), "
-            + "\(gizmoAspect), name='sele', mode='\(m.pyName)')")
-    }
-
-    /// Abandon the box without changing 'sele' and leave the mode.
-    func cancelBoxSelection() {
+    /// Leave the tool. The selection the box made is already committed.
+    func endBoxSelection() {
         setInteractionMode(.viewing)
     }
 
@@ -3336,9 +3343,9 @@ final class PyMOLEngine: ObservableObject {
                     parsePlaybackFeedback(line)
                 } else if line.hasPrefix("PLAYBACK_ERR:") {
                     // swallow (don't flood the log with poll errors)
-                } else if line.hasPrefix("BOXSEL:") {
-                    let count = Int(line.dropFirst("BOXSEL:".count))
-                    DispatchQueue.main.async { self.boxPreviewCount = count }
+                } else if line.hasPrefix("BOXCOMMIT:") {
+                    let count = Int(line.dropFirst("BOXCOMMIT:".count))
+                    DispatchQueue.main.async { self.boxSelectionCount = count }
                 } else if line.hasPrefix("SELPREVIEW:") {
                     let v = String(line.dropFirst("SELPREVIEW:".count))
                     let count = Int(v)

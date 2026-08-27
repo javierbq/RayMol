@@ -321,52 +321,29 @@ final class KeyRoutingTests: XCTestCase {
     }
 }
 
-/// Coverage for KeyRouting.boxAcceptMode — the Return-to-accept policy behind
-/// the Box Select tool (#358). Same rationale as KeyRoutingTests above: the
-/// NSEvent monitor in ContentView cannot be driven from a test, so the decision
-/// lives in a pure function and is pinned down here.
-final class BoxAcceptKeyRoutingTests: XCTestCase {
+/// Coverage for KeyRouting.boxDragMode — which way a Box Select drag (#358)
+/// composes with the selection it started from, given the modifiers held when
+/// the drag began. Same rationale as KeyRoutingTests above: a test cannot hold a
+/// key, so the decision lives in a pure function and is pinned down here.
+final class BoxDragKeyRoutingTests: XCTestCase {
 
-    private func accept(_ keyCode: UInt16 = 36,
-                        _ mods: NSEvent.ModifierFlags = [],
-                        active: Bool = true,
-                        focused: Bool = false) -> BoxSelectMode? {
-        KeyRouting.boxAcceptMode(keyCode: keyCode, modifiers: mods,
-                                 boxSelectActive: active, textFieldFocused: focused)
-    }
-
-    func testReturnAndKeypadEnterBothAccept() {
-        XCTAssertEqual(accept(36), .replace)
-        XCTAssertEqual(accept(76), .replace)
+    func testBareDragReplaces() {
+        XCTAssertEqual(KeyRouting.boxDragMode([]), .replace)
     }
 
     func testShiftAddsAndOptionSubtracts() {
-        XCTAssertEqual(accept(36, .shift), .add)
-        XCTAssertEqual(accept(36, .option), .subtract)
+        XCTAssertEqual(KeyRouting.boxDragMode(.shift), .add)
+        XCTAssertEqual(KeyRouting.boxDragMode(.option), .subtract)
     }
 
     func testOptionWinsOverShift() {
         // Removing atoms is the destructive reading; an ambiguous chord must not
         // silently add them instead.
-        XCTAssertEqual(accept(36, [.shift, .option]), .subtract)
+        XCTAssertEqual(KeyRouting.boxDragMode([.shift, .option]), .subtract)
     }
 
-    func testOtherKeysPassThrough() {
-        XCTAssertNil(accept(49))        // space
-        XCTAssertNil(accept(53))        // Esc — owned by the mode-exit ladder
-    }
-
-    func testInactiveToolPassesThrough() {
-        XCTAssertNil(accept(36, active: false),
-                     "Return must reach the rest of the app when the tool is off")
-    }
-
-    func testFocusedTextFieldKeepsReturn() {
-        XCTAssertNil(accept(36, focused: true),
-                     "Return submits the command line; stealing it would break the console")
-    }
-
-    func testCommandPassesThroughToTheMenus() {
-        XCTAssertNil(accept(36, .command))
+    func testUnrelatedModifiersDoNotChangeTheMode() {
+        XCTAssertEqual(KeyRouting.boxDragMode(.control), .replace)
+        XCTAssertEqual(KeyRouting.boxDragMode([.command, .shift]), .add)
     }
 }

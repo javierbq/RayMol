@@ -536,6 +536,11 @@ extension MetalViewport {
 
         // Press: grab an edge / corner / the interior of the existing box, or —
         // if the press misses it — start drawing a new one.
+        //
+        // A NEW box opens a session (snapshotting the selection it will compose
+        // against); adjusting the existing one keeps the session it already has,
+        // so dragging a corner back in takes atoms away again instead of
+        // ratcheting them on.
         private func boxBegin(in view: MTKView, at p: CGPoint) {
             guard let engine = engine, let (nx, ny, aspect) = gizmoNDC(in: view, at: p) else { return }
             let ndc = CGPoint(x: CGFloat(nx), y: CGFloat(ny))
@@ -544,6 +549,7 @@ extension MetalViewport {
                 engine.boxDrag = drag
             } else {
                 engine.boxDrag = BoxRect.beginNewDrag(at: ndc)
+                engine.beginBoxSession()
             }
         }
 
@@ -553,9 +559,11 @@ extension MetalViewport {
             engine.setBoxRect(drag.rect(at: CGPoint(x: CGFloat(nx), y: CGFloat(ny))))
         }
 
-        // Release. A press that never moved is a TAP, and a tap resolves the way
-        // the issue asks: outside the box it cancels the box (a new-box drag that
-        // stayed a point), on the box it leaves the box alone.
+        // Release. The drag has been committing all along, so this just lands the
+        // final rectangle. A press that never moved is a TAP: on the box it
+        // leaves it alone, outside it dismisses the box — WITHOUT committing an
+        // empty rectangle, so a stray click can't wipe the selection the box just
+        // made.
         private func boxEnd(in view: MTKView, at p: CGPoint) {
             guard let engine = engine else { return }
             defer { engine.boxDrag = nil }
@@ -592,8 +600,12 @@ extension MetalViewport {
             mouseDownLoc = view.convert(event.locationInWindow, from: nil)
             didDrag = false
             // Box Select: the press starts (or grabs) the rectangle; no PyMOL
-            // button event is ever sent, so the camera cannot move.
+            // button event is ever sent, so the camera cannot move. The modifier
+            // held now decides how this drag composes, and is pushed to the
+            // engine so the overlay's Replace/Add/Subtract control shows it.
             if boxSelectActive {
+                let mode = KeyRouting.boxDragMode(event.modifierFlags)
+                if engine?.boxSelectMode != mode { engine?.boxSelectMode = mode }
                 boxBegin(in: view, at: mouseDownLoc)
                 return
             }
@@ -622,8 +634,8 @@ extension MetalViewport {
         // debounces the actual Python pick.
         func handleMouseMoved(_ event: NSEvent, in view: MTKView) {
             guard !didDrag else { return }
-            // Box Select owns '_preselect' for its live box preview; a hover pick
-            // would overwrite it with the atom under the cursor.
+            // No hover picking while the box tool is on: the box is already
+            // driving the selection, and a hover pick would fight it.
             guard !boxSelectActive else { return }
             let loc = view.convert(event.locationInWindow, from: nil)
             if lastHoverLoc != .zero,
@@ -1149,7 +1161,7 @@ extension MetalViewport {
         // hover left behind — atom preview, hovered handle, and Shift-adjust.
         @objc func handleHover(_ gesture: UIHoverGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
-            guard !boxSelectActive else { return }   // the box owns '_preselect'
+            guard !boxSelectActive else { return }   // the box drives the selection
             switch gesture.state {
             case .began, .changed:
                 let p = gesture.location(in: view)

@@ -734,11 +734,36 @@ _BOX_MODES = ('replace', 'add', 'subtract')
 # deleted before we return.
 _BOX_ACC = '_box_select_acc'
 _BOX_TMP = '_box_select_tmp'
+# Snapshot of the target selection as it stood BEFORE the current box existed.
+# See box_begin for why re-committing needs it.
+_BOX_BASE = '_box_select_base'
 
 
-def _box_commit(name, hits, mode, enable):
+def box_begin(name='sele'):
+    """Start a box session: remember what `name` holds right now.
+
+    The interactive tool commits on every drag — draw, then drag a corner, then
+    drag it again — so each commit has to compose against the selection as it
+    stood BEFORE the box existed. Composing against the LIVE selection instead
+    would make add-mode a ratchet (atoms the box swept over on the way out would
+    never come back) and subtract-mode unable to give anything back."""
+    from pymol import cmd
+    cmd.select(_BOX_BASE, '?%s' % name, enable=0, quiet=1)
+
+
+def box_finish():
+    """End a box session (the tool exited, or the box was dismissed)."""
+    from pymol import cmd
+    cmd.delete(_BOX_BASE)
+
+
+def _box_commit(name, hits, mode, enable, base=None):
     """Write {object: [atom index, ...]} into the named selection under `mode`
     (replace / add / subtract) and return the number of atoms in the box.
+
+    add/subtract compose against `base` when given (the box_begin snapshot) and
+    against `name`'s own current contents otherwise — which is what a one-shot
+    scripted cmd.box_select wants.
 
     Goes through select_list rather than a giant `index 1+2+3+...` expression:
     a box over a large structure can hold 10^5 atoms, which is a selection
@@ -753,10 +778,11 @@ def _box_commit(name, hits, mode, enable):
             # state=0: the state filter already happened during projection.
             cmd.select_list(_BOX_TMP, obj, ids, state=0, mode='index', quiet=1)
             cmd.select(_BOX_ACC, _BOX_TMP, enable=0, quiet=1, merge=1)
+        src = name if base is None else base
         if mode == 'add':
-            expr = '(?%s) or (%s)' % (name, _BOX_ACC)
+            expr = '(?%s) or (%s)' % (src, _BOX_ACC)
         elif mode == 'subtract':
-            expr = '(?%s) and not (%s)' % (name, _BOX_ACC)
+            expr = '(?%s) and not (%s)' % (src, _BOX_ACC)
         else:
             expr = '(%s)' % _BOX_ACC
         # enable=0 here, then an explicit enable below: cmd.enable is EXCLUSIVE
@@ -772,7 +798,7 @@ def _box_commit(name, hits, mode, enable):
 
 
 def box_select_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace',
-                   selection='all', state=-1, enable=1):
+                   selection='all', state=-1, enable=1, base=None):
     """Select every drawn atom whose projection lands inside the NDC rectangle
     (x0, y0)-(x1, y1); returns the number of atoms the box caught.
 
@@ -783,7 +809,8 @@ def box_select_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace',
     user can actually see: only DRAWN atoms (_DRAWN_REPS), only atoms inside the
     clip slab, and the coordinates of the displayed state (state=-1).
 
-    `mode` is replace / add / subtract against `name`'s existing contents;
+    `mode` is replace / add / subtract; `base` names the selection to compose
+    against (see box_begin) and defaults to `name`'s own contents.
     `selection` narrows the candidate pool before projection."""
     from pymol import cmd
     mode = (mode or 'replace').lower()
@@ -810,7 +837,7 @@ def box_select_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace',
     if gctx is not None:
         target, x0, y0, x1, y1, aspect = gctx
         if not target:
-            return _box_commit(name, {}, mode, enable)   # empty cell
+            return _box_commit(name, {}, mode, enable, base)   # empty cell
         sel = '(%s) and (%s)' % (sel, target)
 
     r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
@@ -857,23 +884,16 @@ def box_select_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace',
             continue
         hits.setdefault(obj, []).append(idx)
 
-    return _box_commit(name, hits, mode, enable)
+    return _box_commit(name, hits, mode, enable, base)
 
 
-def box_preview_ndc(x0, y0, x1, y1, aspect):
-    """Live preview while the box is being drawn/adjusted: put what the box
-    WOULD catch into the transient '_preselect' selection the renderer draws in
-    its own color, without touching 'sele'. Returns the atom count so the
-    overlay can show it."""
-    return box_select_ndc(x0, y0, x1, y1, aspect, name=_PRESELECT,
-                          mode='replace', enable=0)
+def box_commit_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace'):
+    """What the interactive tool calls on every box drag: commit into `name`
+    against the box_begin snapshot, and return the RESULTING selection size.
 
-
-def box_preview_clear():
-    """Drop the box preview highlight (box cancelled, or mode exited)."""
+    There is no separate preview step. The tool commits continuously while the
+    box is dragged, so the committed selection is itself the live feedback and
+    the user never has to find an Accept button to make it real."""
     from pymol import cmd
-    try:
-        # enable=0 and no cmd.enable — see hover_preview_at.
-        cmd.select(_PRESELECT, 'none', enable=0, quiet=1)
-    except Exception:
-        pass
+    box_select_ndc(x0, y0, x1, y1, aspect, name=name, mode=mode, base=_BOX_BASE)
+    return cmd.count_atoms('?%s' % name)
