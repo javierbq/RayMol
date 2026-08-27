@@ -1026,12 +1026,18 @@ class LiveObjectTest(GeneratorTestCase):
         # exactly, so counting cannot tell the two apart. The user's saved design would be
         # handed this run's rollout states -- and at delivery a rename of its residues,
         # because residue names are per-object.
+        #
+        # What the two do NOT share is state 1: this recording's is the step-4 poly-ALA
+        # seed, and the saved design's is the finished structure. The impostor here is
+        # therefore a DELIVERED design, which is what would actually be reopened -- an
+        # impostor built from the same seed string would be the same object by every
+        # measure that matters and there would be nothing to detect.
         self.assertTrue(self.seed())
         self.assertTrue(self.designing.trajectory_frame(self.name,
                                                         _flat(_backbone(self.LENGTH))))
-        # Same name, same atoms, different object.
         cmd.delete(self.name)
-        cmd.read_pdbstr(_seed_pdb(length=self.LENGTH, target=self.TARGET),
+        cmd.read_pdbstr(_result_pdb(length=self.LENGTH, target=self.TARGET,
+                                    coords=_backbone(self.LENGTH, offset=(9.0, 0, 0))),
                         self.name, zoom=0)
         self.assertEqual(cmd.count_atoms(self.name),
                          self.target_atoms + self.design_atoms,
@@ -1040,6 +1046,78 @@ class LiveObjectTest(GeneratorTestCase):
             self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH))),
             'a frame must not land on an object this recording did not seed')
         self.assertEqual(cmd.count_states(self.name), 1)
+
+    def testTheRecordingLeavesNoTitleOnANYSTATE(self):
+        # The regression, and the assertion shape matters as much as the assertion. A
+        # previous version identified the recording with a token stamped into state 1's
+        # TITLE. `ObjectMoleculeLoadCoords` builds every appended state by copying the
+        # FIRST coordinate set and `CoordSet`'s copy carries `Name`, so the token spread
+        # to every state as the recording grew -- and `appkit_inspector` emits `titles`
+        # for any object where some state has one, which the panel renders as a "Name"
+        # row in accent colour. The user read `raymol-live:<uuid>` in the inspector for
+        # the whole multi-minute run, and it survived into their .pse on states 2..N.
+        #
+        # Checking state 1 alone is exactly what let that through, so this checks every
+        # state, and the payload the panel actually reads.
+        from pymol import appkit_inspector
+
+        def titles():
+            return [cmd.get_title(self.name, s) or ''
+                    for s in range(1, cmd.count_states(self.name) + 1)]
+
+        self.assertTrue(self.seed())
+        for _ in range(4):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)))
+        self.assertEqual(cmd.count_states(self.name), 5)
+        self.assertEqual(titles(), [''] * 5,
+                         'a running recording must leave no state title anywhere')
+        objmeta = appkit_inspector._build([self.name])['objmeta']
+        self.assertNotIn('titles', objmeta[self.name],
+                         'the inspector must not be given a Name row to render')
+
+        self.designing.deliver_result(self.result_path(), self.name)
+        self.assertEqual(titles(), [''] * 6,
+                         'delivery must leave no state title anywhere either')
+        objmeta = appkit_inspector._build([self.name])['objmeta']
+        self.assertNotIn('titles', objmeta[self.name])
+
+    def testDeliverySaysTheObjectIsPinned(self):
+        # The pin survives a .pse round trip, so a user who later drags the frame slider
+        # finds this one object frozen. Nothing else in the session behaves that way and
+        # nothing would explain it, so delivery says so and names the way out.
+        said = []
+        original = self.designing.colorprinting.parrot
+        self.designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            self.assertTrue(self.seed())
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)))
+            self.designing.deliver_result(self.result_path(), self.name)
+        finally:
+            self.designing.colorprinting.parrot = original
+        pinned = [t for t in said if 'pinned' in t]
+        self.assertTrue(pinned, 'delivery must say the object is pinned: %r' % said)
+        self.assertIn('unset state, %s' % self.name, pinned[0],
+                      'and must name the way out')
+        # And that the recording was completed at all. Both failure paths warn, so a
+        # silent success left a degraded 2-state run indistinguishable from a good one in
+        # the log.
+        self.assertTrue([t for t in said if 'built live' in t],
+                        'a completed recording must say so: %r' % said)
+
+    def testTheOnlyTitleADeliveredDesignCarriesIsItsSeed(self):
+        # The positive control for the test above, so "no titles" is not achieved by
+        # having broken the seed provenance that predates all of this: with `seed=`, the
+        # FINAL state is titled and nothing else is -- and nothing anywhere says
+        # `raymol-live`.
+        self.assertTrue(self.seed())
+        for _ in range(3):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)))
+        self.designing.deliver_result(self.result_path(), self.name, seed=7)
+        titles = [cmd.get_title(self.name, s) or ''
+                  for s in range(1, cmd.count_states(self.name) + 1)]
+        self.assertEqual(titles[-1], 'seed=7')
+        self.assertEqual(titles[:-1], [''] * (len(titles) - 1))
+        self.assertFalse([t for t in titles if 'raymol-live' in t])
 
     def testDeliveryAssignsSecondaryStructureFromTheDESIGNNotTheRollout(self):
         # `dss`'s default is state 0 = ALL states, and a live object's earlier states are

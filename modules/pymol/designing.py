@@ -903,6 +903,32 @@ def _pdb_atom_records(text):
     return records
 
 
+def _holds_the_seed(name, record, _self=cmd):
+    """Whether `name`'s state 1 is still the generated chain this recording seeded.
+
+    Rank-scoped, so it reads the generated chain and nothing else; `rank` is the file
+    order the layout was reported in, where `index` is PyMOL's sorted order. Cheap: one
+    `iterate_state` over the generated chain alone, once per captured frame -- 120 atoms
+    for a 24-residue design, fifty times in a multi-minute run.
+    """
+    try:
+        offset = len(record['target'])
+        held = []
+        _self.iterate_state(1, '%s and rank %d-%d'
+                            % (name, offset, offset + record['atoms'] - 1),
+                            'L.append((rank, x, y, z))', space={'L': held})
+        if len(held) != len(record['design']):
+            return False
+        for entry, written in zip(sorted(held), record['design']):
+            # 0.01 A: the seed round-trips through the PDB's three decimals and float32
+            # storage, so this is "the same coordinates", not "close enough".
+            if max(abs(a - b) for a, b in zip(entry[1:], written)) > 0.01:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _refuse_seed(name, reason, _self=cmd):
     """Abandon a seed: say why, leave no object, record nothing. Always False.
 
@@ -947,7 +973,6 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
     the frames that follow find no record to splice into and are dropped for the same
     reason -- and delivery then loads the result plainly, exactly as a non-live run does.
     """
-    import uuid
     try:
         name = _legal_object_name(name, _self=_self)
         offset = int(design_offset)
@@ -957,7 +982,6 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
                                   ' reported is not usable (%d + %d atoms)'
                                   % (name, offset, atoms))
             return False
-        token = 'raymol-live:%s' % uuid.uuid4().hex
         _TRAJECTORY.pop(name, None)
         if name in _self.get_names('objects'):
             # Replace rather than append. `read_pdbstr` into an EXISTING object appends
@@ -1056,14 +1080,28 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
             'offset': offset,
             'atoms': atoms,
             'target': [record[3] for record in written[:offset]],
-            # A token for THIS recording, so a frame cannot land on an object that merely
-            # shares the name -- yesterday's design reopened from a .pse under a reused
-            # name would otherwise be handed this run's rollout states, and the per-object
-            # rename would rewrite its residue names too. Carried in state 1's title,
-            # which nothing else on this path uses and which delivery clears.
-            'token': token,
+            # WHAT THE SEED PUT IN STATE 1, which is this recording's identity.
+            #
+            # A frame must not land on an object that merely shares the name: open
+            # yesterday's .pse of this same design mid-run and the atom count matches
+            # exactly, so counting cannot tell them apart -- and the frames would be
+            # appended to the user's saved design, whose residues delivery would then
+            # rename as well.
+            #
+            # State 1's generated chain discriminates it exactly, because that is the
+            # one thing the two do NOT share: this recording's state 1 is the step-4
+            # poly-ALA seed, and the saved design's is the finished structure.
+            #
+            # Stored rather than written anywhere. A previous version stamped a token
+            # into state 1's TITLE, which was wrong twice over: `ObjectMoleculeLoadCoords`
+            # builds each appended state by copying the first coordinate set, and
+            # `CoordSet`'s copy carries `Name` -- so the token spread to every state as
+            # the recording grew -- and `appkit_inspector` emits `titles` for any object
+            # where a state has one, which the panel renders as a "Name" row. The user
+            # read `raymol-live:<uuid>` in the inspector for the whole run, and it
+            # survived into their .pse on states 2..N.
+            'design': [record[3] for record in written[offset:]],
         }
-        _self.set_title(name, 1, token)
         return True
     except Exception as exc:
         _TRAJECTORY.pop(name, None)
@@ -1112,13 +1150,8 @@ def trajectory_frame(name, coords, _self=cmd):
             # The object is no longer the one the record describes -- atoms removed or
             # added under it. Refused rather than spliced into a shape that has changed.
             return False
-        if _self.get_title(name, 1) != record['token']:
-            # Same NAME, different object. The atom count cannot tell those apart: open
-            # yesterday's .pse of this very design mid-run and it matches exactly, and
-            # the user's saved design would then be handed this run's rollout states --
-            # and, at delivery, a rename of its residues, because residue names are
-            # per-object. The token is stamped on state 1 by the seed and belongs to this
-            # recording alone.
+        if not _holds_the_seed(name, record, _self=_self):
+            # Same NAME, different object -- see `_TRAJECTORY['design']`.
             return False
         frame = record['target'] + [values[i * 3:i * 3 + 3] for i in range(atoms)]
         state = _self.count_states(name) + 1
@@ -1192,6 +1225,8 @@ def _finish_trajectory(path, name, record, _self=cmd):
                     'resn = _seq.get(resi, resn)', space={'_seq': sequence})
         _self.load_coordset([entry[3] for entry in written], name,
                             _self.count_states(name) + 1)
+        colorprinting.parrot(' design: %s was built live -- %d states, the last one the'
+                             ' finished design.' % (name, _self.count_states(name)))
         return True
     except Exception as exc:
         colorprinting.warning(' design: could not complete the live view for %s (%s)'
@@ -1265,9 +1300,6 @@ def deliver_result(path, name, seed=None, _self=cmd):
                                   ' (%s)' % (name, exc))
         if live is not None:
             try:
-                # The recording's token goes with the recording. What is left is a
-                # delivered design, and its state 1 title should say nothing.
-                _self.set_title(name, 1, '')
                 # PINNED to the final state, via the OBJECT's own `state` setting rather
                 # than `cmd.frame`. `cmd.frame` writes the global movie frame, which
                 # `CObject::getCurrentState` only consults as a fallback -- in a session
@@ -1280,6 +1312,14 @@ def deliver_result(path, name, seed=None, _self=cmd):
                 # object panel's per-object state control does exactly this, or
                 # `unset state, <name>` hands the object back to the global frame.
                 _self.set('state', _self.count_states(name), name)
+                # Said out loud, because it survives a .pse round trip: a user who later
+                # drags the frame slider would otherwise find this one object frozen with
+                # nothing anywhere explaining it.
+                colorprinting.parrot(
+                    ' design: %s is pinned to state %d (its finished design). Replay the'
+                    ' rollout from the object panel\'s state control, or "unset state,'
+                    ' %s" to follow the frame slider again.'
+                    % (name, _self.count_states(name), name))
             except Exception:
                 pass
         try:
