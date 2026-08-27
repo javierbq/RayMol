@@ -215,12 +215,12 @@ final class RFD3JobManager: InferenceRuntime {
             return InferenceJob.refusal(
                 "target residue \(empty.chain)/\(empty.resi) has no atoms")
         }
+        // NO FLOOR ON HOTSPOTS. An empty set is unguided placement, which
+        // `Featurizer.binderDesign` supports directly -- `var origin = mean(tgtAtoms)` is
+        // its fallback and the hotspot-directed offset is applied only `if
+        // !hotAtoms.isEmpty`. The guard that stood here was OURS, and it refused a mode
+        // the engine has. Only the indices that ARE sent are bounds-checked.
         let hotspots = request.hotspots ?? []
-        guard !hotspots.isEmpty else {
-            return InferenceJob.refusal(
-                "a backbone design needs hotspot residues: they set the sampler origin, so"
-                + " without them the design is aimed at the whole target's centre of mass")
-        }
         if let bad = hotspots.first(where: { $0 < 0 || $0 >= target.count }) {
             return InferenceJob.refusal(
                 "hotspot index \(bad) is outside the \(target.count)-residue target")
@@ -473,7 +473,9 @@ final class RFD3JobManager: InferenceRuntime {
             try text.write(to: URL(fileURLWithPath: request.outPath),
                            atomically: true, encoding: .utf8)
             Self.writeMetrics(request: request,
-                              geometry: Geometry(design.stats))
+                              geometry: Geometry(
+                                design.stats,
+                                hasHotspots: !(request.hotspots ?? []).isEmpty))
             // Load BEFORE reporting done, so a script that polls then reads the object
             // does not race the load.
             InferenceJob.loadResult(request, pythonModule: Self.pythonModule)
@@ -654,12 +656,17 @@ final class RFD3JobManager: InferenceRuntime {
         let designRadiusOfGyration: Double
         let interfaceMinDistance: Double
         let contactsUnder8A: Int
-        let hotspotMinDistance: Double
+        /// nil on an UNGUIDED run, and written as no metric at all rather than as a
+        /// number. Upstream reports `hotMin.isFinite ? hotMin : 0`, so with no hotspots
+        /// this arrives as 0.0 -- which for a `higher_is_better=false` distance is the
+        /// best possible score, recorded for a thing that was never measured. A missing
+        /// metric is honest; a perfect one is not.
+        let hotspotMinDistance: Double?
         let targetDriftMax: Double
 
         init(designCACAMean: Double, backboneValidPercent: Double,
              designRadiusOfGyration: Double, interfaceMinDistance: Double,
-             contactsUnder8A: Int, hotspotMinDistance: Double, targetDriftMax: Double) {
+             contactsUnder8A: Int, hotspotMinDistance: Double?, targetDriftMax: Double) {
             self.designCACAMean = designCACAMean
             self.backboneValidPercent = backboneValidPercent
             self.designRadiusOfGyration = designRadiusOfGyration
@@ -669,13 +676,13 @@ final class RFD3JobManager: InferenceRuntime {
             self.targetDriftMax = targetDriftMax
         }
 
-        init(_ stats: RFD3Model.Stats) {
+        init(_ stats: RFD3Model.Stats, hasHotspots: Bool) {
             self.init(designCACAMean: stats.binderCACAmeanA,
                       backboneValidPercent: stats.backboneValidPct,
                       designRadiusOfGyration: stats.radiusOfGyrationA,
                       interfaceMinDistance: stats.interfaceMinA,
                       contactsUnder8A: stats.contactsUnder8A,
-                      hotspotMinDistance: stats.binderToHotspotMinA,
+                      hotspotMinDistance: hasHotspots ? stats.binderToHotspotMinA : nil,
                       targetDriftMax: stats.targetDriftMaxA)
         }
 
@@ -683,16 +690,20 @@ final class RFD3JobManager: InferenceRuntime {
         /// object with one state, and the Python side re-stamps the state it actually landed
         /// in anyway.
         var metricValues: [[String: Any]] {
-            [
+            var values: [[String: Any]] = [
                 ["key": "design_ca_ca_mean", "state": 1, "value": designCACAMean],
                 ["key": "backbone_valid_pct", "state": 1, "value": backboneValidPercent],
                 ["key": "design_radius_of_gyration", "state": 1,
                  "value": designRadiusOfGyration],
                 ["key": "interface_min_distance", "state": 1, "value": interfaceMinDistance],
                 ["key": "contacts_under_8a", "state": 1, "value": contactsUnder8A],
-                ["key": "hotspot_min_distance", "state": 1, "value": hotspotMinDistance],
                 ["key": "target_drift_max", "state": 1, "value": targetDriftMax],
             ]
+            if let hotspotMinDistance {
+                values.append(["key": "hotspot_min_distance", "state": 1,
+                               "value": hotspotMinDistance])
+            }
+            return values
         }
     }
 

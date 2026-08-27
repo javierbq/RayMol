@@ -404,6 +404,67 @@ final class RFD3TrayTests: XCTestCase {
         XCTAssertTrue(c.command.contains("keep_frames=1"), c.command)
     }
 
+    // MARK: Unguided placement, and the typed numbers
+
+    @MainActor
+    func testAnEmptyHotspotFieldOmitsTheArgumentEntirely() {
+        // NOT `design_backbone rfd3, target, , length=60`. PyMOL's parser splits on
+        // commas and has no spelling for "skip this positional", so an empty slot would
+        // be passed as the empty string in the LENGTH position on any future reordering
+        // -- and reading it back from the console history, a human sees a typo. Leaving
+        // the argument out takes the Python default, which is "unguided".
+        let c = controller()
+        c.hotspotsText = ""
+        XCTAssertEqual(c.command, "design_backbone rfd3, target, length=60")
+    }
+
+    @MainActor
+    func testAWhitespaceOnlyHotspotFieldIsTheSameAsEmpty() {
+        let c = controller()
+        c.hotspotsText = "   "
+        XCTAssertEqual(c.command, "design_backbone rfd3, target, length=60")
+    }
+
+    @MainActor
+    func testGenerateStaysOpenWithNoHotspots() {
+        // The bar must not refuse in the UI what the command accepts. Zero hotspots is a
+        // resolved target like any other -- it is unguided, not invalid.
+        let c = controller()
+        c.hotspotsText = ""
+        c.target = DesignTargetInfo(residues: 40, chain: "A", state: 1, hotspots: 0)
+        XCTAssertTrue(c.canRun)
+    }
+
+    func testATypedNumberInRangeIsTakenAsItIs() {
+        XCTAssertEqual(
+            DesignBackboneController.committed("120", into: 1...150, fallback: 60), 120)
+        // Surrounding whitespace is not a typo worth punishing.
+        XCTAssertEqual(
+            DesignBackboneController.committed("  75 ", into: 1...150, fallback: 60), 75)
+    }
+
+    func testATypedNumberOutOfRangeIsClampedNotRefused() {
+        // The stepper beside the box cannot leave the range, so the box must not be able
+        // to compose a command the bar could not otherwise compose. The caller writes the
+        // clamped value back into the field, so the snap is visible.
+        XCTAssertEqual(
+            DesignBackboneController.committed("999", into: 1...150, fallback: 60), 150)
+        XCTAssertEqual(
+            DesignBackboneController.committed("0", into: 1...150, fallback: 60), 1)
+        XCTAssertEqual(
+            DesignBackboneController.committed("-4", into: 1...10, fallback: 1), 1)
+    }
+
+    func testUnparseableTextRevertsRatherThanSubstitutingABound() {
+        // There is no number to honour, and clamping "" to 1 would silently change a
+        // setting the user never touched. Reverting is the only non-destructive answer.
+        for text in ["", "   ", "abc", "4.5", "42x", "1e3", "٤٢"] {
+            XCTAssertEqual(
+                DesignBackboneController.committed(text, into: 1...150, fallback: 60), 60,
+                "\(text.debugDescription) must leave the value alone")
+        }
+    }
+
     @MainActor
     func testAResolveErrorPayloadClosesGenerate() throws {
         let json = """

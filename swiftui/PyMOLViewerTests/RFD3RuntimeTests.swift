@@ -181,10 +181,16 @@ final class RFD3RuntimeTests: XCTestCase {
         XCTAssertTrue(refusal?.error?.contains("2") ?? false, refusal?.error ?? "nil")
     }
 
-    func testNoHotspotsAtAllIsRefused() throws {
-        let refusal = RFD3JobManager.preflight(try writeRequest(job: "s4", hotspots: []))
-        XCTAssertEqual(refusal?.state, "failed")
-        XCTAssertTrue(refusal?.error?.contains("hotspot") ?? false, refusal?.error ?? "nil")
+    func testNoHotspotsAtAllIsAcceptedAsUnguidedPlacement() throws {
+        // The floor that used to stand here was OURS, not the engine's.
+        // `Featurizer.binderDesign` handles an empty hotspot set directly: `var origin =
+        // mean(tgtAtoms)` is its fallback and the 10 A hotspot-directed offset is applied
+        // only `if !hotAtoms.isEmpty`. Refusing it meant refusing a mode upstream has.
+        XCTAssertNil(RFD3JobManager.preflight(try writeRequest(job: "s4", hotspots: [])))
+        // And an ABSENT field is the same request as an empty one -- a Python side that
+        // predates the parameter sends no key at all.
+        XCTAssertNil(RFD3JobManager.preflight(
+            try writeRequest(job: "s4b", hotspots: nil)))
     }
 
     func testAZeroLengthDesignIsRefused() throws {
@@ -225,6 +231,19 @@ final class RFD3RuntimeTests: XCTestCase {
                               "design_radius_of_gyration", "interface_min_distance",
                               "contacts_under_8a", "hotspot_min_distance",
                               "target_drift_max"])
+        // An UNGUIDED run writes the same set MINUS the hotspot distance. Upstream
+        // reports `hotMin.isFinite ? hotMin : 0`, so leaving it in would record 0.000 A
+        // -- the best possible score on a `higher_is_better=false` metric -- for a
+        // distance to residues that were never named. Absent is honest; perfect is not.
+        let unguided = RFD3JobManager.Geometry(
+            designCACAMean: 3.85, backboneValidPercent: 98.3,
+            designRadiusOfGyration: 12.1, interfaceMinDistance: 3.0,
+            contactsUnder8A: 154, hotspotMinDistance: nil, targetDriftMax: 0.0)
+        XCTAssertEqual(Set(unguided.metricValues.compactMap { $0["key"] as? String }),
+                       keys.subtracting(["hotspot_min_distance"]))
+        // (The nil's SOURCE -- `Geometry(stats, hasHotspots:)` at the one call site --
+        // cannot be exercised here: `RFD3Model.Stats` has public lets and therefore an
+        // internal memberwise init, so a Stats cannot be built from a test target.)
         // Elapsed time and peak memory reach the store through the STATUS file. Sending
         // them here too would be two sources that can disagree.
         XCTAssertFalse(keys.contains("elapsed_s"))
@@ -257,26 +276,48 @@ final class RFD3RuntimeTests: XCTestCase {
     // MARK: The naming rule
 
     func testNoUserFacingStringCallsTheOutputABinder() throws {
-        // A generated chain is a DESIGNED BACKBONE until a refold and an interface gate say
-        // otherwise -- a product rule, not a wording preference, because generation alone
-        // does not license the word. Enforced by grep rather than by review, over the files
-        // that produce user-visible text.
+        // THE RULE IS ABOUT THE OUTPUT, not about the word.
         //
-        // RFD3Kit's OWN API spells it `designBinder` / `binderSequence` / `binderLength`,
-        // and those call sites are unavoidable, so they are the only allowance.
+        // A generated chain is a DESIGNED BACKBONE until a refold and an interface gate say
+        // otherwise: generation alone does not license the claim that it binds, and the
+        // port's own benchmark has a design scoring min_ipSAE 0.70 whose chain sat 15.6 A
+        // from the reference pose. So nothing that NAMES OR DESCRIBES the result -- an
+        // object name, a metric key, a metric label, a status line -- may call it a binder.
+        //
+        // The TOOL's own name may. "Binder Design" says what RFdiffusion3 is FOR, which is
+        // a claim about the method and not about any particular chain it produced. A menu
+        // item is not a result.
+        //
+        // Two allowances, therefore, and both are narrow:
+        //   * RFD3Kit's own API spells it `designBinder` / `binderSequence` / ... and those
+        //     call sites are unavoidable.
+        //   * the exact tool-name phrases below.
+        // Everything else is a violation.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()          // PyMOLViewerTests
             .deletingLastPathComponent()          // swiftui
             .appendingPathComponent("PyMOLViewer/Shared")
         let upstreamSymbols = ["designBinder", "binderSequence", "binderLength",
                                "binderCACAmeanA", "binderToHotspotMinA"]
+        // Case-sensitive and exact: "Binder Design" is a proper noun. "the binder design"
+        // in running prose is not this phrase and is not allowed through.
+        let toolName = ["Binder Design"]
+        // Scrubbed rather than whitelisted-by-line. The old test allowed the WHOLE line if
+        // it contained an upstream symbol anywhere, so `binderLength` on the same line as a
+        // user-facing "your binder" would have passed. Removing the allowed spellings and
+        // then looking for what is left is the check the rule actually asks for.
+        let allowances = upstreamSymbols + toolName
         // The two UI files are in here because they are where the rule is easiest to
         // break: a help string and a doc comment are exactly the "what the product SAYS"
         // this test is about, and neither was scanned.
         for name in ["RFD3JobManager.swift", "RFD3ResultWriter.swift",
                      "RFD3SizeGuard.swift", "RFD3Runtime.swift",
                      "RFD3Trajectory.swift", "DesignBackboneBar.swift",
-                     "DesignBackboneController.swift"] {
+                     "DesignBackboneController.swift",
+                     // Where the tool's NAME lives -- the mode label, the Tools menu
+                     // item, the ⌃B command. Scanned so the allowance is watched from
+                     // both sides: these files may say "Binder Design" and nothing else.
+                     "ContentView.swift", "PyMOLApp.swift"] {
             let text = try String(contentsOf: root.appendingPathComponent(name),
                                   encoding: .utf8)
             for (number, line) in text.split(separator: "\n").enumerated() {
@@ -286,10 +327,13 @@ final class RFD3RuntimeTests: XCTestCase {
                 // whether the code may explain the rule or name the upstream API it wraps.
                 if trimmed.hasPrefix("//") { continue }
                 guard line.lowercased().contains("binder") else { continue }
-                let allowed = upstreamSymbols.contains { line.contains($0) }
-                XCTAssertTrue(allowed,
-                              "\(name):\(number + 1) says \"binder\" outside an upstream "
-                              + "symbol: \(line)")
+                var scrubbed = String(line)
+                for phrase in allowances {
+                    scrubbed = scrubbed.replacingOccurrences(of: phrase, with: "")
+                }
+                XCTAssertFalse(scrubbed.lowercased().contains("binder"),
+                               "\(name):\(number + 1) says \"binder\" outside an upstream "
+                               + "symbol or the tool's own name: \(line)")
             }
         }
     }

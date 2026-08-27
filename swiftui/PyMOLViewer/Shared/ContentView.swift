@@ -3307,7 +3307,9 @@ struct ContentView: View {
         if engine.predictMode { return ("Predict", "atom", "atom") }
         #if os(macOS)
         if engine.designBackboneMode {
-            return ("Design Backbone", "wand.and.stars", "wand.and.stars")
+            // The TOOL's name. The generated chain is still a "designed backbone"
+            // everywhere it is described -- see DesignBackboneBar's header.
+            return ("Binder Design", "wand.and.stars", "wand.and.stars")
         }
         #endif
         return nil
@@ -3391,9 +3393,9 @@ struct ContentView: View {
             engine.setDesignBackboneMode(!engine.designBackboneMode)
         } label: {
             if engine.designBackboneMode {
-                Label("Design Backbone", systemImage: "checkmark")
+                Label("Binder Design", systemImage: "checkmark")
             } else {
-                Text("Design Backbone")
+                Text("Binder Design")
             }
         }
         .disabled(isDesignLocked)
@@ -3412,7 +3414,7 @@ struct ContentView: View {
         #endif
         if PredictAvailability.isSupported { parts.append("Predict structures") }
         #if os(macOS)
-        parts.append("Design backbones")
+        parts.append("Binder Design")
         #endif
         let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }

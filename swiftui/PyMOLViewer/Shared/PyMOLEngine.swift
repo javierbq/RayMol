@@ -2616,9 +2616,13 @@ final class PyMOLEngine: ObservableObject {
         dc.runCommandSeam = { [weak self] command in self?.runCommand(command) }
         // Trigger the tempfile-JSON feed; DESIGN_FORM:ready routes back in pollFeedback.
         dc.refreshTrigger = { [weak self] target, hotspots, generator in
-            let t = DesignBackboneController.pythonLiteral(target)
-            let h = DesignBackboneController.pythonLiteral(hotspots)
-            let g = DesignBackboneController.pythonLiteral(generator)
+            // All three are single-line tokens -- a selection expression, a selection
+            // expression, a generator id -- so the newline-deleting `pythonLiteral` is
+            // the right one; `pythonMultilineLiteral` is for PDB payloads. #352 folded
+            // this file's fourth copy of the escaper onto InferenceJob's.
+            let t = InferenceJob.pythonLiteral(target)
+            let h = InferenceJob.pythonLiteral(hotspots)
+            let g = InferenceJob.pythonLiteral(generator)
             self?.runPython("from pymol import appkit_design as _ad\n"
                             + "_ad.emit(\(t), \(h), \(g))")
         }

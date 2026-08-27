@@ -1,7 +1,7 @@
 #if os(macOS)
 import SwiftUI
 
-/// Docked Design Backbone form (macOS), raised under the alignment when
+/// Docked Binder Design form (macOS), raised under the alignment when
 /// `engine.designBackboneMode` is on — the peer of ``PredictBar``. Composes
 /// `cmd.design_backbone` via ``DesignBackboneController``.
 ///
@@ -10,9 +10,12 @@ import SwiftUI
 /// the one tool that generates rather than folds would read as a different kind of thing
 /// when it is the same kind of thing.
 ///
-/// **The word "binder" appears nowhere.** A generated chain is a designed backbone until it
-/// has been refolded and passed an interface gate, and this bar is where a user first meets
-/// it.
+/// **The TOOL is called "Binder Design"; its OUTPUT is never called a binder.** Naming the
+/// task is a claim about what RFdiffusion3 is for, which is true. Naming the result would
+/// be a claim that the chain binds, which generation alone does not license — so object
+/// names, metric keys and every string describing what came back say "designed backbone".
+/// `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder` enforces exactly that
+/// split.
 struct DesignBackboneBar: View {
     @ObservedObject var controller: DesignBackboneController
     @ObservedObject var engine: PyMOLEngine
@@ -40,13 +43,18 @@ struct DesignBackboneBar: View {
                 // What the run will actually design against, in the engine's own terms --
                 // `residues` is AFTER the unreadable ones were excluded, which is the
                 // number that matters and the one a user cannot get from the selection.
+                // "unguided" rather than "0 hotspots": zero is a legitimate mode with a
+                // real consequence -- the sampler starts at the target's centre of mass
+                // -- and naming it is the difference between a setting and an accident.
                 Text("chain \(t.chain.isEmpty ? "·" : t.chain) · \(t.residues) res · "
-                     + "\(t.hotspots) hotspot\(t.hotspots == 1 ? "" : "s")"
+                     + (t.hotspots == 0 ? "unguided"
+                        : "\(t.hotspots) hotspot\(t.hotspots == 1 ? "" : "s")")
                      + " · state \(t.state)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(theme.active.panelText.color.opacity(0.6))
             } else {
-                Text("Pick a target selection and the interface residues to engage.")
+                Text("Pick a target selection. Interface residues are optional — without"
+                     + " them the design is placed freely.")
                     .font(.system(size: 11))
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
             }
@@ -55,7 +63,7 @@ struct DesignBackboneBar: View {
                 Image(systemName: "xmark.circle.fill").font(.system(size: 14))
                     .foregroundColor(theme.active.panelText.color.opacity(0.6))
             }
-            .buttonStyle(.plain).accessibilityLabel("Close design backbone")
+            .buttonStyle(.plain).accessibilityLabel("Close Binder Design")
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
@@ -63,8 +71,12 @@ struct DesignBackboneBar: View {
     // Row 2: target + object picker + hotspots + length + count + advanced + Generate.
     private var mainRow: some View {
         HStack(spacing: 8) {
+            // FIXED widths, not `minWidth`. A TextField is greedy: with `minWidth` these
+            // two absorbed every spare point in the bar, so the target box grew to about
+            // half the row and pushed the controls that matter into a huddle on the right.
+            // A definite width plus the Spacer below gives that space back.
             TextField("target selection", text: $controller.targetText)
-                .textFieldStyle(.roundedBorder).frame(minWidth: 140)
+                .textFieldStyle(.roundedBorder).frame(width: 150)
                 .accessibilityIdentifier("designBackbone.target")
                 .onSubmit { controller.inputChanged() }
                 .onChange(of: controller.targetText) { controller.inputChanged() }
@@ -76,8 +88,8 @@ struct DesignBackboneBar: View {
             } label: { Image(systemName: "cube") }
             .menuIndicator(.hidden).help("Use a loaded object")
 
-            TextField("hotspots", text: $controller.hotspotsText)
-                .textFieldStyle(.roundedBorder).frame(minWidth: 110)
+            TextField("hotspots (optional)", text: $controller.hotspotsText)
+                .textFieldStyle(.roundedBorder).frame(width: 110)
                 .accessibilityIdentifier("designBackbone.hotspots")
                 .onSubmit { controller.inputChanged() }
                 .onChange(of: controller.hotspotsText) { controller.inputChanged() }
@@ -95,13 +107,13 @@ struct DesignBackboneBar: View {
                 .onChange(of: controller.generator) { controller.inputChanged() }
             }
 
-            Stepper("\(controller.length) res", value: $controller.length, in: 1...150)
-                .fixedSize().help("Residues in the generated chain")
-                .accessibilityIdentifier("designBackbone.length")
+            SteppedNumberField(value: $controller.length, range: 1...150, suffix: "res",
+                               width: 46, identifier: "designBackbone.length",
+                               help: "Residues in the generated chain")
 
-            Stepper("×\(controller.nDesigns)", value: $controller.nDesigns, in: 1...10)
-                .fixedSize().help("Independent designs; each is a full run")
-                .accessibilityIdentifier("designBackbone.count")
+            SteppedNumberField(value: $controller.nDesigns, range: 1...10, suffix: "×",
+                               width: 34, identifier: "designBackbone.count",
+                               help: "Independent designs; each is a full run")
 
             Toggle("Live", isOn: $controller.liveView)
                 .toggleStyle(.checkbox)
@@ -124,6 +136,8 @@ struct DesignBackboneBar: View {
             Button { showAdvanced.toggle() } label: { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(.plain).help("Advanced options")
 
+            Spacer(minLength: 0)
+
             Button("Generate") { controller.run() }
                 .buttonStyle(.borderedProminent)
                 .disabled(!controller.canRun)
@@ -139,10 +153,18 @@ struct DesignBackboneBar: View {
     // Row 3 (Advanced): schedule / seed / name.
     private var advancedRow: some View {
         HStack(spacing: 10) {
-            labeled("diffuse") { Stepper("\(controller.diffusionSteps)",
-                value: $controller.diffusionSteps, in: 10...500, step: 10).fixedSize() }
-            labeled("recycle") { Stepper("\(controller.recyclingSteps)",
-                value: $controller.recyclingSteps, in: 1...10).fixedSize() }
+            labeled("diffuse") {
+                SteppedNumberField(value: $controller.diffusionSteps, range: 10...500,
+                                   step: 10, suffix: "", width: 46,
+                                   identifier: "designBackbone.diffusionSteps",
+                                   help: "Reverse-diffusion steps")
+            }
+            labeled("recycle") {
+                SteppedNumberField(value: $controller.recyclingSteps, range: 1...10,
+                                   suffix: "", width: 34,
+                                   identifier: "designBackbone.recyclingSteps",
+                                   help: "Recycling iterations")
+            }
             labeled("seed") { TextField("auto", text: $controller.seedText)
                 .frame(width: 60).textFieldStyle(.roundedBorder) }
             labeled("name") { TextField("auto", text: $controller.resultName)
@@ -161,6 +183,67 @@ struct DesignBackboneBar: View {
         HStack(spacing: 3) {
             Text(t).foregroundColor(theme.active.panelText.color.opacity(0.6)); v()
         }
+    }
+}
+
+/// A whole number that can be TYPED or stepped.
+///
+/// The bar's numbers were steppers alone, so reaching 150 residues from 60 was ninety
+/// clicks. A text box beside the arrows is the ordinary macOS answer, and the two stay in
+/// step because they drive the same `value` binding — the box mirrors it, never leads it.
+///
+/// The typing rules live in ``DesignBackboneController/committed(_:into:fallback:)`` so
+/// they are unit-testable without a view. What is decided HERE is *when* they run:
+///
+/// * **On Return and on losing focus, identically.** One code path, deliberately — a field
+///   that commits on Return but discards on click-away is the trap where a user types 120,
+///   clicks Generate, and gets 60. Clicking Generate takes focus off the box, so the blur
+///   commit lands before the button's action.
+/// * **Never while typing.** Committing per keystroke would clamp "1" to the lower bound
+///   on the way to "120", so the box would fight the user mid-number.
+/// * **The committed value is written straight back into the box**, so what is displayed is
+///   always what will run — a clamp is visible rather than silent.
+private struct SteppedNumberField: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    /// Trailing unit shown after the box ("res", "×"). Empty for a bare number.
+    var suffix: String = ""
+    let width: CGFloat
+    let identifier: String
+    let help: String
+
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: width)
+                .focused($focused)
+                .accessibilityIdentifier(identifier + ".field")
+                .onSubmit { commit() }
+                .onChange(of: focused) { if !focused { commit() } }
+            if !suffix.isEmpty { Text(suffix).font(.system(size: 11)) }
+            Stepper("", value: $value, in: range, step: step)
+                .labelsHidden()
+                .accessibilityIdentifier(identifier)
+        }
+        .help(help)
+        .onAppear { text = String(value) }
+        // The stepper (or anything else that sets the binding) writes through to the box.
+        .onChange(of: value) { text = String(value) }
+    }
+
+    private func commit() {
+        let settled = DesignBackboneController.committed(text, into: range, fallback: value)
+        value = settled
+        // Explicit rather than left to `onChange(of: value)`: a rejected entry ("abc")
+        // settles on the value the field already had, so the binding does not change and
+        // that observer never fires — but the box is still showing "abc".
+        text = String(settled)
     }
 }
 #endif

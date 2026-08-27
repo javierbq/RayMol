@@ -288,12 +288,15 @@ struct PyMOLApp: App {
                     .keyboardShortcut("p", modifiers: .control)
                 }
                 #if os(macOS)
-                // Design Backbone (#342): the same shape as Predict above, and a REAL
+                // Binder Design (#342): the same shape as Predict above, and a REAL
                 // menu command rather than the Tools-pill button's shortcut, so it fires
-                // reliably. ⌃B for backbone — ⌃D and ⌃P are taken by Design and Predict.
-                CommandMenu("Backbone") {
-                    Button(engine.designBackboneMode ? "Exit Design Backbone"
-                                                     : "Design Backbone…") {
+                // reliably. ⌃B — ⌃D and ⌃P are taken by Design and Predict.
+                // The menu names the TOOL; what it produces is a designed backbone until
+                // a refold and an interface gate say otherwise. Menu and item share the
+                // name, exactly as Predict's do above.
+                CommandMenu("Binder Design") {
+                    Button(engine.designBackboneMode ? "Exit Binder Design"
+                                                     : "Binder Design…") {
                         engine.setDesignBackboneMode(!engine.designBackboneMode)
                     }
                     .disabled(isDesignLocked)

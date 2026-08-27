@@ -2,7 +2,7 @@
 import Foundation
 import SwiftUI
 
-/// Form state for the Design Backbone bar (#342). The peer of ``PredictController``.
+/// Form state for the Binder Design bar (#342). The peer of ``PredictController``.
 ///
 /// Thin on purpose: it composes a `design_backbone` command and hands it to the engine.
 /// Every refusal, every ceiling and every message lives in `pymol.designing` and
@@ -29,6 +29,11 @@ final class DesignBackboneController: ObservableObject {
     @Published var targetText = ""
     /// `sele` IS right here: it is what the viewport writes and what Design mode's residue
     /// picking writes, so clicking residues then opening the bar needs no retyping.
+    ///
+    /// OPTIONAL. Empty -- or `sele` with nothing picked, which is the state the bar opens
+    /// in -- runs UNGUIDED: the sampler origin falls back to the target's centre of mass.
+    /// The bar says so in its status row rather than refusing, because the Python side
+    /// no longer refuses either.
     @Published var hotspotsText = "sele"
     @Published var generator = ""
     @Published var length = 60
@@ -134,15 +139,16 @@ final class DesignBackboneController: ObservableObject {
 
     // MARK: Run
 
+    /// Hotspots are NOT required: an empty field is a legitimate unguided run, so
+    /// requiring one here would refuse in the UI what Python accepts.
     var canRun: Bool {
-        !generator.isEmpty && !targetText.isEmpty && !hotspotsText.isEmpty
+        !generator.isEmpty && !targetText.isEmpty
             && resolveError == nil && target != nil
     }
 
     func run() {
         guard canRun else {
-            runError = resolveError
-                ?? "Pick a target and the interface residues to design against."
+            runError = resolveError ?? "Pick a target structure to design against."
             return
         }
         runCommandSeam?(command)
@@ -157,10 +163,14 @@ final class DesignBackboneController: ObservableObject {
     /// this layer — and silently sending half a selection would design against the wrong
     /// structure.
     var command: String {
-        var parts = ["design_backbone \(generator)",
-                     Self.sanitise(targetText),
-                     Self.sanitise(hotspotsText),
-                     "length=\(length)"]
+        var parts = ["design_backbone \(generator)", Self.sanitise(targetText)]
+        // OMITTED rather than passed as an empty slot. `design_backbone rfd3, t, ,
+        // length=60` would put an empty positional between two commas, and PyMOL's
+        // parser has no spelling for "skip this one" -- so an unguided run leaves the
+        // argument out entirely and takes the Python default.
+        let hotspots = Self.sanitise(hotspotsText)
+        if !hotspots.isEmpty { parts.append(hotspots) }
+        parts.append("length=\(length)")
         if nDesigns != 1 { parts.append("n_designs=\(nDesigns)") }
         if diffusionSteps != 200 { parts.append("diffusion_steps=\(diffusionSteps)") }
         if recyclingSteps != 2 { parts.append("recycling_steps=\(recyclingSteps)") }
@@ -178,19 +188,40 @@ final class DesignBackboneController: ObservableObject {
         return parts.joined(separator: ", ")
     }
 
+    /// What a typed number in a stepper-backed field commits to.
+    ///
+    /// Pure and static so the bar's text boxes and their tests share ONE rule, and so the
+    /// rule is testable without a view. The four cases the boxes actually see:
+    ///
+    /// * a whole number in range -> itself.
+    /// * out of range -> CLAMPED to the nearest bound, not refused. The stepper on the
+    ///   same control cannot leave `range`, so the text box must not be able to compose a
+    ///   command the bar could not otherwise compose -- and the caller writes the clamped
+    ///   value straight back into the box, so what is displayed is always what will run.
+    /// * empty, or not a whole number ("", "abc", "4.5", "42x") -> the FALLBACK, which the
+    ///   caller passes as the current value. Reverting is the only non-destructive answer:
+    ///   there is no number to honour, and substituting a bound would silently change a
+    ///   setting the user did not touch.
+    ///
+    /// `range` is the stepper's own, so this adds no second copy of a limit; the real
+    /// ceilings live in `pymol.generators.rfd3` and refuse at the command.
+    /// `nonisolated` because it is pure: no state, no view, nothing to serialise. The
+    /// enclosing type is `@MainActor`, which would otherwise isolate this too and make it
+    /// unreachable from a plain test method.
+    nonisolated static func committed(_ text: String, into range: ClosedRange<Int>,
+                                      fallback: Int) -> Int {
+        guard let value = Int(text.trimmingCharacters(in: .whitespaces)) else {
+            return fallback
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
     /// A selection safe to put in one comma-separated argument slot.
     static func sanitise(_ text: String) -> String {
         text.replacingOccurrences(of: ",", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// A Python single-quoted string literal, for the emit trigger.
-    static func pythonLiteral(_ value: String) -> String {
-        "'" + value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "") + "'"
-    }
 }
 
 /// One generator the host can actually run.
