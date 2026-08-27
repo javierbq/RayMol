@@ -278,12 +278,18 @@ What is IDENTICAL between a live run and a plain one, and what is not, precisely
 | result file on disk | **byte-identical** | **byte-identical** |
 | the design's coordinates | **0.000 A** apart | **0.000 A** apart |
 | design key, metrics, metric count | the same | the same |
-| bonds, orders included | **identical** (462 vs 462 measured) | **identical** |
+| bonds, orders included | **identical** (462 vs 462 measured) [^cm] | **identical** |
 | states | 51 (the rollout, then the design) | 1 |
 | object `state` setting | pinned to the final state | unset |
 
 The remaining difference that matters is the pin: a live object is not a drop-in substitute
 for a plain one inside a movie. It is explained under "Which state is on show".
+
+[^cm]: At the default `connect_mode`. `ExecutiveRebond` hardcodes a `connect_mode` of 3, so
+    a live-built design ignores a user-set one; measured, the two agree at modes 0, 2 and 3
+    and diverge at mode 1, where a plain load produces **no bonds at all** and the live
+    object still has its 90. The live result is the better one there, so this is scoping,
+    not a defect.
 
 That is possible because both come out of ONE writer, `RFD3ResultWriter.emit`. The finished
 design is appended with `load_coordset`, which matches coordinates to atoms by POSITION and
@@ -367,9 +373,12 @@ deprecating it.
 PyMOL decides connectivity ONCE, when the seed is read; `load_coordset` moves atoms and
 never re-bonds them. So the bonds you are watching for the whole rollout are whatever PyMOL
 made of the FIRST captured frame, which is step 4 of 199 and is not a settled backbone.
-(Only for the rollout: delivery re-derives them from the finished structure -- see below.
-Before it did, that step-4 guess was the object's connectivity for life, and went into every
-saved session.) Two consequences, and they pull in opposite directions.
+(Only until delivery: it re-derives them from the finished structure -- see below. Before it
+did, that step-4 guess was the object's connectivity for life, and went into every saved
+session. Note that PyMOL's bond table is per OBJECT, so delivery's re-derivation replaces
+the connectivity of *every* state, not only the last one -- the rollout states end up drawn
+with the finished structure's bonds. Scrub back after unpinning and that is what you see.)
+Two consequences, and they pull in opposite directions.
 
 **The generated chain needs bonds stated.** The seed carries **CONECT records** for it,
 numbered from `Composed.designFirstSerial` -- the generated chain no longer starts at serial

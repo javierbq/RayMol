@@ -898,6 +898,19 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertEqual(cmd.count_states(self.name), 1)
         self.assertEqual(cmd.count_atoms(self.name),
                          self.target_atoms + self.design_atoms)
+        # The counts above are satisfied by the impostor ITSELF, so they cannot tell
+        # "replaced by the design" from "left alone". COORDINATES can, and only they:
+        # the impostor is a delivered design too, so it already carries the designed
+        # SEQUENCE -- `before` and `after` are equal and prove nothing. It was built 9 A
+        # away precisely so the two are distinguishable by position.
+        after = []
+        cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(resn)',
+                    space={'L': after})
+        self.assertEqual(after, before)          # the sequence is NOT the discriminator
+        self.assertAlmostEqual(
+            cmd.get_model('%s and chain B and name CA' % self.name).atom[0].coord[0],
+            _backbone(self.LENGTH)[1][0], places=3,
+            msg='delivery left the impostor in place instead of replacing it')
 
     # -- What a run that never finishes leaves behind --------------------------
 

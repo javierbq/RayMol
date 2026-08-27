@@ -1255,9 +1255,17 @@ def _finish_trajectory(path, name, record, _self=cmd):
         # the delivered design, which is exactly what a plain run bonds from, so this
         # makes the two identical by construction instead of by patching up the one
         # difference anyone has noticed so far. It also re-derives inter-chain bonds from
-        # the settled geometry -- which is what a plain load would do too. The unbond at
-        # seed time is still right and still needed: it protects the RECORDING, whose
-        # early frames put the generated chain through the target.
+        # the settled geometry -- which is what a plain load would do too.
+        #
+        # Read from the final state, but WRITTEN to the object: PyMOL's bond table is per
+        # OBJECT, not per state, so this replaces the connectivity of every state at once
+        # -- measured 88 -> 92 on state 2 of a live object across delivery. So the unbond
+        # at seed time protects the RECORDING only UNTIL delivery; afterwards the rollout
+        # states carry the finished structure's bonds, inter-chain ones included. That is
+        # the same thing a plain run draws, and the object is pinned to the final state,
+        # so it surfaces only if someone unpins and scrubs back. Stated because the
+        # alternative reading -- that the early states keep their own connectivity -- is
+        # the natural one and the data model does not offer it.
         _self.rebond(name, state=_self.count_states(name))
         colorprinting.parrot(' design: %s was built live -- %d states, the last one the'
                              ' finished design.' % (name, _self.count_states(name)))
