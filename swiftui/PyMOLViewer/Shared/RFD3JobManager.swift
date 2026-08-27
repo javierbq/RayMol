@@ -35,20 +35,30 @@ final class RFD3JobManager: InferenceRuntime {
     /// The Python surface that owns this runtime's placeholders and metric records.
     static let pythonModule = "designing"
 
-    /// How many frames a live run captures when `live_steps` is not given.
+    /// Capture one frame in this many diffusion steps when the request names no interval.
     ///
-    /// A FRAME COUNT rather than an interval, so the default and the parameter are one
-    /// concept and there is one derivation path:
-    /// ``RFD3Trajectory/captureInterval(frames:total:)`` turns it into the every-Nth-step
-    /// the rollout actually uses. Fifty is what the old fixed interval of 4 produced at
-    /// the default 200 diffusion steps — about 1.7 s at 30 fps, enough to read as motion —
-    /// against 199 round trips that would put roughly 1.2 MB of Python source through the
-    /// main thread during a run that is already GPU-saturated.
+    /// A FALLBACK, not the usual path: Python derives the interval from the user's
+    /// `live_steps` (or from its own default frame count) and sends it, because that is
+    /// the side that also knows `diffusion_steps` and can therefore report the achievable
+    /// count before the run starts. This is what an older Python — or a request written
+    /// before `live_interval` existed — gets, and it is exactly today's behaviour.
     ///
-    /// It differs from the old constant at NON-default schedules, and better: a 6-step run
-    /// used to yield 2 frames (steps 4 and 5, every 4th of 5) and now yields 5, because
-    /// "about fifty" over five available steps is all five.
-    static let defaultTrajectoryFrames = 50
+    /// Four gives ~50 frames from a 199-step run — about 1.7 s at 30 fps, enough to read
+    /// as motion — against 199 round trips that would put roughly 1.2 MB of Python source
+    /// through the main thread during a run that is already GPU-saturated.
+    static let trajectoryStepInterval = 4
+
+    /// The every-Nth-step this request captures at.
+    ///
+    /// A named seam rather than an inline `??`, so both branches are reachable from a
+    /// unit test: `run` needs a 672 MB pack and a real MLX rollout, so an expression
+    /// buried in it is only ever exercised by an end-to-end run.
+    static func captureInterval(for request: InferenceJob.Request) -> Int {
+        guard let interval = request.liveInterval, interval > 0 else {
+            return trajectoryStepInterval
+        }
+        return interval
+    }
 
     /// The statement that creates the live object.
     ///
@@ -306,13 +316,10 @@ final class RFD3JobManager: InferenceRuntime {
             // could not be drawn.
             if request.liveView == true, let objectName = request.objectName,
                !objectName.isEmpty {
-                // Derived once, here, from the frame count the request carries or the
-                // default. `total` is the schedule's transition count, which is what
-                // `shouldCapture` compares its final-step arm against.
-                let rolloutSteps = max(request.diffusionSteps - 1, 1)
-                let interval = RFD3Trajectory.captureInterval(
-                    frames: request.liveSteps ?? Self.defaultTrajectoryFrames,
-                    total: rolloutSteps)
+                // Taken from the request, never computed. Python owns the arithmetic
+                // that turns a wanted state count into an every-Nth-step, so there is one
+                // copy of it and it lives where the achievable count can be reported.
+                let interval = Self.captureInterval(for: request)
                 var seeded = false
                 // Cleared when Python refuses the seed; every later frame is then skipped
                 // rather than emitted into a recording that does not exist.
@@ -448,7 +455,7 @@ final class RFD3JobManager: InferenceRuntime {
     ///
     /// Each call enqueues rather than blocks; the rollout never waits for a frame to
     /// render. The queue is FIFO, so the seed always precedes the frames. At most
-    /// `live_steps` (50 by default) items accumulate — one seed plus 49
+    /// `diffusionSteps / interval` items accumulate — one seed plus 49
     /// frames for a 200-step run — which is acceptable without a drop policy.
     private func runPythonOnMain(_ source: String) {
         DispatchQueue.main.async {

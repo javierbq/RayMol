@@ -182,53 +182,5 @@ enum RFD3Trajectory {
         guard interval > 0 else { return false }
         return step % interval == 0 || step == total
     }
-
-    /// How many frames ``shouldCapture`` yields at `interval` over `total` rollout steps.
-    ///
-    /// The multiples of `interval` in `1...total`, plus the final step when it is not
-    /// already one of them — which is the `step == total` arm of `shouldCapture`, counted
-    /// rather than re-derived, so the two cannot disagree.
-    static func frameCount(interval: Int, total: Int) -> Int {
-        guard interval > 0, total > 0 else { return 0 }
-        let multiples = total / interval
-        return total % interval == 0 ? multiples : multiples + 1
-    }
-
-    /// THE derivation: the capture interval that lands closest to `frames` captures.
-    ///
-    /// `live_steps` is a number of FRAMES, not an interval — a user reasons about how many
-    /// states end up in their object (scrub granularity, memory, how long the movie is),
-    /// not about every-Nth-step. This is the single place that turns one into the other,
-    /// so switching the parameter to interval semantics later means deleting this and
-    /// passing the number straight through.
-    ///
-    /// The achievable counts are QUANTISED, because the interval is an integer: over 199
-    /// rollout steps they run 199, 100, 67, 50, 40, 34, ... So an exact answer is often
-    /// impossible and this returns the NEAREST achievable count rather than the nearest
-    /// under it. "At most `frames`" was the other candidate and it is much worse in the
-    /// gaps — asked for 99 of 199 it would give 67, where nearest gives 100.
-    ///
-    /// Ties keep the SMALLER interval, i.e. the finer recording: a user who asked for more
-    /// states is better served by one extra than by one fewer.
-    ///
-    /// Scanning rather than dividing, because `round(total / frames)` is not always right:
-    /// 7 frames over 199 steps rounds to interval 28, which yields 8. The scan is bounded
-    /// by `total` (199 at the default schedule), once per run, on the rollout thread.
-    static func captureInterval(frames: Int, total: Int) -> Int {
-        guard total > 0 else { return 1 }
-        let wanted = max(frames, 1)
-        var best = 1
-        var bestDistance = Int.max
-        for interval in 1 ... total {
-            let distance = abs(frameCount(interval: interval, total: total) - wanted)
-            // `<`, not `<=`, so a tie keeps the smaller interval already found.
-            if distance < bestDistance {
-                bestDistance = distance
-                best = interval
-            }
-            if distance == 0 { break }
-        }
-        return best
-    }
 }
 #endif
