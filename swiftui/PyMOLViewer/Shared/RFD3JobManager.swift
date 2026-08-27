@@ -100,6 +100,18 @@ final class RFD3JobManager: InferenceRuntime {
     ///
     /// Flat, three floats per atom, at millimetre precision — a trajectory is watched, not
     /// measured, and %.3f keeps a 300-atom frame around 7 KB of source instead of 15.
+    /// The statement that moves the playback head one state on.
+    ///
+    /// Separate from the frame that CREATED that state, which is the whole point: display
+    /// advance is decoupled from frame arrival, so an irregular stream of frames becomes
+    /// evenly paced motion instead of a slideshow that jumps whenever the GPU hands one
+    /// over. Python applies it and owns the "has the user taken over?" check, because that
+    /// needs the object's current state and the bridge is one-directional.
+    static func advancePython(name: String, state: Int) -> String {
+        "from pymol import designing as _d\n"
+        + "_d.trajectory_advance(\(InferenceJob.pythonLiteral(name)), \(state))"
+    }
+
     static func framePython(name: String, coords: [SIMD3<Double>]) -> String {
         var body = ""
         body.reserveCapacity(coords.count * 24)
@@ -107,9 +119,32 @@ final class RFD3JobManager: InferenceRuntime {
             if index > 0 { body += "," }
             body += String(format: "%.3f,%.3f,%.3f", xyz.x, xyz.y, xyz.z)
         }
+        // `advance=0`: the frame adds a state and does NOT display it. The playback head
+        // decides what is shown, and the two must not both drive it or they fight. The
+        // default stays 1 so every non-app caller -- headless scripts, the test suite --
+        // keeps the behaviour it has always had.
         return "from pymol import designing as _d\n"
-             + "_d.trajectory_frame(\(InferenceJob.pythonLiteral(name)), [\(body)])"
+             + "_d.trajectory_frame(\(InferenceJob.pythonLiteral(name)), [\(body)],"
+             + " advance=0)"
     }
+
+    // MARK: The playback head
+    //
+    // MAIN-THREAD ONLY, all four of these. That is the entire concurrency design: frames
+    // arrive on the rollout thread but are applied inside a `DispatchQueue.main.async`
+    // block, and the counter below is bumped INSIDE that block rather than where the
+    // frame is emitted. So "newest" means "states that have actually landed", the timer
+    // reads it from the same queue that writes it, and there is nothing to synchronise
+    // and nothing the rollout can ever block on.
+
+    private var playbackTimer: Timer?
+    /// The state the head last asked for. Not necessarily what is on screen — Python
+    /// refuses if the user has taken over — which is fine: it only feeds the pacing.
+    private var playbackShown = 0
+    /// The newest state that has LANDED. Bumped on main, after the frame's Python ran.
+    private var playbackNewest = 0
+    private var playbackTicks = 0
+    private var playbackObject = ""
 
     /// MLX must never run on the main thread; the command arrives ON it. Serial, so two
     /// designs cannot both hold the peak transient — the guard sizes one design, not two.
@@ -381,17 +416,26 @@ final class RFD3JobManager: InferenceRuntime {
                                                                receiptPath: receipt),
                                                receiptPath: receipt) {
                             live = false
+                        } else {
+                            // Only once the object exists. The seed IS state 1 and is
+                            // already showing, so the head starts from there.
+                            self.startPlaybackHead(object: objectName)
                         }
                         return
                     }
-                    self.runPythonOnMain(Self.framePython(name: objectName,
-                                                          coords: coords))
+                    self.applyFrameOnMain(Self.framePython(name: objectName,
+                                                           coords: coords))
                 }
             }
 
             let design = try RFD3Runtime.withMLXErrorsAsThrows {
                 try model.designBinder(target: target, options: options)
             }
+            // BEFORE `compose`, and therefore before `loadResult` dispatches
+            // `deliver_result` — so the head cannot race delivery's pin, and whatever
+            // state it had reached is simply the last thing shown until the design
+            // lands on top of it. Both `catch` arms below stop it too.
+            stopPlaybackHead()
             elapsed = Date().timeIntervalSince(started)
             peak = Memory.peakMemory
 
@@ -441,12 +485,14 @@ final class RFD3JobManager: InferenceRuntime {
             InferenceJob.loadResult(request, pythonModule: Self.pythonModule)
             report("done", "done", 1.0, result: request.outPath)
         } catch RFD3ModelError.cancelled {
+            stopPlaybackHead()
             settle(cancelledStatus(phase: "diffusion"))
         } catch {
             // `String(describing:)` rather than `localizedDescription`: RFD3Kit's errors do
             // conform to LocalizedError as of 0.1.1, but this path also carries MLX and
             // Foundation errors that do not, and for those the localized form is the
             // useless generic fallback.
+            stopPlaybackHead()
             settle(InferenceJob.Status(
                 state: "failed", phase: "diffusion", fraction: 0,
                 error: String(describing: error), resultPath: nil,
@@ -468,17 +514,94 @@ final class RFD3JobManager: InferenceRuntime {
     /// render. The queue is FIFO, so the seed always precedes the frames. At most
     /// `diffusionSteps / interval` items accumulate — one seed plus 49
     /// frames for a 200-step run — which is acceptable without a drop policy.
-    private func runPythonOnMain(_ source: String) {
+    // MARK: Driving the playback head
+
+    /// Begin walking the displayed state forward, once the seed has created the object.
+    ///
+    /// Lives here rather than in `PyMOLEngine` for three reasons, and the third is the
+    /// one that settles it:
+    ///
+    /// * its lifetime is exactly one design's live view — started at the seed, stopped
+    ///   when the rollout ends — which is this type's lifecycle and not the engine's;
+    /// * `PlaybackState.movieFPS` is the USER's setting for the USER's movies, and
+    ///   borrowing it would make changing their movie speed change a design's pacing;
+    /// * `PyMOLEngine.startObjectStates` is a LOOP player — it cycles 1...total forever,
+    ///   publishes into `playingObjects`, and backs the object panel's play button. A
+    ///   head that chases a moving target is different behaviour, and sharing that timer
+    ///   would make a running design look "playing" in the panel and let the user's
+    ///   play/pause fight it.
+    private func startPlaybackHead(object: String) {
+        DispatchQueue.main.async {
+            self.stopPlaybackHead()
+            self.playbackObject = object
+            // The seed IS state 1, and it is already on screen.
+            self.playbackShown = 1
+            self.playbackNewest = 1
+            self.playbackTicks = 0
+            let timer = Timer(
+                timeInterval: 1.0 / Double(RFD3Trajectory.playbackTicksPerSecond),
+                repeats: true
+            ) { [weak self] _ in
+                self?.playbackTick()
+            }
+            // `.common` so the head keeps time while the user is dragging or scrolling.
+            RunLoop.main.add(timer, forMode: .common)
+            self.playbackTimer = timer
+        }
+    }
+
+    /// Stop the head. Idempotent, and safe to call from any thread.
+    ///
+    /// Called when the rollout ends by ANY route — done, cancelled, failed — so the head
+    /// can never outlive the run, never race delivery's pin, and never fire at an object
+    /// that has been deleted.
+    private func stopPlaybackHead() {
+        let clear = {
+            self.playbackTimer?.invalidate()
+            self.playbackTimer = nil
+            self.playbackObject = ""
+            self.playbackShown = 0
+            self.playbackNewest = 0
+            self.playbackTicks = 0
+        }
+        if Thread.isMainThread { clear() } else { DispatchQueue.main.async(execute: clear) }
+    }
+
+    /// One tick. Asks the pure function what to show, and only touches the session when
+    /// the answer changes — which is also what keeps the forced repaint down to one per
+    /// state rather than one per tick.
+    private func playbackTick() {
+        guard !playbackObject.isEmpty else { return }
+        let next = RFD3Trajectory.nextPlaybackState(shown: playbackShown,
+                                                    newest: playbackNewest,
+                                                    ticksWaited: playbackTicks)
+        guard next != playbackShown else {
+            playbackTicks += 1
+            return
+        }
+        playbackShown = next
+        playbackTicks = 0
+        PyMOLEngine.shared.runPython(Self.advancePython(name: playbackObject, state: next))
+        // `runPython` never reaches `runCommandCore`, so it misses the forced repaint a
+        // typed `set state, N, obj` gets — and once a movie exists the redisplay flag can
+        // be consumed before the viewport's on-demand gate checks it (issue #132).
+        PyMOLEngine.shared.requestViewportRedraw()
+    }
+
+    /// Apply one captured frame, and count it as landed.
+    ///
+    /// The counter is bumped HERE, inside the main-queue block and after the Python has
+    /// run, rather than where the frame is emitted on the rollout thread. That is what
+    /// makes `playbackNewest` mean "states that exist" instead of "states that have been
+    /// queued", and it is why the head needs no locking: the same queue writes it and
+    /// reads it.
+    ///
+    /// No forced repaint. A frame appends a state that is NOT being displayed — the head
+    /// decides what is on screen — so there is nothing new to draw until it advances.
+    private func applyFrameOnMain(_ source: String) {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)
-            // The live view drives the object's state through `runPython`, which does
-            // NOT go through `runCommandCore` and so misses the forced repaint that a
-            // typed `set state, N, obj` gets. That force is not decoration: once a movie
-            // exists the core's redisplay flag can be consumed before the viewport's
-            // on-demand gate checks it, leaving the viewer frozen while the state
-            // counter advances (issue #132) -- which is exactly this path, appending a
-            // state and changing which one shows, fifty times. One extra frame each.
-            PyMOLEngine.shared.requestViewportRedraw()
+            self.playbackNewest += 1
         }
     }
 
