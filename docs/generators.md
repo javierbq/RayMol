@@ -445,6 +445,44 @@ to the finished design afterwards.
 The last hop, from the final captured frame into the delivered design, is **not** animated:
 the head is stopped before delivery so it cannot race the pin. That is one jump, at the end.
 
+### The cartoon evolves, and the target copy is hidden
+
+**Secondary structure is re-assigned on every captured frame**, so the cartoon develops as
+the rollout runs rather than appearing only at the end. Scoped to the generated chain: the
+target's coordinates never move, so re-deriving its `ss` every second is work for an answer
+that cannot change. Measured on the real 450-atom design: 0.048 ms for `dss` plus 0.014 ms
+for the cartoon rebuild it dirties — **0.062 ms, 0.01% of one main thread** at roughly one
+captured frame a second.
+
+Per captured frame rather than per display tick because secondary structure is a slowly
+varying property and ~1 Hz is what the eye needs. Cost is not the constraint: at the 30 Hz
+display rate it would be 0.19% of one main thread.
+
+**A caveat that is inherent rather than a bug, so it is written down here rather than left
+to be discovered.** `ss` in PyMOL is a per-ATOM property, which means it belongs to the
+OBJECT and not to a state. The assignment therefore reflects whichever state `dss` last
+looked at — so with `keep_frames=1`, scrubbing back to an earlier kept frame shows that
+frame's coordinates wearing the *latest* frame's secondary structure. Nothing can fix that
+short of one `ss` per state, which PyMOL does not have. Delivery still runs `dss` against
+the **final** state, so a finished design's secondary structure comes from the design and
+never from the last interpolated position.
+
+**The target copy is hidden.** The design object is the target plus the generated chain, and
+the user already has their own target loaded — so the target half draws duplicate geometry
+directly on top of their structure. It is hidden, leaving only the generated chain displayed.
+
+The atoms **stay**: they are what makes the pair a refold's input, they are in the result
+file and in the metrics, and hiding is a display flag rather than a deletion. Verified on a
+real run — atom count, bonds, metrics and the result bytes are all untouched.
+
+Applied to **every** design object, live or not. The reason for hiding is "this chain
+duplicates a target you already have", which is just as true without the live view — and
+doing it live-only would make a live object look different from a plain one, which is
+exactly the difference `keep_frames=0` exists to avoid.
+
+Hidden **once**, where the object is created, and never again: if you show the target chain
+yourself mid-run, nothing puts it back.
+
 ### Keeping the frames, or not: `keep_frames`
 
 **Off by default.** Watching the design diffuse is the point; the states are opt-in. A live
@@ -492,10 +530,13 @@ stayed 1, 1, 1, 1, and after delivery the object showed **state 1** -- the step-
 seed wearing the designed residue names, which `cmd.save` at its default `state=-1` would
 have exported as the design.
 
-The cost, stated rather than papered over: a delivered live object is **pinned** to its final
-state. To replay the rollout afterwards, move that setting -- the object panel's per-object
-state control does exactly this -- or `unset state, <name>` to hand the object back to the
-global frame.
+The cost, stated rather than papered over: a live object **whose frames were kept** is
+**pinned** to its final state. To replay the rollout afterwards, move that setting -- the
+object panel's per-object state control does exactly this -- or `unset state, <name>` to hand
+the object back to the global frame.
+
+On the default path (`keep_frames=0`) there is nothing to pin and nothing to replay: the
+object has one state, so the pin is skipped and the seed's own is removed.
 
 ### What is streamed: px0, not the iterate
 
