@@ -267,10 +267,24 @@ displayed state as each lands. Replay it afterwards from the object panel's per-
 control (see "Which state is on show" below for why it is that rather than the frame slider).
 
 **There is one object, not two.** It is the result's object, under the result's own name,
-holding what the result holds: the target as supplied, plus the generated chain. A live run
-and a plain one leave the same single thing in the session -- live view changes when you
-see it, not what you get. When the design lands it is appended as one more state and left
-showing.
+holding what the result holds: the target as supplied, plus the generated chain. When the
+design lands it is appended as one more state and left showing.
+
+What is IDENTICAL between a live run and a plain one, and what is not, precisely -- because
+"the same object" is true of the design and not of the container:
+
+| | live | plain |
+|---|---|---|
+| result file on disk | **byte-identical** | **byte-identical** |
+| the design's coordinates | **0.000 A** apart | **0.000 A** apart |
+| design key, metrics, metric count | the same | the same |
+| states | 51 (the rollout, then the design) | 1 |
+| bonds | 119 stated on the generated chain | 119 + 2 per glycine, inferred |
+| object `state` setting | pinned to the final state | unset |
+
+The last two are the ones to know about: a live object is not a drop-in substitute for a
+plain one inside a movie, because it is pinned, and its connectivity is decided from the
+first captured frame rather than from the finished structure. Both are explained below.
 
 That is possible because both come out of ONE writer, `RFD3ResultWriter.emit`. The finished
 design is appended with `load_coordset`, which matches coordinates to atoms by POSITION and
@@ -301,10 +315,15 @@ the generated chain and how many are in it -- both reported by the writer that e
 seed, from `RFD3ResultWriter.Composed`, never counted or guessed on the Python side -- and
 `trajectory_frame` splices each frame onto the target's coordinates from state 1. The
 atom-count guard therefore compares against the GENERATED CHAIN's atom count, not the
-object's; a frame sized for the whole object is refused. The seed also stamps a token for
-that recording into state 1's title and every frame checks it, so a frame cannot land on an
-object that merely shares the name -- yesterday's `.pse` of the same design, reopened
-mid-run, matches on atom count exactly.
+object's; a frame sized for the whole object is refused. The seed also remembers the
+generated chain's own state-1 coordinates and every frame checks them, so a frame cannot
+land on an object that merely shares the name -- yesterday's `.pse` of the same design,
+reopened mid-run, matches on atom count exactly, and what separates them is that its state 1
+is the finished structure where the recording's is the step-4 seed. Remembered in
+`_TRAJECTORY`, never written into the object: a token stamped into state 1's title looked
+tidier and was not, because `ObjectMoleculeLoadCoords` copies the first coordinate set --
+`CoordSet`'s copy carries `Name` -- so it spread to every appended state and the inspector
+rendered it as a **Name** row for the whole run.
 
 ### Which state is on show
 
