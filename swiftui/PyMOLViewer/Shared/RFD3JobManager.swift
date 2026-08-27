@@ -96,10 +96,6 @@ final class RFD3JobManager: InferenceRuntime {
         + ".write('1' if _ok else '0')"
     }
 
-    /// The statement that appends one frame.
-    ///
-    /// Flat, three floats per atom, at millimetre precision — a trajectory is watched, not
-    /// measured, and %.3f keeps a 300-atom frame around 7 KB of source instead of 15.
     /// The statement that moves the display's atoms to where they are right now.
     ///
     /// Carries no numbers, deliberately: Python owns the clock reading, the fraction and
@@ -111,6 +107,10 @@ final class RFD3JobManager: InferenceRuntime {
         + "_d.trajectory_display(\(InferenceJob.pythonLiteral(name)))"
     }
 
+    /// The statement that appends one captured frame.
+    ///
+    /// Flat, three floats per atom, at millimetre precision — a trajectory is watched, not
+    /// measured, and %.3f keeps a 300-atom frame around 7 KB of source instead of 15.
     static func framePython(name: String, coords: [SIMD3<Double>]) -> String {
         var body = ""
         body.reserveCapacity(coords.count * 24)
@@ -498,17 +498,15 @@ final class RFD3JobManager: InferenceRuntime {
                             elapsedSeconds: nil)
     }
 
-    /// Session work, hopped to the main thread. The rollout runs on a background queue and
-    /// PyMOL's session may only be touched from the main one — the same rule
-    /// `InferenceJob.loadResult` follows.
-    ///
-    /// Each call enqueues rather than blocks; the rollout never waits for a frame to
-    /// render. The queue is FIFO, so the seed always precedes the frames. At most
-    /// `diffusionSteps / interval` items accumulate — one seed plus 49
-    /// frames for a 200-step run — which is acceptable without a drop policy.
     // MARK: Driving the playback head
+    //
+    // Everything below touches PyMOL's session, so all of it runs on the main thread: the
+    // rollout is on a background queue and the session may only be touched from main, the
+    // same rule `InferenceJob.loadResult` follows. Frames enqueue rather than block, so
+    // the rollout never waits for anything to draw.
 
-    /// Begin walking the displayed state forward, once the seed has created the object.
+    /// Start the metronome that animates the display state, once the seed has created the
+    /// object.
     ///
     /// Lives here rather than in `PyMOLEngine` for three reasons, and the third is the
     /// one that settles it:
@@ -597,8 +595,9 @@ final class RFD3JobManager: InferenceRuntime {
     private func runSeedOnMain(_ source: String, receiptPath: String) -> Bool {
         DispatchQueue.main.sync {
             PyMOLEngine.shared.runPython(source)
-            // Same reason as `runPythonOnMain`: the seed creates the object and puts
-            // state 1 on screen, through a path that does not force a repaint.
+            // Same reason `playbackTick` forces one: `runPython` does not go through
+            // `runCommandCore`, and the seed creates the object and puts state 1 on
+            // screen (issue #132).
             PyMOLEngine.shared.requestViewportRedraw()
         }
         defer { try? FileManager.default.removeItem(atPath: receiptPath) }
