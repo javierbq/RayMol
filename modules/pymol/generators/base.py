@@ -222,6 +222,10 @@ class DesignSpec:
         #: `design_key` for the same reason: watching a design at 12 states or at 50 does
         #: not make it a different design, and two runs differing only here must key the
         #: same and produce the same bytes.
+        #:
+        #: The `int()` is a live guard, not decoration: `design_backbone` builds every
+        #: per-design copy through this constructor rather than patching the attribute
+        #: afterwards, so this is the one path the value takes.
         self.live_interval = None if live_interval is None else int(live_interval)
 
     #: No sequence input. Present because the shared transport writes `spec.chains` into

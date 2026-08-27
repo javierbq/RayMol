@@ -308,6 +308,105 @@ class DesignBackboneTest(GeneratorTestCase):
             self.assertGreaterEqual(abs(count - 99), 1,
                                     'interval %d gave %d' % (candidate, count))
 
+    def testABadScheduleIsBlamedOnTheScheduleAndPromisesNothing(self):
+        # The live block runs AFTER `validate_options`, and both halves of that matter.
+        #
+        # Before: `diffusion_steps=0, live_steps=5` raised "live_steps must be between 1
+        # and 1" -- blaming the wrong parameter for a bad schedule -- and
+        # `diffusion_steps=1, live_steps=1, quiet=0` PRINTED "will capture 1 state, every
+        # 1 of the 1 rollout steps" and only then refused, promising a state count for a
+        # run that never started.
+        from pymol import designing
+        from pymol.predictors.errors import PredictionOptionError
+        for steps in (0, 1):
+            said = []
+            original = designing.colorprinting.parrot
+            designing.colorprinting.parrot = lambda text: said.append(text)
+            try:
+                with self.assertRaises(PredictionOptionError) as caught:
+                    cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                        diffusion_steps=steps, live_steps=1, quiet=0)
+            finally:
+                designing.colorprinting.parrot = original
+            message = str(caught.exception)
+            self.assertIn('diffusion_steps', message,
+                          'a bad schedule must be blamed on the schedule, got: %s'
+                          % message)
+            self.assertNotIn('live_steps must be', message,
+                             'and must not be blamed on live_steps: %s' % message)
+            self.assertFalse([t for t in said if 'live view will capture' in t],
+                             'nothing may be promised for a run that never starts: %r'
+                             % said)
+
+    def testATIEKeepsTheFinerRecording(self):
+        # THE unguarded decision, until now. `distance < best_distance` (strict) vs `<=`
+        # is a real policy: when two intervals are equally far from what was asked, the
+        # smaller one wins, because someone who asked for more states is better served by
+        # one extra than by one fewer.
+        #
+        # The nearest test above uses 99/199, where nearest wins by 1 against 32 -- a
+        # strict win, never a tie -- so flipping the comparison left all 147 tests green.
+        # These five are every `live_steps` value at the default schedule whose outcome
+        # the tie rule decides.
+        from pymol import designing
+        total = 199
+        for wanted, finer, coarser in ((18, 19, 17), (24, 25, 23), (27, 29, 25),
+                                       (37, 40, 34), (45, 50, 40)):
+            interval = designing.capture_interval(wanted, total)
+            got = designing.capture_frame_count(interval, total)
+            # Precondition: this really is a tie, or the assertion below proves nothing.
+            self.assertEqual(abs(finer - wanted), abs(coarser - wanted),
+                             'live_steps=%d is not a tie between %d and %d'
+                             % (wanted, finer, coarser))
+            self.assertEqual(got, finer,
+                             'live_steps=%d: a tie must keep the finer recording (%d), '
+                             'not the coarser one (%d)' % (wanted, finer, coarser))
+
+    # -- The one cross-language coupling, and the one call site ----------------
+
+    def _swift_source(self, name):
+        """Read a shipped Swift file, the way RFD3RuntimeTests already does.
+
+        Greping the source is not elegant, and it is the only tool available: the code
+        below lives inside `RFD3JobManager.run`, which needs a 672 MB weight pack and a
+        real MLX rollout, so no unit test on either side can execute it.
+        """
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.abspath(os.path.join(here, '..', '..', '..'))
+        path = os.path.join(root, 'swiftui', 'PyMOLViewer', 'Shared', name)
+        self.assertTrue(os.path.exists(path), path)
+        with open(path) as handle:
+            return handle.read()
+
+    def testTheDerivedIntervalIsActuallyWhatTheRuntimeCapturesAt(self):
+        # `captureInterval(for:)` having a test is not the same as it being USED. Its one
+        # production reference is inside `run`, so reverting that line to the fallback
+        # would leave the function tested-but-unused and both suites green -- the whole
+        # feature silently ignoring `live_steps`.
+        source = self._swift_source('RFD3JobManager.swift')
+        self.assertIn('let interval = Self.captureInterval(for: request)', source,
+                      'the rollout must take its cadence from the request, via '
+                      'captureInterval(for:)')
+        self.assertIn('static func captureInterval(for request: InferenceJob.Request)',
+                      source)
+
+    def testTheRolloutLengthMatchesTheRuntimes(self):
+        # THE cross-language coupling. `rollout_step_count` decides the interval AND the
+        # count echoed before the run; the runtime computes the same quantity for
+        # `shouldCapture`'s final-step arm. If they disagreed the echo would be a lie
+        # about the object the user actually gets.
+        from pymol import designing
+        source = self._swift_source('RFD3JobManager.swift')
+        self.assertIn('total: max(request.diffusionSteps - 1, 1)) else { return }',
+                      source,
+                      'the runtime computes the rollout length as diffusionSteps - 1; '
+                      'designing.rollout_step_count must match it')
+        # And the Python end really is that formula, at the schedules that matter.
+        for steps in (200, 100, 20, 6, 2):
+            self.assertEqual(designing.rollout_step_count(steps), max(steps - 1, 1),
+                             'diffusion_steps=%d' % steps)
+
     def testTheFinalRolloutStepIsAlwaysCaptured(self):
         # At every count, at every schedule: the recording must end where the design does,
         # not up to `interval - 1` steps short of it.

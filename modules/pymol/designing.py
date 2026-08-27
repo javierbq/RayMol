@@ -872,6 +872,23 @@ def _weight_version(generator_id):
 # them rather than anything assuming the generated chain is simply "the last atoms".
 
 
+def rollout_step_count(diffusion_steps):
+    """Steps the rollout actually takes for a `diffusion_steps` schedule.
+
+    The schedule has `diffusion_steps` sigma levels and one fewer TRANSITION between
+    them, and it is the transitions that are captured. Floored at 1 so the arithmetic
+    below it never divides by zero; `DesignOptions` already refuses anything under 2.
+
+    ** THIS IS A CROSS-LANGUAGE COUPLING, and it is the only one this feature has. **
+    `RFD3JobManager.run` computes the same quantity as
+    `max(request.diffusionSteps - 1, 1)` for `shouldCapture`'s final-step arm. If the two
+    ever disagreed, the count echoed at submit time would be a lie about the object the
+    user then gets -- so `testTheRolloutLengthMatchesTheRuntimes` greps the Swift source
+    for that expression and fails if it changes. Both ends carry a pointer to the other.
+    """
+    return max(int(diffusion_steps) - 1, 1)
+
+
 def capture_frame_count(interval, total):
     """How many frames a live run captures at `interval` over `total` rollout steps.
 
@@ -1519,7 +1536,11 @@ ARGUMENTS
         the achievable counts are quantised -- over the default 199 rollout steps they
         run 199, 100, 67, 50, 40, 34 and so on -- and the nearest achievable count to
         what was asked is what you get. With quiet=0 the real number is printed before
-        the run starts. {default: 50}
+        the run starts.
+
+        {default: none, meaning the runtime's own cadence of one frame every 4
+        rollout steps -- which is 50 states at diffusion_steps=200, but 5 at 20 and
+        2 at 6, because it is a fixed interval rather than a fixed count}
 
 EXAMPLES
 
@@ -1577,13 +1598,31 @@ SEE ALSO
         raise PredictionOptionError(
             'length must be at least 1 residue, got %d' % int(length))
 
+    structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
+
+    if seed is None:
+        import random
+        seed = random.randrange(RANDOM_SEED_BOUND)
+
+    requested = dict(recycling_steps=int(recycling_steps),
+                     diffusion_steps=int(diffusion_steps),
+                     seed=int(seed))
+    options = generator_obj.validate_options(requested)
+
     # Presentation parameters, resolved together because they interact.
     #
-    # REFUSED rather than clamped. This is submit-time input validation, before anything
-    # has been allocated, so a number that cannot be honoured is a command error the user
-    # can correct -- not a degrade. The "live view must never fail a design" rule governs
+    # AFTER `validate_options`, deliberately. `diffusion_steps` is validated there, and
+    # everything below is derived from it -- so running first meant promising a state
+    # count for a run that then refused to start: `diffusion_steps=1, live_steps=1,
+    # quiet=0` printed "will capture 1 state" and only then raised, and
+    # `diffusion_steps=0, live_steps=5` raised "live_steps must be between 1 and 1",
+    # blaming the wrong parameter for a bad schedule.
+    #
+    # REFUSED rather than clamped. Still nothing has been allocated -- no weight fetch,
+    # no job -- so a number that cannot be honoured is a command error the user can
+    # correct, not a degrade. The "live view must never fail a design" rule governs
     # everything AFTER the job starts, and nothing here starts one.
-    rollout_steps = max(int(diffusion_steps) - 1, 1)
+    rollout_steps = rollout_step_count(options.diffusion_steps)
     if live_steps is not None:
         try:
             live_steps = int(live_steps)
@@ -1591,12 +1630,12 @@ SEE ALSO
             raise PredictionOptionError(
                 'live_steps must be a whole number of states between 1 and %d'
                 ' (diffusion_steps is %d), got %r'
-                % (rollout_steps, int(diffusion_steps), live_steps))
+                % (rollout_steps, options.diffusion_steps, live_steps))
         if not 1 <= live_steps <= rollout_steps:
             raise PredictionOptionError(
                 'live_steps must be between 1 and %d -- the rollout has that many steps'
                 ' to capture at diffusion_steps=%d -- got %d'
-                % (rollout_steps, int(diffusion_steps), live_steps))
+                % (rollout_steps, options.diffusion_steps, live_steps))
     # Giving `live_steps` is an explicit opt-in and turns the live view on by itself.
     #
     # `live_view=0` ALONGSIDE it is a CONTRADICTION and is refused, not absorbed. It asks
@@ -1604,8 +1643,7 @@ SEE ALSO
     # has to be silently thrown away -- which is precisely the "a parameter you passed did
     # nothing" failure this feature keeps closing. Refusing also makes the case observable
     # in something other than a log line: `live_view=0` already forces both fields off, so
-    # a warning was the ONLY thing distinguishing the two paths. `live_steps` shipped in
-    # this same round, so no existing script can be relying on the lenient reading.
+    # a warning was the ONLY thing distinguishing the two paths.
     if live_view is None:
         watch = live_steps is not None
     else:
@@ -1617,15 +1655,15 @@ SEE ALSO
                 % (live_steps, live_steps))
 
     # THE derivation, on this side, so the number can be reported before the run starts.
-    # The wire carries the INTERVAL; the runtime does no arithmetic, it captures every Kth
-    # step. `None` means "the runtime's default", which is what a Python side predating
-    # this parameter also says.
+    # The wire carries the INTERVAL. `None` means "the runtime's default cadence", which
+    # is the path EVERY live run without `live_steps` takes -- including the app's Live
+    # checkbox, which sends no count.
     live_interval = None
     if watch and live_steps is not None:
         live_interval = capture_interval(live_steps, rollout_steps)
         achievable = capture_frame_count(live_interval, rollout_steps)
         if not int(quiet):
-            # The counts are quantised, so asking for 30 and getting 34 is a small
+            # The counts are quantised, so asking for 30 and getting 29 is a small
             # surprise that costs nothing to remove. Said before the run, not after it.
             colorprinting.parrot(
                 ' design: live view will capture %d state%s%s, every %d of the %d rollout'
@@ -1637,16 +1675,6 @@ SEE ALSO
                         % live_steps,
                    live_interval, rollout_steps))
 
-    structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
-
-    if seed is None:
-        import random
-        seed = random.randrange(RANDOM_SEED_BOUND)
-
-    requested = dict(recycling_steps=int(recycling_steps),
-                     diffusion_steps=int(diffusion_steps),
-                     seed=int(seed))
-    options = generator_obj.validate_options(requested)
 
     # Validated BEFORE the weight fetch starts and before anything is submitted: a refused
     # target must cost nothing, and every check in parse_target is one the runtime would
@@ -1700,14 +1728,15 @@ SEE ALSO
         object_name = _legal_object_name(object_name, _self=_self)
         # DesignSpec is a __slots__ class, not a namedtuple: assign, don't _replace. A
         # copy per design, because each names its own object.
+        # CONSTRUCTED with every field, not built bare and then patched. `DesignSpec` is
+        # a __slots__ class rebuilt per design, so a field left off silently reverts to
+        # the constructor default -- and passing them here is also what makes the
+        # constructor's own coercion the real path rather than dead code that reads like
+        # a guard.
         design_spec = type(spec)(spec.target, spec.length, name=object_name,
                                  generator_id=spec.generator_id,
-                                 design_chain=spec.design_chain)
-        # Carried onto the per-design copy explicitly. `DesignSpec` is a __slots__ class
-        # rebuilt field by field above, so anything not assigned here silently reverts to
-        # the constructor default.
-        design_spec.live_view = watch
-        design_spec.live_interval = live_interval
+                                 design_chain=spec.design_chain,
+                                 live_view=watch, live_interval=live_interval)
         if fetch is not None:
             job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
                                      object_name)
