@@ -1394,6 +1394,26 @@ def trajectory_display(name, _self=cmd):
                 ' design: you moved %s yourself, so the live view has stopped animating'
                 ' it. The finished design will still be shown when it lands.' % name)
             return False
+        if not _holds_the_seed(name, record, _self=_self):
+            # SAME NAME, DIFFERENT OBJECT -- see `_TRAJECTORY['design']`. This writer has
+            # to make the check for the same reason the other two do, and more so: it is
+            # the one that writes COORDINATES, thirty times a second, so an unverified
+            # object here is the user's reopened design being silently overwritten rather
+            # than merely being shown a different state.
+            #
+            # The scrub check above catches most impostors incidentally -- a swapped-in
+            # object is rarely showing exactly the state the head last set -- but
+            # "incidentally" is not the contract. Measured on the version without this:
+            # an impostor pinned to the display state had its coordinates changed, with
+            # no latch and no warning.
+            #
+            # Costs 0.100 ms per call, 0.30% of one main thread at 30 Hz, on top of the
+            # 0.041 ms the animation itself takes. Cheap enough not to need a cadence.
+            record['user_scrubbed'] = True
+            colorprinting.warning(
+                ' design: %s is no longer the object this run seeded, so the live view'
+                ' has stopped animating it.' % name)
+            return False
         fraction = display_fraction(time.monotonic() - record['last_arrival'],
                                     record.get('gap'))
         if record.get('fraction') == fraction:

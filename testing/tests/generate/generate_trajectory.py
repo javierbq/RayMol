@@ -1109,6 +1109,52 @@ class LiveObjectTest(GeneratorTestCase):
         cmd.set('state', display, self.name)
         self.assertFalse(self.designing.trajectory_display(self.name))
 
+    def testTheANIMATIONRefusesAnObjectThisRunDidNotSeed(self):
+        # The third writer. `trajectory_frame` and `_finish_trajectory` both make the
+        # identity check and the record's own comment states the rule for all of them --
+        # this one did not, and it is the writer that matters most: it writes COORDINATES,
+        # thirty times a second, so an unverified object here is the user's reopened
+        # design being silently overwritten rather than merely shown a different state.
+        #
+        # PINNED TO THE DISPLAY STATE on purpose. The scrub check catches an impostor
+        # showing anything else, so that is the one arrangement where the identity check
+        # is the only thing standing between the animation and someone else's object --
+        # and "caught incidentally" is not the contract.
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        record = self.designing._TRAJECTORY[self.name]
+        display = record['display_state']
+
+        # A DELIVERED design under the same name: same atoms, and its state 1 is the
+        # finished structure rather than the poly-ALA seed.
+        cmd.delete(self.name)
+        cmd.read_pdbstr(_result_pdb(length=self.LENGTH, target=self.TARGET,
+                                    coords=_backbone(self.LENGTH, offset=(9.0, 0, 0))),
+                        self.name, zoom=0)
+        while cmd.count_states(self.name) < display:
+            cmd.load_coordset(cmd.get_coordset(self.name, 1), self.name,
+                              cmd.count_states(self.name) + 1)
+        cmd.set('state', display, self.name)
+        record['head_state'] = display
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms,
+                         'the impostor must be indistinguishable by atom count')
+        before = self._state_coords(display)
+
+        warned = []
+        original = self.designing.colorprinting.warning
+        self.designing.colorprinting.warning = lambda text: warned.append(text)
+        try:
+            self.assertFalse(self.designing.trajectory_display(self.name),
+                             'the animation must refuse an object it did not seed')
+        finally:
+            self.designing.colorprinting.warning = original
+        self.assertEqual(self._state_coords(display), before,
+                         "the impostor's coordinates must not be touched")
+        self.assertTrue(record.get('user_scrubbed'), 'and it must stop for the run')
+        self.assertTrue([t for t in warned if 'no longer the object' in t], warned)
+
     def testADeletedObjectIsNotEvenQUERIED(self):
         # Asking a gone object anything raises AND prints a Selector-Error -- thirty times
         # a second here. The fake RECORDS rather than raises, because this function
