@@ -1334,7 +1334,29 @@ class LiveObjectTest(GeneratorTestCase):
             # it has one and FALLS BACK to the global when it does not. So move the global
             # somewhere distinctive and see whether the object follows it.
             'pinned': self._has_state_pin(),
+            # Visibility is deliberately SET now (the target copy is hidden), so it is
+            # part of what the two arms have to agree on rather than something neither
+            # touches.
+            'visible_chains': sorted(self._visible_chains()),
+            'visible_atoms': cmd.count_atoms('%s and visible' % self.name),
+            # The three axes the invariant was silently false on. They are nothing to do
+            # with the live view -- they came from deleting the placeholder and building
+            # a fresh object where the plain path loads into it in place -- but a claim
+            # of "indistinguishable" has to be checked, not asserted.
+            'carbons': sorted(self._carbon_colours()),
+            'objlist': cmd.get_names('objects'),
+            'auto_color_next': cmd.get('auto_color_next'),
         }
+
+    def _carbon_colours(self):
+        colours = set()
+        cmd.iterate('%s and elem C' % self.name, 'S.add(color)', space={'S': colours})
+        return colours
+
+    def _visible_chains(self):
+        chains = set()
+        cmd.iterate('%s and visible' % self.name, 'S.add(chain)', space={'S': chains})
+        return chains
 
     def _has_state_pin(self):
         sentinel = 9
@@ -1346,33 +1368,58 @@ class LiveObjectTest(GeneratorTestCase):
 
     def testWithFramesDISCARDEDTheObjectIsIndistinguishableFromAPlainRun(self):
         # THE invariant, and the thing that makes the default safe. With the toggle off a
-        # live run must leave exactly what `live_view=0` leaves -- same states, same
-        # coordinates, same bonds INCLUDING ORDERS, same residue names, same secondary
-        # structure, and no leftover per-object `state` pin, because a plain run has none
-        # and a one-state object has nothing to pin.
-        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
-        path = self.result_path(coords=final)
+        # live run must leave exactly what `live_view=0` leaves -- states, coordinates,
+        # bonds INCLUDING ORDERS, residue names, secondary structure, what is visible,
+        # the object's COLOUR, its POSITION in the object list, and the session's
+        # `auto_color_next`; and no leftover per-object `state` pin.
+        #
+        # The last three were false for several rounds and this test did not look at
+        # them: `trajectory_seed` deleted the placeholder and built a fresh object where
+        # the plain path loads into it in place, so the design came out a different
+        # colour, at the end of the object panel, and every object opened afterwards was
+        # shifted one auto-colour slot.
+        #
+        # EVERY FIXTURE IS BUILT UP FRONT, before either arm starts. `_backbone` uses
+        # `cmd.fab`, which consumes an auto colour, and the two arms do different amounts
+        # of fixture work -- so building fixtures inside the arms makes the test measure
+        # the fixture rather than the product. That is what it did on the first attempt.
+        seed_pdb = _seed_pdb(length=self.LENGTH, target=self.TARGET)
+        frames = [_flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0)))
+                  for step in range(1, 6)]
+        path = self.result_path(coords=_backbone(self.LENGTH, offset=(2.5, -6.0, 0.5)))
+        # Something the user opens while the design runs, so an object-list or colour
+        # difference has somewhere to show up. Prebuilt, and read identically in both.
+        bystander = _seed_pdb(length=2, target=1)
 
-        cmd.delete('all')
-        self.designing._TRAJECTORY.clear()
-        self.designing.register_pending(self.name, 'job-plain')
-        self.designing.deliver_result(path, self.name)
-        plain = self._fingerprint()
+        def arm(build):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            cmd.set('auto_color_next', 0)
+            self.designing.register_pending(self.name, 'job')
+            cmd.read_pdbstr(bystander, 'opened_meanwhile', zoom=0)
+            build()
+            return self._fingerprint()
 
-        cmd.delete('all')
-        self.designing._TRAJECTORY.clear()
-        self.assertTrue(self._seed_keeping(0))
-        for step in range(1, 6):
-            self.assertTrue(self.designing.trajectory_frame(
-                self.name, _flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0))),
-                advance=0, smooth=1))
-            for _ in range(3):
-                self.designing.trajectory_display(self.name)
-        self.designing.deliver_result(path, self.name)
-        live = self._fingerprint()
+        def plain_run():
+            self.designing.deliver_result(path, self.name)
+
+        def live_run():
+            self.assertTrue(self.designing.trajectory_seed(
+                self.name, seed_pdb, self.target_atoms, self.design_atoms, keep=0))
+            for coords in frames:
+                self.assertTrue(self.designing.trajectory_frame(
+                    self.name, coords, advance=0, smooth=1))
+                for _ in range(3):
+                    self.designing.trajectory_display(self.name)
+            self.designing.deliver_result(path, self.name)
+
+        plain = arm(plain_run)
+        live = arm(live_run)
 
         self.assertEqual(live['states'], 1, 'discarded frames must leave one state')
-        for key in ('states', 'atoms', 'coords', 'bonds', 'resn', 'ss', 'pinned'):
+        for key in ('states', 'atoms', 'coords', 'bonds', 'resn', 'ss', 'pinned',
+                    'visible_chains', 'visible_atoms', 'carbons', 'objlist',
+                    'auto_color_next'):
             self.assertEqual(live[key], plain[key],
                              '%s differs between a discarded-frame live run and a '
                              'plain one' % key)
@@ -1433,6 +1480,97 @@ class LiveObjectTest(GeneratorTestCase):
         record['head_state'] = 1
         self.assertFalse(self.designing._holds_our_writes(self.name, record))
         self.assertFalse(self.designing.trajectory_display(self.name))
+
+    # -- The target copy is hidden, and the cartoon evolves --------------------
+
+    def testTheTargetCopyIsHiddenAndOnlyTheGeneratedChainIsShown(self):
+        # The object carries a copy of the target, and the user already has their own
+        # target loaded -- so it draws duplicate geometry on top of their structure.
+        self.assertTrue(self.seed())
+        self.assertEqual(self._visible_chains(), {'B'},
+                         'only the generated chain may be displayed')
+        self.assertEqual(cmd.count_atoms('%s and visible' % self.name),
+                         self.design_atoms)
+
+    def testTheHIDDENTargetAtomsAreStillTHERE(self):
+        # Hiding is a display flag, not a deletion. The atoms are what makes the pair a
+        # refold's input, and they are in the result file and the metrics.
+        self.assertTrue(self.seed())
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms)
+        self.assertEqual(cmd.count_atoms('%s and chain A' % self.name),
+                         self.target_atoms)
+        # And they still move with the recording, which is what the frame path splices.
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0, smooth=1)
+        self.assertEqual(cmd.count_atoms('%s and chain A' % self.name),
+                         self.target_atoms)
+
+    def testAPlainRunGetsTheSameTreatment(self):
+        # Applied to BOTH, so `keep_frames=0` stays indistinguishable from a plain run.
+        # The reason for hiding -- this chain duplicates a target you already have -- is
+        # just as true without the live view.
+        self.designing.register_pending(self.name, 'job-plain')
+        self.designing.deliver_result(self.result_path(), self.name)
+        self.assertEqual(self._visible_chains(), {'B'})
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms)
+
+    def testShowingTheTargetYourselfIsNotUndone(self):
+        # Hidden ONCE, where the object is created. A user who shows the target chain
+        # mid-run must not have it hidden again by the next captured frame.
+        self.assertTrue(self.seed())
+        cmd.show('lines', '%s and chain A' % self.name)
+        self.assertIn('A', self._visible_chains())
+        for step in range(3):
+            self.designing.trajectory_frame(
+                self.name, _flat(_backbone(self.LENGTH, offset=(step, 0, 0))),
+                advance=0, smooth=1)
+            self.designing.trajectory_display(self.name)
+        self.assertIn('A', self._visible_chains(),
+                      'a captured frame must not re-hide what the user showed')
+
+    def testSecondaryStructureIsAssignedOnEVERYCapturedFrame(self):
+        # The cartoon has to evolve with the rollout, not appear only at the end.
+        #
+        # Twenty residues, because two cannot form a helix and `dss` would answer "loop"
+        # either way -- the assertion has to be able to change. Seeded from a CLOUD so the
+        # ss starts as loops, then fed the real helical backbone `cmd.fab(..., ss=1)`
+        # builds: if `dss` only ran at delivery this would still be all loops.
+        length = 20
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.assertTrue(_seed(self.designing, self.name, length=length,
+                              target=self.TARGET, coords=_cloud(length, 9.0)))
+        before = []
+        cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(ss)',
+                    space={'L': before})
+        self.assertEqual(set(before), {'L'}, 'the fixture must start as loops: %r'
+                         % before)
+
+        for _ in range(2):
+            self.assertTrue(self.designing.trajectory_frame(
+                self.name, _flat(_backbone(length)), advance=0, smooth=1))
+        after = []
+        cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(ss)',
+                    space={'L': after})
+        self.assertIn('H', after,
+                      'secondary structure must be re-assigned as frames land, not only '
+                      'at delivery (was %r, still %r)' % (before, after))
+
+    def testTheAssignmentIsScopedToTheGeneratedChain(self):
+        # The target's coordinates never move, so re-deriving its ss every second is work
+        # for an answer that cannot change -- and it must not be silently overwritten.
+        self.assertTrue(self.seed())
+        cmd.alter('%s and chain A' % self.name, 'ss = "S"')
+        cmd.rebuild(self.name)
+        for _ in range(3):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0, smooth=1)
+        target_ss = set()
+        cmd.iterate('%s and chain A' % self.name, 'S.add(ss)', space={'S': target_ss})
+        self.assertEqual(target_ss, {'S'},
+                         'the per-frame assignment must not touch the target chain')
 
     # -- What a run that never finishes leaves behind --------------------------
 

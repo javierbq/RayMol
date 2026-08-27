@@ -1031,6 +1031,42 @@ def _pdb_atom_records(text):
     return records
 
 
+def _hide_target_copy(name, _self=cmd):
+    """Hide the copy of the target the design object carries, showing only the design.
+
+    The object is the target plus the generated chain, and the user already has their own
+    target loaded -- so the target half draws duplicate geometry directly on top of their
+    structure. The atoms STAY: they are what makes the pair a refold's input, they are in
+    the result file and in the metrics, and hiding is a display flag, not a deletion.
+
+    Applied to EVERY design object, live or not. The reason for hiding -- "this chain
+    duplicates a target you already have" -- is just as true without the live view, and
+    doing it live-only would make a live object look different from a plain one, which is
+    the difference `keep_frames=0` exists to avoid.
+
+    ONCE, where the object is created, and never again: if the user shows the target chain
+    themselves mid-run, nothing here puts it back.
+
+    The generated chain is identified as the chain of the LAST atom, because
+    `RFD3ResultWriter.emit` writes the target first and the generated chain second. That
+    also means this needs no parameters and works the same on the seeded object and on a
+    plainly loaded result.
+    """
+    try:
+        atoms = []
+        _self.iterate(name, 'L.append((rank, chain))', space={'L': atoms})
+        if not atoms:
+            return False
+        design_chain = max(atoms)[1]
+        if not design_chain:
+            return False
+        _self.hide('everything', '%s and not chain %s' % (name, design_chain))
+        return True
+    except Exception:
+        # Cosmetic; a design must never fail because a chain could not be hidden.
+        return False
+
+
 def _holds_our_writes(name, record, _self=cmd):
     """Whether `name` still holds the coordinates this recording last put in it.
 
@@ -1123,11 +1159,25 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, keep=1, _self=cmd):
                                   % (name, offset, atoms))
             return False
         _TRAJECTORY.pop(name, None)
-        if name in _self.get_names('objects'):
-            # Replace rather than append. `read_pdbstr` into an EXISTING object appends
-            # states, so re-running a named design with Live on would splice the previous
-            # run's recording onto the front of the new one. It is also what replaces the
-            # zero-atom placeholder `register_pending` created.
+        if name in _self.get_names('objects') and _self.count_atoms(name):
+            # Delete only a PREVIOUS RECORDING. `read_pdbstr` into an object that already
+            # has atoms appends states, so re-running a named design with Live on would
+            # splice the last run's recording onto the front of this one.
+            #
+            # The zero-atom PLACEHOLDER is read into IN PLACE, which is what the plain
+            # path does with `cmd.load` -- and it has to be, or a live object is
+            # distinguishable from a plain one on three axes that had nothing to do with
+            # the live view. Measured with a placeholder at submit and another object
+            # opened before the seed, which is the realistic order:
+            #
+            #   plain          objlist [design, opened]  carbons [26]  auto_color_next 1
+            #   delete+read    objlist [opened, design]  carbons [5]   auto_color_next 2
+            #   read-in-place  objlist [design, opened]  carbons [26]  auto_color_next 1
+            #
+            # Deleting and recreating moved the design to the END of the object panel,
+            # gave it a different colour, and burned an extra auto-colour slot so every
+            # object opened afterwards was shifted one along. Reading in place matches the
+            # plain path on all three with nothing to capture and restore.
             _self.delete(name)
         # `zoom=0` is LOAD-BEARING, not tidiness -- and it is why the comment that used to
         # sit here claiming "not zoomed" was false. Without it `read_pdbstr` inherits
@@ -1180,6 +1230,9 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, keep=1, _self=cmd):
         if offset:
             _self.unbond('%s and rank 0-%d' % (name, offset - 1),
                          '%s and rank %d-%d' % (name, offset, offset + atoms - 1))
+        # Once, here, where the object is created -- never per frame, so a user who shows
+        # the target chain themselves is not fought.
+        _hide_target_copy(name, _self=_self)
         # The target's half of every state, read out of the STRING rather than back out
         # of the session. It never changes -- the target is held fixed by contract for
         # the whole run -- and every frame is spliced onto it.
@@ -1360,6 +1413,32 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
         record['prev_design'] = record.get('last_design')
         record['last_design'] = design
         record['last_arrival'] = now
+        # SECONDARY STRUCTURE, per captured frame -- so the cartoon evolves with the
+        # rollout instead of appearing only at the end.
+        #
+        # Scoped to the GENERATED CHAIN: the target's coordinates never move, so
+        # re-deriving its `ss` every second is work for an answer that cannot change.
+        # Measured on the real 450-atom design: 0.048 ms for `dss` plus 0.014 ms for the
+        # cartoon rebuild it dirties -- 0.062 ms, 0.01% of one main thread at ~1 Hz.
+        #
+        # Per CAPTURED FRAME rather than per display tick: secondary structure is a
+        # slowly varying property and ~1 Hz is what the eye needs. (Per tick would cost
+        # 0.19% of one main thread, so the choice is about sense rather than budget.)
+        #
+        # ss is per-ATOM, so it belongs to the OBJECT and not to a state -- see the note
+        # in `docs/generators.md`. Against the state holding the newest coordinates: the
+        # captured frame itself when frames are kept, and the display otherwise, which is
+        # the only state there is.
+        try:
+            ss_state = state if keep else record.get('display_state')
+            if ss_state:
+                _self.dss('%s and rank %d-%d'
+                          % (name, len(record['target']),
+                             len(record['target']) + record['atoms'] - 1),
+                          state=ss_state)
+        except Exception:
+            # Cosmetic. A design must never fail because a cartoon could not be updated.
+            pass
         if keep and int(smooth) and record['prev_design'] is not None:
             # A new display slot, appended after the captured frame and started at the
             # PREVIOUS frame -- the animation runs from there to the one that just
@@ -1454,9 +1533,11 @@ def trajectory_display(name, _self=cmd):
         if record is None or record.get('user_scrubbed'):
             return False
         display = record.get('display_state')
-        if display is None or record.get('prev_design') is None:
-            # The first captured frame has no predecessor, so there is nothing to
-            # interpolate from yet. Showing it plainly is the right answer.
+        if display is None:
+            # No display slot yet: with frames kept there is none until two of them have
+            # landed. (The "no predecessor yet" case needs no test of its own here --
+            # `interpolate_frame` returns nothing without one, and the `if not middle`
+            # below already turns that into "no animation".)
             return False
         if name not in _self.get_names('objects'):
             # Deleted mid-run, which is legitimate. Asking a gone object anything raises
@@ -1611,8 +1692,13 @@ def _finish_trajectory(path, name, record, _self=cmd):
         # alternative reading -- that the early states keep their own connectivity -- is
         # the natural one and the data model does not offer it.
         _self.rebond(name, state=_self.count_states(name))
-        colorprinting.parrot(' design: %s was built live -- %d states, the last one the'
-                             ' finished design.' % (name, _self.count_states(name)))
+        states = _self.count_states(name)
+        colorprinting.parrot(
+            ' design: %s was built live -- %s' % (
+                name,
+                'the finished design, with the rollout\'s frames discarded'
+                ' (keep_frames=1 keeps them).' if states <= 1
+                else '%d states, the last one the finished design.' % states))
         return True
     except Exception as exc:
         colorprinting.warning(' design: could not complete the live view for %s (%s)'
@@ -1638,11 +1724,15 @@ def deliver_result(path, name, seed=None, _self=cmd):
     recording is thrown away and the result is loaded exactly as a non-live run loads it,
     so the worst case is losing the recording rather than losing the design.
 
-    A delivered live object is left PINNED to its final state through the object's own
-    `state` setting, which is the only way to be sure it shows the design in a session
-    that has a movie. To replay the rollout afterwards, move that setting -- the object
-    panel's per-object state control, or `unset state, <name>` to hand the object back to
-    the global frame.
+    A live object WITH ITS FRAMES KEPT is left PINNED to its final state through the
+    object's own `state` setting, which is the only way to be sure it shows the design in
+    a session that has a movie. To replay the rollout afterwards, move that setting -- the
+    object panel's per-object state control, or `unset state, <name>` to hand the object
+    back to the global frame.
+
+    On the DEFAULT path there is nothing to pin and nothing to replay: the object has one
+    state, so the pin is skipped and the seed's own is removed, leaving exactly what a
+    `live_view=0` run leaves.
     """
     name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
@@ -1657,6 +1747,10 @@ def deliver_result(path, name, seed=None, _self=cmd):
             live = None
         if live is None:
             _self.load(path, name, zoom=0)
+            # The same treatment a live object gets at seed time, for the same reason:
+            # the target half duplicates a structure the user already has loaded. Applied
+            # to both so a live run and a plain one leave the same object.
+            _hide_target_copy(name, _self=_self)
         if seed is not None:
             # In the state title, so a design says which seed produced it -- and it
             # survives into a saved .pse, which is what makes a run reproducible after
