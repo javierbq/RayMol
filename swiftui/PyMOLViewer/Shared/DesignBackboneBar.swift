@@ -106,8 +106,20 @@ struct DesignBackboneBar: View {
             Toggle("Live", isOn: $controller.liveView)
                 .toggleStyle(.checkbox)
                 .accessibilityIdentifier("designBackbone.liveView")
-                .help("Watch the chain diffuse: the result object is built up one "
-                      + "state per frame and ends on the finished design")
+                .help("Watch the chain diffuse: the result object animates through the "
+                      + "rollout and ends on the finished design")
+
+            // Only meaningful while Live is on, so it is disabled rather than hidden --
+            // hiding it would reflow the bar every time Live is toggled, and a greyed
+            // control says "not applicable right now" where a missing one says nothing.
+            // Its value survives being greyed; see `DesignBackboneController.keepFrames`.
+            Toggle("Keep frames", isOn: $controller.keepFrames)
+                .toggleStyle(.checkbox)
+                .disabled(!controller.liveView)
+                .accessibilityIdentifier("designBackbone.keepFrames")
+                .help("Keep every captured frame as a state you can scrub afterwards. "
+                      + "Off, the run animates the same way but leaves just the "
+                      + "finished design.")
 
             Button { showAdvanced.toggle() } label: { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(.plain).help("Advanced options")

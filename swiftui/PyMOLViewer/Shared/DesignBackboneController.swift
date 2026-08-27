@@ -51,6 +51,20 @@ final class DesignBackboneController: ObservableObject {
 
     static let liveViewKey = "designBackboneLiveView"
 
+    /// Keep the live view's captured frames as states, instead of discarding them.
+    ///
+    /// Only meaningful with Live on, and the bar disables the checkbox otherwise. The
+    /// VALUE is remembered across that, deliberately: switching Live off for a moment and
+    /// back on should not silently forget a preference the user set, and a greyed control
+    /// that keeps its tick is the ordinary macOS reading of "not applicable right now"
+    /// rather than "reset". `run()` only emits the argument when Live is actually on, so
+    /// a remembered tick can never compose the contradiction Python refuses.
+    @Published var keepFrames = UserDefaults.standard.bool(forKey: DesignBackboneController.keepFramesKey) {
+        didSet { UserDefaults.standard.set(keepFrames, forKey: Self.keepFramesKey) }
+    }
+
+    static let keepFramesKey = "designBackboneKeepFrames"
+
     // MARK: Resolved state, from the Python round trip
 
     @Published var availableGenerators: [DesignGeneratorInfo] = []
@@ -148,7 +162,12 @@ final class DesignBackboneController: ObservableObject {
         if nDesigns != 1 { parts.append("n_designs=\(nDesigns)") }
         if diffusionSteps != 200 { parts.append("diffusion_steps=\(diffusionSteps)") }
         if recyclingSteps != 2 { parts.append("recycling_steps=\(recyclingSteps)") }
-        if liveView { parts.append("live_view=1") }
+        if liveView {
+            parts.append("live_view=1")
+            // Only with Live on: `keep_frames=1, live_view=0` is a contradiction Python
+            // refuses, and a remembered tick must not be able to compose one.
+            if keepFrames { parts.append("keep_frames=1") }
+        }
         if let seed = Int(seedText.trimmingCharacters(in: .whitespaces)) {
             parts.append("seed=\(seed)")
         }
