@@ -270,8 +270,8 @@ final class RFD3TrajectoryTests: XCTestCase {
 
     func testTheDisplayRateIsAConstantNotALiteral() {
         // A REWRITE rate, not a state count: the object gains one state per captured
-        // model frame whatever this is. Kept in step with
-        // `designing.PLAYBACK_DISPLAY_RATE`, which is where the fraction is computed.
+        // model frame whatever this is. The only definition of the rate — the Python
+        // side works from elapsed time and never needs it.
         XCTAssertEqual(RFD3Trajectory.playbackTicksPerSecond, 30)
     }
 

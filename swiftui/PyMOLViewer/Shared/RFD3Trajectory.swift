@@ -187,8 +187,9 @@ enum RFD3Trajectory {
     /// Deliberately NOT `PlaybackState.movieFPS`: that is the user's setting for the
     /// user's movies, and changing their movie speed must not change a design's motion.
     ///
-    /// Kept in step with `designing.PLAYBACK_DISPLAY_RATE`, which is where the fraction
-    /// is actually computed — this side is only the metronome.
+    /// The ONLY definition of the rate. `designing.display_fraction` is a function of
+    /// elapsed TIME rather than of tick count, so the Python side never needs to know it
+    /// — which is why there is nothing here to keep in step with.
     static let playbackTicksPerSecond = 30
 
     /// Whether this step's coordinates are worth materialising.
