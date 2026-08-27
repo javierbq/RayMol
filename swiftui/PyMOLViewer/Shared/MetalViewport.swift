@@ -600,12 +600,8 @@ extension MetalViewport {
             mouseDownLoc = view.convert(event.locationInWindow, from: nil)
             didDrag = false
             // Box Select: the press starts (or grabs) the rectangle; no PyMOL
-            // button event is ever sent, so the camera cannot move. The modifier
-            // held now decides how this drag composes, and is pushed to the
-            // engine so the overlay's Replace/Add/Subtract control shows it.
+            // button event is ever sent, so the camera cannot move.
             if boxSelectActive {
-                let mode = KeyRouting.boxDragMode(event.modifierFlags)
-                if engine?.boxSelectMode != mode { engine?.boxSelectMode = mode }
                 boxBegin(in: view, at: mouseDownLoc)
                 return
             }

@@ -659,8 +659,7 @@ struct ContentView: View {
     // docks inside macViewportStack, ABOVE the rail's overlay.
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
-            || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode
     }
 
@@ -836,7 +835,6 @@ struct ContentView: View {
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
-                else if engine.interactionMode == .boxSelect { boxSelectOverlay }
             }
             #if RAYMOL_MPNN
             // Design mode overlay: a separate overlay so the #if guard does not
@@ -861,7 +859,8 @@ struct ContentView: View {
             .overlay {
                 if engine.interactionMode == .boxSelect {
                     BoxSelectRectOverlay(rect: engine.boxRect,
-                                         accent: themeManager.active.accent.color)
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
                 }
             }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
@@ -1771,8 +1770,7 @@ struct ContentView: View {
         // RayMol title. Collapsed → the rail floats over the full-bleed viewport.
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
-            || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
@@ -1801,7 +1799,6 @@ struct ContentView: View {
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
                 if engine.interactionMode == .move { moveOverlay }
-                else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                 else if engine.measureMode != nil { measureOverlay }
                 else if engine.designMode { designModeBar }
             }
@@ -1862,8 +1859,7 @@ struct ContentView: View {
         let clampedTermH = min(max(termH, 60), maxTerm)
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
-            || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
@@ -1886,7 +1882,6 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
-                    else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                 }
@@ -2000,8 +1995,7 @@ struct ContentView: View {
         // Any top pane open? The rail docks on chrome above the panes; else it
         // floats over the full-bleed viewport. Move & Measure share the bottom slot.
         let anyTop = cTerm || engine.sequenceVisible
-            || engine.interactionMode == .move || engine.interactionMode == .boxSelect
-            || engine.measureMode != nil
+            || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode
 
         if landscape {
@@ -2028,7 +2022,6 @@ struct ContentView: View {
                         // Move / Measure bar — bottom of the top stack, mutually
                         // exclusive, on matching chrome.
                         if engine.interactionMode == .move { moveOverlay }
-                        else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                         else if engine.measureMode != nil { measureOverlay }
                         else if engine.designMode { designModeBar }
                     }
@@ -2094,7 +2087,6 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
-                    else if engine.interactionMode == .boxSelect { boxSelectOverlay }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                 }
@@ -2465,7 +2457,8 @@ struct ContentView: View {
             .overlay {
                 if engine.interactionMode == .boxSelect {
                     BoxSelectRectOverlay(rect: engine.boxRect,
-                                         accent: themeManager.active.accent.color)
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
                 }
             }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal scene
@@ -3486,58 +3479,6 @@ struct ContentView: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(themeManager.active.panelBackground.color)
         .tint(themeManager.active.accent.color)
-    }
-
-    // Box Select overlay bar (mirrors moveOverlay): how the box composes with the
-    // selection, what it has selected so far, and Done.
-    //
-    // There is deliberately no Accept control. The box commits as it is dragged,
-    // so the bar REPORTS a result rather than asking for confirmation — which is
-    // what stops the commit affordance from being something the user has to hunt
-    // for in the corner of a wide bar.
-    private var boxSelectOverlay: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "square.dashed")
-                .foregroundColor(themeManager.active.accent.color)
-
-            Picker("Combine", selection: $engine.boxSelectMode) {
-                ForEach(BoxSelectMode.allCases) { m in
-                    Text(m.label).tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("How the box combines with the current selection "
-                  + "(or hold Shift to add / Option to subtract as you drag)")
-
-            Text(boxSelectStatus)
-                .font(.system(size: 12, weight: engine.boxRect == nil ? .regular : .semibold))
-                .foregroundColor(engine.boxRect == nil
-                    ? themeManager.active.panelText.color.opacity(0.7)
-                    : themeManager.active.panelText.color)
-                .lineLimit(1)
-                .fixedSize()
-
-            Spacer(minLength: 0)
-
-            Button { engine.endBoxSelection() } label: {
-                Text("Done").font(.system(size: 12, weight: .medium))
-            }
-            // No .defaultAction shortcut: Return belongs to the command line, and
-            // there is nothing here to confirm anyway. Esc leaves via the shared
-            // mode-exit ladder like every other tool.
-            .help("Leave Box Select — the selection is already made (Esc)")
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(themeManager.active.panelBackground.color)
-        .tint(themeManager.active.accent.color)
-    }
-
-    private var boxSelectStatus: String {
-        guard engine.boxRect != nil else { return "Drag over the structure to select" }
-        guard let n = engine.boxSelectionCount else { return "…" }
-        return n == 1 ? "1 atom selected" : "\(n) atoms selected"
     }
 
     // Move-mode overlay bar (mirrors measureOverlay): Move/Rotate tool toggle,
@@ -4646,43 +4587,60 @@ struct CalculatingOverlay: View {
     }
 }
 
-/// The Box Select rubber band (#358): the rectangle, its eight grab handles, and
-/// a dim wash over everything outside it so the box reads as "this is what you
-/// are about to grab".
+/// The Box Select rubber band (#358): the rectangle, its eight grab handles, a
+/// dim wash over everything outside it, and the ✕ that leaves the tool.
 ///
-/// Pure chrome — `allowsHitTesting(false)` — because the drag routing lives in
-/// MetalViewport, which hit-tests the SAME rectangle in NDC (BoxRect.edges). Two
-/// hit-testers over one rectangle would be two chances to disagree; here the
-/// SwiftUI layer only ever draws.
+/// Everything except the ✕ is chrome — `allowsHitTesting(false)` — because the
+/// drag routing lives in MetalViewport, which hit-tests the SAME rectangle in
+/// NDC (BoxRect.edges). Two hit-testers over one rectangle would be two chances
+/// to disagree; here the SwiftUI layer only draws. The ✕ is the one exception,
+/// and it sits OUTSIDE the frame so it can't swallow the corner resize handle.
 struct BoxSelectRectOverlay: View {
     let rect: BoxRect?
     let accent: Color
+    var onClose: () -> Void = {}
+
+    /// How far outside the top-right corner the ✕ sits, in points.
+    private let closeInset: CGFloat = 13
 
     var body: some View {
         GeometryReader { geo in
             if let rect = rect {
                 let r = rect.inPoints(geo.size)
                 ZStack {
-                    // Even-odd fill of (whole viewport + box) = everything but the box.
-                    Path { p in
-                        p.addRect(CGRect(origin: .zero, size: geo.size))
-                        p.addRect(r)
-                    }
-                    .fill(Color.black.opacity(0.22), style: FillStyle(eoFill: true))
+                    Group {
+                        // Even-odd fill of (whole viewport + box) = everything but the box.
+                        Path { p in
+                            p.addRect(CGRect(origin: .zero, size: geo.size))
+                            p.addRect(r)
+                        }
+                        .fill(Color.black.opacity(0.22), style: FillStyle(eoFill: true))
 
-                    Path { $0.addRect(r) }
-                        .stroke(accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                        Path { $0.addRect(r) }
+                            .stroke(accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
 
-                    ForEach(Array(Self.handleCenters(r).enumerated()), id: \.offset) { _, c in
-                        Circle()
-                            .fill(accent)
-                            .frame(width: 8, height: 8)
-                            .position(c)
+                        ForEach(Array(Self.handleCenters(r).enumerated()), id: \.offset) { _, c in
+                            Circle()
+                                .fill(accent)
+                                .frame(width: 8, height: 8)
+                                .position(c)
+                        }
                     }
+                    .allowsHitTesting(false)
+
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Color.white, accent)
+                    }
+                    .buttonStyle(.plain)
+                    .position(x: r.maxX + closeInset, y: r.minY - closeInset)
+                    .help("Close Box Select — the selection stays (Esc)")
+                    .accessibilityLabel("Close box select")
                 }
             }
         }
-        .allowsHitTesting(false)
     }
 
     /// The eight resize handles: every corner and edge midpoint (the centre is

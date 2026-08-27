@@ -33,20 +33,6 @@ enum KeyRouting {
     private static let textEditingCtrlChars: Set<Character> =
         ["a", "b", "d", "e", "f", "h", "k", "l", "n", "o", "p", "t", "v", "y"]
 
-    /// How a Box Select drag (#358) should compose with the selection it started
-    /// from, given the modifiers held when the drag began.
-    ///
-    /// Option → subtract, Shift → add, otherwise replace. Option wins when both
-    /// are held: removing atoms is the destructive reading, so an ambiguous
-    /// chord must not silently add them instead. Read at drag START, not at
-    /// release — the modifier is a statement of intent about the drag, and
-    /// changing it mid-drag should not silently change what the drag did.
-    static func boxDragMode(_ modifiers: NSEvent.ModifierFlags) -> BoxSelectMode {
-        if modifiers.contains(.option) { return .subtract }
-        if modifiers.contains(.shift) { return .add }
-        return .replace
-    }
-
     /// Classifies an NSEvent key-down into a PyMOL key token, or returns nil
     /// meaning "pass the event through untouched".
     ///

@@ -271,30 +271,10 @@ struct GizmoBullseyeOverlay: View {
 
 // MARK: - Box (rubber-band) selection — issue #358
 
-/// How an accepted box combines with what the target selection already holds.
-/// Raw values are the `mode=` strings `metal_pick.box_select_ndc` accepts.
-enum BoxSelectMode: String, CaseIterable, Identifiable {
-    case replace, add, subtract
-
-    var id: String { rawValue }
-    var pyName: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .replace:  return "Replace"
-        case .add:      return "Add"
-        case .subtract: return "Subtract"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .replace:  return "square.dashed"
-        case .add:      return "plus.square.dashed"
-        case .subtract: return "minus.square.dashed"
-        }
-    }
-}
+// The interactive tool is ADD-only: the box grows the selection it was opened
+// on and never replaces or subtracts. (`cmd.box_select` keeps all three modes —
+// a scripted one-shot has no live box to make subtraction legible.) So there is
+// no mode type here, and nothing in the UI to choose one.
 
 /// Which parts of the box a drag is carrying. All four false = the interior
 /// (translate). Modelled as edge flags rather than a corner enum so a corner is
@@ -333,6 +313,12 @@ struct BoxRect: Equatable {
     /// A box this small is a stray click, not a rectangle the user meant to draw
     /// (~1% of the viewport on the short axis).
     var isDegenerate: Bool { width < 0.02 && height < 0.02 }
+
+    /// The rectangle the tool opens with. Entering Box Select drops this in and
+    /// commits it immediately, so the tool starts by SELECTING something the user
+    /// can then adjust — rather than showing an empty viewport that looks broken
+    /// until they guess that they are supposed to drag.
+    static let initial = BoxRect(minX: -0.4, minY: -0.4, maxX: 0.4, maxY: 0.4)
 
     /// Rect in SwiftUI point space (top-left origin, +y down) for a viewport of
     /// `size` — what the overlay draws and what a finger/cursor is measured in.

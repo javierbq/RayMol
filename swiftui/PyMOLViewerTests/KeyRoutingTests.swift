@@ -320,30 +320,3 @@ final class KeyRoutingTests: XCTestCase {
         XCTAssertTrue((0..<n).contains(SelectionModeMenu.nextMode(from: -3, forward: false)))
     }
 }
-
-/// Coverage for KeyRouting.boxDragMode — which way a Box Select drag (#358)
-/// composes with the selection it started from, given the modifiers held when
-/// the drag began. Same rationale as KeyRoutingTests above: a test cannot hold a
-/// key, so the decision lives in a pure function and is pinned down here.
-final class BoxDragKeyRoutingTests: XCTestCase {
-
-    func testBareDragReplaces() {
-        XCTAssertEqual(KeyRouting.boxDragMode([]), .replace)
-    }
-
-    func testShiftAddsAndOptionSubtracts() {
-        XCTAssertEqual(KeyRouting.boxDragMode(.shift), .add)
-        XCTAssertEqual(KeyRouting.boxDragMode(.option), .subtract)
-    }
-
-    func testOptionWinsOverShift() {
-        // Removing atoms is the destructive reading; an ambiguous chord must not
-        // silently add them instead.
-        XCTAssertEqual(KeyRouting.boxDragMode([.shift, .option]), .subtract)
-    }
-
-    func testUnrelatedModifiersDoNotChangeTheMode() {
-        XCTAssertEqual(KeyRouting.boxDragMode(.control), .replace)
-        XCTAssertEqual(KeyRouting.boxDragMode([.command, .shift]), .add)
-    }
-}

@@ -57,6 +57,15 @@ final class BoxSelectGeometryTests: XCTestCase {
                        "a thin but long band is a real box — only a stray click is degenerate")
     }
 
+    func testInitialRectIsCentredAndGrabbable() {
+        let r = BoxRect.initial
+        XCTAssertEqual((r.minX + r.maxX) / 2, 0, accuracy: 0.0001, "centred in x")
+        XCTAssertEqual((r.minY + r.maxY) / 2, 0, accuracy: 0.0001, "centred in y")
+        XCTAssertFalse(r.isDegenerate, "the armed box must select something at once")
+        XCTAssertLessThan(r.maxX, 1.0, "leave room to grab the edges from outside")
+        XCTAssertLessThan(r.maxY, 1.0)
+    }
+
     // MARK: - NDC -> points
 
     func testInPointsFlipsY() {

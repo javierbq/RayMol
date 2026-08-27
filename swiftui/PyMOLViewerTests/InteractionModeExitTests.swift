@@ -127,12 +127,13 @@ final class InteractionModeExitTests: XCTestCase {
 /// leaving the mode, and what dragging the box actually emits.
 ///
 /// The gestures can't be driven from a test, so this pins down the layer they
-/// funnel through — `beginBoxSession`, `setBoxRect`, `boxSelectMode`,
-/// `endBoxSelection` — using the DEBUG `pythonTap` seam to read the Python the
-/// engine intended to run.
+/// funnel through — `toggleBoxSelect`, `setBoxRect`, `endBoxSelection` — using
+/// the DEBUG `pythonTap` seam to read the Python the engine intended to run.
 ///
-/// The behaviour under test is commit-on-drag: there is no Accept step, so every
-/// rectangle change must land in 'sele' by itself.
+/// Two behaviours carry the tool's whole feel and are the point of these tests:
+/// entering ARMS a rectangle (so it selects something at once rather than
+/// showing an empty viewport), and every rectangle change commits by itself (so
+/// there is no Accept control to find).
 @MainActor
 final class BoxSelectModeTests: XCTestCase {
     private var engine: PyMOLEngine { PyMOLEngine.shared }
@@ -160,17 +161,40 @@ final class BoxSelectModeTests: XCTestCase {
     }
 
     /// Start capturing Python from here on, so the seeding above stays out of it.
-    @discardableResult
-    private func startCapture() -> CaptureBox {
+    private func startCapture() {
         capture = CaptureBox()
         let box = capture
         engine.pythonTap = { box.lines.append($0) }
-        return box
     }
 
     private var emitted: String { capture.lines.joined(separator: "\n") }
 
+    /// Spin the run loop until `needle` shows up, or the timeout expires.
+    ///
+    /// Commits are throttled (leading edge, then a trailing catch-up on the main
+    /// queue), so a rectangle change that lands inside the window — which is
+    /// every one of these tests, since entering the mode already fired — is
+    /// DEFERRED rather than emitted inline. Asserting synchronously would be
+    /// asserting on the throttle, not on the behaviour.
+    private func waitForEmit(containing needle: String,
+                             timeout: TimeInterval = 1.0) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if emitted.contains(needle) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        return emitted.contains(needle)
+    }
+
     // MARK: - Mode plumbing
+
+    func testToggleEntersAndLeaves() {
+        engine.toggleBoxSelect()
+        XCTAssertEqual(engine.interactionMode, .boxSelect)
+        engine.toggleBoxSelect()
+        XCTAssertEqual(engine.interactionMode, .viewing,
+                       "the Selections-panel control is a toggle, so it must also close the mode")
+    }
 
     func testEnteringBoxSelectLeavesTheOtherTools() {
         engine.setInteractionMode(.move)
@@ -183,21 +207,39 @@ final class BoxSelectModeTests: XCTestCase {
                      "Box Select is exclusive with Measure, like Move is")
     }
 
-    func testLeavingTheModeForgetsTheBox() {
-        engine.setInteractionMode(.boxSelect)
-        engine.setBoxRect(rect)
-        XCTAssertEqual(engine.boxRect, rect)
-        engine.endBoxSelection()
-        XCTAssertNil(engine.boxRect,
-                     "a rectangle left behind would have no mode to explain it")
-        XCTAssertEqual(engine.interactionMode, .viewing)
-    }
-
     func testEscExitsBoxSelect() {
         engine.setInteractionMode(.boxSelect)
         XCTAssertTrue(engine.exitActiveInteractionMode(),
                       "Esc must back out of Box Select like every other tool")
         XCTAssertEqual(engine.interactionMode, .viewing)
+    }
+
+    // MARK: - Entering arms a box
+
+    func testEnteringArmsAndCommitsARectangle() {
+        startCapture()
+        engine.setInteractionMode(.boxSelect)
+        XCTAssertEqual(engine.boxRect, .initial,
+                       "the tool must open with a box down, not an empty viewport")
+        XCTAssertTrue(emitted.contains("box_begin('sele')"),
+                      "the snapshot has to exist before the first commit")
+        XCTAssertTrue(emitted.contains("box_commit_ndc"),
+                      "the armed box must select something immediately")
+        // box_begin must precede the commit, or the first commit composes against
+        // a stale (or missing) snapshot.
+        XCTAssertLessThan(emitted.range(of: "box_begin")!.lowerBound,
+                          emitted.range(of: "box_commit_ndc")!.lowerBound)
+    }
+
+    func testLeavingTheModeForgetsTheBoxAndClosesTheSession() {
+        engine.setInteractionMode(.boxSelect)
+        startCapture()
+        engine.endBoxSelection()
+        XCTAssertNil(engine.boxRect,
+                     "a rectangle left behind would have no mode to explain it")
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertTrue(emitted.contains("box_finish()"),
+                      "the pre-box snapshot must not outlive the tool")
     }
 
     // MARK: - Commit on drag
@@ -206,61 +248,26 @@ final class BoxSelectModeTests: XCTestCase {
         engine.setInteractionMode(.boxSelect)
         startCapture()
         engine.setBoxRect(rect)
-        XCTAssertTrue(emitted.contains("box_commit_ndc(-0.4, -0.3, 0.5, 0.6"),
-                      "expected the drawn rectangle, got: \(emitted)")
+        XCTAssertTrue(waitForEmit(containing: "box_commit_ndc(-0.4, -0.3, 0.5, 0.6"),
+                      "expected the dragged rectangle, got: \(emitted)")
         XCTAssertTrue(emitted.contains("name='sele'"))
-        XCTAssertTrue(emitted.contains("mode='replace'"))
     }
 
-    func testNewBoxSnapshotsTheSelectionItComposesAgainst() {
+    func testTheToolOnlyEverAdds() {
         engine.setInteractionMode(.boxSelect)
         startCapture()
-        engine.beginBoxSession()
-        XCTAssertTrue(emitted.contains("box_begin('sele')"),
-                      "without the snapshot, re-committing an add-mode box ratchets")
-    }
-
-    func testChangingTheModeRecommitsTheSameBox() {
-        engine.setInteractionMode(.boxSelect)
         engine.setBoxRect(rect)
-        startCapture()
-        engine.boxSelectMode = .subtract
-        XCTAssertTrue(emitted.contains("mode='subtract'"),
-                      "the selection must follow the Replace/Add/Subtract control")
-        XCTAssertTrue(emitted.contains("box_commit_ndc(-0.4, -0.3, 0.5, 0.6"))
-    }
-
-    func testChangingTheModeWithNoBoxCommitsNothing() {
-        engine.setInteractionMode(.boxSelect)
-        startCapture()
-        engine.boxSelectMode = .add
-        XCTAssertFalse(emitted.contains("box_commit_ndc"))
+        XCTAssertTrue(waitForEmit(containing: "mode='add'"))
+        XCTAssertFalse(emitted.contains("mode='replace'"),
+                       "the interactive tool must never overwrite the selection")
+        XCTAssertFalse(emitted.contains("mode='subtract'"))
     }
 
     func testDegenerateRectIsNotWorthCommitting() {
         engine.setInteractionMode(.boxSelect)
-        engine.setBoxRect(rect)
         startCapture()
         engine.setBoxRect(BoxRect(minX: 0, minY: 0, maxX: 0.001, maxY: 0.001))
-        XCTAssertFalse(emitted.contains("box_commit_ndc"),
-                       "a stray click must not wipe the selection the box just made")
-    }
-
-    func testLeavingClosesTheSession() {
-        engine.setInteractionMode(.boxSelect)
-        engine.beginBoxSession()
-        engine.setBoxRect(rect)
-        startCapture()
-        engine.endBoxSelection()
-        XCTAssertTrue(emitted.contains("box_finish()"),
-                      "the pre-box snapshot must not outlive the tool")
-    }
-
-    func testLeavingWithoutABoxIsSilent() {
-        engine.setInteractionMode(.boxSelect)
-        startCapture()
-        engine.endBoxSelection()
-        XCTAssertFalse(emitted.contains("box_finish"),
-                       "no session was opened, so there is nothing to tear down")
+        XCTAssertFalse(waitForEmit(containing: "box_commit_ndc", timeout: 0.3),
+                       "a stray click must not re-commit an empty rectangle")
     }
 }
