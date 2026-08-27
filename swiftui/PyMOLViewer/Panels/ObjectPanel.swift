@@ -1850,6 +1850,12 @@ private struct ShowButton: View {
                     engine.runCommand("show spheres, (\(name)) and sidechain")
                 }
             }
+            // Hydrogens are a selection, not a rep, so they sit beside "side
+            // chains" rather than in the shared rep list (#353). Same command
+            // as A → Hydrogens → show.
+            Button("hydrogens") {
+                engine.runCommand("show sticks, (\(name)) and hydro")
+            }
             Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
                 if opt.label == "---" {
@@ -1883,6 +1889,17 @@ private struct HideButton: View {
         Menu {
             Button("side chains") {
                 engine.runCommand("hide sticks, (\(name)) and (sidechain or name CA); hide lines, (\(name)) and (sidechain or name CA)")
+            }
+            // Hydrogens are a selection, not a rep, so they sit beside "side
+            // chains" rather than in the shared rep list (#353). Mirrors
+            // upstream mol_hide's hydrogens submenu (menu.py hide_hydro).
+            Menu("hydrogens") {
+                Button("all") {
+                    engine.runCommand("hide (\(name) and hydro)")
+                }
+                Button("nonpolar") {
+                    engine.runCommand("hide (\(name) and hydro and (elem C extend 1))")
+                }
             }
             Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
