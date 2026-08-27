@@ -168,6 +168,7 @@ def get_command_keywords(self_cmd=cmd):
         'map_trim'      : [ self_cmd.map_trim          , 0 , 0 , ''  , parsing.STRICT ],
         'mappend'       : [ self_cmd.mappend           , 2 , 2 , ':' , parsing.MOVIE  ],
         'matrix_reset'  : [ self_cmd.matrix_reset      , 0 , 0 , ''  , parsing.STRICT ],
+        'center_all'    : [ self_cmd.center_all        , 0 , 0 , ''  , parsing.STRICT ],
         'matrix_copy'   : [ self_cmd.matrix_copy       , 0 , 0 , ''  , parsing.STRICT ],
         'mcopy'         : [ self_cmd.mcopy             , 0 , 0 , ''  , parsing.STRICT ],
         'mdelete'       : [ self_cmd.mdelete           , 0 , 0 , ''  , parsing.STRICT ],

@@ -227,6 +227,7 @@ from .editing import \
       alphatoall,         \
       attach,             \
       bond,               \
+      center_all,         \
       copy_to,            \
       cycle_valence,      \
       deprotect,          \
