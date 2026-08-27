@@ -83,9 +83,10 @@ class Fetch:
                 'state': self.state,
                 'phase': self.phase,
                 'fraction': self.fraction,
-                # Bytes only make sense while downloading: during extraction the
-                # fraction counts archive members, and a byte count derived from it
-                # would be a plausible-looking lie.
+                # Bytes only make sense while downloading. The extract fraction is
+                # a share of the archive's UNCOMPRESSED size, so scaling `total` --
+                # which is the size of the compressed download -- by it would be a
+                # plausible-looking lie.
                 'received': int(self.fraction * total) if (
                     self.phase == 'download' and total) else 0,
                 'total': total,
@@ -115,8 +116,14 @@ def start(bundle, cache, on_marker=None):
         # somewhere else would leave the caller waiting on a cache it never fills.
         # A finished fetch is always replaced, so a failed or cancelled attempt can be
         # retried simply by asking again.
+        #
+        # _is_live is the third condition rather than trusting `state == 'running'`
+        # alone: a record whose worker is gone without having settled reads exactly
+        # like one mid-transfer, and sharing it is permanent -- forget() skips running
+        # records too, so nothing can clear it and every later download=1 hands back
+        # the same dead handle and starts nothing. That was the reported wedge.
         if (existing is not None and existing.state == 'running'
-                and existing.cache.root == cache.root):
+                and existing.cache.root == cache.root and _is_live(existing)):
             return existing
 
     # Weights that ship inside the app, and weights already on disk, both resolve with no
@@ -135,16 +142,48 @@ def start(bundle, cache, on_marker=None):
         return fetch
 
     fetch = Fetch(bundle, cache)
-    with _LOCK:
-        _FETCHES[bundle.id] = fetch
-    fetch.thread = threading.Thread(
-        target=_run, args=(fetch, on_marker),
-        name='raymol-weights-%s' % bundle.id, daemon=True)
     # daemon=True so a quit during a download does not hang the process on join. The
     # partial file is scratch under .incoming and the sentinel is written last, so an
     # abandoned transfer leaves nothing a later run would mistake for a valid cache.
-    fetch.thread.start()
+    #
+    # Built BEFORE the record is published, so a concurrent start() never sees a
+    # running record with no thread on it -- _is_live would read that as wedged and
+    # start a second transfer for the same bundle, which is the very thing the
+    # publish-then-start order exists to prevent.
+    fetch.thread = threading.Thread(
+        target=_run, args=(fetch, on_marker),
+        name='raymol-weights-%s' % bundle.id, daemon=True)
+    with _LOCK:
+        _FETCHES[bundle.id] = fetch
+    try:
+        fetch.thread.start()
+    except BaseException as exc:
+        # Nothing will ever settle this record now, and a record stuck on 'running'
+        # is worse than a failed one: forget() skips it and start() shares it, so the
+        # bundle becomes permanently un-fetchable for the life of the process. Settle
+        # it here instead, and drop the thread so shutdown() does not try to join a
+        # thread that was never started.
+        with _LOCK:
+            fetch.thread = None
+            fetch.state = 'error'
+            fetch.error = 'could not start the download thread: %s' % (
+                str(exc) or exc.__class__.__name__)
+        _emit(fetch, on_marker, force=True)
     return fetch
+
+
+def _is_live(fetch):
+    """True if `fetch` still has a worker that can settle it.
+
+    Call with `_LOCK` held. `ident` is None until Thread.start() has been called and
+    stays set once it has, so `ident and not is_alive()` means "it ran and is gone"
+    -- a record that will never settle itself. Testing is_alive() alone would
+    misread the window between publishing the record and starting its thread.
+    """
+    thread = fetch.thread
+    if thread is None:
+        return False
+    return thread.ident is None or thread.is_alive()
 
 
 def get(bundle_id):
@@ -188,11 +227,38 @@ def join(bundle_id, timeout=None):
 
 
 def forget(bundle_id=''):
-    """Drop finished records. Tests use it; nothing in normal operation needs it."""
+    """Drop fetch records so the next start() begins a fresh transfer.
+
+    Two deliberately different behaviours, because the two callers want opposite
+    things:
+
+    `forget()` with no id is the broom -- it clears out finished records and leaves
+    anything still transferring alone. Aborting a live half-gigabyte download as a
+    side effect of tidying up would be a nasty surprise.
+
+    `forget(bundle_id)` names one bundle, which is only ever asked by someone trying
+    to get UNSTUCK, so it drops the record whatever state it is in. The old
+    "settled records only" rule made this the one thing that could not help: a
+    record reading 'running' is exactly the one that needs clearing, because
+    start() shares it and so every retry silently starts nothing.
+
+    A live record dropped this way is cancelled on the way out. It owns a
+    half-written staging directory and would otherwise still publish it, landing on
+    top of the very fetch this call exists to permit -- and the worker is a daemon
+    with no other way to be told its result is no longer wanted.
+
+    Returns the ids dropped.
+    """
     with _LOCK:
-        for key in [k for k, f in _FETCHES.items()
-                    if f.state != 'running' and (not bundle_id or k == bundle_id)]:
-            _FETCHES.pop(key, None)
+        if bundle_id:
+            keys = [bundle_id] if bundle_id in _FETCHES else []
+        else:
+            keys = [k for k, f in _FETCHES.items() if f.state != 'running']
+        for key in keys:
+            fetch = _FETCHES.pop(key, None)
+            if fetch is not None and fetch.state == 'running':
+                fetch.cancelled = True
+    return keys
 
 
 def shutdown(timeout=5.0):
@@ -240,24 +306,45 @@ def _run(fetch, on_marker):
 
     _emit(fetch, on_marker, force=True)
     try:
-        path = fetch.cache.ensure(bundle, progress=progress,
-                                  should_cancel=should_cancel)
-    except WeightDownloadCancelled:
+        try:
+            path = fetch.cache.ensure(bundle, progress=progress,
+                                      should_cancel=should_cancel)
+        except WeightDownloadCancelled:
+            with _LOCK:
+                fetch.state = 'cancelled'
+        except Exception as exc:
+            # Deliberately broad: this runs on a thread with no caller to propagate
+            # to, so an unclassified failure has to become readable state rather than
+            # a traceback on stderr that the app would never show.
+            with _LOCK:
+                fetch.state = 'error'
+                fetch.error = str(exc) or exc.__class__.__name__
+        except BaseException as exc:
+            # And broader still, for the same reason. Nothing ensure() raises today
+            # lands here, but letting one through would leave the record on 'running'
+            # -- which forget() skips and start() shares, so the bundle becomes
+            # un-fetchable for the life of the process and the app's tray card sits on
+            # a stale fraction with no terminal marker coming. Re-raising would only
+            # print a traceback into a stderr the app never shows, on a daemon thread
+            # with nobody above it to catch anything.
+            with _LOCK:
+                fetch.state = 'error'
+                fetch.error = str(exc) or exc.__class__.__name__
+        else:
+            with _LOCK:
+                fetch.state = 'done'
+                fetch.fraction = 1.0
+                fetch.path = path
+    finally:
+        # Backstop for the handlers themselves, so that "this worker always settles
+        # its record and always emits a terminal marker" holds no matter what -- the
+        # one invariant the app's tray card and forget() both depend on.
         with _LOCK:
-            fetch.state = 'cancelled'
-    except Exception as exc:
-        # Deliberately broad: this runs on a thread with no caller to propagate to, so
-        # an unclassified failure has to become readable state rather than a traceback
-        # on stderr that the app would never show.
-        with _LOCK:
-            fetch.state = 'error'
-            fetch.error = str(exc) or exc.__class__.__name__
-    else:
-        with _LOCK:
-            fetch.state = 'done'
-            fetch.fraction = 1.0
-            fetch.path = path
-    _emit(fetch, on_marker, force=True)
+            if fetch.state == 'running':
+                fetch.state = 'error'
+                fetch.error = (fetch.error
+                               or 'the weight fetch ended without a result')
+        _emit(fetch, on_marker, force=True)
 
 
 def _emit(fetch, on_marker, force=False):

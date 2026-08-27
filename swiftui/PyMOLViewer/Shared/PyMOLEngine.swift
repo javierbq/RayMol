@@ -49,9 +49,10 @@ struct WeightsFetchState: Codable, Equatable {
     /// download | extract | cached
     let phase: String
     let fraction: Double
-    /// Bytes so far, and the bundle's total. Both 0 outside the download phase:
-    /// during extraction the fraction counts archive members, and a byte count
-    /// derived from it would be a plausible-looking lie.
+    /// Bytes so far, and the bundle's total. `received` is 0 outside the download
+    /// phase: the extract fraction is a share of the archive's UNCOMPRESSED size,
+    /// so scaling `total` -- the compressed download's size -- by it would be a
+    /// plausible-looking lie.
     let received: Int
     let total: Int
     /// Seconds since the transfer began. Optional so a payload from an older Python
@@ -129,14 +130,20 @@ final class PyMOLEngine: ObservableObject {
     /// collection here -- an unguarded 2 Hz assignment re-lays-out the tray on
     /// every tick even when nothing changed.
     @Published var predictionJobs: [PredictionJobState] = []
-    @Published var sequenceVisible = false {
+    // Restored from the last launch (#332). A session (.pse) that turns seq_view
+    // on still wins — it assigns this property after launch, like any other setter.
+    @Published var sequenceVisible = UserDefaults.standard
+        .bool(forKey: PanelLayout.sequenceVisibleKey) {
         // Showing the strip must (re)fetch the sequence data — toggling the
         // panel on (menu/toolbar) only flipped this bool, so the strip rendered
         // empty until an unrelated load/refresh happened to repopulate it (the
         // "sequence only shows when the console is open" bug). Fetch on the
         // false→true edge; fetchSequences() no-ops until the engine is ready,
         // and the load path re-fetches then.
-        didSet { if sequenceVisible && !oldValue { fetchSequences() } }
+        didSet {
+            UserDefaults.standard.set(sequenceVisible, forKey: PanelLayout.sequenceVisibleKey)
+            if sequenceVisible && !oldValue { fetchSequences() }
+        }
     }
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
@@ -207,11 +214,11 @@ final class PyMOLEngine: ObservableObject {
     // Design mode: protein-design overlay (MPNN score/design). Mutually exclusive
     // with Move and Measure modes — entering any one clears the others.
     @Published var designMode: Bool = false
-    // Predict tool (macOS): an exclusive interaction mode like Move/Measure/Design,
-    // but its "bar" is a form that composes cmd.predict rather than a viewport tool.
-    #if os(macOS)
+    // Predict tool: an exclusive interaction mode like Move/Measure/Design, but its
+    // "bar" is a form that composes cmd.predict rather than a viewport tool. Compiled
+    // for BOTH platforms; on iOS whether it is OFFERED is a runtime question, and the
+    // answer is PredictAvailability (Simulator / iOS version), not a #if.
     @Published var predictMode: Bool = false
-    #endif
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
     // Box Select (#358): the rubber-band rectangle, in viewport NDC. nil = the
@@ -260,6 +267,22 @@ final class PyMOLEngine: ObservableObject {
         didSet { UserDefaults.standard.set(hoverPreviewEnabled, forKey: PyMOLEngine.hoverDefaultsKey) }
     }
     static let hoverDefaultsKey = "raymol.hoverPreviewEnabled"
+    // Hover READOUT (issue #359): a chip in the viewport's top-trailing corner
+    // naming whatever is under the cursor, at the current selection level. Rides
+    // on the SAME hover pick as the preview above but is independently
+    // toggleable — some users want the highlight without the text, or the text
+    // without the highlight. Persisted across launches; default on.
+    @Published var hoverReadoutEnabled: Bool =
+        (UserDefaults.standard.object(forKey: PyMOLEngine.hoverReadoutDefaultsKey) as? Bool ?? true) {
+        didSet {
+            UserDefaults.standard.set(hoverReadoutEnabled, forKey: PyMOLEngine.hoverReadoutDefaultsKey)
+            if !hoverReadoutEnabled { hoverReadout = nil }
+        }
+    }
+    static let hoverReadoutDefaultsKey = "raymol.hoverReadoutEnabled"
+    // The formatted chip text, or nil when the pointer is over empty space (or
+    // the readout is off) — so the chip never lingers with a stale identity.
+    @Published var hoverReadout: String? = nil
     // Full settings catalog for the searchable Settings panel (loaded on demand).
     @Published var settingsCatalog: [SettingItem] = []
     // The single detail view that is currently open (accordion: at most one).
@@ -2090,9 +2113,7 @@ final class PyMOLEngine: ObservableObject {
         if let k = k {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
             setDesignMode(false)                                            // mutually exclusive
-            #if os(macOS)
-            setPredictMode(false)   // mutually exclusive
-            #endif
+            setPredictMode(false)                                            // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -2193,9 +2214,7 @@ final class PyMOLEngine: ObservableObject {
             // ENTERING branch, and the clearing block below is `if on`-guarded.
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
-            #if os(macOS)
             setPredictMode(false)   // mutually exclusive
-            #endif
         }
         designMode = on
         // Arm/disarm the Design-mode 'sele' digest that poll_panel computes. Off ⇒
@@ -2204,7 +2223,6 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import raymol_design as _rd; _rd.set_design_active(\(on ? 1 : 0))")
     }
 
-    #if os(macOS)
     /// Enter/leave Predict mode. Exclusive with Move/Measure/Design, matching
     /// setDesignMode's entering-branch clears. On entry, refresh the form (loads the
     /// predictor list); on exit, reset any in-flight search/predict tracking.
@@ -2223,7 +2241,6 @@ final class PyMOLEngine: ObservableObject {
             predictMode = false
         }
     }
-    #endif
 
     // MARK: - Exclusive interaction modes (Move / Design / Measure)
 
@@ -2255,9 +2272,7 @@ final class PyMOLEngine: ObservableObject {
             setInteractionMode(.viewing); exited = exited || interactionMode != .boxSelect
         }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
-        #if os(macOS)
         if predictMode { setPredictMode(false); exited = exited || !predictMode }
-        #endif
         return exited
     }
 
@@ -2462,37 +2477,6 @@ final class PyMOLEngine: ObservableObject {
             opts.omit = omit
             return try MPNNRuntime.withMLXErrorsAsThrows { try model.design(residues, options: opts).indices }
         },
-        listSelections: { [weak self] obj, src, state in
-            guard let self else { return [] }
-            let srcArg = (src?.isEmpty == false) ? src! : ""
-            self.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.list_design_selections('\(obj)', \(state), src='\(srcArg)')
-                """)
-            let path = FileManager.default.temporaryDirectory
-                .appendingPathComponent("raymol_design_selections.json")
-            guard let data = FileManager.default.contents(atPath: path.path),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let arr = root["selections"] as? [[String: Any]] else { return [] }
-            return arr.compactMap { d in
-                guard let name = d["name"] as? String, let n = d["n"] as? Int else { return nil }
-                return DesignSelectionOption(name: name, count: n)
-            }
-        },
-        selectedIndices: { [weak self] obj, sel, src, state in
-            guard let self else { return [] }
-            let srcArg = (src?.isEmpty == false) ? src! : ""
-            self.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.selected_design_indices('\(obj)', '\(sel)', \(state), src='\(srcArg)')
-                """)
-            let path = FileManager.default.temporaryDirectory
-                .appendingPathComponent("raymol_design_selected.json")
-            guard let data = FileManager.default.contents(atPath: path.path),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let idx = root["indices"] as? [Int] else { return [] }
-            return idx
-        },
         releaseModel: { [weak self] in
             // Called on DesignController's inference queue, which is the only
             // context that touches _mpnnModel — see loadedMPNNModel().
@@ -2535,12 +2519,6 @@ final class PyMOLEngine: ObservableObject {
                 _rd.set_sele_residue('\(obj)', '\(chain)', '\(resi)', src='\(srcArg)')
                 """)
         },
-        setSeleNamed: { [weak self] name in
-            self?.runPython("""
-                from pymol import raymol_design as _rd
-                _rd.set_sele_from_selection('\(name)')
-                """)
-        },
         clearSele: { [weak self] in
             self?.runPython("from pymol import raymol_design as _rd; _rd.clear_sele()")
         },
@@ -2570,7 +2548,6 @@ final class PyMOLEngine: ObservableObject {
     }()
 #endif
 
-    #if os(macOS)
     lazy var predictController: PredictController = {
         // PredictController is @MainActor; lazy vars run in a nonisolated context.
         // assumeIsolated is safe here: predictController is always first accessed from
@@ -2597,7 +2574,6 @@ final class PyMOLEngine: ObservableObject {
     }()
 
     private var predictCancellables = Set<AnyCancellable>()
-    #endif
 
     // MARK: - Box Select (rubber-band selection, #358)
 
@@ -2705,11 +2681,14 @@ final class PyMOLEngine: ObservableObject {
         if mode == .move || mode == .boxSelect {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
-            #if os(macOS)
-            setPredictMode(false)   // mutually exclusive
-            #endif
+            setPredictMode(false)                            // mutually exclusive
         }
         if mode == .boxSelect {
+            // The box freezes hover picking (MetalViewport.handleMouseMoved), so
+            // nothing will refresh or clear the hover readout for the rest of the
+            // session — drop it now rather than leave the chip naming whatever
+            // the pointer happened to be over when the tool was switched on.
+            clearHoverPreview()
             // Open with a rectangle already down and already committed. The tool
             // has no other affordance now that the overlay bar is gone, so an
             // empty viewport would just look like nothing happened.
@@ -2986,7 +2965,10 @@ final class PyMOLEngine: ObservableObject {
     /// tracks CONTINUOUSLY while the pointer sweeps — a pure trailing debounce
     /// only fired once the pointer paused, which read as "hover doesn't work".
     func hoverPreview(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
-        guard isReady, hoverPreviewEnabled else { return }
+        // Either output is reason enough to pick: the highlight (#165) and the
+        // top-right readout (#359) are separately toggleable but share this one
+        // pick, so only BOTH being off makes hovering free.
+        guard isReady, hoverPreviewEnabled || hoverReadoutEnabled else { return }
         if let last = lastHoverNDC {
             let dx = ndcX - last.0, dy = ndcY - last.1
             if abs(dx) < kHoverMinNDC && abs(dy) < kHoverMinNDC { return }
@@ -2996,9 +2978,13 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self = self else { return }
             self.lastHoverFire = Date()
+            let wantsPreview = self.hoverPreviewEnabled
+            let wantsInfo = self.hoverReadoutEnabled
             self.runPython(
                 "from pymol import metal_pick as _mp; "
-                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect))")
+                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
+                + "\(wantsPreview ? 1 : 0), \(wantsInfo ? 1 : 0))")
+            if wantsInfo { self.readHoverInfo() }
         }
         let elapsed = Date().timeIntervalSince(lastHoverFire)
         if elapsed >= kHoverInterval {
@@ -3018,6 +3004,11 @@ final class PyMOLEngine: ObservableObject {
         hoverWork?.cancel()
         hoverWork = nil
         lastHoverNDC = nil
+        // Drop the readout here too (not only when a pick reports empty space):
+        // this is the mouse-exit / drag-start path, where no further pick runs
+        // and the chip would otherwise keep naming whatever was last under the
+        // cursor.
+        if hoverReadout != nil { hoverReadout = nil }
         #if RAYMOL_MPNN
         designHoverWork?.cancel()
         designHoverWork = nil
@@ -3029,6 +3020,24 @@ final class PyMOLEngine: ObservableObject {
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
         runPython("from pymol import cmd as _c; _c.select('_preselect', 'none', enable=0)")
+    }
+
+    /// Read back the payload the hover pick just wrote and publish the formatted
+    /// chip text. Called immediately after the pick on the same thread —
+    /// `runPython` runs the interpreter inline, so the file on disk is this
+    /// hover's result, not the previous one (same contract readDesignHoverHit
+    /// relies on).
+    ///
+    /// An unreadable payload resolves to nil (chip hidden) rather than being
+    /// ignored: keeping the last text on screen would name a residue the cursor
+    /// has already left, which is worse than showing nothing.
+    private func readHoverInfo() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_info.json")
+        let data = FileManager.default.contents(atPath: path)
+        let root = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+        let text = HoverReadout.text(payload: root)
+        if hoverReadout != text { hoverReadout = text }
     }
 
     #if RAYMOL_MPNN
@@ -3365,16 +3374,19 @@ final class PyMOLEngine: ObservableObject {
                 } else if line.hasPrefix("PREDICT:") {
                     // Structure prediction (#224). cmd.predict writes a request JSON to
                     // the temp dir and prints this marker; there is no Python->Swift call
-                    // path, so this poll IS the invocation. Deliberately NOT inside the
+                    // path, so this poll IS the invocation. The ROUTER picks the runtime
+                    // from the request, so no manager sees a job that is not its own.
+                    // Deliberately NOT inside the
                     // MAS-restricted #if used for MCP: below -- prediction ships in every
-                    // macOS build. os(macOS) only because MLX cannot run on iOS yet.
-                    #if os(macOS)
-                    BoltzJobManager.shared.handle(marker: line)
-                    #endif
+                    // build, on both platforms. No #if at all now: on iOS the marker can
+                    // only be printed if cmd.predict got past host.available(), which is
+                    // false unless PyMOLBridge.mm exported RAYMOL_PREDICT_HOST — and it
+                    // does not in the Simulator. The platform gate lives there and in
+                    // PredictAvailability, so a guard here would only be a third place to
+                    // forget.
+                    InferenceRouter.handle(marker: line)
                 } else if line.hasPrefix("PREDICT_FORM:ready") {
-                    #if os(macOS)
                     parsePredictFormFeedback()
-                    #endif
                 } else if line.hasPrefix("PREDICT_FORM:err") {
                     // swallow — a resolve error is already carried in the JSON payload's
                     // `error` field on a normal `ready`; this only fires if the write
@@ -3470,7 +3482,6 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
     }
 
-    #if os(macOS)
     func parsePredictFormFeedback() {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_predict_\(ProcessInfo.processInfo.processIdentifier).json")
@@ -3481,7 +3492,6 @@ final class PyMOLEngine: ObservableObject {
             self?.predictController.loadFormPayload(payload)
         }
     }
-    #endif
 
     // Parse the inspector JSON (written by appkit_inspector.poll to a temp file;
     // the feedback line is just the "OBJDETAIL:ready" trigger) → objectDetails +

@@ -5,12 +5,12 @@ import ProtenixMLX
 
 /// Runs the `protenix` inference runtime: the second backend behind `cmd.predict`.
 ///
-/// The job SHELL is shared with ``BoltzJobManager`` — marker parsing, request decoding,
-/// atomic status writes, placeholder discard and result autoload are its static helpers,
-/// used here rather than reimplemented, because "the status file went missing on a
-/// cancelled job" is the class of bug you only find in production. What is not shared is
-/// everything inside `run`: the featurizer, the weights and the network are
-/// method-specific, which is the whole reason a request has to name its runtime.
+/// The job SHELL is ``InferenceJob`` — request decoding, atomic status writes, placeholder
+/// discard and result autoload are its static helpers, used here rather than reimplemented,
+/// because "the status file went missing on a cancelled job" is the class of bug you only
+/// find in production. What is not shared is everything inside `run`: the featurizer, the
+/// weights and the network are method-specific, which is the whole reason a request has to
+/// name its runtime.
 ///
 /// Three differences from the Boltz path are worth knowing:
 ///
@@ -24,7 +24,7 @@ import ProtenixMLX
 ///   cancellation points at all.
 /// * **Progress is real.** `FoldProgress.fraction` is weighted by measured phase cost, so
 ///   the reported fraction tracks the wall clock instead of jumping at phase boundaries.
-final class ProtenixJobManager {
+final class ProtenixJobManager: InferenceRuntime {
 
     static let shared = ProtenixJobManager()
 
@@ -47,31 +47,36 @@ final class ProtenixJobManager {
 
     private init() {}
 
-    // MARK: Entry points, called by BoltzJobManager's marker routing
+    /// Test seam, matching ``BoltzJobManager``'s. UNGATED for the same reason those are:
+    /// `InferenceRouterTests` reads it to prove the cancel broadcast reaches a runtime
+    /// that is neither the first table entry nor the default, and a `#if DEBUG` here would
+    /// not compile against a Release app host.
+    var cancelRequestedForTesting: Set<String> { stateQueue.sync { cancelled } }
+
+    // MARK: InferenceRuntime
 
     /// Refuse or accept a submitted request. Runs on the MAIN thread.
-    func submit(_ request: BoltzJobManager.Request) {
+    func submit(_ request: InferenceJob.Request) {
         if let failure = Self.preflight(request) {
-            BoltzJobManager.discardPlaceholder(request)
-            try? BoltzJobManager.writeStatus(
-                failure, to: URL(fileURLWithPath: request.statusPath))
+            InferenceJob.settle(request, failure,
+                                to: URL(fileURLWithPath: request.statusPath))
             return
         }
         queue.async { self.run(request) }
     }
 
     /// Note a cancel. Idempotent, and safe for a job id this manager never had — the
-    /// marker carries no runtime, so cancels are broadcast to every manager and each
+    /// marker carries no runtime, so cancels are broadcast to every runtime and each
     /// keeps only its own.
     func cancel(jobID: String) {
         stateQueue.sync {
-            guard !BoltzJobManager.hasTerminalStatus(jobID: jobID) else { return }
+            guard !InferenceJob.hasTerminalStatus(jobID: jobID) else { return }
             cancelled.insert(jobID)
         }
     }
 
     /// Refuse before allocating anything, on what the request alone says.
-    static func preflight(_ request: BoltzJobManager.Request) -> BoltzJobManager.Status? {
+    static func preflight(_ request: InferenceJob.Request) -> InferenceJob.Status? {
         let tokens = request.chains.reduce(0) { $0 + $1.sequence.count }
         // The variant, not just the length: v2 costs ~35% more than base at 60 residues
         // and ~22% more at 250, so sizing it against base's curve is optimistic, which
@@ -81,14 +86,14 @@ final class ProtenixJobManager {
         switch ProtenixSizeGuard.decide(tokens: tokens, variant: variant,
                                         availableBytes: PredictSizeGuard.availableBytes) {
         case .refuse(let maxFitting):
-            return BoltzJobManager.refusal(
+            return InferenceJob.refusal(
                 "\(tokens) residues is too large for this machine; at most "
                 + "\(maxFitting) fit")
         case .refuseDepth:
             // Unreachable: Protenix declares no msa_depth, so no request carries one.
             // Handled rather than defaulted away so that adding alignments later cannot
             // silently become "proceed".
-            return BoltzJobManager.refusal("alignments are not supported by protenix")
+            return InferenceJob.refusal("alignments are not supported by protenix")
         case .ok, .warn:
             // `.warn` proceeds, matching the Boltz path: the tier is not surfaced
             // anywhere yet, and inventing a caution channel for it here would be
@@ -99,16 +104,36 @@ final class ProtenixJobManager {
 
     // MARK: Inference
 
-    private func run(_ request: BoltzJobManager.Request) {
+    private func run(_ request: InferenceJob.Request) {
         let statusURL = URL(fileURLWithPath: request.statusPath)
         var peak: Int? = nil
         var elapsed: Double? = nil
         @Sendable func report(_ state: String, _ phase: String, _ fraction: Double,
                               error: String? = nil, result: String? = nil) {
-            try? BoltzJobManager.writeStatus(
-                BoltzJobManager.Status(state: state, phase: phase, fraction: fraction,
-                                       error: error, resultPath: result,
-                                       peakBytes: peak, elapsedSeconds: elapsed),
+            try? InferenceJob.writeStatus(
+                InferenceJob.Status(state: state, phase: phase, fraction: fraction,
+                                    error: error, resultPath: result,
+                                    peakBytes: peak, elapsedSeconds: elapsed),
+                to: statusURL)
+        }
+        /// A TERMINAL status, written BEFORE the placeholder comes down.
+        ///
+        /// Not `report` with a terminal state: the two differ in ORDER, not in payload.
+        /// `report` only writes; this writes and then discards, and the sequence is the
+        /// whole point -- `discard_pending` re-reads the status file to decide whether to
+        /// retain a failure card, so a discard that lands first strands the failure where
+        /// nothing can observe it and an eleven-minute run that died explains nothing.
+        ///
+        /// Mirrors `BoltzJobManager.run`'s own local `settle` and routes through the shared
+        /// `InferenceJob.settle`, so there is ONE implementation of the ordering rather than
+        /// a hand-rolled copy per manager -- which is exactly what this manager had, and
+        /// what got it backwards at all four of its terminal paths.
+        func settle(_ state: String, _ phase: String, error: String? = nil) {
+            InferenceJob.settle(
+                request,
+                InferenceJob.Status(state: state, phase: phase, fraction: 0,
+                                    error: error, resultPath: nil,
+                                    peakBytes: peak, elapsedSeconds: elapsed),
                 to: statusURL)
         }
         func isCancelled() -> Bool {
@@ -130,8 +155,7 @@ final class ProtenixJobManager {
                 name: request.objectName ?? "prediction")
 
             if isCancelled() {
-                BoltzJobManager.discardPlaceholder(request)
-                report("cancelled", "featurize", 0); return
+                settle("cancelled", "featurize"); return
             }
 
             report("running", "load", 0.05)
@@ -185,14 +209,12 @@ final class ProtenixJobManager {
                            atomically: true, encoding: .utf8)
             // Load BEFORE reporting done, so a script that polls then reads the object
             // does not race the load.
-            BoltzJobManager.loadResult(request)
+            InferenceJob.loadResult(request)
             report("done", "done", 1.0, result: request.outPath)
         } catch ProtenixError.cancelled {
-            BoltzJobManager.discardPlaceholder(request)
-            report("cancelled", "inference", 0)
+            settle("cancelled", "inference")
         } catch {
-            BoltzJobManager.discardPlaceholder(request)
-            report("failed", "inference", 0,
+            settle("failed", "inference",
                    error: (error as? LocalizedError)?.errorDescription
                        ?? error.localizedDescription)
         }

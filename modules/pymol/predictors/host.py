@@ -10,7 +10,7 @@ SETTINGS:ready use. Payloads go through files because the feedback line caps at
 Because cmd.predict returns a job handle, nothing here needs a synchronous return
 value from Swift: status and result are files this module polls.
 
-The JSON keys below are a contract with BoltzJobManager.Request / .Status.
+The JSON keys below are a contract with InferenceJob.Request / .Status.
 """
 import json
 import os
@@ -200,7 +200,7 @@ def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None):
         # instead of a refusal that names the missing runtime.
         'runtime': runtime,
         'weights_dir': weights_path or '',
-        # Objects, not pairs: BoltzJobManager.Chain is a Codable struct with named
+        # Objects, not pairs: InferenceJob.Chain is a Codable struct with named
         # keys, so a positional array would fail to decode.
         'chains': [{'chain': chain, 'sequence': sequence}
                    for chain, sequence in spec.chains],

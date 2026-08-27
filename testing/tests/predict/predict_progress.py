@@ -586,38 +586,38 @@ class TestPendingInfo(testing.PyMOLTestCase):
             except Exception:
                 pass
 
-    def testDismissSpaceNameViaDirectApi(self):
-        """cmd.predict_dismiss('my pred') works; cmd.do passes quotes as literals.
+    def testDismissSpaceNameViaDirectApiAndViaCmdDo(self):
+        """Dismissing a space-containing name, through both entry points.
 
-        FINDING: parsing.STRICT does NOT strip surrounding double-quotes from
-        arguments -- cmd.do('predict_dismiss "my pred"') passes the argument as
-        '"my pred"' (quotes included), not 'my pred'. Verified by sentinel-key
-        probe: only the literal-quoted key was removed, not 'my pred' itself.
+        A prediction asked for as 'my pred' IS the object `my_pred`: creation legalises
+        the name, so that is the key the retained card is filed under. Both dismissal
+        routes legalise what they are given, so both reach it.
 
-        The Swift error card must therefore avoid spaces in derived object names,
-        OR call the Python API directly rather than through cmd.do, OR strip its
-        own quotes before dispatching. The direct-API path is what every test in
-        this suite (and testDismissRemovesARetainedCard above) uses, and it works
-        for space-containing names.
+        FINDING, still true and still worth pinning: parsing.STRICT does NOT strip
+        surrounding double-quotes, so cmd.do('predict_dismiss "my pred"') passes the
+        argument as '"my pred"', quotes included. That used to mean the card survived --
+        the quoted key was popped and 'my pred' was not. It no longer does, because
+        legalisation maps '"my pred"' and 'my pred' onto the same `my_pred`: the quotes
+        are stripped as invalid characters. So the Swift error card may now dispatch a
+        spaced name through cmd.do, which it previously could not.
         """
+        real = self.cmd.get_legal_name('my pred')
+        self.assertEqual(real, 'my_pred', 'pre-condition: the name PyMOL actually uses')
         self.register('my pred', [[{'state': 'failed', 'phase': 'inference',
                                     'fraction': 0.0, 'error': 'x'}]])
         self.predicting.pending_info('my pred', _self=self.cmd)
         self.predicting.discard_pending('my pred', _self=self.cmd)
-        self.assertIsNotNone(self.predicting._RECENT.get('my pred'),
+        # Retained under the object's real name, which is what the panel lists.
+        self.assertIsNotNone(self.predicting._RECENT.get(real),
                              'pre-condition: failure must be retained')
-        # Direct API: works fine for space names.
         self.cmd.predict_dismiss('my pred')
-        self.assertIsNone(self.predicting._RECENT.get('my pred'),
+        self.assertIsNone(self.predicting._RECENT.get(real),
                           'direct API must dismiss space-containing name')
-        # cmd.do with quotes: STRICT passes the argument with the quotes as
-        # literal characters, not stripped -- 'my pred' is NOT matched.
-        self.predicting._RECENT['my pred'] = {'state': 'failed'}
+        # cmd.do: the argument still arrives quoted, and now still lands on the card.
+        self.predicting._RECENT[real] = {'state': 'failed'}
         self.cmd.do('predict_dismiss "my pred"')
-        # The key '"my pred"' (with quotes) would be popped, not 'my pred'.
-        # Assert the actual behaviour so a future Swift fix is caught immediately.
-        self.assertIsNotNone(self.predicting._RECENT.get('my pred'),
-                             'cmd.do with quoted arg does NOT strip quotes in STRICT mode')
+        self.assertIsNone(self.predicting._RECENT.get(real),
+                          'legalising the argument strips the quotes STRICT left on')
 
     # -- Measured diffusion progress and the phase-local ETA (increment 3) -----
 
@@ -758,6 +758,35 @@ class TestPendingInfo(testing.PyMOLTestCase):
         self.assertEqual(remaining(240), '4 min left')
         self.assertEqual(remaining(3594), 'over an hour left')
         self.assertEqual(remaining(7200), 'over an hour left')
+
+    def testThePhaseScopedFormatterNamesTheScopeItMeasures(self):
+        """`remaining` is seconds left in the CURRENT PHASE, so the prose that
+        renders it must say so. The unscoped bucket wording stays exactly as it
+        is -- the weight-download card measures a WHOLE task and reads correctly."""
+        scoped = self.predicting.format_phase_remaining
+        self.assertEqual(scoped(4), 'this phase: almost done')
+        self.assertEqual(scoped(45), 'this phase: 45 sec left')
+        self.assertEqual(scoped(240), 'this phase: 4 min left')
+        self.assertEqual(scoped(7200), 'this phase: over an hour left')
+
+    def testTheEtaDoesNotClaimTheWholeJobIsAlmostDone(self):
+        """The captured 1.10.0 frame: 20 models, 3 delivered, diffusion at step
+        141 of 200 and nearly over. 'almost done' sat beside an overall 19% and
+        'model 4 of 20', reading as if the whole job were finishing with 16
+        models still to run."""
+        self.register('hero', [[{'phase': 'diffusion', 'fraction': 0.705,
+                                 'step': 141, 'total_steps': 200}]] * 20)
+        self.predicting._TRACK['hero']['done'] = 3
+        self.predicting.pending_info('hero', _self=self.cmd)
+        self.age_phase('hero', 12.0)                # 12 s in, 70.5% of the phase
+        info = self.predicting.pending_info('hero', _self=self.cmd)
+        # Pre-conditions: the frame is reproduced.
+        self.assertLess(info['remaining'], 10.0, 'pre-condition: the PHASE is ending')
+        self.assertAlmostEqual(info['fraction'], 0.190, delta=0.005)
+        self.assertIn('model 4 of 20', info['detail'])
+        # The defect: an unqualified whole-task phrase beside a whole-job 19%.
+        self.assertNotIn(', almost done', info['detail'])
+        self.assertIn('this phase: almost done', info['detail'])
 
     def testStepCountsAndEtaSurviveThePayloadAsScalars(self):
         """A non-scalar would fail the whole PanelPayload decode in Swift."""

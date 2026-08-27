@@ -16,62 +16,6 @@ class TestDesignRegion(testing.PyMOLTestCase):
         cmd.fab('AAAAA', 'm1')          # 5-residue poly-Ala with full backbone
         return 'm1'
 
-    def testSelectedIndicesMapInGuideOrder(self):
-        obj = self._peptide()
-        cmd.select('reg', '%s and resi 2+4' % obj)
-        from pymol import raymol_design as rd
-        marker = rd.selected_design_indices(obj, 'reg', 1)
-        self.assertTrue(marker.startswith('DESIGN_SELECTED:'))
-        with open(os.path.join(tempfile.gettempdir(),
-                               'raymol_design_selected.json')) as f:
-            data = json.load(f)
-        # resi 2 and 4 → 0-based guide-order indices 1 and 3.
-        self.assertEqual(data['indices'], [1, 3])
-
-    def testListSelectionsCountsAndFilters(self):
-        obj = self._peptide()
-        cmd.select('reg', '%s and resi 2+3+4' % obj)
-        cmd.select('empty', 'resn HOH')          # matches nothing on m1
-        from pymol import raymol_design as rd
-        rd.list_design_selections(obj, 1)
-        with open(os.path.join(tempfile.gettempdir(),
-                               'raymol_design_selections.json')) as f:
-            data = json.load(f)
-        names = {d['name']: d['n'] for d in data['selections']}
-        self.assertEqual(names.get('reg'), 3)
-        self.assertNotIn('empty', names)         # zero-intersection selection filtered out
-
-    def testExcludesInternalSelections(self):
-        obj = self._peptide()
-        cmd.select('reg', '%s and resi 2+3' % obj)
-        cmd.select('_preselect', '%s and resi 1' % obj)   # PyMOL-internal style name
-        from pymol import raymol_design as rd
-        rd.list_design_selections(obj, 1)
-        with open(os.path.join(tempfile.gettempdir(),
-                               'raymol_design_selections.json')) as f:
-            data = json.load(f)
-        names = {d['name'] for d in data['selections']}
-        self.assertIn('reg', names)
-        self.assertNotIn('_preselect', names)    # internal '_' selections hidden
-
-    def testSourceScopingResolvesOriginalSelection(self):
-        # A selection made on the original resolves onto the focused working copy
-        # (identical residues) when src is supplied — object-membership vs identity.
-        obj = self._peptide()
-        cmd.create('%s_design' % obj, obj, zoom=0)   # working copy
-        cmd.select('loop', '%s and resi 2+4' % obj)  # selection on the ORIGINAL
-        from pymol import raymol_design as rd
-        # Focus = working copy; without src the original selection doesn't intersect.
-        rd.selected_design_indices('%s_design' % obj, 'loop', 1)
-        with open(os.path.join(tempfile.gettempdir(),
-                               'raymol_design_selected.json')) as f:
-            self.assertEqual(json.load(f)['indices'], [])
-        # With src = original, it maps by (chain, resi) to the copy's guide order.
-        rd.selected_design_indices('%s_design' % obj, 'loop', 1, src=obj)
-        with open(os.path.join(tempfile.gettempdir(),
-                               'raymol_design_selected.json')) as f:
-            self.assertEqual(json.load(f)['indices'], [1, 3])
-
     def _sele_payload(self):
         with open(os.path.join(tempfile.gettempdir(),
                                'raymol_design_sele.json')) as f:
@@ -170,21 +114,6 @@ class TestDesignRegion(testing.PyMOLTestCase):
         self.assertEqual(self._sele_resis(), ['5'],
                          'set must replace the selection, not extend it')
 
-    def testSetSeleFromSelectionCopiesNamedRegion(self):
-        obj = self._peptide()
-        cmd.select('loop', '%s and resi 2+3' % obj)
-        from pymol import raymol_design as rd
-        rd.set_sele_from_selection('loop')
-        self.assertEqual(self._sele_resis(), ['2', '3'])
-
-    def testSetSeleFromMissingSelectionEmpties(self):
-        obj = self._peptide()
-        from pymol import raymol_design as rd
-        rd.toggle_sele_residue(obj, '', '2')
-        # A name that does not exist must empty 'sele', never raise.
-        rd.set_sele_from_selection('nope')
-        self.assertEqual(self._sele_resis(), [])
-
     def testToggleIsResidueScopedRegardlessOfMouseSelectionMode(self):
         # D1: Design clicks always expand to RESIDUE scope. With
         # mouse_selection_mode = 0 (atom) a normal-mode click would commit a single
@@ -207,6 +136,23 @@ class TestDesignRegion(testing.PyMOLTestCase):
         rd.toggle_sele_residue(obj, '', '2')
         self.assertEqual(rd.clear_sele(), 'DESIGN_SELE_CLEAR:ok')
         self.assertEqual(self._sele_resis(), [])
+
+    def testSelectingAMissingNameEmptiesSeleWithoutRaising(self):
+        # The '(?name)' form is how a NAMED selection reaches Design mode now that
+        # the picker is gone (the PYMOL_AUTODESIGN hook writes exactly this). A
+        # misspelled or deleted name must empty 'sele' rather than raise, because
+        # the caller reports "matched no designable residues" from the resulting
+        # empty selection — an exception would abort before that check.
+        obj = self._peptide()
+        from pymol import raymol_design as rd
+        rd.toggle_sele_residue(obj, '', '2')
+        self.assertEqual(self._sele_resis(), ['2'], 'pre-condition: something selected')
+        cmd.select('sele', '(?nope)', enable=1)          # must not raise
+        self.assertEqual(self._sele_resis(), [])
+        # ...and the real thing still works through the same expression.
+        cmd.select('loop', '%s and resi 2+3' % obj)
+        cmd.select('sele', '(?loop)', enable=1)
+        self.assertEqual(self._sele_resis(), ['2', '3'])
 
     def testPollPanelCarriesDesignSeleDigest(self):
         obj = self._peptide()

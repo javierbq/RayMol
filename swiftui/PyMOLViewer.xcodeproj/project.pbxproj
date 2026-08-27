@@ -11,7 +11,9 @@
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
 		047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */; };
 		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
+		096FA7333E120551F0CC84A8 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
+		0C7AFC549798A22C0FE22112 /* PredictCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */; };
 		0DDA865CB0C8ACAC1BFD0FE9 /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
@@ -28,25 +30,31 @@
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
+		2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		25B6234DE09C8513458832EB /* ProtenixMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 6A6ADC55CC1EDE5686605DCB /* ProtenixMLX */; };
 		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
 		2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		2D3D69F7B73F3F499AD0894F /* PredictAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */; };
 		2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		303210F410E1AD9DBCCF57F3 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
+		31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */; };
+		325EE49F9617F5A907D7BDF7 /* whatsnew-1100-msa.png in Resources */ = {isa = PBXBuildFile; fileRef = 727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */; };
 		33925DA4B65039A7C4C0DE8F /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
 		33C46A7EB6127A6A99D7048D /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
 		3494764DF6FC43A45FB259AF /* PredictSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */; };
 		34985FCB3C0FBC450384D4C9 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
 		36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		3A8107D094C920B600681B74 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
+		3B4F843E2515C36E517E8FD7 /* PredictSizeGuardIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */; };
 		3D6FE0218915810960306973 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
 		3E6C34959A3934D2DE3E080F /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
 		3ECB633FC33E73F4767D3AF5 /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */; };
 		3F96563B0EA8F919B068A421 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F059BB95517CE91BD3E26E /* ContentView.swift */; };
+		40DAE7C10C0EEEC2C1EB09F2 /* whatsnew-1100-interface.png in Resources */ = {isa = PBXBuildFile; fileRef = 283BC19B58F7146F72950E97 /* whatsnew-1100-interface.png */; };
 		4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F059BB95517CE91BD3E26E /* ContentView.swift */; };
 		42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */; };
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
@@ -68,10 +76,13 @@
 		55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		56CC6A9A8A95D5B1B8D92688 /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
 		575E4E4792DE4C46A70ECE01 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
+		57B2D711FAEB98EBCAD11CBC /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
 		57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */; };
+		59414471A1C1412AF869074D /* InferenceJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87825A30DE5C455B6270187F /* InferenceJob.swift */; };
 		598C60D5EA54B317DA845A5D /* PredictControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60E5CB80464F5616064A91C /* PredictControllerTests.swift */; };
 		5992346BC7D06026A673BA71 /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
 		5A20A6D21AA3CFAE2394BAB4 /* dylib-Info-template.plist in Resources */ = {isa = PBXBuildFile; fileRef = 57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */; };
+		5B31EBD069B506D6B0C4DEEA /* PredictCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */; };
 		5C923361D76329D2A466FFA9 /* PyMOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D965CB609C447033E5DB0046 /* PyMOLApp.swift */; };
 		5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F4F52D951CF1F96606F41C /* SmokeTests.swift */; };
 		5CEF96397383F4A7F731F9A0 /* ThemeStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */; };
@@ -86,10 +97,12 @@
 		68AB212502F00E7E297F8208 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */; };
+		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
 		6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */; };
 		6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		6D67CAB3F655837D48E68AF3 /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
 		6E6BAB43588CEBE88230F5C5 /* WhatsNewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */; };
+		6E8C51546C660EE26D379D14 /* whatsnew-1100-metrics.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */; };
 		6E945630A8B9A6195B98A958 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FBA4CCD670BAF318F243E692 /* MLX */; };
 		6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */; };
 		6F45C01C9E3DE3CC89268445 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
@@ -97,6 +110,7 @@
 		7406A4027A2BE46708BA6282 /* DesignIOSPortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */; };
 		76065C249F1901F993E708A6 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
 		768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		7758593457A49366EBBAE30C /* whatsnew-1100-metrics.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */; };
 		77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		783033ED2463B78CD831611D /* ProtenixJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */; };
@@ -105,29 +119,40 @@
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
 		7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */; };
+		809165FC9A0F411860956BD6 /* PredictAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */; };
+		8206A8EA7F51F473C168C9D0 /* whatsnew-1100-msa.png in Resources */ = {isa = PBXBuildFile; fileRef = 727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */; };
+		82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87825A30DE5C455B6270187F /* InferenceJob.swift */; };
+		82F6B1E5C339BCC6545AA222 /* whatsnew-1100-predict-progress.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */; };
 		8471766417221874246F5252 /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
 		848682B247E00ECDD720FF73 /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
 		86F8E58F4BAA9E8B03380DBB /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
 		8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
+		12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */; };
+		32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		90F5E063444FBF4FF3770118 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1304C662D9011F7C4505FC /* MCPStatusView.swift */; };
 		917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */; };
 		946A8CF4D62A7AFFFA6E39A9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */; };
+		966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		983BCF8F1E0F251E82C1CF0E /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
 		9E056CF2985B57F6BF968798 /* ProtenixMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 90EE4E4414E8FBDC2271BEA2 /* ProtenixMLX */; };
 		9FDA615BBA4A6BBDF131EF7F /* ProtenixRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56746569540D202277F2B47F /* ProtenixRuntimeTests.swift */; };
 		9FE703EF6FD7C97884C299DF /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
+		A27A8FF0359176C013760922 /* whatsnew-1100-interface.png in Resources */ = {isa = PBXBuildFile; fileRef = 283BC19B58F7146F72950E97 /* whatsnew-1100-interface.png */; };
+		A39EA05FAD0B4D18957DA517 /* PredictAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */; };
 		A4E8C9619C9B7F0C169BFAFF /* BoltzMLX in Frameworks */ = {isa = PBXBuildFile; productRef = B20D95BF3CA7BA300F0AF09F /* BoltzMLX */; };
+		A653B70A6B824D1F48549503 /* BoltzMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 0BD76B8E1C781556992E4D28 /* BoltzMLX */; };
 		A76B8F620DCFED6F7AD69FEE /* ProtenixRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7845A3EB6A6BF8A14F090062 /* ProtenixRuntime.swift */; };
 		AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
+		AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		AF7D82103248D30E0CD32311 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
 		B238B98768632BEFAD9327E4 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
@@ -137,6 +162,7 @@
 		B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
 		B6FBF55DD1FA97A86C678618 /* BoltzMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 8426817F16C801044FDCCB94 /* BoltzMLX */; };
+		B806C9AB4B89EAE3676F25E2 /* PanelLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */; };
 		B84285B5FAD1A429B1FCEDBF /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */; };
@@ -150,6 +176,7 @@
 		C2FE6360EC57133D61DC3FAD /* CopyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4CC639810B19E8F5E637E93 /* CopyRouting.swift */; };
 		C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */; };
 		C97C087311C3D159E74FA96A /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 69935BE3EFD2F08B88D4AEE9 /* MLX */; };
+		C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */; };
 		CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */; };
 		CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */; };
 		CCC5944AB82CA9D946A60F10 /* whatsnew-190-redesign.png in Resources */ = {isa = PBXBuildFile; fileRef = 137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */; };
@@ -169,6 +196,7 @@
 		DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
 		DE0E67FF8DD0D44121F1B386 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1304C662D9011F7C4505FC /* MCPStatusView.swift */; };
 		E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */ = {isa = PBXBuildFile; fileRef = 57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */; };
+		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
 		E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		E7A7CA409C1DB4D1A78AD5B9 /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
 		E9B0CF8BC5F291107F7C872B /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
@@ -186,6 +214,9 @@
 		F5F9A2124F71FDC7541A6BF8 /* 1ubq.cif in Resources */ = {isa = PBXBuildFile; fileRef = 1A55383922D69D691CA1BAB1 /* 1ubq.cif */; };
 		F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221117550FAD97CF81924E05 /* MousePanel.swift */; };
 		F6C4DEEFED66EB440E6359AF /* PyMOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D965CB609C447033E5DB0046 /* PyMOLApp.swift */; };
+		F96DF6C063C742C64F3C221C /* PredictScreenAwakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AA9F6B00A6FC98E37CB26EC /* PredictScreenAwakeTests.swift */; };
+		F9F1B10E40B13DDF27C0ACC1 /* PanelLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */; };
+		FAB7D942A53C88BEA4D2FFE4 /* whatsnew-1100-predict-progress.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */; };
 		FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
@@ -209,8 +240,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		02F1DF5E9689EFF422BE279A /* RayMolIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolIOS.entitlements; sourceTree = "<group>"; };
 		05C388F2E8B5A99F3CBFFC7E /* PyMOLViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditingTests.swift; sourceTree = "<group>"; };
+		0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailabilityTests.swift; sourceTree = "<group>"; };
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
@@ -223,18 +256,22 @@
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
 		1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzJobManagerMSATests.swift; sourceTree = "<group>"; };
+		1AA9F6B00A6FC98E37CB26EC /* PredictScreenAwakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictScreenAwakeTests.swift; sourceTree = "<group>"; };
 		1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColorTests.swift; sourceTree = "<group>"; };
 		1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBindingDispatchTests.swift; sourceTree = "<group>"; };
 		221117550FAD97CF81924E05 /* MousePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MousePanel.swift; sourceTree = "<group>"; };
 		2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailabilityTests.swift; sourceTree = "<group>"; };
+		283BC19B58F7146F72950E97 /* whatsnew-1100-interface.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-interface.png"; sourceTree = "<group>"; };
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
 		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
+		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
 		35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInspectorView.swift; sourceTree = "<group>"; };
 		3697F74BD2283492B5A7790C /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
 		3F5377EE69A856479317FD61 /* WhatsNewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModel.swift; sourceTree = "<group>"; };
+		3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-metrics.png"; sourceTree = "<group>"; };
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
@@ -259,6 +296,8 @@
 		6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuard.swift; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
+		71574A2074A14803B91ED695 /* InferenceRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouter.swift; sourceTree = "<group>"; };
+		727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-msa.png"; sourceTree = "<group>"; };
 		75F059BB95517CE91BD3E26E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7845A3EB6A6BF8A14F090062 /* ProtenixRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtenixRuntime.swift; sourceTree = "<group>"; };
 		786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDesktopInstaller.swift; sourceTree = "<group>"; };
@@ -269,6 +308,7 @@
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
 		86E93358875495F499780A00 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
+		87825A30DE5C455B6270187F /* InferenceJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceJob.swift; sourceTree = "<group>"; };
 		8B0D207800BE2DDAF04598C1 /* PredictController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictController.swift; sourceTree = "<group>"; };
 		8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieExportSheet.swift; sourceTree = "<group>"; };
 		9371B6FFB30D6166234C678B /* RayMolMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolMain.swift; sourceTree = "<group>"; };
@@ -283,17 +323,25 @@
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
+		80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadout.swift; sourceTree = "<group>"; };
+		AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouterTests.swift; sourceTree = "<group>"; };
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
+		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
+		B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayoutTests.swift; sourceTree = "<group>"; };
 		B820FE9080BF73526A54CD66 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPDrivingBanner.swift; sourceTree = "<group>"; };
 		BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = RayMol.icon; sourceTree = "<group>"; };
 		BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyRoutingTests.swift; sourceTree = "<group>"; };
+		3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadoutTests.swift; sourceTree = "<group>"; };
+		C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictCompactPanel.swift; sourceTree = "<group>"; };
 		C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppVersionFooter.swift; sourceTree = "<group>"; };
 		C562306A5AD1EEDDBA931B98 /* TransportBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportBar.swift; sourceTree = "<group>"; };
+		C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1100-predict-progress.mp4"; sourceTree = "<group>"; };
 		C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColor.swift; sourceTree = "<group>"; };
 		C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PyMOLViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-predict.png"; sourceTree = "<group>"; };
 		CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = "openssl-PrivacyInfo.xcprivacy"; sourceTree = "<group>"; };
 		CC011374F5FD9F008437F037 /* AnalysisNotesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisNotesStoreTests.swift; sourceTree = "<group>"; };
 		CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConnectSheet.swift; sourceTree = "<group>"; };
@@ -301,8 +349,10 @@
 		D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignScoreCacheTests.swift; sourceTree = "<group>"; };
 		D177C9A043AE57844A9AEB95 /* PredictSizeGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuardTests.swift; sourceTree = "<group>"; };
 		D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignCompactPanel.swift; sourceTree = "<group>"; };
+		D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictScreenAwake.swift; sourceTree = "<group>"; };
 		D60E5CB80464F5616064A91C /* PredictControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictControllerTests.swift; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
+		DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuardIOSTests.swift; sourceTree = "<group>"; };
 		E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNRuntime.swift; sourceTree = "<group>"; };
 		E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignModeStateTests.swift; sourceTree = "<group>"; };
 		E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLGestureUITests.swift; sourceTree = "<group>"; };
@@ -319,7 +369,7 @@
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
-		"TEMP_10A06E48-389B-40FD-B69A-488BA0D818F9" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_ECE7A689-BD6F-4587-BA1E-27EB02D1331A" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -351,6 +401,7 @@
 			files = (
 				54D986046911571938A3CF13 /* MPNNKit in Frameworks */,
 				C97C087311C3D159E74FA96A /* MLX in Frameworks */,
+				A653B70A6B824D1F48549503 /* BoltzMLX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -395,6 +446,11 @@
 				7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */,
 				137F4EFE6CA3B90DE4765559 /* whatsnew-190-redesign.png */,
 				6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */,
+				283BC19B58F7146F72950E97 /* whatsnew-1100-interface.png */,
+				3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */,
+				727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */,
+				C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */,
+				C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
 			path = Resources;
@@ -426,6 +482,7 @@
 			children = (
 				10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */,
 				F2078076B68D28457409F7A5 /* RayMol.entitlements */,
+				02F1DF5E9689EFF422BE279A /* RayMolIOS.entitlements */,
 				A63406B360384F3C62E511E1 /* RayMolPython.entitlements */,
 				F5456D006DB0002CB809CACF /* Bridge */,
 				1A65998EE1F4B509B9B62F00 /* Panels */,
@@ -452,6 +509,9 @@
 				EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */,
 				9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */,
 				AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */,
+				80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */,
+				87825A30DE5C455B6270187F /* InferenceJob.swift */,
+				71574A2074A14803B91ED695 /* InferenceRouter.swift */,
 				3697F74BD2283492B5A7790C /* KeyRouting.swift */,
 				1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */,
 				786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */,
@@ -460,8 +520,12 @@
 				86E93358875495F499780A00 /* MLXRuntime.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
+				B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */,
+				2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */,
 				F14E7328C4421ADC9E81417D /* PredictBar.swift */,
+				C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */,
 				8B0D207800BE2DDAF04598C1 /* PredictController.swift */,
+				D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */,
 				6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */,
 				A4857D1284B60EB0C750C02F /* ProgressTray.swift */,
 				9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */,
@@ -488,6 +552,7 @@
 				1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */,
 				193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */,
 				BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */,
+				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
@@ -500,15 +565,20 @@
 				48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */,
 				D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */,
 				EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */,
+				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
 				1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */,
 				F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
+				B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */,
 				7DEAB18A89F026148528C71E /* PendingJobTests.swift */,
+				0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */,
 				D60E5CB80464F5616064A91C /* PredictControllerTests.swift */,
 				48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */,
+				1AA9F6B00A6FC98E37CB26EC /* PredictScreenAwakeTests.swift */,
+				DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */,
 				D177C9A043AE57844A9AEB95 /* PredictSizeGuardTests.swift */,
 				56746569540D202277F2B47F /* ProtenixRuntimeTests.swift */,
 				55F4F52D951CF1F96606F41C /* SmokeTests.swift */,
@@ -537,10 +607,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_EF6349F2-C8F5-427B-87FC-D5436E08DB23" /* swiftui */ = {
+		"TEMP_B4B7BF10-A05C-4BC3-A0FC-767151C4BA0F" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_10A06E48-389B-40FD-B69A-488BA0D818F9" /* PyMOLBridge.xcconfig */,
+				"TEMP_ECE7A689-BD6F-4587-BA1E-27EB02D1331A" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -610,6 +680,7 @@
 			packageProductDependencies = (
 				80B2210B207942EBB65BAF59 /* MPNNKit */,
 				69935BE3EFD2F08B88D4AEE9 /* MLX */,
+				0BD76B8E1C781556992E4D28 /* BoltzMLX */,
 			);
 			productName = PyMOLViewer_iOS;
 			productReference = C78CBBCC3AFAD0E62BBAA884 /* PyMOLViewer.app */;
@@ -711,6 +782,11 @@
 				8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */,
 				E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */,
 				13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */,
+				40DAE7C10C0EEEC2C1EB09F2 /* whatsnew-1100-interface.png in Resources */,
+				6E8C51546C660EE26D379D14 /* whatsnew-1100-metrics.png in Resources */,
+				8206A8EA7F51F473C168C9D0 /* whatsnew-1100-msa.png in Resources */,
+				FAB7D942A53C88BEA4D2FFE4 /* whatsnew-1100-predict-progress.mp4 in Resources */,
+				096FA7333E120551F0CC84A8 /* whatsnew-1100-predict.png in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -735,6 +811,11 @@
 				42F2467DC338FA8435632918 /* WhatsNew.json in Resources */,
 				5A20A6D21AA3CFAE2394BAB4 /* dylib-Info-template.plist in Resources */,
 				C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */,
+				A27A8FF0359176C013760922 /* whatsnew-1100-interface.png in Resources */,
+				7758593457A49366EBBAE30C /* whatsnew-1100-metrics.png in Resources */,
+				325EE49F9617F5A907D7BDF7 /* whatsnew-1100-msa.png in Resources */,
+				82F6B1E5C339BCC6545AA222 /* whatsnew-1100-predict-progress.mp4 in Resources */,
+				2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -1199,6 +1280,7 @@
 				238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */,
 				6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */,
 				6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */,
+				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
 				B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
@@ -1211,15 +1293,20 @@
 				52B5620BEF26DEB8E3A700C1 /* DesignResiduesTests.swift in Sources */,
 				6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */,
 				917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */,
+				C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,
 				CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */,
 				EF9A088B19E39220CC72469D /* KeyRoutingTests.swift in Sources */,
 				7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */,
 				4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,
+				31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */,
 				CFBEE2172EC92121700639E7 /* PendingJobTests.swift in Sources */,
+				809165FC9A0F411860956BD6 /* PredictAvailabilityTests.swift in Sources */,
 				598C60D5EA54B317DA845A5D /* PredictControllerTests.swift in Sources */,
 				615CCED824D7A973408A6CBD /* PredictMSAMemorySweepTests.swift in Sources */,
+				F96DF6C063C742C64F3C221C /* PredictScreenAwakeTests.swift in Sources */,
+				3B4F843E2515C36E517E8FD7 /* PredictSizeGuardIOSTests.swift in Sources */,
 				D1A6B8D3D1B74B4D1142ADE5 /* PredictSizeGuardTests.swift in Sources */,
 				9FDA615BBA4A6BBDF131EF7F /* ProtenixRuntimeTests.swift in Sources */,
 				5CAB662574D238626A8F4D68 /* SmokeTests.swift in Sources */,
@@ -1246,6 +1333,9 @@
 				2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */,
 				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
+				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
+				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
+				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
 				B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */,
 				55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */,
@@ -1262,8 +1352,12 @@
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
 				0DDA865CB0C8ACAC1BFD0FE9 /* NotesInspectorView.swift in Sources */,
 				4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */,
+				F9F1B10E40B13DDF27C0ACC1 /* PanelLayout.swift in Sources */,
+				2D3D69F7B73F3F499AD0894F /* PredictAvailability.swift in Sources */,
 				D31F1B51A22EDBE0B05005AE /* PredictBar.swift in Sources */,
+				5B31EBD069B506D6B0C4DEEA /* PredictCompactPanel.swift in Sources */,
 				4328A7D903B06B6115075B3B /* PredictController.swift in Sources */,
+				57B2D711FAEB98EBCAD11CBC /* PredictScreenAwake.swift in Sources */,
 				3494764DF6FC43A45FB259AF /* PredictSizeGuard.swift in Sources */,
 				AF7D82103248D30E0CD32311 /* ProgressTray.swift in Sources */,
 				783033ED2463B78CD831611D /* ProtenixJobManager.swift in Sources */,
@@ -1305,6 +1399,9 @@
 				6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */,
 				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
+				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
+				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
+				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,
 				42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */,
 				E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */,
@@ -1321,8 +1418,12 @@
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,
 				E9B0CF8BC5F291107F7C872B /* NotesInspectorView.swift in Sources */,
 				5992346BC7D06026A673BA71 /* ObjectPanel.swift in Sources */,
+				B806C9AB4B89EAE3676F25E2 /* PanelLayout.swift in Sources */,
+				A39EA05FAD0B4D18957DA517 /* PredictAvailability.swift in Sources */,
 				5D0883E6462ADA97AEAA823D /* PredictBar.swift in Sources */,
+				0C7AFC549798A22C0FE22112 /* PredictCompactPanel.swift in Sources */,
 				6D67CAB3F655837D48E68AF3 /* PredictController.swift in Sources */,
+				E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */,
 				F5BEB7A4A5B270B0A64476D2 /* PredictSizeGuard.swift in Sources */,
 				BDF58C2A00D4BFACD41D6462 /* ProgressTray.swift in Sources */,
 				BAF51FE61B64C23C51DF4AAF /* ProtenixJobManager.swift in Sources */,
@@ -1367,7 +1468,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1381,7 +1482,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9.1;
+				MARKETING_VERSION = 1.10.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1401,7 +1502,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1415,7 +1516,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9.1;
+				MARKETING_VERSION = 1.10.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1436,7 +1537,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1452,7 +1553,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9.1;
+				MARKETING_VERSION = 1.10.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1493,7 +1594,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1509,7 +1610,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9.1;
+				MARKETING_VERSION = 1.10.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1525,7 +1626,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_10A06E48-389B-40FD-B69A-488BA0D818F9" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_ECE7A689-BD6F-4587-BA1E-27EB02D1331A" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1632,7 +1733,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_10A06E48-389B-40FD-B69A-488BA0D818F9" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_ECE7A689-BD6F-4587-BA1E-27EB02D1331A" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1804,6 +1905,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0BD76B8E1C781556992E4D28 /* BoltzMLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2A63CE2513FB93FA639FB61 /* XCRemoteSwiftPackageReference "boltz-mlx" */;
+			productName = BoltzMLX;
+		};
 		69935BE3EFD2F08B88D4AEE9 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 59736E03D73BFCCFF74027FA /* XCRemoteSwiftPackageReference "mlx-swift" */;

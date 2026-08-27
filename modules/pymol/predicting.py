@@ -123,6 +123,32 @@ def default_object_name(sequence, predictor_id=''):
     return '%s_%s' % (method, stem) if method else stem
 
 
+def _legal_object_name(name, _self=cmd):
+    """The object name PyMOL will actually use for `name`.
+
+    Creating an object LEGALISES its name -- an apostrophe, a space and a forward slash
+    all become underscores -- and nothing tells the caller. So a name chosen here and the
+    object that actually exists are two different strings, and every table keyed on the
+    chosen one then addresses an object that is not there: the placeholder is not deleted
+    by `discard_pending`, `session_save` does not recognise it and writes it into the
+    .pse, and `record_run` files metrics against a name nothing answers to.
+
+    `cmd.get_legal_name` rather than a local rewrite: it is the same C++ rule
+    (`ObjectMakeValidName`) that creation itself applies, so the two cannot drift. That
+    rule is subtler than replacing three characters -- it strips a trailing `)`, yields one
+    underscore per BYTE of a multi-byte character, and leaves `+`, `-` and `.` alone.
+    It is idempotent, so applying it twice on one path is harmless.
+
+    Applied on EVERY public entry point that takes an object name, `pending_info`
+    included. In production its callers pass keys that came out of these tables, so the
+    call is a no-op there -- but a rule of "some of these legalise and some do not" is one
+    a caller has to know, and the cost of not needing to know it was measured at 0.82 us
+    per call: 0.016 ms for twenty placeholders on a 500 ms poll tick, 0.003% of it.
+    """
+    return _self.get_legal_name(str(name))
+
+
+
 def job_ids():
     """Ids of every job submitted this session, newest last.
 
@@ -160,6 +186,13 @@ def pending_info(name, _self=cmd):
     if this throws, which freezes the object panel on a stale list.
     """
     import time
+    try:
+        name = _legal_object_name(name, _self=_self)
+    except Exception:
+        # Guarded because of the "never raises" contract above, and only here: a lookup
+        # under the name as given misses and returns None, which the panel renders as
+        # "pending" -- where letting this out would write no panel file at all.
+        pass
     job_ids = _PENDING.get(name)
     if not job_ids:
         return _RECENT.get(name)
@@ -353,13 +386,41 @@ def format_remaining(seconds):
     return 'over an hour left'
 
 
+def format_phase_remaining(seconds):
+    """'this phase: 4 min left'. The SCOPED spelling, for a prediction card.
+
+    Deliberately identical to ProgressCard.formatPhaseRemaining
+    (ProgressTray.swift), for the same reason format_remaining is.
+
+    The scope is stated because the number is scoped: `remaining` comes from
+    _phase_remaining, which measures the CURRENT PHASE only, while everything
+    beside it on the card -- the percentage, the bar, 'model 4 of 20' -- is the
+    whole job. Unqualified, the two read as one claim: a 1.10.0 capture shows
+    'Diffusion 19% . step 141 of 200 . model 4 of 20 . almost done', where
+    'almost done' means diffusion is seconds from step 200 but reads as if the
+    run were finishing with sixteen models still to go.
+
+    'phase' rather than 'model', which would be the friendlier word: diffusion is
+    band 0.40-0.97 of a model and 'write' follows it, so a phase estimate is not
+    a model estimate and must not be sold as one. A whole-JOB countdown is not
+    offered at all -- compose_progress's bands are layout, not time, so there is
+    nothing honest to extrapolate one from.
+
+    format_remaining stays unscoped, because its other caller is right: a weight
+    download IS the whole task, and 'almost done' there means what it says.
+    """
+    return 'this phase: %s' % (format_remaining(seconds),)
+
+
 def _format_detail(info):
-    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), 4 min left'.
+    """'pending: diffusion 64% step 84 of 200 (model 1 of 3), this phase: 4 min left'.
 
     Short -- it is a tooltip. The percentage is the COMPOSED whole-job value, the
     same number the progress bar draws, so the two can never disagree; the
     stage-local position is said precisely by 'step 84 of 200' instead. The
-    estimate is the current phase's, which is what was actually measured.
+    estimate is the current phase's, which is what was actually measured, and it
+    SAYS so: unqualified, it read as a claim about the whole job it sits beside
+    (see format_phase_remaining).
     """
     parts = ['pending: %s' % (info['phase'],)]
     if info['fraction'] is not None and info['moving']:
@@ -373,7 +434,7 @@ def _format_detail(info):
             min(info['models_done'] + 1, info['models_total']), info['models_total'])
     remaining = info.get('remaining')
     if remaining is not None:
-        detail += ', %s' % (format_remaining(remaining),)
+        detail += ', %s' % (format_phase_remaining(remaining),)
     return detail
 
 
@@ -397,6 +458,7 @@ def register_pending(name, job_id, _self=cmd):
     Recording only the newest would clear the pending mark on the first delivery while
     later models were still running.
     """
+    name = _legal_object_name(name, _self=_self)
     if name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
@@ -420,12 +482,13 @@ def discard_pending(name, _self=cmd):
     # background queue -> settle() writes the terminal status file -> the discard is
     # hopped to the main queue and runs within milliseconds, LONG before the next
     # poll. Trusting the cache therefore retains nothing on the only path that
-    # matters. Nothing deletes the status file (BoltzJobManager has no removeItem
+    # matters. Nothing deletes the status file (InferenceJob has no removeItem
     # on statusPath), so re-reading it here is what actually sees the failure;
     # _LAST_INFO stays as the fallback for a job that vanished from _PENDING first.
     #
     # NOT on the poll path: discard_pending runs once per placeholder teardown, so
     # this does not add a per-tick status read.
+    name = _legal_object_name(name, _self=_self)
     fresh = None
     try:
         fresh = pending_info(name, _self=_self)
@@ -865,6 +928,7 @@ def deliver_result(path, name, seed=None, _self=cmd):
     # Read BEFORE the finally block pops it: this is the job whose model is landing,
     # and it is what says which predictor, which options and which alignment produced
     # the coordinates about to be loaded.
+    name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
     try:
         _self.load(path, name, zoom=0)
@@ -1469,6 +1533,11 @@ SEE ALSO
     # the job immediately rather than after the first poll.
     object_name = (str(name) if name else
                    default_object_name(sequence, predictor_obj.id))
+    # Legalised HERE, once, rather than left for `create` to do silently: this string is
+    # the placeholder's key, the name the host is handed and echoes back to
+    # `deliver_result`, and what the metric run is filed against. Any of those differing
+    # from the object that actually exists is a silent no-op somewhere downstream.
+    object_name = _legal_object_name(object_name, _self=_self)
     # PredictionSpec is a __slots__ class, not a namedtuple: assign, don't _replace.
     spec.name = object_name
 
@@ -1644,6 +1713,7 @@ SEE ALSO
     if not path:
         raise PredictionError('job %s produced no structure' % job_id)
     object_name = name or getattr(job.spec, 'name', None) or job_id
+    object_name = _legal_object_name(object_name, _self=_self)
     _self.load(path, object_name)
     if not int(quiet):
         colorprinting.parrot(' predict: loaded %s' % object_name)
@@ -1678,6 +1748,17 @@ NOTES
     the application's progress sheet. Stop a running fetch with
     "predict_weights_cancel".
 
+    A bundle is fetched ONCE however many callers ask for it, so download=1 while a
+    transfer is already in flight joins that transfer instead of starting a second
+    one. It says so on the console and reports it as joined=True rather than looking
+    like a call that did nothing.
+
+RETURNS
+
+    dict: predictor id -> {'cached', 'path', 'bundle', 'joined', 'fetch'}, where
+    'fetch' is the live transfer's state (or None) and 'joined' says whether this
+    call attached to a transfer that was already running.
+
 SEE ALSO
 
     predict, predict_weights_cancel
@@ -1694,7 +1775,8 @@ SEE ALSO
         predictor_obj = registry.get(pid)
         bundle = predictor_obj.weight_bundle
         if bundle is None:
-            out[pid] = {'cached': True, 'path': None, 'bundle': None}
+            out[pid] = {'cached': True, 'path': None, 'bundle': None,
+                        'joined': False, 'fetch': None}
             continue
         # A BULK fetch downloads only what this build could actually run. Asking for one
         # predictor BY NAME still downloads it -- that is someone pre-warming a cache
@@ -1706,19 +1788,48 @@ SEE ALSO
         if int(download) and not predictor and not _can_run(predictor_obj):
             out[pid] = {'cached': bool(cache.is_cached(bundle)),
                         'path': cache.path_for(bundle),
-                        'bundle': bundle.id}
+                        'bundle': bundle.id,
+                        'joined': False, 'fetch': None}
             if not int(quiet):
                 colorprinting.parrot(
                     ' predict: %s cannot run in this build; not fetching its weights'
                     % pid)
             continue
+        joined = False
         if int(download) and not cache.is_cached(bundle):
-            fetching.start(bundle, cache)
+            # Identity, not a flag from start(): start() joins an in-flight transfer
+            # on purpose (one bundle, one download, however many callers), and the
+            # only way to tell "joined" from "began" is that it handed back the
+            # record that was already there.
+            before = fetching.get(bundle.id)
+            started = fetching.start(bundle, cache)
+            joined = started is before and before is not None
+            if joined and started.state == 'running':
+                snap = started.snapshot()
+                # Warned regardless of `quiet`, for the same reason predict() warns
+                # when it defers: this call deliberately started nothing, and saying
+                # nothing about it is indistinguishable from "download=1 is broken".
+                # That silence is what sent the reported bug looking for a .part file
+                # that was never going to appear.
+                colorprinting.warning(
+                    ' predict: a fetch of %s weights is already in flight (%s %d%%);'
+                    ' this call joined it rather than starting a second download.'
+                    ' Stop it with "predict_weights_cancel %s".'
+                    % (bundle.id, snap['phase'],
+                       int(round(snap['fraction'] * 100)), pid))
             if wait:
                 _wait_for_fetch(bundle, quiet)
+        live = fetching.get(bundle.id)
         out[pid] = {'cached': bool(cache.is_cached(bundle)),
                     'path': cache.path_for(bundle),
-                    'bundle': bundle.id}
+                    'bundle': bundle.id,
+                    # Whether this call joined a transfer already running rather than
+                    # starting one, and what that transfer is doing. Reported in the
+                    # return value as well as on the console so a script can tell a
+                    # deliberate join from a failure instead of reading cached=False
+                    # as "nothing happened".
+                    'joined': joined,
+                    'fetch': live.snapshot() if live is not None else None}
         if not int(quiet):
             colorprinting.parrot(' predict: %s weights cached=%s at %s' % (
                 pid, out[pid]['cached'], out[pid]['path']))
@@ -1846,7 +1957,7 @@ SEE ALSO
     """
     pump(_self=_self)
     if name:
-        removed = _RECENT.pop(name, None) is not None
+        removed = _RECENT.pop(_legal_object_name(name, _self=_self), None) is not None
     else:
         removed = bool(_RECENT)
         _RECENT.clear()

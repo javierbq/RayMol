@@ -27,7 +27,7 @@ final class ProtenixRuntimeTests: XCTestCase {
     }
 
     private func writeRequest(job: String, chains: [(String, String)],
-                              runtime: String?) throws -> BoltzJobManager.Request {
+                              runtime: String?) throws -> InferenceJob.Request {
         let url = dir.appendingPathComponent("raymol_predict_req_\(job).json")
         var payload: [String: Any] = [
             "job_id": job,
@@ -41,7 +41,78 @@ final class ProtenixRuntimeTests: XCTestCase {
         ]
         if let runtime { payload["runtime"] = runtime }
         try JSONSerialization.data(withJSONObject: payload).write(to: url)
-        return try BoltzJobManager.parseRequest(at: url)
+        return try InferenceJob.parseRequest(at: url)
+    }
+
+    // MARK: - settle ordering
+
+    /// The status file must be on disk BEFORE the placeholder is taken down.
+    ///
+    /// `predicting.discard_pending` re-reads the status FRESH to decide whether to retain a
+    /// failure card in `_RECENT` -- and it can, because nothing deletes the status file. So
+    /// a discard that lands first records the failure after `_PENDING`, the only map that
+    /// could observe it, has already been popped: the card silently vanishes and a refused
+    /// or failed run explains nothing.
+    ///
+    /// The Boltz path has had this test since #291. Protenix did not, and did the two steps
+    /// inline in the wrong order at all four of its terminal paths -- #346 moved them onto
+    /// `InferenceJob` but preserved the ordering, so extracting the shared shell did not by
+    /// itself fix them.
+    func testARefusalWritesStatusBeforeDiscardingThePlaceholder() throws {
+        var order: [String] = []
+        InferenceJob.settleTap = { order.append($0) }
+        defer { InferenceJob.settleTap = nil }
+
+        // 100k residues: far past any machine's fitting size, so preflight refuses without
+        // touching MLX or reading a weight pack.
+        let request = try writeRequest(
+            job: "settle-order",
+            chains: [("A", String(repeating: "A", count: 100_000))],
+            runtime: ProtenixJobManager.runtimeName)
+        ProtenixJobManager.shared.submit(request)
+
+        XCTAssertEqual(order, ["write", "discard"],
+                       "status must be written before the placeholder is discarded")
+        let status = try JSONDecoder().decode(
+            InferenceJob.Status.self,
+            from: Data(contentsOf: URL(fileURLWithPath: request.statusPath)))
+        XCTAssertEqual(status.state, "failed")
+        XCTAssertNotNil(status.error)
+    }
+
+    /// Every terminal path goes through the ordered helper -- checked STRUCTURALLY, because
+    /// three of the four cannot be reached from a unit test.
+    ///
+    /// `submit`'s refusal is testable (above). The three inside `run` are not: they need a
+    /// real 214 MB pack and a real MLX fold to reach. They are also where the ordering
+    /// actually bites, and the reason is threading: `discardPlaceholder` hops to the MAIN
+    /// queue while the status write is synchronous on the calling thread. From `submit`,
+    /// which runs on the main thread, that hop is deferred past the write and the wrong
+    /// order is accidentally harmless. From `run`, which is on a background queue, the main
+    /// thread can pick the discard up while the write is still in flight.
+    ///
+    /// So a grep is the honest guard: no direct `discardPlaceholder` call may remain in this
+    /// manager. Same discipline as
+    /// `predict_api.testEveryMessageHelperUsedByPredictingExists`, which greps its source
+    /// rather than trying to take every branch.
+    func testNoTerminalPathDiscardsThePlaceholderItself() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()          // PyMOLViewerTests
+            .deletingLastPathComponent()          // swiftui
+            .appendingPathComponent("PyMOLViewer/Shared/ProtenixJobManager.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        for (number, line) in text.split(separator: "\n").enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("//") { continue }
+            XCTAssertFalse(line.contains("discardPlaceholder"),
+                           "ProtenixJobManager.swift:\(number + 1) discards the placeholder "
+                           + "directly; route it through InferenceJob.settle so the status "
+                           + "is written first: \(trimmed)")
+        }
+        // And it does still settle -- so the assertion above cannot be satisfied by simply
+        // deleting the teardown.
+        XCTAssertTrue(text.contains("InferenceJob.settle("),
+                      "the manager must settle its jobs through the shared helper")
     }
 
     // MARK: - Wire format

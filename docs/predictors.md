@@ -60,6 +60,10 @@ The distinction has to be on the wire because weights and featurizer are method-
 Running one method's request on another's backend does not fail; it tokenizes with the
 wrong featurizer and returns a confident wrong structure. So:
 
+- `InferenceRouter` owns the `PREDICT:` marker and one table of every runtime this build
+  links. `submit` and `cancel` read the **same** table, which is what makes "routable" and
+  "cancellable" the same property — a runtime that could be started but not stopped is a
+  job the user cannot cancel.
 - `BoltzJobManager` implements `boltz` and **refuses** any other in `preflight`, before it
   applies its size model — which is fitted to Boltz's measured peaks and would be
   meaningless applied to another method's request even as a refusal.
@@ -72,6 +76,26 @@ wrong featurizer and returns a confident wrong structure. So:
 
 That default is also the trap: a new predictor that forgets to pass `runtime=` is silently
 dispatched to Boltz. `predict_runtime.py` asserts every registered predictor names one.
+
+### Adding a runtime
+
+The Swift side is three pieces, and only the third is method-specific:
+
+| | |
+|---|---|
+| `InferenceJob` | the wire (`Request`, `Status`, `Chain`, `Alignment`) and the job shell: `parseRequest`, atomic `writeStatus`, `settle`, `refusal`, `discardPlaceholder`, `loadResult`, `StepThrottle`. Neutral — it imports no inference package and knows no method. |
+| `InferenceRuntime` | the three members a manager must have: `static var runtimeName`, `submit(_:)`, `cancel(jobID:)`. |
+| your manager | the featurizer, the weights, the size model, the result writer. |
+
+Conform your manager to `InferenceRuntime` and add its singleton to
+`InferenceRouter.runtimes`. That one line makes it both routable and cancellable; there is
+no second place to remember. Use `InferenceJob`'s helpers rather than reimplementing them —
+"the status file went missing on a cancelled job" is the class of bug you only find in
+production, and `settle`'s write-then-discard ordering in particular is load-bearing (see
+`predicting.discard_pending`, which re-reads the status to decide whether to keep a failure
+card).
+
+`submit` runs on the MAIN thread: refuse there, then hand the work to your own queue.
 
 `boltz2-bf16` subclasses `Boltz2Predictor` and overrides nothing but `weight_bundle`, which
 is what "two predictors, one runtime" looks like in practice. It needs boltz-mlx >= 0.2.0.

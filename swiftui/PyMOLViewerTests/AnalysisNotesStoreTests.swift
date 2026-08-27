@@ -172,6 +172,77 @@ final class AnalysisNotesStoreTests: XCTestCase {
         ])
     }
 
+    @MainActor
+    func testLinkedThumbnailComposesWrappedMarkdownAndCleansToViewLabel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AnalysisNotesStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("source.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: source)
+        let store = AnalysisNotesStore(fallbackDirectory: root, debounceInterval: 60)
+        let bookmark = try XCTUnwrap(store.addViewBookmark(
+            title: "Ligand pocket", view: (0..<25).map(Float.init),
+            kind: .camera, insertsMarkdown: false
+        ))
+        XCTAssertEqual(store.text, "")
+        let asset = try XCTUnwrap(store.addScreenshot(title: "Ligand pocket", from: source,
+                                                      linkedBookmarkID: bookmark.id))
+
+        XCTAssertEqual(store.text,
+                       "[![Ligand pocket](raymol-asset://\(asset.id.uuidString))]"
+                       + "(raymol-view://\(bookmark.id.uuidString))")
+        XCTAssertEqual(store.cleanMarkdown, "**Camera view:** Ligand pocket")
+    }
+
+    @MainActor
+    func testAppendViewLinkAddsBareTextLink() throws {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        let bookmark = try XCTUnwrap(store.addViewBookmark(
+            title: "Interface", view: (0..<25).map(Float.init), insertsMarkdown: false
+        ))
+        store.appendViewLink(bookmark)
+        XCTAssertEqual(store.text, "[Interface](raymol-view://\(bookmark.id.uuidString))")
+    }
+
+    func testPreviewParserRecognizesThumbnailsBoundToViewLinks() {
+        let asset = UUID()
+        let bookmark = UUID()
+        let plain = UUID()
+        let markdown = """
+        Before.
+        [![Pocket](raymol-asset://\(asset.uuidString))](raymol-view://\(bookmark.uuidString))
+        Between.
+        ![Plain](raymol-asset://\(plain.uuidString))
+        After.
+        """
+
+        XCTAssertEqual(AnalysisNotePreviewParser.blocks(in: markdown), [
+            .markdown("Before."),
+            .linkedImage(asset, bookmark),
+            .markdown("Between."),
+            .image(plain),
+            .markdown("After.")
+        ])
+    }
+
+    @MainActor
+    func testHTMLExportKeepsLinkedThumbnailReadableWhenAssetIsMissing() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        let bookmark = try? XCTUnwrap(store.addViewBookmark(
+            title: "Contact map", view: (0..<25).map(Float.init),
+            kind: .scene, sceneName: "__raymol_note_test", insertsMarkdown: false
+        ))
+        guard let bookmark else { return XCTFail("bookmark") }
+        store.text = "[![Contact map](raymol-asset://\(UUID().uuidString))]"
+            + "(raymol-view://\(bookmark.id.uuidString))"
+
+        let html = store.exportHTML()
+        XCTAssertTrue(html.contains("Scene view: Contact map"), html)
+        XCTAssertFalse(html.contains("raymol-asset://"), html)
+    }
+
     func testPreviewParserLeavesOtherMarkdownLinksUntouched() {
         let markdown = "[View](raymol-view://1234) and [site](https://raymol.io/)"
 

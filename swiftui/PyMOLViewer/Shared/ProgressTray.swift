@@ -88,7 +88,10 @@ struct ProgressItem: Identifiable, Equatable {
         // An estimate when there is a measured rate to derive one from, and the
         // measured clock otherwise. Never both: the card's detail line is two
         // lines at most, and a countdown is what the reader came for.
-        parts.append(job.remaining.map(ProgressCard.formatRemaining) ?? elapsed)
+        //
+        // The SCOPED spelling: this estimate covers the current phase, and it sits
+        // beside a whole-job percentage and "model k of N". See formatPhaseRemaining.
+        parts.append(job.remaining.map(ProgressCard.formatPhaseRemaining) ?? elapsed)
 
         // Three states, not two. A cancellation is terminal like a failure — same
         // Dismiss button, same sort position, no progress bar — but it is the user's
@@ -154,7 +157,7 @@ struct ProgressItem: Identifiable, Equatable {
     }
 
     /// A Python single-quoted string literal for an arbitrary object name.
-    /// Matches the escaping in BoltzJobManager.pythonLiteral(_:).
+    /// Matches the escaping in InferenceJob.pythonLiteral(_:).
     private static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -232,6 +235,28 @@ struct ProgressCard: View {
             return "\(mins) min left"
         default:      return "over an hour left"
         }
+    }
+
+    /// The SCOPED spelling, for a prediction card. Wraps the buckets rather than
+    /// replacing them, so the weight-download card above keeps its wording.
+    ///
+    /// The scope is stated because the number is scoped: `PredictionJobState.remaining`
+    /// measures the CURRENT PHASE only, while everything beside it on the card -- the
+    /// percentage, the bar, "model 4 of 20" -- is the whole job. Unqualified, the two
+    /// read as one claim: a 1.10.0 capture shows "Diffusion 19% · step 141 of 200 ·
+    /// model 4 of 20 · almost done", where "almost done" means diffusion is seconds
+    /// from step 200 but reads as if the run were finishing with sixteen models to go.
+    ///
+    /// "phase" and not the friendlier "model": diffusion is band 0.40–0.97 of a model
+    /// and `write` follows it, so a phase estimate is not a model estimate and must not
+    /// be sold as one. No whole-JOB countdown is offered at all — compose_progress's
+    /// bands are layout, not time, so there is nothing honest to extrapolate one from.
+    ///
+    /// Identical to `predicting.format_phase_remaining`, for the same reason
+    /// `formatRemaining` is identical to `format_remaining`: the hover tooltip and the
+    /// card must never word one estimate two different ways.
+    static func formatPhaseRemaining(_ seconds: Double) -> String {
+        "this phase: " + formatRemaining(seconds)
     }
 
     /// Coarse for the same reason, and never counts down -- this one is measured.

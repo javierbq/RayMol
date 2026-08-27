@@ -37,6 +37,14 @@ _sleep = time.sleep
 #: and must never be buffered whole.
 CHUNK_BYTES = 1 << 20
 
+#: Write size during extraction, and therefore how often cancellation and progress
+#: are observed while unpacking. It has to be a chunk rather than a whole member
+#: because every shipping pack is three members of which model.safetensors IS the
+#: payload: a check that only ran between members ran twice on a few bytes of JSON
+#: and then not again for hundreds of MB, which pinned the progress marker at 2/3
+#: and made Cancel look dead for the whole unpack.
+EXTRACT_CHUNK_BYTES = 1 << 20
+
 DEFAULT_TIMEOUT = 30.0
 
 #: Hard ceiling on transfer attempts for one bundle. Two budgets rather than one
@@ -135,8 +143,24 @@ class WeightCache:
     def default_root(platform=None, home=None):
         platform = sys.platform if platform is None else platform
         home = os.path.expanduser('~') if home is None else home
-        if platform == 'darwin':
+        if platform in ('darwin', 'ios'):
             # Under the App Sandbox this same path resolves inside the container.
+            #
+            # 'ios' is NOT cosmetic. CPython reports sys.platform == 'ios' there, not
+            # 'darwin', so an iPhone used to fall through to the ~/.raymol branch below --
+            # and on iOS $HOME is the app's DATA CONTAINER ROOT, which is readable but not
+            # writable. The download failed at the first mkdir with
+            #   [Errno 1] Operation not permitted:
+            #   /var/mobile/Containers/Data/Application/<uuid>/.raymol
+            # after the user had already asked for a 529 MB fetch. Only Documents/,
+            # Library/ and tmp/ are writable inside the container, so the same
+            # Library/Application Support path the sandboxed Mac build uses is both the
+            # correct location here and already covered by this branch.
+            #
+            # Library/Application Support rather than Documents/ on purpose: weights are
+            # a reproducible cache, not user data, and Documents/ is surfaced in the Files
+            # app (UIFileSharingEnabled) where half a gigabyte of model shards would sit
+            # among the user's own structures inviting deletion.
             return os.path.join(home, 'Library', 'Application Support',
                                 'RayMol', 'weights')
         return os.path.join(home, '.raymol', 'weights')
@@ -418,21 +442,65 @@ class WeightCache:
         return received, digest
 
     def _extract(self, bundle, part, staging, progress, should_cancel=None):
-        """Extract to staging, then assert the layout is exactly what was declared."""
+        """Extract to staging, then assert the layout is exactly what was declared.
+
+        Written as an explicit chunked copy rather than one ZipFile.extract() per
+        member so that BOTH cancellation and progress are observed WITHIN a member.
+        Per-member was the bug behind the "stuck on Unpacking... 67%" report: the
+        packs are three members -- config.json, manifest.json, model.safetensors --
+        so 2/3 of the checks happened on a few bytes of JSON and the third ran only
+        after the entire multi-hundred-MB tensor file had been written. For that
+        whole stretch the marker never moved (so the app's tray card could not
+        resolve, and still showed a stale 67%) and the cancel flag was never looked
+        at (so Cancel did nothing at all).
+
+        The fraction is byte-based for the same reason: counting members makes the
+        bar jump 0 -> 33 -> 67 -> 100 with the entire wait sitting inside one step.
+        """
         _rmtree(staging)
         try:
             os.makedirs(staging)
             with zipfile.ZipFile(part) as archive:
-                names = archive.namelist()
+                infos = archive.infolist()
+                names = [info.filename for info in infos]
                 if set(names) != set(bundle.members):
                     raise WeightBundleLayoutError(
                         'bundle %s contains %s, expected %s'
                         % (bundle.id, sorted(names), sorted(bundle.members)))
-                for index, name in enumerate(names):
-                    archive.extract(name, staging)
-                    if progress:
-                        progress('extract', float(index + 1) / len(names))
+                # Guard the destination path explicitly. ZipFile.extract() sanitised
+                # member names itself; the copy below does not, so dropping that call
+                # would otherwise turn a declared "../x" into a write outside staging.
+                for name in names:
+                    if (not name or os.path.isabs(name)
+                            or name != os.path.basename(name)
+                            or name in (os.curdir, os.pardir)):
+                        raise WeightBundleLayoutError(
+                            'bundle %s member %r is not a plain file name'
+                            % (bundle.id, name))
+                # `or 1` guards a bundle of empty files; the final progress call
+                # below is what reports completion in that case.
+                total = sum(info.file_size for info in infos) or 1
+                done = 0
+                last = -1.0
+                for info in infos:
+                    dest = os.path.join(staging, info.filename)
+                    with archive.open(info) as src, open(dest, 'wb') as handle:
+                        while True:
+                            chunk = src.read(EXTRACT_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            handle.write(chunk)
+                            done += len(chunk)
+                            if progress:
+                                last = min(1.0, float(done) / total)
+                                progress('extract', last)
+                            _raise_if_cancelled(should_cancel, bundle)
+                    # Per chunk AND per member, so "cancellation is observed at least
+                    # once per member" still holds for a zero-byte one, whose copy
+                    # loop above never runs a single iteration.
                     _raise_if_cancelled(should_cancel, bundle)
+                if progress and last < 1.0:
+                    progress('extract', 1.0)
         except zipfile.BadZipFile as exc:
             raise WeightBundleLayoutError(
                 'bundle %s is not a readable zip: %s' % (bundle.id, exc))

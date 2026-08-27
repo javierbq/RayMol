@@ -21,13 +21,12 @@ final class DesignIOSPortTests: XCTestCase {
     // clearError() must be the way it goes away (the banner's dismiss path).
     func testClearErrorResetsErrorText() async {
         let c = makeController()
-        c.injectRegion(designRegion: { _, _, _, _, _ in [] },   // wrong length → failure
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+        c.injectRegion(designRegion: { _, _, _, _, _ in [] })   // wrong length → failure
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertEqual(c.errorText, "Region redesign failed",
@@ -46,14 +45,13 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.sizeDecisionProvider = { _ in .refuse(maxFittingResidues: 500) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
 
@@ -71,8 +69,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -84,7 +81,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.autosaveBeforeLargeRun = { autosaves += 1 }
         c.sizeDecisionProvider = { n in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertEqual(designCalls, 0, "warn must hold the run, not start it")
@@ -104,14 +101,13 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
         c.sizeDecisionProvider = { _ in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNotNil(c.pendingSizeWarning)
@@ -131,8 +127,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -143,7 +138,7 @@ final class DesignIOSPortTests: XCTestCase {
         }
         c.sizeDecisionProvider = { _ in providerCalls += 1; return .ok }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning)
@@ -156,7 +151,7 @@ final class DesignIOSPortTests: XCTestCase {
     //
     // Failure scenario (pre-fix):
     // 1. Run lands in warn band → pendingSizeWarning is set.
-    // 2. User clears the region (clearSelection does NOT clear pendingSizeWarning).
+    // 2. User clears the region (clearing does NOT clear pendingSizeWarning).
     // 3. User confirms the stale warning → confirmPendingWarning() sets
     //    suppressSizeGuardOnce=true and calls redesignSelectionAwait(), which
     //    immediately hits the "guard !selectedResidueIndices.isEmpty" early return
@@ -175,8 +170,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -189,14 +183,14 @@ final class DesignIOSPortTests: XCTestCase {
         // Step 1: first redesign lands in the warn band — run is held.
         c.sizeDecisionProvider = { _ in .warn(estimatedBytes: 3_000_000_000, availableBytes: 4_000_000_000) }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNotNil(c.pendingSizeWarning, "warn band must set pendingSizeWarning")
         XCTAssertEqual(designCalls, 0, "warn band must hold the run")
 
         // Step 2: user clears the region while the warning is still pending.
-        c.clearSelection()
+        c.handleViewportHit(object: "", chain: "", resi: "", hasResidue: false)
 
         // Step 3: user confirms the (now stale) warning.
         // confirmPendingWarning() sets suppressSizeGuardOnce=true and calls
@@ -206,7 +200,7 @@ final class DesignIOSPortTests: XCTestCase {
         await c.confirmPendingWarning()
 
         // Step 4: re-establish a region and switch to a refuse provider.
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
         c.sizeDecisionProvider = { _ in providerCalls += 1; return .refuse(maxFittingResidues: 0) }
 
         // Step 5: the next redesign must be refused.
@@ -303,8 +297,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            order.append("design")
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -315,7 +308,7 @@ final class DesignIOSPortTests: XCTestCase {
         }
         c.injectReleaseModel { order.append("release"); done.fulfill() }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
-        c.pickSelection("reg")
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         c.exit()
@@ -415,8 +408,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.injectRegion(designRegion: { r, _, _, _, _ in
                            designCalls += 1
                            return Array(repeating: 0, count: r.count)
-                       },
-                       selectedIndices: { _, _, _, _ in [0, 1] })
+                       })
         c.injectEdit(makeWorkingCopy: { $0 + "_design" },
                      mutateDisplay: { _, _, _, _ in },
                      discard: { _, _ in }, compare: { _, _ in })
@@ -432,7 +424,7 @@ final class DesignIOSPortTests: XCTestCase {
         c.autoRepack = false
         c.setFocusForTest("m1", nativeSequence: Array(repeating: 5, count: count),
                           validFlags: allValid(count))
-        c.pickSelection("reg")   // selectedIndices returns [0]
+        c.tapResidue(residueIndex: 0); c.tapResidue(residueIndex: 1)
 
         await c.redesignSelectionAwait()
         XCTAssertNil(c.pendingSizeWarning,
@@ -977,6 +969,12 @@ final class DesignIOSPortTests: XCTestCase {
                 currentAALogProb: Array(repeating: -3, count: s.count))
         }
         c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        // This test is about the PER-RESIDUE reconcile path, which is only live while
+        // the global show-all is off — reconcileSticks() early-returns otherwise.
+        // Sidechains now default ON, so turn them off to reach the path under test.
+        // (The default-on path is covered by
+        // testRepackReShowsAllSidechainsWhenTheyAreOn below.)
+        c.setShowSidechains(false)
 
         // Pin residue 1 (chain "A", resi "2") — this is the residue we will mutate.
         // On iOS, pill mutations always apply to the active (pinned) residue.
@@ -997,6 +995,44 @@ final class DesignIOSPortTests: XCTestCase {
             XCTAssertTrue(showAfterRepack,
                 "the mutated residue's sidechain (resi '2') must be re-requested after " +
                 "the topology replace — reconcileSticks must add pinned sticks post-repack")
+        }
+    }
+
+    // With sidechains ON (the default), a repack replaces the object's topology and
+    // annihilates its sticks, so the GLOBAL show-all must be re-issued for the
+    // working object — the counterpart of the per-residue path above.
+    func testRepackReShowsAllSidechainsWhenTheyAreOn() async {
+        let c = makeController()
+        var showAllCalls: [(String, Bool)] = []
+        var events: [String] = []
+        c.injectShowAllSidechains { obj, on in
+            showAllCalls.append((obj, on))
+            events.append(on ? "show-all-\(obj)" : "hide-all-\(obj)")
+        }
+        c.injectSetSticks { _, _, _, on in on }
+        c.injectEdit(makeWorkingCopy: { $0 + "_design" },
+                     mutateDisplay: { _, _, _, _ in },
+                     discard: { _, _ in }, compare: { _, _ in })
+        c.injectRepack(
+            repack: { _, _ in "ATOM  ..." },
+            loadRepacked: { _, _, _ in events.append("topology-replace") })
+        c.injectScore { _, s in
+            MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: -3, count: 21), count: s.count),
+                currentAALogProb: Array(repeating: -3, count: s.count))
+        }
+        c.setFocusForTest("m1", nativeSequence: [5, 5, 5], validFlags: allValid(3))
+        XCTAssertTrue(c.showSidechains, "pre-condition: sidechains default on")
+        events.removeAll()
+
+        await c.applyMutationAwait(residueIndex: 1, aa: 9)
+
+        let ri = events.firstIndex(of: "topology-replace")
+        XCTAssertNotNil(ri, "loadRepacked (topology replace) must have been called")
+        if let ri {
+            XCTAssertTrue(events[ri...].contains { $0 == "show-all-m1_design" },
+                "after the topology replace the global show-all must be re-issued for " +
+                "the working object, or the design ends up with no sidechains visible")
         }
     }
 

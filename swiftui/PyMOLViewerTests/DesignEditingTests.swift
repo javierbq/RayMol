@@ -441,5 +441,73 @@ final class DesignEditingTests: XCTestCase {
         XCTAssertFalse(disabledObjs.contains("compare_false_fired"),
                        "setCompare(false) was called after discard — original may have been re-disabled")
     }
+
+    // MARK: – Sidechains shown by default on the target structure
+
+    // Entering Design mode and focusing a structure must SHOW its sidechains.
+    // The flag defaulting to true is not enough on its own: reconcileSticks()
+    // early-returns while it is set, so without an explicit show-all pass the
+    // structure would end up with FEWER sidechains than before, not more.
+    func testFocusShowsAllSidechainsByDefault() async {
+        let c = makeController()
+        var calls: [(String, Bool)] = []
+        c.injectShowAllSidechains { obj, on in calls.append((obj, on)) }
+        XCTAssertTrue(c.showSidechains, "sidechains must default to on")
+
+        await c.focusAwait("m1")
+
+        XCTAssertEqual(calls.filter { $0.1 }.map { $0.0 }, ["m1"],
+                       "focusing must issue exactly one show-all for the focused structure")
+    }
+
+    // Switching focus must not leave the previous structure covered in sticks.
+    func testSwitchingFocusHidesSidechainsOnThePreviousStructure() async {
+        let c = makeController()
+        var calls: [(String, Bool)] = []
+        c.injectShowAllSidechains { obj, on in calls.append((obj, on)) }
+
+        await c.focusAwait("m1")
+        calls.removeAll()
+        await c.focusAwait("m2")
+
+        XCTAssertTrue(calls.contains { $0 == ("m1", false) },
+                      "the previous focus must be un-sticked, or every visited structure accumulates sidechains")
+        XCTAssertTrue(calls.contains { $0 == ("m2", true) },
+                      "the new focus must get the show-all pass")
+    }
+
+    // Leaving Design mode must hide them again. restore() re-applies colours and
+    // transparency but NOT representation visibility (see exit()'s own comment),
+    // so without an explicit hide the user's structure stays sticky after exit.
+    func testExitHidesSidechains() async {
+        let c = makeController()
+        var calls: [(String, Bool)] = []
+        c.injectShowAllSidechains { obj, on in calls.append((obj, on)) }
+
+        await c.focusAwait("m1")
+        calls.removeAll()
+        c.exit()
+
+        XCTAssertTrue(calls.contains { $0 == ("m1", false) },
+                      "exit must hide the sidechains it showed")
+    }
+
+    // A user who turns them off keeps that choice when focusing another
+    // structure — the default is a default, not an override.
+    func testFocusRespectsAUserTurningSidechainsOff() async {
+        let c = makeController()
+        var calls: [(String, Bool)] = []
+        c.injectShowAllSidechains { obj, on in calls.append((obj, on)) }
+
+        await c.focusAwait("m1")
+        c.setShowSidechains(false)
+        XCTAssertFalse(c.showSidechains)
+        calls.removeAll()
+
+        await c.focusAwait("m2")
+
+        XCTAssertFalse(calls.contains { $0 == ("m2", true) },
+                       "focus must not re-show sidechains the user turned off")
+    }
 }
 #endif

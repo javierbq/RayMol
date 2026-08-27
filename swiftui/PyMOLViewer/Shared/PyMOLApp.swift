@@ -263,16 +263,31 @@ struct PyMOLApp: App {
                 .disabled(isDesignLocked)
                 .keyboardShortcut("b", modifiers: .control)
             }
-            #if RAYMOL_MPNN
-            // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
-            CommandMenu("Design") {
-                Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
-                    engine.setDesignMode(!engine.designMode)
+            // Grouped so the two menus together count as ONE entry against the
+            // @CommandsBuilder's 10-child ceiling (Group<Commands> exists for
+            // exactly this reason).
+            Group {
+                #if RAYMOL_MPNN
+                // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
+                CommandMenu("Design") {
+                    Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
+                        engine.setDesignMode(!engine.designMode)
+                    }
+                    .disabled(isDesignLocked)
+                    .keyboardShortcut("d", modifiers: .control)
                 }
-                .disabled(isDesignLocked)
-                .keyboardShortcut("d", modifiers: .control)
+                #endif
+                // Predict menu: toggle Predict mode (structure prediction panel). ⌃P.
+                // A real menu command, not the toolbar-Menu button's shortcut, so it
+                // fires reliably (see the ⌘C comment above).
+                CommandMenu("Predict") {
+                    Button(engine.predictMode ? "Exit Predict Mode" : "Enter Predict Mode") {
+                        engine.setPredictMode(!engine.predictMode)
+                    }
+                    .disabled(isDesignLocked)
+                    .keyboardShortcut("p", modifiers: .control)
+                }
             }
-            #endif
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
             CommandMenu("Movie") {
