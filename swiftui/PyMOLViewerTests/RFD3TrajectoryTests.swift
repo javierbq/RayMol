@@ -334,6 +334,17 @@ final class RFD3TrajectoryTests: XCTestCase {
         XCTAssertEqual(request.liveView, true)
     }
 
+    func testTheKeepFlagDecodesFromTheWire() throws {
+        // Absent means DISCARD, which is also what a Python side predating this key says.
+        let bare = try JSONDecoder().decode(
+            InferenceJob.Request.self, from: requestJSON(",\"live_view\":true"))
+        XCTAssertNil(bare.keepFrames)
+        let kept = try JSONDecoder().decode(
+            InferenceJob.Request.self,
+            from: requestJSON(",\"live_view\":true,\"keep_frames\":true"))
+        XCTAssertEqual(kept.keepFrames, true)
+    }
+
     func testAnIntervalOnTheWireIsCarriedThrough() throws {
         let request = try JSONDecoder().decode(
             InferenceJob.Request.self,

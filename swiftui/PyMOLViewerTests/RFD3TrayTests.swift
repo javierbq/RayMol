@@ -15,10 +15,12 @@ final class RFD3TrayTests: XCTestCase {
         // key to true and subsequent tests that create a fresh controller read true from
         // UserDefaults instead of the intended default.
         UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
+        UserDefaults.standard.removeObject(forKey: DesignBackboneController.keepFramesKey)
     }
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
+        UserDefaults.standard.removeObject(forKey: DesignBackboneController.keepFramesKey)
         super.tearDown()
     }
 
@@ -366,6 +368,40 @@ final class RFD3TrayTests: XCTestCase {
         c.liveView = true
         XCTAssertEqual(c.command,
                        "design_backbone rfd3, target, sele, length=60, live_view=1")
+    }
+
+    @MainActor
+    func testKeepFramesIsOffByDefaultAndAbsentFromTheCommand() {
+        let c = controller()
+        XCTAssertFalse(c.keepFrames, "watching is the point; the states are opt-in")
+        c.liveView = true
+        XCTAssertFalse(c.command.contains("keep_frames"))
+    }
+
+    @MainActor
+    func testKeepFramesAppearsInTheCommandOnlyWithLiveOn() {
+        let c = controller()
+        c.liveView = true
+        c.keepFrames = true
+        XCTAssertEqual(c.command,
+                       "design_backbone rfd3, target, sele, length=60, live_view=1,"
+                       + " keep_frames=1")
+    }
+
+    @MainActor
+    func testARememberedKeepFramesTickCannotComposeTheContradiction() {
+        // The checkbox keeps its value while greyed, so `keepFrames` can be true with
+        // Live off. `keep_frames=1, live_view=0` is a contradiction Python REFUSES, so
+        // the command must not contain it -- a remembered preference must not be able to
+        // make Generate fail.
+        let c = controller()
+        c.keepFrames = true
+        c.liveView = false
+        XCTAssertFalse(c.command.contains("keep_frames"), c.command)
+        XCTAssertFalse(c.command.contains("live_view"), c.command)
+        // And it comes back when Live is switched on again, rather than being forgotten.
+        c.liveView = true
+        XCTAssertTrue(c.command.contains("keep_frames=1"), c.command)
     }
 
     @MainActor

@@ -42,9 +42,11 @@ final class DesignBackboneController: ObservableObject {
     /// end.
     ///
     /// The same single object either way -- there is no second object, and the finished
-    /// design is its last state. Persisted and OFF by default: it turns a one-state result
-    /// into a ~51-state one and costs a little main-thread work per frame, which is a
-    /// reasonable thing to opt into and an unreasonable thing to be given.
+    /// design is its last state. Persisted and OFF by default: it costs a little
+    /// main-thread work per frame, which is a reasonable thing to opt into and an
+    /// unreasonable thing to be given. It does NOT by itself change what the finished
+    /// object is -- that is `keepFrames`, which turns a one-state result into a ~51-state
+    /// one.
     @Published var liveView = UserDefaults.standard.bool(forKey: DesignBackboneController.liveViewKey) {
         didSet { UserDefaults.standard.set(liveView, forKey: Self.liveViewKey) }
     }
