@@ -439,6 +439,14 @@ final class RFD3JobManager: InferenceRuntime {
     private func runPythonOnMain(_ source: String) {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)
+            // The live view drives the object's state through `runPython`, which does
+            // NOT go through `runCommandCore` and so misses the forced repaint that a
+            // typed `set state, N, obj` gets. That force is not decoration: once a movie
+            // exists the core's redisplay flag can be consumed before the viewport's
+            // on-demand gate checks it, leaving the viewer frozen while the state
+            // counter advances (issue #132) -- which is exactly this path, appending a
+            // state and changing which one shows, fifty times. One extra frame each.
+            PyMOLEngine.shared.requestViewportRedraw()
         }
     }
 
@@ -458,6 +466,9 @@ final class RFD3JobManager: InferenceRuntime {
     private func runSeedOnMain(_ source: String, receiptPath: String) -> Bool {
         DispatchQueue.main.sync {
             PyMOLEngine.shared.runPython(source)
+            // Same reason as `runPythonOnMain`: the seed creates the object and puts
+            // state 1 on screen, through a path that does not force a repaint.
+            PyMOLEngine.shared.requestViewportRedraw()
         }
         defer { try? FileManager.default.removeItem(atPath: receiptPath) }
         return (try? String(contentsOfFile: receiptPath, encoding: .utf8))?
