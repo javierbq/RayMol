@@ -116,6 +116,49 @@ class PyMOLMTKView: MTKView {
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    // MARK: - Render loop
+    //
+    // Drive draw(in:) from a display link we own instead of MetalKit's.
+    //
+    // MTKView creates its own CVDisplayLink in viewDidMoveToWindow, but only
+    // starts it for a window that is already visible — and it never retries. A
+    // launch that opens a document (Finder double-click on a .pse, `open file.pse`)
+    // attaches this view to a window that is not visible yet, so the loop never
+    // starts: draw(in:) is then reached ONLY by the handful of manual draw() calls
+    // in PyMOLEngine.initialize()'s blank-on-launch guard and in handleWake. The
+    // window paints those few frames and is stale from then on. Because PyMOL
+    // executes queued mouse input inside a rendered frame (OrthoExecDeferred runs
+    // from SceneRenderMetal), every drag is silently swallowed too — the viewport
+    // looks frozen while menus, panels and the console stay responsive. Launching
+    // the app first and opening the file afterwards hid it, since that view was
+    // attached to a window that did become visible in time.
+    //
+    // Toggling isPaused does NOT fix it: MetalKit will not rebuild a display link
+    // it never created. Owning the link sidesteps the ordering entirely. It ticks
+    // at the screen's refresh rate and follows the view across displays; the
+    // on-demand gate in draw(in:) still skips the GPU work for a static scene, so
+    // a still viewport costs the same idle poll it did before.
+    private var renderLink: CADisplayLink?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else {
+            // No window: drop our link and hand the loop back to MetalKit, so a
+            // view that is re-attached later is never left with nothing driving it.
+            renderLink?.invalidate()
+            renderLink = nil
+            isPaused = false
+            return
+        }
+        guard renderLink == nil else { return }
+        let link = displayLink(target: self, selector: #selector(renderTick))
+        link.add(to: .main, forMode: .common)
+        renderLink = link
+        isPaused = true   // ours drives now; don't let both loops draw
+    }
+
+    @objc private func renderTick() { draw() }
+
     // Track pointer motion over the viewport so the hover pre-selection preview
     // (issue #165) can update as the mouse moves WITHOUT any button held. A
     // tracking area is required for mouseMoved/mouseExited to fire; recreate it
