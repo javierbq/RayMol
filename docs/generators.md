@@ -348,16 +348,26 @@ away. Drop whichever you did not mean.
 `pymol.designing.capture_interval(frames, total)` -- on the PYTHON side, and it is the only
 place frames become an interval. That side also knows `diffusion_steps`, which is what lets
 the achievable count be reported before the run rather than discovered after it. The wire
-then carries `live_interval`, the derived every-Nth-step, and the runtime does no arithmetic
-at all: it captures every Kth step and nothing else. Moving to interval semantics later means
-returning `frames` unchanged from that one function.
+then carries `live_interval`, the derived every-Nth-step. Moving to interval semantics later
+means returning `frames` unchanged from that one function.
+
+The runtime does no arithmetic ABOUT THE CADENCE — it captures every Kth step — but it does
+still compute one thing: the rollout's length, `max(diffusionSteps - 1, 1)`, for
+`shouldCapture`'s final-step arm. **That is a cross-language coupling**, and the only one
+this feature has: `designing.rollout_step_count` computes the same quantity, and if the two
+disagreed the count echoed at submit time would be a lie about the object you get. Both ends
+carry a comment pointing at the other, and a Python test greps the Swift source for the
+expression so a change on that side fails the suite.
 
 It SCANS rather than dividing, because `round(total / frames)` is not always right: 7 frames
 over 199 steps rounds to interval 28, which yields 8, while 29 yields exactly 7.
 
-A request that carries no `live_interval` -- an older Python, or one written before the key
-existed -- falls back to `RFD3JobManager.trajectoryStepInterval`, which is 4 and is exactly
-the previous behaviour.
+A request that carries no `live_interval` falls back to
+`RFD3JobManager.trajectoryStepInterval`, which is 4. That is not an edge case: Python sends
+the key only when `live_steps` was given, so **every live run without `live_steps` uses this
+fallback** -- including the app's **Live** checkbox, which sends no count -- as does an older
+Python. Being an interval rather than a count is why the states it yields move with the
+schedule: 50 at `diffusion_steps` 200, but 5 at 20 and 2 at 6.
 
 Each frame on the wire carries the **generated chain only**. Resending the static target
 fifty times would be pointless traffic, so `trajectory_seed` records how many atoms precede
