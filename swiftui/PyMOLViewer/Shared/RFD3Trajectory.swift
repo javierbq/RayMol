@@ -176,58 +176,20 @@ enum RFD3Trajectory {
 
     // MARK: The playback head
 
-    /// How often the playback head reconsiders which state to show, per second.
+    /// Times per second the live view rewrites its display state while a design runs.
     ///
-    /// Its own constant, deliberately NOT `PlaybackState.movieFPS`: that is the user's
-    /// setting for the user's movies, and a design's pacing is not their movie's pacing.
-    /// Changing one must not change the other.
-    static let playbackTicksPerSecond = 15
-
-    /// How long the head aims to take to close whatever gap it has, in milliseconds.
+    /// A REWRITE rate, not a state count. Smooth motion comes from moving the atoms of
+    /// one extra state, so the object still gains exactly one state per captured model
+    /// frame and nothing about the finished design changes with this number — the only
+    /// thing it buys or costs is main-thread work: one `load_coordset` and one forced
+    /// repaint per tick, while a GPU rollout is running.
     ///
-    /// This is what makes the motion EVEN rather than arrival-driven. The head deliberately
-    /// runs about this far behind the newest captured state while frames are still coming,
-    /// and closes the gap when they stop — so a burst of five frames arriving at once is
-    /// paced out over roughly a second instead of snapping through in one redraw, and a
-    /// steady one-per-second stream advances once per second rather than whenever the GPU
-    /// happens to hand a frame over.
-    static let playbackCatchUpMilliseconds = 1000
-
-    /// THE pacing decision: which state the head should be showing on this tick.
+    /// Deliberately NOT `PlaybackState.movieFPS`: that is the user's setting for the
+    /// user's movies, and changing their movie speed must not change a design's motion.
     ///
-    /// Pure, and the one seam the whole feature turns on. Everything else is a timer and a
-    /// `set state` — this is the only place that decides anything, which is what makes it
-    /// testable at all: the live path needs a 672 MB pack and a real MLX rollout, so an
-    /// expression buried in it is an expression no test ever runs.
-    ///
-    /// It is also where INTERPOLATION would go, if the follow-on is asked for: this would
-    /// return a state plus a fraction between it and the next, and nothing around it would
-    /// have to move.
-    ///
-    /// The rule is self-balancing. `backlog / catchUp` is the rate needed to clear the gap
-    /// in `catchUpMilliseconds`, so a bigger backlog drains faster and a smaller one waits
-    /// longer. Left alone with frames arriving at a steady rate, the head settles at
-    /// whatever backlog makes its pace match theirs. It advances ONE state at a time and
-    /// never skips, so every captured frame is seen.
-    ///
-    /// Returns `shown` unchanged to mean "stay put" — nothing new (`newest <= shown`),
-    /// or not enough ticks have passed yet.
-    static func nextPlaybackState(shown: Int, newest: Int, ticksWaited: Int,
-                                  ticksPerSecond: Int = playbackTicksPerSecond,
-                                  catchUpMilliseconds: Int = playbackCatchUpMilliseconds)
-        -> Int
-    {
-        guard newest > shown, ticksPerSecond > 0, catchUpMilliseconds > 0 else {
-            return shown
-        }
-        let backlog = newest - shown
-        // Integer arithmetic on purpose: no accumulating float drift over a run that can
-        // be thousands of ticks long. `max(1, ...)` because a large backlog rounds the
-        // wait to zero and a head that advances on EVERY tick is the fastest it may go.
-        let ticksPerState = max(1, (ticksPerSecond * catchUpMilliseconds)
-                                   / (1000 * backlog))
-        return ticksWaited >= ticksPerState ? shown + 1 : shown
-    }
+    /// Kept in step with `designing.PLAYBACK_DISPLAY_RATE`, which is where the fraction
+    /// is actually computed — this side is only the metronome.
+    static let playbackTicksPerSecond = 30
 
     /// Whether this step's coordinates are worth materialising.
     ///

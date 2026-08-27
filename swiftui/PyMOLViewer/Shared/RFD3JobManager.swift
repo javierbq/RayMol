@@ -100,16 +100,15 @@ final class RFD3JobManager: InferenceRuntime {
     ///
     /// Flat, three floats per atom, at millimetre precision — a trajectory is watched, not
     /// measured, and %.3f keeps a 300-atom frame around 7 KB of source instead of 15.
-    /// The statement that moves the playback head one state on.
+    /// The statement that moves the display's atoms to where they are right now.
     ///
-    /// Separate from the frame that CREATED that state, which is the whole point: display
-    /// advance is decoupled from frame arrival, so an irregular stream of frames becomes
-    /// evenly paced motion instead of a slideshow that jumps whenever the GPU hands one
-    /// over. Python applies it and owns the "has the user taken over?" check, because that
-    /// needs the object's current state and the bridge is one-directional.
-    static func advancePython(name: String, state: Int) -> String {
+    /// Carries no numbers, deliberately: Python owns the clock reading, the fraction and
+    /// the interpolation, so this is the shortest text that can be sent thirty times a
+    /// second — and there is one copy of the arithmetic, on the side that also has both
+    /// captured frames to interpolate between and the object's state to check against.
+    static func displayPython(name: String) -> String {
         "from pymol import designing as _d\n"
-        + "_d.trajectory_advance(\(InferenceJob.pythonLiteral(name)), \(state))"
+        + "_d.trajectory_display(\(InferenceJob.pythonLiteral(name)))"
     }
 
     static func framePython(name: String, coords: [SIMD3<Double>]) -> String {
@@ -125,25 +124,18 @@ final class RFD3JobManager: InferenceRuntime {
         // keeps the behaviour it has always had.
         return "from pymol import designing as _d\n"
              + "_d.trajectory_frame(\(InferenceJob.pythonLiteral(name)), [\(body)],"
-             + " advance=0)"
+             + " advance=0, smooth=1)"
     }
 
     // MARK: The playback head
     //
-    // MAIN-THREAD ONLY, all four of these. That is the entire concurrency design: frames
-    // arrive on the rollout thread but are applied inside a `DispatchQueue.main.async`
-    // block, and the counter below is bumped INSIDE that block rather than where the
-    // frame is emitted. So "newest" means "states that have actually landed", the timer
-    // reads it from the same queue that writes it, and there is nothing to synchronise
-    // and nothing the rollout can ever block on.
+    // MAIN-THREAD ONLY, both of these, and there is nothing else to carry: the head is a
+    // metronome. It holds no notion of which frame is newest or how far behind it is,
+    // because the motion is a fraction of elapsed TIME between the last two captured
+    // frames and Python computes that from its own clock. So nothing crosses the
+    // rollout/main boundary except the frames themselves, and the rollout never waits.
 
     private var playbackTimer: Timer?
-    /// The state the head last asked for. Not necessarily what is on screen — Python
-    /// refuses if the user has taken over — which is fine: it only feeds the pacing.
-    private var playbackShown = 0
-    /// The newest state that has LANDED. Bumped on main, after the frame's Python ran.
-    private var playbackNewest = 0
-    private var playbackTicks = 0
     private var playbackObject = ""
 
     /// MLX must never run on the main thread; the command arrives ON it. Serial, so two
@@ -534,10 +526,6 @@ final class RFD3JobManager: InferenceRuntime {
         DispatchQueue.main.async {
             self.stopPlaybackHead()
             self.playbackObject = object
-            // The seed IS state 1, and it is already on screen.
-            self.playbackShown = 1
-            self.playbackNewest = 1
-            self.playbackTicks = 0
             let timer = Timer(
                 timeInterval: 1.0 / Double(RFD3Trajectory.playbackTicksPerSecond),
                 repeats: true
@@ -560,48 +548,36 @@ final class RFD3JobManager: InferenceRuntime {
             self.playbackTimer?.invalidate()
             self.playbackTimer = nil
             self.playbackObject = ""
-            self.playbackShown = 0
-            self.playbackNewest = 0
-            self.playbackTicks = 0
         }
         if Thread.isMainThread { clear() } else { DispatchQueue.main.async(execute: clear) }
     }
 
-    /// One tick. Asks the pure function what to show, and only touches the session when
-    /// the answer changes — which is also what keeps the forced repaint down to one per
-    /// state rather than one per tick.
+    /// One tick: ask Python to put the display's atoms where they are now, and draw it.
+    ///
+    /// The repaint is forced unconditionally here, unlike the state-index version this
+    /// replaces. The coordinates change on nearly every tick — that is what smooth motion
+    /// IS — so there is no cheaper condition to test, and `runPython` never reaches
+    /// `runCommandCore` where a typed command would get the force for free (issue #132:
+    /// once a movie exists the redisplay flag can be consumed before the viewport's
+    /// on-demand gate checks it).
+    ///
+    /// Python skips the coordinate load when the gap has already run out and the next
+    /// frame has not landed, so a stalled rollout costs one no-op call per tick rather
+    /// than a reload and a repaint.
     private func playbackTick() {
         guard !playbackObject.isEmpty else { return }
-        let next = RFD3Trajectory.nextPlaybackState(shown: playbackShown,
-                                                    newest: playbackNewest,
-                                                    ticksWaited: playbackTicks)
-        guard next != playbackShown else {
-            playbackTicks += 1
-            return
-        }
-        playbackShown = next
-        playbackTicks = 0
-        PyMOLEngine.shared.runPython(Self.advancePython(name: playbackObject, state: next))
-        // `runPython` never reaches `runCommandCore`, so it misses the forced repaint a
-        // typed `set state, N, obj` gets — and once a movie exists the redisplay flag can
-        // be consumed before the viewport's on-demand gate checks it (issue #132).
+        PyMOLEngine.shared.runPython(Self.displayPython(name: playbackObject))
         PyMOLEngine.shared.requestViewportRedraw()
     }
 
-    /// Apply one captured frame, and count it as landed.
+    /// Apply one captured frame.
     ///
-    /// The counter is bumped HERE, inside the main-queue block and after the Python has
-    /// run, rather than where the frame is emitted on the rollout thread. That is what
-    /// makes `playbackNewest` mean "states that exist" instead of "states that have been
-    /// queued", and it is why the head needs no locking: the same queue writes it and
-    /// reads it.
-    ///
-    /// No forced repaint. A frame appends a state that is NOT being displayed — the head
-    /// decides what is on screen — so there is nothing new to draw until it advances.
+    /// No forced repaint, and no bookkeeping: the frame appends a state that is not the
+    /// one being displayed, and the head is about to redraw the display anyway. Python
+    /// records the frame as one end of the next animation.
     private func applyFrameOnMain(_ source: String) {
         DispatchQueue.main.async {
             PyMOLEngine.shared.runPython(source)
-            self.playbackNewest += 1
         }
     }
 

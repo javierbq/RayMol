@@ -266,154 +266,30 @@ final class RFD3TrajectoryTests: XCTestCase {
         XCTAssertTrue(source.contains("[1.000,2.000,3.000,4.000,5.000,6.000]"), source)
     }
 
-    // MARK: The playback head's pacing decision
+    // MARK: The playback head
 
-    /// Replay the head against a frame-arrival schedule and report what it showed when.
-    ///
-    /// `arrivals[t]` is how many new states landed on tick `t`. Returns one entry per
-    /// tick: the state on screen after that tick.
-    private func replayHead(arrivals: [Int], ticks: Int) -> [Int] {
-        var shown = 1, newest = 1, waited = 0
-        var timeline: [Int] = []
-        for tick in 0 ..< ticks {
-            newest += tick < arrivals.count ? arrivals[tick] : 0
-            let next = RFD3Trajectory.nextPlaybackState(shown: shown, newest: newest,
-                                                        ticksWaited: waited)
-            if next != shown { shown = next; waited = 0 } else { waited += 1 }
-            timeline.append(shown)
-        }
-        return timeline
+    func testTheDisplayRateIsAConstantNotALiteral() {
+        // A REWRITE rate, not a state count: the object gains one state per captured
+        // model frame whatever this is. Kept in step with
+        // `designing.PLAYBACK_DISPLAY_RATE`, which is where the fraction is computed.
+        XCTAssertEqual(RFD3Trajectory.playbackTicksPerSecond, 30)
     }
 
-    func testTheHeadStaysPutWhenThereIsNothingNew() {
-        // newest == shown is the common case: the head ticks 15 times a second and frames
-        // arrive about once a second, so most ticks must do nothing at all.
-        for waited in 0 ... 40 {
-            XCTAssertEqual(
-                RFD3Trajectory.nextPlaybackState(shown: 7, newest: 7, ticksWaited: waited),
-                7, "waited \(waited)")
-        }
-        // And it never runs BACKWARDS if the user has moved ahead of it.
-        XCTAssertEqual(
-            RFD3Trajectory.nextPlaybackState(shown: 20, newest: 7, ticksWaited: 99), 20)
+    func testTheDisplayStatementCarriesNoNumbers() {
+        // Python owns the clock reading, the fraction and the interpolation, so this is
+        // the shortest text that can go through the bridge thirty times a second — and
+        // there is one copy of the arithmetic, on the side that has both frames.
+        let source = RFD3JobManager.displayPython(name: "it's_a_design")
+        XCTAssertTrue(source.contains("from pymol import designing as _d"), source)
+        XCTAssertTrue(source.contains("_d.trajectory_display('it\\'s_a_design')"), source)
     }
 
-    func testTheHeadDoesNothingBeforeAnyFrameHasLanded() {
-        // Between the seed and the first appended state there is nothing to chase.
-        XCTAssertEqual(
-            RFD3Trajectory.nextPlaybackState(shown: 1, newest: 1, ticksWaited: 0), 1)
-        XCTAssertEqual(
-            RFD3Trajectory.nextPlaybackState(shown: 0, newest: 0, ticksWaited: 50), 0)
-    }
-
-    func testTheHeadAdvancesONEStateAtATimeAndNeverSkips() {
-        // Every captured frame is seen. A head that jumped straight to `newest` would be
-        // the slideshow this replaces.
-        for backlog in [1, 2, 5, 20, 199] {
-            let next = RFD3Trajectory.nextPlaybackState(
-                shown: 1, newest: 1 + backlog, ticksWaited: 10_000)
-            XCTAssertEqual(next, 2, "backlog \(backlog)")
-        }
-    }
-
-    func testABiggerBacklogDrainsFaster() {
-        // The self-balancing part: the wait between states shrinks as the gap grows, so
-        // the head settles at whatever pace matches the arrival rate instead of falling
-        // permanently behind.
-        func ticksToAdvance(backlog: Int) -> Int {
-            for waited in 0 ... 10_000 where RFD3Trajectory.nextPlaybackState(
-                shown: 1, newest: 1 + backlog, ticksWaited: waited) != 1 {
-                return waited
-            }
-            return .max
-        }
-        let waits = [1, 2, 4, 8, 16].map { ticksToAdvance(backlog: $0) }
-        XCTAssertEqual(waits, waits.sorted(by: >), "waits must shrink as backlog grows: \(waits)")
-        XCTAssertEqual(waits.last, 1, "a large backlog must advance every tick")
-        // One state per second at a backlog of one: the deliberate lag that makes a
-        // steady stream even rather than arrival-driven.
-        XCTAssertEqual(ticksToAdvance(backlog: 1), RFD3Trajectory.playbackTicksPerSecond)
-    }
-
-    func testABurstIsPacedOutRatherThanSnappedThrough() {
-        // THE point of the feature. Five states landing on one tick must not appear in one
-        // redraw. Today they would: the display advanced on arrival.
-        //
-        // What the rule actually does, measured rather than guessed: it recomputes the
-        // wait from the CURRENT backlog every time, so a burst starts fast and eases off
-        // as it drains -- 3, 3, 5, 7 then 15 ticks for five states. It is always about a
-        // second away from being caught up rather than clearing in a second flat. That is
-        // the same self-balancing rule that keeps it in step with a steady stream, and the
-        // easing is a fair description of what the run is doing.
-        let timeline = replayHead(arrivals: [5], ticks: 60)
-        XCTAssertEqual(timeline.last, 6, "all five must be shown")
-        // No tick may show more than one new state.
-        for (before, after) in zip(timeline, timeline.dropFirst()) {
-            XCTAssertLessThanOrEqual(after - before, 1, "the head skipped: \(timeline)")
-        }
-        // Spread over real time, not clustered into a few ticks. Snapping would put all
-        // five inside the first tick or two.
-        let advanceTicks = (1 ..< timeline.count).filter { timeline[$0] != timeline[$0 - 1] }
-        XCTAssertEqual(advanceTicks.count, 5, "\(timeline)")
-        XCTAssertGreaterThanOrEqual(advanceTicks.last ?? 0, 20,
-                                    "five states must take well over a second: \(timeline)")
-        // And it eases: each wait is at least as long as the one before it.
-        let gaps = zip([0] + advanceTicks, advanceTicks).map { $1 - $0 }
-        XCTAssertEqual(gaps, gaps.sorted(), "the drain must ease off, got \(gaps)")
-    }
-
-    func testASteadyStreamIsShownAtASteadyPace() {
-        // One frame per second for ten seconds. The gaps between advances must be even --
-        // that is the difference between motion and a slideshow.
-        let tps = RFD3Trajectory.playbackTicksPerSecond
-        var arrivals = [Int](repeating: 0, count: tps * 10)
-        for second in 0 ..< 10 { arrivals[second * tps] = 1 }
-        let timeline = replayHead(arrivals: arrivals, ticks: tps * 10)
-        var gaps: [Int] = []
-        var last = 0
-        for (tick, state) in timeline.enumerated() where tick > 0 && state != timeline[tick - 1] {
-            gaps.append(tick - last)
-            last = tick
-        }
-        XCTAssertGreaterThanOrEqual(gaps.count, 8, "\(timeline)")
-        // Every gap within one tick of every other: even, by construction.
-        XCTAssertLessThanOrEqual((gaps.max() ?? 0) - (gaps.min() ?? 0), 1,
-                                 "advances must be evenly spaced, got gaps \(gaps)")
-    }
-
-    func testTheHeadCatchesUpOnceTheRolloutStops() {
-        // A run that ends mid-chase: no more arrivals, and the head must close the gap
-        // rather than stall part way through.
-        let timeline = replayHead(arrivals: [10], ticks: 200)
-        XCTAssertEqual(timeline.last, 11, "the head must reach the last captured state")
-    }
-
-    func testNonsenseTimingCannotStallTheHeadForever() {
-        // Belt and braces: a zero or negative rate must mean "stay put", never a divide
-        // by zero or a negative wait that advances on every tick.
-        XCTAssertEqual(RFD3Trajectory.nextPlaybackState(
-            shown: 1, newest: 9, ticksWaited: 5, ticksPerSecond: 0), 1)
-        XCTAssertEqual(RFD3Trajectory.nextPlaybackState(
-            shown: 1, newest: 9, ticksWaited: 5, catchUpMilliseconds: 0), 1)
-    }
-
-    func testThePaceIsAConstantNotALiteral() {
-        XCTAssertEqual(RFD3Trajectory.playbackTicksPerSecond, 15)
-        XCTAssertEqual(RFD3Trajectory.playbackCatchUpMilliseconds, 1000)
-    }
-
-    func testTheFramesTheAppSendsDoNotDriveTheDisplay() {
-        // The head owns what is shown; a frame that also set the state would fight it
-        // several times a second. The default stays 1 for every other caller.
+    func testTheFramesTheAppSendsAskForSmoothingAndDoNotJump() {
+        // `advance=0`: the captured frame must not snap the display to itself.
+        // `smooth=1`: keep the one extra display state the animation rewrites.
         let source = RFD3JobManager.framePython(name: "d", coords: [SIMD3(1, 2, 3)])
         XCTAssertTrue(source.contains("advance=0"), source)
-    }
-
-    func testTheAdvanceStatementImportsAndEscapesTheName() {
-        let source = RFD3JobManager.advancePython(name: "it's_a_design", state: 12)
-        XCTAssertTrue(source.contains("from pymol import designing as _d"), source)
-        XCTAssertTrue(source.contains("'it\\'s_a_design'"), source)
-        XCTAssertTrue(source.contains(", 12)"), source)
+        XCTAssertTrue(source.contains("smooth=1"), source)
     }
 
     func testTheCaptureIntervalFallbackIsAConstantNotALiteral() {
