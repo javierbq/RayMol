@@ -1082,11 +1082,12 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
             'target': [record[3] for record in written[:offset]],
             # WHAT THE SEED PUT IN STATE 1, which is this recording's identity.
             #
-            # A frame must not land on an object that merely shares the name: open
-            # yesterday's .pse of this same design mid-run and the atom count matches
-            # exactly, so counting cannot tell them apart -- and the frames would be
-            # appended to the user's saved design, whose residues delivery would then
-            # rename as well.
+            # Neither a frame NOR delivery may land on an object that merely shares the
+            # name: open yesterday's .pse of this same design mid-run and the atom count
+            # matches exactly, so counting cannot tell them apart -- and the frames would
+            # be appended to the user's saved design, whose residues delivery would then
+            # rename as well. Checked in both places, `trajectory_frame` and
+            # `_finish_trajectory`; the frame check alone left delivery free to do it.
             #
             # State 1's generated chain discriminates it exactly, because that is the
             # one thing the two do NOT share: this recording's state 1 is the step-4
@@ -1214,6 +1215,19 @@ def _finish_trajectory(path, name, record, _self=cmd):
                 ' as a fresh object instead.'
                 % (name, _self.count_atoms(name), expected))
             return False
+        if not _holds_the_seed(name, record, _self=_self):
+            # The same check every frame makes, applied once more here. Counting alone
+            # cannot see this: an impostor -- yesterday's .pse of this design, reopened
+            # under the name mid-run -- matches on atoms exactly, and delivery would then
+            # append a state to the user's saved object and RENAME its residues, which is
+            # a silent rewrite of something this run does not own. Refusing sends the
+            # caller down the plain path, which replaces the object with the design the
+            # name promises.
+            colorprinting.warning(
+                ' design: the live view for %s could not be completed -- the object under'
+                ' that name is no longer the one this run seeded, so the result is being'
+                ' loaded as a fresh object instead.' % name)
+            return False
         sequence = {}
         for resn, _chain, resi, _xyz in written[offset:]:
             sequence[resi] = resn
@@ -1225,6 +1239,26 @@ def _finish_trajectory(path, name, record, _self=cmd):
                     'resn = _seq.get(resi, resn)', space={'_seq': sequence})
         _self.load_coordset([entry[3] for entry in written], name,
                             _self.count_states(name) + 1)
+        # RE-DERIVE the bonds from the settled final state, so a delivered design's
+        # CHEMISTRY does not depend on whether Live was ticked.
+        #
+        # The seed states connectivity with CONECT records, and a plain CONECT is order
+        # ONE. The result file carries no CONECT at all, so a plain run INFERS the
+        # generated chain's carbonyls as double bonds. Nothing here used to re-derive
+        # them, so the same design came out with C=O order 2 without live view and order
+        # 1 with it -- measured on an 8-residue design, 8 double bonds on the generated
+        # chain against 0. That is visible, not bookkeeping: `valence` is on by default
+        # and the wire and cylinder renderers branch on bond order, and it persisted into
+        # any saved session.
+        #
+        # `rebond` on the FINAL state rather than a scoped valence fix: the final state is
+        # the delivered design, which is exactly what a plain run bonds from, so this
+        # makes the two identical by construction instead of by patching up the one
+        # difference anyone has noticed so far. It also re-derives inter-chain bonds from
+        # the settled geometry -- which is what a plain load would do too. The unbond at
+        # seed time is still right and still needed: it protects the RECORDING, whose
+        # early frames put the generated chain through the target.
+        _self.rebond(name, state=_self.count_states(name))
         colorprinting.parrot(' design: %s was built live -- %d states, the last one the'
                              ' finished design.' % (name, _self.count_states(name)))
         return True

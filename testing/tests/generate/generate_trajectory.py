@@ -820,6 +820,85 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertNotIn(self.name, cmd.get_names('objects'))
         self.assertNotIn(self.name, self.designing._TRAJECTORY)
 
+    def _bond_list(self, obj):
+        """Every bond as `(rank, rank, order)`, sorted. ORDER included on purpose.
+
+        Counting bonds is what missed this: a bond set can match in size and still
+        describe different chemistry.
+        """
+        ranks = []
+        cmd.iterate(obj, 'L.append(rank)', space={'L': ranks})
+        model = cmd.get_model(obj)
+        return sorted((min(ranks[b.index[0]], ranks[b.index[1]]),
+                       max(ranks[b.index[0]], ranks[b.index[1]]), b.order)
+                      for b in model.bond)
+
+    def testADeliveredLiveObjectHasEXACTLYAPLAINRUNSBONDS(self):
+        # A delivered design's CHEMISTRY must not depend on a view-only checkbox.
+        #
+        # The seed states connectivity with CONECT records, and a plain CONECT is order
+        # ONE. The result file carries no CONECT, so a plain run INFERS the generated
+        # chain's carbonyls as DOUBLE bonds. Nothing re-derived them, so the same design
+        # came out with C=O order 2 without Live and order 1 with it -- measured on an
+        # 8-residue design, 8 double bonds on the generated chain against 0. `valence` is
+        # on by default and the wire and cylinder renderers branch on `b->order`, so it
+        # was visible, and it persisted into any saved session.
+        #
+        # Bond LIST including orders, not bond count: the counts matched in some fixtures
+        # while every carbonyl in the design was wrong.
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        path = self.result_path(coords=final)
+
+        self.designing.register_pending('plain_run', 'job-plain')
+        self.designing.deliver_result(path, 'plain_run')
+        plain = self._bond_list('plain_run')
+
+        # Seeded from an UNSETTLED frame, which is what a real seed is (step 4 of 199).
+        # It also pins WHICH state the re-derivation must use: rebonding from state 1
+        # here would bond a cloud, so a fix that re-derived from the wrong state would
+        # fail this and not just look tidy.
+        self.assertTrue(self.seed(coords=_cloud(self.LENGTH, 9.0)))
+        for _ in range(3):
+            self.designing.trajectory_frame(self.name, _flat(_jittered(self.LENGTH, 2.0)))
+        self.designing.deliver_result(path, self.name)
+        live = self._bond_list(self.name)
+
+        self.assertEqual(live, plain,
+                         'a live-built design must have a plain run\'s exact bonds, '
+                         'orders included')
+        # Named explicitly, because equality above would also hold if BOTH were wrong.
+        design_doubles = len([1 for a, b, o in plain
+                              if o == 2 and a >= self.target_atoms])
+        self.assertEqual(design_doubles, self.LENGTH,
+                         'the fixture must really have one carbonyl per designed residue')
+        self.assertEqual(len([1 for a, b, o in live
+                              if o == 2 and a >= self.target_atoms]), self.LENGTH)
+        # And no bond joining the two chains survives on the settled geometry.
+        self.assertEqual(self._inter_chain_bonds(self.name), 0)
+
+    def testDeliveryRefusesAnObjectThisRunDidNotSeed(self):
+        # The identity check is applied at DELIVERY as well as per frame. Counting alone
+        # cannot see this -- an impostor matches on atoms exactly -- and delivery would
+        # otherwise append a state to the user's reopened saved design and rename its
+        # residues, a silent rewrite of an object this run does not own.
+        self.assertTrue(self.seed())
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)))
+        cmd.delete(self.name)
+        cmd.read_pdbstr(_result_pdb(length=self.LENGTH, target=self.TARGET,
+                                    coords=_backbone(self.LENGTH, offset=(9.0, 0, 0))),
+                        self.name, zoom=0)
+        before = []
+        cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(resn)',
+                    space={'L': before})
+
+        self.designing.deliver_result(self.result_path(), self.name)
+
+        # It went down the plain path: one state, the design the name promises, and the
+        # impostor was NOT appended to or renamed in place.
+        self.assertEqual(cmd.count_states(self.name), 1)
+        self.assertEqual(cmd.count_atoms(self.name),
+                         self.target_atoms + self.design_atoms)
+
     # -- What a run that never finishes leaves behind --------------------------
 
     def testACancelledRunLeavesNoObjectRatherThanAHalfDiffusedOne(self):
