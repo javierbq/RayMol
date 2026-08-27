@@ -331,10 +331,13 @@ input validation, before any job exists, not a runtime degrade.
 You are told the real number **before the run starts**, under `quiet=0`:
 
 ```
-design: live view will capture 34 states (the nearest to the 30 requested -- the interval
-is a whole number of steps, so the reachable counts are spaced out), every 6 of the 199
+design: live view will capture 29 states (the nearest to the 30 requested -- the interval
+is a whole number of steps, so the reachable counts are spaced out), every 7 of the 199
 rollout steps; the finished design is appended after them.
 ```
+
+That is a real run, and the object it produced has **30** states: the 29 captured frames
+plus the delivered design.
 
 `live_view=0` alongside `live_steps` is a **contradiction and is refused**: it asks for a
 recording length and for no recording at once, and either reading silently throws one of them
