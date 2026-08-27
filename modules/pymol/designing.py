@@ -240,11 +240,13 @@ def resolve_target(target, hotspots, quiet=1, _self=cmd):
     hotspot_indices = _resolve_hotspots(target, hotspots, residues, _self=_self)
     if not int(quiet):
         colorprinting.parrot(
-            ' design: target %s -- %d residues, chain %s, state %d, %d hotspot(s): %s'
+            ' design: target %s -- %d residues, chain %s, state %d, %s'
             % (target, len(residues), residues[0].chain if residues else '?', state,
-               len(hotspot_indices),
-               ', '.join('%s/%s' % (residues[i].chain, residues[i].resi)
-                         for i in hotspot_indices[:8])))
+               'no hotspots (unguided placement)' if not hotspot_indices else
+               '%d hotspot(s): %s'
+               % (len(hotspot_indices),
+                  ', '.join('%s/%s' % (residues[i].chain, residues[i].resi)
+                            for i in hotspot_indices[:8]))))
     return TargetStructure(residues, hotspot_indices, source=str(target), state=state)
 
 
@@ -321,24 +323,54 @@ def _report_excluded(target, residues, state, _self=cmd):
 
 
 def _resolve_hotspots(target, hotspots, residues, _self=cmd):
-    """The hotspot selection, as indices into `residues`.
+    """The hotspot selection, as indices into `residues`. May be EMPTY.
 
     Every named hotspot must land inside the target. A hotspot outside it is not
     ignorable: hotspots set the sampler's origin, so dropping one silently aims the
     design somewhere else -- which looks exactly like a bad design.
+
+    NO hotspots is a legitimate mode rather than an error -- the featurizer falls back
+    to the target's centre of mass for the origin and leaves the atom-level hotspot
+    feature uniformly zero, so an unguided design is a thing the engine does. Three
+    inputs reach it, and they are deliberately NOT all the same:
+
+    * nothing given at all -- omitted, empty, or whitespace. Unguided, silently: no
+      selection was asked for, so nothing was dropped.
+    * a name that exists but currently matches no atoms, or has never been created.
+      `sele` before anything is picked is BOTH of those (measured: `sele` survives
+      `deselect`, so it is empty-and-existing after one pick and non-existent before
+      the first), and it is what the bar sends by default. Unguided; the CALLER says
+      so out loud, because something was asked for and did not resolve.
+    * an expression that cannot be evaluated -- a misspelt keyword, unbalanced
+      parentheses. STILL A REFUSAL: `hotspots="chian A and resi 45"` is a typo, not a
+      request for free positioning, and turning it into one silently is the exact
+      "aimed somewhere other than where it was pointed" failure this function exists
+      to prevent. `count_atoms` raises on these where `iterate` returns 0, which is
+      the only reason they can be told apart at all.
     """
     text = str(hotspots or '').strip()
     if not text:
-        raise PredictionInputError(
-            'no hotspots given. They are required rather than optional: the interface'
-            ' residues set the sampler origin, so without them the design is aimed at'
-            ' the centre of mass of the whole target. Give a selection, e.g.'
-            ' hotspots="chain A and resi 45+48+52", or hotspots=sele after picking'
-            ' them in the viewer.')
+        return ()
     if looks_like_bare_residue_list(text):
         raise PredictionInputError(
             'hotspots is a SELECTION, not a residue list: %r selects nothing. Write it'
             ' as hotspots="resi %s".' % (text, text.replace(' ', '')))
+    # A bare NAME that does not exist yet. Checked BEFORE `count_atoms` rather than by
+    # catching its exception, because the raise also prints a Selector-Error to the
+    # feedback stream -- and `hotspots=sele` in a session where nothing has ever been
+    # picked is the ordinary opening state of the bar, not something to complain about.
+    if text.isidentifier() and text not in _self.get_names('all'):
+        return ()
+    try:
+        n_atoms = _self.count_atoms(text)
+    except Exception as exc:
+        raise PredictionInputError(
+            'the hotspot selection %r cannot be evaluated: %s. Leave it empty to design'
+            ' without hotspots -- but a selection that does not parse is a typo, and'
+            ' running unguided instead would aim the design somewhere other than where'
+            ' it was pointed.' % (text, exc))
+    if not n_atoms:
+        return ()
 
     index_of = {}
     for index, residue in enumerate(residues):
@@ -348,8 +380,7 @@ def _resolve_hotspots(target, hotspots, residues, _self=cmd):
     _self.iterate('(%s)' % text, 'picked.add((chain, resi))',
                   space={'picked': picked})
     if not picked:
-        raise PredictionInputError(
-            'the hotspot selection %r selects no atoms' % (text,))
+        return ()
 
     outside = sorted(pair for pair in picked if pair not in index_of)
     if outside:
@@ -1116,11 +1147,20 @@ def _refuse_seed(name, reason, _self=cmd):
     try:
         _TRAJECTORY.pop(name, None)
         if name in _self.get_names('objects'):
-            _self.delete(name)
-        # Put the placeholder back. `register_pending` made a zero-atom object so the
-        # design has a row in the object panel from the moment the command returns, and
-        # the seed replaced it; abandoning the seed must not cost the user that row for
-        # the rest of a seventeen-minute run.
+            if name in _PENDING:
+                # EMPTIED IN PLACE, never delete-and-recreate. `register_pending` made a
+                # zero-atom object so the design has a row in the object panel from the
+                # moment the command returns; deleting it and making another one put that
+                # row at the END of the panel, so a refused seed moved the design's place
+                # in the list -- and the run then delivers plainly into it, leaving the
+                # FINISHED object somewhere a plain run's would never be. `cmd.remove`
+                # keeps the object and its position and takes only the atoms (measured:
+                # objlist ['ph', 'other'] before and after, 40 atoms -> 0).
+                _self.remove(name)
+            else:
+                # Not ours to keep: no placeholder was registered, so the only thing under
+                # this name is the half-seeded object this function exists to discard.
+                _self.delete(name)
         if name in _PENDING and name not in _self.get_names('objects'):
             _self.create(name, 'none')
     except Exception:
@@ -1273,6 +1313,15 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, keep=1, _self=cmd):
         # over?" check compares against. The seed IS state 1, and it is SET rather than
         # assumed: a fresh object reports the global default until something sets it, and
         # the check needs an unambiguous starting point.
+        #
+        # This ALLOCATES the object's CSetting, and `deliver_result`'s `unset` removes the
+        # entry but not the container -- so a keep_frames=0 object's session record holds
+        # `[]` where a plain run's holds `None`, a 55-byte-larger .pse and nothing else.
+        # Kept anyway, because the alternative is worse in a way a user CAN see: with the
+        # frames discarded this is the only `set('state')` in the whole run (both of
+        # `trajectory_frame`'s advance branches are gated on `keep`), so without it a
+        # session whose global movie frame is not 1 makes `_user_took_over` true on the
+        # first tick and the smoothing stops before it starts.
         import time
         _self.set('state', 1, name)
         _TRAJECTORY[name] = {
@@ -1426,9 +1475,15 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
         # 0.19% of one main thread, so the choice is about sense rather than budget.)
         #
         # ss is per-ATOM, so it belongs to the OBJECT and not to a state -- see the note
-        # in `docs/generators.md`. Against the state holding the newest coordinates: the
-        # captured frame itself when frames are kept, and the display otherwise, which is
-        # the only state there is.
+        # in `docs/generators.md`.
+        #
+        # Against the state that is ON SCREEN, which is not the same as the newest
+        # coordinates. With frames kept that IS the captured frame, `captured + 1`, just
+        # written. With frames DISCARDED nothing was written here at all, so the display
+        # still holds the previous captured frame or an interpolation towards it -- and
+        # the assignment therefore lags one frame (traced: `H` first appears at frame 2,
+        # not frame 1). That is the right lag, not an oversight: the cartoon a user sees
+        # should describe the backbone a user sees.
         try:
             ss_state = state if keep else record.get('display_state')
             if ss_state:
@@ -1839,7 +1894,7 @@ def deliver_result(path, name, seed=None, _self=cmd):
 # -- The command surface -------------------------------------------------------
 
 
-def design_backbone(generator, target, hotspots, length=60, name='', n_designs=1,
+def design_backbone(generator, target, hotspots='', length=60, name='', n_designs=1,
                     diffusion_steps=200, recycling_steps=2, seed=None, live_view=None,
                     live_steps=None, keep_frames=0, quiet=1, _self=cmd):
     """
@@ -1860,8 +1915,8 @@ DESCRIPTION
 
 USAGE
 
-    design_backbone generator, target, hotspots [, length [, name [, n_designs
-        [, diffusion_steps [, recycling_steps [, seed ]]]]]]
+    design_backbone generator, target [, hotspots [, length [, name [, n_designs
+        [, diffusion_steps [, recycling_steps [, seed ]]]]]]]
 
 ARGUMENTS
 
@@ -1873,9 +1928,15 @@ ARGUMENTS
 
     hotspots = str: atom selection for the interface residues to engage. A
     SELECTION, not a residue list -- so "resi 45+48+52", or "sele" after picking
-    them in the viewer. Required: hotspots set the sampler origin, so without them
-    the design is aimed at the whole target's centre of mass. Every residue named
-    must be inside the target.
+    them in the viewer. Every residue named must be inside the target.
+
+    OPTIONAL. Omit it, leave it empty, or point it at a selection that is currently
+    empty, and the design runs UNGUIDED: hotspots set the sampler's origin, so
+    without them the chain starts at the target's CENTRE OF MASS rather than just
+    off an interface -- which for a globular target is inside the protein. See
+    NOTES for what that measures like. A hotspot selection that does not PARSE is
+    still refused, because a typo is not a request for free positioning.
+    {default: '', meaning unguided}
 
     length = int: residues in the generated chain {default: 60}
 
@@ -1934,6 +1995,9 @@ EXAMPLES
     # pick the hotspots in the viewer, then:
     design_backbone rfd3, my_target, sele, length=75, n_designs=5
 
+    # no hotspots -- unguided placement, aimed at nothing in particular:
+    design_backbone rfd3, my_target, length=75
+
 NOTES
 
     THIS TAKES MINUTES PER DESIGN. On an M3 Pro at 200 steps, a 578-residue target
@@ -1982,6 +2046,25 @@ SEE ALSO
             'length must be at least 1 residue, got %d' % int(length))
 
     structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
+
+    # Said OUT LOUD, regardless of `quiet`, and said here rather than in `resolve_target`
+    # -- which the bar re-runs on every keystroke through `appkit_design.emit`, so a
+    # warning there would fire once per typed character.
+    #
+    # Unguided is a legitimate mode, not a degrade, but it changes what the run MEANS: the
+    # sampler starts inside a globular target instead of just off its surface. And when a
+    # selection WAS given and resolved to nothing, that is exactly the "a parameter you
+    # passed did nothing" case the rest of this command refuses -- it survives as a
+    # warning only because free positioning is now something a user can legitimately want.
+    if not structure.hotspots:
+        given = str(hotspots or '').strip()
+        colorprinting.warning(
+            ' design: %s -- this run is UNGUIDED. The sampler origin falls back to the'
+            ' target\'s centre of mass rather than sitting 10 A off an interface, so the'
+            ' chain starts inside a globular target and has to diffuse its way out.'
+            ' Check "interface_min_distance" and "contacts_under_8a" on what comes back.'
+            % ('no hotspots given' if not given
+               else 'the hotspot selection %r matches no atoms' % (given,)))
 
     if seed is None:
         import random

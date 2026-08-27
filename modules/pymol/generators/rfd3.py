@@ -78,13 +78,13 @@ MAX_DESIGN_LENGTH = 150
 #: the whole workflow this is a stage of.
 MAX_DESIGNS = 10
 
-#: Fewest hotspots worth conditioning on. The featurizer derives the sampler's ORIGIN
-#: from the hotspot centre of mass, offset 10 A along the core-to-hotspot normal, so
-#: hotspots decide where the design is placed and not merely how it is scored. With none
-#: at all the origin collapses to the target's centre of mass and the atom-level hotspot
-#: feature is uniformly zero -- a legitimate unconditioned mode, but not this one, and
-#: silently substituting it for what was asked would produce a design aimed nowhere.
-MIN_HOTSPOTS = 1
+# NO FLOOR ON HOTSPOTS, deliberately -- see `designing._resolve_hotspots`. The featurizer
+# derives the sampler's ORIGIN from the hotspot centre of mass, offset 10 A along the
+# core-to-hotspot normal, so hotspots decide where the design is PLACED and not merely how
+# it is scored. With none at all `Featurizer.binderDesign` falls back to `mean(tgtAtoms)`
+# and leaves `is_atom_level_hotspot` uniformly zero: unguided placement, which upstream
+# supports and this package used to refuse. The floor that stood here was OURS, not the
+# engine's, and refusing a mode the engine has is not a safety property.
 
 
 class RFD3Generator(Generator):
@@ -200,13 +200,10 @@ class RFD3Generator(Generator):
                     'residue %s/%s is %s, which this method carries no atom template'
                     ' for' % (residue.chain, residue.resi, residue.resn))
 
-        if len(target.hotspots) < MIN_HOTSPOTS:
-            raise PredictionInputError(
-                'no hotspot residues were resolved inside the target. Hotspots are'
-                ' required rather than optional: they set the sampler origin, so'
-                ' without them the design is aimed at the target\'s centre of mass'
-                ' instead of at an interface. Name the interface residues, e.g.'
-                ' hotspots="chain A and resi 45+48+52".')
+        # An EMPTY hotspot set reaches the engine unchanged: unguided placement is a
+        # supported mode, and `designing` has already said so out loud. Only the indices
+        # that ARE present are bounds-checked -- an out-of-range one is a wire bug, and
+        # the featurizer would silently condition on the wrong residue.
         for index in target.hotspots:
             if not 0 <= index < len(residues):
                 raise PredictionInputError(

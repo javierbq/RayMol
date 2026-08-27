@@ -195,7 +195,7 @@ class NoCoordsetCmd(object):
 
 
 def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target=0,
-          _self=None, target_chain='A'):
+          _self=None, target_chain='A', keep=1):
     """`trajectory_seed` with the layout the writer would have reported.
 
     The offset and the atom count are arguments on the wire because the Python side must
@@ -205,7 +205,7 @@ def _seed(designing, name, length=3, chain='B', coords=None, conect=True, target
     return designing.trajectory_seed(
         name, _seed_pdb(length=length, chain=chain, coords=coords, conect=conect,
                         target=target, target_chain=target_chain),
-        target * len(_SLOTS), length * len(_SLOTS),
+        target * len(_SLOTS), length * len(_SLOTS), keep=keep,
         **({'_self': _self} if _self is not None else {}))
 
 
@@ -1424,6 +1424,37 @@ class LiveObjectTest(GeneratorTestCase):
                              '%s differs between a discarded-frame live run and a '
                              'plain one' % key)
 
+    def testDeliveryNeverSays1States(self):
+        # The message a keep_frames=0 run ends on. It used to read "... was built live --
+        # 1 states, the last one the finished design", which is both ungrammatical and
+        # wrong about what happened: nothing was kept, so there are no rollout states to
+        # be the last of. The conditional that fixed it was guarded by nothing -- reverting
+        # it failed no test.
+        import io as _io
+        from contextlib import redirect_stdout
+        path = self.result_path()
+        self.assertTrue(self._seed_keeping(0))
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0, smooth=1)
+        with redirect_stdout(_io.StringIO()) as buf:
+            self.designing.deliver_result(path, self.name)
+        said = buf.getvalue()
+        self.assertIn('was built live', said)
+        self.assertNotIn('1 states', said)
+        self.assertIn('discarded', said,
+                      'the line has to say what became of the frames: %r' % said)
+        # And the OTHER arm still names the count, or the fix would have been to delete
+        # the number rather than to make it conditional.
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.assertTrue(self._seed_keeping(1))
+        for _ in range(2):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0, smooth=1)
+        with redirect_stdout(_io.StringIO()) as buf:
+            self.designing.deliver_result(path, self.name)
+        self.assertIn('states, the last one the finished design', buf.getvalue())
+
     def testWithFramesKEPTTheStatesAreThereToScrub(self):
         # The positive control for the test above: with the toggle ON the states exist,
         # so "indistinguishable" is a property of the toggle rather than of the code
@@ -1557,6 +1588,51 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertIn('H', after,
                       'secondary structure must be re-assigned as frames land, not only '
                       'at delivery (was %r, still %r)' % (before, after))
+
+    def testSecondaryStructureIsAssignedWithFramesDISCARDEDToo(self):
+        # The keep_frames=0 branch is the DEFAULT path and had no coverage: both of the
+        # tests above seed with keep=1, so `ss_state = state if keep else <display>` could
+        # have gone dead -- two mutations of the else arm survived the whole suite.
+        #
+        # It also LAGS ONE CAPTURED FRAME, and that is correct rather than a defect: with
+        # frames discarded nothing is written at capture time, so the display still holds
+        # the previous frame (or an interpolation towards it) when `dss` runs. The cartoon
+        # therefore matches what is on screen, which is the point. Asserted explicitly so
+        # nobody "fixes" the lag into an assignment against coordinates nobody can see.
+        length = 20
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.assertTrue(_seed(self.designing, self.name, length=length,
+                              target=self.TARGET, coords=_cloud(length, 9.0), keep=0))
+        self.assertEqual(cmd.count_states(self.name), 1)
+
+        def ss_now():
+            out = []
+            cmd.iterate('%s and chain B and name CA' % self.name, 'L.append(ss)',
+                        space={'L': out})
+            return out
+
+        self.assertEqual(set(ss_now()), {'L'}, 'the fixture must start as loops')
+        # Frame 1 supplies helical coordinates but nothing is WRITTEN with frames
+        # discarded, so the display still holds the cloud and the ss is still loops --
+        # the lag, measured.
+        self.assertTrue(self.designing.trajectory_frame(
+            self.name, _flat(_backbone(length)), advance=0, smooth=1))
+        self.assertEqual(set(ss_now()), {'L'},
+                         'the assignment reads the DISPLAY, which still holds the seed')
+        # Frame 2 gives the tween both of its ends, and the head then writes the
+        # interpolation into the single state. `trajectory_display` is what moves the
+        # atoms on this path -- `trajectory_frame` writes nothing at all.
+        self.assertTrue(self.designing.trajectory_frame(
+            self.name, _flat(_backbone(length)), advance=0, smooth=1))
+        for _ in range(4):
+            self.designing.trajectory_display(self.name)
+        self.assertTrue(self.designing.trajectory_frame(
+            self.name, _flat(_backbone(length)), advance=0, smooth=1))
+        self.assertIn('H', ss_now(),
+                      'with frames discarded the cartoon must still evolve')
+        # And nothing was appended on the way -- this is still the one-state path.
+        self.assertEqual(cmd.count_states(self.name), 1)
 
     def testTheAssignmentIsScopedToTheGeneratedChain(self):
         # The target's coordinates never move, so re-deriving its ss every second is work
@@ -1744,6 +1820,35 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertIn(self.name, cmd.get_names('objects'))
         self.assertEqual(cmd.count_atoms(self.name), 0)
         self.assertNotIn(self.name, self.designing._TRAJECTORY)
+
+    def testARefusedSeedLEAVESTHEROWWHEREITWAS(self):
+        # The same defect class the success path fixed: `_refuse_seed` used to delete the
+        # object and `create` another, which puts the design's row at the END of the object
+        # panel -- and the run then delivers plainly into it, so the FINISHED object sits
+        # somewhere a plain run's never would. `cmd.remove` empties it in place instead.
+        #
+        # Both orders that matter: refused BEFORE any load (the common case) and refused
+        # AFTER a partial one (the atom-count mismatch), because only the second used to
+        # have atoms to delete.
+        for label, pdb, atoms in (
+                ('before the load', _seed_pdb(length=self.LENGTH, target=self.TARGET),
+                 -1),
+                ('after a partial load',
+                 _seed_pdb(length=self.LENGTH, target=self.TARGET),
+                 self.design_atoms + 5)):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            self.designing._PENDING.clear()
+            self.designing.register_pending(self.name, 'job-1')
+            cmd.read_pdbstr(_result_pdb(length=2), 'opened_after', zoom=0)
+            before = cmd.get_names('objects')
+            self.assertEqual(before, [self.name, 'opened_after'], label)
+            self.assertFalse(self.designing.trajectory_seed(
+                self.name, pdb, self.target_atoms,
+                atoms if atoms > 0 else -1))
+            self.assertEqual(cmd.get_names('objects'), before,
+                             'a seed refused %s moved the design\'s row' % label)
+            self.assertEqual(cmd.count_atoms(self.name), 0, label)
 
     # -- A session that already has a movie -------------------------------------
 

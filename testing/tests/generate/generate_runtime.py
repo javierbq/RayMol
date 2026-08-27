@@ -300,7 +300,10 @@ class RFD3PackTest(GeneratorTestCase):
         from pymol.generators import rfd3
         self.assertGreater(rfd3.MAX_TOKENS, rfd3.MAX_DESIGN_LENGTH)
         self.assertGreaterEqual(rfd3.MAX_DESIGNS, 1)
-        self.assertGreaterEqual(rfd3.MIN_HOTSPOTS, 1)
+        # No MIN_HOTSPOTS any more, and the absence is asserted rather than merely
+        # deleted: unguided placement is a mode the engine has, so a floor reappearing
+        # here would silently take it away again.
+        self.assertFalse(hasattr(rfd3, 'MIN_HOTSPOTS'))
 
     def testTheLengthCeilingRefusalExplainsItself(self):
         from pymol import designing

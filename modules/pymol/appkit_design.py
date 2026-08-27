@@ -62,7 +62,10 @@ def _target(target_str, hotspots_str, generator_id):
     """
     target_str = (target_str or '').strip()
     hotspots_str = (hotspots_str or '').strip()
-    if not target_str or not hotspots_str:
+    # An EMPTY hotspot field is a resolvable form, not an unfinished one: no hotspots
+    # means unguided placement, and the bar has to be able to show what that will design
+    # against. Only the target is genuinely required.
+    if not target_str:
         return None, None
     try:
         from pymol import designing

@@ -44,6 +44,67 @@ class DesignBackboneTest(GeneratorTestCase):
         self.assertEqual(cmd.count_atoms('%s and chain B and name CA' % name), 12)
         self.assertEqual(cmd.count_atoms('%s and chain A and name CA' % name), 20)
 
+    def testADesignWithNoHotspotsRunsAndSaysItIsUnguided(self):
+        # The hotspot argument is now OPTIONAL. Omitted entirely -- not passed empty --
+        # because that is the command line a user will actually type.
+        import io as _io
+        from contextlib import redirect_stdout
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            with redirect_stdout(_io.StringIO()) as buf:
+                job = cmd.design_backbone('stubgen', 'tgt', length=8)
+            settle()
+        deliver(job)
+        self.assertEqual(job.spec.target.hotspots, ())
+        self.assertIn(job.spec.name, cmd.get_names('objects'))
+        # And it is AUDIBLE regardless of `quiet`: unguided placement changes what the run
+        # means, and the two ways of reaching it read differently.
+        said = buf.getvalue()
+        self.assertIn('UNGUIDED', said)
+        self.assertIn('no hotspots given', said)
+
+    def testASelectionThatMatchedNothingSaysSoRatherThanNothing(self):
+        # The other arm. A selection WAS given and did not resolve -- the user believes
+        # they pointed at something, so the warning names what they typed.
+        import io as _io
+        from contextlib import redirect_stdout
+        cmd.select('sele', 'none')
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            with redirect_stdout(_io.StringIO()) as buf:
+                job = cmd.design_backbone('stubgen', 'tgt', 'sele', length=8)
+            settle()
+        deliver(job)
+        self.assertEqual(job.spec.target.hotspots, ())
+        said = buf.getvalue()
+        self.assertIn('UNGUIDED', said)
+        self.assertIn("'sele' matches no atoms", said)
+
+    def testAGuidedRunSaysNothingAboutBeingUnguided(self):
+        # The control for both of the above, in the suite rather than in my shell: the
+        # warning must be a property of having no hotspots, not something printed always.
+        import io as _io
+        from contextlib import redirect_stdout
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            with redirect_stdout(_io.StringIO()) as buf:
+                job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=8)
+            settle()
+        deliver(job)
+        self.assertNotIn('UNGUIDED', buf.getvalue())
+
+    def testTheHotspotsAreStillPartOfTheDesignKey(self):
+        # Unguided is a DIFFERENT design from a guided one, so it must not key the same.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            guided = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=8,
+                                         seed=1)
+            settle()
+            free = cmd.design_backbone('stubgen', 'tgt', length=8, seed=1)
+            settle()
+        self.assertNotEqual(guided.spec.design_key(guided.options),
+                            free.spec.design_key(free.options))
+
     def testTheTargetIsUnmovedInTheEmittedObject(self):
         # The contract is that the target is held fixed, so the emitted copy must sit on
         # the source atom for atom. Asserted as a real distance rather than a chain count.
@@ -678,8 +739,10 @@ class DesignBackboneTest(GeneratorTestCase):
         # user a 625 MB transfer. That ordering is the point of the test, not the message.
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not fetch for a refused design')):
+            # An UNEVALUABLE hotspot expression -- `tgt and resi 999` resolves fine
+            # these days and simply runs unguided, which is the point of that change.
             self.assertRaises(Exception, cmd.design_backbone,
-                              'stubgen', 'tgt', 'tgt and resi 999', length=6)
+                              'stubgen', 'tgt', 'chian A and resi 5', length=6)
             self.assertRaises(Exception, cmd.design_backbone,
                               'stubgen', 'tgt', 'tgt and resi 5', length=0)
             self.assertRaises(Exception, cmd.design_backbone,
@@ -739,8 +802,8 @@ class DesignBackboneTest(GeneratorTestCase):
         from contextlib import redirect_stdout
         for quiet in (0, 1):
             with redirect_stdout(io.StringIO()):
-                self.assertRaises(Exception, cmd.design_backbone, 'stubgen', 'tgt', '',
-                                  quiet=quiet)
+                self.assertRaises(Exception, cmd.design_backbone, 'stubgen', 'tgt',
+                                  'chian A', quiet=quiet)
 
     def testTheBarsFormFeedResolvesATargetTheSameWayTheCommandDoes(self):
         """appkit_design.emit is what the Design Backbone bar reads.
@@ -772,7 +835,7 @@ class DesignBackboneTest(GeneratorTestCase):
         import os
         import tempfile
         from pymol import appkit_design
-        appkit_design.emit('tgt', 'tgt and resi 999', 'stubgen')
+        appkit_design.emit('tgt', 'chian A', 'stubgen')
         path = os.path.join(tempfile.gettempdir(),
                             'pymol_design_%d.json' % os.getpid())
         with open(path) as handle:

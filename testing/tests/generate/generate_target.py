@@ -176,12 +176,51 @@ class ResolveTargetTest(GeneratorTestCase):
         self.assertRaises(PredictionInputError, self.resolve, 't and resi 99',
                           't and resi 2')
 
-    def testNoHotspotsIsRefusedWithTheReason(self):
+    # -- No hotspots: unguided placement, and what is still a refusal ---------
+
+    def testNothingGivenIsUNGUIDEDRatherThanRefused(self):
+        # The floor was OURS, not the engine's: `Featurizer.binderDesign` falls back to
+        # `mean(tgtAtoms)` for the origin and applies the 10 A hotspot offset only when
+        # there are hotspots. Omitted, empty and whitespace are ONE case -- PyMOL's parser
+        # cannot tell them apart anyway -- and none of them asked for anything, so none of
+        # them drops anything.
+        self.helix('t', length=4)
+        for hotspots in ('', '   ', None):
+            self.assertEqual(self.resolve('t', hotspots).hotspots, (),
+                             'hotspots=%r must run unguided' % (hotspots,))
+
+    def testASelectionThatMatchesNoAtomsRunsUnguided(self):
+        # `sele` with nothing picked is what the bar sends by default, and refusing it
+        # would refuse the bar's opening state.
+        self.helix('t', length=4)
+        cmd.select('sele', 'none')
+        self.assertIn('sele', cmd.get_names('all'))
+        self.assertEqual(cmd.count_atoms('sele'), 0)
+        self.assertEqual(self.resolve('t', 'sele').hotspots, ())
+        # A valid expression inside the target that happens to match nothing is the same
+        # case: it resolved, and it resolved to nothing.
+        self.assertEqual(self.resolve('t', 't and resi 77').hotspots, ())
+
+    def testANameThatHasNEVEREXISTEDRunsUnguidedToo(self):
+        # `sele` BEFORE the first pick does not exist at all, which is a different PyMOL
+        # state from "exists and is empty" -- `count_atoms` raises on one and returns 0 on
+        # the other. Both are the same intent.
+        self.helix('t', length=4)
+        cmd.delete('sele')
+        self.assertNotIn('sele', cmd.get_names('all'))
+        self.assertEqual(self.resolve('t', 'sele').hotspots, ())
+
+    def testAnExpressionThatCannotBeEvaluatedIsSTILLRefused(self):
+        # The line the unguided mode must not cross. `chian A` is a typo, not a request
+        # for free positioning, and turning one into the other silently is exactly the
+        # "aimed somewhere other than where it was pointed" failure. `count_atoms` raises
+        # where `iterate` returns 0, which is the only reason these can be told apart.
         from pymol.predictors.errors import PredictionInputError
         self.helix('t', length=4)
-        with self.assertRaises(PredictionInputError) as caught:
-            self.resolve('t', '')
-        self.assertIn('origin', str(caught.exception))
+        for bad in ('chian A and resi 2', 'chain ('):
+            with self.assertRaises(PredictionInputError, msg=bad) as caught:
+                self.resolve('t', bad)
+            self.assertIn('cannot be evaluated', str(caught.exception))
 
     def testABareResidueListIsRefusedWithTheSelectionToUse(self):
         # `hotspots=45+48` is the mistake a user makes first: it is a valid thing to type
@@ -201,10 +240,6 @@ class ResolveTargetTest(GeneratorTestCase):
             self.resolve('t and resi 1-5', 't and resi 8')
         self.assertIn('/8', str(caught.exception))
 
-    def testAHotspotSelectionThatSelectsNothingIsRefused(self):
-        from pymol.predictors.errors import PredictionInputError
-        self.helix('t', length=4)
-        self.assertRaises(PredictionInputError, self.resolve, 't', 't and resi 77')
 
 
 class DesignKeyTest(GeneratorTestCase):
