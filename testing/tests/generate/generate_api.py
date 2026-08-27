@@ -142,6 +142,125 @@ class DesignBackboneTest(GeneratorTestCase):
             settle()
         self.assertIs(job.spec.live_view, False)
 
+    # -- live_steps: how many states the recording ends up with ---------------
+
+    def _design(self, **kwargs):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                      **kwargs)
+            settle()
+        return job
+
+    def testAskingForAStateCountTurnsTheLiveViewOnByItself(self):
+        # Passing live_steps is an explicit opt-in -- having to pass live_view=1 as well
+        # would be asking the user to say the same thing twice.
+        job = self._design(live_steps=12)
+        self.assertIs(job.spec.live_view, True)
+        self.assertEqual(job.spec.live_steps, 12)
+
+    def testAnExplicitLiveViewOffBeatsAStateCountAndSaysSo(self):
+        # "Off" has to mean off. The count is dropped with it, so nothing downstream sees
+        # a recording length for a run that is not being recorded -- and the user is TOLD,
+        # because they asked for two things and only got one of them. Asserting the
+        # warning is what makes this test able to fail: without it, `live_view=0` already
+        # forces both fields to their off values and the branch is invisible.
+        from pymol import designing
+        said = []
+        original = designing.colorprinting.warning
+        designing.colorprinting.warning = lambda text: said.append(text)
+        try:
+            job = self._design(live_view=0, live_steps=12)
+        finally:
+            designing.colorprinting.warning = original
+        self.assertIs(job.spec.live_view, False)
+        self.assertIsNone(job.spec.live_steps)
+        ignored = [t for t in said if 'live_steps' in t and 'ignored' in t]
+        self.assertTrue(ignored, 'the ignored parameter must be reported: %r' % said)
+        self.assertIn('live_view=0', ignored[0])
+
+    def testLiveViewOnWithoutACountUsesTheRuntimeDefault(self):
+        job = self._design(live_view=1)
+        self.assertIs(job.spec.live_view, True)
+        self.assertIsNone(job.spec.live_steps,
+                          'absent must mean "the runtime default", not a number chosen '
+                          'on this side')
+
+    def testEveryDesignOfARunCarriesTheStateCount(self):
+        # DesignSpec is a __slots__ class rebuilt field by field per design, so anything
+        # not carried explicitly silently reverts for every design after the first.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=2, live_steps=9)
+            settle()
+        self.assertEqual(len(jobs), 2)
+        for job in jobs:
+            self.assertEqual(job.spec.live_steps, 9, job.spec.name)
+            self.assertIs(job.spec.live_view, True, job.spec.name)
+
+    def testAStateCountOutsideWhatTheRolloutCanSupplyIsRefused(self):
+        # Refused, not clamped, and before anything is allocated -- this is input
+        # validation, not a runtime degrade.
+        from pymol.predictors.errors import PredictionOptionError
+        for bad in (0, -3, 200, 10000):
+            with self.assertRaises(PredictionOptionError) as caught:
+                cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                    diffusion_steps=200, live_steps=bad)
+            message = str(caught.exception)
+            self.assertIn('live_steps must be between 1 and 199', message)
+            self.assertIn('diffusion_steps=200', message,
+                          'the message must name the schedule the bound came from')
+
+    def testTheBoundFollowsDiffusionSteps(self):
+        # The ceiling is the rollout's own step count, so it moves with the schedule.
+        from pymol.predictors.errors import PredictionOptionError
+        job = self._design(diffusion_steps=20, live_steps=19)
+        self.assertEqual(job.spec.live_steps, 19)
+        with self.assertRaises(PredictionOptionError) as caught:
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                diffusion_steps=20, live_steps=20)
+        self.assertIn('between 1 and 19', str(caught.exception))
+
+    def testAMalformedStateCountIsRefusedWithTheSameGuidance(self):
+        from pymol.predictors.errors import PredictionOptionError
+        with self.assertRaises(PredictionOptionError) as caught:
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                live_steps='lots')
+        self.assertIn('live_steps must be a whole number', str(caught.exception))
+
+    def testTheStateCountIsAbsentFromTheWireUnlessAskedFor(self):
+        # Absent means "the runtime's default", which is also what a Python side that
+        # predates this parameter says -- so the two are the SAME request, rather than one
+        # of them pinning a number the other would not have.
+        from pymol import designing
+        from pymol.generators import rfd3
+        from pymol.predictors import host
+
+        structure = designing.resolve_target('tgt', 'tgt and resi 5')
+        generator = rfd3.RFD3Generator()
+        spec = generator.parse_target(structure, 6, name='wire_probe')
+        options = generator.validate_options(
+            dict(recycling_steps=2, diffusion_steps=200, seed=1))
+        sent = {}
+
+        def capture(spec_, options_, weights_path, runtime=None, knobs=None, extra=None):
+            sent.clear()
+            sent.update(extra or {})
+            return object()
+
+        with patch.object(host, 'submit', side_effect=capture):
+            spec.live_view = True
+            spec.live_steps = None
+            generator.submit(spec, options, '/tmp')
+            self.assertIn('live_view', sent)
+            self.assertNotIn('live_steps', sent,
+                             'an unasked-for count must not be pinned on the wire')
+
+            spec.live_steps = 12
+            generator.submit(spec, options, '/tmp')
+            self.assertEqual(sent.get('live_steps'), 12)
+
     # -- Placeholders, weights, cancellation ---------------------------------
 
     def testThePlaceholderExistsBeforeTheDesignDoes(self):

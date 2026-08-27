@@ -284,3 +284,9 @@ class DesignKeyTest(GeneratorTestCase):
         before = self.key()
         self.spec.live_view = True
         self.assertEqual(before, self.key())
+        # And neither does how MANY states are recorded while watching it. Same reason:
+        # `live_steps` changes when the design is seen, never what it is.
+        self.spec.live_steps = 12
+        self.assertEqual(before, self.key())
+        self.spec.live_steps = 199
+        self.assertEqual(before, self.key())

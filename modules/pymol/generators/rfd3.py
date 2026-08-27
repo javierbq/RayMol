@@ -250,23 +250,26 @@ class RFD3Generator(Generator):
         # its own most-compact 95-residue window and its own three hotspots. Shipping the
         # array means the residues the user selected are the residues the model sees, in
         # the order the hotspot indices are resolved against.
-        return host.submit(
-            spec, options, weights_path, runtime=RUNTIME,
-            knobs=self.option_defaults,
-            extra={
-                'target': spec.target_wire(),
-                # Positions in `target`, resolved once on this side. See
-                # TargetStructure.hotspots for why a residue number here would be wrong.
-                'hotspots': list(spec.target.hotspots),
-                'design_length': spec.length,
-                'design_chain': spec.design_chain,
-                # Carried so the runtime can stamp it into the metric document it writes,
-                # which is what makes a design's identity travel with its numbers rather
-                # than being re-derived by whoever reads them later.
-                'design_key': spec.design_key(
-                    options, weights_version=_bundle_version(self)),
-                'live_view': spec.live_view,
-            })
+        extra = {
+            'target': spec.target_wire(),
+            # Positions in `target`, resolved once on this side. See
+            # TargetStructure.hotspots for why a residue number here would be wrong.
+            'hotspots': list(spec.target.hotspots),
+            'design_length': spec.length,
+            'design_chain': spec.design_chain,
+            # Carried so the runtime can stamp it into the metric document it writes,
+            # which is what makes a design's identity travel with its numbers rather
+            # than being re-derived by whoever reads them later.
+            'design_key': spec.design_key(
+                options, weights_version=_bundle_version(self)),
+            'live_view': spec.live_view,
+        }
+        # Only when asked for. Absent means "the runtime's default", which is exactly what
+        # a Python side predating this parameter also says, so the two are one request.
+        if getattr(spec, 'live_steps', None) is not None:
+            extra['live_steps'] = int(spec.live_steps)
+        return host.submit(spec, options, weights_path, runtime=RUNTIME,
+                           knobs=self.option_defaults, extra=extra)
 
 
 def _free_chain_id(residues):

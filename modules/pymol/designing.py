@@ -1392,8 +1392,8 @@ def deliver_result(path, name, seed=None, _self=cmd):
 
 
 def design_backbone(generator, target, hotspots, length=60, name='', n_designs=1,
-                    diffusion_steps=200, recycling_steps=2, seed=None, live_view=0,
-                    quiet=1, _self=cmd):
+                    diffusion_steps=200, recycling_steps=2, seed=None, live_view=None,
+                    live_steps=None, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -1452,7 +1452,19 @@ ARGUMENTS
         left showing, so a live run and a plain one leave the same thing in the
         session. Scrub the states afterwards to replay the rollout. A run that is
         cancelled or fails leaves no object at all, as it does without this.
-        {default: 0}
+        {default: off, unless live_steps is given}
+
+    live_steps = int: roughly how many states the live recording should end up with,
+        across the whole rollout. Giving it turns the live view ON by itself; pass
+        live_view=0 alongside to override that, in which case live_steps is ignored
+        and says so. Between 1 and diffusion_steps - 1, and refused outside that
+        rather than clamped.
+
+        APPROXIMATE on purpose: the capture interval is a whole number of steps, so
+        the achievable counts are quantised -- over the default 199 rollout steps they
+        run 199, 100, 67, 50, 40, 34 and so on -- and the nearest achievable count to
+        what was asked is what you get. The finished object's state count is reported
+        when it lands. {default: 50}
 
 EXAMPLES
 
@@ -1509,6 +1521,38 @@ SEE ALSO
     if int(length) < 1:
         raise PredictionOptionError(
             'length must be at least 1 residue, got %d' % int(length))
+
+    # Presentation parameters, resolved together because they interact.
+    #
+    # REFUSED rather than clamped. This is submit-time input validation, before anything
+    # has been allocated, so a number that cannot be honoured is a command error the user
+    # can correct -- not a degrade. The "live view must never fail a design" rule governs
+    # everything AFTER the job starts, and nothing here starts one.
+    rollout_steps = max(int(diffusion_steps) - 1, 1)
+    if live_steps is not None:
+        try:
+            live_steps = int(live_steps)
+        except (TypeError, ValueError):
+            raise PredictionOptionError(
+                'live_steps must be a whole number of states between 1 and %d'
+                ' (diffusion_steps is %d), got %r'
+                % (rollout_steps, int(diffusion_steps), live_steps))
+        if not 1 <= live_steps <= rollout_steps:
+            raise PredictionOptionError(
+                'live_steps must be between 1 and %d -- the rollout has that many steps'
+                ' to capture at diffusion_steps=%d -- got %d'
+                % (rollout_steps, int(diffusion_steps), live_steps))
+    # Giving `live_steps` is an explicit opt-in and turns the live view on by itself; an
+    # explicit `live_view=0` beside it wins, because saying "off" should mean off.
+    if live_view is None:
+        watch = live_steps is not None
+    else:
+        watch = bool(int(live_view))
+        if live_steps is not None and not watch:
+            colorprinting.warning(
+                ' design: live_view=0 was given, so live_steps=%d is ignored and the'
+                ' design will not be built live.' % live_steps)
+            live_steps = None
 
     structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
 
@@ -1576,7 +1620,11 @@ SEE ALSO
         design_spec = type(spec)(spec.target, spec.length, name=object_name,
                                  generator_id=spec.generator_id,
                                  design_chain=spec.design_chain)
-        design_spec.live_view = bool(int(live_view))
+        # Carried onto the per-design copy explicitly. `DesignSpec` is a __slots__ class
+        # rebuilt field by field above, so anything not assigned here silently reverts to
+        # the constructor default.
+        design_spec.live_view = watch
+        design_spec.live_steps = live_steps if watch else None
         if fetch is not None:
             job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
                                      object_name)
