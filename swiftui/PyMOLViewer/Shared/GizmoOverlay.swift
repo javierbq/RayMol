@@ -8,6 +8,10 @@
 //
 // NDC convention (matches metal_pick / MetalViewport): bottom-left origin,
 // +x right, +y up, in [-1, 1].
+//
+// Also home to InteractionMode and, at the bottom, the Box Select (#358)
+// rubber-band geometry: the same "shared types + hit-testing, no rendering"
+// role, for the other exclusive viewport tool.
 
 import Foundation
 import CoreGraphics
@@ -16,6 +20,9 @@ import SwiftUI
 enum InteractionMode {
     case viewing
     case move
+    /// Box Select (#358): drags draw/adjust a rubber-band rectangle instead of
+    /// orbiting, and accepting it selects every atom under the rectangle.
+    case boxSelect
 }
 
 /// A draggable gizmo handle: .x/.y/.z axis arrows (translate along a frame axis),
@@ -262,3 +269,140 @@ struct GizmoBullseyeOverlay: View {
     }
 }
 
+// MARK: - Box (rubber-band) selection — issue #358
+
+// The interactive tool is ADD-only: the box grows the selection it was opened
+// on and never replaces or subtracts. (`cmd.box_select` keeps all three modes —
+// a scripted one-shot has no live box to make subtraction legible.) So there is
+// no mode type here, and nothing in the UI to choose one.
+
+/// Which parts of the box a drag is carrying. All four false = the interior
+/// (translate). Modelled as edge flags rather than a corner enum so a corner is
+/// just "two edges", which makes both hit-testing and resizing trivial.
+struct BoxEdges: Equatable {
+    var left = false, right = false, bottom = false, top = false
+
+    static let interior = BoxEdges()
+    var isInterior: Bool { !left && !right && !bottom && !top }
+}
+
+/// The rubber-band rectangle, in PyMOL viewport NDC (bottom-left origin, +y up,
+/// both axes in [-1, 1]) — the same space MetalViewport hands to picking, so the
+/// rectangle the user sees and the atoms `box_select_ndc` projects into it agree
+/// by construction. Always stored normalized (min <= max on both axes).
+struct BoxRect: Equatable {
+    var minX: CGFloat
+    var minY: CGFloat
+    var maxX: CGFloat
+    var maxY: CGFloat
+
+    init(minX: CGFloat, minY: CGFloat, maxX: CGFloat, maxY: CGFloat) {
+        self.minX = Swift.min(minX, maxX)
+        self.maxX = Swift.max(minX, maxX)
+        self.minY = Swift.min(minY, maxY)
+        self.maxY = Swift.max(minY, maxY)
+    }
+
+    init(from a: CGPoint, to b: CGPoint) {
+        self.init(minX: a.x, minY: a.y, maxX: b.x, maxY: b.y)
+    }
+
+    var width: CGFloat { maxX - minX }
+    var height: CGFloat { maxY - minY }
+
+    /// A box this small is a stray click, not a rectangle the user meant to draw
+    /// (~1% of the viewport on the short axis).
+    var isDegenerate: Bool { width < 0.02 && height < 0.02 }
+
+    /// The rectangle the tool opens with. Entering Box Select drops this in and
+    /// commits it immediately, so the tool starts by SELECTING something the user
+    /// can then adjust — rather than showing an empty viewport that looks broken
+    /// until they guess that they are supposed to drag.
+    static let initial = BoxRect(minX: -0.4, minY: -0.4, maxX: 0.4, maxY: 0.4)
+
+    /// Rect in SwiftUI point space (top-left origin, +y down) for a viewport of
+    /// `size` — what the overlay draws and what a finger/cursor is measured in.
+    func inPoints(_ size: CGSize) -> CGRect {
+        let x0 = (minX + 1) / 2 * size.width
+        let x1 = (maxX + 1) / 2 * size.width
+        let y0 = (1 - maxY) / 2 * size.height       // +y up -> +y down
+        let y1 = (1 - minY) / 2 * size.height
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+    }
+
+    /// The edges a point grabs, or nil when the point is outside the box's grab
+    /// area entirely (the caller then starts a fresh box).
+    ///
+    /// `slop` is the grab band in NDC-Y units; the x band is divided by `aspect`
+    /// so the band is the same number of PIXELS on both axes.
+    func edges(at p: CGPoint, aspect: CGFloat, slop: CGFloat) -> BoxEdges? {
+        let sx = aspect > 0 ? slop / aspect : slop
+        guard p.x >= minX - sx, p.x <= maxX + sx,
+              p.y >= minY - slop, p.y <= maxY + slop else { return nil }
+        var e = BoxEdges()
+        e.left = abs(p.x - minX) <= sx
+        e.right = abs(p.x - maxX) <= sx
+        e.bottom = abs(p.y - minY) <= slop
+        e.top = abs(p.y - maxY) <= slop
+        // A box narrower than the grab band would report both of its edges; keep
+        // the nearer one so the drag resizes instead of collapsing the box.
+        if e.left && e.right { if abs(p.x - minX) <= abs(p.x - maxX) { e.right = false } else { e.left = false } }
+        if e.bottom && e.top { if abs(p.y - minY) <= abs(p.y - maxY) { e.top = false } else { e.bottom = false } }
+        return e
+    }
+
+    /// Start a drag that resizes/translates this box from a grab at `p`, or nil
+    /// if `p` misses the box.
+    func beginDrag(at p: CGPoint, aspect: CGFloat, slop: CGFloat) -> BoxDrag? {
+        guard let e = edges(at: p, aspect: aspect, slop: slop) else { return nil }
+        if e.isInterior {
+            return BoxDrag(origin: self, start: p, anchor: p, moving: p,
+                           tracksX: false, tracksY: false, translates: true)
+        }
+        // Resize == "the opposite corner stays put and the pointer carries this
+        // one", with an edge grab simply not tracking the other axis.
+        let anchor = CGPoint(x: e.left ? maxX : minX, y: e.bottom ? maxY : minY)
+        let moving = CGPoint(x: e.left ? minX : maxX, y: e.bottom ? minY : maxY)
+        return BoxDrag(origin: self, start: p, anchor: anchor, moving: moving,
+                       tracksX: e.left || e.right, tracksY: e.bottom || e.top,
+                       translates: false)
+    }
+
+    /// Start a drag that draws a NEW box out of the press point.
+    static func beginNewDrag(at p: CGPoint) -> BoxDrag {
+        BoxDrag(origin: BoxRect(from: p, to: p), start: p, anchor: p, moving: p,
+                tracksX: true, tracksY: true, translates: false)
+    }
+}
+
+/// A box drag in flight. Holds everything needed to turn the current pointer
+/// position into the updated rectangle, so the gesture handlers stay dumb and
+/// the geometry stays unit-testable.
+struct BoxDrag: Equatable {
+    /// The rectangle as it stood when the drag began (the translate reference).
+    var origin: BoxRect
+    /// Pointer NDC at grab time (the translate reference).
+    var start: CGPoint
+    /// Corner held fixed while resizing.
+    var anchor: CGPoint
+    /// Corner the pointer carries while resizing.
+    var moving: CGPoint
+    /// Whether the pointer controls the moving corner's x / y. An edge grab
+    /// tracks one axis only; a corner (or a new box) tracks both.
+    var tracksX: Bool
+    var tracksY: Bool
+    /// Interior grab: the whole box follows the pointer instead of resizing.
+    var translates: Bool
+
+    /// The rectangle for a pointer now at `p`.
+    func rect(at p: CGPoint) -> BoxRect {
+        if translates {
+            let dx = p.x - start.x, dy = p.y - start.y
+            return BoxRect(minX: origin.minX + dx, minY: origin.minY + dy,
+                           maxX: origin.maxX + dx, maxY: origin.maxY + dy)
+        }
+        return BoxRect(from: anchor,
+                       to: CGPoint(x: tracksX ? p.x : moving.x,
+                                   y: tracksY ? p.y : moving.y))
+    }
+}

@@ -1149,9 +1149,31 @@ struct ObjectPanel: View {
                         }
                     }
 
-                    // SELECTIONS — named atom selections; the + opens the builder.
+                    // SELECTIONS — named atom selections; the lasso enters the
+                    // box tool and the + opens the builder. Two ways to make a
+                    // selection, side by side: point at it, or describe it.
                     sectionHeader("SELECTIONS", id: "selections",
                                   tag: selections.isEmpty ? nil : "\(selections.count)") {
+                        // Box Select (#358). A toggle, not a launcher: it arms a
+                        // rectangle in the viewport immediately and 'sele' tracks
+                        // it, so the lit state IS "a box is live right now" and
+                        // switching it off is a way out of the mode.
+                        Button(action: { engine.toggleBoxSelect() }) {
+                            Image(systemName: "lasso")
+                                .font(.system(size: 11))
+                                .foregroundColor(engine.interactionMode == .boxSelect
+                                                 ? PanelTheme.accentColor
+                                                 : PanelTheme.headerColor)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Box select")
+                        // The lasso is the ONLY affordance for this tool, so the
+                        // tooltip carries the whole interaction, not just a name.
+                        .help("Box select — puts a rectangle on the viewport and adds "
+                              + "everything under it to the selection. Drag its edges, "
+                              + "corners or middle to adjust. Close with ✕, Esc, or "
+                              + "this button.")
+
                         Button(action: { showSelectionBuilder = true }) {
                             Image(systemName: "plus")
                                 .font(.system(size: 11))

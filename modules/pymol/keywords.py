@@ -268,6 +268,7 @@ def get_command_keywords(self_cmd=cmd):
         'sculpt_iterate': [ self_cmd.sculpt_iterate    , 0 , 0 , ''  , parsing.STRICT ],
         'spectrum'      : [ self_cmd.spectrum          , 0 , 0 , ''  , parsing.STRICT ],
         'select'        : [ self_cmd.select            , 0 , 0 , ''  , parsing.LEGACY ],
+        'box_select'    : [ self_cmd.box_select        , 0 , 0 , ''  , parsing.STRICT ],
         'set'           : [ self_cmd.set               , 0 , 0 , ''  , parsing.LEGACY ],
         'set_bond'      : [ self_cmd.set_bond          , 0 , 0 , ''  , parsing.STRICT ],
         'set_color'     : [ self_cmd.set_color         , 0 , 0 , ''  , parsing.LEGACY ],

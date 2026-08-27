@@ -964,6 +964,16 @@ struct ContentView: View {
                 }
             }
             #endif
+            // Box Select rubber band (#358). Unlike the Move gizmo (a 3D CGO in
+            // the Metal scene) the box is pure 2D screen furniture, so SwiftUI
+            // draws it; MetalViewport hit-tests the same rectangle in NDC.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
             // scene by metal_move.py; no SwiftUI overlay is needed. Input is
             // hit-tested against the projected geometry in MetalViewport.)
@@ -2627,6 +2637,15 @@ struct ContentView: View {
                 #endif
             }
             .animation(.easeOut(duration: 0.35), value: hasRestoreSnapshot)
+            // Box Select rubber band (#358) — see the macOS site for why this one
+            // is SwiftUI and the Move gizmo is not.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal scene
             // by metal_move.py; no SwiftUI overlay is needed.)
             // (The floating viewport transport was removed: movie playback lives in
@@ -3295,6 +3314,9 @@ struct ContentView: View {
         }
         .disabled(isDesignLocked)
 
+        // (Box Select is deliberately absent: its control is the lasso toggle in
+        // the Selections panel header, which both enters the mode and shows that
+        // it is on. A second entry point here would be a second thing to find.)
         Button {
             engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
         } label: {
@@ -4738,5 +4760,71 @@ struct CalculatingOverlay: View {
             .padding(28)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+/// The Box Select rubber band (#358): the rectangle, its eight grab handles, a
+/// dim wash over everything outside it, and the ✕ that leaves the tool.
+///
+/// Everything except the ✕ is chrome — `allowsHitTesting(false)` — because the
+/// drag routing lives in MetalViewport, which hit-tests the SAME rectangle in
+/// NDC (BoxRect.edges). Two hit-testers over one rectangle would be two chances
+/// to disagree; here the SwiftUI layer only draws. The ✕ is the one exception,
+/// and it sits OUTSIDE the frame so it can't swallow the corner resize handle.
+struct BoxSelectRectOverlay: View {
+    let rect: BoxRect?
+    let accent: Color
+    var onClose: () -> Void = {}
+
+    /// How far outside the top-right corner the ✕ sits, in points.
+    private let closeInset: CGFloat = 13
+
+    var body: some View {
+        GeometryReader { geo in
+            if let rect = rect {
+                let r = rect.inPoints(geo.size)
+                ZStack {
+                    Group {
+                        // Even-odd fill of (whole viewport + box) = everything but the box.
+                        Path { p in
+                            p.addRect(CGRect(origin: .zero, size: geo.size))
+                            p.addRect(r)
+                        }
+                        .fill(Color.black.opacity(0.22), style: FillStyle(eoFill: true))
+
+                        Path { $0.addRect(r) }
+                            .stroke(accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+
+                        ForEach(Array(Self.handleCenters(r).enumerated()), id: \.offset) { _, c in
+                            Circle()
+                                .fill(accent)
+                                .frame(width: 8, height: 8)
+                                .position(c)
+                        }
+                    }
+                    .allowsHitTesting(false)
+
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Color.white, accent)
+                    }
+                    .buttonStyle(.plain)
+                    .position(x: r.maxX + closeInset, y: r.minY - closeInset)
+                    .help("Close Box Select — the selection stays (Esc)")
+                    .accessibilityLabel("Close box select")
+                }
+            }
+        }
+    }
+
+    /// The eight resize handles: every corner and edge midpoint (the centre is
+    /// the translate area, which needs no dot).
+    static func handleCenters(_ r: CGRect) -> [CGPoint] {
+        [r.minX, r.midX, r.maxX].flatMap { x in
+            [r.minY, r.midY, r.maxY].map { CGPoint(x: x, y: $0) }
+        }
+        .filter { !($0.x == r.midX && $0.y == r.midY) }
     }
 }

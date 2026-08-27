@@ -193,6 +193,7 @@ from .querying import \
 
 #--------------------------------------------------------------------
 from .selecting import \
+      box_select,         \
       deselect,           \
       indicate,           \
       select,             \

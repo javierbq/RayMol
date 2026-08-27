@@ -17,6 +17,7 @@ legacy 18-float vector described in its docstring. Verified layout (0-based):
   v[24]     : fov flag (+fov if orthoscopic, else -fov); abs() = vertical FOV deg.
 The modelview is MV = T(pos) * R * T(-origin), i.e. eye = R*(model-origin) + pos.
 """
+import collections
 import math
 
 # Screen pick radius (squared, in NDC). Clicks farther than this from any
@@ -155,20 +156,15 @@ def _grid_layout(size, aspect):
     return (n_col, n_row)
 
 
-def _grid_pick_context(ndc_x, ndc_y, aspect):
-    """When grid_mode=1 (by-object) is active with 2+ objects, map a full-window
-    click NDC to its grid cell and return
-    (target_obj, cell_ndc_x, cell_ndc_y, cell_aspect):
-      - target_obj: the object laid out in the clicked cell ('' if none).
-      - cell_ndc_x/y: the click re-expressed in that cell's NDC.
-      - cell_aspect: that cell's aspect (window_aspect * n_row/n_col).
-    Returns None when grid isn't cell-mapped (caller projects the whole window).
+def _grid_cells(aspect):
+    """(objs, n_col, n_row, cell_aspect) for an active by-object grid, else None.
 
-    The slot→object mapping mirrors the core: grid-eligible enabled objects take
-    slots in scene order, cell layout is GridUpdate, cells run col left→right and
-    row 0 at the TOP. (By-object only; grid_mode 2/3 fall through to whole-window
-    picking, and disabled-object/group gaps aren't modeled — the common case is
-    all-enabled objects.)"""
+    None means the scene is NOT cell-mapped (grid off, grid_mode 2/3, fewer than
+    two grid-eligible objects) and callers should project against the whole
+    window. The slot→object mapping mirrors the core: grid-eligible enabled
+    objects take slots in scene order and the cell layout is GridUpdate.
+    (Disabled-object/group gaps aren't modeled — the common case is all-enabled
+    objects.)"""
     from pymol import cmd
     try:
         if int(cmd.get_setting_int('grid_mode')) != 1:
@@ -189,16 +185,133 @@ def _grid_pick_context(ndc_x, ndc_y, aspect):
     n_col, n_row = _grid_layout(size, aspect)
     if n_col < 1 or n_row < 1:
         return None
-    u = (ndc_x + 1.0) * 0.5 * n_col        # [0, n_col), x: +1 = right
-    t = (1.0 - ndc_y) * 0.5 * n_row        # [0, n_row), 0 = top row
+    return (objs, n_col, n_row, aspect * (float(n_row) / float(n_col)))
+
+
+def _grid_uv(ndc_x, ndc_y, n_col, n_row):
+    """Window NDC → continuous cell coordinates (u across columns left→right,
+    t down rows with row 0 at the TOP), each in [0, n)."""
+    return ((ndc_x + 1.0) * 0.5 * n_col, (1.0 - ndc_y) * 0.5 * n_row)
+
+
+def _grid_slot(u, t, n_col, n_row):
+    """(slot, col, row) of the cell holding continuous cell coordinates (u, t).
+    slot is 0-based and matches the core's abs_grid_slot."""
     col = min(max(int(u), 0), n_col - 1)
     row = min(max(int(t), 0), n_row - 1)
-    slot = row * n_col + col               # 0-based, matches abs_grid_slot
+    return (row * n_col + col, col, row)
+
+
+def _grid_pick_context(ndc_x, ndc_y, aspect):
+    """When grid_mode=1 (by-object) is active with 2+ objects, map a full-window
+    click NDC to its grid cell and return
+    (target_obj, cell_ndc_x, cell_ndc_y, cell_aspect):
+      - target_obj: the object laid out in the clicked cell ('' if none).
+      - cell_ndc_x/y: the click re-expressed in that cell's NDC.
+      - cell_aspect: that cell's aspect (window_aspect * n_row/n_col).
+    Returns None when grid isn't cell-mapped (caller projects the whole window)."""
+    cells = _grid_cells(aspect)
+    if cells is None:
+        return None
+    objs, n_col, n_row, cell_aspect = cells
+    u, t = _grid_uv(ndc_x, ndc_y, n_col, n_row)
+    slot, col, row = _grid_slot(u, t, n_col, n_row)
     cell_ndc_x = (u - col) * 2.0 - 1.0
     cell_ndc_y = 1.0 - (t - row) * 2.0
-    cell_aspect = aspect * (float(n_row) / float(n_col))
     target = objs[slot] if 0 <= slot < len(objs) else ''
     return (target, cell_ndc_x, cell_ndc_y, cell_aspect)
+
+
+def _grid_rect_context(x0, y0, x1, y1, aspect):
+    """Grid analogue of _grid_pick_context for a RECTANGLE: the box belongs to
+    the cell under its CENTER, and its corners are re-expressed in that cell's
+    NDC. Returns (target_obj, cx0, cy0, cx1, cy1, cell_aspect), or None when the
+    scene isn't cell-mapped.
+
+    Corners outside the owning cell fall outside [-1, 1] there, which is exactly
+    right: a box dragged across a cell boundary still selects only the atoms of
+    the cell it was centered on, and only where it actually overlaps them."""
+    cells = _grid_cells(aspect)
+    if cells is None:
+        return None
+    objs, n_col, n_row, cell_aspect = cells
+    uc, tc = _grid_uv((x0 + x1) * 0.5, (y0 + y1) * 0.5, n_col, n_row)
+    slot, col, row = _grid_slot(uc, tc, n_col, n_row)
+    def to_cell(nx, ny):
+        u, t = _grid_uv(nx, ny, n_col, n_row)
+        return ((u - col) * 2.0 - 1.0, 1.0 - (t - row) * 2.0)
+    cx0, cy0 = to_cell(x0, y0)
+    cx1, cy1 = to_cell(x1, y1)
+    target = objs[slot] if 0 <= slot < len(objs) else ''
+    # to_cell flips y (row 0 is the TOP row), so re-normalize the corner order.
+    return (target, min(cx0, cx1), min(cy0, cy1), max(cx0, cx1), max(cy0, cy1),
+            cell_aspect)
+
+
+_Camera = collections.namedtuple(
+    '_Camera', 'rot pos origin fov tan_half clip_front clip_back view')
+
+
+def camera():
+    """Parse cmd.get_view() into the numbers every screen-space projection in
+    this module needs, or None when there is no view.
+
+    Returns a _Camera with:
+      rot         9 floats, ROW-major 3x3 model->camera rotation
+      pos         camera position (eye-space translation)
+      origin      rotation origin, in MODEL space
+      fov         vertical field of view, degrees
+      tan_half    half-height slope at unit depth (see below)
+      clip_*      near/far slab distances, or None if the layout didn't carry them
+      view        the raw get_view() tuple (diagnostics)
+
+    Projecting a model point with these is:
+        eye   = rot * (model - origin) + pos
+        depth = -eye.z                       (the camera looks down -Z)
+        ndc   = (eye.x / (depth*tan_half*aspect), eye.y / (depth*tan_half))
+
+    tan_half matches the renderer EXACTLY: it calls glm::perspective(GetFovWidth,
+    ...) with GetFovWidth = 2*tan(radians(fov)/2), and glm itself takes
+    tan(arg/2), so the effective half-height slope is tan(GetFovWidth/2) — NOT
+    tan(radians(fov)/2). It depends only on the FOV, so it is aspect-independent
+    and safe to reuse across grid cells."""
+    from pymol import cmd
+    v = cmd.get_view()
+    if not v:
+        return None
+    if len(v) >= 25:
+        # 4x4 column-major rotation -> 3x3 rows (model -> camera).
+        rot = (v[0], v[4], v[8],
+               v[1], v[5], v[9],
+               v[2], v[6], v[10])
+        pos = (v[16], v[17], v[18])        # camera pos (eye translation)
+        origin = (v[19], v[20], v[21])     # rotation origin (model space)
+        fov_deg = abs(v[24])
+        clip_front = clip_back = None      # 25-float clip layout unverified; skip
+    else:
+        # Legacy 18-float layout (what our embedded build returns):
+        #   v[0:9]=3x3 rotation, v[9:12]=pos, v[12:15]=origin,
+        #   v[15]=front, v[16]=back, v[17]=fov flag.
+        # The rotation is COLUMN-MAJOR (same as the 25-float / GL convention
+        # and the Metal renderer's modelview). Parsing it row-major TRANSPOSES
+        # it — harmless for axis-aligned views but, under a real `orient`
+        # rotation, it projects atoms to the wrong screen positions, so the
+        # click selects an atom that renders far from the cursor.
+        rot = (v[0], v[3], v[6],
+               v[1], v[4], v[7],
+               v[2], v[5], v[8])
+        pos = (v[9], v[10], v[11])
+        origin = (v[12], v[13], v[14])
+        fov_deg = abs(v[17])
+        clip_front, clip_back = v[15], v[16]  # slab: pickable only in [front,back]
+    if fov_deg <= 1.0:
+        fov_deg = cmd.get_setting_float('field_of_view')
+    fov_width = 2.0 * math.tan(math.radians(fov_deg) / 2.0)
+    tan_half = math.tan(fov_width / 2.0)
+    if tan_half <= 0.0:
+        return None
+    return _Camera(rot, pos, origin, fov_deg, tan_half,
+                   clip_front, clip_back, v)
 
 
 def _is_identity(m, eps=1e-6):
@@ -220,48 +333,15 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
     thresh = _MAX_PICK_NDC2 if max_ndc2 is None else float(max_ndc2)
 
     try:
-        v = cmd.get_view()
-        if not v:
+        cam = camera()
+        if cam is None or aspect <= 0.0:
             return None
-
-        if len(v) >= 25:
-            # 4x4 column-major rotation -> 3x3 rows (model -> camera).
-            r00, r01, r02 = v[0], v[4], v[8]
-            r10, r11, r12 = v[1], v[5], v[9]
-            r20, r21, r22 = v[2], v[6], v[10]
-            tx, ty, tz = v[16], v[17], v[18]   # camera pos (eye translation)
-            ox, oy, oz = v[19], v[20], v[21]   # rotation origin (model space)
-            fov_deg = abs(v[24])
-            clip_front = clip_back = None      # 25-float clip layout unverified; skip
-        else:
-            # Legacy 18-float layout (what our embedded build returns):
-            #   v[0:9]=3x3 rotation, v[9:12]=pos, v[12:15]=origin,
-            #   v[15]=front, v[16]=back, v[17]=fov flag.
-            # The rotation is COLUMN-MAJOR (same as the 25-float / GL convention
-            # and the Metal renderer's modelview). Parsing it row-major TRANSPOSES
-            # it — harmless for axis-aligned views but, under a real `orient`
-            # rotation, it projects atoms to the wrong screen positions, so the
-            # click selects an atom that renders far from the cursor.
-            r00, r01, r02 = v[0], v[3], v[6]
-            r10, r11, r12 = v[1], v[4], v[7]
-            r20, r21, r22 = v[2], v[5], v[8]
-            tx, ty, tz = v[9], v[10], v[11]
-            ox, oy, oz = v[12], v[13], v[14]
-            fov_deg = abs(v[17])
-            clip_front, clip_back = v[15], v[16]   # slab: pickable only in [front,back]
-        if fov_deg <= 1.0:
-            fov_deg = cmd.get_setting_float('field_of_view')
-
-        if aspect <= 0.0:
-            return
-
-        # Match the renderer EXACTLY: it calls glm::perspective(GetFovWidth,...)
-        # with GetFovWidth = 2*tan(radians(fov)/2), and glm takes tan(arg/2),
-        # so the effective half-height slope is tan(GetFovWidth/2).
-        fov_width = 2.0 * math.tan(math.radians(fov_deg) / 2.0)
-        tan_half = math.tan(fov_width / 2.0)
-        if tan_half <= 0.0:
-            return
+        v = cam.view
+        r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
+        tx, ty, tz = cam.pos
+        ox, oy, oz = cam.origin
+        fov_deg, tan_half = cam.fov, cam.tan_half
+        clip_front, clip_back = cam.clip_front, cam.clip_back
 
         # Grid mode (by-object): the renderer draws each object in its own
         # viewport cell, so a full-window projection wouldn't line up with what
@@ -703,3 +783,184 @@ def hover_design_at(ndc_x, ndc_y, aspect):
             json.dump(out, f)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Box (rubber-band) selection — issue #358
+#
+# Same projection as _pick_atom, but the test is "inside a rectangle" instead of
+# "nearest a point", so it runs over every drawn atom rather than stopping at
+# one. Deliberately NOT the pick buffer: that reads a single atom under the
+# cursor, and a box can cover thousands.
+# ---------------------------------------------------------------------------
+
+_BOX_MODES = ('replace', 'add', 'subtract')
+
+# Scratch selections used to assemble the box hit set. Underscore-prefixed so
+# they stay out of the object list even in the window where they exist, and
+# deleted before we return.
+_BOX_ACC = '_box_select_acc'
+_BOX_TMP = '_box_select_tmp'
+# Snapshot of the target selection as it stood BEFORE the current box existed.
+# See box_begin for why re-committing needs it.
+_BOX_BASE = '_box_select_base'
+
+
+def box_begin(name='sele'):
+    """Start a box session: remember what `name` holds right now.
+
+    The interactive tool commits on every drag — draw, then drag a corner, then
+    drag it again — so each commit has to compose against the selection as it
+    stood BEFORE the box existed. Composing against the LIVE selection instead
+    would make add-mode a ratchet (atoms the box swept over on the way out would
+    never come back) and subtract-mode unable to give anything back."""
+    from pymol import cmd
+    cmd.select(_BOX_BASE, '?%s' % name, enable=0, quiet=1)
+
+
+def box_finish():
+    """End a box session (the tool exited, or the box was dismissed)."""
+    from pymol import cmd
+    cmd.delete(_BOX_BASE)
+
+
+def _box_commit(name, hits, mode, enable, base=None):
+    """Write {object: [atom index, ...]} into the named selection under `mode`
+    (replace / add / subtract) and return the number of atoms in the box.
+
+    add/subtract compose against `base` when given (the box_begin snapshot) and
+    against `name`'s own current contents otherwise — which is what a one-shot
+    scripted cmd.box_select wants.
+
+    Goes through select_list rather than a giant `index 1+2+3+...` expression:
+    a box over a large structure can hold 10^5 atoms, which is a selection
+    string the parser has no business seeing."""
+    from pymol import cmd
+    n = 0
+    try:
+        cmd.select(_BOX_ACC, 'none', enable=0, quiet=1)
+        for obj, ids in hits.items():
+            n += len(ids)
+            # select_list REPLACES its target, so accumulate through merge=1.
+            # state=0: the state filter already happened during projection.
+            cmd.select_list(_BOX_TMP, obj, ids, state=0, mode='index', quiet=1)
+            cmd.select(_BOX_ACC, _BOX_TMP, enable=0, quiet=1, merge=1)
+        src = name if base is None else base
+        if mode == 'add':
+            expr = '(?%s) or (%s)' % (src, _BOX_ACC)
+        elif mode == 'subtract':
+            expr = '(?%s) and not (%s)' % (src, _BOX_ACC)
+        else:
+            expr = '(%s)' % _BOX_ACC
+        # enable=0 here, then an explicit enable below: cmd.enable is EXCLUSIVE
+        # for selections, so enabling a preview selection would disable the
+        # committed 'sele' and hide its markers (see hover_preview_at).
+        cmd.select(name, expr, enable=0, quiet=1)
+    finally:
+        cmd.delete(_BOX_TMP)
+        cmd.delete(_BOX_ACC)
+    if enable and not name.startswith('_'):
+        cmd.enable(name)
+    return n
+
+
+def box_select_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace',
+                   selection='all', state=-1, enable=1, base=None):
+    """Select every drawn atom whose projection lands inside the NDC rectangle
+    (x0, y0)-(x1, y1); returns the number of atoms the box caught.
+
+    NDC convention matches _pick_atom and MetalViewport: bottom-left origin,
+    +x right, +y up, both in [-1, 1]. Corners may be given in any order.
+
+    Honors the same three things a click does, so what a box grabs is what the
+    user can actually see: only DRAWN atoms (_DRAWN_REPS), only atoms inside the
+    clip slab, and the coordinates of the displayed state (state=-1).
+
+    `mode` is replace / add / subtract; `base` names the selection to compose
+    against (see box_begin) and defaults to `name`'s own contents.
+    `selection` narrows the candidate pool before projection."""
+    from pymol import cmd
+    mode = (mode or 'replace').lower()
+    if mode not in _BOX_MODES:
+        raise ValueError('box mode must be one of %s' % (_BOX_MODES,))
+
+    cam = camera()
+    if cam is None or aspect <= 0.0:
+        return 0
+
+    x0, x1 = min(x0, x1), max(x0, x1)
+    y0, y1 = min(y0, y1), max(y0, y1)
+
+    # `enabled` as well as the per-rep filter: hiding an object's reps and
+    # switching the object off are two different ways to make it invisible,
+    # and a box must respect both (a click does -- _pick_atom only walks
+    # enabled objects).
+    sel = '(%s) and (enabled) and (%s)' % (selection, _DRAWN_REPS)
+
+    # Grid mode (by-object): the renderer gives each object its own viewport
+    # cell, so project in the cell the box was drawn over — exactly as picking
+    # does for a click.
+    gctx = _grid_rect_context(x0, y0, x1, y1, aspect)
+    if gctx is not None:
+        target, x0, y0, x1, y1, aspect = gctx
+        if not target:
+            return _box_commit(name, {}, mode, enable, base)   # empty cell
+        sel = '(%s) and (%s)' % (sel, target)
+
+    r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
+    tx, ty, tz = cam.pos
+    ox, oy, oz = cam.origin
+    tan_half = cam.tan_half
+    clip_front, clip_back = cam.clip_front, cam.clip_back
+    clipped = (clip_front is not None and clip_back is not None
+               and clip_back > clip_front)
+
+    # iterate_state (not get_model) for the candidate coordinates: it is the
+    # cheap bulk reader, and — verified — it already returns coordinates with the
+    # object's display matrix (TTT) baked in, so a MOVED object boxes where it
+    # renders. `index` is the per-object atom index select_list wants.
+    rows = []
+    try:
+        cmd.iterate_state(int(state), sel,
+                          'rows.append((model, index, x, y, z))',
+                          space={'rows': rows}, quiet=1)
+    except Exception as e:
+        print('metal_pick box_select error: %s' % e)
+        return 0
+
+    hits = {}
+    for obj, idx, cx, cy, cz in rows:
+        dx = cx - ox
+        dy = cy - oy
+        dz = cz - oz
+        # eye = R*(model-origin) + pos
+        ex = r00 * dx + r01 * dy + r02 * dz + tx
+        ey = r10 * dx + r11 * dy + r12 * dz + ty
+        ez = r20 * dx + r21 * dy + r22 * dz + tz
+        depth = -ez                       # camera looks down -Z
+        if depth <= 0.01:
+            continue
+        if clipped and (depth < clip_front or depth > clip_back):
+            continue
+        half_h = depth * tan_half
+        sy = ey / half_h                  # NDC y, +1 = up
+        if sy < y0 or sy > y1:
+            continue
+        sx = ex / (half_h * aspect)       # NDC x, +1 = right
+        if sx < x0 or sx > x1:
+            continue
+        hits.setdefault(obj, []).append(idx)
+
+    return _box_commit(name, hits, mode, enable, base)
+
+
+def box_commit_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace'):
+    """What the interactive tool calls on every box drag: commit into `name`
+    against the box_begin snapshot, and return the RESULTING selection size.
+
+    There is no separate preview step. The tool commits continuously while the
+    box is dragged, so the committed selection is itself the live feedback and
+    the user never has to find an Accept button to make it real."""
+    from pymol import cmd
+    box_select_ndc(x0, y0, x1, y1, aspect, name=name, mode=mode, base=_BOX_BASE)
+    return cmd.count_atoms('?%s' % name)
