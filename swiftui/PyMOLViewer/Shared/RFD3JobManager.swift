@@ -37,11 +37,15 @@ final class RFD3JobManager: InferenceRuntime {
 
     /// Capture one frame in this many diffusion steps when the request names no interval.
     ///
-    /// A FALLBACK, not the usual path: Python derives the interval from the user's
-    /// `live_steps` (or from its own default frame count) and sends it, because that is
-    /// the side that also knows `diffusion_steps` and can therefore report the achievable
-    /// count before the run starts. This is what an older Python — or a request written
-    /// before `live_interval` existed — gets, and it is exactly today's behaviour.
+    /// This is the DEFAULT CADENCE, not an edge case. Python sends `live_interval` only
+    /// when the user asked for a specific number of states with `live_steps`; it has no
+    /// default frame count of its own and writes no key otherwise. So every live run
+    /// without `live_steps` lands here — including the app's **Live** checkbox, which
+    /// sends no count at all — as does an older Python, or any request written before
+    /// `live_interval` existed.
+    ///
+    /// Being an INTERVAL rather than a count is why the number of states it yields moves
+    /// with the schedule: 50 at `diffusion_steps` 200, but 5 at 20 and 2 at 6.
     ///
     /// Four gives ~50 frames from a 199-step run — about 1.7 s at 30 fps, enough to read
     /// as motion — against 199 round trips that would put roughly 1.2 MB of Python source
@@ -337,6 +341,13 @@ final class RFD3JobManager: InferenceRuntime {
                     guard let self, live else { return }
                     // `total` is not passed to this callback, so the final-step rule uses
                     // the requested schedule's last transition: numTimesteps - 1.
+                    // `max(request.diffusionSteps - 1, 1)` — the schedule's TRANSITION
+                    // count, which is what is captured. THIS IS A CROSS-LANGUAGE
+                    // COUPLING: `designing.rollout_step_count` computes the same thing
+                    // to derive the interval and to echo the achievable count before the
+                    // run. If the two disagreed, that echo would be a lie about the
+                    // object the user gets. A Python test greps this file for the
+                    // expression below and fails if it changes.
                     guard RFD3Trajectory.shouldCapture(
                         step: step, interval: interval,
                         total: max(request.diffusionSteps - 1, 1)) else { return }
