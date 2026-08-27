@@ -366,6 +366,14 @@ enum InferenceJob {
             PyMOLEngine.shared.runPython(
                 "from pymol import \(pythonModule) as _p; "
                 + "_p.deliver_result(\(path), \(name), seed=\(request.seed))")
+            // `runPython` does not go through `runCommandCore`, so it misses the forced
+            // repaint a typed command gets — and delivery is the state change that puts
+            // the finished structure on screen. A live design's `deliver_result` runs
+            // exactly the per-object `set state, N, obj` that the force exists for
+            // (issue #132: once a movie exists the redisplay flag can be consumed before
+            // the viewport's on-demand gate checks it). One frame, at the end of a run
+            // that took minutes.
+            PyMOLEngine.shared.requestViewportRedraw()
         }
     }
 
