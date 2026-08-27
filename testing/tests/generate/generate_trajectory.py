@@ -912,6 +912,183 @@ class LiveObjectTest(GeneratorTestCase):
             _backbone(self.LENGTH)[1][0], places=3,
             msg='delivery left the impostor in place instead of replacing it')
 
+    # -- The playback head, applied ------------------------------------------
+
+    def testAFrameFromTheAppAppendsAStateWithoutShowingIt(self):
+        # `advance=0` is what the app sends: the head owns the display, and a frame that
+        # also set the state would fight it several times a second. The DEFAULT stays 1,
+        # so every headless and scripted caller keeps the behaviour it always had.
+        self.assertTrue(self.seed())
+        self.assertEqual(self.displayed_state(), 1)
+        self.assertTrue(self.designing.trajectory_frame(
+            self.name, _flat(_backbone(self.LENGTH)), advance=0))
+        self.assertEqual(cmd.count_states(self.name), 2)
+        self.assertEqual(self.displayed_state(), 1,
+                         'a frame the app sends must not move the display')
+        # The default is unchanged.
+        self.assertTrue(self.designing.trajectory_frame(
+            self.name, _flat(_backbone(self.LENGTH))))
+        self.assertEqual(self.displayed_state(), 3)
+
+    def testTheHeadWalksTheDisplayForward(self):
+        self.assertTrue(self.seed())
+        for _ in range(4):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0)
+        self.assertEqual(cmd.count_states(self.name), 5)
+        self.assertEqual(self.displayed_state(), 1)
+        for state in (2, 3, 4, 5):
+            self.assertTrue(self.designing.trajectory_advance(self.name, state))
+            self.assertEqual(self.displayed_state(), state)
+
+    def testTheHeadStopsForGoodOnceTheUserMovesTheObject(self):
+        # A live view that drags the user back every 200 ms is worse than one that jumps.
+        # Detection is exact rather than polled: the object is not showing what the head
+        # last put there, so something else moved it.
+        self.assertTrue(self.seed())
+        for _ in range(5):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0)
+        self.assertTrue(self.designing.trajectory_advance(self.name, 2))
+
+        said = []
+        original = self.designing.colorprinting.parrot
+        self.designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            cmd.set('state', 5, self.name)          # the user scrubs
+            self.assertFalse(self.designing.trajectory_advance(self.name, 3),
+                             'the head must give way')
+        finally:
+            self.designing.colorprinting.parrot = original
+        self.assertEqual(self.displayed_state(), 5, 'the user must be left where they are')
+        self.assertTrue([t for t in said if 'you moved' in t],
+                        'and must be told why it stopped: %r' % said)
+
+        # FOR THE REST OF THE RUN, not just this tick.
+        for state in (3, 4, 6):
+            self.assertFalse(self.designing.trajectory_advance(self.name, state))
+        self.assertEqual(self.displayed_state(), 5)
+
+    def testTheHeadStaysOffEvenIfTheUserScrubsBackToWhereItWas(self):
+        # The latch, and the only case that needs it. Without it the head compares the
+        # object's state against the last one IT set, so a user who scrubs away and then
+        # happens to come back to that state would find the head driving again -- which is
+        # not "stop for the rest of the run", it is "stop until you look away".
+        self.assertTrue(self.seed())
+        for _ in range(5):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0)
+        self.assertTrue(self.designing.trajectory_advance(self.name, 2))
+        cmd.set('state', 5, self.name)                       # the user scrubs away
+        self.assertFalse(self.designing.trajectory_advance(self.name, 3))
+        cmd.set('state', 2, self.name)                       # ... and scrubs back
+        self.assertFalse(self.designing.trajectory_advance(self.name, 3),
+                         'the head must stay off for the rest of the run')
+        self.assertEqual(self.displayed_state(), 2, 'and must leave the user alone')
+
+    def testADeletedObjectIsNotEvenQUERIED(self):
+        # The head ticks 15 times a second. Asking a deleted object for its state raises
+        # AND prints a Selector-Error, so without the existence check a user who deletes
+        # the object mid-run gets fifteen error lines a second for the rest of the run --
+        # the return value is False either way, so the noise is the whole observable.
+        self.assertTrue(self.seed())
+        record = self.designing._TRAJECTORY[self.name]
+
+        # RECORDING rather than raising: `trajectory_advance` wraps everything in one
+        # try/except -- it must never throw into a running design -- so a fake that raised
+        # would be swallowed and the test would pass with the guard removed.
+        queried = []
+
+        class GoneCmd(object):
+            def __init__(self, real):
+                self._real = real
+
+            def __getattr__(self, attribute):
+                return getattr(self._real, attribute)
+
+            def get_names(self, *args, **kwargs):
+                return []                      # the object has been deleted
+
+            def get(self, *args, **kwargs):
+                queried.append('get')
+                return '1'
+
+            def count_states(self, *args, **kwargs):
+                queried.append('count_states')
+                return 1
+
+        self.assertFalse(self.designing.trajectory_advance(self.name, 3,
+                                                           _self=GoneCmd(cmd)))
+        self.assertEqual(queried, [],
+                         'a deleted object must not be queried at all -- asking raises '
+                         'AND prints a Selector-Error, fifteen times a second')
+        self.assertIn(self.name, self.designing._TRAJECTORY)
+        self.assertEqual(record['head_state'], 1, 'and nothing may be recorded')
+
+    def testTheSeedShowsItsOwnStateWhateverTheSessionWasShowing(self):
+        # The head's whole check is "is the object still showing what I last set?", so the
+        # baseline has to be a fact rather than an inherited default. A fresh object
+        # reports the GLOBAL state setting until something sets its own -- so if the user
+        # was scrubbing something else, the seed would claim to be showing state 3 of a
+        # one-state object and the head would call that user-control on its first tick.
+        cmd.set('state', 3)                      # global, e.g. another object scrubbed
+        self.addCleanup(cmd.set, 'state', 1)
+        self.assertTrue(self.seed())
+        self.assertEqual(self.displayed_state(), 1,
+                         'the seed must show itself, not the global default')
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0)
+        self.assertTrue(self.designing.trajectory_advance(self.name, 2),
+                        'and the head must not mistake that default for the user')
+        self.assertEqual(self.displayed_state(), 2)
+
+    def testAdvancingAnObjectThatIsGoneOrUnknownIsANoOp(self):
+        # The head ticks on a timer; the object can be deleted under it at any moment.
+        self.assertFalse(self.designing.trajectory_advance('nosuchobject', 3))
+        self.assertTrue(self.seed())
+        cmd.delete(self.name)
+        self.assertFalse(self.designing.trajectory_advance(self.name, 2))
+
+    def testTheHeadCannotRunOffTheEndOfTheRecording(self):
+        # Clamped rather than refused: the head's arithmetic lives on the Swift side and
+        # a state past the end must not raise into a running design.
+        self.assertTrue(self.seed())
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0)
+        self.assertTrue(self.designing.trajectory_advance(self.name, 999))
+        self.assertEqual(self.displayed_state(), 2)
+        self.assertLessEqual(self.displayed_state(), cmd.count_states(self.name))
+
+    def testDeliveryLandsOnTheDesignEvenIfTheHeadWasBehind(self):
+        # The head is stopped when the rollout ends, so it can be parked anywhere. The
+        # delivered design is what must be on screen afterwards.
+        self.assertTrue(self.seed())
+        for _ in range(5):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0)
+        self.designing.trajectory_advance(self.name, 2)      # head lags well behind
+        self.assertEqual(self.displayed_state(), 2)
+
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        self.designing.deliver_result(self.result_path(coords=final), self.name)
+
+        self.assertEqual(cmd.count_states(self.name), 7)
+        self.assertEqual(self.displayed_state(), 7,
+                         'delivery must land on the finished design, not where the head '
+                         'happened to stop')
+
+    def testDeliveryLandsOnTheDesignEvenIfTheUserTookControl(self):
+        # Deliberate: the design is the point of the run, and the pin predates the head.
+        self.assertTrue(self.seed())
+        for _ in range(3):
+            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                            advance=0)
+        self.designing.trajectory_advance(self.name, 2)
+        cmd.set('state', 3, self.name)
+        self.designing.trajectory_advance(self.name, 3)      # latches user_scrubbed
+        self.designing.deliver_result(self.result_path(), self.name)
+        self.assertEqual(self.displayed_state(), cmd.count_states(self.name))
+
     # -- What a run that never finishes leaves behind --------------------------
 
     def testACancelledRunLeavesNoObjectRatherThanAHalfDiffusedOne(self):

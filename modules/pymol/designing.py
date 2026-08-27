@@ -1149,9 +1149,15 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
                 return _refuse_seed(
                     name, 'the object does not hold the seed PDB in the order it was'
                     ' written (atom %d differs)' % position, _self=_self)
+        # The state the head last put on screen, and the baseline the "has the user taken
+        # over?" check compares against. The seed IS state 1, and it is SET rather than
+        # assumed: a fresh object reports the global default until something sets it, and
+        # the check needs an unambiguous starting point.
+        _self.set('state', 1, name)
         _TRAJECTORY[name] = {
             'offset': offset,
             'atoms': atoms,
+            'head_state': 1,
             'target': [record[3] for record in written[:offset]],
             # WHAT THE SEED PUT IN STATE 1, which is this recording's identity.
             #
@@ -1183,7 +1189,7 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         return False
 
 
-def trajectory_frame(name, coords, _self=cmd):
+def trajectory_frame(name, coords, advance=1, _self=cmd):
     """Append one captured frame as a new state of `name`, and show it.
 
     `coords` is a FLAT list of floats, three per atom, covering the GENERATED CHAIN ONLY,
@@ -1194,10 +1200,17 @@ def trajectory_frame(name, coords, _self=cmd):
     `load_coordset` rather than `load_coords`: it is documented to load in the order the
     file had, and that order is the one `RFD3ResultWriter.emit` wrote.
 
-    The new state is then made the displayed one -- through the OBJECT's `state` setting,
-    not `cmd.frame`, which is the global MOVIE frame and is only a fallback for what an
-    object displays -- so the user watches the design progress rather than having to
-    scrub for it.
+    `advance` decides whether the new state is also SHOWN. It defaults to 1, which is the
+    behaviour every scripted and headless caller has always had: append a state and jump
+    to it. The app passes 0, because there the PLAYBACK HEAD owns what is displayed --
+    see `trajectory_advance`. Both driving the display would mean the two fighting over it
+    several times a second.
+
+    When it does show the state, it does so through the OBJECT's `state` setting and never
+    `cmd.frame`: `cmd.frame` writes the global MOVIE frame, and `CObject::getCurrentState`
+    prefers the object's own setting and only falls back to the global -- so in a session
+    that already has an `mset` the object would never move. Measured with `mset '1 x10'`:
+    states grew 2, 3, 4, 5 while the displayed state stayed 1, 1, 1, 1.
 
     Never raises, for the reason `trajectory_seed` does not. A name with no record -- an
     object the user deleted mid-run, or a run whose seed failed -- is a no-op rather than
@@ -1230,13 +1243,58 @@ def trajectory_frame(name, coords, _self=cmd):
         frame = record['target'] + [values[i * 3:i * 3 + 3] for i in range(atoms)]
         state = _self.count_states(name) + 1
         _self.load_coordset(frame, name, state)
-        # The OBJECT's state, not `cmd.frame`. `cmd.frame` writes the global MOVIE frame,
-        # and `CObject::getCurrentState` prefers the object's own `state` setting and only
-        # falls back to the global -- so in any session that already has an `mset` (a
-        # Timeline the user built, a movie, a reopened .pse carrying one) `cmd.frame` maps
-        # through the movie and the object never moves. Measured with `mset '1 x10'`:
-        # states grew 2, 3, 4, 5 while the displayed state stayed 1, 1, 1, 1.
+        if int(advance):
+            _self.set('state', state, name)
+            record['head_state'] = state
+        return True
+    except Exception:
+        return False
+
+
+def trajectory_advance(name, state, _self=cmd):
+    """Show `state` of a live recording, unless the user has taken the wheel.
+
+    The playback head calls this several times a second while a design runs. It exists as
+    a separate entry point from `trajectory_frame` because DISPLAY IS DECOUPLED FROM
+    ARRIVAL: frames land irregularly and roughly once a second, so advancing on arrival
+    is a slideshow. The head walks the displayed state forward at an even pace instead,
+    always chasing the newest captured state -- lagging while the rollout produces,
+    closing the gap when it pauses.
+
+    HOW THE USER TAKING OVER IS DETECTED, and it is the whole reason this decision is on
+    this side rather than in Swift: the bridge is one-directional, so the runtime cannot
+    read the object's current state, and the check needs it. Here it is a `cmd.get` away.
+    If the object is not showing what the head last put there, something else moved it --
+    the object panel's state control, a typed `set state`, a scrubbed slider -- and the
+    head gives up FOR THE REST OF THE RUN. A live view that drags the user back every
+    200 ms is worse than one that jumps.
+
+    What that costs: if the user scrubs to exactly the state the head last set, nothing is
+    detected -- but then nothing has visibly changed either, so there is nothing to detect.
+    Delivery still pins the object to the finished design at the end, deliberately: the
+    design is the point of the run, and that pin predates the head.
+
+    Never raises, like everything else on this path.
+    """
+    try:
+        name = _legal_object_name(name, _self=_self)
+        record = _TRAJECTORY.get(name)
+        if record is None or record.get('user_scrubbed'):
+            return False
+        if name not in _self.get_names('objects'):
+            # Deleted mid-run, which is legitimate. Nothing to drive.
+            return False
+        state = max(1, min(int(state), _self.count_states(name)))
+        if int(_self.get('state', name)) != int(record['head_state']):
+            record['user_scrubbed'] = True
+            colorprinting.parrot(
+                ' design: you moved %s yourself, so the live view has stopped advancing'
+                ' it. The finished design will still be shown when it lands.' % name)
+            return False
+        if state == record['head_state']:
+            return False
         _self.set('state', state, name)
+        record['head_state'] = state
         return True
     except Exception:
         return False
