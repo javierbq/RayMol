@@ -2559,7 +2559,7 @@ final class PyMOLEngine: ObservableObject {
             pc.runPythonSeam = { [weak self] code in self?.runPython(code) }
             // Trigger the tempfile-JSON feed; PREDICT_FORM:ready routes back below.
             pc.refreshTrigger = { [weak self] input in
-                let lit = PredictController.pythonLiteral(input)
+                let lit = InferenceJob.pythonLiteral(input)
                 self?.runPython("from pymol import appkit_predict as _ap\n_ap.emit(\(lit))")
             }
             // Drive the search→predict state machine off the object poll's published state.

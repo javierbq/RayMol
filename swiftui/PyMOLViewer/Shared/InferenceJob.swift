@@ -311,12 +311,19 @@ enum InferenceJob {
         }
     }
 
-    /// A Python string literal for an arbitrary path. Paths come from our own temp dir,
-    /// but building source text without quoting is how injection bugs start.
+    /// A Python string literal for an arbitrary path or object name. Paths come from our
+    /// own temp dir, but building source text without quoting is how injection bugs start.
     /// PyMOL's text parser does not strip quotes from a `"..."` token, so an object name
     /// has to be escaped exactly this way or a name with an apostrophe breaks the call.
-    /// Private: both callers are right here.
-    private static func pythonLiteral(_ value: String) -> String {
+    ///
+    /// Newlines are DELETED, not escaped: every value that reaches here is a single token
+    /// (a path, an object name, a predictor id), and a stray newline would end the
+    /// statement mid-call. A multi-line payload must not be passed through this.
+    ///
+    /// Internal, and the only copy: PredictController and ProgressTray each carried a
+    /// byte-identical private one, which is three chances to fix a quoting bug in two
+    /// places.
+    static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
