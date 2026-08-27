@@ -403,6 +403,8 @@ side gives the right answer at any rate and at irregular ticks. So:
   interpolated coordinate outlives the gap it belonged to;
 * at delivery the display state becomes the finished design, and the finished object is the
   captured frames plus the design — **the same states a run without smoothing produces**.
+  With `keep_frames` off, which is the default, no captured frames are kept at all and the
+  object ends as the design alone; see below.
 
 The display necessarily runs **one frame behind**: a gap can only be animated once both of
 its ends are known. The first captured frame has no predecessor, so it is simply shown.
@@ -442,6 +444,42 @@ to the finished design afterwards.
 
 The last hop, from the final captured frame into the delivered design, is **not** animated:
 the head is stopped before delivery so it cannot race the pin. That is one jump, at the end.
+
+### Keeping the frames, or not: `keep_frames`
+
+**Off by default.** Watching the design diffuse is the point; the states are opt-in. A live
+run therefore leaves the same single-state object a `live_view=0` run does, unless you ask
+for more.
+
+`design_backbone ..., keep_frames=1` — or the **Keep frames** checkbox on the bar, which is
+enabled only while **Live** is checked — keeps every captured model frame as a state you can
+scrub afterwards. `live_steps` still means the number of MODEL frames captured either way:
+with the toggle off they are captured, used to animate, and simply not kept, and the
+submit-time echo says so rather than promising states that will not exist.
+
+It is built by **not appending**, never by deleting afterwards. With the toggle off the
+object holds the single display state throughout — animated exactly as it is with the toggle
+on, because the interpolation's two ends come from the record rather than from states — and
+at delivery that slot becomes the design. (Deleting states at the end would have been worse:
+PyMOL has no clean per-state delete, and `create`-and-rename would drop the object's
+settings.)
+
+**The invariant, and the reason the default is safe: with the toggle off the finished object
+is indistinguishable from a plain `live_view=0` run.** Same state count, same coordinates,
+same bonds including orders, same residue names, same secondary structure, same metrics,
+same design key, same result bytes — and **no leftover per-object `state` pin**, which takes
+one extra step: the seed sets one so the "has the user taken over?" check has an unambiguous
+baseline, so delivery removes it again when there is only one state to show.
+
+`keep_frames` is a presentation parameter like `live_view` and `live_steps`: absent from
+`option_defaults`, absent from `design_key`, and refused as a contradiction if passed with
+`live_view=0`.
+
+With the toggle ON the identity check has a subtlety worth knowing. It compares the state
+this recording writes to against the coordinates it last put there — the display slot once
+there is one, state 1 before that. It used to compare state 1 against the SEED, which worked
+only while state 1 was never rewritten; with the frames discarded the object's single state
+IS the animated display, so the anchor follows the writes instead.
 
 ### Which state is on show
 
