@@ -264,6 +264,77 @@ class DesignBackboneTest(GeneratorTestCase):
                              'the wire carries the derived INTERVAL, not the count')
             self.assertNotIn('live_steps', sent)
 
+    def testTheEchoSaysTheFramesAreKeptWhenTheyAre(self):
+        from pymol import designing
+        said = []
+        original = designing.colorprinting.parrot
+        designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            self._design(live_steps=50, keep_frames=1, quiet=0)
+        finally:
+            designing.colorprinting.parrot = original
+        live = [t for t in said if 'live view will capture' in t]
+        self.assertTrue(live)
+        self.assertIn('kept as states', live[0])
+        self.assertNotIn('discarded', live[0])
+
+    def testKeepingFramesTurnsTheLiveViewOnByItself(self):
+        job = self._design(keep_frames=1)
+        self.assertIs(job.spec.live_view, True)
+        self.assertIs(job.spec.keep_frames, True)
+
+    def testFramesAreDiscardedUnlessAskedFor(self):
+        job = self._design(live_view=1)
+        self.assertIs(job.spec.keep_frames, False,
+                      'watching is the point; the states are opt-in')
+
+    def testKeepingFramesWithTheLiveViewOffIsRefused(self):
+        from pymol.predictors.errors import PredictionOptionError
+        with self.assertRaises(PredictionOptionError) as caught:
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                live_view=0, keep_frames=1)
+        message = str(caught.exception)
+        self.assertIn('keep_frames=1', message)
+        self.assertIn('live_view=0', message)
+        self.assertIn('drop whichever one you did not mean', message)
+
+    def testEveryDesignOfARunCarriesTheKeepFlag(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=2, keep_frames=1)
+            settle()
+        self.assertEqual(len(jobs), 2)
+        for job in jobs:
+            self.assertIs(job.spec.keep_frames, True, job.spec.name)
+
+    def testTheKeepFlagIsAbsentFromTheWireUnlessAskedFor(self):
+        from pymol import designing
+        from pymol.generators import rfd3
+        from pymol.predictors import host
+
+        structure = designing.resolve_target('tgt', 'tgt and resi 5')
+        generator = rfd3.RFD3Generator()
+        spec = generator.parse_target(structure, 6, name='keep_probe')
+        options = generator.validate_options(
+            dict(recycling_steps=2, diffusion_steps=200, seed=1))
+        sent = {}
+
+        def capture(spec_, options_, weights_path, runtime=None, knobs=None, extra=None):
+            sent.clear()
+            sent.update(extra or {})
+            return object()
+
+        with patch.object(host, 'submit', side_effect=capture):
+            spec.live_view = True
+            spec.keep_frames = False
+            generator.submit(spec, options, '/tmp')
+            self.assertNotIn('keep_frames', sent,
+                             'the default must not be pinned on the wire')
+            spec.keep_frames = True
+            generator.submit(spec, options, '/tmp')
+            self.assertIs(sent.get('keep_frames'), True)
+
     # -- The derivation: a wanted state count -> an every-Nth-step -------------
 
     def _captured(self, interval, total):
@@ -453,9 +524,15 @@ class DesignBackboneTest(GeneratorTestCase):
         self.assertTrue(live, 'the achievable count must be reported: %r' % said)
         achievable = designing.capture_frame_count(
             designing.capture_interval(30, 199), 199)
-        self.assertIn('capture %d state' % achievable, live[0])
+        self.assertIn('capture %d model frame' % achievable, live[0])
         self.assertIn('nearest to the 30 requested', live[0],
                       'and must say so when it is not what was asked for')
+        # MODEL FRAMES, not states -- and it must say what becomes of them, because with
+        # keep_frames off (the default) the states it would otherwise be promising will
+        # not exist.
+        self.assertIn('animated and discarded', live[0],
+                      'the echo must not promise states that will not exist: %s'
+                      % live[0])
 
     def testAnExactlyAchievableCountIsReportedWithoutTheCaveat(self):
         from pymol import designing
@@ -468,7 +545,7 @@ class DesignBackboneTest(GeneratorTestCase):
             designing.colorprinting.parrot = original
         live = [t for t in said if 'live view will capture' in t]
         self.assertTrue(live)
-        self.assertIn('capture 50 states', live[0])
+        self.assertIn('capture 50 model frames', live[0])
         self.assertNotIn('nearest', live[0])
         self.assertIn('every 4 of the 199 rollout steps', live[0])
 

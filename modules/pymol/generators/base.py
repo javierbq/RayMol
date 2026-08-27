@@ -194,10 +194,10 @@ class DesignSpec:
     """
 
     __slots__ = ('target', 'length', 'name', 'generator_id', 'design_chain', 'live_view',
-                 'live_interval')
+                 'live_interval', 'keep_frames')
 
     def __init__(self, target, length, name='', generator_id='', design_chain='B',
-                 live_view=False, live_interval=None):
+                 live_view=False, live_interval=None, keep_frames=False):
         self.target = target
         self.length = int(length)
         self.name = name
@@ -227,6 +227,12 @@ class DesignSpec:
         #: per-design copy through this constructor rather than patching the attribute
         #: afterwards, so this is the one path the value takes.
         self.live_interval = None if live_interval is None else int(live_interval)
+        #: Keep the live view's captured frames as states of the finished object.
+        #: PRESENTATION only, and absent from `design_key` for the same reason the other
+        #: two are: whether the rollout's frames are kept does not change what the design
+        #: IS, and two runs differing only here must key the same and produce the same
+        #: bytes. Off by default -- watching is the point, the states are opt-in.
+        self.keep_frames = bool(keep_frames)
 
     #: No sequence input. Present because the shared transport writes `spec.chains` into
     #: every request; an empty list is what a generator genuinely has, and the far end's

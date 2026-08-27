@@ -1031,23 +1031,35 @@ def _pdb_atom_records(text):
     return records
 
 
-def _holds_the_seed(name, record, _self=cmd):
-    """Whether `name`'s state 1 is still the generated chain this recording seeded.
+def _holds_our_writes(name, record, _self=cmd):
+    """Whether `name` still holds the coordinates this recording last put in it.
+
+    The identity check. Its job is to catch "same NAME, different object" -- yesterday's
+    .pse of this design reopened under the name mid-run matches on atom count exactly, so
+    counting cannot tell them apart, and every writer here would then be editing somebody
+    else's structure.
+
+    It compares the ANCHOR state -- the one this recording writes to, which is the display
+    slot once there is one and state 1 before that -- against `record['written']`, the
+    coordinates last put there. It used to compare state 1 against the SEED, which worked
+    only while state 1 was never rewritten. With `keep_frames=0` the object has a single
+    state that IS the animated display, so the anchor has to follow the writes instead.
 
     Rank-scoped, so it reads the generated chain and nothing else; `rank` is the file
-    order the layout was reported in, where `index` is PyMOL's sorted order. Cheap: one
-    `iterate_state` over the generated chain alone, once per captured frame -- 120 atoms
-    for a 24-residue design, fifty times in a multi-minute run.
+    order the layout was reported in, where `index` is PyMOL's sorted order. Measured on
+    the real 450-atom design: 0.132 ms.
     """
     try:
         offset = len(record['target'])
+        expected = record.get('written') or record['design']
+        anchor = record.get('display_state') or 1
         held = []
-        _self.iterate_state(1, '%s and rank %d-%d'
+        _self.iterate_state(anchor, '%s and rank %d-%d'
                             % (name, offset, offset + record['atoms'] - 1),
                             'L.append((rank, x, y, z))', space={'L': held})
-        if len(held) != len(record['design']):
+        if len(held) != len(expected):
             return False
-        for entry, written in zip(sorted(held), record['design']):
+        for entry, written in zip(sorted(held), expected):
             # 0.01 A: the seed round-trips through the PDB's three decimals and float32
             # storage, so this is "the same coordinates", not "close enough".
             if max(abs(a - b) for a, b in zip(entry[1:], written)) > 0.01:
@@ -1082,7 +1094,7 @@ def _refuse_seed(name, reason, _self=cmd):
     return False
 
 
-def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
+def trajectory_seed(name, pdb, design_offset, design_atoms, keep=1, _self=cmd):
     """Create the design's object from the FIRST captured frame. Called once.
 
     `pdb` is the whole object -- target chain plus a poly-ALA generated chain -- as
@@ -1217,10 +1229,19 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
             #: How many CAPTURED frames have landed, which is also the index of the last
             #: of them: states 1..captured are model output and nothing else ever is.
             'captured': 1,
-            #: Index of the one state the smooth display rewrites, or None while there is
-            #: nothing to interpolate. Always `captured + 1`, so it is never state 1 --
-            #: which `_holds_the_seed` reads, and must keep reading the seed.
-            'display_state': None,
+            #: Whether captured frames are KEPT as states of the object.
+            #:
+            #: On, the object grows one state per model frame and you can scrub them
+            #: afterwards. Off -- the default -- the frames are still captured and still
+            #: animated, but nothing is appended: the object holds the single display
+            #: state throughout and at delivery that slot becomes the design, so the
+            #: finished object is indistinguishable from a `live_view=0` run.
+            'keep': bool(int(keep)),
+            #: The state the animation rewrites, and the one `_holds_our_writes` reads.
+            #: With frames kept it is `captured + 1` and appears once there are two
+            #: frames to interpolate between; without, it is state 1 from the start,
+            #: because the object's only state IS the display.
+            'display_state': None if int(keep) else 1,
             #: The two ends of the current animation, and the gap it plays over.
             'prev_design': None,
             'last_design': [record[3] for record in written[offset:]],
@@ -1249,6 +1270,9 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
             # read `raymol-live:<uuid>` in the inspector for the whole run, and it
             # survived into their .pse on states 2..N.
             'design': [record[3] for record in written[offset:]],
+            #: The coordinates last written to the anchor state. Starts as the seed's,
+            #: because that is what state 1 holds.
+            'written': [record[3] for record in written[offset:]],
         }
         return True
     except Exception as exc:
@@ -1311,18 +1335,24 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
             # The object is no longer the one the record describes -- atoms removed or
             # added under it. Refused rather than spliced into a shape that has changed.
             return False
-        if not _holds_the_seed(name, record, _self=_self):
+        if not _holds_our_writes(name, record, _self=_self):
             # Same NAME, different object -- see `_TRAJECTORY['design']`.
             return False
         import time
         design = [values[i * 3:i * 3 + 3] for i in range(atoms)]
         now = time.monotonic()
-        # The captured frame goes at ITS OWN index, `captured + 1`. When a display state
-        # exists it is sitting at exactly that index, so this overwrites it -- which is
-        # the point: nothing interpolated survives, the slot becomes model output, and
-        # the object gains exactly one state per captured frame either way.
+        keep = record.get('keep', True)
         state = record['captured'] + 1
-        _self.load_coordset(record['target'] + design, name, state)
+        if keep:
+            # The captured frame goes at ITS OWN index, `captured + 1`. When a display
+            # state exists it is sitting at exactly that index, so this overwrites it --
+            # which is the point: nothing interpolated survives, the slot becomes model
+            # output, and the object gains exactly one state per captured frame.
+            _self.load_coordset(record['target'] + design, name, state)
+        # Counted either way: the frame WAS captured, and `live_steps` means model frames
+        # whether or not they are kept. Nothing is appended when they are not -- the
+        # object holds the single display state and the animation runs exactly as it does
+        # with them, from the two ends held in this record rather than from states.
         record['captured'] = state
         gap = now - record.get('last_arrival', now)
         if gap > 0:
@@ -1330,7 +1360,7 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
         record['prev_design'] = record.get('last_design')
         record['last_design'] = design
         record['last_arrival'] = now
-        if int(smooth) and record['prev_design'] is not None:
+        if keep and int(smooth) and record['prev_design'] is not None:
             # A new display slot, appended after the captured frame and started at the
             # PREVIOUS frame -- the animation runs from there to the one that just
             # landed, over the interval that just elapsed. That is why the display lags
@@ -1342,13 +1372,14 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
             display = state + 1
             _self.load_coordset(record['target'] + record['prev_design'], name, display)
             record['display_state'] = display
+            record['written'] = record['prev_design']
             if not took_over:
                 # The slot still moves so the recording keeps its shape and delivery
                 # overwrites the right state -- but a user who has taken the object is
                 # left where they are, which is what they were told would happen.
                 _self.set('state', display, name)
                 record['head_state'] = display
-        elif int(advance):
+        elif keep and int(advance):
             _self.set('state', state, name)
             record['head_state'] = state
         return True
@@ -1423,7 +1454,7 @@ def trajectory_display(name, _self=cmd):
         if record is None or record.get('user_scrubbed'):
             return False
         display = record.get('display_state')
-        if display is None:
+        if display is None or record.get('prev_design') is None:
             # The first captured frame has no predecessor, so there is nothing to
             # interpolate from yet. Showing it plainly is the right answer.
             return False
@@ -1442,7 +1473,7 @@ def trajectory_display(name, _self=cmd):
             # check exists to guard a write. Skipping it here is what keeps an idle tick
             # cheap; putting it first made the "early out" cost more than the work.
             return False
-        if not _holds_the_seed(name, record, _self=_self):
+        if not _holds_our_writes(name, record, _self=_self):
             # SAME NAME, DIFFERENT OBJECT -- see `_TRAJECTORY['design']`. This writer has
             # to make the check for the same reason the other two do, and more so: it is
             # the one that writes COORDINATES, thirty times a second, so an unverified
@@ -1470,6 +1501,8 @@ def trajectory_display(name, _self=cmd):
             return False
         _self.load_coordset(record['target'] + middle, name, display)
         record['fraction'] = fraction
+        # The anchor now holds this, and the identity check compares against it.
+        record['written'] = middle
         return True
     except Exception:
         return False
@@ -1521,7 +1554,7 @@ def _finish_trajectory(path, name, record, _self=cmd):
                 ' as a fresh object instead.'
                 % (name, _self.count_atoms(name), expected))
             return False
-        if not _holds_the_seed(name, record, _self=_self):
+        if not _holds_our_writes(name, record, _self=_self):
             # The same check every frame makes, applied once more here. Counting alone
             # cannot see this: an impostor -- yesterday's .pse of this design, reopened
             # under the name mid-run -- matches on atoms exactly, and delivery would then
@@ -1651,7 +1684,17 @@ def deliver_result(path, name, seed=None, _self=cmd):
         except Exception as exc:
             colorprinting.warning(' design: could not assign secondary structure to %s'
                                   ' (%s)' % (name, exc))
-        if live is not None:
+        # `keep_frames=0` leaves a single state, which has nothing to pin -- and a plain
+        # run leaves no per-object `state` setting behind, so neither may this, or the two
+        # objects would be distinguishable by a leftover setting. The seed SET one (state
+        # 1, so the "has the user taken over?" check had an unambiguous baseline), so it
+        # is not enough to skip the pin here: the seed's has to be removed.
+        if live is not None and _self.count_states(name) <= 1:
+            try:
+                _self.unset('state', name)
+            except Exception:
+                pass
+        if live is not None and _self.count_states(name) > 1:
             try:
                 # PINNED to the final state, via the OBJECT's own `state` setting rather
                 # than `cmd.frame`. `cmd.frame` writes the global movie frame, which
@@ -1704,7 +1747,7 @@ def deliver_result(path, name, seed=None, _self=cmd):
 
 def design_backbone(generator, target, hotspots, length=60, name='', n_designs=1,
                     diffusion_steps=200, recycling_steps=2, seed=None, live_view=None,
-                    live_steps=None, quiet=1, _self=cmd):
+                    live_steps=None, keep_frames=0, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -1779,6 +1822,14 @@ ARGUMENTS
         {default: none, meaning the runtime's own cadence of one frame every 4
         rollout steps -- which is 50 states at diffusion_steps=200, but 5 at 20 and
         2 at 6, because it is a fixed interval rather than a fixed count}
+
+    keep_frames = 0/1: keep the captured frames as states of the finished object,
+        so they can be scrubbed afterwards. Off by default: watching is the point,
+        and the states are opt-in. With it off the run animates exactly the same
+        way -- every frame is still captured and still shown -- but nothing is
+        appended, and the object you are left with is indistinguishable from a
+        live_view=0 run: one state, the design. Only meaningful with the live view
+        on; live_view=0 alongside it is a contradiction and is refused. {default: 0}
 
 EXAMPLES
 
@@ -1882,8 +1933,9 @@ SEE ALSO
     # nothing" failure this feature keeps closing. Refusing also makes the case observable
     # in something other than a log line: `live_view=0` already forces both fields off, so
     # a warning was the ONLY thing distinguishing the two paths.
+    keep = bool(int(keep_frames))
     if live_view is None:
-        watch = live_steps is not None
+        watch = live_steps is not None or keep
     else:
         watch = bool(int(live_view))
         if live_steps is not None and not watch:
@@ -1891,6 +1943,10 @@ SEE ALSO
                 'live_steps=%d asks for a %d-state live recording and live_view=0 asks'
                 ' for none -- drop whichever one you did not mean.'
                 % (live_steps, live_steps))
+        if keep and not watch:
+            raise PredictionOptionError(
+                'keep_frames=1 asks to keep the live view\'s frames and live_view=0 asks'
+                ' for no live view -- drop whichever one you did not mean.')
 
     # THE derivation, on this side, so the number can be reported before the run starts.
     # The wire carries the INTERVAL. `None` means "the runtime's default cadence", which
@@ -1904,14 +1960,18 @@ SEE ALSO
             # The counts are quantised, so asking for 30 and getting 29 is a small
             # surprise that costs nothing to remove. Said before the run, not after it.
             colorprinting.parrot(
-                ' design: live view will capture %d state%s%s, every %d of the %d rollout'
-                ' steps; the finished design is appended after them.'
+                ' design: live view will capture %d model frame%s%s, every %d of the %d'
+                ' rollout steps; %s'
                 % (achievable, '' if achievable == 1 else 's',
                    '' if achievable == live_steps
                    else ' (the nearest to the %d requested -- the interval is a whole'
                         ' number of steps, so the reachable counts are spaced out)'
                         % live_steps,
-                   live_interval, rollout_steps))
+                   live_interval, rollout_steps,
+                   'they are kept as states and the finished design is appended after'
+                   ' them.' if keep else
+                   'they are animated and discarded, so the object ends as the design'
+                   ' alone -- pass keep_frames=1 to scrub them afterwards.'))
 
 
     # Validated BEFORE the weight fetch starts and before anything is submitted: a refused
@@ -1974,7 +2034,8 @@ SEE ALSO
         design_spec = type(spec)(spec.target, spec.length, name=object_name,
                                  generator_id=spec.generator_id,
                                  design_chain=spec.design_chain,
-                                 live_view=watch, live_interval=live_interval)
+                                 live_view=watch, live_interval=live_interval,
+                                 keep_frames=keep)
         if fetch is not None:
             job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
                                      object_name)

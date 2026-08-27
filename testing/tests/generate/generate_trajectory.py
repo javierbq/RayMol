@@ -991,10 +991,11 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertEqual(cmd.count_states(self.name), 1)
         self.assertEqual(self.displayed_state(), 1)
 
-    def testTheDISPLAYSTATEISNEVERSTATEONE(self):
-        # `_holds_the_seed` reads state 1 to decide whether this object is still the
-        # recording it seeded. If the display ever landed there, the identity check would
-        # be comparing against something being rewritten thirty times a second.
+    def testTheDISPLAYSTATEISNEVERSTATEONEWhenFramesAreKept(self):
+        # With frames kept, states 1..N are model output and the display sits after them,
+        # so it must never land on state 1. (With `keep_frames=0` it deliberately IS
+        # state 1 -- there are no captured states for it to sit after -- which is why the
+        # identity check follows what was last WRITTEN rather than the seed.)
         self.assertTrue(self.seed())
         for step in range(4):
             self._capture(_backbone(self.LENGTH, offset=(step, 0, 0)))
@@ -1002,7 +1003,7 @@ class LiveObjectTest(GeneratorTestCase):
             if display is not None:
                 self.assertGreaterEqual(display, 3, 'step %d' % step)
             # And the identity check still passes at every point.
-            self.assertTrue(self.designing._holds_the_seed(
+            self.assertTrue(self.designing._holds_our_writes(
                 self.name, self.designing._TRAJECTORY[self.name]))
 
     def testACAPTUREDSTATEISNEVERMODIFIEDAFTERITLANDS(self):
@@ -1288,6 +1289,150 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertEqual(cmd.count_states(self.name), 4, '3 captured + 1 display')
         self.assertEqual(self.displayed_state(), 4)
         self.assertEqual(self.designing._TRAJECTORY[self.name]['captured'], 3)
+
+    # -- keep_frames: the states are opt-in ------------------------------------
+
+    def _seed_keeping(self, keep, coords=None):
+        return self.designing.trajectory_seed(
+            self.name,
+            _seed_pdb(length=self.LENGTH, coords=coords, target=self.TARGET),
+            self.target_atoms, self.design_atoms, keep=keep)
+
+    def _run(self, keep, frames=5):
+        """Seed, animate through `frames` captured frames, deliver. Returns the object."""
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.assertTrue(self._seed_keeping(keep))
+        for step in range(1, frames + 1):
+            self.assertTrue(self.designing.trajectory_frame(
+                self.name, _flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0))),
+                advance=0, smooth=1))
+            for _ in range(3):
+                self.designing.trajectory_display(self.name)
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        self.designing.deliver_result(self.result_path(coords=final), self.name)
+
+    def _fingerprint(self):
+        """Everything about the finished object a user could tell apart."""
+        ranks = []
+        cmd.iterate(self.name, 'L.append(rank)', space={'L': ranks})
+        model = cmd.get_model(self.name)
+        resn = []
+        cmd.iterate(self.name, 'L.append(resn)', space={'L': resn})
+        return {
+            'states': cmd.count_states(self.name),
+            'atoms': cmd.count_atoms(self.name),
+            'coords': [tuple(round(c, 4) for c in a.coord)
+                       for a in cmd.get_model(self.name, state=1).atom],
+            'bonds': sorted((min(ranks[b.index[0]], ranks[b.index[1]]),
+                             max(ranks[b.index[0]], ranks[b.index[1]]), b.order)
+                            for b in model.bond),
+            'resn': resn,
+            'ss': [a.ss for a in model.atom],
+            # A leftover per-object `state` pin is itself a difference, and detecting one
+            # takes a probe: `cmd.get('state', obj)` returns the object's own setting when
+            # it has one and FALLS BACK to the global when it does not. So move the global
+            # somewhere distinctive and see whether the object follows it.
+            'pinned': self._has_state_pin(),
+        }
+
+    def _has_state_pin(self):
+        sentinel = 9
+        cmd.set('state', sentinel)
+        try:
+            return int(cmd.get('state', self.name)) != sentinel
+        finally:
+            cmd.set('state', 1)
+
+    def testWithFramesDISCARDEDTheObjectIsIndistinguishableFromAPlainRun(self):
+        # THE invariant, and the thing that makes the default safe. With the toggle off a
+        # live run must leave exactly what `live_view=0` leaves -- same states, same
+        # coordinates, same bonds INCLUDING ORDERS, same residue names, same secondary
+        # structure, and no leftover per-object `state` pin, because a plain run has none
+        # and a one-state object has nothing to pin.
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        path = self.result_path(coords=final)
+
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.designing.register_pending(self.name, 'job-plain')
+        self.designing.deliver_result(path, self.name)
+        plain = self._fingerprint()
+
+        cmd.delete('all')
+        self.designing._TRAJECTORY.clear()
+        self.assertTrue(self._seed_keeping(0))
+        for step in range(1, 6):
+            self.assertTrue(self.designing.trajectory_frame(
+                self.name, _flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0))),
+                advance=0, smooth=1))
+            for _ in range(3):
+                self.designing.trajectory_display(self.name)
+        self.designing.deliver_result(path, self.name)
+        live = self._fingerprint()
+
+        self.assertEqual(live['states'], 1, 'discarded frames must leave one state')
+        for key in ('states', 'atoms', 'coords', 'bonds', 'resn', 'ss', 'pinned'):
+            self.assertEqual(live[key], plain[key],
+                             '%s differs between a discarded-frame live run and a '
+                             'plain one' % key)
+
+    def testWithFramesKEPTTheStatesAreThereToScrub(self):
+        # The positive control for the test above: with the toggle ON the states exist,
+        # so "indistinguishable" is a property of the toggle rather than of the code
+        # never keeping anything.
+        self._run(keep=1, frames=5)
+        self.assertEqual(cmd.count_states(self.name), 7, '6 captured + the design')
+        self.assertGreater(cmd.count_states(self.name), 1)
+
+    def testDiscardingFramesStillAnimates(self):
+        # The whole point of the option: the run looks the same, only the leftovers
+        # differ. Nothing is appended, and the single state still moves.
+        self.assertTrue(self._seed_keeping(0))
+        self.assertEqual(cmd.count_states(self.name), 1)
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0, smooth=1)
+        self.designing.trajectory_frame(
+            self.name, _flat(_backbone(self.LENGTH, offset=(10.0, 0, 0))),
+            advance=0, smooth=1)
+        self.assertEqual(cmd.count_states(self.name), 1,
+                         'nothing may be appended when frames are discarded')
+        self.assertEqual(self.designing._TRAJECTORY[self.name]['display_state'], 1,
+                         'the object\'s only state IS the display')
+        before = self._state_coords(1)
+        import time
+        time.sleep(0.05)
+        self.assertTrue(self.designing.trajectory_display(self.name))
+        self.assertNotEqual(self._state_coords(1), before,
+                            'the single state must still animate')
+        # And the captured count still tracks the model frames, because `live_steps`
+        # means model frames whether or not they are kept.
+        self.assertEqual(self.designing._TRAJECTORY[self.name]['captured'], 3)
+
+    def testTheIdentityCheckStillHoldsWithNothingAppended(self):
+        # The anchor moved: with frames discarded, state 1 IS the animated display, so
+        # comparing it against the SEED would fail on the first tick. It follows what was
+        # last written instead -- and must still reject an object it did not seed.
+        self.assertTrue(self._seed_keeping(0))
+        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
+                                        advance=0, smooth=1)
+        self.designing.trajectory_frame(
+            self.name, _flat(_backbone(self.LENGTH, offset=(10.0, 0, 0))),
+            advance=0, smooth=1)
+        record = self.designing._TRAJECTORY[self.name]
+        for _ in range(5):
+            self.assertTrue(self.designing.trajectory_display(self.name))
+            self.assertTrue(self.designing._holds_our_writes(self.name, record),
+                            'the anchor must follow the animation, not the seed')
+        # An impostor is still rejected.
+        cmd.delete(self.name)
+        cmd.read_pdbstr(_result_pdb(length=self.LENGTH, target=self.TARGET,
+                                    coords=_backbone(self.LENGTH, offset=(99.0, 0, 0))),
+                        self.name, zoom=0)
+        cmd.set('state', 1, self.name)
+        record['head_state'] = 1
+        self.assertFalse(self.designing._holds_our_writes(self.name, record))
+        self.assertFalse(self.designing.trajectory_display(self.name))
 
     # -- What a run that never finishes leaves behind --------------------------
 

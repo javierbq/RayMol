@@ -270,6 +270,10 @@ class RFD3Generator(Generator):
         # side predating this parameter also says, so the two are one request.
         if getattr(spec, 'live_interval', None) is not None:
             extra['live_interval'] = int(spec.live_interval)
+        # Only when ON. Absent means the default, which is to discard -- and is what a
+        # Python side predating this parameter also says.
+        if getattr(spec, 'keep_frames', False):
+            extra['keep_frames'] = True
         return host.submit(spec, options, weights_path, runtime=RUNTIME,
                            knobs=self.option_defaults, extra=extra)
 

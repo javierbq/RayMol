@@ -288,5 +288,9 @@ class DesignKeyTest(GeneratorTestCase):
         # `live_steps` changes when the design is seen, never what it is.
         self.spec.live_interval = 17
         self.assertEqual(before, self.key())
+        # Nor whether the frames it captured are KEPT. Same reason again: the states are
+        # a presentation choice, not a property of the design.
+        self.spec.keep_frames = True
+        self.assertEqual(before, self.key())
         self.spec.live_interval = 1
         self.assertEqual(before, self.key())
