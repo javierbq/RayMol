@@ -3088,7 +3088,6 @@ struct ContentView: View {
     /// Design, the iOS rail used outline variants and `wand.and.stars`.
     private var activeInteractionTool: (name: String, macIcon: String, railIcon: String)? {
         if engine.interactionMode == .move { return ("Move", "move.3d", "move.3d") }
-        if engine.interactionMode == .boxSelect { return ("Box Select", "square.dashed", "square.dashed") }
         if engine.measureMode != nil { return ("Measure", "ruler.fill", "ruler") }
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
@@ -3119,17 +3118,9 @@ struct ContentView: View {
         }
         .disabled(isDesignLocked)
 
-        Button {
-            engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
-        } label: {
-            if engine.interactionMode == .boxSelect {
-                Label("Box Select", systemImage: "checkmark")
-            } else {
-                Text("Box Select")
-            }
-        }
-        .disabled(isDesignLocked)
-
+        // (Box Select is deliberately absent: its control is the lasso toggle in
+        // the Selections panel header, which both enters the mode and shows that
+        // it is on. A second entry point here would be a second thing to find.)
         Button {
             engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
         } label: {

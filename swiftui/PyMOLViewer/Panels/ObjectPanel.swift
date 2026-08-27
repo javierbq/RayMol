@@ -1164,8 +1164,12 @@ struct ObjectPanel: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Box select")
-                        .help("Box select — drag a rectangle over the viewport to "
-                              + "add what it covers to the selection")
+                        // The lasso is the ONLY affordance for this tool, so the
+                        // tooltip carries the whole interaction, not just a name.
+                        .help("Box select — puts a rectangle on the viewport and adds "
+                              + "everything under it to the selection. Drag its edges, "
+                              + "corners or middle to adjust. Close with ✕, Esc, or "
+                              + "this button.")
 
                         Button(action: { showSelectionBuilder = true }) {
                             Image(systemName: "plus")
