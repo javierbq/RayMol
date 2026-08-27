@@ -35,12 +35,20 @@ final class RFD3JobManager: InferenceRuntime {
     /// The Python surface that owns this runtime's placeholders and metric records.
     static let pythonModule = "designing"
 
-    /// Capture one frame in this many diffusion steps when live view is on.
+    /// How many frames a live run captures when `live_steps` is not given.
     ///
-    /// Four gives ~50 frames from a 199-step run — about 1.7 s at 30 fps, enough to read
-    /// as motion — against 199 round trips that would put roughly 1.2 MB of Python source
-    /// through the main thread during a run that is already GPU-saturated.
-    static let trajectoryStepInterval = 4
+    /// A FRAME COUNT rather than an interval, so the default and the parameter are one
+    /// concept and there is one derivation path:
+    /// ``RFD3Trajectory/captureInterval(frames:total:)`` turns it into the every-Nth-step
+    /// the rollout actually uses. Fifty is what the old fixed interval of 4 produced at
+    /// the default 200 diffusion steps — about 1.7 s at 30 fps, enough to read as motion —
+    /// against 199 round trips that would put roughly 1.2 MB of Python source through the
+    /// main thread during a run that is already GPU-saturated.
+    ///
+    /// It differs from the old constant at NON-default schedules, and better: a 6-step run
+    /// used to yield 2 frames (steps 4 and 5, every 4th of 5) and now yields 5, because
+    /// "about fifty" over five available steps is all five.
+    static let defaultTrajectoryFrames = 50
 
     /// The statement that creates the live object.
     ///
@@ -298,7 +306,13 @@ final class RFD3JobManager: InferenceRuntime {
             // could not be drawn.
             if request.liveView == true, let objectName = request.objectName,
                !objectName.isEmpty {
-                let interval = Self.trajectoryStepInterval
+                // Derived once, here, from the frame count the request carries or the
+                // default. `total` is the schedule's transition count, which is what
+                // `shouldCapture` compares its final-step arm against.
+                let rolloutSteps = max(request.diffusionSteps - 1, 1)
+                let interval = RFD3Trajectory.captureInterval(
+                    frames: request.liveSteps ?? Self.defaultTrajectoryFrames,
+                    total: rolloutSteps)
                 var seeded = false
                 // Cleared when Python refuses the seed; every later frame is then skipped
                 // rather than emitted into a recording that does not exist.
@@ -434,7 +448,7 @@ final class RFD3JobManager: InferenceRuntime {
     ///
     /// Each call enqueues rather than blocks; the rollout never waits for a frame to
     /// render. The queue is FIFO, so the seed always precedes the frames. At most
-    /// `diffusionSteps / trajectoryStepInterval` items accumulate — one seed plus 49
+    /// `live_steps` (50 by default) items accumulate — one seed plus 49
     /// frames for a 200-step run — which is acceptable without a drop policy.
     private func runPythonOnMain(_ source: String) {
         DispatchQueue.main.async {

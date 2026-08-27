@@ -156,6 +156,11 @@ enum InferenceJob {
         /// like every field around it: absent means off, which is what every Python side
         /// that predates it writes.
         let liveView: Bool?
+        /// How many frames a live run should capture. Optional, absent meaning
+        /// ``RFD3JobManager/defaultTrajectoryFrames`` — a Python side that predates this
+        /// writes no such key. PRESENTATION only, like `liveView`: it changes when the
+        /// design is seen, never what it is, so it is absent from the design key.
+        let liveSteps: Int?
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
@@ -165,6 +170,7 @@ enum InferenceJob {
             case target, hotspots, designLength = "design_length"
             case designChain = "design_chain", designKey = "design_key"
             case liveView = "live_view"
+            case liveSteps = "live_steps"
         }
     }
 

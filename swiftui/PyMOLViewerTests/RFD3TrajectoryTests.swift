@@ -266,8 +266,95 @@ final class RFD3TrajectoryTests: XCTestCase {
         XCTAssertTrue(source.contains("[1.000,2.000,3.000,4.000,5.000,6.000]"), source)
     }
 
-    func testTheCaptureIntervalIsAConstantNotALiteral() {
-        XCTAssertEqual(RFD3JobManager.trajectoryStepInterval, 4)
+    func testTheDefaultFrameCountIsAConstantNotALiteral() {
+        XCTAssertEqual(RFD3JobManager.defaultTrajectoryFrames, 50)
+        // And it still produces exactly what the old fixed interval of 4 did at the
+        // default schedule, which is what makes this a refactor of the default rather
+        // than a change to it.
+        XCTAssertEqual(RFD3Trajectory.captureInterval(frames: 50, total: 199), 4)
+        XCTAssertEqual(RFD3Trajectory.frameCount(interval: 4, total: 199), 50)
+    }
+
+    // MARK: live_steps — a frame COUNT, turned into an interval in one place
+
+    /// What the rollout would actually capture at `interval`, counted by replaying
+    /// `shouldCapture` rather than by trusting `frameCount`.
+    private func captured(interval: Int, total: Int) -> [Int] {
+        (1 ... total).filter {
+            RFD3Trajectory.shouldCapture(step: $0, interval: interval, total: total)
+        }
+    }
+
+    func testFrameCountAgreesWithWhatShouldCaptureActuallyYields() {
+        // `frameCount` is arithmetic and `shouldCapture` is the rule. If they disagreed,
+        // every derived interval would be off and nothing else here would notice.
+        for total in [199, 99, 60, 19, 5, 1] {
+            for interval in 1 ... total {
+                XCTAssertEqual(RFD3Trajectory.frameCount(interval: interval, total: total),
+                               captured(interval: interval, total: total).count,
+                               "interval \(interval) over \(total)")
+            }
+        }
+    }
+
+    func testTheDerivedIntervalYieldsTheRequestedNumberOfFrames() {
+        // Including 1, counts that divide evenly, and counts that cannot land exactly.
+        // 199 steps admits 199, 100, 67, 50, 40, 34, ... so 7 is reachable (interval 29)
+        // while `round(199/7)` = 28 would give 8 — which is why the derivation scans.
+        let total = 199
+        for wanted in [1, 2, 4, 7, 10, 12, 25, 40, 50, 67, 100, 199] {
+            let interval = RFD3Trajectory.captureInterval(frames: wanted, total: total)
+            XCTAssertEqual(captured(interval: interval, total: total).count, wanted,
+                           "asked \(wanted), interval \(interval)")
+        }
+    }
+
+    func testAnUnreachableCountLandsOnTheNEARESTAchievableOne() {
+        // The counts are quantised, so exactness is often impossible. Nearest, not
+        // nearest-below: asked 99 of 199, "at most" would give 67 and this gives 100.
+        let total = 199
+        let interval = RFD3Trajectory.captureInterval(frames: 99, total: total)
+        XCTAssertEqual(captured(interval: interval, total: total).count, 100)
+        // And it is genuinely the nearest — no interval does better.
+        for candidate in 1 ... total {
+            let count = RFD3Trajectory.frameCount(interval: candidate, total: total)
+            XCTAssertGreaterThanOrEqual(abs(count - 99), abs(100 - 99),
+                                        "interval \(candidate) gave \(count)")
+        }
+    }
+
+    func testTheFinalRolloutStepIsAlwaysCaptured() {
+        // At every count, at every schedule: the recording must end where the design
+        // does, not up to `interval - 1` steps short of it.
+        for total in [199, 99, 60, 19, 5, 1] {
+            for wanted in [1, 3, 7, 12, 50, total] where wanted <= total {
+                let interval = RFD3Trajectory.captureInterval(frames: wanted, total: total)
+                XCTAssertTrue(
+                    RFD3Trajectory.shouldCapture(step: total, interval: interval,
+                                                 total: total),
+                    "wanted \(wanted) of \(total) -> interval \(interval)")
+            }
+        }
+    }
+
+    func testAskingForEveryStepGivesEveryStep() {
+        let interval = RFD3Trajectory.captureInterval(frames: 199, total: 199)
+        XCTAssertEqual(interval, 1)
+        XCTAssertEqual(captured(interval: interval, total: 199).count, 199)
+    }
+
+    func testTheDerivationIsSafeAtTheEdges() {
+        // Python refuses these before a job exists; this is belt and braces, because the
+        // one thing the derivation may not do is return 0 and make `shouldCapture` refuse
+        // every step for the whole run.
+        for frames in [0, -1, 1_000_000] {
+            for total in [199, 1] {
+                let interval = RFD3Trajectory.captureInterval(frames: frames, total: total)
+                XCTAssertGreaterThanOrEqual(interval, 1, "frames \(frames)")
+                XCTAssertFalse(captured(interval: interval, total: total).isEmpty)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(RFD3Trajectory.captureInterval(frames: 5, total: 0), 1)
     }
 
     func testSeedPythonPreservesNewlinesInThePDBPayload() {
