@@ -222,16 +222,7 @@ struct ProgressItem: Identifiable, Equatable {
     /// the statement, and an unusual one cannot shadow something a user's
     /// `~/.raymolrc.py` put there.
     private static func pythonCall(_ function: String, _ name: String) -> String {
-        "from pymol import cmd as _c\n_c.\(function)(\(pythonLiteral(name)))"
-    }
-
-    /// A Python single-quoted string literal for an arbitrary object name.
-    /// Matches the escaping in InferenceJob.pythonLiteral(_:).
-    private static func pythonLiteral(_ value: String) -> String {
-        "'" + value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "") + "'"
+        "from pymol import cmd as _c\n_c.\(function)(\(InferenceJob.pythonLiteral(name)))"
     }
 
     /// Everything the tray should show, in order.

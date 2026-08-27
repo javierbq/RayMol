@@ -384,6 +384,20 @@ struct ContentView: View {
         .allowsHitTesting(true)
     }
 
+    // Live hover readout chip (issue #359): names whatever the cursor is over, at
+    // the current selection level. Shared by the macOS and iOS viewports. Empty
+    // space (or the setting off) publishes nil, so the chip disappears rather
+    // than going stale. Animated so a sweep across the structure reads as the
+    // text updating, not as flicker.
+    @ViewBuilder private var hoverReadoutOverlay: some View {
+        if let readout = engine.hoverReadout, engine.hoverReadoutEnabled {
+            HoverReadoutChip(text: readout)
+                .padding(10)
+                .transition(.opacity)
+                .animation(.easeOut(duration: 0.12), value: readout)
+        }
+    }
+
     // MARK: - macOS: HSplitView with sidebar
 
     #if os(macOS)
@@ -964,6 +978,16 @@ struct ContentView: View {
                 }
             }
             #endif
+            // Box Select rubber band (#358). Unlike the Move gizmo (a 3D CGO in
+            // the Metal scene) the box is pure 2D screen furniture, so SwiftUI
+            // draws it; MetalViewport hit-tests the same rectangle in NDC.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal
             // scene by metal_move.py; no SwiftUI overlay is needed. Input is
             // hit-tested against the projected geometry in MetalViewport.)
@@ -979,6 +1003,11 @@ struct ContentView: View {
                                          hovered: engine.hoveredHandle)
                 }
             }
+            // Live hover readout (issue #359), top-trailing. Only ever populated
+            // in viewing mode — the hover pick bails out under move/measure and
+            // Design mode runs its own hover path — so it can never collide with
+            // the mode bars that occupy the top edge above.
+            .overlay(alignment: .topTrailing) { hoverReadoutOverlay }
             // Mouse-mode legend as a compact floating card at the bottom-trailing
             // corner, so it's reachable even when the right column is collapsed
             // (where MousePanel used to live). Minimizable to free up the view.
@@ -2622,6 +2651,15 @@ struct ContentView: View {
                 #endif
             }
             .animation(.easeOut(duration: 0.35), value: hasRestoreSnapshot)
+            // Box Select rubber band (#358) — see the macOS site for why this one
+            // is SwiftUI and the Move gizmo is not.
+            .overlay {
+                if engine.interactionMode == .boxSelect {
+                    BoxSelectRectOverlay(rect: engine.boxRect,
+                                         accent: themeManager.active.accent.color,
+                                         onClose: { engine.endBoxSelection() })
+                }
+            }
             // (The Move-mode gizmo is a 3D CGO object rendered in the Metal scene
             // by metal_move.py; no SwiftUI overlay is needed.)
             // (The floating viewport transport was removed: movie playback lives in
@@ -2662,6 +2700,13 @@ struct ContentView: View {
                 // Keep the help button clear of the floating transport (timeline mode
                 // docks the panel elsewhere, so the viewport is clear then).
                 .padding(.bottom, 0)
+            }
+            // Live hover readout (issue #359). iOS only ever populates this from a
+            // trackpad / Apple Pencil hover (UIHoverGestureRecognizer never fires
+            // for a finger), so pure-touch use never sees the chip. Pushed clear
+            // of the floating top rail, which owns the same corner.
+            .overlay(alignment: .topTrailing) {
+                hoverReadoutOverlay.padding(.top, 44)
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible
@@ -3288,6 +3333,9 @@ struct ContentView: View {
         }
         .disabled(isDesignLocked)
 
+        // (Box Select is deliberately absent: its control is the lasso toggle in
+        // the Selections panel header, which both enters the mode and shows that
+        // it is on. A second entry point here would be a second thing to find.)
         Button {
             engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
         } label: {
@@ -4751,5 +4799,71 @@ struct CalculatingOverlay: View {
             .padding(28)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+/// The Box Select rubber band (#358): the rectangle, its eight grab handles, a
+/// dim wash over everything outside it, and the ✕ that leaves the tool.
+///
+/// Everything except the ✕ is chrome — `allowsHitTesting(false)` — because the
+/// drag routing lives in MetalViewport, which hit-tests the SAME rectangle in
+/// NDC (BoxRect.edges). Two hit-testers over one rectangle would be two chances
+/// to disagree; here the SwiftUI layer only draws. The ✕ is the one exception,
+/// and it sits OUTSIDE the frame so it can't swallow the corner resize handle.
+struct BoxSelectRectOverlay: View {
+    let rect: BoxRect?
+    let accent: Color
+    var onClose: () -> Void = {}
+
+    /// How far outside the top-right corner the ✕ sits, in points.
+    private let closeInset: CGFloat = 13
+
+    var body: some View {
+        GeometryReader { geo in
+            if let rect = rect {
+                let r = rect.inPoints(geo.size)
+                ZStack {
+                    Group {
+                        // Even-odd fill of (whole viewport + box) = everything but the box.
+                        Path { p in
+                            p.addRect(CGRect(origin: .zero, size: geo.size))
+                            p.addRect(r)
+                        }
+                        .fill(Color.black.opacity(0.22), style: FillStyle(eoFill: true))
+
+                        Path { $0.addRect(r) }
+                            .stroke(accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+
+                        ForEach(Array(Self.handleCenters(r).enumerated()), id: \.offset) { _, c in
+                            Circle()
+                                .fill(accent)
+                                .frame(width: 8, height: 8)
+                                .position(c)
+                        }
+                    }
+                    .allowsHitTesting(false)
+
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Color.white, accent)
+                    }
+                    .buttonStyle(.plain)
+                    .position(x: r.maxX + closeInset, y: r.minY - closeInset)
+                    .help("Close Box Select — the selection stays (Esc)")
+                    .accessibilityLabel("Close box select")
+                }
+            }
+        }
+    }
+
+    /// The eight resize handles: every corner and edge midpoint (the centre is
+    /// the translate area, which needs no dot).
+    static func handleCenters(_ r: CGRect) -> [CGPoint] {
+        [r.minX, r.midX, r.maxX].flatMap { x in
+            [r.minY, r.midY, r.maxY].map { CGPoint(x: x, y: $0) }
+        }
+        .filter { !($0.x == r.midX && $0.y == r.midY) }
     }
 }

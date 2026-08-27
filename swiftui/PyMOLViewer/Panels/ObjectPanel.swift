@@ -272,6 +272,9 @@ enum SceneCatalog {
         // special-case) and persisted across launches. Same control as Mouse ▸ Hover.
         SceneParam(setting: "hover_indicator", label: "Hover indicator", kind: .toggle, group: "Canvas",
                    help: "Highlight the residue under the cursor (nearest Cα) before you click, in a distinct cyan — without changing the selection. Also on the Mouse panel; persists across launches."),
+        // Also not a PyMOL setting — bound to engine.hoverReadoutEnabled (#359).
+        SceneParam(setting: "hover_readout", label: "Hover readout", kind: .toggle, group: "Canvas",
+                   help: "Name whatever the cursor is over in the viewport's top-right corner, at the current selection level — object, chain, segment, residue or atom. Persists across launches."),
 
         // --- Camera: viewpoint + lens ---
         SceneParam(setting: "field_of_view", label: "Lens (mm)", kind: .slider, min: 12, max: 135, step: 0.5, decimals: 0, group: "Camera",
@@ -939,6 +942,13 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "deselect":           cmd = "deselect"
     case "hide_everything":    cmd = "hide everything, \(n)"
     case "reset_view":         cmd = "reset"
+    // Moves the objects, not the camera: every object is shifted so their
+    // centers coincide, so switching between unrelated PDBs stops requiring a
+    // re-zoom. Non-destructive (object matrix) — `matrix_reset` puts it back.
+    // The follow-up zoom frames the stacked result — the camera may be aimed
+    // at where things used to be.
+    case "center_all":         cmd = "center_all\nzoom visible"
+    case "center_all_reset":   cmd = "python\nfor _o in cmd.get_names('public_objects'):\n    cmd.matrix_reset(_o, mode=1)\npython end"
     default:                   return
     }
     engine.runCommand(cmd)
@@ -949,10 +959,19 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
 /// omits per-object items (Rename / Duplicate / Delete) and adds global ones
 /// (Deselect, Hide everything, Reset camera).
 private let allActionMenuItems: [ActionMenuItem] = [
-    .action(label: "Zoom",          key: "zoom"),
-    .action(label: "Orient",        key: "orient"),
-    .action(label: "Center",        key: "center"),
-    .action(label: "Reset camera",  key: "reset_view"),
+    .action(label: "Zoom",           key: "zoom"),
+    .action(label: "Orient",         key: "orient"),
+    .action(label: "Center camera",  key: "center"),
+    .action(label: "Reset camera",   key: "reset_view"),
+    .separator,
+    // "Center all" moves the objects onto a shared center; "Center camera"
+    // above only aims the camera. The labels have to carry that distinction —
+    // they sit two rows apart in the same menu.
+    .submenu(label: "Center all objects", children: [
+        .action(label: "stack on first object", key: "center_all"),
+        .separator,
+        .action(label: "undo (reset matrices)", key: "center_all_reset"),
+    ]),
     .separator,
     .action(label: "Deselect",      key: "deselect"),
     .action(label: "Hide everything", key: "hide_everything"),
@@ -1146,9 +1165,31 @@ struct ObjectPanel: View {
                         }
                     }
 
-                    // SELECTIONS — named atom selections; the + opens the builder.
+                    // SELECTIONS — named atom selections; the lasso enters the
+                    // box tool and the + opens the builder. Two ways to make a
+                    // selection, side by side: point at it, or describe it.
                     sectionHeader("SELECTIONS", id: "selections",
                                   tag: selections.isEmpty ? nil : "\(selections.count)") {
+                        // Box Select (#358). A toggle, not a launcher: it arms a
+                        // rectangle in the viewport immediately and 'sele' tracks
+                        // it, so the lit state IS "a box is live right now" and
+                        // switching it off is a way out of the mode.
+                        Button(action: { engine.toggleBoxSelect() }) {
+                            Image(systemName: "lasso")
+                                .font(.system(size: 11))
+                                .foregroundColor(engine.interactionMode == .boxSelect
+                                                 ? PanelTheme.accentColor
+                                                 : PanelTheme.headerColor)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Box select")
+                        // The lasso is the ONLY affordance for this tool, so the
+                        // tooltip carries the whole interaction, not just a name.
+                        .help("Box select — puts a rectangle on the viewport and adds "
+                              + "everything under it to the selection. Drag its edges, "
+                              + "corners or middle to adjust. Close with ✕, Esc, or "
+                              + "this button.")
+
                         Button(action: { showSelectionBuilder = true }) {
                             Image(systemName: "plus")
                                 .font(.system(size: 11))
@@ -3069,6 +3110,13 @@ struct SceneParamRow: View {
                     ToggleSetting(value: engine.hoverPreviewEnabled ? 1 : 0) { on in
                         engine.hoverPreviewEnabled = on
                         if !on { engine.clearHoverPreview() }
+                    }
+                } else if p.setting == "hover_readout" {
+                    // Likewise app-level (#359): gates the top-right identity chip.
+                    // Turning it off clears the chip via the property's didSet; the
+                    // hover pick itself keeps running only if the indicator is on.
+                    ToggleSetting(value: engine.hoverReadoutEnabled ? 1 : 0) { on in
+                        engine.hoverReadoutEnabled = on
                     }
                 } else {
                     ToggleSetting(value: v) { on in engine.runCommand("set \(p.setting), \(on ? 1 : 0)") }

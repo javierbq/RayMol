@@ -522,6 +522,61 @@ extension MetalViewport {
             return (nx, ny, Float(w / h))
         }
 
+        // MARK: - Box Select input (#358)
+
+        // True while Box Select owns the viewport. Every camera gesture below
+        // early-returns on this: the issue's "camera controls are disabled" is
+        // what makes drawing the box possible at all, since otherwise the same
+        // drag would orbit the scene out from under the rectangle.
+        var boxSelectActive: Bool { engine?.interactionMode == .boxSelect }
+
+        // Grab band around the box's edges/corners, in NDC-Y units (~1.75% of the
+        // viewport height each side, so ~20 pt of target on a 600 pt viewport).
+        private let boxGrabSlop: CGFloat = 0.035
+
+        // Press: grab an edge / corner / the interior of the existing box, or —
+        // if the press misses it — start drawing a new one.
+        //
+        // A NEW box opens a session (snapshotting the selection it will compose
+        // against); adjusting the existing one keeps the session it already has,
+        // so dragging a corner back in takes atoms away again instead of
+        // ratcheting them on.
+        private func boxBegin(in view: MTKView, at p: CGPoint) {
+            guard let engine = engine, let (nx, ny, aspect) = gizmoNDC(in: view, at: p) else { return }
+            let ndc = CGPoint(x: CGFloat(nx), y: CGFloat(ny))
+            if let existing = engine.boxRect,
+               let drag = existing.beginDrag(at: ndc, aspect: CGFloat(aspect), slop: boxGrabSlop) {
+                engine.boxDrag = drag
+            } else {
+                engine.boxDrag = BoxRect.beginNewDrag(at: ndc)
+                engine.beginBoxSession()
+            }
+        }
+
+        private func boxUpdate(in view: MTKView, at p: CGPoint) {
+            guard let engine = engine, let drag = engine.boxDrag,
+                  let (nx, ny, _) = gizmoNDC(in: view, at: p) else { return }
+            engine.setBoxRect(drag.rect(at: CGPoint(x: CGFloat(nx), y: CGFloat(ny))))
+        }
+
+        // Release. The drag has been committing all along, so this just lands the
+        // final rectangle. A press that never moved is a TAP: on the box it
+        // leaves it alone, outside it dismisses the box — WITHOUT committing an
+        // empty rectangle, so a stray click can't wipe the selection the box just
+        // made.
+        private func boxEnd(in view: MTKView, at p: CGPoint) {
+            guard let engine = engine else { return }
+            defer { engine.boxDrag = nil }
+            guard let drag = engine.boxDrag,
+                  let (nx, ny, _) = gizmoNDC(in: view, at: p) else { return }
+            let rect = drag.rect(at: CGPoint(x: CGFloat(nx), y: CGFloat(ny)))
+            if rect.isDegenerate {
+                engine.setBoxRect(drag.translates ? drag.origin : nil)
+            } else {
+                engine.setBoxRect(rect)
+            }
+        }
+
         // The gizmo handle under a view point (Move mode only), or nil.
         private func gizmoHit(in view: MTKView, at p: CGPoint) -> GizmoHandle? {
             guard let g = engine?.gizmo, let (nx, ny, aspect) = gizmoNDC(in: view, at: p) else { return nil }
@@ -544,6 +599,12 @@ extension MetalViewport {
             lastHoverLoc = .zero
             mouseDownLoc = view.convert(event.locationInWindow, from: nil)
             didDrag = false
+            // Box Select: the press starts (or grabs) the rectangle; no PyMOL
+            // button event is ever sent, so the camera cannot move.
+            if boxSelectActive {
+                boxBegin(in: view, at: mouseDownLoc)
+                return
+            }
             // Move mode: remember whether the press landed on a gizmo handle, so
             // the drag manipulates the object; otherwise the drag orbits the camera.
             moveHandle = nil
@@ -569,6 +630,9 @@ extension MetalViewport {
         // debounces the actual Python pick.
         func handleMouseMoved(_ event: NSEvent, in view: MTKView) {
             guard !didDrag else { return }
+            // No hover picking while the box tool is on: the box is already
+            // driving the selection, and a hover pick would fight it.
+            guard !boxSelectActive else { return }
             let loc = view.convert(event.locationInWindow, from: nil)
             if lastHoverLoc != .zero,
                hypot(loc.x - lastHoverLoc.x, loc.y - lastHoverLoc.y) < 2 {
@@ -633,6 +697,10 @@ extension MetalViewport {
             // mouse-down.
             defer { didDrag = false }
             let loc = view.convert(event.locationInWindow, from: nil)
+            if boxSelectActive {
+                boxEnd(in: view, at: loc)
+                return
+            }
             let mods = pymolModifiers(event.modifierFlags.rawValue)
             let moved = hypot(loc.x - mouseDownLoc.x, loc.y - mouseDownLoc.y)
 
@@ -770,6 +838,11 @@ extension MetalViewport {
 
         func handleMouseDragged(_ event: NSEvent, in view: MTKView) {
             let loc = view.convert(event.locationInWindow, from: nil)
+            if boxSelectActive {
+                didDrag = true
+                boxUpdate(in: view, at: loc)
+                return
+            }
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
             if engine?.interactionMode == .move {
@@ -824,6 +897,7 @@ extension MetalViewport {
         }
 
         func handleRightMouseDown(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             // Defer PyMOL's button-down: raising it here would immediately enter
             // clip mode, and PyMOL's own pop-up menu is never rendered under this
             // Metal backend (internal_gui=0). A bare right-click instead pops the
@@ -834,6 +908,7 @@ extension MetalViewport {
         }
 
         func handleRightMouseUp(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let loc = view.convert(event.locationInWindow, from: nil)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
@@ -856,6 +931,7 @@ extension MetalViewport {
         }
 
         func handleRightMouseDragged(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let loc = view.convert(event.locationInWindow, from: nil)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
             let moved = hypot(loc.x - rightDownLoc.x, loc.y - rightDownLoc.y)
@@ -872,24 +948,28 @@ extension MetalViewport {
         }
 
         func handleOtherMouseDown(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let pt = pymolPoint(in: view, at: view.convert(event.locationInWindow, from: nil))
             let mods = pymolModifiers(event.modifierFlags.rawValue)
             engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: mods)
         }
 
         func handleOtherMouseUp(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let pt = pymolPoint(in: view, at: view.convert(event.locationInWindow, from: nil))
             let mods = pymolModifiers(event.modifierFlags.rawValue)
             engine?.button(PYMOL_BUTTON_MIDDLE, state: PYMOL_BUTTON_UP, x: pt.0, y: pt.1, modifiers: mods)
         }
 
         func handleOtherMouseDragged(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let pt = pymolPoint(in: view, at: view.convert(event.locationInWindow, from: nil))
             let mods = pymolModifiers(event.modifierFlags.rawValue)
             engine?.drag(x: pt.0, y: pt.1, modifiers: mods)
         }
 
         func handleScrollWheel(_ event: NSEvent, in view: MTKView) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             let loc = view.convert(event.locationInWindow, from: nil)
             let pt = pymolPoint(in: view, at: loc)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
@@ -971,6 +1051,7 @@ extension MetalViewport {
         }
 
         @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             switch gesture.state {
             case .began:
                 lastMag = 0
@@ -995,7 +1076,7 @@ extension MetalViewport {
         // per-button mouse modes. runPython (not runCommand) to avoid echoing
         // `turn z` into the feedback log every frame.
         @objc func handleRotationGesture(_ gesture: NSRotationGestureRecognizer) {
-            guard engine?.trackpadMode == true else { return }
+            guard engine?.trackpadMode == true, !boxSelectActive else { return }
             switch gesture.state {
             case .began:
                 lastRoll = 0
@@ -1018,6 +1099,9 @@ extension MetalViewport {
         #if os(iOS)
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
+            // Box Select: taps belong to the box (handlePan resolves them), not
+            // to atom picking.
+            guard !boxSelectActive else { return }
             // CPU-side pick (metal_pick). Compute NDC in POINT space (not backing
             // pixels) and flip Y: UIKit gesture origin is top-left, PyMOL NDC is
             // bottom-left. (The standard LEFT-click path does NOT select on the
@@ -1073,6 +1157,7 @@ extension MetalViewport {
         // hover left behind — atom preview, hovered handle, and Shift-adjust.
         @objc func handleHover(_ gesture: UIHoverGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
+            guard !boxSelectActive else { return }   // the box drives the selection
             switch gesture.state {
             case .began, .changed:
                 let p = gesture.location(in: view)
@@ -1117,6 +1202,17 @@ extension MetalViewport {
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView else { return }
             let location = gesture.location(in: view)
+
+            // Box Select: one finger (or the Pencil) draws / adjusts the box.
+            if boxSelectActive {
+                switch gesture.state {
+                case .began:            boxBegin(in: view, at: location)
+                case .changed:          boxUpdate(in: view, at: location)
+                case .ended, .cancelled: boxEnd(in: view, at: location)
+                default: break
+                }
+                return
+            }
 
             if engine?.interactionMode == .move {
                 handleMovePan(gesture, in: view, at: location)
@@ -1184,6 +1280,7 @@ extension MetalViewport {
         }
 
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             // Pinch → zoom via explicit dolly. gesture.scale is cumulative (1.0
             // at start); feed its per-callback change as a zoom fraction (NOT
             // velocity, which fired erratically and only once).
@@ -1217,7 +1314,7 @@ extension MetalViewport {
         // (handleTap already flips Y the same way for picking; macOS gets this
         // for free because NSView is bottom-up.)
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-            guard let view = mtkView else { return }
+            guard let view = mtkView, !boxSelectActive else { return }   // camera frozen (#358)
             let loc = gesture.location(in: view)
             let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
             switch gesture.state {
@@ -1243,6 +1340,7 @@ extension MetalViewport {
         }
 
         @objc func handleRotation(_ gesture: UIRotationGestureRecognizer) {
+            guard !boxSelectActive else { return }   // camera frozen (#358)
             // Two-finger rotation → Z-axis roll (`turn z`). Per-callback delta of
             // the cumulative gesture.rotation, in degrees. runPython (not run-
             // Command) to avoid echoing into the log every frame.
@@ -1267,7 +1365,7 @@ extension MetalViewport {
         // finger trackpad gesture (touch has no Shift, so a 3-finger drag is the
         // iPad idiom). The centroid feeds PyMOL's drag cursor.
         @objc func handleClip(_ gesture: UIPanGestureRecognizer) {
-            guard let view = mtkView else { return }
+            guard let view = mtkView, !boxSelectActive else { return }   // camera frozen (#358)
             let pt = pymolPoint(in: view, at: gesture.location(in: view))
             let s = PYMOL_MOD_SHIFT
             switch gesture.state {
@@ -1299,7 +1397,7 @@ extension MetalViewport {
             // No long-press context menu in Move mode — the gizmo owns the
             // gestures there, and the Scene menu (Reset view / Deselect all) just
             // interferes with dragging handles.
-            guard engine.interactionMode != .move else { return }
+            guard engine.interactionMode != .move, !boxSelectActive else { return }
             // Identify the atom/residue under the press and let ContentView show
             // a native context menu. NDC in point space with Y flipped (same as
             // handleTap). This replaces the old right-click, which fired a PyMOL

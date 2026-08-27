@@ -38,14 +38,6 @@ struct PredictSizeWarning: Equatable {
 
 extension PredictController {
 
-    /// A Python single-quoted string literal. Matches InferenceJob.pythonLiteral.
-    nonisolated static func pythonLiteral(_ value: String) -> String {
-        "'" + value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "") + "'"
-    }
-
     /// `from pymol import cmd as _c\n_c.predict(...)`. Optional args are omitted when
     /// nil so predict applies its own defaults (notably: no seed → a fresh seed per
     /// run). `msa` is passed only on the literal-sequence path; object inputs let
@@ -54,14 +46,15 @@ extension PredictController {
                               recyclingSteps: Int, diffusionSteps: Int,
                               seed: Int?, msaDepth: Int?, name: String?,
                               msa: String?) -> String {
-        var args = ["\(pythonLiteral(predictor)), \(pythonLiteral(input))"]
+        var args = ["\(InferenceJob.pythonLiteral(predictor)), "
+                    + "\(InferenceJob.pythonLiteral(input))"]
         args.append("n_models=\(nModels)")
         args.append("recycling_steps=\(recyclingSteps)")
         args.append("diffusion_steps=\(diffusionSteps)")
         if let seed { args.append("seed=\(seed)") }
         if let msaDepth { args.append("msa_depth=\(msaDepth)") }
-        if let name, !name.isEmpty { args.append("name=\(pythonLiteral(name))") }
-        if let msa, !msa.isEmpty { args.append("msa=\(pythonLiteral(msa))") }
+        if let name, !name.isEmpty { args.append("name=\(InferenceJob.pythonLiteral(name))") }
+        if let msa, !msa.isEmpty { args.append("msa=\(InferenceJob.pythonLiteral(msa))") }
         return "from pymol import cmd as _c\n_c.predict(\(args.joined(separator: ", ")))"
     }
 
@@ -69,12 +62,12 @@ extension PredictController {
     /// object path); a literal sequence lands the alignment unattached under `name`.
     nonisolated static func msaSearchPython(sequence: String, name: String, target: String,
                                 chain: String, mode: String, server: String) -> String {
-        var args = ["\(pythonLiteral(sequence))"]
-        args.append("name=\(pythonLiteral(name))")
-        if !target.isEmpty { args.append("target=\(pythonLiteral(target))") }
-        if !chain.isEmpty { args.append("chain=\(pythonLiteral(chain))") }
-        args.append("mode=\(pythonLiteral(mode))")
-        if !server.isEmpty { args.append("server=\(pythonLiteral(server))") }
+        var args = ["\(InferenceJob.pythonLiteral(sequence))"]
+        args.append("name=\(InferenceJob.pythonLiteral(name))")
+        if !target.isEmpty { args.append("target=\(InferenceJob.pythonLiteral(target))") }
+        if !chain.isEmpty { args.append("chain=\(InferenceJob.pythonLiteral(chain))") }
+        args.append("mode=\(InferenceJob.pythonLiteral(mode))")
+        if !server.isEmpty { args.append("server=\(InferenceJob.pythonLiteral(server))") }
         return "from pymol import cmd as _c\n_c.msa_search(\(args.joined(separator: ", ")))"
     }
 
@@ -376,7 +369,7 @@ final class PredictController: ObservableObject {
 
     func cancel() {
         for name in plannedNames.values {
-            runPythonSeam("from pymol import cmd as _c\n_c.msa_cancel(\(PredictController.pythonLiteral(name)))")
+            runPythonSeam("from pymol import cmd as _c\n_c.msa_cancel(\(InferenceJob.pythonLiteral(name)))")
         }
         plannedNames = [:]
         phase = .idle

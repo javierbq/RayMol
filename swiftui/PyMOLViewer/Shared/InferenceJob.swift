@@ -405,16 +405,21 @@ enum InferenceJob {
         }
     }
 
-    /// A Python string literal for a single-line token: object names, file paths.
+    /// A Python string literal for an arbitrary path or object name. Paths come from our
+    /// own temp dir, but building source text without quoting is how injection bugs start.
+    /// PyMOL's text parser does not strip quotes from a `"..."` token, so an object name
+    /// has to be escaped exactly this way or a name with an apostrophe breaks the call.
     ///
-    /// WARNING: This escaper SILENTLY DELETES newlines (`\n` → `""`). It exists for names and
-    /// paths, which must stay on one line; using it for multi-line content (PDB blocks,
-    /// embedded source) produces a joined line that will be parsed incorrectly on the
-    /// Python side. For multi-line payloads use `pythonMultilineLiteral` instead.
+    /// WARNING: newlines are DELETED, not escaped. Every value that reaches here is a
+    /// single token (a path, an object name, a predictor id), and a stray newline would end
+    /// the statement mid-call. A multi-line payload must NOT be passed through this: it
+    /// produces a joined line that the Python side parses incorrectly, and PyMOL's PDB
+    /// reader in particular is line-oriented, so a joined PDB yields exactly one atom.
+    /// Use `pythonMultilineLiteral` for those.
     ///
-    /// Internal rather than private: `RFD3JobManager` needs it for helpers that feed
-    /// `runPython`. Duplicate copies in `PredictController`, `DesignBackboneController`,
-    /// and `ProgressTray` are known and tracked for a separate dedup.
+    /// Internal, and the only copy: `PredictController` and `ProgressTray` each carried a
+    /// byte-identical private one, which is three chances to fix a quoting bug in two
+    /// places.
     static func pythonLiteral(_ value: String) -> String {
         "'" + value
             .replacingOccurrences(of: "\\", with: "\\\\")

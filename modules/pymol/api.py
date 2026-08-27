@@ -207,6 +207,7 @@ from .querying import \
 
 #--------------------------------------------------------------------
 from .selecting import \
+      box_select,         \
       deselect,           \
       indicate,           \
       select,             \
@@ -240,6 +241,7 @@ from .editing import \
       alphatoall,         \
       attach,             \
       bond,               \
+      center_all,         \
       copy_to,            \
       cycle_valence,      \
       deprotect,          \

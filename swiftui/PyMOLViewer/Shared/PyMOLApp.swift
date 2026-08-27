@@ -255,6 +255,13 @@ struct PyMOLApp: App {
                 }
                 .disabled(isDesignLocked)
                 .keyboardShortcut("m", modifiers: .control)
+                // Box Select (#358): the other exclusive viewport tool that
+                // reinterprets a drag, so it belongs on the same menu. ⌃B.
+                Button(engine.interactionMode == .boxSelect ? "Stop Box Select" : "Box Select") {
+                    engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
+                }
+                .disabled(isDesignLocked)
+                .keyboardShortcut("b", modifiers: .control)
             }
             // Grouped so the two menus together count as ONE entry against the
             // @CommandsBuilder's 10-child ceiling (Group<Commands> exists for

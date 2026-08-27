@@ -234,6 +234,12 @@ final class PyMOLEngine: ObservableObject {
     @Published var predictMode: Bool = false
     @Published var activeMoveObject: String? = nil
     @Published var armedAxis: GizmoHandle? = nil        // iOS tap-to-arm
+    // Box Select (#358): the rubber-band rectangle, in viewport NDC. nil = the
+    // mode is on but no box has been drawn yet. interactionMode == .boxSelect
+    // gates gesture routing in MetalViewport (which freezes the camera while it
+    // is on); boxDrag is the in-flight grab, live only between press and release.
+    @Published var boxRect: BoxRect? = nil
+    var boxDrag: BoxDrag? = nil
     // Adjust-frame mode: gizmo controls re-anchor the gizmo's own frame (origin +
     // inclination) instead of moving the structure — for precise custom pivots.
     // Active when the overlay toggle is on OR Shift is held (macOS). The gizmo
@@ -274,6 +280,22 @@ final class PyMOLEngine: ObservableObject {
         didSet { UserDefaults.standard.set(hoverPreviewEnabled, forKey: PyMOLEngine.hoverDefaultsKey) }
     }
     static let hoverDefaultsKey = "raymol.hoverPreviewEnabled"
+    // Hover READOUT (issue #359): a chip in the viewport's top-trailing corner
+    // naming whatever is under the cursor, at the current selection level. Rides
+    // on the SAME hover pick as the preview above but is independently
+    // toggleable — some users want the highlight without the text, or the text
+    // without the highlight. Persisted across launches; default on.
+    @Published var hoverReadoutEnabled: Bool =
+        (UserDefaults.standard.object(forKey: PyMOLEngine.hoverReadoutDefaultsKey) as? Bool ?? true) {
+        didSet {
+            UserDefaults.standard.set(hoverReadoutEnabled, forKey: PyMOLEngine.hoverReadoutDefaultsKey)
+            if !hoverReadoutEnabled { hoverReadout = nil }
+        }
+    }
+    static let hoverReadoutDefaultsKey = "raymol.hoverReadoutEnabled"
+    // The formatted chip text, or nil when the pointer is over empty space (or
+    // the readout is off) — so the chip never lingers with a stale identity.
+    @Published var hoverReadout: String? = nil
     // Full settings catalog for the searchable Settings panel (loaded on demand).
     @Published var settingsCatalog: [SettingItem] = []
     // The single detail view that is currently open (accordion: at most one).
@@ -2301,6 +2323,9 @@ final class PyMOLEngine: ObservableObject {
         // Esc must not be consumed as if the exit succeeded (Part 3 fix).
         if designMode     { setDesignMode(false);       exited = exited || !designMode }
         if interactionMode == .move { setInteractionMode(.viewing); exited = exited || interactionMode != .move }
+        if interactionMode == .boxSelect {
+            setInteractionMode(.viewing); exited = exited || interactionMode != .boxSelect
+        }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         if predictMode { setPredictMode(false); exited = exited || !predictMode }
         return exited
@@ -2613,7 +2638,7 @@ final class PyMOLEngine: ObservableObject {
             pc.runPythonSeam = { [weak self] code in self?.runPython(code) }
             // Trigger the tempfile-JSON feed; PREDICT_FORM:ready routes back below.
             pc.refreshTrigger = { [weak self] input in
-                let lit = PredictController.pythonLiteral(input)
+                let lit = InferenceJob.pythonLiteral(input)
                 self?.runPython("from pymol import appkit_predict as _ap\n_ap.emit(\(lit))")
             }
             // Drive the search→predict state machine off the object poll's published state.
@@ -2629,6 +2654,89 @@ final class PyMOLEngine: ObservableObject {
 
     private var predictCancellables = Set<AnyCancellable>()
 
+    // MARK: - Box Select (rubber-band selection, #358)
+
+    // Leading-edge throttle for the live commit, mirroring hoverPreview: a drag
+    // produces a new rectangle every frame, and each commit projects EVERY drawn
+    // atom, so an unthrottled drag would queue Python faster than it can run.
+    private var boxWork: DispatchWorkItem?
+    private var lastBoxFire = Date.distantPast
+    private let kBoxCommitInterval = 0.045     // <= ~22 commits/s
+    // Whether a box session is open (box_begin has run, so the pre-box snapshot
+    // exists). Tracked so leaving the mode only pays for the teardown round-trip
+    // when there is something to tear down — setInteractionMode runs on every
+    // Move/Measure toggle too.
+    private var boxSessionActive = false
+
+    /// Enter / leave Box Select. The Selections panel's lasso control and the
+    /// Tools menu both come through here, so the two can't disagree about state.
+    func toggleBoxSelect() {
+        setInteractionMode(interactionMode == .boxSelect ? .viewing : .boxSelect)
+    }
+
+    /// Begin a new box: snapshot the selection so that every re-commit of THIS
+    /// box composes against what was there before it, not against its own
+    /// previous commit. Called when a drag starts a fresh rectangle, not when
+    /// one adjusts the existing one.
+    func beginBoxSession() {
+        boxSessionActive = true
+        runPython("from pymol import metal_pick as _mp\n_mp.box_begin('sele')")
+    }
+
+    /// Update the rectangle and commit it. There is no preview/accept split: the
+    /// committed selection IS the feedback, which is what makes the tool usable
+    /// without hunting for a confirm button.
+    func setBoxRect(_ rect: BoxRect?) {
+        boxRect = rect
+        guard let rect = rect, !rect.isDegenerate else { return }
+        commitBoxRect(rect)
+    }
+
+    private func commitBoxRect(_ rect: BoxRect) {
+        let aspect = gizmoAspect
+        boxWork?.cancel()
+        let fire: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            self.lastBoxFire = Date()
+            // mode='add': the tool only ever grows the selection it opened on.
+            self.runPython(
+                "from pymol import metal_pick as _mp\n"
+                + "_mp.box_commit_ndc(\(rect.minX), \(rect.minY), \(rect.maxX), \(rect.maxY), "
+                + "\(aspect), name='sele', mode='add')")
+        }
+        let elapsed = Date().timeIntervalSince(lastBoxFire)
+        if elapsed >= kBoxCommitInterval {
+            fire()                                   // leading edge — track the drag
+        } else {
+            let work = DispatchWorkItem(block: fire) // trailing — final rest position
+            boxWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (kBoxCommitInterval - elapsed), execute: work)
+        }
+    }
+
+    /// Forget the rectangle and close the session. The last commit STAYS — the
+    /// tool has no cancel, because with commit-on-drag there is no uncommitted
+    /// state left to throw away.
+    private func clearBoxState() {
+        boxWork?.cancel()
+        boxWork = nil
+        boxDrag = nil
+        boxRect = nil
+        // Reset the throttle clock too, so the FIRST rectangle of the next box
+        // always commits on the leading edge instead of waiting out a window
+        // left over from the previous one.
+        lastBoxFire = .distantPast
+        guard boxSessionActive else { return }
+        boxSessionActive = false
+        runPython("from pymol import metal_pick as _mp\n_mp.box_finish()")
+    }
+
+    /// Leave the tool. The selection the box made is already committed.
+    func endBoxSelection() {
+        setInteractionMode(.viewing)
+    }
+
     // MARK: - Move mode (rigid-body object gizmo)
 
     /// Viewport aspect (width / height) for the gizmo projection. Falls back to
@@ -2643,10 +2751,30 @@ final class PyMOLEngine: ObservableObject {
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
         #endif
         interactionMode = mode
-        if mode == .move {
+        // Leaving Box Select (for viewing OR for another tool) must drop the
+        // rectangle and its preview highlight, or the cyan atoms stay lit with no
+        // box on screen to explain them.
+        if mode != .boxSelect { clearBoxState() }
+        // Both viewport tools are exclusive with the other modes; .viewing is not
+        // a tool and leaves them alone (Esc unwinds them via their own setters).
+        if mode == .move || mode == .boxSelect {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
             setPredictMode(false)                            // mutually exclusive
+        }
+        if mode == .boxSelect {
+            // The box freezes hover picking (MetalViewport.handleMouseMoved), so
+            // nothing will refresh or clear the hover readout for the rest of the
+            // session — drop it now rather than leave the chip naming whatever
+            // the pointer happened to be over when the tool was switched on.
+            clearHoverPreview()
+            // Open with a rectangle already down and already committed. The tool
+            // has no other affordance now that the overlay bar is gone, so an
+            // empty viewport would just look like nothing happened.
+            beginBoxSession()
+            setBoxRect(.initial)
+        }
+        if mode == .move {
             refreshGizmo()
         } else {
             armedAxis = nil
@@ -2916,7 +3044,10 @@ final class PyMOLEngine: ObservableObject {
     /// tracks CONTINUOUSLY while the pointer sweeps — a pure trailing debounce
     /// only fired once the pointer paused, which read as "hover doesn't work".
     func hoverPreview(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
-        guard isReady, hoverPreviewEnabled else { return }
+        // Either output is reason enough to pick: the highlight (#165) and the
+        // top-right readout (#359) are separately toggleable but share this one
+        // pick, so only BOTH being off makes hovering free.
+        guard isReady, hoverPreviewEnabled || hoverReadoutEnabled else { return }
         if let last = lastHoverNDC {
             let dx = ndcX - last.0, dy = ndcY - last.1
             if abs(dx) < kHoverMinNDC && abs(dy) < kHoverMinNDC { return }
@@ -2926,9 +3057,13 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self = self else { return }
             self.lastHoverFire = Date()
+            let wantsPreview = self.hoverPreviewEnabled
+            let wantsInfo = self.hoverReadoutEnabled
             self.runPython(
                 "from pymol import metal_pick as _mp; "
-                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect))")
+                + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
+                + "\(wantsPreview ? 1 : 0), \(wantsInfo ? 1 : 0))")
+            if wantsInfo { self.readHoverInfo() }
         }
         let elapsed = Date().timeIntervalSince(lastHoverFire)
         if elapsed >= kHoverInterval {
@@ -2948,6 +3083,11 @@ final class PyMOLEngine: ObservableObject {
         hoverWork?.cancel()
         hoverWork = nil
         lastHoverNDC = nil
+        // Drop the readout here too (not only when a pick reports empty space):
+        // this is the mouse-exit / drag-start path, where no further pick runs
+        // and the chip would otherwise keep naming whatever was last under the
+        // cursor.
+        if hoverReadout != nil { hoverReadout = nil }
         #if RAYMOL_MPNN
         designHoverWork?.cancel()
         designHoverWork = nil
@@ -2959,6 +3099,24 @@ final class PyMOLEngine: ObservableObject {
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
         runPython("from pymol import cmd as _c; _c.select('_preselect', 'none', enable=0)")
+    }
+
+    /// Read back the payload the hover pick just wrote and publish the formatted
+    /// chip text. Called immediately after the pick on the same thread —
+    /// `runPython` runs the interpreter inline, so the file on disk is this
+    /// hover's result, not the previous one (same contract readDesignHoverHit
+    /// relies on).
+    ///
+    /// An unreadable payload resolves to nil (chip hidden) rather than being
+    /// ignored: keeping the last text on screen would name a residue the cursor
+    /// has already left, which is worse than showing nothing.
+    private func readHoverInfo() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_hover_info.json")
+        let data = FileManager.default.contents(atPath: path)
+        let root = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+        let text = HoverReadout.text(payload: root)
+        if hoverReadout != text { hoverReadout = text }
     }
 
     #if RAYMOL_MPNN
