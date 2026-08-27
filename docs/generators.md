@@ -310,35 +310,51 @@ delivery:
 
 ### How many states you get: `live_steps`
 
-By default a live run captures `RFD3JobManager.defaultTrajectoryFrames` (**50**) frames, so
-the default 200-step run leaves **51 states** -- the 50 captured frames plus the delivered
+By default a live run captures every `RFD3JobManager.trajectoryStepInterval` (**4**) steps,
+so the default 200-step run leaves **51 states** -- 50 captured frames plus the delivered
 design. The FIRST captured frame is the object's state 1, not an extra state after an empty
 placeholder.
 
 `design_backbone ..., live_steps=N` asks for a different number. It is a count of STATES,
 not an interval: you say how many you want in the object and the every-Nth-step is derived,
 because scrub granularity and movie length are what a user actually reasons about. Passing
-it turns the live view on by itself; `live_view=0` alongside overrides that and says the
-count is being ignored.
+it turns the live view on by itself.
 
 **Approximate, and refused rather than clamped.** The interval is a whole number of steps,
 so the achievable counts are quantised -- over the default 199 rollout steps they run 199,
 100, 67, 50, 40, 34, ... and you get the **nearest achievable** count to what you asked. Not
 the nearest below: asked for 99 of 199, "at most" would hand back 67 where nearest gives 100.
 A count below 1, or above `diffusion_steps - 1` (the rollout has no more steps to capture),
-is a command error naming the permitted range and the schedule it came from -- that is
-submit-time input validation, before any job exists, not a runtime degrade. The count you
-actually got is reported when the design lands (`... was built live -- N states ...`).
+is a command error naming the permitted range and the schedule it came from -- submit-time
+input validation, before any job exists, not a runtime degrade.
 
-The derivation is `RFD3Trajectory.captureInterval(frames:total:)` and it is the only place
-frames become an interval, so moving to interval semantics later is a deletion rather than a
-rewrite. It SCANS rather than dividing, because `round(total / frames)` is not always right:
-7 frames over 199 steps rounds to interval 28, which yields 8; 29 yields exactly 7.
+You are told the real number **before the run starts**, under `quiet=0`:
 
-One consequence of the default being a frame count rather than the old fixed interval of 4:
-at the default schedule nothing changes (50 frames either way), but a very short schedule now
-gives more. A 6-step run used to yield 2 frames -- every 4th of its 5 steps -- and now yields
-5, because "about fifty" over five available steps is all five.
+```
+design: live view will capture 34 states (the nearest to the 30 requested -- the interval
+is a whole number of steps, so the reachable counts are spaced out), every 6 of the 199
+rollout steps; the finished design is appended after them.
+```
+
+`live_view=0` alongside `live_steps` is a **contradiction and is refused**: it asks for a
+recording length and for no recording at once, and either reading silently throws one of them
+away. Drop whichever you did not mean.
+
+### Where the derivation lives, and what the wire carries
+
+`pymol.designing.capture_interval(frames, total)` -- on the PYTHON side, and it is the only
+place frames become an interval. That side also knows `diffusion_steps`, which is what lets
+the achievable count be reported before the run rather than discovered after it. The wire
+then carries `live_interval`, the derived every-Nth-step, and the runtime does no arithmetic
+at all: it captures every Kth step and nothing else. Moving to interval semantics later means
+returning `frames` unchanged from that one function.
+
+It SCANS rather than dividing, because `round(total / frames)` is not always right: 7 frames
+over 199 steps rounds to interval 28, which yields 8, while 29 yields exactly 7.
+
+A request that carries no `live_interval` -- an older Python, or one written before the key
+existed -- falls back to `RFD3JobManager.trajectoryStepInterval`, which is 4 and is exactly
+the previous behaviour.
 
 Each frame on the wire carries the **generated chain only**. Resending the static target
 fifty times would be pointless traffic, so `trajectory_seed` records how many atoms precede
