@@ -262,8 +262,8 @@ never from the requested step count, or it stops one step short of the end forev
 ## Watching a design diffuse
 
 `design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
-design's own object as the rollout runs, one state per captured frame, and advances the
-displayed state as each lands. Replay it afterwards from the object panel's per-object state
+design's own object as the rollout runs, one state per captured frame, animating smoothly
+between them. Replay it afterwards from the object panel's per-object state
 control (see "Which state is on show" below for why it is that rather than the frame slider).
 
 **There is one object, not two.** It is the result's object, under the result's own name,
@@ -384,6 +384,50 @@ is the finished structure where the recording's is the step-4 seed. Remembered i
 tidier and was not, because `ObjectMoleculeLoadCoords` copies the first coordinate set --
 `CoordSet`'s copy carries `Name` -- so it spread to every appended state and the inspector
 rendered it as a **Name** row for the whole run.
+
+### Smooth motion, without inventing any states
+
+The captured frames arrive about once a second, so showing each one as it lands is a
+slideshow: the atoms teleport from one conformation to the next. The live view interpolates
+instead — but **it does not add states to do it**.
+
+The object holds exactly one state per captured model frame, as it always has. Alongside
+them sits **one extra state, the display**, whose coordinates are rewritten
+`designing.PLAYBACK_DISPLAY_RATE` (30) times a second with a position interpolated between
+the last two captured frames. So:
+
+* every state in the object is model output, and nothing has to be labelled or explained;
+* the display state is overwritten by the next captured frame as soon as it lands, so no
+  interpolated coordinate outlives the gap it belonged to;
+* at delivery the display state becomes the finished design, and the finished object is the
+  captured frames plus the design — **the same states a run without smoothing produces**.
+
+The display necessarily runs **one frame behind**: a gap can only be animated once both of
+its ends are known. The first captured frame has no predecessor, so it is simply shown.
+
+`display_fraction` is time-based rather than tick-counted, so a tick that arrives late lands
+where it belongs rather than where a punctual tick would have been, and it **saturates at 1**
+rather than extrapolating: if the next frame is slow the display waits on the newest captured
+frame and never runs past a coordinate the model produced. `interpolate_frame` returns both
+endpoints **by copy rather than by arithmetic**, because `a + (b - a) * t` is not bit-for-bit
+`a` at t=0 nor `b` at t=1 in floating point, and the model's own coordinates are never
+approximated.
+
+**Cost.** One `load_coordset` and one forced repaint per tick, on the main thread, while a
+GPU rollout runs. Measured on the real 450-atom design: **0.041 ms per tick, 0.12% of one
+main thread at 30 Hz** (1.2 ms of work per second). A tick whose gap has already run out
+early-outs at 0.004 ms rather than reloading coordinates for a position that has not changed.
+The forced repaint is a real GPU frame, but that is what showing motion costs and it is not
+specific to this approach.
+
+**If the user moves the object** — the panel's state control, a typed `set state`, a scrubbed
+slider — the object is no longer showing the display state, which is the only thing the
+animation touches. That is detected exactly, with no polling, and the animation stops for the
+rest of the run rather than dragging the user back thirty times a second. Delivery still pins
+to the finished design afterwards.
+
+The last hop, from the final captured frame into the delivered design, is **not** animated:
+the head is stopped before delivery so it cannot race the pin. That is one jump, at the end.
 
 ### Which state is on show
 
