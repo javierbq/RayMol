@@ -123,6 +123,19 @@ class TestCenterAll(testing.PyMOLTestCase):
         cmd.center_all('m1')
         self.assertCentersEqual(['m1', 'm2', 'm3'])
 
+    def testHiddenObjectsAreIgnored(self):
+        # Underscore-prefixed objects are internal machinery (RayMol's Theme
+        # Studio preview, note anchors) that the object panel never shows.
+        # Loaded first, one would otherwise become the default anchor.
+        cmd.pseudoatom('_hidden', pos=[-80., 3., 9.])
+        self.make_scattered()
+        cmd.center_all()
+        self.assertArrayEqual(extent_center('_hidden'), [-80., 3., 9.], delta=1e-3)
+        self.assertArrayEqual(extent_center('m1'), [0., 0., 0.], delta=1e-3)
+        self.assertCentersEqual(['m1', 'm2', 'm3'])
+        with self.assertRaises(CmdException):
+            cmd.center_all('_hidden')
+
     def testNoObjectsIsNotAnError(self):
         cmd.center_all()
 

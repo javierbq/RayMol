@@ -2523,6 +2523,9 @@ NOTES
     Groups are skipped -- a group's matrix already propagates to its
     members, so moving both would shift them twice.
 
+    Hidden objects (names starting with an underscore) are internal
+    machinery: they neither move nor serve as the anchor.
+
     With coords=0 the move is a display transformation: exported
     coordinates are unchanged, and "matrix_reset <name>, mode=1" puts an
     object back. Use coords=1 when the new positions need to survive a
@@ -2543,7 +2546,8 @@ PYMOL API
         coords, enabled_only, quiet = int(coords), int(enabled_only), int(quiet)
 
         names = [
-            name for name in _self.get_names('objects', enabled_only=enabled_only)
+            name for name in _self.get_names('public_objects',
+                                             enabled_only=enabled_only)
             if _self.get_type(name) != 'object:group'
         ]
 

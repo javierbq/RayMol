@@ -942,8 +942,10 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     // Moves the objects, not the camera: every object is shifted so their
     // centers coincide, so switching between unrelated PDBs stops requiring a
     // re-zoom. Non-destructive (object matrix) — `matrix_reset` puts it back.
-    case "center_all":         cmd = "center_all"
-    case "center_all_reset":   cmd = "python\nfor _o in cmd.get_names('objects'):\n    cmd.matrix_reset(_o, mode=1)\npython end"
+    // The follow-up zoom frames the stacked result — the camera may be aimed
+    // at where things used to be.
+    case "center_all":         cmd = "center_all\nzoom visible"
+    case "center_all_reset":   cmd = "python\nfor _o in cmd.get_names('public_objects'):\n    cmd.matrix_reset(_o, mode=1)\npython end"
     default:                   return
     }
     engine.runCommand(cmd)
