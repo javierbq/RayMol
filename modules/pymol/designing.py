@@ -945,16 +945,16 @@ def capture_interval(frames, total):
     return best
 
 
-#: Times per second the live view rewrites its display state while a design runs.
+#: The gap a record starts with, before any two captured frames have been timed.
 #:
-#: This is a REWRITE RATE, not a state count: the object gains exactly one state per
-#: captured model frame, and smoothness comes from moving the atoms of a single extra
-#: state rather than from inventing more states. So the only cost of raising it is
-#: main-thread work -- one `load_coordset` and one forced repaint per tick -- and nothing
-#: about the finished object changes.
-PLAYBACK_DISPLAY_RATE = 30
-
-#: What to assume for a gap that has not been measured yet, in seconds.
+#: A placeholder rather than a pace: nothing animates until a second frame lands, and
+#: that landing measures the real gap and overwrites this. It only survives if the
+#: measured gap comes back non-positive, which a monotonic clock does not do.
+#:
+#: There is deliberately no display-rate constant here. The rate is
+#: `RFD3Trajectory.playbackTicksPerSecond`, on the side that owns the timer, and this
+#: module never needs it: `display_fraction` is a function of elapsed TIME, so it gives
+#: the right answer at any tick rate and at irregular ticks.
 NOMINAL_FRAME_INTERVAL = 1.0
 
 
@@ -1335,17 +1335,61 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
             # PREVIOUS frame -- the animation runs from there to the one that just
             # landed, over the interval that just elapsed. That is why the display lags
             # one frame: a gap can only be animated once both of its ends are known.
+            # BEFORE `head_state` moves. A scrub that landed since the last tick is
+            # only visible against the OLD value, and overwriting it first is what let a
+            # frame arriving in the ~33 ms after a scrub undo it silently.
+            took_over = _user_took_over(name, record, _self=_self)
             display = state + 1
             _self.load_coordset(record['target'] + record['prev_design'], name, display)
             record['display_state'] = display
-            _self.set('state', display, name)
-            record['head_state'] = display
+            if not took_over:
+                # The slot still moves so the recording keeps its shape and delivery
+                # overwrites the right state -- but a user who has taken the object is
+                # left where they are, which is what they were told would happen.
+                _self.set('state', display, name)
+                record['head_state'] = display
         elif int(advance):
             _self.set('state', state, name)
             record['head_state'] = state
         return True
     except Exception:
         return False
+
+
+def _user_took_over(name, record, _self=cmd):
+    """Whether something other than the live view has moved `name`. Latches if so.
+
+    The live view is the only thing that sets this object's state, so the object showing
+    anything other than what the view last set means the user moved it -- the object
+    panel's state control, a typed `set state`, a scrubbed slider.
+
+    ONE helper because there are two writers that must agree, and a version where only
+    one of them checked shipped: `trajectory_display` latched and told the user the live
+    view had stopped touching the object, and then every subsequent captured frame moved
+    them anyway, about once a second for the rest of the rollout. Worse, a frame landing
+    in the ~33 ms between the scrub and the next tick reset `head_state` first, so the
+    comparison was against a value that had just been invented and the latch never fired
+    at all.
+
+    So this is called by BOTH, and in `trajectory_frame` it is called BEFORE `head_state`
+    is overwritten. Once latched it stays latched: "stopped" has to mean stopped, not
+    "stopped until the next frame".
+    """
+    if record.get('user_scrubbed'):
+        return True
+    try:
+        shown = int(_self.get('state', name))
+    except Exception:
+        # Cannot tell; assume not, and leave the object alone rather than latching on a
+        # transient failure.
+        return False
+    if shown == int(record.get('head_state', shown)):
+        return False
+    record['user_scrubbed'] = True
+    colorprinting.parrot(
+        ' design: you moved %s yourself, so the live view has stopped animating it.'
+        ' The finished design will still be shown when it lands.' % name)
+    return True
 
 
 def trajectory_display(name, _self=cmd):
@@ -1388,11 +1432,15 @@ def trajectory_display(name, _self=cmd):
             # AND prints a Selector-Error -- thirty times a second, for the rest of the
             # run -- so it is not asked.
             return False
-        if int(_self.get('state', name)) != int(record['head_state']):
-            record['user_scrubbed'] = True
-            colorprinting.parrot(
-                ' design: you moved %s yourself, so the live view has stopped animating'
-                ' it. The finished design will still be shown when it lands.' % name)
+        if _user_took_over(name, record, _self=_self):
+            return False
+        fraction = display_fraction(time.monotonic() - record['last_arrival'],
+                                    record.get('gap'))
+        if record.get('fraction') == fraction:
+            # Already there -- the gap has run out and the next frame has not landed.
+            # AHEAD of the identity check on purpose: this tick writes nothing, and the
+            # check exists to guard a write. Skipping it here is what keeps an idle tick
+            # cheap; putting it first made the "early out" cost more than the work.
             return False
         if not _holds_the_seed(name, record, _self=_self):
             # SAME NAME, DIFFERENT OBJECT -- see `_TRAJECTORY['design']`. This writer has
@@ -1407,18 +1455,15 @@ def trajectory_display(name, _self=cmd):
             # an impostor pinned to the display state had its coordinates changed, with
             # no latch and no warning.
             #
-            # Costs 0.100 ms per call, 0.30% of one main thread at 30 Hz, on top of the
-            # 0.041 ms the animation itself takes. Cheap enough not to need a cadence.
+            # Measured on the real 450-atom design: 0.132 ms per call, most of a
+            # 0.182 ms working tick -- 0.55% of one main thread at 30 Hz, 5.5 ms/s.
+            # Immaterial, and it is the only thing between this loop and someone else's
+            # coordinates, so it runs on every tick that WRITES. It sits after the
+            # fraction early-out precisely so an idle tick pays none of it (0.004 ms).
             record['user_scrubbed'] = True
             colorprinting.warning(
                 ' design: %s is no longer the object this run seeded, so the live view'
                 ' has stopped animating it.' % name)
-            return False
-        fraction = display_fraction(time.monotonic() - record['last_arrival'],
-                                    record.get('gap'))
-        if record.get('fraction') == fraction:
-            # Already there -- the gap has run out and the next frame has not landed.
-            # Skipping saves a coordinate load and a repaint per tick while waiting.
             return False
         middle = interpolate_frame(record['prev_design'], record['last_design'], fraction)
         if not middle:

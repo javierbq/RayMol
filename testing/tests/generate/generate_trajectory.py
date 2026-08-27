@@ -971,10 +971,6 @@ class LiveObjectTest(GeneratorTestCase):
         for gap in (0, -1, None, 'x'):
             self.assertEqual(designing.display_fraction(0.5, gap), 1.0)
 
-    def testTheDisplayRateIsAConstantNotALiteral(self):
-        from pymol import designing
-        self.assertEqual(designing.PLAYBACK_DISPLAY_RATE, 30)
-
     # -- Smooth motion by rewriting ONE display state -------------------------
 
     def _state_coords(self, state):
@@ -1100,14 +1096,91 @@ class LiveObjectTest(GeneratorTestCase):
         try:
             cmd.set('state', 2, self.name)          # the user scrubs to a real frame
             self.assertFalse(self.designing.trajectory_display(self.name))
+            self.assertEqual(self.displayed_state(), 2, 'the user must be left alone')
+
+            # AND ACROSS SUBSEQUENT CAPTURED FRAMES, which is the thing a real run does
+            # every second for the rest of a multi-minute rollout. Without this the test
+            # latched, printed "the live view has stopped animating it", and then let
+            # every following frame move the user anyway -- contradicting the message it
+            # had just printed.
+            for step in range(3):
+                self._capture(_backbone(self.LENGTH, offset=(20.0 + step, 0, 0)))
+                self.assertEqual(self.displayed_state(), 2,
+                                 'captured frame %d moved a user who had taken over'
+                                 % step)
+                for _ in range(10):
+                    self.assertFalse(self.designing.trajectory_display(self.name))
+
+            # And it stays stopped even if they scrub back to where the head had been.
+            display = self.designing._TRAJECTORY[self.name]['display_state']
+            cmd.set('state', display, self.name)
+            self.assertFalse(self.designing.trajectory_display(self.name))
         finally:
             self.designing.colorprinting.parrot = original
-        self.assertEqual(self.displayed_state(), 2, 'the user must be left alone')
+
+        # SAID ONCE, over ~34 calls. The latch is what makes that true: without it every
+        # call re-derives "the user has moved this" and re-announces it, which at 30 Hz is
+        # thirty lines a second for the rest of the run.
+        self.assertEqual(len([t for t in said if 'you moved' in t]), 1,
+                         'the reason must be given exactly once: %r' % said)
+        # The recording still grew underneath them, so delivery has the right shape.
+        self.assertEqual(self.designing._TRAJECTORY[self.name]['captured'], 6)
+
+    def testAFrameLandingBetweenTheScrubAndTheNextTickCannotUndoIt(self):
+        # The ~33 ms window. `trajectory_frame` overwrote `head_state` before
+        # `trajectory_display` could compare against it, so a frame arriving in that gap
+        # -- about 3% of scrubs at 30 Hz -- silently undid the scrub and the latch never
+        # fired. The frame path now makes the comparison itself, BEFORE it overwrites.
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        self.assertTrue(self.designing.trajectory_display(self.name))
+
+        said = []
+        original = self.designing.colorprinting.parrot
+        self.designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            cmd.set('state', 2, self.name)          # the user scrubs ...
+            self._capture(_backbone(self.LENGTH, offset=(20.0, 0, 0)))  # ... frame first
+        finally:
+            self.designing.colorprinting.parrot = original
+        self.assertTrue(self.designing._TRAJECTORY[self.name].get('user_scrubbed'),
+                        'the frame path must notice the scrub itself')
+        self.assertEqual(self.displayed_state(), 2)
         self.assertTrue([t for t in said if 'you moved' in t], said)
-        # For the rest of the run, even if they scrub back.
-        display = self.designing._TRAJECTORY[self.name]['display_state']
-        cmd.set('state', display, self.name)
         self.assertFalse(self.designing.trajectory_display(self.name))
+
+    def testAnIdleTickWritesNothingAtAll(self):
+        # The fraction early-out. It sits AHEAD of the identity check because a tick that
+        # writes nothing needs no guard on a write -- which is also what keeps it cheap.
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        record = self.designing._TRAJECTORY[self.name]
+        record['gap'] = 0.000001                    # the gap has long since run out
+        self.assertTrue(self.designing.trajectory_display(self.name))
+
+        touched = []
+
+        class WatchingCmd(object):
+            def __init__(self, real):
+                self._real = real
+
+            def __getattr__(self, attribute):
+                return getattr(self._real, attribute)
+
+            def load_coordset(self, *args, **kwargs):
+                touched.append('load_coordset')
+
+            def iterate_state(self, *args, **kwargs):
+                touched.append('iterate_state')      # the identity check
+
+        for _ in range(5):
+            self.assertFalse(self.designing.trajectory_display(
+                self.name, _self=WatchingCmd(cmd)))
+        self.assertEqual(touched, [],
+                         'an idle tick must neither reload coordinates nor pay the '
+                         'identity check that guards the reload')
 
     def testTheANIMATIONRefusesAnObjectThisRunDidNotSeed(self):
         # The third writer. `trajectory_frame` and `_finish_trajectory` both make the
