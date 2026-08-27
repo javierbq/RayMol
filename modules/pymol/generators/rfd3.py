@@ -264,10 +264,12 @@ class RFD3Generator(Generator):
                 options, weights_version=_bundle_version(self)),
             'live_view': spec.live_view,
         }
-        # Only when asked for. Absent means "the runtime's default", which is exactly what
-        # a Python side predating this parameter also says, so the two are one request.
-        if getattr(spec, 'live_steps', None) is not None:
-            extra['live_steps'] = int(spec.live_steps)
+        # The derived INTERVAL, not the frame count the user asked for -- the arithmetic
+        # happens once, on this side, where `diffusion_steps` is also known. Only when
+        # asked for: absent means "the runtime's default", which is exactly what a Python
+        # side predating this parameter also says, so the two are one request.
+        if getattr(spec, 'live_interval', None) is not None:
+            extra['live_interval'] = int(spec.live_interval)
         return host.submit(spec, options, weights_path, runtime=RUNTIME,
                            knobs=self.option_defaults, extra=extra)
 

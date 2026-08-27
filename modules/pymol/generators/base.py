@@ -194,10 +194,10 @@ class DesignSpec:
     """
 
     __slots__ = ('target', 'length', 'name', 'generator_id', 'design_chain', 'live_view',
-                 'live_steps')
+                 'live_interval')
 
     def __init__(self, target, length, name='', generator_id='', design_chain='B',
-                 live_view=False, live_steps=None):
+                 live_view=False, live_interval=None):
         self.target = target
         self.length = int(length)
         self.name = name
@@ -213,12 +213,16 @@ class DesignSpec:
         #: is deliberately absent from `design_key` -- the same design watched and unwatched
         #: is the same design and must key the same.
         self.live_view = bool(live_view)
-        #: How many states the live recording should end up with, or None for the
-        #: runtime's default. PRESENTATION only for the same reason `live_view` is, and
-        #: absent from `design_key` for the same reason: watching a design at 12 states
-        #: or at 50 does not make it a different design, and two runs that differ only
-        #: here must key the same and produce the same bytes.
-        self.live_steps = None if live_steps is None else int(live_steps)
+        #: Capture every Nth rollout step in the live recording, or None for the
+        #: runtime's default. The INTERVAL rather than the frame count the user asked
+        #: for: `designing.capture_interval` turns one into the other at submit time, on
+        #: this side, so the achievable count can be reported before the run starts and
+        #: the runtime needs no arithmetic of its own -- one derivation, one place.
+        #: PRESENTATION only for the same reason `live_view` is, and absent from
+        #: `design_key` for the same reason: watching a design at 12 states or at 50 does
+        #: not make it a different design, and two runs differing only here must key the
+        #: same and produce the same bytes.
+        self.live_interval = None if live_interval is None else int(live_interval)
 
     #: No sequence input. Present because the shared transport writes `spec.chains` into
     #: every request; an empty list is what a generator genuinely has, and the far end's

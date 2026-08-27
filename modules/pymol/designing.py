@@ -872,6 +872,62 @@ def _weight_version(generator_id):
 # them rather than anything assuming the generated chain is simply "the last atoms".
 
 
+def capture_frame_count(interval, total):
+    """How many frames a live run captures at `interval` over `total` rollout steps.
+
+    The multiples of `interval` in `1..total`, plus the final step when it is not already
+    one of them -- which is the `step == total` arm of `RFD3Trajectory.shouldCapture`,
+    counted rather than re-derived. Swift owns the capture RULE; this side owns the
+    arithmetic about it, and these two must agree or every derived interval is off.
+    """
+    interval, total = int(interval), int(total)
+    if interval <= 0 or total <= 0:
+        return 0
+    multiples = total // interval
+    return multiples if total % interval == 0 else multiples + 1
+
+
+def capture_interval(frames, total):
+    """THE derivation: the capture interval that lands closest to `frames` captures.
+
+    `live_steps` is a number of STATES, not an interval -- a user reasons about how many
+    states end up in their object (scrub granularity, memory, how long the movie is), not
+    about every-Nth-step. This is the single place that turns one into the other, on the
+    side that also knows `diffusion_steps`, so the number can be REPORTED at submit time
+    without a second copy of this arithmetic existing anywhere. Swift does no arithmetic:
+    it is handed the interval and captures every Kth step.
+
+    Switching the parameter to interval semantics later means returning `frames` unchanged
+    from here and deleting the rest.
+
+    The achievable counts are QUANTISED, because the interval is a whole number of steps:
+    over 199 rollout steps they run 199, 100, 67, 50, 40, 34, ... So an exact answer is
+    often impossible and this returns the NEAREST achievable count rather than the nearest
+    under it. "At most `frames`" was the other candidate and it is much worse in the gaps
+    -- asked for 99 of 199 it would give 67, where nearest gives 100.
+
+    Ties keep the SMALLER interval, i.e. the finer recording: someone who asked for more
+    states is better served by one extra than by one fewer.
+
+    Scanning rather than dividing, because `round(total / frames)` is not always right:
+    7 frames over 199 steps rounds to interval 28, which yields 8, while 29 yields exactly
+    7. Bounded by `total`, once per command.
+    """
+    total = int(total)
+    if total <= 0:
+        return 1
+    wanted = max(int(frames), 1)
+    best, best_distance = 1, None
+    for interval in range(1, total + 1):
+        distance = abs(capture_frame_count(interval, total) - wanted)
+        # `<`, not `<=`, so a tie keeps the smaller interval already found.
+        if best_distance is None or distance < best_distance:
+            best, best_distance = interval, distance
+        if distance == 0:
+            break
+    return best
+
+
 def _pdb_atom_records(text):
     """`(resn, chain, resi, [x, y, z])` per ATOM record of `text`, in FILE order.
 
@@ -1455,16 +1511,15 @@ ARGUMENTS
         {default: off, unless live_steps is given}
 
     live_steps = int: roughly how many states the live recording should end up with,
-        across the whole rollout. Giving it turns the live view ON by itself; pass
-        live_view=0 alongside to override that, in which case live_steps is ignored
-        and says so. Between 1 and diffusion_steps - 1, and refused outside that
-        rather than clamped.
+        across the whole rollout. Giving it turns the live view ON by itself; giving
+        live_view=0 alongside it is a contradiction and is refused. Between 1 and
+        diffusion_steps - 1, and refused outside that rather than clamped.
 
         APPROXIMATE on purpose: the capture interval is a whole number of steps, so
         the achievable counts are quantised -- over the default 199 rollout steps they
         run 199, 100, 67, 50, 40, 34 and so on -- and the nearest achievable count to
-        what was asked is what you get. The finished object's state count is reported
-        when it lands. {default: 50}
+        what was asked is what you get. With quiet=0 the real number is printed before
+        the run starts. {default: 50}
 
 EXAMPLES
 
@@ -1542,17 +1597,45 @@ SEE ALSO
                 'live_steps must be between 1 and %d -- the rollout has that many steps'
                 ' to capture at diffusion_steps=%d -- got %d'
                 % (rollout_steps, int(diffusion_steps), live_steps))
-    # Giving `live_steps` is an explicit opt-in and turns the live view on by itself; an
-    # explicit `live_view=0` beside it wins, because saying "off" should mean off.
+    # Giving `live_steps` is an explicit opt-in and turns the live view on by itself.
+    #
+    # `live_view=0` ALONGSIDE it is a CONTRADICTION and is refused, not absorbed. It asks
+    # for a recording length and for no recording in the same breath, and one of the two
+    # has to be silently thrown away -- which is precisely the "a parameter you passed did
+    # nothing" failure this feature keeps closing. Refusing also makes the case observable
+    # in something other than a log line: `live_view=0` already forces both fields off, so
+    # a warning was the ONLY thing distinguishing the two paths. `live_steps` shipped in
+    # this same round, so no existing script can be relying on the lenient reading.
     if live_view is None:
         watch = live_steps is not None
     else:
         watch = bool(int(live_view))
         if live_steps is not None and not watch:
-            colorprinting.warning(
-                ' design: live_view=0 was given, so live_steps=%d is ignored and the'
-                ' design will not be built live.' % live_steps)
-            live_steps = None
+            raise PredictionOptionError(
+                'live_steps=%d asks for a %d-state live recording and live_view=0 asks'
+                ' for none -- drop whichever one you did not mean.'
+                % (live_steps, live_steps))
+
+    # THE derivation, on this side, so the number can be reported before the run starts.
+    # The wire carries the INTERVAL; the runtime does no arithmetic, it captures every Kth
+    # step. `None` means "the runtime's default", which is what a Python side predating
+    # this parameter also says.
+    live_interval = None
+    if watch and live_steps is not None:
+        live_interval = capture_interval(live_steps, rollout_steps)
+        achievable = capture_frame_count(live_interval, rollout_steps)
+        if not int(quiet):
+            # The counts are quantised, so asking for 30 and getting 34 is a small
+            # surprise that costs nothing to remove. Said before the run, not after it.
+            colorprinting.parrot(
+                ' design: live view will capture %d state%s%s, every %d of the %d rollout'
+                ' steps; the finished design is appended after them.'
+                % (achievable, '' if achievable == 1 else 's',
+                   '' if achievable == live_steps
+                   else ' (the nearest to the %d requested -- the interval is a whole'
+                        ' number of steps, so the reachable counts are spaced out)'
+                        % live_steps,
+                   live_interval, rollout_steps))
 
     structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
 
@@ -1624,7 +1707,7 @@ SEE ALSO
         # rebuilt field by field above, so anything not assigned here silently reverts to
         # the constructor default.
         design_spec.live_view = watch
-        design_spec.live_steps = live_steps if watch else None
+        design_spec.live_interval = live_interval
         if fetch is not None:
             job = _DeferredDesignJob(design_spec, design_options, generator_obj, bundle,
                                      object_name)

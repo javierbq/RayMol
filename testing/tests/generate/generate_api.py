@@ -150,39 +150,37 @@ class DesignBackboneTest(GeneratorTestCase):
             job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                       **kwargs)
             settle()
-        return job
+        return job if not isinstance(job, list) else job[0]
 
     def testAskingForAStateCountTurnsTheLiveViewOnByItself(self):
         # Passing live_steps is an explicit opt-in -- having to pass live_view=1 as well
         # would be asking the user to say the same thing twice.
+        from pymol import designing
         job = self._design(live_steps=12)
         self.assertIs(job.spec.live_view, True)
-        self.assertEqual(job.spec.live_steps, 12)
+        # The spec carries the DERIVED interval, not the count that was asked for: the
+        # arithmetic happens once, here, and the wire carries its answer.
+        self.assertEqual(job.spec.live_interval, designing.capture_interval(12, 199))
 
-    def testAnExplicitLiveViewOffBeatsAStateCountAndSaysSo(self):
-        # "Off" has to mean off. The count is dropped with it, so nothing downstream sees
-        # a recording length for a run that is not being recorded -- and the user is TOLD,
-        # because they asked for two things and only got one of them. Asserting the
-        # warning is what makes this test able to fail: without it, `live_view=0` already
-        # forces both fields to their off values and the branch is invisible.
-        from pymol import designing
-        said = []
-        original = designing.colorprinting.warning
-        designing.colorprinting.warning = lambda text: said.append(text)
-        try:
-            job = self._design(live_view=0, live_steps=12)
-        finally:
-            designing.colorprinting.warning = original
-        self.assertIs(job.spec.live_view, False)
-        self.assertIsNone(job.spec.live_steps)
-        ignored = [t for t in said if 'live_steps' in t and 'ignored' in t]
-        self.assertTrue(ignored, 'the ignored parameter must be reported: %r' % said)
-        self.assertIn('live_view=0', ignored[0])
+    def testAskingForAStateCountAndAlsoTurningTheViewOffIsRefused(self):
+        # A CONTRADICTION, refused rather than absorbed: it asks for a recording length
+        # and for no recording in the same breath, and either reading throws one of the
+        # two away silently -- which is the "a parameter you passed did nothing" failure
+        # this feature keeps closing. Refusing also makes the case observable in something
+        # other than a log line, which is all that used to distinguish the two paths.
+        from pymol.predictors.errors import PredictionOptionError
+        with self.assertRaises(PredictionOptionError) as caught:
+            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                live_view=0, live_steps=12)
+        message = str(caught.exception)
+        self.assertIn('live_steps=12', message)
+        self.assertIn('live_view=0', message)
+        self.assertIn('drop whichever one you did not mean', message)
 
     def testLiveViewOnWithoutACountUsesTheRuntimeDefault(self):
         job = self._design(live_view=1)
         self.assertIs(job.spec.live_view, True)
-        self.assertIsNone(job.spec.live_steps,
+        self.assertIsNone(job.spec.live_interval,
                           'absent must mean "the runtime default", not a number chosen '
                           'on this side')
 
@@ -195,8 +193,10 @@ class DesignBackboneTest(GeneratorTestCase):
                                        n_designs=2, live_steps=9)
             settle()
         self.assertEqual(len(jobs), 2)
+        from pymol import designing
+        expected = designing.capture_interval(9, 199)
         for job in jobs:
-            self.assertEqual(job.spec.live_steps, 9, job.spec.name)
+            self.assertEqual(job.spec.live_interval, expected, job.spec.name)
             self.assertIs(job.spec.live_view, True, job.spec.name)
 
     def testAStateCountOutsideWhatTheRolloutCanSupplyIsRefused(self):
@@ -214,9 +214,10 @@ class DesignBackboneTest(GeneratorTestCase):
 
     def testTheBoundFollowsDiffusionSteps(self):
         # The ceiling is the rollout's own step count, so it moves with the schedule.
+        from pymol import designing
         from pymol.predictors.errors import PredictionOptionError
         job = self._design(diffusion_steps=20, live_steps=19)
-        self.assertEqual(job.spec.live_steps, 19)
+        self.assertEqual(job.spec.live_interval, designing.capture_interval(19, 19))
         with self.assertRaises(PredictionOptionError) as caught:
             cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                 diffusion_steps=20, live_steps=20)
@@ -251,15 +252,126 @@ class DesignBackboneTest(GeneratorTestCase):
 
         with patch.object(host, 'submit', side_effect=capture):
             spec.live_view = True
-            spec.live_steps = None
+            spec.live_interval = None
             generator.submit(spec, options, '/tmp')
             self.assertIn('live_view', sent)
-            self.assertNotIn('live_steps', sent,
-                             'an unasked-for count must not be pinned on the wire')
+            self.assertNotIn('live_interval', sent,
+                             'an unasked-for cadence must not be pinned on the wire')
 
-            spec.live_steps = 12
+            spec.live_interval = 17
             generator.submit(spec, options, '/tmp')
-            self.assertEqual(sent.get('live_steps'), 12)
+            self.assertEqual(sent.get('live_interval'), 17,
+                             'the wire carries the derived INTERVAL, not the count')
+            self.assertNotIn('live_steps', sent)
+
+    # -- The derivation: a wanted state count -> an every-Nth-step -------------
+
+    def _captured(self, interval, total):
+        """What the rollout would actually capture, replaying Swift's capture RULE.
+
+        `shouldCapture` is `step % interval == 0 || step == total`. Reproduced here on
+        purpose: `capture_frame_count` is arithmetic ABOUT that rule, and if the two ever
+        disagreed every derived interval would be wrong and nothing else would notice.
+        """
+        return [step for step in range(1, total + 1)
+                if step % interval == 0 or step == total]
+
+    def testTheFrameCountAgreesWithWhatTheCaptureRuleYields(self):
+        from pymol import designing
+        for total in (199, 99, 60, 19, 5, 1):
+            for interval in range(1, total + 1):
+                self.assertEqual(
+                    designing.capture_frame_count(interval, total),
+                    len(self._captured(interval, total)),
+                    'interval %d over %d' % (interval, total))
+
+    def testTheDerivedIntervalYieldsTheRequestedNumberOfStates(self):
+        # Including 1, counts that divide evenly, and counts that cannot land exactly.
+        # 199 steps admits 199, 100, 67, 50, 40, 34, ... so 7 IS reachable (interval 29),
+        # while round(199/7) = 28 would give 8 -- which is why the derivation scans.
+        from pymol import designing
+        total = 199
+        for wanted in (1, 2, 4, 7, 10, 12, 25, 40, 50, 67, 100, 199):
+            interval = designing.capture_interval(wanted, total)
+            self.assertEqual(len(self._captured(interval, total)), wanted,
+                             'asked %d, interval %d' % (wanted, interval))
+
+    def testAnUnreachableCountLandsOnTheNearestAchievableOne(self):
+        # Nearest, not nearest-below: asked 99 of 199, "at most" would give 67.
+        from pymol import designing
+        total = 199
+        interval = designing.capture_interval(99, total)
+        self.assertEqual(len(self._captured(interval, total)), 100)
+        # And it really is the nearest -- no interval does better.
+        for candidate in range(1, total + 1):
+            count = designing.capture_frame_count(candidate, total)
+            self.assertGreaterEqual(abs(count - 99), 1,
+                                    'interval %d gave %d' % (candidate, count))
+
+    def testTheFinalRolloutStepIsAlwaysCaptured(self):
+        # At every count, at every schedule: the recording must end where the design does,
+        # not up to `interval - 1` steps short of it.
+        from pymol import designing
+        for total in (199, 99, 60, 19, 5, 1):
+            for wanted in (1, 3, 7, 12, 50, total):
+                if wanted > total:
+                    continue
+                interval = designing.capture_interval(wanted, total)
+                self.assertIn(total, self._captured(interval, total),
+                              'wanted %d of %d -> interval %d' % (wanted, total, interval))
+
+    def testTheDerivationNeverYieldsAnIntervalThatCapturesNothing(self):
+        # Python refuses these before a job exists; this is the structural invariant, and
+        # the one thing the derivation may not do is make the runtime skip every step.
+        from pymol import designing
+        for frames in (0, -1, 1000000):
+            for total in (199, 1):
+                interval = designing.capture_interval(frames, total)
+                self.assertGreaterEqual(interval, 1, 'frames %r' % frames)
+                self.assertTrue(self._captured(interval, total))
+        self.assertGreaterEqual(designing.capture_interval(5, 0), 1)
+
+    def testTheDefaultCadenceIsUnchangedAtTheDefaultSchedule(self):
+        # The old fixed interval of 4 over 199 steps gave 50 frames. Whatever the
+        # derivation does, asking for 50 must still be interval 4 -- otherwise this is a
+        # change to the default rather than a parameter added beside it.
+        from pymol import designing
+        self.assertEqual(designing.capture_interval(50, 199), 4)
+        self.assertEqual(designing.capture_frame_count(4, 199), 50)
+
+    def testTheAchievableCountIsReportedBeforeTheRunStarts(self):
+        # The point of deriving on this side. The counts are quantised, so asking for 30
+        # and silently getting 34 is a small surprise that costs nothing to remove.
+        from pymol import designing
+        said = []
+        original = designing.colorprinting.parrot
+        designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            self._design(live_steps=30, quiet=0)
+        finally:
+            designing.colorprinting.parrot = original
+        live = [t for t in said if 'live view will capture' in t]
+        self.assertTrue(live, 'the achievable count must be reported: %r' % said)
+        achievable = designing.capture_frame_count(
+            designing.capture_interval(30, 199), 199)
+        self.assertIn('capture %d state' % achievable, live[0])
+        self.assertIn('nearest to the 30 requested', live[0],
+                      'and must say so when it is not what was asked for')
+
+    def testAnExactlyAchievableCountIsReportedWithoutTheCaveat(self):
+        from pymol import designing
+        said = []
+        original = designing.colorprinting.parrot
+        designing.colorprinting.parrot = lambda text: said.append(text)
+        try:
+            self._design(live_steps=50, quiet=0)
+        finally:
+            designing.colorprinting.parrot = original
+        live = [t for t in said if 'live view will capture' in t]
+        self.assertTrue(live)
+        self.assertIn('capture 50 states', live[0])
+        self.assertNotIn('nearest', live[0])
+        self.assertIn('every 4 of the 199 rollout steps', live[0])
 
     # -- Placeholders, weights, cancellation ---------------------------------
 
