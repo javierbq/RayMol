@@ -164,6 +164,12 @@ enum InferenceJob {
         /// predates this key sends. PRESENTATION only, like `liveView`: it changes when
         /// the design is seen, never what it is, so it is absent from the design key.
         let liveInterval: Int?
+        /// Keep the live view's captured frames as states of the finished object.
+        /// Optional, absent meaning NO — the frames are animated and discarded, which is
+        /// what a Python side predating this key also means. PRESENTATION only, like
+        /// `liveView`: absent from the design key, and the finished object is the same
+        /// either way apart from the states themselves.
+        let keepFrames: Bool?
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
             case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
@@ -174,6 +180,7 @@ enum InferenceJob {
             case designChain = "design_chain", designKey = "design_key"
             case liveView = "live_view"
             case liveInterval = "live_interval"
+            case keepFrames = "keep_frames"
         }
     }
 

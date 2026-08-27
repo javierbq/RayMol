@@ -213,11 +213,26 @@ final class RFD3TrajectoryTests: XCTestCase {
                                        chain: "B", coords: seedCoords(length: 2))
         let source = RFD3JobManager.seedPython(name: "rfd3_design_ab12cd34",
                                                seed: XCTUnwrap2(seed),
-                                               receiptPath: "/tmp/r.seed")
+                                               receiptPath: "/tmp/r.seed",
+                                               keepFrames: false)
         XCTAssertTrue(source.contains("'rfd3_design_ab12cd34'"), source)
         XCTAssertFalse(source.contains("_traj"), source)
         // 12 target atoms before the generated chain, 10 atoms in it.
-        XCTAssertTrue(source.contains(", 12, 10)"), source)
+        XCTAssertTrue(source.contains(", 12, 10, keep="), source)
+    }
+
+    func testTheSeedStatementCarriesWhetherFramesAreKept() {
+        // Recorded once, on the seed, rather than repeated on every frame: the answer
+        // cannot change mid-run, and `trajectory_frame` reads it back off the record.
+        let seed = XCTUnwrap2(RFD3Trajectory.seed(target: target(residues: 3), length: 2,
+                                                  chain: "B",
+                                                  coords: seedCoords(length: 2)))
+        XCTAssertTrue(RFD3JobManager.seedPython(name: "d", seed: seed,
+                                                receiptPath: "/tmp/k.seed",
+                                                keepFrames: false).contains("keep=0"))
+        XCTAssertTrue(RFD3JobManager.seedPython(name: "d", seed: seed,
+                                                receiptPath: "/tmp/k.seed",
+                                                keepFrames: true).contains("keep=1"))
     }
 
     func testTheSeedStatementReportsWhetherPythonAcceptedIt() {
@@ -229,7 +244,8 @@ final class RFD3TrajectoryTests: XCTestCase {
                                                   chain: "B",
                                                   coords: seedCoords(length: 2)))
         let source = RFD3JobManager.seedPython(name: "d", seed: seed,
-                                               receiptPath: "/tmp/x.seed")
+                                               receiptPath: "/tmp/x.seed",
+                                               keepFrames: false)
         XCTAssertTrue(source.contains("_ok = _d.trajectory_seed("), source)
         XCTAssertTrue(source.contains("open('/tmp/x.seed', 'w')"), source)
         XCTAssertTrue(source.contains("'1' if _ok else '0'"), source)
@@ -356,7 +372,8 @@ final class RFD3TrajectoryTests: XCTestCase {
         // The PDB has multiple ATOM records separated by real newlines.
         XCTAssertTrue(seed.pdb.contains("\n"), "the seed must be a multi-line string")
         let source = RFD3JobManager.seedPython(name: "traj", seed: seed,
-                                               receiptPath: "/tmp/t.seed")
+                                               receiptPath: "/tmp/t.seed",
+                                               keepFrames: false)
         // The two-character escape sequence must be in the source, not a joined line.
         XCTAssertTrue(source.contains("\\n"), source)
         // Each ATOM record's newline must survive as a \n escape: the buggy pythonLiteral

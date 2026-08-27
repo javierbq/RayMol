@@ -87,11 +87,12 @@ final class RFD3JobManager: InferenceRuntime {
     /// refused and sends 49 more frames, each ~7 KB of source through the main thread, for
     /// a recording that does not exist.
     static func seedPython(name: String, seed: RFD3ResultWriter.Composed,
-                           receiptPath: String) -> String {
+                           receiptPath: String, keepFrames: Bool) -> String {
         "from pymol import designing as _d\n"
         + "_ok = _d.trajectory_seed(\(InferenceJob.pythonLiteral(name)), "
         + "\(InferenceJob.pythonMultilineLiteral(seed.pdb)), "
-        + "\(seed.targetAtomCount), \(seed.designAtomCount))\n"
+        + "\(seed.targetAtomCount), \(seed.designAtomCount), "
+        + "keep=\(keepFrames ? 1 : 0))\n"
         + "open(\(InferenceJob.pythonLiteral(receiptPath)), 'w')"
         + ".write('1' if _ok else '0')"
     }
@@ -403,10 +404,11 @@ final class RFD3JobManager: InferenceRuntime {
                         // so the seed is not retried every fourth step.
                         let receipt = request.statusPath + ".seed"
                         seeded = true
-                        if !self.runSeedOnMain(Self.seedPython(name: objectName,
-                                                               seed: seed,
-                                                               receiptPath: receipt),
-                                               receiptPath: receipt) {
+                        if !self.runSeedOnMain(
+                            Self.seedPython(name: objectName, seed: seed,
+                                            receiptPath: receipt,
+                                            keepFrames: request.keepFrames == true),
+                            receiptPath: receipt) {
                             live = false
                         } else {
                             // Only once the object exists. The seed IS state 1 and is
