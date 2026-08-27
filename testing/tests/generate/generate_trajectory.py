@@ -912,91 +912,210 @@ class LiveObjectTest(GeneratorTestCase):
             _backbone(self.LENGTH)[1][0], places=3,
             msg='delivery left the impostor in place instead of replacing it')
 
-    # -- The playback head, applied ------------------------------------------
+    # -- The interpolation itself, which is pure arithmetic --------------------
 
-    def testAFrameFromTheAppAppendsAStateWithoutShowingIt(self):
-        # `advance=0` is what the app sends: the head owns the display, and a frame that
-        # also set the state would fight it several times a second. The DEFAULT stays 1,
-        # so every headless and scripted caller keeps the behaviour it always had.
+    def testTheENDPOINTSAreExactBitForBit(self):
+        # The whole design rests on the model's own coordinates never being approximated.
+        # `a + (b - a) * t` is NOT bit-for-bit `a` at t=0 nor `b` at t=1 in floating
+        # point, so both ends are returned by copy instead of computed.
+        from pymol import designing
+        start = [[0.1, 0.2, 0.3], [-7.7, 1e-8, 12345.6789]]
+        end = [[9.9, -3.3, 0.0], [0.30000000000000004, 2.5, -1e-9]]
+        self.assertEqual(designing.interpolate_frame(start, end, 0.0), start)
+        self.assertEqual(designing.interpolate_frame(start, end, 1.0), end)
+        # Out of range clamps to the endpoints rather than extrapolating past a
+        # coordinate the model produced.
+        self.assertEqual(designing.interpolate_frame(start, end, -5.0), start)
+        self.assertEqual(designing.interpolate_frame(start, end, 99.0), end)
+        # And it is a copy, so a caller cannot mutate the record through it.
+        out = designing.interpolate_frame(start, end, 0.0)
+        out[0][0] = 999.0
+        self.assertEqual(start[0][0], 0.1)
+
+    def testTheMidpointIsTheMidpointAndMotionIsMonotonic(self):
+        from pymol import designing
+        start = [[0.0, 0.0, 0.0]]
+        end = [[10.0, -20.0, 5.0]]
+        self.assertEqual(designing.interpolate_frame(start, end, 0.5),
+                         [[5.0, -10.0, 2.5]])
+        previous = None
+        for step in range(0, 101):
+            point = designing.interpolate_frame(start, end, step / 100.0)[0]
+            if previous is not None:
+                self.assertGreaterEqual(point[0], previous[0])
+                self.assertLessEqual(point[1], previous[1])
+                self.assertGreaterEqual(point[2], previous[2])
+            previous = point
+
+    def testDegenerateInterpolationsDegradeRatherThanCorrupt(self):
+        from pymol import designing
+        frame = [[1.0, 2.0, 3.0]]
+        # Identical consecutive frames: every fraction is that frame.
+        for fraction in (0.0, 0.25, 0.5, 1.0):
+            self.assertEqual(designing.interpolate_frame(frame, frame, fraction), frame)
+        # Mismatched atom counts, and empty: no smoothing rather than a mis-shaped state.
+        self.assertEqual(designing.interpolate_frame(frame, frame + frame, 0.5), [])
+        self.assertEqual(designing.interpolate_frame([], [], 0.5), [])
+        self.assertEqual(designing.interpolate_frame([], frame, 0.5), [])
+
+    def testTheDisplayFractionIsTimeBasedAndSaturates(self):
+        from pymol import designing
+        self.assertEqual(designing.display_fraction(0.0, 1.0), 0.0)
+        self.assertEqual(designing.display_fraction(0.5, 1.0), 0.5)
+        self.assertEqual(designing.display_fraction(1.0, 1.0), 1.0)
+        # Saturates rather than extrapolating: a late next frame means the display waits
+        # on the newest captured one, never past it.
+        self.assertEqual(designing.display_fraction(9.0, 1.0), 1.0)
+        self.assertEqual(designing.display_fraction(-1.0, 1.0), 0.0)
+        # Degenerate gaps mean "just show the newest", not a divide by zero.
+        for gap in (0, -1, None, 'x'):
+            self.assertEqual(designing.display_fraction(0.5, gap), 1.0)
+
+    def testTheDisplayRateIsAConstantNotALiteral(self):
+        from pymol import designing
+        self.assertEqual(designing.PLAYBACK_DISPLAY_RATE, 30)
+
+    # -- Smooth motion by rewriting ONE display state -------------------------
+
+    def _state_coords(self, state):
+        return [tuple(a.coord)
+                for a in cmd.get_model(self.name, state=state).atom]
+
+    def _capture(self, coords, smooth=1):
+        return self.designing.trajectory_frame(self.name, _flat(coords),
+                                               advance=0, smooth=smooth)
+
+    def testTheFirstCapturedFrameHasNothingToInterpolateFrom(self):
+        # Defined behaviour at the near end: no predecessor, so no display state and no
+        # animation -- the seed is simply shown. `trajectory_display` says so rather than
+        # inventing a starting point.
         self.assertTrue(self.seed())
+        self.assertIsNone(self.designing._TRAJECTORY[self.name]['display_state'])
+        self.assertFalse(self.designing.trajectory_display(self.name))
+        self.assertEqual(cmd.count_states(self.name), 1)
         self.assertEqual(self.displayed_state(), 1)
-        self.assertTrue(self.designing.trajectory_frame(
-            self.name, _flat(_backbone(self.LENGTH)), advance=0))
-        self.assertEqual(cmd.count_states(self.name), 2)
-        self.assertEqual(self.displayed_state(), 1,
-                         'a frame the app sends must not move the display')
-        # The default is unchanged.
-        self.assertTrue(self.designing.trajectory_frame(
-            self.name, _flat(_backbone(self.LENGTH))))
-        self.assertEqual(self.displayed_state(), 3)
 
-    def testTheHeadWalksTheDisplayForward(self):
+    def testTheDISPLAYSTATEISNEVERSTATEONE(self):
+        # `_holds_the_seed` reads state 1 to decide whether this object is still the
+        # recording it seeded. If the display ever landed there, the identity check would
+        # be comparing against something being rewritten thirty times a second.
         self.assertTrue(self.seed())
-        for _ in range(4):
-            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                            advance=0)
-        self.assertEqual(cmd.count_states(self.name), 5)
-        self.assertEqual(self.displayed_state(), 1)
-        for state in (2, 3, 4, 5):
-            self.assertTrue(self.designing.trajectory_advance(self.name, state))
-            self.assertEqual(self.displayed_state(), state)
+        for step in range(4):
+            self._capture(_backbone(self.LENGTH, offset=(step, 0, 0)))
+            display = self.designing._TRAJECTORY[self.name]['display_state']
+            if display is not None:
+                self.assertGreaterEqual(display, 3, 'step %d' % step)
+            # And the identity check still passes at every point.
+            self.assertTrue(self.designing._holds_the_seed(
+                self.name, self.designing._TRAJECTORY[self.name]))
 
-    def testTheHeadStopsForGoodOnceTheUserMovesTheObject(self):
-        # A live view that drags the user back every 200 ms is worse than one that jumps.
-        # Detection is exact rather than polled: the object is not showing what the head
-        # last put there, so something else moved it.
+    def testACAPTUREDSTATEISNEVERMODIFIEDAFTERITLANDS(self):
+        # THE invariant this whole approach exists for. States 1..N are model output; the
+        # smoothing rewrites one extra state and must never reach back into them. Checked
+        # by keeping every captured frame's coordinates and re-reading them after a run's
+        # worth of display rewrites.
         self.assertTrue(self.seed())
-        for _ in range(5):
-            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                            advance=0)
-        self.assertTrue(self.designing.trajectory_advance(self.name, 2))
+        captured = {1: self._state_coords(1)}
+        for step in range(1, 6):
+            self.assertTrue(self._capture(_backbone(self.LENGTH,
+                                                    offset=(step * 3.0, 0, 0))))
+            index = self.designing._TRAJECTORY[self.name]['captured']
+            captured[index] = self._state_coords(index)
+            # Animate that gap, the way the head would.
+            for _ in range(8):
+                self.designing.trajectory_display(self.name)
+        for index, coords in captured.items():
+            self.assertEqual(self._state_coords(index), coords,
+                             'captured state %d was modified by the smoothing' % index)
+
+    def testTheDisplayStateIsTheONLYThingTheAnimationTouches(self):
+        # The other half of the invariant: it does move something, so the test above is
+        # not passing because nothing happens at all.
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        display = self.designing._TRAJECTORY[self.name]['display_state']
+        before = self._state_coords(display)
+        import time
+        time.sleep(0.05)
+        self.assertTrue(self.designing.trajectory_display(self.name))
+        self.assertNotEqual(self._state_coords(display), before,
+                            'the display state must actually move')
+
+    def testTheTargetHalfNeverMovesWhileAnimating(self):
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        display = self.designing._TRAJECTORY[self.name]['display_state']
+        target = self.chain_coords('A', 1)
+        for _ in range(6):
+            self.designing.trajectory_display(self.name)
+        self.assertEqual(
+            [tuple(a.coord) for a in
+             cmd.get_model('%s and chain A' % self.name, state=display).atom],
+            target)
+
+    def testASmoothedRunEndsWithTHESAMESTATESAsAPlainOne(self):
+        # The count is the claim: smoothing must not change what the finished object is.
+        counts = {}
+        for smooth in (0, 1):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            self.assertTrue(self.seed())
+            for step in range(1, 6):
+                self._capture(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0)),
+                              smooth=smooth)
+                if smooth:
+                    self.designing.trajectory_display(self.name)
+            self.designing.deliver_result(self.result_path(), self.name)
+            counts[smooth] = cmd.count_states(self.name)
+        self.assertEqual(counts[1], counts[0],
+                         'a smoothed run must end with the same state count')
+        self.assertEqual(counts[0], 7, '6 captured frames + the delivered design')
+
+    def testDeliveryOverwritesTheDisplayStateWithTheDesign(self):
+        self.assertTrue(self.seed())
+        for step in range(1, 4):
+            self._capture(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0)))
+            self.designing.trajectory_display(self.name)
+        display = self.designing._TRAJECTORY[self.name]['display_state']
+        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
+        self.designing.deliver_result(self.result_path(coords=final), self.name)
+        self.assertEqual(cmd.count_states(self.name), display,
+                         'the design must land IN the display slot, not after it')
+        self.assertEqual(self.displayed_state(), display)
+        for atom, expected in zip(self.chain_coords('B', display), final):
+            for axis in range(3):
+                self.assertAlmostEqual(atom[axis], expected[axis], places=3)
+
+    def testTheAnimationStopsForGoodOnceTheUserMovesTheObject(self):
+        self.assertTrue(self.seed())
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        self.assertTrue(self.designing.trajectory_display(self.name))
 
         said = []
         original = self.designing.colorprinting.parrot
         self.designing.colorprinting.parrot = lambda text: said.append(text)
         try:
-            cmd.set('state', 5, self.name)          # the user scrubs
-            self.assertFalse(self.designing.trajectory_advance(self.name, 3),
-                             'the head must give way')
+            cmd.set('state', 2, self.name)          # the user scrubs to a real frame
+            self.assertFalse(self.designing.trajectory_display(self.name))
         finally:
             self.designing.colorprinting.parrot = original
-        self.assertEqual(self.displayed_state(), 5, 'the user must be left where they are')
-        self.assertTrue([t for t in said if 'you moved' in t],
-                        'and must be told why it stopped: %r' % said)
-
-        # FOR THE REST OF THE RUN, not just this tick.
-        for state in (3, 4, 6):
-            self.assertFalse(self.designing.trajectory_advance(self.name, state))
-        self.assertEqual(self.displayed_state(), 5)
-
-    def testTheHeadStaysOffEvenIfTheUserScrubsBackToWhereItWas(self):
-        # The latch, and the only case that needs it. Without it the head compares the
-        # object's state against the last one IT set, so a user who scrubs away and then
-        # happens to come back to that state would find the head driving again -- which is
-        # not "stop for the rest of the run", it is "stop until you look away".
-        self.assertTrue(self.seed())
-        for _ in range(5):
-            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                            advance=0)
-        self.assertTrue(self.designing.trajectory_advance(self.name, 2))
-        cmd.set('state', 5, self.name)                       # the user scrubs away
-        self.assertFalse(self.designing.trajectory_advance(self.name, 3))
-        cmd.set('state', 2, self.name)                       # ... and scrubs back
-        self.assertFalse(self.designing.trajectory_advance(self.name, 3),
-                         'the head must stay off for the rest of the run')
-        self.assertEqual(self.displayed_state(), 2, 'and must leave the user alone')
+        self.assertEqual(self.displayed_state(), 2, 'the user must be left alone')
+        self.assertTrue([t for t in said if 'you moved' in t], said)
+        # For the rest of the run, even if they scrub back.
+        display = self.designing._TRAJECTORY[self.name]['display_state']
+        cmd.set('state', display, self.name)
+        self.assertFalse(self.designing.trajectory_display(self.name))
 
     def testADeletedObjectIsNotEvenQUERIED(self):
-        # The head ticks 15 times a second. Asking a deleted object for its state raises
-        # AND prints a Selector-Error, so without the existence check a user who deletes
-        # the object mid-run gets fifteen error lines a second for the rest of the run --
-        # the return value is False either way, so the noise is the whole observable.
+        # Asking a gone object anything raises AND prints a Selector-Error -- thirty times
+        # a second here. The fake RECORDS rather than raises, because this function
+        # swallows everything by contract and a raising fake would be swallowed with it.
         self.assertTrue(self.seed())
-        record = self.designing._TRAJECTORY[self.name]
-
-        # RECORDING rather than raising: `trajectory_advance` wraps everything in one
-        # try/except -- it must never throw into a running design -- so a fake that raised
-        # would be swallowed and the test would pass with the guard removed.
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
         queried = []
 
         class GoneCmd(object):
@@ -1007,87 +1126,49 @@ class LiveObjectTest(GeneratorTestCase):
                 return getattr(self._real, attribute)
 
             def get_names(self, *args, **kwargs):
-                return []                      # the object has been deleted
+                return []
 
             def get(self, *args, **kwargs):
                 queried.append('get')
                 return '1'
 
-            def count_states(self, *args, **kwargs):
-                queried.append('count_states')
-                return 1
+            def load_coordset(self, *args, **kwargs):
+                queried.append('load_coordset')
 
-        self.assertFalse(self.designing.trajectory_advance(self.name, 3,
+        self.assertFalse(self.designing.trajectory_display(self.name,
                                                            _self=GoneCmd(cmd)))
-        self.assertEqual(queried, [],
-                         'a deleted object must not be queried at all -- asking raises '
-                         'AND prints a Selector-Error, fifteen times a second')
-        self.assertIn(self.name, self.designing._TRAJECTORY)
-        self.assertEqual(record['head_state'], 1, 'and nothing may be recorded')
+        self.assertEqual(queried, [], 'a deleted object must not be queried at all')
 
     def testTheSeedShowsItsOwnStateWhateverTheSessionWasShowing(self):
-        # The head's whole check is "is the object still showing what I last set?", so the
-        # baseline has to be a fact rather than an inherited default. A fresh object
-        # reports the GLOBAL state setting until something sets its own -- so if the user
-        # was scrubbing something else, the seed would claim to be showing state 3 of a
-        # one-state object and the head would call that user-control on its first tick.
-        cmd.set('state', 3)                      # global, e.g. another object scrubbed
+        # The animation's user-control check compares against what it last set, so the
+        # baseline has to be a fact rather than an inherited default: a fresh object
+        # reports the GLOBAL state setting until something sets its own.
+        cmd.set('state', 3)
         self.addCleanup(cmd.set, 'state', 1)
         self.assertTrue(self.seed())
-        self.assertEqual(self.displayed_state(), 1,
-                         'the seed must show itself, not the global default')
-        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                        advance=0)
-        self.assertTrue(self.designing.trajectory_advance(self.name, 2),
-                        'and the head must not mistake that default for the user')
-        self.assertEqual(self.displayed_state(), 2)
+        self.assertEqual(self.displayed_state(), 1)
+        self._capture(_backbone(self.LENGTH))
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        self.assertTrue(self.designing.trajectory_display(self.name),
+                        'the head must not mistake that default for the user')
 
-    def testAdvancingAnObjectThatIsGoneOrUnknownIsANoOp(self):
-        # The head ticks on a timer; the object can be deleted under it at any moment.
-        self.assertFalse(self.designing.trajectory_advance('nosuchobject', 3))
+    def testAFrameFromTheAppDoesNotJumpTheDisplayToItself(self):
+        # `advance=0`: the captured frame lands as a state without the display snapping to
+        # it. With `smooth=1` the display moves to the new slot instead, which is where
+        # the animation into that frame plays out.
         self.assertTrue(self.seed())
-        cmd.delete(self.name)
-        self.assertFalse(self.designing.trajectory_advance(self.name, 2))
-
-    def testTheHeadCannotRunOffTheEndOfTheRecording(self):
-        # Clamped rather than refused: the head's arithmetic lives on the Swift side and
-        # a state past the end must not raise into a running design.
-        self.assertTrue(self.seed())
-        self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                        advance=0)
-        self.assertTrue(self.designing.trajectory_advance(self.name, 999))
-        self.assertEqual(self.displayed_state(), 2)
-        self.assertLessEqual(self.displayed_state(), cmd.count_states(self.name))
-
-    def testDeliveryLandsOnTheDesignEvenIfTheHeadWasBehind(self):
-        # The head is stopped when the rollout ends, so it can be parked anywhere. The
-        # delivered design is what must be on screen afterwards.
-        self.assertTrue(self.seed())
-        for _ in range(5):
-            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                            advance=0)
-        self.designing.trajectory_advance(self.name, 2)      # head lags well behind
-        self.assertEqual(self.displayed_state(), 2)
-
-        final = _backbone(self.LENGTH, offset=(2.5, -6.0, 0.5))
-        self.designing.deliver_result(self.result_path(coords=final), self.name)
-
-        self.assertEqual(cmd.count_states(self.name), 7)
-        self.assertEqual(self.displayed_state(), 7,
-                         'delivery must land on the finished design, not where the head '
-                         'happened to stop')
-
-    def testDeliveryLandsOnTheDesignEvenIfTheUserTookControl(self):
-        # Deliberate: the design is the point of the run, and the pin predates the head.
-        self.assertTrue(self.seed())
-        for _ in range(3):
-            self.designing.trajectory_frame(self.name, _flat(_backbone(self.LENGTH)),
-                                            advance=0)
-        self.designing.trajectory_advance(self.name, 2)
-        cmd.set('state', 3, self.name)
-        self.designing.trajectory_advance(self.name, 3)      # latches user_scrubbed
-        self.designing.deliver_result(self.result_path(), self.name)
-        self.assertEqual(self.displayed_state(), cmd.count_states(self.name))
+        self.assertEqual(self.displayed_state(), 1)
+        # The SEED is captured frame 1, so the very first appended frame already has a
+        # predecessor and a gap to animate: 2 captured states plus the display.
+        self._capture(_backbone(self.LENGTH))
+        self.assertEqual(cmd.count_states(self.name), 3, '2 captured + 1 display')
+        self.assertEqual(self.displayed_state(), 3)
+        # The next frame overwrites that display slot with model output and opens a new
+        # one, so the object grows by exactly one state per captured frame.
+        self._capture(_backbone(self.LENGTH, offset=(10.0, 0, 0)))
+        self.assertEqual(cmd.count_states(self.name), 4, '3 captured + 1 display')
+        self.assertEqual(self.displayed_state(), 4)
+        self.assertEqual(self.designing._TRAJECTORY[self.name]['captured'], 3)
 
     # -- What a run that never finishes leaves behind --------------------------
 

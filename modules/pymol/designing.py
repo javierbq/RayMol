@@ -945,6 +945,61 @@ def capture_interval(frames, total):
     return best
 
 
+#: Times per second the live view rewrites its display state while a design runs.
+#:
+#: This is a REWRITE RATE, not a state count: the object gains exactly one state per
+#: captured model frame, and smoothness comes from moving the atoms of a single extra
+#: state rather than from inventing more states. So the only cost of raising it is
+#: main-thread work -- one `load_coordset` and one forced repaint per tick -- and nothing
+#: about the finished object changes.
+PLAYBACK_DISPLAY_RATE = 30
+
+#: What to assume for a gap that has not been measured yet, in seconds.
+NOMINAL_FRAME_INTERVAL = 1.0
+
+
+def display_fraction(elapsed, gap):
+    """How far between the previous captured frame and the newest one to show, 0...1.
+
+    Time-based rather than tick-counted, so a tick that arrives late lands where it
+    should rather than where it would have been if every tick had been on time.
+
+    Saturates at 1 rather than overshooting: if the next frame is slow the display sits
+    on the newest captured frame and waits. It never extrapolates past a coordinate the
+    model actually produced.
+    """
+    try:
+        elapsed, gap = float(elapsed), float(gap)
+    except (TypeError, ValueError):
+        return 1.0
+    if not gap > 0:
+        return 1.0
+    if elapsed <= 0:
+        return 0.0
+    return min(1.0, elapsed / gap)
+
+
+def interpolate_frame(start, end, fraction):
+    """One coordinate set `fraction` of the way from `start` to `end`.
+
+    Straight-line, per atom, per axis. THE ENDPOINTS ARE EXACT and are returned by copy
+    rather than computed: `a + (b - a) * t` is not bit-for-bit `a` at t=0 or `b` at t=1 in
+    floating point, and the whole design of this feature is that the model's own
+    coordinates are never approximated.
+
+    Returns `[]` when the two frames do not describe the same atoms, so a mismatch
+    degrades to "no smoothing" rather than to a mis-shaped state.
+    """
+    if not start or len(start) != len(end):
+        return []
+    if fraction <= 0:
+        return [list(point) for point in start]
+    if fraction >= 1:
+        return [list(point) for point in end]
+    return [[a[axis] + (b[axis] - a[axis]) * fraction for axis in range(3)]
+            for a, b in zip(start, end)]
+
+
 def _pdb_atom_records(text):
     """`(resn, chain, resi, [x, y, z])` per ATOM record of `text`, in FILE order.
 
@@ -1153,11 +1208,24 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         # over?" check compares against. The seed IS state 1, and it is SET rather than
         # assumed: a fresh object reports the global default until something sets it, and
         # the check needs an unambiguous starting point.
+        import time
         _self.set('state', 1, name)
         _TRAJECTORY[name] = {
             'offset': offset,
             'atoms': atoms,
             'head_state': 1,
+            #: How many CAPTURED frames have landed, which is also the index of the last
+            #: of them: states 1..captured are model output and nothing else ever is.
+            'captured': 1,
+            #: Index of the one state the smooth display rewrites, or None while there is
+            #: nothing to interpolate. Always `captured + 1`, so it is never state 1 --
+            #: which `_holds_the_seed` reads, and must keep reading the seed.
+            'display_state': None,
+            #: The two ends of the current animation, and the gap it plays over.
+            'prev_design': None,
+            'last_design': [record[3] for record in written[offset:]],
+            'last_arrival': time.monotonic(),
+            'gap': NOMINAL_FRAME_INTERVAL,
             'target': [record[3] for record in written[:offset]],
             # WHAT THE SEED PUT IN STATE 1, which is this recording's identity.
             #
@@ -1189,7 +1257,7 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, _self=cmd):
         return False
 
 
-def trajectory_frame(name, coords, advance=1, _self=cmd):
+def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
     """Append one captured frame as a new state of `name`, and show it.
 
     `coords` is a FLAT list of floats, three per atom, covering the GENERATED CHAIN ONLY,
@@ -1200,11 +1268,17 @@ def trajectory_frame(name, coords, advance=1, _self=cmd):
     `load_coordset` rather than `load_coords`: it is documented to load in the order the
     file had, and that order is the one `RFD3ResultWriter.emit` wrote.
 
-    `advance` decides whether the new state is also SHOWN. It defaults to 1, which is the
-    behaviour every scripted and headless caller has always had: append a state and jump
-    to it. The app passes 0, because there the PLAYBACK HEAD owns what is displayed --
-    see `trajectory_advance`. Both driving the display would mean the two fighting over it
-    several times a second.
+    `advance` decides whether the new state is also SHOWN, and `smooth` whether an extra
+    DISPLAY state is kept beside the captured frames for `trajectory_display` to animate.
+    Both default to the behaviour every scripted and headless caller has always had:
+    append a state and jump to it, nothing else in the object. The app passes
+    `advance=0, smooth=1`.
+
+    Note what `smooth` does NOT do: it does not add states between the captured frames.
+    The object gains exactly one state per model frame either way. The single extra state
+    is the live display, it is overwritten by the next captured frame, and at delivery it
+    becomes the finished design -- so a smoothed run and a plain one end with the same
+    states.
 
     When it does show the state, it does so through the OBJECT's `state` setting and never
     `cmd.frame`: `cmd.frame` writes the global MOVIE frame, and `CObject::getCurrentState`
@@ -1240,10 +1314,33 @@ def trajectory_frame(name, coords, advance=1, _self=cmd):
         if not _holds_the_seed(name, record, _self=_self):
             # Same NAME, different object -- see `_TRAJECTORY['design']`.
             return False
-        frame = record['target'] + [values[i * 3:i * 3 + 3] for i in range(atoms)]
-        state = _self.count_states(name) + 1
-        _self.load_coordset(frame, name, state)
-        if int(advance):
+        import time
+        design = [values[i * 3:i * 3 + 3] for i in range(atoms)]
+        now = time.monotonic()
+        # The captured frame goes at ITS OWN index, `captured + 1`. When a display state
+        # exists it is sitting at exactly that index, so this overwrites it -- which is
+        # the point: nothing interpolated survives, the slot becomes model output, and
+        # the object gains exactly one state per captured frame either way.
+        state = record['captured'] + 1
+        _self.load_coordset(record['target'] + design, name, state)
+        record['captured'] = state
+        gap = now - record.get('last_arrival', now)
+        if gap > 0:
+            record['gap'] = gap
+        record['prev_design'] = record.get('last_design')
+        record['last_design'] = design
+        record['last_arrival'] = now
+        if int(smooth) and record['prev_design'] is not None:
+            # A new display slot, appended after the captured frame and started at the
+            # PREVIOUS frame -- the animation runs from there to the one that just
+            # landed, over the interval that just elapsed. That is why the display lags
+            # one frame: a gap can only be animated once both of its ends are known.
+            display = state + 1
+            _self.load_coordset(record['target'] + record['prev_design'], name, display)
+            record['display_state'] = display
+            _self.set('state', display, name)
+            record['head_state'] = display
+        elif int(advance):
             _self.set('state', state, name)
             record['head_state'] = state
         return True
@@ -1251,50 +1348,63 @@ def trajectory_frame(name, coords, advance=1, _self=cmd):
         return False
 
 
-def trajectory_advance(name, state, _self=cmd):
-    """Show `state` of a live recording, unless the user has taken the wheel.
+def trajectory_display(name, _self=cmd):
+    """Move the atoms of the DISPLAY state to where they are right now. Called ~30/s.
 
-    The playback head calls this several times a second while a design runs. It exists as
-    a separate entry point from `trajectory_frame` because DISPLAY IS DECOUPLED FROM
-    ARRIVAL: frames land irregularly and roughly once a second, so advancing on arrival
-    is a slideshow. The head walks the displayed state forward at an even pace instead,
-    always chasing the newest captured state -- lagging while the rollout produces,
-    closing the gap when it pauses.
+    This is the smooth motion, and the shape of it is the point: the object gains exactly
+    one state per captured model frame, and the animation happens by REWRITING the
+    coordinates of one extra state rather than by manufacturing states between them. So
+    nothing in the finished object was invented, there is nothing to label, and a session
+    saved from it contains model output and the design.
 
-    HOW THE USER TAKING OVER IS DETECTED, and it is the whole reason this decision is on
-    this side rather than in Swift: the bridge is one-directional, so the runtime cannot
-    read the object's current state, and the check needs it. Here it is a `cmd.get` away.
-    If the object is not showing what the head last put there, something else moved it --
-    the object panel's state control, a typed `set state`, a scrubbed slider -- and the
-    head gives up FOR THE REST OF THE RUN. A live view that drags the user back every
-    200 ms is worse than one that jumps.
+    The display runs one frame behind, necessarily: a gap can only be animated once both
+    of its ends have landed. `display_fraction` turns elapsed time into how far along the
+    gap to be, so a late tick lands where it belongs rather than where it would have been
+    had every tick been punctual, and it saturates at 1 rather than extrapolating past a
+    coordinate the model produced.
 
-    What that costs: if the user scrubs to exactly the state the head last set, nothing is
-    detected -- but then nothing has visibly changed either, so there is nothing to detect.
-    Delivery still pins the object to the finished design at the end, deliberately: the
-    design is the point of the run, and that pin predates the head.
+    HOW THE USER TAKING OVER IS DETECTED: the object is showing the display state and
+    nothing else moves it, so if it is showing something else, the user did -- the object
+    panel's state control, a typed `set state`, a scrubbed slider. The head then gives way
+    for the rest of the run. Checked here rather than in the runtime because the bridge is
+    one-directional: the runtime cannot read the object's state, and here it is a
+    `cmd.get` away.
 
-    Never raises, like everything else on this path.
+    Never raises. Everything on this path degrades to "no smoothing".
     """
     try:
+        import time
         name = _legal_object_name(name, _self=_self)
         record = _TRAJECTORY.get(name)
         if record is None or record.get('user_scrubbed'):
             return False
-        if name not in _self.get_names('objects'):
-            # Deleted mid-run, which is legitimate. Nothing to drive.
+        display = record.get('display_state')
+        if display is None:
+            # The first captured frame has no predecessor, so there is nothing to
+            # interpolate from yet. Showing it plainly is the right answer.
             return False
-        state = max(1, min(int(state), _self.count_states(name)))
+        if name not in _self.get_names('objects'):
+            # Deleted mid-run, which is legitimate. Asking a gone object anything raises
+            # AND prints a Selector-Error -- thirty times a second, for the rest of the
+            # run -- so it is not asked.
+            return False
         if int(_self.get('state', name)) != int(record['head_state']):
             record['user_scrubbed'] = True
             colorprinting.parrot(
-                ' design: you moved %s yourself, so the live view has stopped advancing'
+                ' design: you moved %s yourself, so the live view has stopped animating'
                 ' it. The finished design will still be shown when it lands.' % name)
             return False
-        if state == record['head_state']:
+        fraction = display_fraction(time.monotonic() - record['last_arrival'],
+                                    record.get('gap'))
+        if record.get('fraction') == fraction:
+            # Already there -- the gap has run out and the next frame has not landed.
+            # Skipping saves a coordinate load and a repaint per tick while waiting.
             return False
-        _self.set('state', state, name)
-        record['head_state'] = state
+        middle = interpolate_frame(record['prev_design'], record['last_design'], fraction)
+        if not middle:
+            return False
+        _self.load_coordset(record['target'] + middle, name, display)
+        record['fraction'] = fraction
         return True
     except Exception:
         return False
@@ -1368,8 +1478,13 @@ def _finish_trajectory(path, name, record, _self=cmd):
         # cannot depend on atom order at all.
         _self.alter('%s and rank %d-%d' % (name, offset, expected - 1),
                     'resn = _seq.get(resi, resn)', space={'_seq': sequence})
+        # The design goes into the DISPLAY slot when smoothing made one -- overwriting
+        # the last interpolated position rather than appending after it -- so the finished
+        # object is the captured frames plus the design, exactly the state count a run
+        # without smoothing produces.
+        display = record.get('display_state')
         _self.load_coordset([entry[3] for entry in written], name,
-                            _self.count_states(name) + 1)
+                            display if display else _self.count_states(name) + 1)
         # RE-DERIVE the bonds from the settled final state, so a delivered design's
         # CHEMISTRY does not depend on whether Live was ticked.
         #
