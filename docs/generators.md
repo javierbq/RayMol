@@ -366,6 +366,73 @@ half that identifies the row. Dropping one redundant word (this is a design card
 design card's icon) buys 45 pt. A unit test measures every batch title against that geometry
 so the margin cannot be spent by accident.
 
+### How long the whole run has left
+
+The row answers the question a batch row is actually asked. `designing._run_remaining`
+publishes `run_remaining` — seconds left for the **whole run**, meaning the batch when the
+design belongs to one and the design itself when it does not, since a batch of one is still
+a run — and the tray renders it as `all 10: 41 min left` beside the per-design counters. A
+lone design's row renders the same field **unscoped**, `4 min left`, because there is
+nothing on that row for it to be confused with. Where the estimate refuses to speak, the
+phase-scoped `this phase: …` it replaced is the fallback, so no window is left blank.
+
+It is computed in **Python**, not in the tray, for two reasons that are not style. A design
+that has already succeeded leaves **no record on the wire** — and it is that design's
+measured wall time which prices the ones still queued, so Swift cannot see the evidence.
+And the estimate is smoothed, which needs state; the tray is recomposed from scratch on
+every poll.
+
+Two quantities, measured differently:
+
+* **The design in flight** gets the larger of its own phase countdown (`remaining`, while
+  it is in the phase that owns most of the bar) and *what a design of this batch actually
+  took, less what this one has spent*. Taking the larger is the point rather than a hedge:
+  the phase countdown cannot see the design's tail — `write`, and PyMOL's own load of the
+  result — while a completed sibling's wall clock includes everything. Measured over a real
+  three-design rfd3 batch, that choice takes the median absolute error from 7.1% to 4.3%.
+* **The designs still queued** are charged the mean measured wall time of the designs that
+  have **succeeded**, never a projection, whenever there is one to use. Only successes
+  contribute: a cancelled design settles in milliseconds and a failed one at any point at
+  all, so either would drag the average towards a number that is not what a design costs.
+
+The count of what is left comes from the same frontier the row's `design k of N` does, so a
+**failure shortens the run** rather than being estimated for a second time.
+
+Which phase's countdown is trusted is read off **your** `progress_phases`, not hard-coded:
+the widest band, and only if it is wider than `RUN_ETA_DOMINANT_BAND` (0.5). rfd3's
+`diffusion` is 0.90 wide and is ~99% of a warm design's wall time, and the composed fraction
+is exactly linear in the step counter inside it — measured at 0.250–0.267 s/step across all
+four quarters of two consecutive designs. A generator that splits its bar evenly between
+four phases is making no such claim and gets the composed-fraction projection instead.
+
+A prediction's card still offers **no** whole-job countdown, and that is not an
+inconsistency. The objection there — `compose_progress`'s bands are layout, not time — is
+about folding `n_models` through one bar; a design is one model, and this estimate leans on
+the dominant band's own countdown rather than on the composed number.
+
+**It refuses rather than guesses.** Nothing is projected from a design less than
+`RUN_ETA_MIN_SECONDS` (10 s) old or less than `RUN_ETA_MIN_FRACTION` (0.08) through itself:
+the projection divides by that fraction and is then multiplied by the designs still queued,
+so an early over-estimate is amplified N-fold. The same threshold happens to cover the
+cold-start distortion — the pack read and MLX's kernel warm-up are paid once per process,
+not once per design, and on runs short enough for that to matter the estimate never appears
+at all.
+
+**And it is smoothed**, by an exponential moving average with weight `RUN_ETA_SMOOTHING`
+(0.2) — but over a *countdown*, so the previous estimate is wound forward by the wall time
+since it was made before the blend. A plain EMA would drag the old number along and a
+steady rate would show an estimate that barely moved; this way a steady rate produces an
+exact countdown and only a real change of pace moves it. Measured over a real run, the
+unsmoothed value ticks **upward** seven times; at 0.2 it never does.
+
+The wording is measured too. The caption is `lineLimit(2)` in a 340 pt card, and the phrase
+this replaced was already over at the top of its range: with `diffusion_steps` at its
+ceiling of 10,000 and every design below the running one settled badly, `this phase: …`
+needs three lines. `all 10 designs:` needs three at the *default* 200 steps. `all 10:` needs
+two at both, 25 pt shorter than what shipped at every point on the range. A unit test lays
+every row out through the same TextKit path SwiftUI uses and fails on the wordings that
+clip.
+
 **One Cancel stops the lot.** It passes the batch id, which `design_cancel` resolves to
 every job of that invocation still outstanding — the running one and the queued ones. A
 queued design is refused at the top of `RFD3JobManager.run`, before it featurizes anything;
