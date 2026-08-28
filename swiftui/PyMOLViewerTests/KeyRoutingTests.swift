@@ -341,9 +341,9 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.measureTool), "⌃E")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.designTool), "⌃D")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.predictTool), "⌃P")
-        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘'")
-        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘L")
-        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘0")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘1")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘2")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘3")
         XCTAssertEqual(
             AppShortcuts.hint(KeyboardShortcut("k", modifiers: [.command, .shift, .option, .control])),
             "⌃⌥⇧⌘K")

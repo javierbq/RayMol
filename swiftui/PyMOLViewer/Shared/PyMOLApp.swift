@@ -73,11 +73,12 @@ enum AppShortcuts {
     static let predictTool = KeyboardShortcut("p", modifiers: .control)
     static let boxSelect = KeyboardShortcut("b", modifiers: .control)
 
-    // Pane toggles (#361): open-if-closed / close-if-open, one plain-⌘ family.
-    // ⌘' not ⌘` because ⌘` is the system's cycle-windows shortcut.
-    static let consolePane = KeyboardShortcut("'", modifiers: .command)
-    static let sequencePane = KeyboardShortcut("l", modifiers: .command)
-    static let sidePanel = KeyboardShortcut("0", modifiers: .command)
+    // Pane toggles (#361): open-if-closed / close-if-open, one numbered ⌘
+    // family in the order the panes appear — the rail pills left to right
+    // (Console, Seq), then the side panel.
+    static let consolePane = KeyboardShortcut("1", modifiers: .command)
+    static let sequencePane = KeyboardShortcut("2", modifiers: .command)
+    static let sidePanel = KeyboardShortcut("3", modifiers: .command)
 
     /// Every entry above. The collision test runs off this list, so a new
     /// shortcut must be added here too (same contract as PanelLayout.allKeys).
@@ -86,7 +87,7 @@ enum AppShortcuts {
         consolePane, sequencePane, sidePanel,
     ]
 
-    /// The macOS-style symbol hint ("⌃M", "⌘0") for the surfaces that don't
+    /// The macOS-style symbol hint ("⌃M", "⌘1") for the surfaces that don't
     /// render one from the registration itself — rail-pill tooltips and
     /// toolsMenuHelp. Menus draw their own glyphs from the attached shortcut.
     static func hint(_ shortcut: KeyboardShortcut) -> String {
