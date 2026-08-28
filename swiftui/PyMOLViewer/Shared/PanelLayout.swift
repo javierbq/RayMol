@@ -36,6 +36,10 @@ enum PanelLayout {
     /// The user's console height, as a fraction of the window height. Absent
     /// until they resize it, which is what selects the absolute default (#331).
     static let consoleFracKey = ns + "consoleFrac"
+    /// The user's macOS inspector (right column) width, as a fraction of the
+    /// window width. Absent until they drag the seam (#350), which is what
+    /// selects the absolute default width.
+    static let inspectorFracKey = ns + "inspectorFrac"
     /// iPad bottom-panel share of the screen.
     static let panelFracKey = ns + "panelFrac"
     /// Sequence strip visible. Written by PyMOLEngine, which owns the flag.
@@ -46,7 +50,7 @@ enum PanelLayout {
     static let allKeys: [String] = [
         consoleVisibleKey, objectsVisibleKey,
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
-        consoleFracKey, panelFracKey, sequenceVisibleKey,
+        consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
     ]
 
     // MARK: - Bounds
@@ -79,6 +83,55 @@ enum PanelLayout {
     static let defaultPanelFrac: CGFloat = 0.53
     static let minPanelFrac: CGFloat = 0.2
     static let maxPanelFrac: CGFloat = 0.8
+
+    /// #350: the macOS inspector column's width on a launch with nothing stored.
+    /// ABSOLUTE points for the same reason as the console default — an untouched
+    /// inspector looks the same on a laptop and on a 6K display. 340 is the width
+    /// the narrow-inspector redesign settled on (fits the Movie transport, matches
+    /// the Theme Studio column).
+    static let macDefaultInspectorWidth: CGFloat = 340
+    /// Below this an Objects row is nothing but its fixed chrome — gutter (26) +
+    /// five 38pt A/S/H/L/C buttons + chevron/indent — with no room left for even
+    /// a short name, so shrinking further only breaks the panel.
+    static let macMinInspectorWidth: CGFloat = 280
+    /// The macOS viewport's own minimum WIDTH; the inspector may grow until the
+    /// viewport is down to this. The horizontal sibling of `macViewportMinHeight`.
+    static let macViewportMinWidth: CGFloat = 480
+
+    // MARK: - macOS inspector sizing (#350)
+
+    /// How wide the inspector is allowed to get in a window of `windowWidth`,
+    /// given a viewport beside it that needs `viewportMin`. Same bracket shape as
+    /// `maxConsoleHeight`: never more than half the window (the viewport must
+    /// remain the main event), never less than `minCeilingFrac`.
+    static func maxInspectorWidth(windowWidth: CGFloat,
+                                  viewportMin: CGFloat = macViewportMinWidth) -> CGFloat {
+        guard windowWidth.isFinite, windowWidth > 0 else { return 0 }
+        return min(max(windowWidth - viewportMin, windowWidth * minCeilingFrac),
+                   windowWidth * 0.5)
+    }
+
+    /// The inspector's width in a window of `windowWidth`.
+    ///
+    /// `frac` is the persisted share and applies only once the user has dragged
+    /// the seam themselves; a missing, zero, negative or non-finite value (an
+    /// unset UserDefaults Double reads as 0) means "untouched" and yields the
+    /// absolute default. The CEILING WINS when it crosses the usable minimum —
+    /// in a very narrow window, better a cramped inspector than no viewport.
+    static func inspectorWidth(frac: CGFloat, windowWidth: CGFloat,
+                               maxWidth: CGFloat) -> CGFloat {
+        guard windowWidth.isFinite, windowWidth > 0 else { return macMinInspectorWidth }
+        let w = (frac.isFinite && frac > 0) ? frac * windowWidth : macDefaultInspectorWidth
+        return min(max(w, macMinInspectorWidth), maxWidth)
+    }
+
+    /// The fraction to persist for an inspector measured at `width`, clamped into
+    /// the storable band so nothing unrestorable can ever be written. nil for a
+    /// degenerate window — there is nothing meaningful to store, so don't write.
+    static func inspectorFrac(width: CGFloat, windowWidth: CGFloat) -> CGFloat? {
+        guard windowWidth.isFinite, windowWidth > 0, width.isFinite else { return nil }
+        return min(max(width / windowWidth, minStorableFrac), maxStorableFrac)
+    }
 
     // MARK: - Console sizing
 

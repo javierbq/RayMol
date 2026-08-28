@@ -2403,6 +2403,11 @@ private struct ObjectRowContent: View {
             .truncationMode(.tail)
             .contentShape(Rectangle())
             .onTapGesture { toggleEnabled() }   // tap name = toggle enable
+            // #350: a row's fixed chrome (gutter + five action buttons) leaves the
+            // name column narrow, so names that differ only in a long suffix
+            // ("…_relaxed_model_2") truncate to the same thing. Widening the panel
+            // is the fix; this tooltip reads the full name without resizing at all.
+            .help(entry.displayName)
 
         // Model / state count, right of the name (the structure's "frame count").
         if entry.stateCount > 1 {
