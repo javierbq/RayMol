@@ -267,6 +267,73 @@ Note that `onProgress`'s `total` is `numTimesteps - 1` — the EDM schedule has 
 sigma levels and one fewer transition between them. Drive a bar from the reported `total`,
 never from the requested step count, or it stops one step short of the end forever.
 
+## `n_designs`: one command is one batch
+
+`design_backbone ..., n_designs=10` submits ten designs. They are **not** ten independent
+jobs the user can act on separately: `RFD3JobManager`'s queue is **serial**, so exactly one
+of them is ever running and the other nine are waiting their turn. Two things follow, and
+both hang off a single **batch identity** derived once in `design_backbone`, where the N
+specs are built.
+
+**The identity IS the group name.** One string that is the group the finished designs land
+in, the title of the progress row, and the argument `design_cancel` and `design_dismiss`
+accept — so there is nothing to keep in step between them. Derived from the FIRST design's
+key as `<generator>_batch_<key>` (`rfd3_batch_1f4c9e02`), or from `name` when the caller
+gave one; "batch" rather than "designs", because `rfd3_designs_<key>` would differ from its
+own first member by a single letter. It is legalised through `cmd.get_legal_name` and moved
+aside if a **molecule** already answers to it — `cmd.group` on an existing molecule name
+*raises*, measured, and it would do so inside delivery, minutes after the command returned.
+An existing **group** is not a collision: adding to it is what makes an identical re-run
+land back where the first one did.
+
+**`n_designs=1` gets none of this.** A group of one is noise and a batch of one is the row
+that already exists, so a single design publishes no batch fields at all and makes no group.
+
+### The group fills in as results land
+
+Grouping happens in `deliver_result`, per design, not up front. A group is a promise that
+these objects exist, and a batch that is cancelled or fails must leave nothing behind —
+which for an up-front group means a second teardown path and an empty group in any `.pse`
+saved in between. `cmd.group(g, name, action='add')` costs **0.0012 ms**, once per
+delivered design, consumes no auto-colour slot, and leaves the member enabled.
+
+Applied **identically to a live run and a plain one**. That is not decoration: this branch's
+standing invariant is that `keep_frames=0` leaves a session indistinguishable from
+`live_view=0`, and a design inside a group in one mode and at the top level in the other
+would break it on the object list.
+
+### One row, and what it says
+
+`ProgressItem.designBatch` collapses every design record sharing a `batch` into one row.
+The batch's `total` comes from the wire (`batch_total`) and **never** from counting the
+records present — a delivered design leaves *no* record at all, so a row that counted rows
+would report a ten-design batch as a seven-design one by the time it was three in.
+
+**How far through** is the lowest-indexed member that has not settled. Submission order is
+queue order, so that member is the one running and every index below it has finished one
+way or another. The bar is `(index - 1 + the running design's own fraction) / total`, and
+the percentage in the text quotes that same number.
+
+A **partial failure is not a batch failure**. While anything is still running the row stays
+a running row and appends `· 1 failed`; only when nothing is left does it become terminal,
+and it then reads `1 of 10 designs failed: <batch>` rather than implying all ten did. A
+batch nobody cancelled and that all succeeded simply has no row, because it has no records.
+
+**One Cancel stops the lot.** It passes the batch id, which `design_cancel` resolves to
+every job of that invocation still outstanding — the running one and the queued ones. A
+queued design is refused at the top of `RFD3JobManager.run`, before it featurizes anything;
+the next cancellation point is after `RFD3Model.preflight`, which is seconds of CPU per
+queued design, so without that check a batch cancel drains slowly instead of at once.
+Cancelled members leave **nothing** (their placeholders go with them, the rule the live view
+already follows) and their cards are retained so the row can say what happened. **Designs
+that already finished are untouched and stay in the group** — cancel stops what has not
+finished; it does not destroy minutes of completed work.
+
+Nothing about a design's own identity changes: the design key, the object name, the metric
+run and the result bytes are what they would be for `n_designs=1` at the same seed. The
+batch travels on the **panel** wire (`designing.pending_info` → `design_jobs`), not in the
+inference request — the runtime has nothing to do with a batch.
+
 ## Watching a design diffuse
 
 `design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
