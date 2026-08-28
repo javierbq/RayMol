@@ -92,6 +92,28 @@ _LAST_INFO = {}
 #: never finished as though the object were still the empty placeholder it replaced.
 _TRAJECTORY = {}
 
+#: batch id -> `{'names': [every object name in the batch, in submission order],
+#:               'total': how many designs the command asked for}`
+#:
+#: ONE `design_backbone` invocation with `n_designs > 1` is ONE batch, and the batch is
+#: what the user asked about when they said ten designs should not be ten queue entries.
+#: The id IS the group name the finished designs land in -- one string that is the group,
+#: the tray row's title, and the argument `design_cancel` / `design_dismiss` accept -- so
+#: there is nothing to keep in step between them.
+#:
+#: `names` is the COMPLETE membership and is never trimmed: `design_dismiss <batch>` has
+#: to reach members whose record is retained after a failure, which have already left
+#: `_PENDING`. The entry is dropped by `_reap_batches` once no member is either pending or
+#: retained, which is also what frees the group name for an identical re-run.
+_BATCH = {}
+
+#: object name -> `{'batch': batch id, 'index': 1-based position, 'total': batch size}`
+#:
+#: Stamped onto every record `pending_info` publishes, which is how the progress tray
+#: knows which rows are one invocation. A design submitted on its own has NO entry here
+#: and no batch fields on the wire, so its row is exactly what it always was.
+_BATCH_OF = {}
+
 
 def weight_cache():
     """The process-wide WeightCache -- `predicting`'s, not a second one.
@@ -133,6 +155,23 @@ def default_object_name(design_key, generator_id=''):
     return '%s_%s' % (method, stem) if method else stem
 
 
+def default_group_name(design_key, generator_id=''):
+    """The group name a multi-design command uses when the caller does not pick one.
+
+    Shaped `<generator>_batch_<key>`, e.g. `rfd3_batch_1f4c9e02`, from the FIRST design's
+    key -- which is a pure function of the target, the options and the seed that was
+    resolved for the command, so an identical re-run names the same group.
+
+    "batch" rather than "designs": the members are `rfd3_design_<key>` and a group called
+    `rfd3_designs_<key>` would differ from its own first member by a single letter, which
+    is not a distinction to make a reader carry. It also says what the group IS -- one
+    invocation -- which is exactly what the tray row and `design_cancel` mean by it.
+    """
+    method = ''.join(ch for ch in str(generator_id) if ch.isalnum() or ch == '_')
+    stem = 'batch_%s' % str(design_key)[:OBJECT_NAME_DIGEST_CHARS]
+    return '%s_%s' % (method, stem) if method else stem
+
+
 def _legal_object_name(name, _self=cmd):
     """The object name PyMOL will actually use for `name`.
 
@@ -159,6 +198,75 @@ def _legal_object_name(name, _self=cmd):
     """
     return _self.get_legal_name(str(name))
 
+
+
+def _free_group_name(name, _self=cmd):
+    """`name` legalised, and moved aside if something else already answers to it.
+
+    `cmd.group` on a name that is already a MOLECULE raises -- measured, not assumed -- so
+    a collision here would lose the grouping and, because it happens inside delivery,
+    would do so seventeen minutes after the command returned. Resolved at submit time
+    instead, where a different name costs nothing.
+
+    An existing GROUP is not a collision: adding to it is the whole point, and it is what
+    makes an identical re-run land back where the first one did. A name another batch is
+    still using IS a collision -- sharing it would make one Cancel stop both.
+    """
+    base = _legal_object_name(name, _self=_self)
+    try:
+        groups = set(_self.get_names('public_group_objects') or [])
+        taken = set(_self.get_names('objects') or []) - groups
+    except Exception:
+        taken = set()
+    taken |= set(_PENDING) | set(_BATCH)
+    candidate, suffix = base, 1
+    while candidate in taken:
+        suffix += 1
+        candidate = _legal_object_name('%s_%d' % (base, suffix), _self=_self)
+    return candidate
+
+
+def _join_batch_group(name, _self=cmd):
+    """Put a delivered design into its invocation's group. Never raises.
+
+    Created AS RESULTS LAND rather than at submit time: a group is a promise that these
+    objects exist, and a cancelled or failed batch must leave nothing behind -- which for
+    an up-front group would mean a second teardown path (and an empty group in any .pse
+    saved in between) for no gain the user can see.
+
+    Identical for a live run and a plain one. This branch's standing invariant is that
+    `keep_frames=0` leaves a session indistinguishable from `live_view=0`, and a group in
+    one mode but not the other would break it on the object list.
+    """
+    entry = _BATCH_OF.get(name)
+    if entry is None:
+        return None
+    group = entry['batch']
+    try:
+        _self.group(group, name, action='add')
+    except Exception as exc:
+        # A design that took minutes must not be lost to a tidying step. Said out loud,
+        # because the object is then at the top level and the user would otherwise be
+        # looking for it inside a group.
+        colorprinting.warning(' design: could not add %s to the group %s (%s); it is'
+                              ' loaded at the top level instead' % (name, group, exc))
+        return None
+    return group
+
+
+def _reap_batches():
+    """Forget batches no member is pending or retained for.
+
+    Bounded rather than left to grow: without this a session's batch ids accumulate, and
+    `_free_group_name` treats a live batch id as taken -- so an identical re-run would
+    creep to `_2`, `_3` forever instead of landing back in the same group.
+    """
+    for batch_id, batch in list(_BATCH.items()):
+        if any(n in _PENDING or n in _RECENT for n in batch['names']):
+            continue
+        for member in batch['names']:
+            _BATCH_OF.pop(member, None)
+        _BATCH.pop(batch_id, None)
 
 
 # -- Reading the target out of the session ------------------------------------
@@ -573,6 +681,12 @@ def discard_pending(name, _self=cmd):
             _self.delete(name)
     except Exception:
         pass
+    # Last, though the position is not load-bearing and saying so is cheaper than leaving
+    # a reader to work it out: `_reap_batches` only drops a batch when NO member is in
+    # `_PENDING` or `_RECENT`, and this name is still in one of them until the lines
+    # above have run. Moving this call to the top of the function was measured to change
+    # the answer on nothing.
+    _reap_batches()
 
 
 def clear_pending(_self=cmd):
@@ -589,6 +703,8 @@ def clear_pending(_self=cmd):
     _TRACK.clear()
     _RECENT.clear()
     _LAST_INFO.clear()
+    _BATCH.clear()
+    _BATCH_OF.clear()
 
 
 def pending_info(name, _self=cmd):
@@ -617,8 +733,18 @@ def pending_info(name, _self=cmd):
     info = {'state': 'running', 'phase': 'pending', 'fraction': None,
             'moving': False, 'models_done': 0, 'models_total': 1,
             'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None,
-            'step': None, 'total_steps': None, 'remaining': None}
+            'step': None, 'total_steps': None, 'remaining': None,
+            'batch': None, 'batch_index': None, 'batch_total': None}
     try:
+        # Which invocation this design belongs to, so ten designs from one command render
+        # as one tray row instead of ten. Absent -- all three None -- for a design
+        # submitted on its own, which is what keeps that row byte-for-byte what it was.
+        # A prediction's record never carries these at all.
+        batch = _BATCH_OF.get(name)
+        if batch is not None:
+            info['batch'] = str(batch['batch'])
+            info['batch_index'] = int(batch['index'])
+            info['batch_total'] = int(batch['total'])
         info['models_done'] = track['done']
         info['models_total'] = max(track['total'], 1)
         info['elapsed'] = max(time.monotonic() - track['started'], 0.0)
@@ -1874,6 +2000,10 @@ def deliver_result(path, name, seed=None, _self=cmd):
                     % (name, _self.count_states(name), name))
             except Exception:
                 pass
+        # Into the invocation's group, if this design came from a `n_designs > 1` command.
+        # AFTER the object is complete and pinned, so a failure in any of that leaves the
+        # design at the top level rather than inside a group that promises a finished one.
+        _join_batch_group(name, _self=_self)
         try:
             # `count_states` IS the state the design landed in, and it is the last one for
             # a live run as well as the only one for a plain one -- the metrics describe
@@ -1896,6 +2026,9 @@ def deliver_result(path, name, seed=None, _self=cmd):
                 _TRACK.pop(name, None)
                 _LAST_INFO.pop(name, None)
                 _RECENT.pop(name, None)
+                # Only once this name is out of both tables, and only the LAST member of a
+                # batch actually drops it: nine designs still running keep it alive.
+                _reap_batches()
 
 
 # -- The command surface -------------------------------------------------------
@@ -1948,10 +2081,13 @@ ARGUMENTS
     length = int: residues in the generated chain {default: 60}
 
     name = str: object name for the result {default: <generator>_design_<key>}. With
-    n_designs > 1 an index is appended.
+    n_designs > 1 an index is appended and this becomes the GROUP's name.
 
     n_designs = int: how many independent designs to generate. Each is a FULL run --
-    see NOTES. {default: 1}
+    see NOTES. More than one, and they are ONE BATCH: they land in a group named
+    <generator>_batch_<key> (or `name`, if you gave one), they occupy a single progress
+    row rather than one each, and cancelling that row cancels all of them. A batch of
+    one is not a batch -- n_designs=1 makes no group and changes nothing. {default: 1}
 
     diffusion_steps = int: reverse-diffusion steps {default: 200}
 
@@ -2015,6 +2151,8 @@ NOTES
     sequential, so peak memory is that of ONE design.
 
     Cancel a running design with "design_cancel". It stops within one diffusion step.
+    For an n_designs batch, pass the group name and the whole batch stops -- the design
+    that is running and the ones still queued. Designs that already finished stay.
 
     THE FIRST CALL DOWNLOADS WEIGHTS, in the background -- ~625 MB for rfd3. That runs
     on its own thread and this command returns immediately; each job sits in phase
@@ -2183,6 +2321,30 @@ SEE ALSO
                 ' "design_weights_cancel %s".'
                 % (generator_obj.id, (bundle.size or 0) / 1e6, generator_obj.id))
 
+    # THE BATCH IDENTITY, derived once, here, where the N specs are built and where the
+    # only thing that knows they are one command still exists. Two things hang off it: the
+    # progress tray renders one row per batch instead of one per design, and the finished
+    # designs land in one group instead of N flat rows in the object panel.
+    #
+    # `n_designs=1` gets NONE of it. A group of one is noise, and a batch of one is the row
+    # that already exists -- so a single design is untouched by every line below.
+    batch_id = ''
+    if count > 1:
+        if name:
+            # The members are `<name>_01`, `<name>_02`, ... so the group is `<name>`
+            # itself: the name the user gave, holding the designs it named.
+            candidate = str(name)
+        else:
+            # The FIRST design's key. Same computation the loop makes for index 0 -- pure
+            # in (target, options, weights version) -- so the group is named for the same
+            # identity its first member is, and an identical re-run names the same group.
+            candidate = default_group_name(
+                spec.design_key(options,
+                                weights_version=_weight_version(generator_obj.id)),
+                generator_obj.id)
+        batch_id = _free_group_name(candidate, _self=_self)
+        _BATCH[batch_id] = {'names': [], 'total': count}
+
     jobs = []
     for index in range(count):
         # A distinct seed per design, or every one would be the same molecule. The first
@@ -2235,6 +2397,12 @@ SEE ALSO
             pass          # __slots__ handle with no room: it simply gets the spinner
         _JOBS[job.job_id] = job
         register_pending(object_name, job.job_id, _self=_self)
+        if batch_id:
+            # Recorded AFTER register_pending, so the name in both tables is the legalised
+            # one an object actually answers to.
+            _BATCH[batch_id]['names'].append(object_name)
+            _BATCH_OF[object_name] = {'batch': batch_id, 'index': index + 1,
+                                      'total': count}
         jobs.append(job)
         if not int(quiet):
             colorprinting.parrot(
@@ -2317,8 +2485,11 @@ USAGE
 
 ARGUMENTS
 
-    job_id = string: the job to cancel, or the name of a pending object -- which
-        cancels the design outstanding for it.
+    job_id = string: the job to cancel, the name of a pending object -- which cancels
+        the design outstanding for it -- or the GROUP NAME of an n_designs batch, which
+        cancels every design in that command: the one running and the ones still
+        queued behind it. Designs from the batch that have already finished are
+        untouched and stay in the group.
 
 SEE ALSO
 
@@ -2334,6 +2505,28 @@ SEE ALSO
     #
     # Job ids are 'pending-<12 hex>' or the host's own hex and never collide with an
     # object name, so this cannot shadow a real id.
+    # A BATCH id -- the group name one `n_designs > 1` command's designs are headed for.
+    # The tray shows that whole invocation as ONE row with ONE Cancel, so that button has
+    # to stop the lot: the design that is running AND the ones still queued behind it on
+    # the runtime's serial queue. Anything already delivered is a finished design and is
+    # left exactly where it is.
+    #
+    # Checked BEFORE `_job`, and returning even when nothing is left to stop: pressing
+    # Cancel as the last member settles is a race the user cannot avoid, and it must not
+    # raise at them. Checked AFTER `_PENDING`, so an object name still means the object.
+    if job_id not in _PENDING and job_id in _BATCH:
+        ids = [one for member in _BATCH[job_id]['names']
+               for one in _PENDING.get(member, ())]
+        for one in ids:
+            try:
+                _job(one).cancel()
+            except Exception as exc:
+                colorprinting.warning(' design_cancel: %s (%s)' % (one, exc))
+        if not int(quiet):
+            colorprinting.parrot(' design: cancel requested for the batch %s (%d job(s)'
+                                 ' still to stop)' % (job_id, len(ids)))
+        pump(_self=_self)
+        return job_id
     ids = _PENDING.get(job_id)
     if ids:
         for one in list(ids):
@@ -2414,6 +2607,12 @@ SEE ALSO
     # The explicit name only: the list branches are already table keys.
     names = ([_legal_object_name(name, _self=_self)] if name
              else list(_RECENT) + list(_PENDING))
+    # A BATCH id expands to its members, for the same reason `design_cancel` accepts one:
+    # the tray draws one invocation as one row, so its Dismiss carries the batch id and
+    # has to clear every card that row was standing for. Membership is the COMPLETE list,
+    # not what is still pending -- a dismissed failure has already left `_PENDING`.
+    if len(names) == 1 and names[0] in _BATCH:
+        names = list(_BATCH[names[0]]['names'])
     for entry in names:
         _RECENT.pop(entry, None)
         discard_pending(entry, _self=_self)

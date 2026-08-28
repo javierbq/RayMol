@@ -254,6 +254,16 @@ final class RFD3JobManager: InferenceRuntime {
                                 pythonModule: Self.pythonModule)
         }
 
+        // BEFORE any work at all. `submit` enqueues every design of an `n_designs` batch
+        // at once and this queue is SERIAL, so nine of ten sit here for hours; when the
+        // tray's one Cancel stops the batch, each of those must fall out immediately
+        // rather than featurizing a target it will never design against. The next
+        // cancellation point is after `RFD3Model.preflight`, which on a real target is
+        // seconds of CPU per queued design.
+        if isCancelled() {
+            settle(cancelledStatus(phase: "queued")); return
+        }
+
         guard let wireTarget = request.target, let length = request.designLength else {
             // preflight already refused this; belt and braces so `run` has no optionals to
             // force-unwrap.

@@ -175,6 +175,283 @@ class DesignBackboneTest(GeneratorTestCase):
             settle()
         self.assertEqual([job.spec.name for job in jobs], ['several_01', 'several_02'])
 
+    # -- The batch: one invocation, one group, one progress row ----------------
+
+    def _batch(self, count=3, **kwargs):
+        """Submit `count` designs in one command and return the job handles."""
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=count, **kwargs)
+            settle()
+        return jobs
+
+    def groups(self):
+        return list(cmd.get_names('public_group_objects'))
+
+    @staticmethod
+    def real(job):
+        """The submitted job behind a deferred handle -- what a test pokes at.
+
+        `design_backbone` returns a `_DeferredDesignJob` whenever the weights were not
+        already cached, and the stub it wraps is what records a cancel and what reports a
+        status. Same unwrapping the harness's `deliver` does.
+        """
+        return getattr(job, '_real', None) or job
+
+    def testTheDesignsOfOneCommandLandInOneGroup(self):
+        # The user's request, in its plainest form: ten designs should be one expandable
+        # row in the object panel, not ten flat ones.
+        jobs = self._batch(3, seed=11)
+        deliver(jobs)
+        self.assertEqual(len(self.groups()), 1, self.groups())
+        group = self.groups()[0]
+        self.assertEqual(sorted(cmd.get_object_list(group)),
+                         sorted(job.spec.name for job in jobs))
+        # And they are still THERE, enabled, with their atoms -- grouping is organisation,
+        # not a move into a drawer that turns them off.
+        enabled = set(cmd.get_names('objects', enabled_only=1))
+        for job in jobs:
+            self.assertIn(job.spec.name, enabled)
+            self.assertEqual(sorted(cmd.get_chains(job.spec.name)), ['A', 'B'])
+
+    def testTheGroupIsNamedForTheBatchAndNeverCallsAnythingABinder(self):
+        jobs = self._batch(2, seed=11)
+        deliver(jobs)
+        group = self.groups()[0]
+        from pymol.designing import default_group_name
+        key = jobs[0].spec.design_key(jobs[0].options, weights_version='stubgen v1')
+        self.assertEqual(group, default_group_name(key, 'stubgen'))
+        self.assertTrue(group.startswith('stubgen_batch_'), group)
+        # The naming rule: the tool may be called Binder Design, but nothing that NAMES
+        # the output may call it a binder -- and a group name is a name for N of them.
+        self.assertNotIn('binder', group.lower())
+
+    def testASingleDesignMakesNoGroupAtAll(self):
+        # A group of one is noise. n_designs=1 must be untouched by any of this.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        deliver(job)
+        self.assertEqual(self.groups(), [])
+        self.assertIn(job.spec.name, cmd.get_names('objects'))
+        from pymol import designing
+        self.assertEqual(designing._BATCH, {})
+        self.assertIsNone(designing.pending_info(job.spec.name))
+
+    def testTheGroupFillsInAsResultsLandRatherThanWaitingForThemAllUpFront(self):
+        # Created AS RESULTS LAND: a group is a promise these objects exist, so it must
+        # never be a container of placeholders that may never arrive.
+        jobs = self._batch(3, seed=11)
+        self.assertEqual(self.groups(), [], 'nothing has finished yet')
+        deliver(jobs[0])
+        self.assertEqual(len(self.groups()), 1)
+        self.assertEqual(cmd.get_object_list(self.groups()[0]), [jobs[0].spec.name])
+        deliver(jobs[1])
+        self.assertEqual(sorted(cmd.get_object_list(self.groups()[0])),
+                         sorted([jobs[0].spec.name, jobs[1].spec.name]))
+
+    def testAnExplicitNameBecomesTheGroupAndTheIndexedObjectsItsMembers(self):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       name='several', n_designs=2)
+            settle()
+        deliver(jobs)
+        self.assertEqual(self.groups(), ['several'])
+        self.assertEqual(sorted(cmd.get_object_list('several')),
+                         ['several_01', 'several_02'])
+
+    def testAGroupNameAlreadyTakenByAMoleculeMovesAside(self):
+        # `cmd.group` on a name that is already a molecule RAISES -- measured, not
+        # assumed -- and it would do so inside delivery, minutes after the command
+        # returned. So the collision is resolved at submit time.
+        cmd.fab('AAAA', 'several', ss=1)
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       name='several', n_designs=2)
+            settle()
+        deliver(jobs)
+        self.assertEqual(self.groups(), ['several_2'])
+        self.assertEqual(sorted(cmd.get_object_list('several_2')),
+                         ['several_01', 'several_02'])
+        # And the object that was in the way is untouched.
+        self.assertEqual(cmd.count_atoms('several'), 40)
+
+    def testEveryDesignOfABatchPublishesTheSameBatchIdentity(self):
+        # What the tray groups by. Published on the PANEL wire, in the record
+        # `designing.pending_info` writes -- the runtime is told nothing about batches
+        # because it has nothing to do with one.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        seen = set()
+        for position, job in enumerate(jobs, start=1):
+            info = designing.pending_info(job.spec.name)
+            seen.add(info['batch'])
+            self.assertEqual(info['batch_index'], position)
+            self.assertEqual(info['batch_total'], 3)
+        self.assertEqual(len(seen), 1, 'one command is one batch: %r' % seen)
+        # And that identity IS the group name the finished designs will land in -- one
+        # string for the group, the tray row and the cancel argument.
+        self.assertEqual(list(seen)[0], list(designing._BATCH)[0])
+        deliver(jobs)
+        self.assertEqual(self.groups(), [list(seen)[0]])
+
+    def testASingleDesignsRecordCarriesNoBatchFields(self):
+        # The negative half, and the reason the prediction lane cannot be affected: the
+        # keys are absent unless a batch put them there.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            settle()
+        from pymol import designing
+        info = designing.pending_info(job.spec.name)
+        self.assertEqual((info['batch'], info['batch_index'], info['batch_total']),
+                         (None, None, None))
+
+    def testCancellingTheBatchStopsEveryDesignQueuedBehindTheRunningOne(self):
+        # ONE Cancel for the whole invocation: the design that is running and the ones
+        # still queued on the runtime's serial queue. Passed the BATCH id, which is the
+        # group name, because that is what the single tray row is keyed by.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        batch = list(designing._BATCH)[0]
+        cmd.design_cancel(batch)
+        for job in jobs:
+            self.assertTrue(self.real(job).cancelled,
+                            '%s was left running' % job.spec.name)
+
+    def testCancellingTheBatchLeavesADesignThatAlreadyLandedAlone(self):
+        # Cancel stops what has not finished. What HAS finished took minutes and is a
+        # real design -- it stays, in the group, with its atoms.
+        jobs = self._batch(3, seed=11)
+        deliver(jobs[0])
+        from pymol import designing
+        batch = list(designing._BATCH)[0]
+        cmd.design_cancel(batch)
+        for job in jobs[1:]:
+            self.assertTrue(self.real(job).cancelled)
+        # What the runtime does next for each cancelled job: settle, which discards the
+        # placeholder. Driven here because there is no host in a headless test.
+        for job in jobs[1:]:
+            self.real(job).status = lambda: {
+                'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0,
+                'error': None, 'result_path': None, 'peak_bytes': None,
+                'elapsed_s': 2.0}
+            designing.discard_pending(job.spec.name)
+        landed = jobs[0].spec.name
+        # The finished design stays, in the group, with its atoms.
+        self.assertIn(landed, cmd.get_names('objects'))
+        self.assertEqual(cmd.get_object_list(batch), [landed])
+        self.assertGreater(cmd.count_atoms(landed), 0)
+        # The two that never finished leave NOTHING -- their placeholders go with them,
+        # which is the cancellation rule this branch already settled: the name means the
+        # finished design or nothing.
+        for job in jobs[1:]:
+            self.assertNotIn(job.spec.name, cmd.get_names('objects'))
+        # And their cards are RETAINED, still carrying the batch, so the row can say what
+        # became of the invocation rather than vanishing.
+        self.assertEqual(sorted(designing.recent_objects()),
+                         sorted(job.spec.name for job in jobs[1:]))
+        for job in jobs[1:]:
+            self.assertEqual(designing.pending_info(job.spec.name)['batch'], batch)
+
+    def testCancellingABatchWithNothingLeftToStopIsQuietRatherThanAnError(self):
+        # A reachable race, not a hypothetical: the tray is drawn from a 2 Hz poll, and a
+        # batch whose only surviving record is a RETAINED failure still has a row -- so
+        # Cancel can arrive after the last outstanding design has settled. Nothing to
+        # stop is not an error to raise at the user.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        batch = list(designing._BATCH)[0]
+        self.real(jobs[0]).status = lambda: {
+            'state': 'failed', 'phase': 'diffusion', 'fraction': 0.0, 'error': 'boom',
+            'result_path': None, 'peak_bytes': None, 'elapsed_s': 1.0}
+        designing.discard_pending(jobs[0].spec.name)
+        deliver(jobs[1:])
+        self.assertEqual(designing.pending_objects(), {})
+        self.assertIn(batch, designing._BATCH, 'a retained failure keeps the row up')
+        self.assertEqual(cmd.design_cancel(batch), batch)
+
+    def testOneDesignFailingDoesNotClaimTheOthersFailedOrStopThem(self):
+        # THE PARTIAL FAILURE. Design 2 of 3 fails; the other two still deliver, land in
+        # the group, and the failed one's card is retained -- still carrying its batch
+        # identity, or the row would come apart from the batch on the tick it failed.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        batch = list(designing._BATCH)[0]
+        bad = jobs[1]
+        self.real(bad).status = lambda: {'state': 'failed', 'phase': 'diffusion', 'fraction': 0.0,
+                              'error': 'the target moved 3.500 A', 'result_path': None,
+                              'peak_bytes': None, 'elapsed_s': 4.0}
+        designing.discard_pending(bad.spec.name)          # what settle() does
+        deliver([jobs[0], jobs[2]])
+        retained = designing.pending_info(bad.spec.name)
+        self.assertEqual(retained['state'], 'failed')
+        self.assertEqual(retained['error'], 'the target moved 3.500 A')
+        self.assertEqual(retained['batch'], batch)
+        self.assertEqual(retained['batch_total'], 3)
+        self.assertEqual(sorted(cmd.get_object_list(batch)),
+                         sorted([jobs[0].spec.name, jobs[2].spec.name]))
+        self.assertNotIn(bad.spec.name, cmd.get_names('objects'))
+
+    def testDismissingTheBatchClearsEveryCardItStoodFor(self):
+        # The failure card's Dismiss carries the batch id too, and has to reach members
+        # that have already left `_PENDING` -- which is why the membership list is the
+        # complete one rather than what is still outstanding.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        batch = list(designing._BATCH)[0]
+        for job in jobs:
+            self.real(job).status = lambda: {'state': 'failed', 'phase': 'diffusion',
+                                  'fraction': 0.0, 'error': 'boom', 'result_path': None,
+                                  'peak_bytes': None, 'elapsed_s': 1.0}
+            designing.discard_pending(job.spec.name)
+        self.assertEqual(len(designing.recent_objects()), 3)
+        cmd.design_dismiss(batch)
+        self.assertEqual(designing.recent_objects(), [])
+        self.assertEqual(designing._BATCH, {})
+
+    def testBatchingChangesNothingAboutADESIGNSOwnIdentityOrItsMetrics(self):
+        # The batch is presentation and organisation: which row a run occupies and which
+        # group its object sits in. It must not touch the design key, the object name or
+        # the metric run -- the three things a later refold is matched against.
+        from pymol.metrics import store
+        batched = self._batch(2, seed=7)
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            lone = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       seed=7)
+            settle()
+        version = 'stubgen v1'
+        self.assertEqual(
+            batched[0].spec.design_key(batched[0].options, weights_version=version),
+            lone.spec.design_key(lone.options, weights_version=version))
+        # Same key, so the same derived object name -- and `register_pending` put both
+        # jobs on that one placeholder rather than inventing a second object.
+        self.assertEqual(batched[0].spec.name, lone.spec.name)
+        deliver(batched)
+        for job in batched:
+            self.assertEqual(len(store.runs(object=job.spec.name)), 1,
+                             'one metric run per delivered design, filed against its '
+                             'own object and not against the group')
+        self.addCleanup(store.clear)
+
+    def testTheBatchIsForgottenOnceEveryDesignHasSettled(self):
+        # Bounded, and it is what lets an identical re-run land back in the SAME group
+        # rather than creeping to _2, _3 forever.
+        jobs = self._batch(2, seed=11)
+        from pymol import designing
+        first = list(designing._BATCH)[0]
+        deliver(jobs)
+        self.assertEqual(designing._BATCH, {})
+        self.assertEqual(designing._BATCH_OF, {})
+        again = self._batch(2, seed=11)
+        deliver(again)
+        self.assertEqual(self.groups(), [first])
+
     # -- Live view -----------------------------------------------------------
 
     def testLiveViewRidesFromTheCommandOntoEveryDesignsSpec(self):
@@ -522,6 +799,20 @@ class DesignBackboneTest(GeneratorTestCase):
                       'captureInterval(for:)')
         self.assertIn('static func captureInterval(for request: InferenceJob.Request)',
                       source)
+
+    def testAQueuedDesignIsRefusedBeforeItFeaturizesAnything(self):
+        # One Cancel stops a whole batch, and a batch is enqueued on a SERIAL queue -- so
+        # nine of ten designs are sitting in `run` waiting their turn when the cancel
+        # lands. Without a check before the work, each of those still builds its feature
+        # set (seconds of CPU on a real target) before noticing at the existing
+        # cancellation point after `RFD3Model.preflight`, so a batch cancel drains slowly
+        # instead of at once. Pinned by SOURCE, because `run` needs a 672 MB pack.
+        source = self._swift_source('RFD3JobManager.swift')
+        head = source.split('report("running", "featurize", 0.0)')[0]
+        self.assertIn('if isCancelled() {', head,
+                      'run() must refuse an already-cancelled job before it does any '
+                      'work, or a batch cancel featurizes every queued design first')
+        self.assertIn('settle(cancelledStatus(phase: "queued")); return', head)
 
     def testTheRolloutLengthMatchesTheRuntimes(self):
         # THE cross-language coupling. `rollout_step_count` decides the interval AND the

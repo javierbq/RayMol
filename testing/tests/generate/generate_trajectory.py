@@ -1424,6 +1424,60 @@ class LiveObjectTest(GeneratorTestCase):
                              '%s differs between a discarded-frame live run and a '
                              'plain one' % key)
 
+    def testABatchGROUPSTheSameWayLiveAndPlain(self):
+        # Grouping is delivery's job and it happens on BOTH paths, which is not decoration:
+        # this branch's standing invariant is that `keep_frames=0` leaves a session
+        # indistinguishable from `live_view=0`, and a design that ended up inside a group
+        # in one mode and at the top level in the other would break it on the object list
+        # -- exactly the axis an earlier round was silently wrong on.
+        seed_pdb = _seed_pdb(length=self.LENGTH, target=self.TARGET)
+        frames = [_flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0)))
+                  for step in range(1, 4)]
+        path = self.result_path(coords=_backbone(self.LENGTH, offset=(2.5, -6.0, 0.5)))
+
+        def arm(build):
+            cmd.delete('all')
+            self.designing._TRAJECTORY.clear()
+            self.designing._BATCH.clear()
+            self.designing._BATCH_OF.clear()
+            self.designing.register_pending(self.name, 'job')
+            # What `design_backbone` stamps for an n_designs command, without needing a
+            # generator: the batch is bookkeeping, not something the runtime knows.
+            self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
+            self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,
+                                                   'total': 2}
+            build()
+            groups = list(cmd.get_names('public_group_objects'))
+            return (groups, [cmd.get_object_list(g) for g in groups],
+                    cmd.get_names('objects'))
+
+        plain = arm(lambda: self.designing.deliver_result(path, self.name))
+
+        def live_run():
+            self.assertTrue(self.designing.trajectory_seed(
+                self.name, seed_pdb, self.target_atoms, self.design_atoms, keep=0))
+            for coords in frames:
+                self.assertTrue(self.designing.trajectory_frame(
+                    self.name, coords, advance=0, smooth=1))
+                self.designing.trajectory_display(self.name)
+            self.designing.deliver_result(path, self.name)
+
+        live = arm(live_run)
+        self.assertEqual(plain[0], ['a_batch'], 'a plain delivery must group too')
+        self.assertEqual(plain[1], [[self.name]])
+        self.assertEqual(live, plain,
+                         'a live run and a plain one must be grouped identically')
+
+    def testADeliveryOutsideABatchJoinsNoGroup(self):
+        # The control for the test above: grouping is a property of the BATCH stamp, not
+        # something delivery does to everything -- so with no stamp there is no group,
+        # which is what n_designs=1 gets.
+        self.designing._BATCH.clear()
+        self.designing._BATCH_OF.clear()
+        self.designing.register_pending(self.name, 'job')
+        self.designing.deliver_result(self.result_path(), self.name)
+        self.assertEqual(list(cmd.get_names('public_group_objects')), [])
+
     def testDeliveryNeverSays1States(self):
         # The message a keep_frames=0 run ends on. It used to read "... was built live --
         # 1 states, the last one the finished design", which is both ungrammatical and
