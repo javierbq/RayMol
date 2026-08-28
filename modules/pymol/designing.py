@@ -1467,12 +1467,19 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
         #
         # Scoped to the GENERATED CHAIN: the target's coordinates never move, so
         # re-deriving its `ss` every second is work for an answer that cannot change.
-        # Measured on the real 450-atom design: 0.048 ms for `dss` plus 0.014 ms for the
-        # cartoon rebuild it dirties -- 0.062 ms, 0.01% of one main thread at ~1 Hz.
+        # The cost tracks the GENERATED CHAIN's length, not the object's size, which is
+        # worth stating because the object is the obvious thing to measure and it is the
+        # wrong variable. Measured holding the object at 900 atoms: 0.059 ms at 24
+        # residues, 0.200 ms at 60 -- `design_backbone`'s default `length`, so that is
+        # the number to quote -- and 0.530 ms at 100. Going the other way, DOUBLING the
+        # object at a fixed 60-residue chain (900 -> 1800 atoms) moves it 0.200 -> 0.214.
+        # With the cartoon rebuild it dirties, 0.215 ms: 0.02% of one main thread at
+        # roughly one captured frame a second.
         #
         # Per CAPTURED FRAME rather than per display tick: secondary structure is a
-        # slowly varying property and ~1 Hz is what the eye needs. (Per tick would cost
-        # 0.19% of one main thread, so the choice is about sense rather than budget.)
+        # slowly varying property and ~1 Hz is what the eye needs. (Per tick at 30 Hz
+        # would be 0.65% of one main thread -- affordable, so the choice is about sense
+        # rather than budget.)
         #
         # ss is per-ATOM, so it belongs to the OBJECT and not to a state -- see the note
         # in `docs/generators.md`.
