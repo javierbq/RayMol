@@ -65,17 +65,25 @@ and 6979 s against a 389 s median, so it is not a free win either.
 
 ## The naming rule
 
-**A generated chain is a "designed backbone", never a "binder"** — in UI strings, object
-names, metric keys and metric labels. This is a product rule, not a wording preference:
-generation alone does not establish that the chain binds anything. Confirming it needs a
-refold of the pair and an interface gate, neither of which RayMol does yet. A measured run
-from the port's own benchmarking makes the point — a design scoring min_ipSAE 0.70 had its
-chain docked 15.6 Å from the reference pose. The scalar passed it; the pose is what failed.
+**The rule is about the OUTPUT, not about the word.**
+
+**A generated chain is a "designed backbone", never a "binder"** — so nothing that NAMES OR
+DESCRIBES the result may call it one: object names, metric keys, metric labels, status lines.
+This is a product rule, not a wording preference: generation alone does not establish that the
+chain binds anything. Confirming it needs a refold of the pair and an interface gate, neither
+of which RayMol does yet. A measured run from the port's own benchmarking makes the point — a
+design scoring min_ipSAE 0.70 had its chain docked 15.6 Å from the reference pose. The scalar
+passed it; the pose is what failed.
+
+**The tool's own name may.** The mode is called **Binder Design**, and that is a claim about
+what RFdiffusion3 is FOR — a property of the method, not of any chain it produced. A menu item
+saying what you came to do asserts nothing about the result; an object called `binder_1` does.
+Where a string is genuinely ambiguous between the two, it says "designed backbone".
 
 RFD3Kit's own API says `designBinder` / `binderSequence` / `binderLength`, and those call
 sites are unavoidable. `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder` greps
-for the word and allows exactly those symbols, so the boundary is enforced rather than
-remembered.
+for the word over the files that produce user-visible text, allowing those symbols and the
+tool's name, so the boundary is enforced rather than remembered.
 
 ## Steps
 
@@ -450,13 +458,21 @@ the head is stopped before delivery so it cannot race the pin. That is one jump,
 **Secondary structure is re-assigned on every captured frame**, so the cartoon develops as
 the rollout runs rather than appearing only at the end. Scoped to the generated chain: the
 target's coordinates never move, so re-deriving its `ss` every second is work for an answer
-that cannot change. Measured on the real 450-atom design: 0.048 ms for `dss` plus 0.014 ms
-for the cartoon rebuild it dirties — **0.062 ms, 0.01% of one main thread** at roughly one
-captured frame a second.
+that cannot change.
+
+The cost is driven by the GENERATED CHAIN's length, not by the object's size -- worth stating
+because the object is the obvious thing to measure and it is the wrong variable. Measured
+here, holding the object at 900 atoms and varying only the chain: a 24-residue design costs
+0.060 ms, a 60-residue one -- `design_backbone`'s default `length` -- costs **0.201 ms**, and
+100 residues costs 0.528 ms. Going the other way, +40% atoms at a fixed 60-residue chain
+(900 -> 1260) moves it by 3%. So quote the default: **0.201 ms for `dss` plus 0.014 ms for the
+cartoon rebuild it dirties, about 0.02% of one main thread** at roughly one captured frame a
+second.
 
 Per captured frame rather than per display tick because secondary structure is a slowly
-varying property and ~1 Hz is what the eye needs. Cost is not the constraint: at the 30 Hz
-display rate it would be 0.19% of one main thread.
+varying property and ~1 Hz is what the eye needs. Cost is not the constraint even so: at the
+30 Hz display rate a 60-residue design would be ~0.65% of one main thread, which is
+affordable -- it is 30x the work for a picture that does not change 30x a second.
 
 **A caveat that is inherent rather than a bug, so it is written down here rather than left
 to be discovered.** `ss` in PyMOL is a per-ATOM property, which means it belongs to the
