@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import XCTest
 @testable import RayMol
 
@@ -283,7 +284,7 @@ final class RFD3TrayTests: XCTestCase {
         // has to name the ONE, not the batch.
         let item = ProgressItem.designBatch(
             [member(4, state: "failed", error: "the target moved 3.500 A")])
-        XCTAssertEqual(item.title, "1 of 10 designs failed: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.title, "1 of 10 failed: rfd3_batch_ab12cd34")
         XCTAssertEqual(item.detail, "the target moved 3.500 A")
         XCTAssertTrue(item.isError)
         XCTAssertFalse(item.isCancelled)
@@ -298,7 +299,7 @@ final class RFD3TrayTests: XCTestCase {
             [member(2, state: "failed", error: "first reason"),
              member(5, state: "failed", error: "second reason"),
              member(9, state: "cancelled")])
-        XCTAssertEqual(item.title, "2 of 10 designs failed: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.title, "2 of 10 failed: rfd3_batch_ab12cd34")
         XCTAssertEqual(item.detail, "first reason · and 1 more · 1 cancelled")
     }
 
@@ -306,7 +307,7 @@ final class RFD3TrayTests: XCTestCase {
         // `settle("cancelled", ...)` writes error: nil, so without the split the card
         // read "designs failed — Unknown error" at someone who had just pressed Cancel.
         let item = ProgressItem.designBatch((1...10).map { member($0, state: "cancelled") })
-        XCTAssertEqual(item.title, "10 of 10 designs cancelled: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.title, "10 of 10 cancelled: rfd3_batch_ab12cd34")
         XCTAssertEqual(item.detail, "9 min elapsed")
         XCTAssertTrue(item.isCancelled)
         XCTAssertEqual(item.icon, "xmark.circle")
@@ -369,6 +370,51 @@ final class RFD3TrayTests: XCTestCase {
             designs: (1...4).map { member($0, bundle: "rfd3-mlx-fp32") })
         XCTAssertEqual(items.count, 1)
         XCTAssertEqual(items.first?.bundle, "rfd3-mlx-fp32")
+    }
+
+    func testEveryBatchTitleFITSTheCardItIsDrawnIn() throws {
+        // The title is `lineLimit(1)` in a 340 pt card and truncates at the TAIL, so what
+        // overflow eats is the batch NAME -- the half that identifies the row. Measured
+        // rather than eyeballed, with the real fonts, because the app's window is not
+        // reachable from this machine's shell (no Screen Recording) and "it looked fine"
+        // is not a measurement.
+        //
+        // Geometry read off ProgressTray: container .frame(width: min(340, ...)), card
+        // .padding(.horizontal, 12), HStack(spacing: 6) of icon + title + Spacer(min: 8)
+        // + a .small Button.
+        let cardWidth: CGFloat = 340
+        let titleFont = NSFont.systemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize,
+            weight: .medium)
+        let captionFont = NSFont.preferredFont(forTextStyle: .caption1)
+        let buttonFont = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        func width(_ text: String, _ font: NSFont) -> CGFloat {
+            (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        // icon + its 6 pt spacing + the 8 pt minimum spacer + the button and its chrome.
+        func room(for button: String) -> CGFloat {
+            cardWidth - 24 - width("\u{25A0}", captionFont) - 6 - 8
+                - (width(button, buttonFont) + 16)
+        }
+        // Every state of a batch whose name has the DERIVED shape, which is the one this
+        // code chooses. An explicit `name=` can be any length and will truncate like any
+        // other object name in the tray; what this pins is that the fixed words around it
+        // stay small enough to leave the name room.
+        let rows = [
+            ProgressItem.designBatch([member(1, state: "running", phase: "diffusion",
+                                             fraction: 0.42, moving: true)]),
+            ProgressItem.designBatch([member(4, state: "failed", error: "x")]),
+            ProgressItem.designBatch((1...10).map { member($0, state: "failed",
+                                                           error: "x") }),
+            ProgressItem.designBatch((1...10).map { member($0, state: "cancelled") }),
+        ]
+        for row in rows {
+            let title = row.title.replacingOccurrences(of: "rfd3_batch_ab12cd34",
+                                                       with: "rfd3_batch_1f4c9e02")
+            XCTAssertLessThanOrEqual(
+                width(title, titleFont), room(for: row.buttonTitle),
+                "\(title) does not fit a 340 pt card and would truncate its own name")
+        }
     }
 
     // MARK: The payload
@@ -479,6 +525,97 @@ final class RFD3TrayTests: XCTestCase {
         XCTAssertFalse(row.isError)
         XCTAssertEqual(row.buttonTitle, "Cancel")
         XCTAssertEqual(try XCTUnwrap(row.fraction), (2.0 + 0.478) / 10.0, accuracy: 1e-9)
+    }
+
+    func testTheAPPSOwnPayloadReadsDesignOneOfThree() throws {
+        // The FIRST phase of a real three-design batch in the shipped app: design 1 running
+        // at 11%, designs 2 and 3 queued behind it on the serial queue. Before this change
+        // that was THREE rows, two of them saying "Queued".
+        //
+        // VERBATIM from `_pending_maps('designing')` in the RUNNING APP, captured over its
+        // own MCP during the run. Nothing in it is hand-written -- which is the point: the
+        // headless suite cannot see a Python/Swift key mismatch, and the app is where this
+        // feature has been caught being inert twice before.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+                 "has_transp":{},"groups":[],"parent":{},"pending":{},"pending_jobs":{},
+                 "design_jobs":{
+                   "rfd3_design_0476bd94":{"batch":"rfd3_batch_4bf129e3","batch_index":3,"batch_total":3,"bundle":null,"detail":"pending: queued","elapsed":0.979287291993387,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                   "rfd3_design_4bf129e3":{"batch":"rfd3_batch_4bf129e3","batch_index":1,"batch_total":3,"bundle":null,"detail":"pending: diffusion 11%","elapsed":0.9892277920152992,"error":null,"fraction":0.11399999999999999,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":null,"state":"running","step":null,"total_steps":null},
+                   "rfd3_design_4e17cc59":{"batch":"rfd3_batch_4bf129e3","batch_index":2,"batch_total":3,"bundle":null,"detail":"pending: queued","elapsed":0.9844215409830213,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        let designs = try XCTUnwrap(decoded.design_jobs).map { $0.value.withID($0.key) }
+        let items = ProgressItem.tray(weights: nil, predictions: [], designs: designs)
+        XCTAssertEqual(items.count, 1, "one invocation is one row")
+        let row = items[0]
+        XCTAssertEqual(row.id, "design:rfd3_batch_4bf129e3")
+        XCTAssertEqual(row.title, "Designing rfd3_batch_4bf129e3")
+        XCTAssertEqual(row.detail, "Diffusion 4% \u{00B7} design 1 of 3 \u{00B7} 1 sec elapsed")
+        XCTAssertFalse(row.isError)
+        XCTAssertEqual(row.buttonTitle, "Cancel")
+        // The bar is the WHOLE batch: none finished plus 11.4% of the first, over three.
+        XCTAssertEqual(try XCTUnwrap(row.fraction), 0.114 / 3.0, accuracy: 1e-9)
+    }
+
+    func testTheAPPSOwnPayloadStillSaysOfTHREEAfterOneHasLanded() throws {
+        // MID-BATCH in the shipped app: design 1 has been DELIVERED and left NO record at
+        // all, design 2 is running, design 3 is queued. Two records, and the row still has
+        // to say three -- this is the exact state in which counting the rows lies.
+        //
+        // VERBATIM from `_pending_maps('designing')` in the RUNNING APP, captured over its
+        // own MCP during the run. Nothing in it is hand-written -- which is the point: the
+        // headless suite cannot see a Python/Swift key mismatch, and the app is where this
+        // feature has been caught being inert twice before.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+                 "has_transp":{},"groups":[],"parent":{},"pending":{},"pending_jobs":{},
+                 "design_jobs":{
+                   "rfd3_design_0476bd94":{"batch":"rfd3_batch_4bf129e3","batch_index":3,"batch_total":3,"bundle":null,"detail":"pending: queued","elapsed":108.68085483403411,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                   "rfd3_design_4e17cc59":{"batch":"rfd3_batch_4bf129e3","batch_index":2,"batch_total":3,"bundle":null,"detail":"pending: diffusion 11% step 1 of 119","elapsed":108.68558266595937,"error":null,"fraction":0.11399999999999999,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":null,"state":"running","step":1,"total_steps":119}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        let designs = try XCTUnwrap(decoded.design_jobs).map { $0.value.withID($0.key) }
+        let items = ProgressItem.tray(weights: nil, predictions: [], designs: designs)
+        XCTAssertEqual(items.count, 1, "one invocation is one row")
+        let row = items[0]
+        XCTAssertEqual(row.id, "design:rfd3_batch_4bf129e3")
+        XCTAssertEqual(designs.count, 2, "the delivered design leaves no record")
+        XCTAssertTrue(row.detail.contains("design 2 of 3"), row.detail)
+        XCTAssertFalse(row.detail.contains("of 2"), row.detail)
+        XCTAssertEqual(row.buttonTitle, "Cancel")
+        // One design behind the frontier plus 11.4% of the second, over three.
+        XCTAssertEqual(try XCTUnwrap(row.fraction), (1.0 + 0.114) / 3.0, accuracy: 1e-9)
+    }
+
+    func testTheAPPSOwnPayloadAfterAMidBatchCancelSaysTwoOfThree() throws {
+        // FIVE SECONDS after `design_cancel <batch>` in the shipped app: the running design
+        // and the queued one are both cancelled and their objects are gone, while the
+        // design that had already landed is untouched and still sits in the group. The row
+        // must say TWO of three were cancelled, not three.
+        //
+        // VERBATIM from `_pending_maps('designing')` in the RUNNING APP, captured over its
+        // own MCP during the run. Nothing in it is hand-written -- which is the point: the
+        // headless suite cannot see a Python/Swift key mismatch, and the app is where this
+        // feature has been caught being inert twice before.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+                 "has_transp":{},"groups":[],"parent":{},"pending":{},"pending_jobs":{},
+                 "design_jobs":{
+                   "rfd3_design_0476bd94":{"batch":"rfd3_batch_4bf129e3","batch_index":3,"batch_total":3,"bundle":null,"detail":"pending: queued","elapsed":206.1400989170652,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"cancelled","step":null,"total_steps":null},
+                   "rfd3_design_4e17cc59":{"batch":"rfd3_batch_4bf129e3","batch_index":2,"batch_total":3,"bundle":null,"detail":"pending: diffusion 88%","elapsed":206.14005770802032,"error":null,"fraction":0.8843697478991595,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":null,"state":"cancelled","step":null,"total_steps":null}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        let designs = try XCTUnwrap(decoded.design_jobs).map { $0.value.withID($0.key) }
+        let items = ProgressItem.tray(weights: nil, predictions: [], designs: designs)
+        XCTAssertEqual(items.count, 1, "one invocation is one row")
+        let row = items[0]
+        XCTAssertEqual(row.id, "design:rfd3_batch_4bf129e3")
+        XCTAssertEqual(row.title, "2 of 3 cancelled: rfd3_batch_4bf129e3")
+        XCTAssertTrue(row.isCancelled)
+        XCTAssertEqual(row.icon, "xmark.circle")
+        XCTAssertEqual(row.buttonTitle, "Dismiss")
+        XCTAssertNil(row.fraction)
     }
 
     func testAPayloadWithNoDesignJobsStillDecodes() throws {

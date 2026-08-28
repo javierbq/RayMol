@@ -354,8 +354,17 @@ the percentage in the text quotes that same number.
 
 A **partial failure is not a batch failure**. While anything is still running the row stays
 a running row and appends `· 1 failed`; only when nothing is left does it become terminal,
-and it then reads `1 of 10 designs failed: <batch>` rather than implying all ten did. A
-batch nobody cancelled and that all succeeded simply has no row, because it has no records.
+and it then reads `1 of 10 failed: <batch>` rather than implying all ten did. A batch nobody
+cancelled and that all succeeded simply has no row, because it has no records.
+
+The terminal titles say `failed` and `cancelled`, not `designs failed` and `designs
+cancelled`, and that word was dropped on a **measurement**, not a preference: the title is
+`lineLimit(1)` in a 340 pt card, and with the real fonts `1 of 10 designs failed:
+rfd3_batch_1f4c9e02` is 235.1 pt against 236.2 pt of room while the cancelled spelling is
+264.1 pt — over by 28. Truncation is at the tail, so what it eats is the batch **name**, the
+half that identifies the row. Dropping one redundant word (this is a design card, with a
+design card's icon) buys 45 pt. A unit test measures every batch title against that geometry
+so the margin cannot be spent by accident.
 
 **One Cancel stops the lot.** It passes the batch id, which `design_cancel` resolves to
 every job of that invocation still outstanding — the running one and the queued ones. A

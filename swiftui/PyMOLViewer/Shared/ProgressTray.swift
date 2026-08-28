@@ -261,7 +261,14 @@ struct ProgressItem: Identifiable, Equatable {
             let detail: String
             if let first = failed.first {
                 icon = "exclamationmark.triangle.fill"
-                title = "\(failed.count) of \(total) designs failed: \(batch)"
+                // "designs" is dropped on purpose, and it is not a style choice: the
+                // title is `lineLimit(1)` in a 340 pt card, and MEASURED with the real
+                // font, "1 of 10 designs failed: rfd3_batch_1f4c9e02" is 235.1 pt against
+                // 236.2 pt of room -- and the CANCELLED spelling was 264.1 pt, truncating
+                // by 28. Truncation is at the tail, so what it eats is the batch NAME,
+                // which is the half that identifies the row. Dropping one redundant word
+                // (this is a design card, with a design card's icon) buys 45 pt.
+                title = "\(failed.count) of \(total) failed: \(batch)"
                 // The first failure's own message, plus a count when there are more --
                 // a two-line card cannot carry ten reasons, and the individual cards are
                 // gone by construction.
@@ -271,7 +278,7 @@ struct ProgressItem: Identifiable, Equatable {
                 detail = parts.joined(separator: " · ")
             } else {
                 icon = "xmark.circle"
-                title = "\(cancelled.count) of \(total) designs cancelled: \(batch)"
+                title = "\(cancelled.count) of \(total) cancelled: \(batch)"
                 detail = elapsed
             }
             return ProgressItem(
