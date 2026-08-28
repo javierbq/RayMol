@@ -193,6 +193,96 @@ final class PanelLayoutTests: XCTestCase {
                        PanelLayout.defaultPanelFrac, accuracy: 1e-9)
     }
 
+    // MARK: - macOS inspector width (#350)
+
+    /// Same contract as the console: untouched means the ABSOLUTE default, on
+    /// any display.
+    func testUnsetInspectorFracYieldsTheAbsoluteDefault() {
+        for window in [CGFloat(1000), 1512, 2400] {
+            XCTAssertEqual(
+                PanelLayout.inspectorWidth(
+                    frac: 0, windowWidth: window,
+                    maxWidth: PanelLayout.maxInspectorWidth(windowWidth: window)),
+                PanelLayout.macDefaultInspectorWidth, accuracy: 1e-9,
+                "an untouched inspector must not scale with a \(window)pt window")
+        }
+    }
+
+    func testStoredInspectorFractionIsHonouredInsideTheBand() {
+        XCTAssertEqual(
+            PanelLayout.inspectorWidth(
+                frac: 0.3, windowWidth: 1600,
+                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1600)),
+            480, accuracy: 1e-9)
+    }
+
+    func testInspectorNeverShrinksBelowItsRowChromeMinimum() {
+        XCTAssertEqual(
+            PanelLayout.inspectorWidth(
+                frac: 0.05, windowWidth: 1600,
+                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1600)),
+            PanelLayout.macMinInspectorWidth, accuracy: 1e-9)
+    }
+
+    func testInspectorFractionAboveTheCeilingIsCapped() {
+        // 1000pt window: ceiling = min(max(1000-480, 200), 500) = 500.
+        XCTAssertEqual(
+            PanelLayout.inspectorWidth(
+                frac: 0.9, windowWidth: 1000,
+                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1000)),
+            500, accuracy: 1e-9)
+    }
+
+    func testInspectorCeilingLeavesTheViewportItsMinimum() {
+        // 800pt window, 480pt viewport minimum -> the inspector may reach 320pt.
+        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 800),
+                       320, accuracy: 1e-9)
+    }
+
+    func testInspectorCeilingNeverExceedsHalfTheWindow() {
+        // A wide window would otherwise let the sidebar take all but 480pt.
+        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 2000),
+                       1000, accuracy: 1e-9)
+    }
+
+    func testInspectorCeilingNeverFallsBelowMinCeilingFrac() {
+        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 500),
+                       100, accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.maxInspectorWidth(windowWidth: 0), 0, accuracy: 1e-9)
+    }
+
+    func testInspectorFractionRoundTripsThroughAWidth() throws {
+        let w = PanelLayout.inspectorWidth(
+            frac: 0.31, windowWidth: 1600,
+            maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1600))
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.inspectorFrac(width: w, windowWidth: 1600)),
+                       0.31, accuracy: 1e-9)
+    }
+
+    func testMeasuredInspectorFractionIsClampedIntoTheStorableBand() throws {
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.inspectorFrac(width: 2, windowWidth: 1000)),
+                       PanelLayout.minStorableFrac, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(PanelLayout.inspectorFrac(width: 990, windowWidth: 1000)),
+                       PanelLayout.maxStorableFrac, accuracy: 1e-9)
+    }
+
+    func testNoInspectorFractionIsStorableForADegenerateWindow() {
+        XCTAssertNil(PanelLayout.inspectorFrac(width: 340, windowWidth: 0))
+        XCTAssertNil(PanelLayout.inspectorFrac(width: .nan, windowWidth: 1000))
+    }
+
+    /// The point of storing a fraction: a sidebar dragged to 30% of a wide window
+    /// comes back proportional in a narrower one — still clamped by ITS ceiling.
+    func testInspectorFractionRestoresProportionallyIntoASmallerWindow() throws {
+        let stored = try XCTUnwrap(PanelLayout.inspectorFrac(width: 600, windowWidth: 2000))
+        XCTAssertEqual(stored, 0.3, accuracy: 1e-9)
+        XCTAssertEqual(
+            PanelLayout.inspectorWidth(
+                frac: stored, windowWidth: 1200,
+                maxWidth: PanelLayout.maxInspectorWidth(windowWidth: 1200)),
+            360, accuracy: 1e-9)
+    }
+
     // MARK: - key namespace
 
     func testEveryKeyIsNamespaced() {

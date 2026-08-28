@@ -1850,6 +1850,12 @@ private struct ShowButton: View {
                     engine.runCommand("show spheres, (\(name)) and sidechain")
                 }
             }
+            // Hydrogens are a selection, not a rep, so they sit beside "side
+            // chains" rather than in the shared rep list (#353). Same command
+            // as A → Hydrogens → show.
+            Button("hydrogens") {
+                engine.runCommand("show sticks, (\(name)) and hydro")
+            }
             Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
                 if opt.label == "---" {
@@ -1883,6 +1889,17 @@ private struct HideButton: View {
         Menu {
             Button("side chains") {
                 engine.runCommand("hide sticks, (\(name)) and (sidechain or name CA); hide lines, (\(name)) and (sidechain or name CA)")
+            }
+            // Hydrogens are a selection, not a rep, so they sit beside "side
+            // chains" rather than in the shared rep list (#353). Mirrors
+            // upstream mol_hide's hydrogens submenu (menu.py hide_hydro).
+            Menu("hydrogens") {
+                Button("all") {
+                    engine.runCommand("hide (\(name) and hydro)")
+                }
+                Button("nonpolar") {
+                    engine.runCommand("hide (\(name) and hydro and (elem C extend 1))")
+                }
             }
             Divider()
             ForEach(Array(showHideOptions.enumerated()), id: \.offset) { _, opt in
@@ -2403,6 +2420,11 @@ private struct ObjectRowContent: View {
             .truncationMode(.tail)
             .contentShape(Rectangle())
             .onTapGesture { toggleEnabled() }   // tap name = toggle enable
+            // #350: a row's fixed chrome (gutter + five action buttons) leaves the
+            // name column narrow, so names that differ only in a long suffix
+            // ("…_relaxed_model_2") truncate to the same thing. Widening the panel
+            // is the fix; this tooltip reads the full name without resizing at all.
+            .help(entry.displayName)
 
         // Model / state count, right of the name (the structure's "frame count").
         if entry.stateCount > 1 {
