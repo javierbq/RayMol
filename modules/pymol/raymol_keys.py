@@ -8,13 +8,21 @@
 #
 # This module names that collision out loud, once, right after ~/.raymolrc runs.
 #
-# Only these two keys can collide: every other RayMol menu shortcut carries ⌘,
-# and the Swift classifier passes ⌘ events straight through to the menus.
+# Only the CTRL-letter keys can collide: every other RayMol menu shortcut
+# carries ⌘, and the Swift classifier passes ⌘ events straight through to the
+# menus.
 
 # Canonical key token -> the menu command it would shadow.
+#
+# Mirrors the ⌃-letter entries of AppShortcuts in
+# swiftui/PyMOLViewer/Shared/PyMOLApp.swift — a new ⌃ shortcut there must be
+# added here too (AppShortcutsTests pins the set on the Swift side).
 APP_SHORTCUTS = {
     'CTRL-M': 'Move Objects (Mouse menu)',
+    'CTRL-E': 'Measure Distances (Mouse menu)',
+    'CTRL-B': 'Box Select (Mouse menu)',
     'CTRL-D': 'Enter/Exit Design Mode (Design menu)',
+    'CTRL-P': 'Enter/Exit Predict Mode (Predict menu)',
 }
 
 # CTRL-D only exists in RAYMOL_MPNN builds, so the caller says whether the

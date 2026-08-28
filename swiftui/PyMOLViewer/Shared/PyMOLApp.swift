@@ -49,6 +49,57 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 }
 #endif
 
+// MARK: - Keyboard shortcut table (#360, #361)
+
+/// The one table behind every discoverable app shortcut: the binding that is
+/// REGISTERED and the hint the user SEES both come from these constants, so
+/// they cannot drift (#360). macOS registers each tool shortcut on a real
+/// menu-bar command (a menu key equivalent is what fires reliably — see the ⌘C
+/// note in macCommands); the shared tool-picker rows and pane toggles attach
+/// the same constant, which is what renders the hint in their menus and makes
+/// the shortcut reach iPadOS hardware keyboards.
+///
+/// Every ⌃-letter entry must be mirrored in modules/pymol/raymol_keys.py
+/// (APP_SHORTCUTS), the launch-time audit that warns when ~/.raymolrc binds
+/// over a menu shortcut. ⌘ entries need no mirror: KeyRouting passes ⌘ events
+/// straight through to the menus, so a user binding can never shadow them.
+enum AppShortcuts {
+    // Tool picker (#360): the exclusive viewport modes, one ⌃-mnemonic each —
+    // Move / mEasure / Design / Predict — plus Box Select on the same scheme.
+    // ⌃E is the first letter of "measure" not already spoken for (⌃M is Move).
+    static let moveTool = KeyboardShortcut("m", modifiers: .control)
+    static let measureTool = KeyboardShortcut("e", modifiers: .control)
+    static let designTool = KeyboardShortcut("d", modifiers: .control)
+    static let predictTool = KeyboardShortcut("p", modifiers: .control)
+    static let boxSelect = KeyboardShortcut("b", modifiers: .control)
+
+    // Pane toggles (#361): open-if-closed / close-if-open, one plain-⌘ family.
+    // ⌘' not ⌘` because ⌘` is the system's cycle-windows shortcut.
+    static let consolePane = KeyboardShortcut("'", modifiers: .command)
+    static let sequencePane = KeyboardShortcut("l", modifiers: .command)
+    static let sidePanel = KeyboardShortcut("0", modifiers: .command)
+
+    /// Every entry above. The collision test runs off this list, so a new
+    /// shortcut must be added here too (same contract as PanelLayout.allKeys).
+    static let all: [KeyboardShortcut] = [
+        moveTool, measureTool, designTool, predictTool, boxSelect,
+        consolePane, sequencePane, sidePanel,
+    ]
+
+    /// The macOS-style symbol hint ("⌃M", "⌘0") for the surfaces that don't
+    /// render one from the registration itself — rail-pill tooltips and
+    /// toolsMenuHelp. Menus draw their own glyphs from the attached shortcut.
+    static func hint(_ shortcut: KeyboardShortcut) -> String {
+        var out = ""
+        if shortcut.modifiers.contains(.control) { out += "⌃" }
+        if shortcut.modifiers.contains(.option) { out += "⌥" }
+        if shortcut.modifiers.contains(.shift) { out += "⇧" }
+        if shortcut.modifiers.contains(.command) { out += "⌘" }
+        out += String(shortcut.key.character).uppercased()
+        return out
+    }
+}
+
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
     @StateObject private var notes = AnalysisNotesStore.shared
@@ -172,6 +223,13 @@ struct PyMOLApp: App {
             #endif
         }
     #if os(macOS)
+    // The pane-visibility flags behind the View-menu toggles (#361): the same
+    // UserDefaults keys ContentView reads through @AppStorage (defaults must
+    // match its declarations), so the menu command, the rail pill, and the
+    // tongue all flip one persisted flag and can never disagree.
+    @AppStorage(PanelLayout.consoleVisibleKey) private var showCommandPanel = true
+    @AppStorage(PanelLayout.objectsVisibleKey) private var showObjectPanel = true
+
     /// True while any MLX Design inference is in flight. Mirrors ContentView.isDesignLocked
     /// so the macOS menu commands (⌃M, ⌃D) respect the same lock as toolbar and rail buttons.
     private var isDesignLocked: Bool {
@@ -248,25 +306,55 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolClearSession, object: nil)
                 }
             }
-            // Mouse menu: toggle Move mode (rigid-body object gizmo). ⌃M.
+            // Mouse menu: the exclusive viewport tools that reinterpret a
+            // click/drag. Shortcuts come from AppShortcuts (#360) so these menu
+            // commands and the tool-picker rows can never disagree.
             CommandMenu("Mouse") {
                 Button(engine.interactionMode == .move ? "Stop Moving Objects" : "Move Objects") {
                     engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
                 }
                 .disabled(isDesignLocked)
-                .keyboardShortcut("m", modifiers: .control)
+                .keyboardShortcut(AppShortcuts.moveTool)
+                // Measure (#360): previously mouse-only; the menu command is what
+                // makes ⌃E fire reliably on macOS (see the ⌘C note above) — the
+                // tool-picker row carries the same constant for the hint.
+                Button(engine.measureMode != nil ? "Stop Measuring" : "Measure Distances") {
+                    engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
+                }
+                .disabled(isDesignLocked)
+                .keyboardShortcut(AppShortcuts.measureTool)
                 // Box Select (#358): the other exclusive viewport tool that
                 // reinterprets a drag, so it belongs on the same menu. ⌃B.
                 Button(engine.interactionMode == .boxSelect ? "Stop Box Select" : "Box Select") {
                     engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
                 }
                 .disabled(isDesignLocked)
-                .keyboardShortcut("b", modifiers: .control)
+                .keyboardShortcut(AppShortcuts.boxSelect)
             }
-            // Grouped so the two menus together count as ONE entry against the
+            // Grouped so these entries together count as ONE against the
             // @CommandsBuilder's 10-child ceiling (Group<Commands> exists for
-            // exactly this reason).
+            // exactly this reason) — the builder is already at capacity.
             Group {
+                // View menu: the pane toggles (#361) — open if closed, close if
+                // open. One plain-⌘ family, which KeyRouting passes straight
+                // through to the menus, so a ~/.raymolrc binding can never
+                // shadow them. The rail pills / tongue flip the same persisted
+                // flags (PanelLayout keys / engine.sequenceVisible), so menu and
+                // pointer stay in agreement.
+                CommandGroup(after: .sidebar) {
+                    Button(showCommandPanel ? "Hide Console" : "Show Console") {
+                        showCommandPanel.toggle()
+                    }
+                    .keyboardShortcut(AppShortcuts.consolePane)
+                    Button(engine.sequenceVisible ? "Hide Sequence" : "Show Sequence") {
+                        engine.sequenceVisible.toggle()
+                    }
+                    .keyboardShortcut(AppShortcuts.sequencePane)
+                    Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {
+                        showObjectPanel.toggle()
+                    }
+                    .keyboardShortcut(AppShortcuts.sidePanel)
+                }
                 #if RAYMOL_MPNN
                 // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
                 CommandMenu("Design") {
@@ -274,7 +362,7 @@ struct PyMOLApp: App {
                         engine.setDesignMode(!engine.designMode)
                     }
                     .disabled(isDesignLocked)
-                    .keyboardShortcut("d", modifiers: .control)
+                    .keyboardShortcut(AppShortcuts.designTool)
                 }
                 #endif
                 // Predict menu: toggle Predict mode (structure prediction panel). ⌃P.
@@ -285,7 +373,7 @@ struct PyMOLApp: App {
                         engine.setPredictMode(!engine.predictMode)
                     }
                     .disabled(isDesignLocked)
-                    .keyboardShortcut("p", modifiers: .control)
+                    .keyboardShortcut(AppShortcuts.predictTool)
                 }
             }
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
