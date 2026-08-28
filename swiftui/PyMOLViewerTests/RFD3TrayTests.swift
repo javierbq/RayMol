@@ -29,11 +29,28 @@ final class RFD3TrayTests: XCTestCase {
                      moving: Bool = true, elapsed: Double = 512,
                      error: String? = nil, bundle: String? = nil,
                      step: Int? = 84, totalSteps: Int? = 199,
-                     remaining: Double? = 300) -> PredictionJobState {
+                     remaining: Double? = 300,
+                     batch: String? = nil, batchIndex: Int? = nil,
+                     batchTotal: Int? = nil) -> PredictionJobState {
         PredictionJobState(id: id, state: state, phase: phase, fraction: fraction,
                            moving: moving, detail: "d", modelsDone: 0, modelsTotal: 1,
                            elapsed: elapsed, error: error, bundle: bundle,
-                           step: step, totalSteps: totalSteps, remaining: remaining)
+                           step: step, totalSteps: totalSteps, remaining: remaining,
+                           batch: batch, batchIndex: batchIndex, batchTotal: batchTotal)
+    }
+
+    /// One member of a ten-design batch, at `index`, in whatever state.
+    private func member(_ index: Int, state: String = "queued", phase: String = "queued",
+                        fraction: Double? = nil, moving: Bool = false,
+                        error: String? = nil, bundle: String? = nil,
+                        step: Int? = nil, totalSteps: Int? = nil,
+                        remaining: Double? = nil, total: Int = 10,
+                        elapsed: Double = 512) -> PredictionJobState {
+        job(id: String(format: "rfd3_design_%02d", index),
+            state: state, phase: phase, fraction: fraction, moving: moving,
+            elapsed: elapsed, error: error, bundle: bundle, step: step,
+            totalSteps: totalSteps, remaining: remaining,
+            batch: "rfd3_batch_ab12cd34", batchIndex: index, batchTotal: total)
     }
 
     // MARK: What the card says
@@ -180,6 +197,180 @@ final class RFD3TrayTests: XCTestCase {
                                          designs: []).map(\.id))
     }
 
+    // MARK: The batch — one invocation, one row
+
+    func testTenDesignsFromOneCommandAreOneRow() {
+        // The defect this exists to close: ten designs produced ten tray rows, nine of
+        // them reading "Queued", because the tray listed work the serial queue had not
+        // started as if it were nine separate jobs.
+        let running = member(1, state: "running", phase: "diffusion", fraction: 0.42,
+                             moving: true, step: 84, totalSteps: 199, remaining: 300)
+        let queued = (2...10).map { member($0) }
+        let items = ProgressItem.tray(weights: nil, predictions: [],
+                                      designs: [running] + queued)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].id, "design:rfd3_batch_ab12cd34")
+        XCTAssertEqual(items[0].title, "Designing rfd3_batch_ab12cd34")
+    }
+
+    func testTheRowSaysHowFarThroughTheBatchTheRunIs() {
+        // Submission order IS the serial queue's order, so the lowest index that has not
+        // settled is the design being worked on -- and everything below it is done.
+        let item = ProgressItem.designBatch(
+            [member(3, state: "running", phase: "diffusion", fraction: 0.5, moving: true,
+                    step: 100, totalSteps: 199, remaining: 300)]
+            + (4...10).map { member($0) })
+        XCTAssertEqual(item.detail,
+                       "Diffusion 25% · design 3 of 10 · step 100 of 199 · "
+                       + "this phase: 5 min left · 9 min elapsed")
+        XCTAssertFalse(item.isError)
+        XCTAssertEqual(item.buttonTitle, "Cancel")
+    }
+
+    func testTheBatchDoesNotSHRINKAsItsDesignsSUCCEED() {
+        // A delivered design leaves NO record -- `deliver_result` pops it from every
+        // table -- so a row that counted the records present would report a ten-design
+        // batch as a seven-design one by the time it was three in. The size comes from
+        // the wire.
+        let item = ProgressItem.designBatch(
+            [member(4, state: "running", phase: "diffusion", fraction: 0.0, moving: true)]
+            + (5...10).map { member($0) })
+        XCTAssertTrue(item.detail.contains("design 4 of 10"), item.detail)
+    }
+
+    func testTheBarComposesTheFINISHEDDesignsWithTheRunningOnesOwnFraction() {
+        // The whole-batch number, and the SAME number the percentage in the text quotes
+        // -- the two can never disagree because there is one of them.
+        let item = ProgressItem.designBatch(
+            [member(3, state: "running", phase: "diffusion", fraction: 0.5,
+                    moving: true)])
+        XCTAssertEqual(try XCTUnwrap(item.fraction), 0.25, accuracy: 1e-9)
+        XCTAssertTrue(item.detail.hasPrefix("Diffusion 25%"), item.detail)
+    }
+
+    func testOneCancelStopsTheWholeBatch() {
+        // The batch id, which is the group name -- `design_cancel` resolves it to every
+        // job of that invocation still outstanding: the one running and the ones queued.
+        let item = ProgressItem.designBatch(
+            [member(1, state: "running", phase: "diffusion", fraction: 0.1, moving: true)]
+            + (2...10).map { member($0) })
+        guard case .python(let source) = item.action else {
+            return XCTFail("a batch card must act through the Python channel")
+        }
+        XCTAssertTrue(source.contains("design_cancel"), source)
+        XCTAssertTrue(source.contains("'rfd3_batch_ab12cd34'"), source)
+        // NOT the member names: ten calls would be ten chances to half-cancel a batch.
+        XCTAssertFalse(source.contains("rfd3_design_"), source)
+    }
+
+    func testADesignFAILINGMidBatchDoesNotStopTheRowFromRunning() {
+        // A partial failure is not a batch failure. The other nine are still going, so
+        // the row stays a running row -- and it says how many have failed, so a batch
+        // that ends nine-and-one can never have read as ten successes.
+        let item = ProgressItem.designBatch(
+            [member(1, state: "failed", error: "the target moved 3.500 A"),
+             member(2, state: "running", phase: "diffusion", fraction: 0.5, moving: true)]
+            + (3...10).map { member($0) })
+        XCTAssertFalse(item.isError)
+        XCTAssertEqual(item.title, "Designing rfd3_batch_ab12cd34")
+        XCTAssertTrue(item.detail.contains("design 2 of 10"), item.detail)
+        XCTAssertTrue(item.detail.contains("1 failed"), item.detail)
+        XCTAssertEqual(item.buttonTitle, "Cancel")
+    }
+
+    func testABatchThatENDEDWithOneFailureDoesNotClaimTheyAllFailed() {
+        // Nine landed and are gone from the wire; one failed and is retained. The card
+        // has to name the ONE, not the batch.
+        let item = ProgressItem.designBatch(
+            [member(4, state: "failed", error: "the target moved 3.500 A")])
+        XCTAssertEqual(item.title, "1 of 10 designs failed: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.detail, "the target moved 3.500 A")
+        XCTAssertTrue(item.isError)
+        XCTAssertFalse(item.isCancelled)
+        XCTAssertEqual(item.buttonTitle, "Dismiss")
+        guard case .python(let source) = item.action else { return XCTFail("expected .python") }
+        XCTAssertTrue(source.contains("design_dismiss"), source)
+        XCTAssertTrue(source.contains("'rfd3_batch_ab12cd34'"), source)
+    }
+
+    func testSeveralFailuresAreCountedRatherThanListed() {
+        let item = ProgressItem.designBatch(
+            [member(2, state: "failed", error: "first reason"),
+             member(5, state: "failed", error: "second reason"),
+             member(9, state: "cancelled")])
+        XCTAssertEqual(item.title, "2 of 10 designs failed: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.detail, "first reason · and 1 more · 1 cancelled")
+    }
+
+    func testACancelledBatchIsNotReportedAsAFailure() {
+        // `settle("cancelled", ...)` writes error: nil, so without the split the card
+        // read "designs failed — Unknown error" at someone who had just pressed Cancel.
+        let item = ProgressItem.designBatch((1...10).map { member($0, state: "cancelled") })
+        XCTAssertEqual(item.title, "10 of 10 designs cancelled: rfd3_batch_ab12cd34")
+        XCTAssertEqual(item.detail, "9 min elapsed")
+        XCTAssertTrue(item.isCancelled)
+        XCTAssertEqual(item.icon, "xmark.circle")
+    }
+
+    func testTheBatchRowNeverSaysBinder() {
+        for state in ["running", "failed", "cancelled"] {
+            let item = ProgressItem.designBatch(
+                [member(1, state: state, error: "a binder-ish error")])
+            XCTAssertFalse(item.title.lowercased().contains("binder"), item.title)
+            XCTAssertFalse(item.buttonTitle.lowercased().contains("binder"))
+        }
+    }
+
+    func testALONEDesignIsUNTOUCHEDByBatching() {
+        // n_designs=1 publishes no batch fields at all, so its row is byte-for-byte the
+        // one it has always been. Compared against `design(_:)` directly rather than
+        // against a remembered string.
+        let lone = job()
+        let items = ProgressItem.tray(weights: nil, predictions: [], designs: [lone])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0], ProgressItem.design(lone))
+    }
+
+    func testAPredictionIsNEVERCollapsedEvenBesideABatch() {
+        // `predicting.pending_info` publishes no batch key, so a prediction cannot be
+        // grouped -- and the prediction lane is shipped behaviour this feature does not
+        // own. Asserted against the untouched tray, not against a remembered layout.
+        let predictions = [job(id: "p1"), job(id: "p2")]
+        let designs = (1...4).map { member($0) }
+        let withBatch = ProgressItem.tray(weights: nil, predictions: predictions,
+                                          designs: designs)
+        let alone = ProgressItem.tray(weights: nil, predictions: predictions)
+        XCTAssertEqual(withBatch.filter { $0.id.hasPrefix("predict:") }, alone)
+        XCTAssertEqual(withBatch.filter { $0.id.hasPrefix("design:") }.count, 1)
+    }
+
+    func testTwoBatchesAreTwoRowsInAStableOrder() {
+        let first = (1...3).map { member($0) }
+        let second = (1...3).map {
+            job(id: "other_\($0)", state: "queued", phase: "queued", fraction: nil,
+                moving: false, batch: "rfd3_batch_ffffffff", batchIndex: $0,
+                batchTotal: 3)
+        }
+        let once = ProgressItem.tray(weights: nil, predictions: [],
+                                     designs: first + second).map(\.id)
+        let twice = ProgressItem.tray(weights: nil, predictions: [],
+                                      designs: (second + first).reversed()).map(\.id)
+        XCTAssertEqual(once, ["design:rfd3_batch_ab12cd34", "design:rfd3_batch_ffffffff"])
+        XCTAssertEqual(once, twice)
+    }
+
+    func testABatchWaitingOnAFetchingBundleShowsNoSecondCard() {
+        // Same rule as a single design: one transfer, one card.
+        let fetch = WeightsFetchState(id: "rfd3-mlx-fp32", state: "running",
+                                      phase: "download", fraction: 0.4, received: 250,
+                                      total: 625, elapsed: 30, error: nil)
+        let items = ProgressItem.tray(
+            weights: fetch, predictions: [],
+            designs: (1...4).map { member($0, bundle: "rfd3-mlx-fp32") })
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.bundle, "rfd3-mlx-fp32")
+    }
+
     // MARK: The payload
 
     func testADesignRecordDecodesFromTheRealPayloadShape() throws {
@@ -205,6 +396,89 @@ final class RFD3TrayTests: XCTestCase {
         // A design placeholder is in `pending` too, so its enable-toggle is greyed exactly
         // as a prediction placeholder's is.
         XCTAssertEqual(decoded.pending?.count, 1)
+    }
+
+    func testABatchedRecordCarriesItsBatchIdentityThroughTheRealPayloadShape() throws {
+        // The three keys `designing.pending_info` adds. Decoded from the payload rather
+        // than constructed here, because a CodingKey typo is exactly the kind of break
+        // that leaves every test green and the tray uncollapsed.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+         "has_transp":{},"groups":[],"parent":{},"pending":{},"pending_jobs":{},
+         "design_jobs":{"rfd3_design_ab12cd34":{"state":"queued","phase":"queued",
+           "fraction":null,"moving":false,"detail":"pending","models_done":0,
+           "models_total":1,"elapsed":12.0,"error":null,"step":null,"total_steps":null,
+           "remaining":null,"batch":"rfd3_batch_ab12cd34","batch_index":3,
+           "batch_total":10}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        let record = try XCTUnwrap(decoded.design_jobs?["rfd3_design_ab12cd34"])
+        XCTAssertEqual(record.batch, "rfd3_batch_ab12cd34")
+        XCTAssertEqual(record.batchIndex, 3)
+        XCTAssertEqual(record.batchTotal, 10)
+        // And the identity survives the key-to-id step the panel does on every record.
+        XCTAssertEqual(record.withID("rfd3_design_ab12cd34").batch, "rfd3_batch_ab12cd34")
+    }
+
+    func testARecordWithNoBatchKeysDecodesToNoBatch() throws {
+        // A single design, and every prediction ever: the keys are simply absent. A
+        // non-optional field here would fail the whole payload decode against a Python
+        // side that predates them and freeze the object panel on its last list.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+         "has_transp":{},"groups":[],"parent":{},"pending":{},
+         "pending_jobs":{"pred_1":{"state":"running","phase":"diffusion","fraction":0.4,
+           "moving":true,"detail":"d","models_done":0,"models_total":1,"elapsed":1.0,
+           "error":null}},
+         "design_jobs":{"rfd3_design_ab12cd34":{"state":"running","phase":"diffusion",
+           "fraction":0.42,"moving":true,"detail":"d","models_done":0,"models_total":1,
+           "elapsed":512.0,"error":null,"step":84,"total_steps":199,"remaining":300.0}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        XCTAssertNil(try XCTUnwrap(decoded.design_jobs?["rfd3_design_ab12cd34"]).batch)
+        XCTAssertNil(try XCTUnwrap(decoded.pending_jobs?["pred_1"]).batch)
+    }
+
+    func testTheREALPayloadOfAPartlyFailedTenDesignBatchCollapsesToOneRow() throws {
+        // VERBATIM from `appkit_inspector._pending_maps('designing')` on a real ten-design
+        // batch driven through the headless harness: design 1 DELIVERED (so it has no
+        // record at all -- that is what makes counting rows wrong), design 2 FAILED and
+        // retained, design 3 running at step 84, designs 4-10 queued.
+        //
+        // Decoded here rather than hand-built, because every defect this row exists to
+        // close lives between the two languages: a CodingKey that does not match the key
+        // Python writes leaves the tray uncollapsed with every unit test green.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},"nstate":{},
+                 "has_transp":{},"groups":[],"parent":{},"pending":{},"pending_jobs":{},
+                 "design_jobs":{
+                 "stubgen_design_15938a91":{"batch":"stubgen_batch_ee8afa5b","batch_index":7,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.0020585829624906182,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_332196a5":{"batch":"stubgen_batch_ee8afa5b","batch_index":4,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.0024077920243144035,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_3d92314b":{"batch":"stubgen_batch_ee8afa5b","batch_index":5,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.002310291980393231,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_6fbbee03":{"batch":"stubgen_batch_ee8afa5b","batch_index":9,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.0016517910407856107,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_85c5eb2c":{"batch":"stubgen_batch_ee8afa5b","batch_index":3,"batch_total":10,"bundle":null,"detail":"pending: diffusion 47% step 84 of 199","elapsed":0.0026035000337287784,"error":null,"fraction":0.478,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":null,"state":"running","step":84,"total_steps":199},
+                 "stubgen_design_a3def5ea":{"batch":"stubgen_batch_ee8afa5b","batch_index":6,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.0021878340048715472,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_ac22da17":{"batch":"stubgen_batch_ee8afa5b","batch_index":10,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.001532584079541266,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_ce27af0c":{"batch":"stubgen_batch_ee8afa5b","batch_index":8,"batch_total":10,"bundle":null,"detail":"pending: queued","elapsed":0.001891832915134728,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"state":"queued","step":null,"total_steps":null},
+                 "stubgen_design_ef1a8cb5":{"batch":"stubgen_batch_ee8afa5b","batch_index":2,"batch_total":10,"bundle":null,"detail":"pending: diffusion 10%","elapsed":0.0026616250397637486,"error":"the target moved 3.500 A","fraction":0.1,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":null,"state":"failed","step":null,"total_steps":null}}}
+        """
+        let decoded = try JSONDecoder().decode(PanelPayload.self, from: Data(payload.utf8))
+        let designs = try XCTUnwrap(decoded.design_jobs).map { $0.value.withID($0.key) }
+        XCTAssertEqual(designs.count, 9, "the delivered design leaves no record")
+        let items = ProgressItem.tray(weights: nil, predictions: [], designs: designs)
+        XCTAssertEqual(items.count, 1, "nine records, one invocation, one row")
+        let row = items[0]
+        XCTAssertEqual(row.id, "design:stubgen_batch_ee8afa5b")
+        XCTAssertEqual(row.title, "Designing stubgen_batch_ee8afa5b")
+        // Design 3 is the frontier: 1 landed, 2 failed, 3 is running. Not "design 1 of 9".
+        XCTAssertTrue(row.detail.contains("design 3 of 10"), row.detail)
+        XCTAssertTrue(row.detail.contains("step 84 of 199"), row.detail)
+        XCTAssertTrue(row.detail.contains("1 failed"), row.detail)
+        // Still running, still cancellable, and the bar is the WHOLE batch: two designs
+        // behind the frontier plus 47.8% of the third, over ten.
+        XCTAssertFalse(row.isError)
+        XCTAssertEqual(row.buttonTitle, "Cancel")
+        XCTAssertEqual(try XCTUnwrap(row.fraction), (2.0 + 0.478) / 10.0, accuracy: 1e-9)
     }
 
     func testAPayloadWithNoDesignJobsStillDecodes() throws {

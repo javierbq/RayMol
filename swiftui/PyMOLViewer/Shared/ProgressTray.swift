@@ -216,6 +216,111 @@ struct ProgressItem: Identifiable, Equatable {
             bundle: job.bundle)
     }
 
+    /// One `design_backbone n_designs=N` invocation, as ONE row.
+    ///
+    /// N designs from one command are not N jobs a user can act on independently: the
+    /// runtime runs them on a SERIAL queue, so exactly one is ever running and the rest
+    /// are waiting their turn. Listing ten rows, nine of them reading "Queued", reports
+    /// work that has not started as if it were ten separate jobs, and offers ten Cancels
+    /// where the user wants one.
+    ///
+    /// **The batch does not shrink as it succeeds.** A design that lands leaves no record
+    /// at all -- `deliver_result` pops it from every table -- so the size comes from
+    /// `batchTotal` on the wire and never from counting the rows that are left.
+    ///
+    /// **How far through** is the lowest-indexed member that has not settled. Submission
+    /// order IS queue order, so that member is the one running (or the one about to), and
+    /// every index below it has finished one way or another. Derived rather than counted
+    /// for the same reason: the successes are not there to count.
+    ///
+    /// A PARTIAL FAILURE is not a batch failure. While anything is still running the row
+    /// stays a running row and merely says how many have failed so far; only when nothing
+    /// is left does it become a terminal card, and even then it says how many of the N
+    /// failed rather than implying all of them did.
+    static func designBatch(_ members: [PredictionJobState]) -> ProgressItem {
+        // Sorted by index, with the id as a tiebreak so the choice is total and stable:
+        // the tray is rebuilt from a 2 Hz poll, and a row that reorders under the pointer
+        // makes Cancel unclickable.
+        let ordered = members.sorted {
+            ($0.batchIndex ?? 0, $0.id) < ($1.batchIndex ?? 0, $1.id)
+        }
+        let batch = ordered.first?.batch ?? ""
+        let total = max(ordered.compactMap(\.batchTotal).max() ?? ordered.count, 1)
+        let failed = ordered.filter { $0.isError && !$0.isCancelled }
+        let cancelled = ordered.filter(\.isCancelled)
+        // The batch's own clock, not one design's: every member is registered in the same
+        // instant, so the largest elapsed is the time since the command was typed.
+        let elapsed = "\(ProgressCard.formatElapsed(ordered.map(\.elapsed).max() ?? 0))"
+                    + " elapsed"
+
+        guard let current = ordered.first(where: { !$0.isError }) else {
+            // Nothing left running. Whatever is still on the wire is a terminal record
+            // that has not been dismissed -- the successes are already gone.
+            let icon: String
+            let title: String
+            let detail: String
+            if let first = failed.first {
+                icon = "exclamationmark.triangle.fill"
+                title = "\(failed.count) of \(total) designs failed: \(batch)"
+                // The first failure's own message, plus a count when there are more --
+                // a two-line card cannot carry ten reasons, and the individual cards are
+                // gone by construction.
+                var parts = [first.error ?? "Unknown error"]
+                if failed.count > 1 { parts.append("and \(failed.count - 1) more") }
+                if !cancelled.isEmpty { parts.append("\(cancelled.count) cancelled") }
+                detail = parts.joined(separator: " · ")
+            } else {
+                icon = "xmark.circle"
+                title = "\(cancelled.count) of \(total) designs cancelled: \(batch)"
+                detail = elapsed
+            }
+            return ProgressItem(
+                id: "design:\(batch)", icon: icon, title: title, detail: detail,
+                fraction: nil, moving: false, isError: true,
+                isCancelled: failed.isEmpty, buttonTitle: "Dismiss",
+                action: .python(pythonCall("design_dismiss", batch)),
+                bundle: ordered.first?.bundle)
+        }
+
+        let index = current.batchIndex ?? 1
+        // Whole-batch: the designs already behind this one, plus how far this one has got.
+        // The bar and the percentage read the same number, as they do on every other card.
+        let fraction = current.fraction.map {
+            (Double(index - 1) + min(max($0, 0), 1)) / Double(total)
+        }
+        var head = current.phase.capitalized
+        if current.moving, let fraction {
+            head += " \(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+        }
+        var parts = ["design \(index) of \(total)"]
+        if let step = current.step, let steps = current.totalSteps, steps > 0 {
+            parts.append("step \(step) of \(steps)")
+        }
+        if let remaining = current.remaining {
+            parts.append(ProgressCard.formatPhaseRemaining(remaining))
+        }
+        parts.append(elapsed)
+        // Said while the rest are still running, so a batch that ends with nine designs
+        // and one failure never reads as ten successes.
+        if !failed.isEmpty { parts.append("\(failed.count) failed") }
+        if !cancelled.isEmpty { parts.append("\(cancelled.count) cancelled") }
+
+        return ProgressItem(
+            id: "design:\(batch)",
+            icon: "wand.and.stars",
+            title: "Designing \(batch)",
+            detail: ([head] + parts).joined(separator: " · "),
+            fraction: fraction,
+            moving: current.moving,
+            isError: false,
+            buttonTitle: "Cancel",
+            // The BATCH id, which `design_cancel` resolves to every job of that
+            // invocation still outstanding -- the one running and the ones queued behind
+            // it. One button, because there is one thing the user wants to stop.
+            action: .python(pythonCall("design_cancel", batch)),
+            bundle: current.bundle)
+    }
+
     /// A self-contained Python statement calling `cmd.<function>(<name>)`.
     ///
     /// `_c` rather than `cmd`: the name is bound in `__main__` for the duration of
@@ -241,8 +346,24 @@ struct ProgressItem: Identifiable, Equatable {
         // different number. A design waiting on a bundle is hidden for the same
         // reason -- and it is the same `bundle` field, so the same filter covers it.
         let fetching = Set(items.compactMap(\.bundle))
+        // Designs from ONE `n_designs` command collapse into ONE row; everything else is
+        // a row of its own. `batch` is present only on a design record and only when the
+        // command asked for more than one, so a prediction and a lone design both take
+        // the untouched path -- which is what keeps the prediction lane, shipped
+        // behaviour this feature does not own, exactly as it was.
+        var batches: [String: [PredictionJobState]] = [:]
+        var singles: [PredictionJobState] = []
+        for job in designs {
+            if let batch = job.batch, !batch.isEmpty { batches[batch, default: []].append(job) }
+            else { singles.append(job) }
+        }
         items += (predictions.map(ProgressItem.prediction)
-                  + designs.map(ProgressItem.design))
+                  + singles.map(ProgressItem.design)
+                  // `batches` is a dictionary, so this map's order is undefined -- and it
+                  // does not matter, because the sort below is TOTAL: every row's id is
+                  // unique, so `lhs.id < rhs.id` decides every pair within a tier. Sorting
+                  // the keys here as well was measured to change the answer on nothing.
+                  + batches.values.map(ProgressItem.designBatch))
             .filter { item in item.bundle.map { !fetching.contains($0) } ?? true }
         // Running first, so a live job is never pushed below the fold by a stale
         // error card the user has not dismissed. Within a tier by id, which puts

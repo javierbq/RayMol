@@ -4076,6 +4076,23 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     /// through is layout, not time (see compose_progress), so there is nothing
     /// honest to extrapolate a whole-job countdown from.
     let remaining: Double?
+    /// The BATCH this job belongs to: one `design_backbone n_designs=N` invocation, named
+    /// by the group its finished designs land in. Nil for a design submitted on its own,
+    /// and nil for EVERY prediction — `predicting.pending_info` publishes no such key, so
+    /// a prediction can never be collapsed and its row is untouched by this.
+    ///
+    /// The runtime runs a batch on a SERIAL queue, so exactly one of its designs is ever
+    /// running; without this the tray listed the other nine as separate jobs reading
+    /// "Queued", which is work that has not started shown as if it had.
+    let batch: String?
+    /// This design's 1-based position in its batch, in submission order — which is also
+    /// the order the serial queue runs them in, so the lowest index that has not settled
+    /// is how far through the batch the run is.
+    let batchIndex: Int?
+    /// How many designs the command asked for. Carried rather than counted from the
+    /// records present: a design that succeeds leaves NO record, so counting rows would
+    /// make the batch shrink as it progressed.
+    let batchTotal: Int?
 
     /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
     /// migrated, so the single consumer accepts both. "cancelled" is included
@@ -4092,17 +4109,20 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         case state, phase, fraction, moving, detail, error, bundle
         case modelsDone = "models_done", modelsTotal = "models_total", elapsed
         case step, totalSteps = "total_steps", remaining
+        case batch, batchIndex = "batch_index", batchTotal = "batch_total"
     }
 
     init(id: String, state: String, phase: String, fraction: Double?, moving: Bool,
          detail: String, modelsDone: Int, modelsTotal: Int, elapsed: Double,
          error: String?, bundle: String? = nil,
-         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil) {
+         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil,
+         batch: String? = nil, batchIndex: Int? = nil, batchTotal: Int? = nil) {
         self.id = id; self.state = state; self.phase = phase
         self.fraction = fraction; self.moving = moving; self.detail = detail
         self.modelsDone = modelsDone; self.modelsTotal = modelsTotal
         self.elapsed = elapsed; self.error = error; self.bundle = bundle
         self.step = step; self.totalSteps = totalSteps; self.remaining = remaining
+        self.batch = batch; self.batchIndex = batchIndex; self.batchTotal = batchTotal
     }
 
     init(from decoder: Decoder) throws {
@@ -4121,6 +4141,9 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         step = try c.decodeIfPresent(Int.self, forKey: .step)
         totalSteps = try c.decodeIfPresent(Int.self, forKey: .totalSteps)
         remaining = try c.decodeIfPresent(Double.self, forKey: .remaining)
+        batch = try c.decodeIfPresent(String.self, forKey: .batch)
+        batchIndex = try c.decodeIfPresent(Int.self, forKey: .batchIndex)
+        batchTotal = try c.decodeIfPresent(Int.self, forKey: .batchTotal)
     }
 
     /// `id` comes from the payload's dictionary key, not the record body.
@@ -4129,7 +4152,8 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
                            moving: moving, detail: detail, modelsDone: modelsDone,
                            modelsTotal: modelsTotal, elapsed: elapsed, error: error,
                            bundle: bundle, step: step, totalSteps: totalSteps,
-                           remaining: remaining)
+                           remaining: remaining, batch: batch, batchIndex: batchIndex,
+                           batchTotal: batchTotal)
     }
 }
 
