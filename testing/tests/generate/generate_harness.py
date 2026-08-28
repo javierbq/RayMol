@@ -121,11 +121,57 @@ def _atom(serial, name, resn, chain, resi, x, y, z):
             % (serial, padded, resn, chain or 'A', resi, x, y, z, name[0]))
 
 
-def install_stub(digest, size, runtime='stubruntime'):
+class ProgressDesignJob(StubDesignJob):
+    """A stub whose status is SCRIPTED, so a design can be caught mid-run.
+
+    `StubDesignJob` reports `done` on the first read, which ~30 existing tests depend
+    on, so it must not be modified -- this is its progress-aware sibling, the same
+    split `predict_progress.ProgressStubJob` makes against `predict_api.StubJob`.
+
+    Mutate `script` to move the design on. `result_path` is filled in on the way out
+    when the script says 'done', so `deliver()` works on it unchanged.
+    """
+
+    def __init__(self, spec, options, weights_path):
+        StubDesignJob.__init__(self, spec, options, weights_path)
+        self.script = {'state': 'queued', 'phase': 'queued', 'fraction': 0.0,
+                       'error': None, 'result_path': None, 'step': None,
+                       'total_steps': None}
+
+    def run(self, fraction, phase='diffusion', step=None, total_steps=200):
+        """Put the job in `phase` at that PHASE-LOCAL fraction."""
+        self.script = {'state': 'running', 'phase': phase, 'fraction': fraction,
+                       'error': None, 'result_path': None,
+                       'step': step if step is not None else int(fraction * total_steps),
+                       'total_steps': total_steps}
+
+    def finish(self):
+        self.script = {'state': 'done', 'phase': 'done', 'fraction': 1.0,
+                       'error': None, 'result_path': None, 'step': None,
+                       'total_steps': None}
+
+    def fail(self, message='stub exploded'):
+        self.script = {'state': 'failed', 'phase': 'diffusion', 'fraction': 0.0,
+                       'error': message, 'result_path': None, 'step': None,
+                       'total_steps': None}
+
+    def status(self):
+        state = dict(self.script)
+        if state.get('state') == 'done' and state.get('result_path') is None:
+            state['result_path'] = self.result_path
+        return state
+
+
+def install_stub(digest, size, runtime='stubruntime', job_class=StubDesignJob,
+                 phases=(('featurize', 0.0, 0.1), ('diffusion', 0.1, 1.0))):
     """Register a stub generator and return its class.
 
     Its `runtime` is NOT 'rfd3' by default: a stub that claimed the real runtime would
     make every host-availability test pass for the wrong reason.
+
+    `job_class` and `phases` are for the progress suite: a design that is RUNNING needs
+    `ProgressDesignJob`, and a generator with no dominant band is what proves
+    `designing._dominant_phase` reads the bands rather than assuming 'diffusion'.
     """
     from pymol.generators import registry
     from pymol.generators.base import DesignSpec, Generator, require_single_chain
@@ -141,7 +187,7 @@ def install_stub(digest, size, runtime='stubruntime'):
             sha256=digest, size=size, members=('config.json', 'model.bin'))
         option_defaults = {'recycling_steps': 2, 'diffusion_steps': 200, 'seed': 0}
         metric_specs = DESIGN_SPECS
-        progress_phases = (('featurize', 0.0, 0.1), ('diffusion', 0.1, 1.0))
+        progress_phases = phases
 
         def check_available(self):
             _host.require_available(self.id)
@@ -153,7 +199,7 @@ def install_stub(digest, size, runtime='stubruntime'):
                               design_chain='B')
 
         def submit(self, spec, options, weights_path):
-            return StubDesignJob(spec, options, weights_path)
+            return job_class(spec, options, weights_path)
 
     registry.register(Stub(), replace=True)
     return Stub

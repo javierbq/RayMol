@@ -114,6 +114,43 @@ _BATCH = {}
 #: and no batch fields on the wire, so its row is exactly what it always was.
 _BATCH_OF = {}
 
+#: States a design does not come back from. `pending_info` publishes the first three;
+#: 'done' is what the runtime writes between finishing and `deliver_result` landing the
+#: object, and a design in that window is finished for the purpose of the run estimate.
+TERMINAL_STATES = ('done', 'error', 'failed', 'cancelled')
+
+#: Nothing is projected from a design that has been running for less than this, or that
+#: is less than `RUN_ETA_MIN_FRACTION` of the way through itself.
+#:
+#: Wider than `predicting.ETA_MIN_PHASE_SECONDS` (2.0), deliberately. That one scopes a
+#: single phase of a single job; this one is multiplied by the designs still queued
+#: behind the running one, so an early over-estimate is amplified N-fold. MEASURED on a
+#: real 3-design rfd3 batch: extrapolating from the first 10 s of a 92 s design is
+#: already within a few per cent, while the first 5 s is not -- the diffusion band opens
+#: at 0.06 and the step counter has barely moved.
+RUN_ETA_MIN_SECONDS = 10.0
+
+#: ...and the same refusal on the fraction, for the reason `ETA_MIN_FRACTION` gives:
+#: the projection divides by it. 0.08 is a few steps into diffusion (whose band is
+#: 0.06-0.96), i.e. past featurize and the pack load, which is the region where the
+#: composed fraction is NOT proportional to time.
+RUN_ETA_MIN_FRACTION = 0.08
+
+#: A generator's widest progress band has to be at least this wide before its phase
+#: countdown is trusted as the whole DESIGN's countdown. rfd3's `diffusion` is 0.90 and
+#: is ~99% of a warm design's wall time; a generator whose bar is split evenly between
+#: four phases is making no such claim, and gets the composed-fraction fallback instead.
+RUN_ETA_DOMINANT_BAND = 0.5
+
+#: Weight given to each new raw sample by the exponential moving average.
+#:
+#: The average is over a COUNTDOWN, so the previous estimate is wound forward by the
+#: wall time since it was made before the blend -- see `_smoothed_run_eta`. At 0.2 and
+#: a 500 ms poll, a step change is 90% absorbed in about 5 seconds, which is slow
+#: enough that the number does not twitch on every tick and fast enough that it follows
+#: a design that really has changed pace.
+RUN_ETA_SMOOTHING = 0.2
+
 
 def weight_cache():
     """The process-wide WeightCache -- `predicting`'s, not a second one.
@@ -774,6 +811,204 @@ def clear_pending(_self=cmd):
     _BATCH_OF.clear()
 
 
+def _batch_frontier(batch_id):
+    """`(name, settled_before_it)` for the lowest-indexed member that has not settled.
+
+    Submission order IS the runtime's serial-queue order, so that member is the design
+    running (or the one about to start) and everything below it has finished one way or
+    another. `settled_before_it` therefore counts the designs already accounted for --
+    delivered, failed AND cancelled alike -- which is what makes a failure shorten the
+    run rather than being estimated for a second time.
+
+    Deliberately the SAME rule `ProgressItem.designBatch` uses to pick `current`
+    (ProgressTray.swift): a member is settled when it has left `_PENDING` or its last
+    published record is terminal. The two must agree, because Swift renders "design k of
+    N" from its answer and this estimate from ours.
+
+    `(None, len(names))` when nothing is left, which is the terminal row -- no estimate.
+    """
+    entry = _BATCH.get(batch_id)
+    if entry is None:
+        return None, 0
+    for settled, member in enumerate(entry['names']):
+        if member not in _PENDING:
+            continue
+        if (_LAST_INFO.get(member) or {}).get('state') in TERMINAL_STATES:
+            continue
+        return member, settled
+    return None, len(entry['names'])
+
+
+def _smoothed_run_eta(store, raw, now):
+    """Exponential moving average over a COUNTDOWN, kept in `store`.
+
+    An ETA that jitters is worse than none, and the raw projection does jitter: it
+    divides by a fraction that arrives in steps, and it steps again every time a design
+    ends and the next one's clock starts from zero.
+
+    The subtlety is that a plain EMA over a countdown does not count down -- it drags
+    the old value forward, so a perfectly steady estimate would sit still instead of
+    falling second by second. So the previous estimate is first WOUND FORWARD by the
+    wall time since it was made (that is what it now predicts), and the new sample is
+    blended against that. A stable rate therefore produces an exact countdown, and only
+    a genuine change of pace moves the number.
+
+    `raw` is never None here: the callers above refuse BEFORE they reach this, and by
+    not touching the store on the way out they leave the average intact across the gap
+    between one design ending and the next starting -- which is real time the
+    wind-forward should consume, not a reason to restart from scratch.
+    """
+    previous, at = store.get('eta'), store.get('eta_at')
+    if previous is None or at is None:
+        value = float(raw)
+    else:
+        wound = max(previous - max(now - at, 0.0), 0.0)
+        value = RUN_ETA_SMOOTHING * float(raw) + (1.0 - RUN_ETA_SMOOTHING) * wound
+    store['eta'] = value
+    store['eta_at'] = now
+    return value
+
+
+def _dominant_phase(job):
+    """The phase that owns most of the progress bar, or '' when none clearly does.
+
+    Read off the generator's OWN `progress_phases` rather than hard-coded, because the
+    claim being made is the generator's: rfd3 says of its 0.06-0.96 diffusion band that
+    it "owns almost the whole bar because it genuinely does". Where that is true, the
+    phase's countdown IS the design's countdown, which is what `_run_remaining` leans
+    on -- and where it is not (no band wider than `RUN_ETA_DOMINANT_BAND`), this returns
+    '' and the estimate falls back to the design's composed fraction instead.
+
+    Never raises: it is on the panel poll, and a third-party generator may declare
+    anything at all here.
+    """
+    try:
+        generator_id = getattr(job, 'generator_id', '') or ''
+        generator = (registry.get(generator_id) if generator_id
+                     else getattr(job, '_generator', None))
+        widest, width = '', RUN_ETA_DOMINANT_BAND
+        for phase, start, end in (getattr(generator, 'progress_phases', ()) or ()):
+            if float(end) - float(start) > width:
+                widest, width = str(phase), float(end) - float(start)
+        return widest
+    except Exception:
+        return ''
+
+
+def _run_remaining(name, track, info, now):
+    """Seconds left for the WHOLE run this record belongs to, or None.
+
+    "The whole run" is the batch when the design is part of one, and the design itself
+    when it is not -- a batch of one is still a run, and "how long will this take" is the
+    same question. One field, one formatter, one thing for the tray to read.
+
+    Two quantities, measured differently on purpose.
+
+    **The design that is RUNNING.** The larger of two views of it, and taking the larger
+    is the point rather than a hedge:
+
+    * its own phase countdown, `info['remaining']`, while it is in the phase that owns
+      most of the bar. That is the honest one -- inside `diffusion` the composed
+      fraction is exactly linear in the step counter and the step rate is flat
+      (MEASURED: 0.250-0.267 s/step across all four quarters of two consecutive
+      designs). What it CANNOT see is the design's tail: `write`, and PyMOL's own load
+      of the result.
+    * what a design of this batch has actually TAKEN, less what this one has spent.
+      That one includes the tail, because it is a wall clock.
+
+    Whichever is larger is the one that has not forgotten something. MEASURED over a
+    real 3-design batch: the phase countdown alone runs 8.6% short, the larger of the
+    two 7.3% short, with the median absolute error falling from 7.1% to 4.3%.
+
+    **The designs still QUEUED** are charged the mean measured wall time of the designs
+    that have already SUCCEEDED, never a projection, when there is one to use. A
+    completed design is the only number that includes everything a design costs.
+
+    Only successful designs contribute a duration. A cancelled one settles in
+    milliseconds and a failed one at any point at all, so either would drag the average
+    towards a number that is not what a design costs.
+
+    A WHOLE-JOB countdown is offered here and deliberately is not for a prediction
+    (`predicting`, whose card says only "this phase: ..."). The objection there is that
+    `compose_progress`'s bands are layout rather than time; it does not carry across,
+    and the difference was measured rather than assumed. A prediction folds n_models
+    through one bar; a design is one model, its dominant band is 0.90 wide and is ~99%
+    of a warm design's wall time, and this estimate leans on that band's own countdown
+    rather than on the composed number.
+
+    `_TRACK` is per name and is popped when the design settles, so a batch's durations
+    live on the batch entry -- the only table that outlives its members.
+
+    Never raises: `pending_info` promises that, and this is inside its try anyway.
+    """
+    batch = _BATCH_OF.get(name)
+    entry = None if batch is None else _BATCH.get(batch['batch'])
+    if batch is None:
+        # A lone design: nothing is queued behind it, and its own `_TRACK` is where the
+        # smoothing state belongs -- it dies with the design, which is right.
+        store, queued, durations = track, 0, ()
+    else:
+        if entry is None:
+            return None
+        frontier, settled = _batch_frontier(batch['batch'])
+        if frontier != name:
+            # Computed ONCE per poll, by the design that is running, and read back here
+            # so every member of a batch publishes the SAME number -- whichever one the
+            # tray picks as `current` must carry it, INCLUDING when that number is None.
+            # `published` and not `eta`: the moving average keeps its state across the
+            # gap between two designs (that gap is real time it should consume), so
+            # `eta` outlives the window in which it may be shown.
+            #
+            # Recomputing here would also advance the average once per MEMBER instead of
+            # once per tick, so a ten-design batch would smooth three times as fast as a
+            # three-design one.
+            return entry.get('published')
+        store = entry
+        queued = max(int(entry['total']) - settled - 1, 0)
+        durations = entry.get('durations') or ()
+
+    value = _projected_run_remaining(track, store, queued, durations, info, now)
+    if entry is not None:
+        entry['published'] = value
+    return value
+
+
+def _projected_run_remaining(track, store, queued, durations, info, now):
+    """The arithmetic behind `_run_remaining`, once the run's shape is known.
+
+    Split out so the batch's answer has ONE exit -- every path has to reach
+    `entry['published']`, including the paths that refuse to answer.
+    """
+    started = track.get('run_started')
+    if started is None or info.get('state') != 'running':
+        # Nothing is running: queued behind a weight fetch, or between two designs.
+        return None
+    run_elapsed = max(now - started, 0.0)
+    left = None
+    if run_elapsed >= RUN_ETA_MIN_SECONDS:
+        fraction = info.get('fraction')
+        if (info.get('remaining') is not None
+                and info.get('phase') == track.get('dominant_phase')):
+            left = float(info['remaining'])
+        elif fraction is not None and RUN_ETA_MIN_FRACTION <= fraction < 1.0:
+            # Outside the dominant phase there is no phase countdown worth having --
+            # `featurize` and `write` are seconds long and their countdowns say nothing
+            # about the design -- so fall back to the design's composed fraction.
+            left = run_elapsed / fraction - run_elapsed
+    if durations:
+        typical = sum(durations) / float(len(durations))
+        current = max(left or 0.0, typical - run_elapsed, 0.0)
+    elif left is not None:
+        # Nothing has finished yet, so the running design is the only evidence there is
+        # -- and it has to price the queued ones too.
+        typical = run_elapsed + left
+        current = left
+    else:
+        # Too early to say anything. A confidently wrong countdown is worse than none.
+        return None
+    return _smoothed_run_eta(store, current + queued * typical, now)
+
+
 def pending_info(name, _self=cmd):
     """Structured progress for a placeholder, or None if it is not pending.
 
@@ -801,7 +1036,8 @@ def pending_info(name, _self=cmd):
             'moving': False, 'models_done': 0, 'models_total': 1,
             'elapsed': 0.0, 'error': None, 'detail': 'pending', 'bundle': None,
             'step': None, 'total_steps': None, 'remaining': None,
-            'batch': None, 'batch_index': None, 'batch_total': None}
+            'batch': None, 'batch_index': None, 'batch_total': None,
+            'run_remaining': None}
     try:
         # Which invocation this design belongs to, so ten designs from one command render
         # as one tray row instead of ten. Absent -- all three None -- for a design
@@ -826,6 +1062,21 @@ def pending_info(name, _self=cmd):
             # wrong type fails the WHOLE panel payload and takes the object list down.
             info['state'] = str(status.get('state') or 'running')
             info['phase'] = str(status.get('phase') or 'pending')
+            # WHEN THIS DESIGN STARTED, which is not when it was submitted. A batch is
+            # enqueued all at once on a serial queue, so `track['started']` -- the clock
+            # behind `elapsed` -- reads the same on the design that is running and on the
+            # nine sitting behind it, and a rate derived from it would be the batch's
+            # rate, not the design's. `state` is the runtime's own answer: a job whose
+            # status file does not exist yet reports 'queued' (host.HostJob.status), and
+            # `run` writes 'running' as its first act. Latched once, so a design is not
+            # re-clocked on every poll.
+            if info['state'] == 'running' and track.get('run_started') is None:
+                track['run_started'] = time.monotonic()
+            # Latched beside it, because it is a property of the generator and cannot
+            # change under a running job: which phase's countdown is worth reading as
+            # the design's own. See _dominant_phase.
+            if 'dominant_phase' not in track:
+                track['dominant_phase'] = _dominant_phase(job)
             error = status.get('error')
             info['error'] = None if error is None else str(error)
             info['step'] = _as_int(status.get('step'))
@@ -850,6 +1101,10 @@ def pending_info(name, _self=cmd):
                 info['moving'] = bool(moving)
             elif track.get('floor'):
                 info['fraction'] = track['floor']
+        # LAST, because it reads the composed `fraction` two lines above. Outside the
+        # `if job is not None` block so that a member whose own job handle has gone still
+        # publishes the batch's estimate rather than dropping it for a tick.
+        info['run_remaining'] = _run_remaining(name, track, info, time.monotonic())
         info['detail'] = _format_detail(info)
     except Exception:
         pass
@@ -2126,6 +2381,22 @@ def deliver_result(path, name, seed=None, _self=cmd):
             track = _TRACK.get(name)
             if track is not None:
                 track['done'] += 1
+            # HOW LONG A DESIGN ACTUALLY TAKES, banked before `_TRACK[name]` is popped
+            # below -- this is the only moment the clock and the outcome are both in
+            # hand. It is what the whole-run estimate charges for each design still
+            # queued, and it is worth more than any projection because it includes
+            # everything a design costs rather than only what the progress bar can see.
+            #
+            # SUCCESS ONLY, which is what makes this the right place: nothing but a
+            # delivery reaches it. A cancelled design settles in milliseconds and a
+            # failed one at any point at all, so either would drag the average towards
+            # a number that is not what a design costs.
+            entry = _BATCH_OF.get(name)
+            batch = None if entry is None else _BATCH.get(entry['batch'])
+            if batch is not None and track is not None and track.get('run_started'):
+                import time
+                batch.setdefault('durations', []).append(
+                    max(time.monotonic() - track['run_started'], 0.0))
             if not remaining:
                 _PENDING.pop(name, None)
                 _TRACK.pop(name, None)

@@ -1417,3 +1417,394 @@ class DesignBackboneTest(GeneratorTestCase):
         # Same reason as above: a record left under the raw name would keep this finished
         # design pending forever, and session_save strips a pending object from the .pse.
         self.assertEqual(designing.pending_objects(), {})
+
+
+class RunEstimateTest(GeneratorTestCase):
+    """The whole-run countdown: `run_remaining` on the wire, and what it is made of.
+
+    A separate class because it needs a design that is RUNNING, which the ordinary
+    `StubDesignJob` never is -- it reports `done` on its first status read.
+
+    Time is BACKDATED rather than slept through, the technique `predict_progress` uses:
+    `_TRACK[name]['run_started']` and `['phase_started']` are the clocks under test, so
+    moving them IS moving time, and a sleeping suite is a suite nobody runs.
+    """
+
+    def setUp(self):
+        GeneratorTestCase.setUp(self)
+        import tempfile
+        from generate_harness import ProgressDesignJob
+        from pymol import designing
+        self.designing = designing
+        self.data, self.digest = make_zip()
+        self.root = tempfile.mkdtemp()
+        os.environ['RAYMOL_WEIGHTS_DIR'] = self.root
+        install_stub(self.digest, len(self.data), job_class=ProgressDesignJob)
+        self.declareHost('stubruntime')
+        self.helix()
+
+    # -- Driving -------------------------------------------------------------
+
+    def submit(self, count=3, **kwargs):
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       n_designs=count, **kwargs)
+            settle()
+        return jobs if isinstance(jobs, (list, tuple)) else [jobs]
+
+    @staticmethod
+    def real(job):
+        return getattr(job, '_real', None) or job
+
+    def poll(self, jobs):
+        """One panel tick: every member's record, in submission order.
+
+        Through `pending_info` for every name, which is what `appkit_inspector`
+        `_pending_maps` does -- so a value that is only right for the member polled
+        first cannot pass. `None` for a member that has already been delivered, which
+        is exactly what the wire shows.
+        """
+        return [self.designing.pending_info(job.spec.name) for job in jobs]
+
+    def live(self, jobs):
+        """The records still on the wire, in submission order."""
+        return [info for info in self.poll(jobs) if info is not None]
+
+    def raw(self, jobs):
+        """One poll with the moving average taken out of the way.
+
+        Every test that asserts the estimator's ARITHMETIC drops the remembered value
+        first, so the poll publishes the raw projection exactly. Deliberately NOT
+        "poll until the average catches up": that answer depends on how long the polls
+        took -- the average winds its previous value forward by real wall time -- so on
+        a loaded machine it drifts, and a test that drifts is a test that will one day
+        fail for no reason. The smoothing has tests of its own.
+        """
+        for store in (list(self.designing._BATCH.values())
+                      + list(self.designing._TRACK.values())):
+            store.pop('eta', None)
+            store.pop('eta_at', None)
+        return self.live(jobs)
+
+    def age(self, job, seconds):
+        """Backdate this design's own clocks by `seconds`."""
+        track = self.designing._TRACK[job.spec.name]
+        for key in ('run_started', 'phase_started', 'started'):
+            if track.get(key) is not None:
+                track[key] -= seconds
+
+    def batch(self):
+        return self.designing._BATCH[list(self.designing._BATCH)[0]]
+
+    def running(self, jobs, index, fraction, elapsed, **kwargs):
+        """Put design `index` (1-based) at `fraction` of diffusion, `elapsed` s in."""
+        job = jobs[index - 1]
+        self.real(job).run(fraction, **kwargs)
+        self.poll(jobs)                     # latch run_started / phase_started
+        self.age(job, elapsed)
+        return self.live(jobs)
+
+    # -- What it is ----------------------------------------------------------
+
+    def testTheEstimateCoversTheDesignsThatHaveNotStartedYet(self):
+        # The whole point: a batch row is asked "how long for the run", not "how long
+        # for the design that happens to be in flight".
+        jobs = self.submit(3)
+        infos = self.running(jobs, 1, 0.5, 60.0)
+        # The design in flight: 60 s for half of diffusion -> 60 s left. Nothing has
+        # finished, so the queued two are charged its projected total, 120 s each.
+        self.assertAlmostEqual(infos[0]['run_remaining'], 60.0 + 2 * 120.0, delta=2.0)
+        # ...and that is FIVE times what the design's own phase countdown says, which is
+        # the number this row used to show.
+        self.assertAlmostEqual(infos[0]['remaining'], 60.0, delta=2.0)
+
+    def testALoneDesignGetsAnEstimateOfItsOwn(self):
+        # A batch of one is still a run, and it must not be charged for siblings it
+        # does not have.
+        jobs = self.submit(1)
+        infos = self.running(jobs, 1, 0.5, 60.0)
+        self.assertIsNone(infos[0]['batch'], 'pre-condition: no batch')
+        self.assertAlmostEqual(infos[0]['run_remaining'], 60.0, delta=2.0)
+
+    def testAMeasuredDesignPricesTheOnesStillQueued(self):
+        # The rule the brief asked for: once a design has really finished you have a
+        # wall clock that includes everything a design costs -- featurization, the pack
+        # read, the write -- and no projection off a progress bar can see all of that.
+        jobs = self.submit(3)
+        self.running(jobs, 1, 0.5, 100.0)
+        self.real(jobs[0]).finish()
+        deliver(jobs[0])
+        banked = self.batch()['durations']
+        self.assertEqual(len(banked), 1)
+        self.assertAlmostEqual(banked[0], 100.0, delta=2.0)
+        # Design 2 is 10 s into a rollout of its own; design 3 has not started.
+        self.running(jobs, 2, 0.1, 10.0)
+        # 90 s left of design 2 (its own rate), + ONE queued design at the measured 100.
+        self.assertAlmostEqual(self.raw(jobs)[0]['run_remaining'],
+                               90.0 + 100.0, delta=4.0)
+
+    def testTheMeasuredTimeBeatsAProjectionThatCannotSeeTheTail(self):
+        # A design's phase countdown covers the phase, and the phase is not the design:
+        # `write`, and PyMOL's own load of the result, come after it. The larger of the
+        # two views is the one that has not forgotten something.
+        jobs = self.submit(2)
+        self.running(jobs, 1, 0.5, 100.0)
+        self.real(jobs[0]).finish()
+        deliver(jobs[0])
+        # Design 2 says it is 90% done after 30 s -- i.e. 3 s left -- while a real
+        # design of this batch took 100 s. The estimate refuses to promise 3 s.
+        self.running(jobs, 2, 0.9, 30.0)
+        info = self.raw(jobs)[0]
+        self.assertAlmostEqual(info['remaining'], 30.0 / 0.9 - 30.0, delta=1.0)
+        self.assertAlmostEqual(info['run_remaining'], 100.0 - 30.0, delta=3.0)
+
+    def testAFailedDesignIsNotStillCountedAsWorkToDo(self):
+        # A failure SHORTENS the run. Counted through the frontier -- the same rule the
+        # tray uses to say "design k of N" -- rather than through a second notion of
+        # what is left.
+        jobs = self.submit(3)
+        self.running(jobs, 1, 0.5, 100.0)
+        self.real(jobs[0]).fail()
+        self.poll(jobs)
+        self.running(jobs, 2, 0.5, 60.0)
+        # design 1 failed, 2 is running with 60 s left, 3 is queued at 120 s. Design 1
+        # is NOT charged again -- three designs would have been 60 + 240.
+        self.assertAlmostEqual(self.raw(jobs)[1]['run_remaining'],
+                               60.0 + 120.0, delta=3.0)
+
+    def testAFailedDesignContributesNoDurationToThePrice(self):
+        # It settles at any point at all -- instantly, or after seventeen minutes -- so
+        # its wall time says nothing about what a design costs.
+        jobs = self.submit(3)
+        self.running(jobs, 1, 0.5, 100.0)
+        self.real(jobs[0]).fail()
+        self.poll(jobs)
+        cmd.design_dismiss(jobs[0].spec.name)
+        self.assertEqual(self.batch().get('durations', []), [])
+
+    def testACancelledDesignContributesNoDurationEither(self):
+        jobs = self.submit(3)
+        self.running(jobs, 1, 0.5, 100.0)
+        cmd.design_cancel(list(self.designing._BATCH)[0])
+        for job in jobs:
+            self.designing.discard_pending(job.spec.name)
+        self.assertEqual([b.get('durations', []) for b in self.designing._BATCH.values()],
+                         [] if not self.designing._BATCH else [[]])
+
+    # -- When it refuses to speak --------------------------------------------
+
+    def testNothingIsProjectedFromADesignThatHasBarelyStarted(self):
+        # `remaining` divides by a fraction, and on a batch row the answer is then
+        # multiplied by the designs still queued. A confidently wrong countdown is
+        # worse than no countdown.
+        jobs = self.submit(3)
+        infos = self.running(jobs, 1, 0.5, 3.0)
+        self.assertIsNone(infos[0]['run_remaining'])
+        # ...and it appears once there is signal, from the same design.
+        infos = self.running(jobs, 1, 0.5, 40.0)
+        self.assertIsNotNone(infos[0]['run_remaining'])
+
+    def testNothingIsProjectedWhileNoDesignIsRunning(self):
+        # Nothing is running -- waiting on a weight fetch, or in the gap between two
+        # designs -- so there is no rate to extrapolate and no measured duration to fall
+        # back on.
+        #
+        # Driven through the QUEUED state itself rather than through the fetch. The
+        # fetch is a real background thread, and "the bundle is still downloading" is a
+        # pre-condition that races it: under load it had ALREADY finished by the time
+        # this looked, and the test failed on its own setup rather than on the product.
+        jobs = self.submit(3)
+        infos = self.poll(jobs)
+        self.assertEqual([info['state'] for info in infos], ['queued'] * 3,
+                         'pre-condition: nothing has started')
+        self.assertEqual([info['run_remaining'] for info in infos], [None] * 3)
+        # And ageing them conjures nothing: `elapsed` is the clock since the COMMAND was
+        # typed, which every member shares, so it is not evidence about any design.
+        for job in jobs:
+            self.age(job, 600.0)
+        infos = self.poll(jobs)
+        self.assertGreater(infos[0]['elapsed'], 500.0, 'pre-condition: an old batch')
+        self.assertEqual([info['run_remaining'] for info in infos], [None] * 3)
+
+    def testAQueuedDesignIsNotMistakenForARunningOne(self):
+        # `elapsed` reads the SAME on the design that is running and on the nine sitting
+        # behind it -- every member is registered in the same instant -- so a rate taken
+        # from it would be the batch's, not the design's. `run_started` is latched off
+        # the runtime's own 'running' state instead.
+        jobs = self.submit(3)
+        self.poll(jobs)
+        for job in jobs[1:]:
+            self.assertIsNone(self.designing._TRACK[job.spec.name].get('run_started'),
+                              '%s never ran' % job.spec.name)
+        self.real(jobs[0]).run(0.5)
+        self.poll(jobs)
+        self.assertIsNotNone(self.designing._TRACK[jobs[0].spec.name]['run_started'])
+
+    def testTheDominantPhaseIsReadOffTheGeneratorsOwnBands(self):
+        # The phase countdown is trusted as the DESIGN's countdown only where the
+        # generator says that phase owns the bar. A generator with four even bands is
+        # making no such claim and gets the composed-fraction fallback instead.
+        from generate_harness import ProgressDesignJob
+        install_stub(self.digest, len(self.data), job_class=ProgressDesignJob,
+                     phases=(('a', 0.0, 0.25), ('b', 0.25, 0.5),
+                             ('c', 0.5, 0.75), ('d', 0.75, 1.0)))
+        jobs = self.submit(1)
+        self.real(jobs[0]).run(0.5, phase='c')
+        self.poll(jobs)
+        self.assertEqual(self.designing._TRACK[jobs[0].spec.name]['dominant_phase'], '')
+        self.age(jobs[0], 60.0)
+        info = self.poll(jobs)[0]
+        # Composed fraction is 0.5 + 0.5 * 0.25 = 0.625, so 60 s buys 36 s more -- NOT
+        # the 60 s the phase countdown alone would have said.
+        self.assertAlmostEqual(info['fraction'], 0.625, places=3)
+        self.assertAlmostEqual(info['run_remaining'], 60.0 / 0.625 - 60.0, delta=2.0)
+
+    # -- Behaviour over a run -------------------------------------------------
+
+    def testEveryMemberOfABatchPublishesTheSameEstimateOnce(self):
+        # Whichever record the tray picks as `current` must carry the same number -- and
+        # the moving average must advance once per TICK, not once per member, or a
+        # ten-design batch would smooth ten times as fast as a three-design one.
+        jobs = self.submit(3)
+        infos = self.running(jobs, 1, 0.5, 60.0)
+        self.assertEqual(len(infos), 3, 'pre-condition: three members on the wire')
+        values = [info['run_remaining'] for info in infos]
+        self.assertEqual(len(set(values)), 1, values)
+        # One advance for the whole poll, from the frontier alone: the other two read
+        # the stored value back. Proved by BLINDING the frontier -- with design 1 out
+        # of the picture the value cannot be recomputed at all, and the members that
+        # are left still answer.
+        stored = self.batch()['published']
+        self.designing._TRACK[jobs[0].spec.name].pop('run_started')
+        again = [self.designing.pending_info(job.spec.name) for job in jobs[1:]]
+        self.assertEqual([info['run_remaining'] for info in again], [stored, stored])
+
+    def testWhenTheFRONTIERHasNothingToSayNeitherDoesTheRestOfTheBatch(self):
+        # The whole batch is one row and one number, so the members must not disagree
+        # about whether there IS one. The moving average deliberately keeps its state
+        # across the gap between two designs -- that gap is real time it should
+        # consume -- so what is PUBLISHED has to be tracked separately from what is
+        # remembered, or the queued members would go on showing a countdown the row
+        # itself had stopped showing.
+        jobs = self.submit(3)
+        self.running(jobs, 1, 0.5, 60.0)
+        self.assertIsNotNone(self.poll(jobs)[0]['run_remaining'],
+                             'pre-condition: an estimate exists')
+        # Design 1 finishes; design 2 has not been picked up by the queue yet.
+        self.real(jobs[0]).finish()
+        deliver(jobs[0])
+        infos = self.live(jobs)
+        self.assertEqual([info['run_remaining'] for info in infos], [None, None])
+        self.assertIsNotNone(self.batch().get('eta'),
+                             'the average remembers, even while nothing is shown')
+
+    def testAConstantEstimateStillCountsDownAsTimePasses(self):
+        # THE reason the moving average winds the previous value forward before it
+        # blends. A plain EMA over a countdown drags the old number along, so a design
+        # ticking along at a steady rate would show an estimate that barely moved. Here
+        # the raw projection is held EXACTLY constant and only the clock advances.
+        jobs = self.submit(1)
+        self.running(jobs, 1, 0.5, 100.0)
+        raw = self.raw(jobs)[0]['run_remaining']
+        self.assertAlmostEqual(raw, 100.0, delta=3.0)
+        import time
+        store = self.designing._TRACK[jobs[0].spec.name]
+        store['eta_at'] -= 10.0             # ten seconds of wall clock, no new evidence
+        mark = time.monotonic()
+        after = self.poll(jobs)[0]['run_remaining']
+        # A plain EMA would answer `raw` (both terms equal); the wind-forward answers
+        # 0.2*raw + 0.8*(raw - 10) = raw - 8. The poll's OWN duration is part of the
+        # wall clock the wind-forward consumes, so it is measured rather than absorbed
+        # into a tolerance -- a test whose margin is really "how fast is this machine
+        # today" is a test that eventually fails for no reason.
+        gap = time.monotonic() - mark
+        self.assertAlmostEqual(after, raw - 8.0 - 0.8 * gap, delta=0.5)
+        self.assertLess(after, raw - 5.0, 'the estimate did not count down at all')
+
+    def testTheEstimateIsSmoothedRatherThanFollowingEveryJump(self):
+        # The raw projection steps whenever the fraction does, and it steps hardest at
+        # the moment one design ends and the next starts from zero. Damped, so the row
+        # does not swing on a tick.
+        jobs = self.submit(1)
+        self.running(jobs, 1, 0.5, 100.0)
+        settled = self.raw(jobs)[0]['run_remaining']
+        self.assertAlmostEqual(settled, 100.0, delta=3.0)
+        # The design suddenly reports itself 90% done: raw collapses to ~11 s.
+        self.real(jobs[0]).run(0.9)
+        jumped = self.poll(jobs)[0]['run_remaining']
+        raw = 100.0 * (0.1 / 0.9)
+        self.assertAlmostEqual(raw, 11.1, delta=0.5, msg='pre-condition: the raw moved')
+        self.assertLess(jumped, settled, 'it must move towards the new evidence')
+        self.assertGreater(jumped, settled * 0.5,
+                           'one sample must not carry the estimate to the raw value')
+        # ...and it gets there in the end rather than sticking. Stated as a
+        # COMPARISON rather than a tolerance, because how far it gets in 40 polls
+        # depends on how long those polls took on the machine of the day.
+        for _ in range(40):
+            settling = self.live(jobs)[0]['run_remaining']
+        self.assertLess(abs(settling - raw), abs(settling - settled),
+                        'it stuck near the old value instead of following the new')
+
+    def testTheEstimateSurvivesThePayloadAsAScalar(self):
+        # A non-scalar would fail the WHOLE PanelPayload decode in Swift and take the
+        # object list down with it.
+        import json
+        from pymol import appkit_inspector
+        jobs = self.submit(3)
+        infos = self.running(jobs, 1, 0.5, 60.0)
+        _, records = appkit_inspector._pending_maps('designing')
+        record = records[jobs[0].spec.name]
+        self.assertIsInstance(record['run_remaining'], float)
+        self.assertEqual(json.loads(json.dumps(record))['run_remaining'],
+                         record['run_remaining'])
+        self.assertAlmostEqual(record['run_remaining'], infos[0]['run_remaining'],
+                               delta=1.0)
+
+    def testARecordAlwaysCARRIESTheKeyEvenWhenTheJobExplodes(self):
+        # The key is seeded in the record's initial dict, not only assigned on the happy
+        # path: `pending_info` wraps everything after that in one `except: pass`, so a
+        # generator whose `status()` raises would otherwise publish a record with the key
+        # MISSING -- and a missing key is a different shape on a wire a strongly-typed
+        # decoder reads.
+        jobs = self.submit(1)
+
+        def explode():
+            raise RuntimeError('boom')
+
+        self.real(jobs[0]).status = explode
+        info = self.designing.pending_info(jobs[0].spec.name)
+        self.assertIn('run_remaining', info)
+        self.assertIsNone(info['run_remaining'])
+
+    def testAPredictionsRecordCarriesNoWholeRunEstimateAtAll(self):
+        # The tray is SHARED, and one decoder serves both records. A prediction must
+        # render exactly as it does today, which it does because `predicting` publishes
+        # no such key -- so `PredictionJobState.runRemaining` decodes nil and the
+        # prediction branch never reaches the new wording.
+        #
+        # Driven through `predicting`'s own register_pending rather than asserted about
+        # its source, because "the key is absent" is a fact about the RECORD.
+        from pymol import predicting
+
+        class Bare(object):
+            job_id = 'bare-1'
+
+            def status(self):
+                return {'state': 'running', 'phase': 'diffusion', 'fraction': 0.5,
+                        'error': None, 'result_path': None}
+
+        job = Bare()
+        predicting._JOBS[job.job_id] = job
+        try:
+            predicting.register_pending('pred_probe', job.job_id, _self=cmd)
+            prediction = predicting.pending_info('pred_probe', _self=cmd)
+            self.assertEqual(prediction['state'], 'running',
+                             'pre-condition: a real pending prediction record')
+            self.assertNotIn('run_remaining', prediction)
+        finally:
+            predicting.discard_pending('pred_probe', _self=cmd)
+            predicting._JOBS.pop(job.job_id, None)
+        # ...while a design's does carry it.
+        design = self.designing.pending_info(self.submit(1)[0].spec.name)
+        self.assertIn('run_remaining', design)
