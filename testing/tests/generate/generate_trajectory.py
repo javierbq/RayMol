@@ -1346,7 +1346,23 @@ class LiveObjectTest(GeneratorTestCase):
             'carbons': sorted(self._carbon_colours()),
             'objlist': cmd.get_names('objects'),
             'auto_color_next': cmd.get('auto_color_next'),
+            # WHICH GROUP the object ended up in, if any. An n_designs batch groups its
+            # placeholders at SUBMIT, so a live design spends its whole rollout inside a
+            # group; this axis is what says the plain run spends it in the same one.
+            'parent': self._parent_of(self.name),
         }
+
+    @staticmethod
+    def _parent_of(name):
+        """The object's group, or '' -- from the session record, `entry[6]`.
+
+        NOT `cmd.get_object_list` over the groups: that reports molecular leaves only, so
+        it cannot see a zero-atom placeholder inside a group at all.
+        """
+        for entry in (cmd.get_session(partial=1).get('names') or []):
+            if entry and entry[0] == name and len(entry) > 6:
+                return entry[6] or ''
+        return ''
 
     def _carbon_colours(self):
         colours = set()
@@ -1367,6 +1383,16 @@ class LiveObjectTest(GeneratorTestCase):
             cmd.set('state', 1)
 
     def testWithFramesDISCARDEDTheObjectIsIndistinguishableFromAPlainRun(self):
+        self._indistinguishable(batched=False)
+
+    def testTheINVARIANTHoldsWithTheObjectInsideItsBatchGroupToo(self):
+        # An n_designs batch groups its placeholders AT SUBMIT, so a live design is
+        # seeded, animated and delivered from INSIDE a group. The invariant has to hold
+        # with grouping on BOTH arms, or being early bought a tidy object panel at the
+        # cost of the thing that makes `keep_frames=0` safe.
+        self._indistinguishable(batched=True)
+
+    def _indistinguishable(self, batched):
         # THE invariant, and the thing that makes the default safe. With the toggle off a
         # live run must leave exactly what `live_view=0` leaves -- states, coordinates,
         # bonds INCLUDING ORDERS, residue names, secondary structure, what is visible,
@@ -1394,8 +1420,18 @@ class LiveObjectTest(GeneratorTestCase):
         def arm(build):
             cmd.delete('all')
             self.designing._TRAJECTORY.clear()
+            self.designing._BATCH.clear()
+            self.designing._BATCH_OF.clear()
             cmd.set('auto_color_next', 0)
+            if batched:
+                # What `design_backbone` stamps for an n_designs command, in the order the
+                # command does it: stamp, create the placeholder, join the group.
+                self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
+                self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,
+                                                       'total': 2}
             self.designing.register_pending(self.name, 'job')
+            if batched:
+                self.designing._join_batch_group(self.name)
             cmd.read_pdbstr(bystander, 'opened_meanwhile', zoom=0)
             build()
             return self._fingerprint()
@@ -1419,54 +1455,77 @@ class LiveObjectTest(GeneratorTestCase):
         self.assertEqual(live['states'], 1, 'discarded frames must leave one state')
         for key in ('states', 'atoms', 'coords', 'bonds', 'resn', 'ss', 'pinned',
                     'visible_chains', 'visible_atoms', 'carbons', 'objlist',
-                    'auto_color_next'):
+                    'auto_color_next', 'parent'):
             self.assertEqual(live[key], plain[key],
                              '%s differs between a discarded-frame live run and a '
-                             'plain one' % key)
+                             'plain one (batched=%s)' % (key, batched))
+        # And the fixture really did put the object where it claims to have -- without
+        # this the grouped arm passes by both arms being ungrouped.
+        self.assertEqual(live['parent'], 'a_batch' if batched else '')
 
-    def testABatchGROUPSTheSameWayLiveAndPlain(self):
-        # Grouping is delivery's job and it happens on BOTH paths, which is not decoration:
-        # this branch's standing invariant is that `keep_frames=0` leaves a session
-        # indistinguishable from `live_view=0`, and a design that ended up inside a group
-        # in one mode and at the top level in the other would break it on the object list
-        # -- exactly the axis an earlier round was silently wrong on.
-        seed_pdb = _seed_pdb(length=self.LENGTH, target=self.TARGET)
-        frames = [_flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0)))
-                  for step in range(1, 4)]
-        path = self.result_path(coords=_backbone(self.LENGTH, offset=(2.5, -6.0, 0.5)))
+    def testTheLIVEObjectSTAYSInItsGroupForTheWholeRollout(self):
+        # An n_designs batch groups its placeholder at SUBMIT, so the object is seeded,
+        # animated and delivered from INSIDE a group. The fingerprint test above compares
+        # the two arms at the END; this one samples the whole run, because the seed reads
+        # into the placeholder in place and any path that deleted and recreated it would
+        # silently drop the object out of its group mid-rollout.
+        self.designing._BATCH.clear()
+        self.designing._BATCH_OF.clear()
+        self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
+        self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,
+                                               'total': 2}
+        self.designing.register_pending(self.name, 'job')
+        self.designing._join_batch_group(self.name)
+        seen = [self._parent_of(self.name)]
+        self.assertTrue(self.designing.trajectory_seed(
+            self.name, _seed_pdb(length=self.LENGTH, target=self.TARGET),
+            self.target_atoms, self.design_atoms, keep=1))
+        seen.append(self._parent_of(self.name))
+        for step in range(1, 4):
+            # A True return from each of these IS the identity check (`_holds_our_writes`)
+            # passing for an object that lives inside a group.
+            self.assertTrue(self.designing.trajectory_frame(
+                self.name, _flat(_backbone(self.LENGTH, offset=(step * 2.0, 0, 0))),
+                advance=0, smooth=1))
+            self.assertTrue(self.designing.trajectory_display(self.name))
+            seen.append(self._parent_of(self.name))
+        # The animation really is running, inside the group.
+        self.assertGreater(cmd.count_states(self.name), 1)
+        self.designing.deliver_result(self.result_path(), self.name)
+        seen.append(self._parent_of(self.name))
+        self.assertEqual(seen, ['a_batch'] * len(seen), seen)
+        # Delivery's own state pin still lands on the OBJECT, not on the group.
+        self.assertEqual(int(cmd.get('state', self.name)),
+                         cmd.count_states(self.name))
 
-        def arm(build):
-            cmd.delete('all')
-            self.designing._TRAJECTORY.clear()
-            self.designing._BATCH.clear()
-            self.designing._BATCH_OF.clear()
-            self.designing.register_pending(self.name, 'job')
-            # What `design_backbone` stamps for an n_designs command, without needing a
-            # generator: the batch is bookkeeping, not something the runtime knows.
-            self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
-            self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,
-                                                   'total': 2}
-            build()
-            groups = list(cmd.get_names('public_group_objects'))
-            return (groups, [cmd.get_object_list(g) for g in groups],
-                    cmd.get_names('objects'))
-
-        plain = arm(lambda: self.designing.deliver_result(path, self.name))
-
-        def live_run():
-            self.assertTrue(self.designing.trajectory_seed(
-                self.name, seed_pdb, self.target_atoms, self.design_atoms, keep=0))
-            for coords in frames:
-                self.assertTrue(self.designing.trajectory_frame(
-                    self.name, coords, advance=0, smooth=1))
-                self.designing.trajectory_display(self.name)
-            self.designing.deliver_result(path, self.name)
-
-        live = arm(live_run)
-        self.assertEqual(plain[0], ['a_batch'], 'a plain delivery must group too')
-        self.assertEqual(plain[1], [[self.name]])
-        self.assertEqual(live, plain,
-                         'a live run and a plain one must be grouped identically')
+    def testADeliveryFALLBACKPutsTheObjectBackInItsGroup(self):
+        # `deliver_result` deletes and reloads the object when a recording cannot be
+        # finished, and a deleted object takes its group membership with it -- which is
+        # why the join is made again at delivery and not only at submit.
+        self.designing._BATCH.clear()
+        self.designing._BATCH_OF.clear()
+        self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
+        self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,
+                                               'total': 2}
+        self.designing.register_pending(self.name, 'job')
+        self.designing._join_batch_group(self.name)
+        self.assertTrue(self.designing.trajectory_seed(
+            self.name, _seed_pdb(length=self.LENGTH, target=self.TARGET),
+            self.target_atoms, self.design_atoms, keep=1))
+        # A recording that cannot be finished: the result is laid out with a DIFFERENT
+        # design length, so `_finish_trajectory` refuses on the atom-count guard and
+        # delivery falls back to delete-then-load.
+        path = self.tempfile()
+        with open(path, 'w') as handle:
+            handle.write(_result_pdb(length=self.LENGTH + 1, target=self.TARGET))
+        self.designing.deliver_result(path, self.name)
+        # The fallback really did fire -- otherwise the assertion below is vacuous,
+        # because a recording that finishes never leaves the group in the first place.
+        self.assertEqual(cmd.count_atoms(self.name),
+                         (self.TARGET + self.LENGTH + 1) * len(_SLOTS),
+                         'the object must be the RELOADED result, not the recording')
+        self.assertEqual(self._parent_of(self.name), 'a_batch',
+                         'the reloaded object must go back into its group')
 
     def testADeliveryOutsideABatchJoinsNoGroup(self):
         # The control for the test above: grouping is a property of the BATCH stamp, not

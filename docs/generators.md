@@ -289,18 +289,56 @@ land back where the first one did.
 **`n_designs=1` gets none of this.** A group of one is noise and a batch of one is the row
 that already exists, so a single design publishes no batch fields at all and makes no group.
 
-### The group fills in as results land
+### The group exists from the moment the command returns
 
-Grouping happens in `deliver_result`, per design, not up front. A group is a promise that
-these objects exist, and a batch that is cancelled or fails must leave nothing behind —
-which for an up-front group means a second teardown path and an empty group in any `.pse`
-saved in between. `cmd.group(g, name, action='add')` costs **0.0012 ms**, once per
-delivered design, consumes no auto-colour slot, and leaves the member enabled.
+Grouping happens at **submit**, on the placeholders, and again at delivery. The clutter this
+removes is **mid-run** clutter — ten `rfd3_design_*` rows sitting at top level for the hours
+a batch takes — so a group that only formed at delivery would leave that picture unchanged
+for the whole run and tidy it up after the user had stopped looking.
+`cmd.group(g, name, action='add')` costs **0.0012 ms**, consumes no auto-colour slot, and
+leaves the member enabled. The second join at delivery is not belt-and-braces: when a live
+recording cannot be finished, `deliver_result` deletes the object and loads the result
+fresh, and a deleted object takes its group membership with it.
+
+Being early has three costs. Each is handled.
+
+**A partial session is a READ, not a save.** This is the one that decides whether up-front
+grouping works at all, and it is not obvious. RayMol reads the object TREE out of
+`cmd.get_session(partial=1)` — `entry[6]` is an object's parent — because nothing else
+reports a group's non-molecular children: `cmd.get_object_list` returns the *molecular
+leaves*, so it reports a group of zero-atom placeholders as **empty**. But
+`designing.session_save` is a session-save task, so it ran on that read too and stripped
+the pending placeholders out of it. Measured: `group_parents` returned `{}`, so the panel
+drew ten flat rows *next to an empty group* — worse than not grouping at all.
+`session_save` now returns early for a partial session (the key `partial` is present, with
+value `None`). A partial session already omits view, settings, movie and selections, and
+`cmd.save('x.pse')` passes `partial=0`, so nothing that writes a `.pse` takes that branch.
+`predicting.session_save` still filters a partial read; a pending *prediction* placeholder
+dragged into a group therefore loses its nesting in the panel — a shipped path this change
+does not own.
+
+**An empty group must not survive.** A batch cancelled or failed before anything landed
+leaves no group, exactly as it leaves no placeholders. The teardown is guarded hard, because
+**`cmd.delete` on a group deletes its members too** — measured. Three conditions, all
+required: the group exists, every name the batch registered is gone, and the *session* says
+the group has no children at all. That last one is what stops the teardown destroying an
+object the user dragged in. The membership check is real rather than trusting our own list;
+the cheap "is any of mine still here?" pre-filter in front of it exists because
+`get_session` serialises every object — **0.11 ms at 200 atoms, 1.29 ms at 2,000, 7.01 ms at
+10,000** — and `discard_pending` runs on the main thread every time a job settles.
+
+**A mid-run session save must carry neither.** An empty group is a real object and *does*
+round-trip (measured: saved to a `.pse`, it reopens as an empty group), so `session_save`
+drops a batch's group when nothing of it survived the placeholder filter. Membership there
+comes from the session being saved, so an object the user dragged into the group keeps it.
 
 Applied **identically to a live run and a plain one**. That is not decoration: this branch's
 standing invariant is that `keep_frames=0` leaves a session indistinguishable from
 `live_view=0`, and a design inside a group in one mode and at the top level in the other
-would break it on the object list.
+would break it on the object list. The invariant test now runs **both** arms grouped as well
+as both ungrouped, and `parent` is one of its axes. A live design is therefore seeded,
+animated, identity-checked, state-pinned and delivered from *inside* a group, and the
+animation costs the same there: 0.059 ms/tick either way on the same 750-atom object.
 
 ### One row, and what it says
 
@@ -325,9 +363,9 @@ queued design is refused at the top of `RFD3JobManager.run`, before it featurize
 the next cancellation point is after `RFD3Model.preflight`, which is seconds of CPU per
 queued design, so without that check a batch cancel drains slowly instead of at once.
 Cancelled members leave **nothing** (their placeholders go with them, the rule the live view
-already follows) and their cards are retained so the row can say what happened. **Designs
-that already finished are untouched and stay in the group** — cancel stops what has not
-finished; it does not destroy minutes of completed work.
+already follows, and the group goes with the last of them) and their cards are retained so
+the row can say what happened. **Designs that already finished are untouched and stay in the
+group** — cancel stops what has not finished; it does not destroy minutes of completed work.
 
 Nothing about a design's own identity changes: the design key, the object name, the metric
 run and the result bytes are what they would be for `n_designs=1` at the same seed. The

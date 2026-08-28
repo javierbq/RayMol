@@ -190,6 +190,18 @@ class DesignBackboneTest(GeneratorTestCase):
         return list(cmd.get_names('public_group_objects'))
 
     @staticmethod
+    def children(group):
+        """Real membership of `group`, from the session record.
+
+        NOT `cmd.get_object_list`, which reports a group's molecular leaves and therefore
+        answers `[]` for a group of zero-atom placeholders -- which is most of a batch's
+        life. `entry[6]` is the parent, the same field `appkit_inspector.group_parents`
+        reads.
+        """
+        return [entry[0] for entry in (cmd.get_session(partial=1).get('names') or [])
+                if entry and len(entry) > 6 and entry[6] == group]
+
+    @staticmethod
     def real(job):
         """The submitted job behind a deferred handle -- what a test pokes at.
 
@@ -240,17 +252,169 @@ class DesignBackboneTest(GeneratorTestCase):
         self.assertEqual(designing._BATCH, {})
         self.assertIsNone(designing.pending_info(job.spec.name))
 
-    def testTheGroupFillsInAsResultsLandRatherThanWaitingForThemAllUpFront(self):
-        # Created AS RESULTS LAND: a group is a promise these objects exist, so it must
-        # never be a container of placeholders that may never arrive.
+    def testTheGroupExistsFromTheMOMENTTheCommandReturns(self):
+        # The clutter this removes is MID-RUN clutter: ten `rfd3_design_*` rows sitting at
+        # top level for the hours the batch takes. A group that only formed at delivery
+        # would leave that picture unchanged for the whole run.
         jobs = self._batch(3, seed=11)
-        self.assertEqual(self.groups(), [], 'nothing has finished yet')
+        self.assertEqual(len(self.groups()), 1, self.groups())
+        group = self.groups()[0]
+        self.assertEqual(sorted(self.children(group)),
+                         sorted(job.spec.name for job in jobs),
+                         'every placeholder is in the group before anything has run')
+        # And they are still greyed as pending, which is what the group must not change.
+        from pymol import designing
+        for job in jobs:
+            self.assertIsNotNone(designing.pending_info(job.spec.name))
+        deliver(jobs)
+        self.assertEqual(sorted(self.children(group)),
+                         sorted(job.spec.name for job in jobs))
+
+    def testAnEmptyPLACEHOLDERGroupIsNotVisibleToGetObjectList(self):
+        # Why the teardown reads the session record instead. `get_object_list` reports a
+        # group's MOLECULAR LEAVES, so on a group of zero-atom placeholders it answers
+        # "empty" -- and the teardown's whole job is to decide whether the group is empty
+        # before deleting it, which takes its members with it.
+        jobs = self._batch(2, seed=11)
+        group = self.groups()[0]
+        self.assertEqual(cmd.get_object_list(group), [])
+        self.assertEqual(len(self.children(group)), 2)
+
+    def testABatchThatNeverLANDSAnythingLeavesNoGroupBehind(self):
+        # The first cost of being early, handled rather than avoided: cancelled or failed,
+        # a batch leaves no group, exactly as it leaves no placeholders.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        group = self.groups()[0]
+        for job in jobs:
+            self.real(job).status = lambda: {
+                'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0,
+                'error': None, 'result_path': None, 'peak_bytes': None,
+                'elapsed_s': 2.0}
+            designing.discard_pending(job.spec.name)
+        self.assertEqual(self.groups(), [], 'the empty group must go with its members')
+        self.assertNotIn(group, cmd.get_names('objects'))
+
+    def testAGroupIsNEVERDeletedWhileAnythingIsStillInIt(self):
+        # `cmd.delete` on a group deletes its MEMBERS TOO -- measured -- so the teardown
+        # firing one design too early would destroy a design that took minutes. Two
+        # deliver, one is cancelled: the group and both designs must survive.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        group = self.groups()[0]
+        deliver([jobs[0], jobs[2]])
+        self.real(jobs[1]).status = lambda: {
+            'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0, 'error': None,
+            'result_path': None, 'peak_bytes': None, 'elapsed_s': 2.0}
+        designing.discard_pending(jobs[1].spec.name)
+        self.assertEqual(self.groups(), [group])
+        self.assertEqual(sorted(self.children(group)),
+                         sorted([jobs[0].spec.name, jobs[2].spec.name]))
+        for job in (jobs[0], jobs[2]):
+            self.assertGreater(cmd.count_atoms(job.spec.name), 0)
+
+    def testTheTeardownDoesNotREADTheSessionUntilItsLastMemberIsGone(self):
+        # The pre-filter is an OPTIMISATION, and it is covered as one rather than left as
+        # a branch with no observable. `get_session(partial=1)` is the only complete
+        # source of a group's membership and it serialises every object: measured 0.11 ms
+        # at 200 atoms, 1.29 ms at 2,000 and 7.01 ms at 10,000. `discard_pending` runs on
+        # the main thread every time a job settles, so a ten-design batch against a real
+        # target would pay that ten times to answer "no" nine of them.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        reads = []
+
+        class CountingCmd:
+            def __init__(self, inner): self._inner = inner
+            def __getattr__(self, name): return getattr(self._inner, name)
+            def get_session(self, *args, **kwargs):
+                reads.append(1)
+                return self._inner.get_session(*args, **kwargs)
+
+        counting = CountingCmd(cmd)
+        for job in jobs[:2]:
+            self.real(job).status = lambda: {
+                'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0,
+                'error': None, 'result_path': None, 'peak_bytes': None,
+                'elapsed_s': 2.0}
+            designing.discard_pending(job.spec.name, _self=counting)
+        self.assertEqual(reads, [], 'nothing may read the session while members remain')
+        self.real(jobs[2]).status = lambda: {
+            'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0, 'error': None,
+            'result_path': None, 'peak_bytes': None, 'elapsed_s': 2.0}
+        designing.discard_pending(jobs[2].spec.name, _self=counting)
+        self.assertEqual(len(reads), 1, 'exactly once, on the last member')
+        self.assertEqual(self.groups(), [])
+
+    def testAGroupHOLDINGSOMETHINGTheUserPutThereIsNotDeleted(self):
+        # The reason the teardown reads real membership rather than trusting its own list:
+        # a group deletion takes everything inside with it, so an object the user dragged
+        # in must veto it.
+        jobs = self._batch(2, seed=11)
+        from pymol import designing
+        group = self.groups()[0]
+        cmd.fab('AAAA', 'mine', ss=1)
+        cmd.group(group, 'mine', action='add')
+        for job in jobs:
+            self.real(job).status = lambda: {
+                'state': 'cancelled', 'phase': 'diffusion', 'fraction': 0.0,
+                'error': None, 'result_path': None, 'peak_bytes': None,
+                'elapsed_s': 2.0}
+            designing.discard_pending(job.spec.name)
+        self.assertEqual(self.groups(), [group], 'the group still holds the user\'s object')
+        self.assertEqual(cmd.count_atoms('mine'), 40)
+
+    def testAPARTIALSessionIsAReadAndIsNotFiltered(self):
+        # THE reason up-front grouping works at all, and it is not obvious: RayMol reads
+        # the object TREE out of `cmd.get_session(partial=1)` -- `entry[6]` is the parent,
+        # and nothing else reports a group's non-molecular children. Filtering that read
+        # made a batch's pending placeholders invisible to `group_parents`, so the panel
+        # drew ten flat rows next to an empty group -- the exact clutter grouping early is
+        # meant to remove. Measured before the fix: `group_parents` returned {}.
+        from pymol import appkit_inspector, designing
+        jobs = self._batch(3, seed=11)
+        group = self.groups()[0]
+        parents = appkit_inspector.group_parents(cmd.get_names('objects'),
+                                                 cmd.get_names('public_group_objects'))
+        for job in jobs:
+            self.assertEqual(parents.get(job.spec.name), group,
+                             'the panel must see a pending placeholder inside its group')
+        # ...and a FULL session is still filtered, which is what session_save is for.
+        full = cmd.get_session(partial=0)
+        saved = [entry[0] for entry in (full.get('names') or []) if entry]
+        for job in jobs:
+            self.assertNotIn(job.spec.name, saved)
+
+    def testAMidRunSessionSaveCarriesNeitherThePlaceholdersNorTheirGroup(self):
+        # The second cost of being early. An empty group is a real object and DOES survive
+        # a .pse round trip (measured), so without this a session saved mid-batch reopens
+        # holding a container named after designs that never existed.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        group = self.groups()[0]
+        session = {'names': [[name] + [None] * 6 for name in cmd.get_names('objects')]}
+        for entry in session['names']:
+            entry[6] = group if entry[0] != group and entry[0] != 'tgt' else ''
+        designing.session_save(session)
+        saved = [entry[0] for entry in session['names']]
+        self.assertEqual(saved, ['tgt'])
+        self.assertNotIn(group, saved)
+
+    def testASessionSaveKEEPSTheGroupOnceADesignHasLanded(self):
+        # ...and only then. A group holding a finished design is a real result and must
+        # round-trip with it.
+        jobs = self._batch(3, seed=11)
+        from pymol import designing
+        group = self.groups()[0]
         deliver(jobs[0])
-        self.assertEqual(len(self.groups()), 1)
-        self.assertEqual(cmd.get_object_list(self.groups()[0]), [jobs[0].spec.name])
-        deliver(jobs[1])
-        self.assertEqual(sorted(cmd.get_object_list(self.groups()[0])),
-                         sorted([jobs[0].spec.name, jobs[1].spec.name]))
+        session = {'names': [[name] + [None] * 6 for name in cmd.get_names('objects')]}
+        for entry in session['names']:
+            entry[6] = group if entry[0] not in (group, 'tgt') else ''
+        designing.session_save(session)
+        saved = [entry[0] for entry in session['names']]
+        self.assertIn(group, saved)
+        self.assertIn(jobs[0].spec.name, saved)
+        self.assertNotIn(jobs[1].spec.name, saved)
 
     def testAnExplicitNameBecomesTheGroupAndTheIndexedObjectsItsMembers(self):
         with patch('pymol.predictors.weights._urlopen',

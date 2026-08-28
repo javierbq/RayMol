@@ -227,12 +227,18 @@ def _free_group_name(name, _self=cmd):
 
 
 def _join_batch_group(name, _self=cmd):
-    """Put a delivered design into its invocation's group. Never raises.
+    """Put one of a batch's objects into that invocation's group. Never raises.
 
-    Created AS RESULTS LAND rather than at submit time: a group is a promise that these
-    objects exist, and a cancelled or failed batch must leave nothing behind -- which for
-    an up-front group would mean a second teardown path (and an empty group in any .pse
-    saved in between) for no gain the user can see.
+    Called AT SUBMIT, on the placeholder, and again at delivery. The clutter this feature
+    exists to remove is MID-RUN clutter -- ten `rfd3_design_*` rows sitting at top level
+    for the hours the batch takes -- so a group that only forms at the end would leave the
+    picture the user complained about unchanged for the whole run and tidy it up after
+    they had stopped looking. The costs of being early are handled rather than avoided:
+    see `_drop_empty_batch_group` and `session_save`.
+
+    Called again at delivery because it is not always the same object: when a live
+    recording cannot be finished, `deliver_result` deletes the object and loads the result
+    fresh, and a deleted object takes its group membership with it.
 
     Identical for a live run and a plain one. This branch's standing invariant is that
     `keep_frames=0` leaves a session indistinguishable from `live_view=0`, and a group in
@@ -252,6 +258,61 @@ def _join_batch_group(name, _self=cmd):
                               ' loaded at the top level instead' % (name, group, exc))
         return None
     return group
+
+
+def _group_children(group, _self=cmd):
+    """Names whose parent is `group`, or None if that could not be determined.
+
+    From the SESSION RECORD (`entry[6]` is the parent), which is the only complete
+    source -- the same reason `appkit_inspector.group_parents` reads it. `get_object_list`
+    reports a group's MOLECULAR LEAVES only and returns `[]` for a group of zero-atom
+    placeholders (measured), so it answers "is this group empty?" with a confident yes
+    while the group is full of them.
+
+    `get_session` is expensive, so the one caller pre-filters on its own membership list
+    and reaches this only when every name it registered is already gone -- at most once
+    per batch, when its last member is discarded.
+
+    None, not [], when the read fails: the caller is deciding whether to DELETE, and a
+    group deletion takes its members with it.
+    """
+    try:
+        return [entry[0] for entry in (_self.get_session(partial=1).get('names') or [])
+                if entry and len(entry) > 6 and entry[6] == group]
+    except Exception:
+        return None
+
+
+def _drop_empty_batch_group(group, _self=cmd):
+    """Delete a batch's group once nothing is left in it. Never raises.
+
+    The cost of creating the group up front: a batch that is cancelled or fails before
+    anything lands must leave NO group, exactly as it leaves no placeholders.
+
+    Guarded hard, and the guard is the whole function. **`cmd.delete` on a group deletes
+    its MEMBERS TOO** -- measured, `delete g` on a group of two took both molecules with
+    it -- so deleting one that still holds something would destroy a finished design, or
+    an object the user had dragged in. Three conditions, all required: the group exists,
+    every name this batch registered is gone, and the session says the group has no
+    children at all.
+    """
+    batch = _BATCH.get(group)
+    if batch is None:
+        return False
+    try:
+        if group not in _self.get_names('objects'):
+            return False
+        # Cheap pre-filter, so the expensive session read happens at most once per batch.
+        existing = set(_self.get_names('objects'))
+        if any(member in existing for member in batch['names']):
+            return False
+        children = _group_children(group, _self=_self)
+        if children is None or children:
+            return False
+        _self.delete(group)
+    except Exception:
+        return False
+    return True
 
 
 def _reap_batches():
@@ -681,6 +742,12 @@ def discard_pending(name, _self=cmd):
             _self.delete(name)
     except Exception:
         pass
+    # The group goes with the last member, so a batch that never landed anything leaves
+    # nothing -- the price of creating it at submit rather than at delivery. Read from
+    # `_BATCH_OF` before `_reap_batches` below drops the entry.
+    entry = _BATCH_OF.get(name)
+    if entry is not None:
+        _drop_empty_batch_group(entry['batch'], _self=_self)
     # Last, though the position is not load-bearing and saying so is cheaper than leaving
     # a reader to work it out: `_reap_batches` only drops a batch when NO member is in
     # `_PENDING` or `_RECENT`, and this name is still in one of them until the lines
@@ -837,8 +904,28 @@ def session_save(session, _self=cmd):
     the thing called `rfd3_design_<key>` is a rollout frozen at step 84. `_TRAJECTORY`
     holds the name for exactly as long as that is true.
     """
+    # A PARTIAL session is a READ, not a save, and is left exactly as it is.
+    #
+    # `cmd.get_session(partial=1)` is how RayMol introspects the object tree: `entry[6]`
+    # is an object's parent group, and `appkit_inspector.group_parents` reads it because
+    # NOTHING else reports a group's non-molecular children -- `get_object_list` returns
+    # the molecular leaves, so it reports a group of zero-atom placeholders as empty.
+    # Filtering that read made a batch's pending placeholders invisible to the panel: the
+    # group existed in PyMOL, and the panel still drew ten flat rows with an empty group
+    # beside them. Measured before this line existed: `group_parents` returned {}.
+    #
+    # A partial session already omits view, settings, movie and selections -- it is a
+    # snapshot to read, not a session anyone reopens -- and `cmd.save('x.pse')` passes
+    # partial=0, so nothing that writes a .pse takes this branch. The discriminator is the
+    # KEY's presence, not its value: it is written as None.
+    #
+    # `predicting.session_save` still filters a partial read, so a pending PREDICTION
+    # placeholder that a user drags into a group loses its nesting in the panel. That is
+    # a shipped path this change does not own; noted here rather than silently diverging.
+    if 'partial' in session:
+        return 1
     names = session.get('names')
-    if not names or not (_PENDING or _TRAJECTORY):
+    if not names or not (_PENDING or _TRAJECTORY or _BATCH):
         return 1
     keep = []
     for entry in names:
@@ -849,6 +936,24 @@ def session_save(session, _self=cmd):
             except Exception:
                 continue
         keep.append(entry)
+    # And a batch's GROUP goes when nothing of it survived that filter. The group is
+    # created at SUBMIT so the object panel is tidy while the run is on, and it is a real
+    # object that round-trips: measured, an empty group saved to a .pse reopens as an
+    # empty group. Without this, a session saved mid-batch carries a container named after
+    # designs that do not exist.
+    #
+    # Membership comes from the SESSION being saved -- `entry[6]` is the parent -- rather
+    # than from `_BATCH`, so an object the user dragged into the group keeps it.
+    if _BATCH:
+        kept = set(entry[0] for entry in keep if entry)
+        children = {}
+        for entry in names:
+            if entry and len(entry) > 6 and entry[6]:
+                children.setdefault(entry[6], []).append(entry[0])
+        keep = [entry for entry in keep
+                if not (entry and entry[0] in _BATCH
+                        and not any(child in kept
+                                    for child in children.get(entry[0], ())))]
     session['names'] = keep
     return 1
 
@@ -2084,9 +2189,11 @@ ARGUMENTS
     n_designs > 1 an index is appended and this becomes the GROUP's name.
 
     n_designs = int: how many independent designs to generate. Each is a FULL run --
-    see NOTES. More than one, and they are ONE BATCH: they land in a group named
-    <generator>_batch_<key> (or `name`, if you gave one), they occupy a single progress
-    row rather than one each, and cancelling that row cancels all of them. A batch of
+    see NOTES. More than one, and they are ONE BATCH: they go into a group named
+    <generator>_batch_<key> (or `name`, if you gave one) from the moment this command
+    returns, they occupy a single progress row rather than one each, and cancelling that
+    row cancels all of them. A batch that never finishes anything leaves no group behind,
+    and a session saved mid-run carries neither the group nor its placeholders. A batch of
     one is not a batch -- n_designs=1 makes no group and changes nothing. {default: 1}
 
     diffusion_steps = int: reverse-diffusion steps {default: 200}
@@ -2396,13 +2503,18 @@ SEE ALSO
         except AttributeError:
             pass          # __slots__ handle with no room: it simply gets the spinner
         _JOBS[job.job_id] = job
-        register_pending(object_name, job.job_id, _self=_self)
         if batch_id:
-            # Recorded AFTER register_pending, so the name in both tables is the legalised
-            # one an object actually answers to.
+            # BEFORE register_pending, so `_join_batch_group` below has the stamp to read
+            # -- and after `_legal_object_name`, so both tables key on the one string an
+            # object actually answers to.
             _BATCH[batch_id]['names'].append(object_name)
             _BATCH_OF[object_name] = {'batch': batch_id, 'index': index + 1,
                                       'total': count}
+        register_pending(object_name, job.job_id, _self=_self)
+        # AT SUBMIT, on the placeholder: the object-panel clutter this removes is MID-RUN
+        # clutter, and a group that only formed at delivery would leave it there for the
+        # hours the batch takes.
+        _join_batch_group(object_name, _self=_self)
         jobs.append(job)
         if not int(quiet):
             colorprinting.parrot(
