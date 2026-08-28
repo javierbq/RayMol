@@ -174,6 +174,12 @@ struct ContentView: View {
     // The console height the current macOS drag started from, in points. nil when
     // no drag is in flight; the committed size lives in `consoleFrac`.
     @State private var macConsoleDragAnchor: CGFloat? = nil
+    // The macOS inspector width the USER chose, as a fraction of the window width
+    // (#350: object names were unreadable at the fixed column width). 0 means
+    // "never resized", which selects the absolute 340pt default instead.
+    @AppStorage(PanelLayout.inspectorFracKey) private var inspectorFrac = 0.0
+    // The inspector width the current macOS seam drag started from, in points.
+    @State private var macInspectorDragAnchor: CGFloat? = nil
 
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
@@ -396,7 +402,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - macOS: HSplitView with sidebar
+    // MARK: - macOS: viewport column + resizable inspector column
 
     #if os(macOS)
     // Minimizable mouse-mode legend: full card with a minimize button, or a
@@ -512,6 +518,76 @@ struct ContentView: View {
             )
     }
 
+    // The right (inspector / Theme Studio) column's current width: the share the
+    // user dragged the seam to, or the absolute 340pt default until they have
+    // (#350) — clamped every layout pass so a window shrink can't squeeze the
+    // viewport below its minimum width.
+    private func macInspectorWidth(windowWidth: CGFloat) -> CGFloat {
+        PanelLayout.inspectorWidth(frac: CGFloat(inspectorFrac),
+                                   windowWidth: windowWidth,
+                                   maxWidth: PanelLayout.maxInspectorWidth(windowWidth: windowWidth))
+    }
+
+    // macOS: the seam between the viewport column and the right column, doubling
+    // as the drag handle that resizes it (#350 — object names truncate at a fixed
+    // width). Same recipe as macConsoleDivider: a 1pt themed hairline with a wider
+    // invisible hit strip, a resize cursor, and the committed size persisted as a
+    // fraction of the window width. Deliberately NOT an HSplitView divider — its
+    // mouse-tracking band swallowed clicks on the inspector tongue that straddles
+    // this seam (#325); the tongue's pill draws later than this strip, so it keeps
+    // winning hit-testing where the two overlap.
+    @ViewBuilder
+    private func macInspectorDivider(windowWidth: CGFloat) -> some View {
+        let maxW = PanelLayout.maxInspectorWidth(windowWidth: windowWidth)
+        Rectangle()
+            .fill(hairlineColor)
+            .frame(width: 1)
+            // A 9pt grab band (about what an AppKit splitter tracks) grown entirely
+            // on the VIEWPORT side, so the visible hairline still sits immediately
+            // against the panel's leading edge — which is where panelTongue's
+            // seam:true offset expects it, and how the seam looked before it became
+            // draggable. Padding is layout width in the HStack, not an overlay, so
+            // it cannot steal clicks from the panel's own controls; a 1pt-wide
+            // target, meanwhile, was measurably hard to hit in VM testing.
+            .padding(.leading, 8)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { v in
+                        let start = macInspectorDragAnchor ?? macInspectorWidth(windowWidth: windowWidth)
+                        macInspectorDragAnchor = start
+                        // Freeze the Metal drawable while the seam moves so the
+                        // renderer doesn't reallocate its offscreen targets every
+                        // frame (same guard as the iOS resizeDivider); the frames
+                        // still track the drag, and one reshape snaps the viewport
+                        // crisp on release.
+                        engine.suppressDrawableResize = true
+                        // The column sits on the RIGHT: dragging left grows it.
+                        let w = min(max(start - v.translation.width,
+                                        PanelLayout.macMinInspectorWidth), maxW)
+                        if let f = PanelLayout.inspectorFrac(width: w, windowWidth: windowWidth) {
+                            inspectorFrac = Double(f)
+                        }
+                    }
+                    .onEnded { _ in
+                        macInspectorDragAnchor = nil
+                        engine.suppressDrawableResize = false
+                    }
+            )
+            // A drag that never ends normally — the column is toggled away by the
+            // tongue or a menu while the button is still down — would otherwise
+            // leave the drawable frozen at its mid-drag size for good (a blurry,
+            // wrongly-scaled viewport with no way back but a relaunch). onEnded
+            // doesn't fire for a cancelled gesture, so release the freeze here too.
+            .onDisappear {
+                macInspectorDragAnchor = nil
+                engine.suppressDrawableResize = false
+            }
+    }
+
     private var macOSLayoutBase: some View {
         // Sequence height cap: 1–5 sequence rows (~26pt each + 8pt padding) so the
         // strip can't grow into the viewport. minHeight is set a few pt below the
@@ -535,14 +611,14 @@ struct ContentView: View {
             #if !RAYMOL_MAS_RESTRICTED
             MCPDrivingBanner()
             #endif
-            // Left | right as a plain HStack, NOT an HSplitView. The right column is
-            // a FIXED 340pt (see below), so that split view's divider could never be
-            // dragged — all it contributed was a system divider whose mouse-tracking
-            // band SWALLOWED clicks on the inspector tongue sitting on the seam (#325;
-            // bisected in the VM: x=679 dead, x=690 live). A 1pt themed hairline draws
-            // the same seam, lets the tongue straddle it, and is exactly what the iPad
-            // landscape layout does. The VSplitView inside — which IS draggable and
-            // carries the console/sequence sizing — stays.
+            // Left | right as a plain HStack, NOT an HSplitView: that split view's
+            // system divider had a mouse-tracking band that SWALLOWED clicks on the
+            // inspector tongue sitting on the seam (#325; bisected in the VM: x=679
+            // dead, x=690 live). Our own seam (macInspectorDivider) draws the same
+            // 1pt hairline, lets the tongue straddle it, and — since #350 — is also
+            // the drag handle that resizes the right column, with the share
+            // persisted the way the console's is. The VSplitView inside — which IS
+            // draggable and carries the console/sequence sizing — stays.
             HStack(spacing: 0) {
             // Left column: the pane rail pinned on TOP, then terminal, sequence and
             // the 3D viewport stacked in a VSplitView so each stays drag-resizable.
@@ -615,23 +691,26 @@ struct ContentView: View {
             }
 
             // Right column: objects + (chat). Only exists (and only occupies its
-            // 300pt width) when at least one of its panels is shown — when both are
-            // off the HSplitView collapses to just the left column. The mouse
+            // width) when at least one of its panels is shown — when both are off
+            // the layout collapses to just the left column. Width is 340pt until
+            // the user drags the seam (#350); Theme Studio shares the SAME width so
+            // toggling between the two never makes the right edge jump. The mouse
             // legend moved to the floating viewport overlay (above) so it stays
             // reachable regardless.
             if showThemeStudio {
                 // Theme studio takes over the right column; viewport stays live.
-                Rectangle().fill(hairlineColor).frame(width: 1)
+                macInspectorDivider(windowWidth: winGeo.size.width)
                 ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                     .environmentObject(engine)
                     .environmentObject(themeManager)
-                    .frame(width: 340)
+                    .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
             } else if showObjectPanel {
-                // The seam the tongue centres on. Drawn by us now that the HSplitView
-                // divider is gone — same hairline the iPad layout uses.
-                Rectangle().fill(hairlineColor).frame(width: 1)
+                // The seam the tongue centres on, and (#350) the drag handle that
+                // resizes the column. The Movie-tab transport is shrunk (TransportBar
+                // kT* consts) to fit the 340pt default rather than requiring more.
+                macInspectorDivider(windowWidth: winGeo.size.width)
                 inspectorSwitcher()
-                    .frame(width: 340)   // compact; the Movie-tab transport is shrunk (TransportBar kT* consts) to fit rather than widening the column
+                    .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
                     .overlay(alignment: .leading) {
                         // seam:true shifts the pill left by half its width so it is
                         // centred ON the hairline rather than sitting beside it.
