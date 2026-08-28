@@ -4,8 +4,9 @@ Covers the shadow-warning audit (RayMol#258): when a user's ~/.raymolrc binds a
 key that RayMol also uses as a menu shortcut, the user is told once rather than
 left wondering why the menu item stopped responding to its key.
 
-Only ⌃M and ⌃D can collide: every other RayMol menu shortcut carries ⌘, and the
-classifier passes ⌘ events straight through to the menus.
+Only the ⌃-letter shortcuts (⌃M/⌃E/⌃B/⌃D/⌃P) can collide: every other RayMol
+menu shortcut carries ⌘, and the classifier passes ⌘ events straight through to
+the menus.
 """
 
 import contextlib
@@ -76,6 +77,20 @@ class AuditShadowedTests(unittest.TestCase):
         fake = FakeCmd({"CTRL-M": "zoom", "CTRL-D": "turn x, 5"})
         lines = raymol_keys.audit_shadowed(has_design=True, _self=fake)
         self.assertEqual(len(lines), 2)
+
+    def test_warns_for_measure_boxselect_predict(self):
+        # The #360 additions: ⌃E (Measure) is new, ⌃B (Box Select) and ⌃P
+        # (Predict) were menu shortcuts the table had fallen behind on. None
+        # is design-gated, so has_design stays at its default here.
+        fake = FakeCmd({"CTRL-E": "ray", "CTRL-B": "zoom", "CTRL-P": "orient"})
+        lines = raymol_keys.audit_shadowed(_self=fake)
+        self.assertEqual(len(lines), 3)
+        joined = "\n".join(lines)
+        for token, label in (("CTRL-E", "Measure Distances"),
+                             ("CTRL-B", "Box Select"),
+                             ("CTRL-P", "Predict Mode")):
+            self.assertIn(token, joined)
+            self.assertIn(label, joined)
 
     def test_empty_binding_is_not_a_shadow(self):
         # cmd.set_key(key, '') is how a binding is CLEARED; it shadows nothing.

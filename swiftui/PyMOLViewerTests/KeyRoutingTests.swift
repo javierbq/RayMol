@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import RayMol
 
 /// Coverage for KeyRouting.token — the pure NSEvent-facts → PyMOL key-token
@@ -318,5 +319,52 @@ final class KeyRoutingTests: XCTestCase {
                        [6, 0, 1, 2, 3, 4, 5])
         XCTAssertTrue((0..<n).contains(SelectionModeMenu.nextMode(from: 42, forward: true)))
         XCTAssertTrue((0..<n).contains(SelectionModeMenu.nextMode(from: -3, forward: false)))
+    }
+}
+
+/// AppShortcuts (#360, #361) — the one table behind every registered shortcut
+/// and every hint the user sees. In the same file as KeyRoutingTests because the
+/// two contracts interlock: KeyRouting's pass-through rules are what make the
+/// table's ⌘/⌃ split safe.
+final class AppShortcutsTests: XCTestCase {
+
+    /// Two commands sharing a key equivalent would fight silently; the table
+    /// exists to make that impossible to miss.
+    func testNoDuplicateBindings() {
+        XCTAssertEqual(Set(AppShortcuts.all).count, AppShortcuts.all.count,
+                       "AppShortcuts.all contains a duplicate key equivalent")
+    }
+
+    /// The symbol hints tooltips show, in macOS glyph order (⌃⌥⇧⌘).
+    func testHintSymbols() {
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.moveTool), "⌃M")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.measureTool), "⌃E")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.designTool), "⌃D")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.predictTool), "⌃P")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘1")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘2")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘3")
+        XCTAssertEqual(
+            AppShortcuts.hint(KeyboardShortcut("k", modifiers: [.command, .shift, .option, .control])),
+            "⌃⌥⇧⌘K")
+    }
+
+    /// Every ⌃-letter shortcut must be mirrored in the Python launch audit
+    /// (modules/pymol/raymol_keys.py APP_SHORTCUTS), which warns when a
+    /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new ⌃
+    /// entry fails this test until the audit table learns it. ⌘ entries need no
+    /// mirror — KeyRouting passes ⌘ straight through to the menus.
+    func testControlShortcutsMatchPythonAuditTable() {
+        let ctrl = AppShortcuts.all.filter { $0.modifiers.contains(.control) }
+        XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
+                       ["m", "e", "d", "p", "b"])
+    }
+
+    /// The pane toggles are one plain-⌘ family (#361): immune to raymolrc
+    /// shadowing, and consistent with each other as the issue asks.
+    func testPaneTogglesAreCommandFamily() {
+        for s in [AppShortcuts.consolePane, AppShortcuts.sequencePane, AppShortcuts.sidePanel] {
+            XCTAssertEqual(s.modifiers, .command)
+        }
     }
 }
