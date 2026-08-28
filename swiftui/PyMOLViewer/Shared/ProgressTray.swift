@@ -167,11 +167,20 @@ struct ProgressItem: Identifiable, Equatable {
             parts.append("step \(step) of \(total)")
         }
         let elapsed = "\(ProgressCard.formatElapsed(job.elapsed)) elapsed"
-        // BOTH, unlike a prediction's card. A design is minutes long and its phase estimate
-        // covers only the current phase, so the elapsed clock is the number a user actually
-        // tracks -- dropping it in favour of a scoped countdown would hide the one honest
-        // measure of a seventeen-minute run.
-        if let remaining = job.remaining {
+        // BOTH, unlike a prediction's card. A design is minutes long, so the elapsed clock
+        // is the number a user actually tracks -- dropping it in favour of a countdown
+        // would hide the one honest measure of a seventeen-minute run.
+        //
+        // The WHOLE-DESIGN estimate when there is one, and UNSCOPED: a lone design is the
+        // whole run, so there is nothing on this row for "4 min left" to be confused with
+        // -- the same rule the weight-download card follows. The phase-scoped estimate is
+        // the fallback rather than a second line, because it is what this row said before
+        // a whole-run estimate existed and it covers the window (the first ten seconds,
+        // and any phase that is not the dominant one) where the run estimate refuses to
+        // guess. Never both: two countdowns in one line is a puzzle, not a report.
+        if let run = job.runRemaining {
+            parts.append(ProgressCard.formatRemaining(run))
+        } else if let remaining = job.remaining {
             parts.append(ProgressCard.formatPhaseRemaining(remaining))
         }
         parts.append(elapsed)
@@ -303,7 +312,18 @@ struct ProgressItem: Identifiable, Equatable {
         if let step = current.step, let steps = current.totalSteps, steps > 0 {
             parts.append("step \(step) of \(steps)")
         }
-        if let remaining = current.remaining {
+        // THE WHOLE BATCH, which is the question a batch row is asked: the design in
+        // flight plus every one still queued behind it, priced from the measured wall
+        // time of the ones that have already finished. Scoped by count, because this row
+        // is dense with per-design numbers and an unqualified countdown beside "design 3
+        // of 10 · step 100 of 199" would read as the current design's.
+        //
+        // The phase estimate is the fallback, not a companion: it is what this row said
+        // before, it covers the window where the run estimate refuses to guess, and there
+        // is no room on a two-line caption for both.
+        if let run = current.runRemaining {
+            parts.append(ProgressCard.formatRunRemaining(run, designs: total))
+        } else if let remaining = current.remaining {
             parts.append(ProgressCard.formatPhaseRemaining(remaining))
         }
         parts.append(elapsed)
@@ -451,6 +471,31 @@ struct ProgressCard: View {
     /// card must never word one estimate two different ways.
     static func formatPhaseRemaining(_ seconds: Double) -> String {
         "this phase: " + formatRemaining(seconds)
+    }
+
+    /// The whole-RUN estimate for a BATCH: "all 10: 41 min left".
+    ///
+    /// Scoped, and scoped by COUNT, because the row it sits on already carries a
+    /// per-design counter ("design 3 of 10") and a per-design step counter, and an
+    /// unqualified "41 min left" beside those reads as the current design's. Naming the
+    /// count is what says the number covers designs that have not started; it is the
+    /// same count the row has already said, two segments earlier.
+    ///
+    /// The terseness is MEASURED, not taste. The caption is `lineLimit(2)` in a 340 pt
+    /// card, and the wording this replaces was already over at the top of its range:
+    /// with `diffusion_steps` at its ceiling of 10,000 and every design below the
+    /// running one settled badly, "this phase: ..." needs THREE lines (626.7 pt against
+    /// a 632 pt budget, which word-wrap cannot pack). "all 10 designs:" needs three at
+    /// the DEFAULT 200 steps. "all 10:" needs two at both — 601.5 pt at the ceiling, 25
+    /// pt shorter than what ships today at every point on the range, so the row can only
+    /// get better. See `testEveryDetailLineFITSTheTwoItIsAllowed`.
+    ///
+    /// A LONE design gets the UNSCOPED `formatRemaining` instead — see
+    /// `ProgressItem.design`. There is nothing there for the number to be confused
+    /// with, and that row is where the weight card's rule applies: the estimate IS the
+    /// whole task, so "4 min left" means what it says.
+    static func formatRunRemaining(_ seconds: Double, designs: Int) -> String {
+        "all \(designs): " + formatRemaining(seconds)
     }
 
     /// Coarse for the same reason, and never counts down -- this one is measured.

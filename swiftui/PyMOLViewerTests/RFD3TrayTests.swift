@@ -32,12 +32,14 @@ final class RFD3TrayTests: XCTestCase {
                      step: Int? = 84, totalSteps: Int? = 199,
                      remaining: Double? = 300,
                      batch: String? = nil, batchIndex: Int? = nil,
-                     batchTotal: Int? = nil) -> PredictionJobState {
+                     batchTotal: Int? = nil,
+                     runRemaining: Double? = nil) -> PredictionJobState {
         PredictionJobState(id: id, state: state, phase: phase, fraction: fraction,
                            moving: moving, detail: "d", modelsDone: 0, modelsTotal: 1,
                            elapsed: elapsed, error: error, bundle: bundle,
                            step: step, totalSteps: totalSteps, remaining: remaining,
-                           batch: batch, batchIndex: batchIndex, batchTotal: batchTotal)
+                           batch: batch, batchIndex: batchIndex, batchTotal: batchTotal,
+                           runRemaining: runRemaining)
     }
 
     /// One member of a ten-design batch, at `index`, in whatever state.
@@ -46,12 +48,14 @@ final class RFD3TrayTests: XCTestCase {
                         error: String? = nil, bundle: String? = nil,
                         step: Int? = nil, totalSteps: Int? = nil,
                         remaining: Double? = nil, total: Int = 10,
-                        elapsed: Double = 512) -> PredictionJobState {
+                        elapsed: Double = 512,
+                        runRemaining: Double? = nil) -> PredictionJobState {
         job(id: String(format: "rfd3_design_%02d", index),
             state: state, phase: phase, fraction: fraction, moving: moving,
             elapsed: elapsed, error: error, bundle: bundle, step: step,
             totalSteps: totalSteps, remaining: remaining,
-            batch: "rfd3_batch_ab12cd34", batchIndex: index, batchTotal: total)
+            batch: "rfd3_batch_ab12cd34", batchIndex: index, batchTotal: total,
+            runRemaining: runRemaining)
     }
 
     // MARK: What the card says
@@ -901,6 +905,221 @@ final class RFD3TrayTests: XCTestCase {
         c.loadFormPayload(payload)
         XCTAssertEqual(c.generator, "")
         XCTAssertFalse(c.canRun)
+    }
+
+    // MARK: The whole-run estimate
+
+    func testALoneDesignsRowSaysHowLongTheWholeDesignHasLeft() {
+        // UNSCOPED, and that is the decision: a lone design IS the whole run, so there is
+        // nothing on this row for "4 min left" to be mistaken for. The weight-download
+        // card has always worded a whole-task estimate exactly this way.
+        let item = ProgressItem.design(job(runRemaining: 240))
+        XCTAssertEqual(item.detail,
+                       "Diffusion 42% · step 84 of 199 · 4 min left · 9 min elapsed")
+        // ...and the phase-scoped one it replaced is GONE, not sitting beside it. Two
+        // countdowns on one line is a puzzle, not a report.
+        XCTAssertFalse(item.detail.contains("this phase"), item.detail)
+    }
+
+    func testWithoutARunEstimateALoneDesignStillShowsThePhaseOne() {
+        // The estimator refuses to speak for the first ten seconds and outside the
+        // dominant phase. What the row said before this feature existed is the fallback,
+        // so that window is not a blank where there used to be a number.
+        let item = ProgressItem.design(job(runRemaining: nil))
+        XCTAssertEqual(item.detail,
+                       "Diffusion 42% · step 84 of 199 · this phase: 5 min left · "
+                       + "9 min elapsed")
+    }
+
+    func testTheBatchRowSaysHowLongTheWHOLEBatchHasLeft() {
+        // The question a batch row is asked. SCOPED BY COUNT, because this row is dense
+        // with per-design numbers -- "design 3 of 10", "step 100 of 199" -- and an
+        // unqualified countdown beside them reads as the current design's.
+        let row = ProgressItem.designBatch([
+            member(1, state: "failed", error: "x"),
+            member(2, state: "running", phase: "diffusion", fraction: 0.4, moving: true,
+                   step: 80, totalSteps: 199, remaining: 300, runRemaining: 2460),
+            member(3), member(4), member(5), member(6),
+            member(7), member(8), member(9), member(10)])
+        XCTAssertEqual(row.detail,
+                       "Diffusion 14% · design 2 of 10 · step 80 of 199 · "
+                       + "all 10: 41 min left · 9 min elapsed · 1 failed")
+        XCTAssertFalse(row.detail.contains("this phase"), row.detail)
+    }
+
+    func testWithoutARunEstimateTheBatchRowStillShowsThePhaseOne() {
+        let row = ProgressItem.designBatch([
+            member(1, state: "running", phase: "diffusion", fraction: 0.4, moving: true,
+                   step: 80, totalSteps: 199, remaining: 300)])
+        XCTAssertTrue(row.detail.contains("this phase: 5 min left"), row.detail)
+        XCTAssertFalse(row.detail.contains("all 10:"), row.detail)
+    }
+
+    func testTheEstimateIsReadOffTheDESIGNTheRowIsReporting() {
+        // Every member carries the same number, so which record is read cannot matter --
+        // but the one the row reports on is the frontier, and reading a settled member's
+        // stale copy instead would freeze the countdown on a failure.
+        let row = ProgressItem.designBatch([
+            member(1, state: "failed", error: "x", runRemaining: 9999),
+            member(2, state: "running", phase: "diffusion", fraction: 0.4, moving: true,
+                   remaining: 300, runRemaining: 2460)])
+        XCTAssertTrue(row.detail.contains("all 10: 41 min left"), row.detail)
+    }
+
+    func testAPredictionsRowCannotAcquireARunEstimate() {
+        // The tray is shared. `predicting.pending_info` publishes no `run_remaining`, so
+        // a prediction decodes nil and its row is byte-for-byte what it was -- asserted
+        // against the shipped wording rather than against a remembered string.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},
+         "pending_jobs":{"pred":{"state":"running","phase":"diffusion","fraction":0.19,
+          "moving":true,"detail":"d","models_done":3,"models_total":20,"elapsed":512,
+          "error":null,"step":141,"total_steps":200,"remaining":4}}}
+        """
+        let decoded = try! JSONDecoder().decode(PanelPayload.self,
+                                                from: Data(payload.utf8))
+        let job = decoded.pending_jobs!["pred"]!.withID("pred")
+        XCTAssertNil(job.runRemaining)
+        XCTAssertEqual(ProgressItem.prediction(job).detail,
+                       "Diffusion 19% · step 141 of 200 · model 4 of 20 · "
+                       + "this phase: almost done")
+    }
+
+    func testTheRunEstimateDecodesFromTheWireAndSurvivesWithID() {
+        // The cross-language break that is otherwise invisible: a CodingKey typo leaves
+        // every other test green and the countdown silently absent.
+        let payload = """
+        {"objects":[],"selections":[],"enabled":[],"sel_counts":{},
+         "design_jobs":{"d1":{"state":"running","phase":"diffusion","fraction":0.4,
+          "moving":true,"detail":"d","models_done":0,"models_total":1,"elapsed":512,
+          "error":null,"step":80,"total_steps":199,"remaining":300,
+          "batch":"rfd3_batch_ab12cd34","batch_index":2,"batch_total":10,
+          "run_remaining":2460.5}}}
+        """
+        let decoded = try! JSONDecoder().decode(PanelPayload.self,
+                                                from: Data(payload.utf8))
+        let job = decoded.design_jobs!["d1"]!.withID("d1")
+        XCTAssertEqual(job.runRemaining, 2460.5)
+        XCTAssertEqual(job.withID("other").runRemaining, 2460.5)
+    }
+
+
+    // MARK: The app's own payloads
+
+    /// Verbatim from a real three-design rfd3 batch in the built macOS app, captured
+    /// mid-run from `appkit_inspector._pending_maps('designing')`. Nothing here is
+    /// hand-written, which is the point: a CodingKey typo or a composition change that
+    /// leaves every synthetic fixture green fails here.
+    private func trayFromAppPayload(_ json: String) -> [ProgressItem] {
+        let payload = try! JSONDecoder().decode(
+            PanelPayload.self,
+            from: Data(("{\"objects\":[],\"selections\":[],\"enabled\":[],"
+                        + "\"sel_counts\":{}," + json.dropFirst()).utf8))
+        return ProgressItem.tray(
+            weights: nil, predictions: [],
+            designs: (payload.design_jobs ?? [:]).map { $0.value.withID($0.key) })
+    }
+
+    func testTheAppsOwnBatchPayloadsRenderTheWholeRunCountdown() {
+        // t = 30.0 s of a 185.8 s run: design 1 running, 2 and 3 queued and carrying the
+        // same estimate. The batch estimate is 155 s where the design's own PHASE
+        // countdown -- the number this row used to show -- is 32 s.
+        let early = trayFromAppPayload("""
+        {"design_jobs":{"rfd3_design_5ce7af6a":{"batch":"rfd3_batch_5ce7af6a","batch_index":1,"batch_total":3,"bundle":null,"detail":"d","elapsed":29.690158540965058,"error":null,"fraction":0.48060301507537684,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":32.25552118005561,"run_remaining":155.02326218464407,"state":"running","step":93,"total_steps":199},
+                        "rfd3_design_319a498a":{"batch":"rfd3_batch_5ce7af6a","batch_index":2,"batch_total":3,"bundle":null,"detail":"d","elapsed":29.685948416939937,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"run_remaining":155.02326218464407,"state":"queued","step":null,"total_steps":null},
+                        "rfd3_design_36c1c8f5":{"batch":"rfd3_batch_5ce7af6a","batch_index":3,"batch_total":3,"bundle":null,"detail":"d","elapsed":29.683171250042506,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"run_remaining":155.02326218464407,"state":"queued","step":null,"total_steps":null}}}
+        """)
+        XCTAssertEqual(early.count, 1, "three designs, one row")
+        XCTAssertEqual(early[0].detail,
+                       "Diffusion 16% · design 1 of 3 · step 93 of 199 · "
+                       + "all 3: 3 min left · 30 sec elapsed")
+
+        // t = 90.3 s: design 1 has been DELIVERED, so there are only TWO records for a
+        // three-design batch -- the state no synthetic fixture produced. The row still
+        // says "design 2 of 3", and its estimate now prices design 3 from design 1's
+        // MEASURED 62.7 s rather than from a projection.
+        let mid = trayFromAppPayload("""
+        {"design_jobs":{"rfd3_design_319a498a":{"batch":"rfd3_batch_5ce7af6a","batch_index":2,"batch_total":3,"bundle":null,"detail":"d","elapsed":89.98285858298186,"error":null,"fraction":0.4444221105527638,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":37.016030514719624,"run_remaining":98.01133859224383,"state":"running","step":85,"total_steps":199},
+                        "rfd3_design_36c1c8f5":{"batch":"rfd3_batch_5ce7af6a","batch_index":3,"batch_total":3,"bundle":null,"detail":"d","elapsed":89.9801889170194,"error":null,"fraction":null,"models_done":0,"models_total":1,"moving":false,"phase":"queued","remaining":null,"run_remaining":98.01133859224383,"state":"queued","step":null,"total_steps":null}}}
+        """)
+        XCTAssertEqual(mid.count, 1)
+        XCTAssertEqual(mid[0].detail,
+                       "Diffusion 48% · design 2 of 3 · step 85 of 199 · "
+                       + "all 3: 2 min left · 1 min elapsed")
+
+        // t = 150.5 s, one record left. The whole-run estimate (36.5 s) is now the last
+        // design's own remaining PLUS its tail, against a phase countdown of 35.4 s.
+        let late = trayFromAppPayload("""
+        {"design_jobs":{"rfd3_design_36c1c8f5":{"batch":"rfd3_batch_5ce7af6a","batch_index":3,"batch_total":3,"bundle":null,"detail":"d","elapsed":150.17960662499536,"error":null,"fraction":0.4308542713567839,"models_done":0,"models_total":1,"moving":true,"phase":"diffusion","remaining":35.38521561991685,"run_remaining":36.54946079732588,"state":"running","step":82,"total_steps":199}}}
+        """)
+        XCTAssertEqual(late.count, 1)
+        XCTAssertEqual(late[0].detail,
+                       "Diffusion 81% · design 3 of 3 · step 82 of 199 · "
+                       + "all 3: 37 sec left · 3 min elapsed")
+        for row in [early[0], mid[0], late[0]] {
+            XCTAssertEqual(row.buttonTitle, "Cancel")
+            XCTAssertFalse(row.detail.contains("this phase"), row.detail)
+        }
+    }
+
+    func testEveryDetailLineFITSTheTwoItIsAllowed() throws {
+        // The caption is `lineLimit(2)` in a 340 pt card, and this round ADDS to it. The
+        // title's own test measures the title; this measures the line the estimate
+        // actually lands on, through the same TextKit path SwiftUI lays it out with.
+        //
+        // Worst case is bounded and reachable: rfd3's MAX_DESIGNS is 10, the running
+        // design is the last of them, and every design below it settled badly (failed +
+        // cancelled cannot exceed index - 1).
+        let width: CGFloat = 340 - 24                 // card less .padding(.horizontal, 12)
+        let font = NSFont.preferredFont(forTextStyle: .caption2)
+        func lines(_ text: String) -> Int {
+            let storage = NSTextStorage(string: text, attributes: [.font: font])
+            let container = NSTextContainer(size: NSSize(width: width,
+                                                         height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            let manager = NSLayoutManager()
+            manager.addTextContainer(container)
+            storage.addLayoutManager(manager)
+            manager.ensureLayout(for: container)
+            var count = 0, index = 0
+            while index < manager.numberOfGlyphs {
+                var range = NSRange()
+                _ = manager.lineFragmentRect(forGlyphAt: index, effectiveRange: &range)
+                index = NSMaxRange(range)
+                count += 1
+            }
+            return count
+        }
+        // `diffusion_steps` is bounded by MAX_DIFFUSION_STEPS = 10_000
+        // (pymol/predictors/base.py), so the widest step counter is "step 9999 of 9999".
+        func worstBatch(steps: Int) -> [PredictionJobState] {
+            var members = (1...9).map {
+                member($0, state: $0 <= 5 ? "failed" : "cancelled",
+                       error: $0 <= 5 ? "x" : nil, elapsed: 9000)
+            }
+            members.append(member(10, state: "running", phase: "diffusion",
+                                  fraction: 0.99, moving: true, step: steps - 1,
+                                  totalSteps: steps - 1, remaining: 5000, elapsed: 9000,
+                                  runRemaining: 5000))
+            return members
+        }
+        let rows = [ProgressItem.design(job(elapsed: 4320, runRemaining: 5000)),
+                    ProgressItem.design(job(elapsed: 4320, runRemaining: nil)),
+                    ProgressItem.designBatch(worstBatch(steps: 200)),
+                    ProgressItem.designBatch(worstBatch(steps: 10_000))]
+        for row in rows {
+            XCTAssertLessThanOrEqual(lines(row.detail), 2,
+                                     "clipped at 2 lines: \(row.detail)")
+        }
+        // AND the wording can only ever have made the line shorter. The scoped phrase
+        // this replaces is longer at every point of the range, which is why the batch
+        // row now fits at the step ceiling where it did NOT before.
+        let batch = ProgressItem.designBatch(worstBatch(steps: 10_000))
+        let asItWas = batch.detail.replacingOccurrences(
+            of: ProgressCard.formatRunRemaining(5000, designs: 10),
+            with: ProgressCard.formatPhaseRemaining(5000))
+        XCTAssertNotEqual(asItWas, batch.detail, "pre-condition: the phrase is in there")
+        XCTAssertEqual(lines(asItWas), 3, "pre-condition: the old wording DID clip here")
     }
 }
 #endif
