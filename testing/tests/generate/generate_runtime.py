@@ -187,7 +187,7 @@ class RuntimeSeamTest(GeneratorTestCase):
         self.assertRaises(PredictorNotFound, registry.get, 'boltz2')
 
     def testNoGeneratorIdIsAPrefixOfAnother(self):
-        # The Tab-completion invariant: `design_backbone rf<Tab>` must never stop at a dead
+        # The Tab-completion invariant: `binder_design rf<Tab>` must never stop at a dead
         # end. The prediction registry learned this the hard way with boltz2/boltz2-bf16.
         from pymol.generators import registry
         ids = registry.available()
@@ -222,7 +222,7 @@ class RuntimeSeamTest(GeneratorTestCase):
         # validate_options ever runs, so the taxonomy's error never reaches the user.
         import inspect
         from pymol.generators import registry
-        parameters = set(inspect.signature(cmd.design_backbone).parameters)
+        parameters = set(inspect.signature(cmd.binder_design).parameters)
         for gid in registry.available():
             for knob in registry.get(gid).option_defaults:
                 self.assertIn(knob, parameters, '%s declares %r' % (gid, knob))

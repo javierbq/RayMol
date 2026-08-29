@@ -223,6 +223,64 @@ final class RFD3ResultWriterTests: XCTestCase {
         }
     }
 
+    func testAnIdentifierTooWideForItsColumnsIsRefusedRatherThanTruncated() throws {
+        // The identifier columns fail DIFFERENTLY from the coordinate ones, and worse.
+        // `%8.3f` overflows and pushes later fields right; `pad` keeps the SUFFIX, so the
+        // line stays perfectly well-formed and simply names a different residue. Residue
+        // 10000 is written as 0000; -1000 as 1000, changing sign as well as magnitude; a
+        // two-character mmCIF chain `AA` as `A`, merging it with whatever else that letter
+        // names.
+        //
+        // Nothing raises and nothing looks wrong. That makes this the exact silent
+        // wrong-answer this type exists to prevent -- two of its four listed failure modes
+        // are "the target's identity" and "the numbering the hotspot selection was written
+        // in", and truncating either IS those failures rather than a workaround for them.
+        for (chain, resi) in [("AA", "1"), ("ABC", "1"),
+                              ("A", "10000"), ("A", "-1000"), ("A", "123456"),
+                              // Two-character insertion code: column 27 holds one.
+                              ("A", "45AB")] {
+            XCTAssertNil(RFD3ResultWriter.atomRecord(
+                serial: 1, name: "N", resName: "ALA", chain: chain, resi: resi,
+                xyz: SIMD3(1, 2, 3)),
+                "chain \"\(chain)\" residue \"\(resi)\" does not fit and must be refused")
+            XCTAssertFalse(RFD3ResultWriter.isRepresentable(chain: chain, resi: resi))
+        }
+
+        // The widest that DO fit are still written -- an inclusive bound, like the
+        // coordinate one, so the check refuses only what the format genuinely cannot hold.
+        for (chain, resi) in [("A", "9999"), ("A", "-999"), ("A", "45A"), ("", "1")] {
+            XCTAssertTrue(RFD3ResultWriter.isRepresentable(chain: chain, resi: resi))
+            XCTAssertNotNil(RFD3ResultWriter.atomRecord(
+                serial: 1, name: "N", resName: "ALA", chain: chain, resi: resi,
+                xyz: SIMD3(1, 2, 3)))
+        }
+    }
+
+    func testEmitRefusesAnUnwritableIdentifierWithItsOwnErrorNotTheCoordinateOne() throws {
+        // Separate cases because they are FIXED differently: a coordinate out of range
+        // means "move the target nearer the origin", an identifier that does not fit means
+        // "renumber it, or pick a single-letter chain". Telling a user with a chain called
+        // `AA` to move their structure sends them nowhere.
+        let wideChain = [InferenceJob.DesignResidue(
+            chain: "AA", resi: "1", resn: "GLY",
+            atoms: [atom("N", 1, 0, 0), atom("CA", 2, 0, 0),
+                    atom("C", 3, 0, 0), atom("O", 3, 1, 0)])]
+        XCTAssertThrowsError(try RFD3ResultWriter.emit(
+            target: wideChain, designChain: "D",
+            designResidues: [[RFD3ResultWriter.Atom(name: "N", xyz: SIMD3(5, 0, 0)),
+                              RFD3ResultWriter.Atom(name: "CA", xyz: SIMD3(6, 0, 0)),
+                              RFD3ResultWriter.Atom(name: "C", xyz: SIMD3(7, 0, 0)),
+                              RFD3ResultWriter.Atom(name: "O", xyz: SIMD3(7, 1, 0))]],
+            designSequence: "G", remarks: [])) { error in
+            guard case RFD3ResultWriter.ComposeError.identifierNotRepresentable(
+                    let chain, let resi) = error else {
+                return XCTFail("expected identifierNotRepresentable, got \(error)")
+            }
+            XCTAssertEqual(chain, "AA")
+            XCTAssertEqual(resi, "1")
+        }
+    }
+
     func testTheExtremesThatDoFitAreStillWrittenAndStayInTheirColumns() throws {
         // The bounds are inclusive, and the point of stating them exactly is that the
         // widest values the format CAN hold are not thrown away with the ones it cannot.

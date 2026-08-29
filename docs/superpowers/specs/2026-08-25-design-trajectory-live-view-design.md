@@ -1,3 +1,21 @@
+> **SUPERSEDED (2026-08-28) — this describes an architecture that was not shipped.**
+>
+> This spec chose "states of a separate object": a `<design object>_traj` holding the
+> **designed chain only**, kept after the run so a cancelled trajectory survives. The
+> merged implementation does the opposite on both counts. There is no `_traj` object at
+> all — `designing.trajectory_seed` streams into the **result object itself**, target and
+> generated chain together — and `designing.discard_pending` **deletes** an unfinished
+> live object, because a half-diffused poly-ALA backbone under a name that says
+> `rfd3_design_<key>` is indistinguishable from a finished design in the object panel and
+> in any `.pse` saved afterwards.
+>
+> So the "mutate the result object in place" row in the table below is what shipped, and
+> the invariants argued against it were met another way: the placeholder is read into in
+> place rather than deleted and recreated, and `keep_frames=0` leaves a session
+> indistinguishable from `live_view=0`. Read this for the problem statement and the
+> alternatives considered; read `docs/generators.md` for how live view actually behaves.
+> The command is also now `binder_design` rather than `design_backbone`.
+
 # Live view of a design's diffusion trajectory
 
 **Date:** 2026-08-25

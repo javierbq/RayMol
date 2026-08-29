@@ -6,9 +6,11 @@ and returns a new backbone -- with a sequence, because RFdiffusion3 carries a se
 head, which is what makes a design usable on its own rather than only as input to an
 inverse-folding pass.
 
-**What comes back is a DESIGNED BACKBONE, and the word "binder" is not used for it
-anywhere.** Not a style preference: generation alone does not establish that the chain
-binds anything. Confirming that needs a refold of the pair and an interface gate, neither
+**What comes back is a DESIGNED BACKBONE, and nothing that names or describes it calls it
+a "binder"** -- object names, metric keys, metric labels, status lines. The TOOL is called
+Binder Design and its command is `binder_design`, which is a claim about what RFdiffusion3
+is FOR and is true; the split is between naming the method and naming a result. Not a
+style preference: generation alone does not establish that the chain binds anything. Confirming that needs a refold of the pair and an interface gate, neither
 of which exists in RayMol yet. A measured run from the port's own benchmarking makes the
 point concretely -- a design scoring min_ipSAE 0.70 had its chain docked 15.6 A from the
 reference pose. The scalar passed it; the pose is what failed.
@@ -77,6 +79,58 @@ MAX_DESIGN_LENGTH = 150
 #: benchmark discarded one of ten seeds as a runaway outlier, and picking among samples is
 #: the whole workflow this is a stage of.
 MAX_DESIGNS = 10
+
+#: Columns a PDB ATOM record gives each identifier: one for the chain id (column 22), four
+#: for the residue sequence number (23-26), one for the insertion code (27).
+PDB_CHAIN_WIDTH = 1
+PDB_RESI_WIDTH = 4
+
+
+def _split_resi(resi):
+    """`resi` as (numeric part, insertion code), neither of them clipped.
+
+    The twin of `RFD3ResultWriter.splitResi`, and a SECOND implementation rather than a
+    shared one because there is no Python->Swift call path: the choice is between checking
+    here and not checking here. Drift is bounded -- the Swift side refuses on its own
+    terms, so the worst a disagreement costs is a design that fails late instead of one
+    that is refused early, never a silent truncation.
+    """
+    digits, rest = '', ''
+    for character in str(resi):
+        if not rest and (character.isdigit() or (not digits and character == '-')):
+            digits += character
+        else:
+            rest += character
+    return (digits or '0'), rest
+
+
+def _require_pdb_representable(chain, resi):
+    """Refuse a target identifier the result could only come back from as something else.
+
+    The result and every live frame cross back from the runtime as PDB TEXT, and the PDB
+    is a fixed-column format whose writer keeps the SUFFIX of anything too long. So chain
+    `AA` returns as `A`, residue `10000` as `0000`, and `-1000` as `1000` -- a different
+    residue, and in the last case a different sign -- in an object the user is told holds
+    their target exactly as it was.
+
+    Refused HERE, before the weight download and before seventeen minutes of GPU, because
+    the whole value of catching it is catching it early. `RFD3ResultWriter` refuses again
+    on its own; this is the friendly half of the same rule, not the only half.
+    """
+    if len(str(chain)) > PDB_CHAIN_WIDTH:
+        raise PredictionInputError(
+            'chain %r cannot be written to the PDB\'s single chain-id column, so the'
+            ' target would be reloaded as chain %r -- a different chain, silently. The'
+            ' result crosses back as PDB text, which is why this is a limit at all.'
+            ' Rename the chain, or select one whose id is a single character.'
+            % (str(chain), str(chain)[:PDB_CHAIN_WIDTH]))
+    number, insertion = _split_resi(resi)
+    if len(number) > PDB_RESI_WIDTH or len(insertion) > 1:
+        raise PredictionInputError(
+            'residue number %r does not fit the PDB\'s four-column residue field (plus'
+            ' one for an insertion code), so the target would come back renumbered --'
+            ' and the numbering is what the hotspot selection was written in. Renumber'
+            ' the target with "alter ... resi=..." and design against that.' % (str(resi),))
 
 # NO FLOOR ON HOTSPOTS, deliberately -- see `designing._resolve_hotspots`. The featurizer
 # derives the sampler's ORIGIN from the hotspot centre of mass, offset 10 A along the
@@ -199,6 +253,7 @@ class RFD3Generator(Generator):
                 raise PredictionInputError(
                     'residue %s/%s is %s, which this method carries no atom template'
                     ' for' % (residue.chain, residue.resi, residue.resn))
+            _require_pdb_representable(residue.chain, residue.resi)
 
         # An EMPTY hotspot set reaches the engine unchanged: unguided placement is a
         # supported mode, and `designing` has already said so out loud. Only the indices

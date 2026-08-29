@@ -1,5 +1,5 @@
-"""Feed the macOS Design Backbone bar: the registered generators, and a target
-resolved exactly as `design_backbone` resolves it.
+"""Feed the macOS Binder Design bar: the registered generators, and a target
+resolved exactly as `binder_design` resolves it.
 
 The peer of `appkit_predict`, and deliberately the same mechanism: RayMol has no
 Python->Swift call path, so the bar cannot ask a function for these values. It
@@ -53,7 +53,7 @@ def _generators():
 def _target(target_str, hotspots_str, generator_id):
     """({'residues','chain','state','hotspots','length_max'} or None, error).
 
-    Resolved through `design_backbone`'s OWN resolver and the generator's own
+    Resolved through `binder_design`'s OWN resolver and the generator's own
     `parse_target`, so the bar reports exactly what would be designed against --
     including the residues excluded because the engine cannot read them.
 

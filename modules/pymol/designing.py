@@ -1,4 +1,4 @@
-"""Backbone design: cmd.design_backbone and friends.
+"""Backbone design: cmd.binder_design and friends.
 
 The sibling of `predicting.py`, and thin in the same way: argument marshalling and
 session interaction only. The registry lives in `pymol.generators`, and the weight cache,
@@ -95,7 +95,7 @@ _TRAJECTORY = {}
 #: batch id -> `{'names': [every object name in the batch, in submission order],
 #:               'total': how many designs the command asked for}`
 #:
-#: ONE `design_backbone` invocation with `n_designs > 1` is ONE batch, and the batch is
+#: ONE `binder_design` invocation with `n_designs > 1` is ONE batch, and the batch is
 #: what the user asked about when they said ten designs should not be ten queue entries.
 #: The id IS the group name the finished designs land in -- one string that is the group,
 #: the tray row's title, and the argument `design_cancel` / `design_dismiss` accept -- so
@@ -182,10 +182,14 @@ def default_object_name(design_key, generator_id=''):
     """The object name a design lands in when the caller does not pick one.
 
     Shaped `<generator>_design_<key>`, e.g. `rfd3_design_1f4c9e02`. Derived from the
-    DESIGN KEY rather than from the target alone, so two seeds against one target are
-    two objects automatically and re-running an identical design lands back in the same
-    one -- and so the name a user sees is a prefix of the identity a later refold is
-    matched against.
+    DESIGN KEY rather than from the target alone, so two seeds against one target are two
+    objects automatically -- and so the name a user sees is a prefix of the identity a
+    later refold is matched against.
+
+    An identical RE-RUN therefore proposes the name its first run already delivered to,
+    and `_free_object_name` moves it to `..._2`. It does NOT land back in the same object:
+    `deliver_result` loads, and loading into an object that already has atoms adds to them
+    rather than replacing them, so "same name" would mean one object holding two designs.
     """
     method = ''.join(ch for ch in str(generator_id) if ch.isalnum() or ch == '_')
     stem = 'design_%s' % str(design_key)[:OBJECT_NAME_DIGEST_CHARS]
@@ -250,17 +254,128 @@ def _free_group_name(name, _self=cmd):
     still using IS a collision -- sharing it would make one Cancel stop both.
     """
     base = _legal_object_name(name, _self=_self)
-    try:
-        groups = set(_self.get_names('public_group_objects') or [])
-        taken = set(_self.get_names('objects') or []) - groups
-    except Exception:
-        taken = set()
-    taken |= set(_PENDING) | set(_BATCH)
     candidate, suffix = base, 1
-    while candidate in taken:
+    while not _group_name_is_available(candidate, _self=_self):
         suffix += 1
         candidate = _legal_object_name('%s_%d' % (base, suffix), _self=_self)
     return candidate
+
+
+def _group_name_is_available(name, _self=cmd):
+    """True when a batch may put its designs in a group called `name`.
+
+    The GROUP rules, which are not the object rules (`_name_is_available`): an existing
+    group is fine, because adding to it is the whole point and is what makes an identical
+    re-run land where the first one did, while a molecule is not, because `cmd.group` on
+    one raises. A placeholder or a live batch id is taken either way.
+
+    Factored out of `_free_group_name` so `_require_free_output_name` can ask the same
+    question about a user-given `name=` before the run starts, rather than a second
+    encoding of the rule drifting away from this one.
+    """
+    name = _legal_object_name(name, _self=_self)
+    if name in _PENDING or name in _BATCH:
+        return False
+    try:
+        groups = set(_self.get_names('public_group_objects') or [])
+        return name not in (set(_self.get_names('objects') or []) - groups)
+    except Exception:
+        return False
+
+
+def _name_is_available(name, _self=cmd):
+    """True when a design may take `name` without destroying or corrupting anything.
+
+    A FREE name is available. So is an EMPTY PLACEHOLDER this module registered, and that
+    second case is not an oversight: the same design key is the same computation, so two
+    identical submissions SHOULD share one object, and `register_pending` keeps a LIST of
+    job ids per name precisely so they can.
+
+    Nothing else is, and the reasons are destructive rather than cosmetic:
+
+    * an object that already HAS ATOMS -- a delivered design, a live recording, or a
+      structure the user loaded -- is loaded on top of, because `cmd.load` into an
+      existing object adds atoms rather than replacing them. That is the doubling
+      `deliver_result` already guards against on the live path and not on the plain one;
+    * `trajectory_seed` DELETES an occupied name outright to start its recording clean,
+      and `cmd.delete` on a GROUP takes its members with it (see `_drop_empty_batch_group`
+      for the measurement). So `name=<a group>` on a live run destroys the group's
+      contents, and `name=<the target>` destroys the structure the design was generated
+      against -- seventeen minutes after the command returned, with nothing to recover;
+    * a name promised to a batch group is spoken for even before its object exists.
+    """
+    name = _legal_object_name(name, _self=_self)
+    if name in _BATCH:
+        return False
+    try:
+        if name not in set(_self.get_names('objects') or []):
+            return True
+        if name in set(_self.get_names('public_group_objects') or []):
+            return False
+        # A live recording's object is full of atoms that are NOT a design, so it fails
+        # the atom test below anyway -- but it is checked by name as well, because a
+        # recording that has not written its first frame yet is still not free.
+        if name in _TRAJECTORY or name not in _PENDING:
+            return False
+        return _self.count_atoms(name) == 0
+    except Exception:
+        # Anything unreadable is treated as taken. The failure this whole predicate exists
+        # to prevent is destructive; guessing "free" is the one answer that cannot be
+        # walked back.
+        return False
+
+
+def _free_object_name(name, _self=cmd):
+    """A DERIVED design name, moved aside if it is not available.
+
+    The sibling of `_free_group_name`. Nobody chose this spelling -- it is a digest of the
+    design key -- so a suffix costs nothing and is preferred to a refusal. A name the USER
+    gave is refused instead: see `_require_free_output_name`.
+    """
+    base = _legal_object_name(name, _self=_self)
+    candidate, suffix = base, 1
+    while not _name_is_available(candidate, _self=_self):
+        suffix += 1
+        candidate = _legal_object_name('%s_%d' % (base, suffix), _self=_self)
+    return candidate
+
+
+def _require_free_output_name(name, count, _self=cmd):
+    """Refuse a user-given `name=` that something else already answers to.
+
+    REFUSED, not moved aside, and that asymmetry with `_free_object_name` is the point:
+    the user typed this string in order to find the design under it afterwards, so
+    quietly delivering to `mine_2` is a design they will not look for. A derived name has
+    no such expectation attached.
+
+    Only the OBJECT names are checked here, which for `n_designs > 1` is the members
+    `name_01 .. name_NN` and not `name` itself. The group half needs no refusal: a group
+    is never delivered into or deleted, and `_free_group_name` already moves it aside
+    when a molecule holds the name -- non-destructively, and pinned by
+    `testAGroupNameAlreadyTakenByAMoleculeMovesAside`. It is the object a design LOADS
+    INTO that can lose data, so it is the object that has to be refused.
+
+    Availability is the same question a derived name asks (`_name_is_available`), so
+    re-running an identical `name=mine` while the first is still pending still shares its
+    placeholder rather than being refused.
+
+    Checked BEFORE the target is read and long before the weight fetch, because the whole
+    value of catching it is catching it early.
+    """
+    base = _legal_object_name(name, _self=_self)
+    wanted = [base] if count == 1 else [
+        _legal_object_name('%s_%02d' % (base, i + 1), _self=_self)
+        for i in range(count)]
+    clash = [candidate for candidate in wanted
+             if not _name_is_available(candidate, _self=_self)]
+    if not clash:
+        return base
+    raise PredictionInputError(
+        'name=%s is already taken: %s. A design delivers INTO the object it names --'
+        ' loading into one that already has atoms doubles them, and a live run deletes'
+        ' the name first, which for a group takes its members too. Pick a free name, or'
+        ' leave name= off and the design is named for its own key.'
+        % (name, ', '.join(clash)))
 
 
 def _join_batch_group(name, _self=cmd):
@@ -443,7 +558,8 @@ def resolve_target(target, hotspots, quiet=1, _self=cmd):
 
     _report_excluded(target, residues, state, _self=_self)
 
-    hotspot_indices = _resolve_hotspots(target, hotspots, residues, _self=_self)
+    hotspot_indices = _resolve_hotspots(target, hotspots, residues, objects[0],
+                                        _self=_self)
     if not int(quiet):
         colorprinting.parrot(
             ' design: target %s -- %d residues, chain %s, state %d, %s'
@@ -528,8 +644,13 @@ def _report_excluded(target, residues, state, _self=cmd):
         % (len(missing), shown, ', ...' if len(missing) > 6 else ''))
 
 
-def _resolve_hotspots(target, hotspots, residues, _self=cmd):
+def _resolve_hotspots(target, hotspots, residues, target_object, _self=cmd):
     """The hotspot selection, as indices into `residues`. May be EMPTY.
+
+    `target_object` is the ONE object the target selection resolved to
+    (`resolve_target` refuses more than one). It is carried here rather than re-derived
+    because a hotspot's identity is `(object, chain, resi)` and matching on
+    `(chain, resi)` alone is a silent wrong answer -- see the `model` check below.
 
     Every named hotspot must land inside the target. A hotspot outside it is not
     ignorable: hotspots set the sampler's origin, so dropping one silently aims the
@@ -582,13 +703,36 @@ def _resolve_hotspots(target, hotspots, residues, _self=cmd):
     for index, residue in enumerate(residues):
         index_of.setdefault((residue.chain, residue.resi), index)
 
+    # `model` IS PART OF THE IDENTITY. Without it a hotspot is just `(chain, resi)`, and
+    # two loaded objects can both have an A/45 -- so a residue picked in a DIFFERENT
+    # object matches the target's own A/45 in `index_of` and is conditioned on as though
+    # it were inside the target, instead of being caught by the outside-the-target refusal
+    # below. That is the exact "aimed somewhere other than where it was pointed" failure
+    # this function exists to prevent, and `hotspots=sele` -- what the bar sends, and what
+    # the viewport writes whatever object was clicked -- is the way into it.
     picked = set()
-    _self.iterate('(%s)' % text, 'picked.add((chain, resi))',
+    _self.iterate('(%s)' % text, 'picked.add((model, chain, resi))',
                   space={'picked': picked})
     if not picked:
         return ()
 
-    outside = sorted(pair for pair in picked if pair not in index_of)
+    # Refused with its own message rather than folded into the one below: "your hotspot is
+    # in the wrong object" and "your hotspot is outside the target selection" are different
+    # mistakes with different fixes, and telling a user to extend the target when they
+    # picked in the wrong object sends them the wrong way.
+    foreign = sorted(triple for triple in picked if triple[0] != target_object)
+    if foreign:
+        shown = ', '.join('%s//%s/%s' % triple for triple in foreign[:6])
+        raise PredictionInputError(
+            '%d hotspot residue(s) are in a different object from the target (%s): %s%s.'
+            ' A design is generated against ONE structure, so a hotspot picked in another'
+            ' one cannot be conditioned on -- and it would otherwise be matched to the'
+            ' target residue that happens to share its chain and number. Pick the'
+            ' hotspots in %s.'
+            % (len(foreign), target_object, shown,
+               ', ...' if len(foreign) > 6 else '', target_object))
+
+    outside = sorted(triple[1:] for triple in picked if triple[1:] not in index_of)
     if outside:
         shown = ', '.join('%s/%s' % pair for pair in outside[:6])
         raise PredictionInputError(
@@ -597,7 +741,7 @@ def _resolve_hotspots(target, hotspots, residues, _self=cmd):
             ' the design somewhere other than where it was pointed. Either extend the'
             ' target to include them or drop them from the hotspot selection.'
             % (len(outside), shown, ', ...' if len(outside) > 6 else ''))
-    return sorted(index_of[pair] for pair in picked)
+    return sorted(index_of[triple[1:]] for triple in picked)
 
 
 # -- Deferred submit: designs waiting on a weight download ---------------------
@@ -1956,7 +2100,7 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
         # The cost tracks the GENERATED CHAIN's length, not the object's size, which is
         # worth stating because the object is the obvious thing to measure and it is the
         # wrong variable. Measured holding the object at 900 atoms: 0.059 ms at 24
-        # residues, 0.200 ms at 60 -- `design_backbone`'s default `length`, so that is
+        # residues, 0.200 ms at 60 -- `binder_design`'s default `length`, so that is
         # the number to quote -- and 0.530 ms at 100. Going the other way, DOUBLING the
         # object at a fixed 60-residue chain (900 -> 1800 atoms) moves it 0.200 -> 0.214.
         # With the cartoon rebuild it dirties, 0.215 ms: 0.02% of one main thread at
@@ -2410,13 +2554,13 @@ def deliver_result(path, name, seed=None, _self=cmd):
 # -- The command surface -------------------------------------------------------
 
 
-def design_backbone(generator, target, hotspots='', length=60, name='', n_designs=1,
+def binder_design(generator, target, hotspots='', length=60, name='', n_designs=1,
                     diffusion_steps=200, recycling_steps=2, seed=None, live_view=None,
                     live_steps=None, keep_frames=0, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "design_backbone" generates a new protein backbone against a target structure,
+    "binder_design" generates a new protein backbone against a target structure,
     with a registered backbone generator. It returns a job handle; poll it with
     "design_status".
 
@@ -2431,7 +2575,7 @@ DESCRIPTION
 
 USAGE
 
-    design_backbone generator, target [, hotspots [, length [, name [, n_designs
+    binder_design generator, target [, hotspots [, length [, name [, n_designs
         [, diffusion_steps [, recycling_steps [, seed ]]]]]]]
 
 ARGUMENTS
@@ -2457,7 +2601,10 @@ ARGUMENTS
     length = int: residues in the generated chain {default: 60}
 
     name = str: object name for the result {default: <generator>_design_<key>}. With
-    n_designs > 1 an index is appended and this becomes the GROUP's name.
+    n_designs > 1 an index is appended and this becomes the GROUP's name. REFUSED if
+    anything already answers to it: a design delivers INTO the object it names, so an
+    occupied name would add atoms to a structure the design did not make -- and a live
+    run deletes the name first, which for a group takes its members with it.
 
     n_designs = int: how many independent designs to generate. Each is a FULL run --
     see NOTES. More than one, and they are ONE BATCH: they go into a group named
@@ -2510,14 +2657,14 @@ ARGUMENTS
 EXAMPLES
 
     fetch 1ao6
-    design_backbone rfd3, 1ao6 and chain A and resi 100-200, \\
+    binder_design rfd3, 1ao6 and chain A and resi 100-200, \\
         hotspots=1ao6 and chain A and resi 142+145+149
 
     # pick the hotspots in the viewer, then:
-    design_backbone rfd3, my_target, sele, length=75, n_designs=5
+    binder_design rfd3, my_target, sele, length=75, n_designs=5
 
     # no hotspots -- unguided placement, aimed at nothing in particular:
-    design_backbone rfd3, my_target, length=75
+    binder_design rfd3, my_target, length=75
 
 NOTES
 
@@ -2567,6 +2714,13 @@ SEE ALSO
     if int(length) < 1:
         raise PredictionOptionError(
             'length must be at least 1 residue, got %d' % int(length))
+
+    # BEFORE the target is read, before the download, before anything is submitted: a
+    # refused name must cost nothing, and an occupied one is destructive rather than
+    # merely untidy (see `_require_free_output_name`). Only a name the user GAVE is
+    # checked here; a derived one is disambiguated in the loop below.
+    if name:
+        _require_free_output_name(name, count, _self=_self)
 
     structure = resolve_target(target, hotspots, quiet=quiet, _self=_self)
 
@@ -2734,20 +2888,27 @@ SEE ALSO
             import random
             design_options = generator_obj.validate_options(
                 dict(requested, seed=random.randrange(RANDOM_SEED_BOUND)))
-        # Named per design, from that design's own key: two seeds are two objects, and an
-        # identical re-run lands back in the same one.
+        # Named per design, from that design's own key, so two seeds are two objects. See
+        # `default_object_name` for what an identical re-run does with that name.
         key = spec.design_key(design_options,
                               weights_version=_weight_version(generator_obj.id))
-        if name:
-            object_name = str(name) if count == 1 else '%s_%02d' % (name, index + 1)
-        else:
-            object_name = default_object_name(key, generator_obj.id)
         # Legalised HERE, once, rather than left for `create` to do silently: this string
         # becomes the placeholder's key, the name the runtime is handed and echoes back on
         # delivery, the object the metric run is filed against, and what the message below
         # tells the user to look for. Any of those differing from the object that actually
         # exists is a silent no-op somewhere downstream.
-        object_name = _legal_object_name(object_name, _self=_self)
+        #
+        # And CHECKED FOR A COLLISION, differently for the two kinds of name. A user's is
+        # taken verbatim -- `_require_free_output_name` cleared this exact spelling above,
+        # and silently delivering somewhere else is a design they will not find. A derived
+        # one is moved aside, because nobody asked for that spelling and landing on an
+        # occupied name is destructive.
+        if name:
+            object_name = _legal_object_name(
+                str(name) if count == 1 else '%s_%02d' % (name, index + 1), _self=_self)
+        else:
+            object_name = _free_object_name(
+                default_object_name(key, generator_obj.id), _self=_self)
         # DesignSpec is a __slots__ class, not a namedtuple: assign, don't _replace. A
         # copy per design, because each names its own object.
         # CONSTRUCTED with every field, not built bare and then patched. `DesignSpec` is
@@ -2820,7 +2981,7 @@ USAGE
 
 SEE ALSO
 
-    design_backbone
+    binder_design
     """
     # Polling design_status is what a script does while it waits, so it doubles as the
     # main-thread pump that submits jobs whose weights have arrived. The app also pumps
@@ -2876,7 +3037,7 @@ ARGUMENTS
 
 SEE ALSO
 
-    design_backbone, design_status
+    binder_design, design_status
     """
     # A pending OBJECT name cancels the design registered against it, exactly as
     # `predict_cancel` accepts one. That is not a convenience: the progress tray's
@@ -2948,7 +3109,7 @@ USAGE
 
 SEE ALSO
 
-    design_backbone, design_status
+    binder_design, design_status
     """
     job = _job(job_id)
     status = job.status()
@@ -2985,7 +3146,7 @@ USAGE
 
 SEE ALSO
 
-    design_backbone
+    binder_design
     """
     # The explicit name only: the list branches are already table keys.
     names = ([_legal_object_name(name, _self=_self)] if name
@@ -3027,7 +3188,7 @@ ARGUMENTS
 
 SEE ALSO
 
-    design_backbone, design_weights_cancel
+    binder_design, design_weights_cancel
     """
     cache = weight_cache()
     ids = [str(generator)] if generator else registry.available()

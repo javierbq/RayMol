@@ -295,9 +295,9 @@ struct PyMOLApp: App {
                 // a refold and an interface gate say otherwise. Menu and item share the
                 // name, exactly as Predict's do above.
                 CommandMenu("Binder Design") {
-                    Button(engine.designBackboneMode ? "Exit Binder Design"
+                    Button(engine.binderDesignMode ? "Exit Binder Design"
                                                      : "Binder Design…") {
-                        engine.setDesignBackboneMode(!engine.designBackboneMode)
+                        engine.setBinderDesignMode(!engine.binderDesignMode)
                     }
                     .disabled(isDesignLocked)
                     .keyboardShortcut("b", modifiers: .control)

@@ -227,7 +227,7 @@ def get_command_keywords(self_cmd=cmd):
         'predict_result' : [ self_cmd.predict_result  , 0 , 0 , ''  , parsing.STRICT ],
         'predict_weights': [ self_cmd.predict_weights , 0 , 0 , ''  , parsing.STRICT ],
         'predict_weights_cancel': [ self_cmd.predict_weights_cancel , 0 , 0 , ''  , parsing.STRICT ],
-        'design_backbone': [ self_cmd.design_backbone , 0 , 0 , ''  , parsing.STRICT ],
+        'binder_design': [ self_cmd.binder_design , 0 , 0 , ''  , parsing.STRICT ],
         'design_status'  : [ self_cmd.design_status   , 0 , 0 , ''  , parsing.STRICT ],
         'design_cancel'  : [ self_cmd.design_cancel   , 0 , 0 , ''  , parsing.STRICT ],
         'design_dismiss' : [ self_cmd.design_dismiss  , 0 , 0 , ''  , parsing.STRICT ],

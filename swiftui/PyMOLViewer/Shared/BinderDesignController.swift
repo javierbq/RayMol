@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Form state for the Binder Design bar (#342). The peer of ``PredictController``.
 ///
-/// Thin on purpose: it composes a `design_backbone` command and hands it to the engine.
+/// Thin on purpose: it composes a `binder_design` command and hands it to the engine.
 /// Every refusal, every ceiling and every message lives in `pymol.designing` and
 /// `pymol.generators`, where they are testable — a control here that second-guessed them
 /// would be a second copy of a rule, and the two would drift.
@@ -14,7 +14,7 @@ import SwiftUI
 /// ``loadFormPayload(_:)``. That round trip is what lets the bar say "40 residues, chain A,
 /// 3 hotspots" — or name the problem — BEFORE a run that takes minutes.
 @MainActor
-final class DesignBackboneController: ObservableObject {
+final class BinderDesignController: ObservableObject {
 
     // MARK: Form
 
@@ -52,11 +52,11 @@ final class DesignBackboneController: ObservableObject {
     /// unreasonable thing to be given. It does NOT by itself change what the finished
     /// object is -- that is `keepFrames`, which turns a one-state result into a ~51-state
     /// one.
-    @Published var liveView = UserDefaults.standard.bool(forKey: DesignBackboneController.liveViewKey) {
+    @Published var liveView = UserDefaults.standard.bool(forKey: BinderDesignController.liveViewKey) {
         didSet { UserDefaults.standard.set(liveView, forKey: Self.liveViewKey) }
     }
 
-    static let liveViewKey = "designBackboneLiveView"
+    static let liveViewKey = "binderDesignLiveView"
 
     /// Keep the live view's captured frames as states, instead of discarding them.
     ///
@@ -66,11 +66,11 @@ final class DesignBackboneController: ObservableObject {
     /// that keeps its tick is the ordinary macOS reading of "not applicable right now"
     /// rather than "reset". `run()` only emits the argument when Live is actually on, so
     /// a remembered tick can never compose the contradiction Python refuses.
-    @Published var keepFrames = UserDefaults.standard.bool(forKey: DesignBackboneController.keepFramesKey) {
+    @Published var keepFrames = UserDefaults.standard.bool(forKey: BinderDesignController.keepFramesKey) {
         didSet { UserDefaults.standard.set(keepFrames, forKey: Self.keepFramesKey) }
     }
 
-    static let keepFramesKey = "designBackboneKeepFrames"
+    static let keepFramesKey = "binderDesignKeepFrames"
 
     // MARK: Resolved state, from the Python round trip
 
@@ -143,18 +143,39 @@ final class DesignBackboneController: ObservableObject {
     /// requiring one here would refuse in the UI what Python accepts.
     var canRun: Bool {
         !generator.isEmpty && !targetText.isEmpty
-            && resolveError == nil && target != nil
+            && resolveError == nil && target != nil && seedIsValid
+    }
+
+    /// Whether the seed box holds something that can actually be run.
+    ///
+    /// EMPTY IS VALID and means auto — a fresh random seed per run, which is the default
+    /// and what the placeholder says. Anything else has to parse as a whole number.
+    ///
+    /// A non-empty seed that does not parse used to be dropped from the command line, so
+    /// typing `42x` started a RANDOM design. That is the one outcome the user demonstrably
+    /// did not want: a seed is typed for exactly one reason, to make the run reproducible,
+    /// and silently substituting an unreproducible one answers the opposite question.
+    /// Dropping it was chosen over passing it through so a typo could not fail Generate —
+    /// but the third option is better than either, and this is it: refuse in the FORM,
+    /// where the user is still looking at the box, and let nothing reach the command layer
+    /// to fail on.
+    var seedIsValid: Bool {
+        let text = seedText.trimmingCharacters(in: .whitespaces)
+        return text.isEmpty || Int(text) != nil
     }
 
     func run() {
         guard canRun else {
-            runError = resolveError ?? "Pick a target structure to design against."
+            runError = resolveError
+                ?? (seedIsValid ? "Pick a target structure to design against."
+                                : "The seed must be a whole number, or empty for a fresh"
+                                  + " random one each run.")
             return
         }
         runCommandSeam?(command)
     }
 
-    /// The `design_backbone` command line for the current form.
+    /// The `binder_design` command line for the current form.
     ///
     /// Pure and internal so the quoting is unit-testable without a view. Quoting matters:
     /// PyMOL's parser splits arguments on COMMAS, so a selection with spaces is one
@@ -163,8 +184,8 @@ final class DesignBackboneController: ObservableObject {
     /// this layer — and silently sending half a selection would design against the wrong
     /// structure.
     var command: String {
-        var parts = ["design_backbone \(generator)", Self.sanitise(targetText)]
-        // OMITTED rather than passed as an empty slot. `design_backbone rfd3, t, ,
+        var parts = ["binder_design \(generator)", Self.sanitise(targetText)]
+        // OMITTED rather than passed as an empty slot. `binder_design rfd3, t, ,
         // length=60` would put an empty positional between two commas, and PyMOL's
         // parser has no spelling for "skip this one" -- so an unguided run leaves the
         // argument out entirely and takes the Python default.
@@ -180,6 +201,9 @@ final class DesignBackboneController: ObservableObject {
             // refuses, and a remembered tick must not be able to compose one.
             if keepFrames { parts.append("keep_frames=1") }
         }
+        // Only a seed that PARSES is written, and `canRun`/`seedIsValid` is what stops an
+        // unparseable one from getting this far — so the omission here is now the empty
+        // (auto) case only, never a silent downgrade of a seed the user typed.
         if let seed = Int(seedText.trimmingCharacters(in: .whitespaces)) {
             parts.append("seed=\(seed)")
         }

@@ -15,13 +15,13 @@ final class RFD3TrayTests: XCTestCase {
         // default (false). Without this, testLiveViewAppearsInTheCommandWhenOn sets the
         // key to true and subsequent tests that create a fresh controller read true from
         // UserDefaults instead of the intended default.
-        UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
-        UserDefaults.standard.removeObject(forKey: DesignBackboneController.keepFramesKey)
+        UserDefaults.standard.removeObject(forKey: BinderDesignController.liveViewKey)
+        UserDefaults.standard.removeObject(forKey: BinderDesignController.keepFramesKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: DesignBackboneController.liveViewKey)
-        UserDefaults.standard.removeObject(forKey: DesignBackboneController.keepFramesKey)
+        UserDefaults.standard.removeObject(forKey: BinderDesignController.liveViewKey)
+        UserDefaults.standard.removeObject(forKey: BinderDesignController.keepFramesKey)
         super.tearDown()
     }
 
@@ -638,8 +638,8 @@ final class RFD3TrayTests: XCTestCase {
     // MARK: The bar's command
 
     @MainActor
-    private func controller() -> DesignBackboneController {
-        let c = DesignBackboneController()
+    private func controller() -> BinderDesignController {
+        let c = BinderDesignController()
         c.generator = "rfd3"
         c.targetText = "target"
         c.target = DesignTargetInfo(residues: 40, chain: "A", state: 1, hotspots: 3)
@@ -649,7 +649,7 @@ final class RFD3TrayTests: XCTestCase {
     @MainActor
     func testTheBarBuildsARunnableCommand() {
         XCTAssertEqual(controller().command,
-                       "design_backbone rfd3, target, sele, length=60")
+                       "binder_design rfd3, target, sele, length=60")
     }
 
     @MainActor
@@ -663,17 +663,46 @@ final class RFD3TrayTests: XCTestCase {
         c.seedText = "42"
         c.resultName = "mine"
         XCTAssertEqual(c.command,
-                       "design_backbone rfd3, target, sele, length=60, n_designs=5, "
+                       "binder_design rfd3, target, sele, length=60, n_designs=5, "
                        + "diffusion_steps=30, recycling_steps=3, seed=42, name=mine")
     }
 
     @MainActor
-    func testANonNumericSeedIsDroppedRatherThanPassedThrough() {
-        // Dropped keeps the command runnable and the default -- a fresh random seed --
-        // applies. Passing it through would make Generate fail on a typo.
+    func testANonNumericSeedBlocksGenerateRatherThanSilentlyRunningRandom() {
+        // A seed is typed for exactly ONE reason: to make the run reproducible. So the
+        // two obvious answers to `42x` are both wrong. Passing it through fails Generate
+        // on a typo; DROPPING it -- which is what this did -- starts a random,
+        // unreproducible design, silently answering the opposite of the question asked.
+        //
+        // Refused in the FORM instead, while the user is still looking at the box: the
+        // command line stays clean, nothing reaches Python to fail on, and Generate is
+        // disabled with the seed field outlined (see BinderDesignBar).
         let c = controller()
-        c.seedText = "abc"
+        c.seedText = "42x"
+        XCTAssertFalse(c.seedIsValid)
+        XCTAssertFalse(c.canRun, "Generate must be blocked, not silently randomised")
         XCTAssertFalse(c.command.contains("seed"))
+
+        // EMPTY is valid and still means auto -- that is the placeholder's promise and
+        // the default, so validation must not turn the common case into an error.
+        c.seedText = ""
+        XCTAssertTrue(c.seedIsValid)
+        c.seedText = "  7  "
+        XCTAssertTrue(c.seedIsValid, "surrounding whitespace is not a typo")
+        XCTAssertTrue(c.command.contains("seed=7"))
+    }
+
+    @MainActor
+    func testRunSaysWhyWhenTheSeedIsTheThingBlockingIt() {
+        // canRun is false for several reasons and the bar shows one message, so the
+        // message has to name the one that actually applies -- "pick a target" when the
+        // target is fine and the seed is not sends the user to the wrong field.
+        let c = controller()
+        c.seedText = "42x"
+        c.run()
+        XCTAssertEqual(c.runError,
+                       "The seed must be a whole number, or empty for a fresh random one"
+                       + " each run.")
     }
 
     @MainActor
@@ -684,8 +713,8 @@ final class RFD3TrayTests: XCTestCase {
         let c = controller()
         c.targetText = "1ao6 and chain A and resi 100-200"
         XCTAssertTrue(c.command.contains("1ao6 and chain A and resi 100-200"))
-        XCTAssertEqual(DesignBackboneController.sanitise("resi 45,48"), "resi 45 48")
-        XCTAssertEqual(DesignBackboneController.sanitise("  sele\n"), "sele")
+        XCTAssertEqual(BinderDesignController.sanitise("resi 45,48"), "resi 45 48")
+        XCTAssertEqual(BinderDesignController.sanitise("  sele\n"), "sele")
     }
 
     @MainActor
@@ -694,7 +723,7 @@ final class RFD3TrayTests: XCTestCase {
         // reading "3 res · 3 hotspots" against a 40-residue structure. Target is the thing
         // the interface is part of, so it is seeded from a loaded object; hotspots stay
         // `sele`, which is what the viewport writes.
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         XCTAssertEqual(c.targetText, "")
         XCTAssertEqual(c.hotspotsText, "sele")
         c.prepare(defaultTarget: "1ao6")
@@ -704,7 +733,7 @@ final class RFD3TrayTests: XCTestCase {
 
     @MainActor
     func testSeedingNeverClobbersATargetTheUserTyped() {
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.targetText = "chain A and resi 100-200"
         c.prepare(defaultTarget: "1ao6")
         XCTAssertEqual(c.targetText, "chain A and resi 100-200")
@@ -715,7 +744,7 @@ final class RFD3TrayTests: XCTestCase {
         // `canRun` gates on the RESOLVED target, not on the text being non-empty: the
         // fields are prefilled with "sele", so gating on text alone would offer Generate
         // before anything had been picked.
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.generator = "rfd3"
         c.targetText = "target"
         XCTAssertNil(c.target)
@@ -730,7 +759,7 @@ final class RFD3TrayTests: XCTestCase {
 
     @MainActor
     func testRunWithNothingResolvedReportsInTheBarRatherThanSilently() {
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.generator = "rfd3"
         var ran: [String] = []
         c.runCommandSeam = { ran.append($0) }
@@ -758,7 +787,7 @@ final class RFD3TrayTests: XCTestCase {
         """
         let payload = try JSONDecoder().decode(DesignFormPayload.self,
                                                from: Data(json.utf8))
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.targetText = "target"
         c.loadFormPayload(payload)
         XCTAssertEqual(c.generator, "rfd3", "the only generator is selected for you")
@@ -782,7 +811,7 @@ final class RFD3TrayTests: XCTestCase {
         let c = controller()
         c.liveView = true
         XCTAssertEqual(c.command,
-                       "design_backbone rfd3, target, sele, length=60, live_view=1")
+                       "binder_design rfd3, target, sele, length=60, live_view=1")
     }
 
     @MainActor
@@ -799,7 +828,7 @@ final class RFD3TrayTests: XCTestCase {
         c.liveView = true
         c.keepFrames = true
         XCTAssertEqual(c.command,
-                       "design_backbone rfd3, target, sele, length=60, live_view=1,"
+                       "binder_design rfd3, target, sele, length=60, live_view=1,"
                        + " keep_frames=1")
     }
 
@@ -823,21 +852,21 @@ final class RFD3TrayTests: XCTestCase {
 
     @MainActor
     func testAnEmptyHotspotFieldOmitsTheArgumentEntirely() {
-        // NOT `design_backbone rfd3, target, , length=60`. PyMOL's parser splits on
+        // NOT `binder_design rfd3, target, , length=60`. PyMOL's parser splits on
         // commas and has no spelling for "skip this positional", so an empty slot would
         // be passed as the empty string in the LENGTH position on any future reordering
         // -- and reading it back from the console history, a human sees a typo. Leaving
         // the argument out takes the Python default, which is "unguided".
         let c = controller()
         c.hotspotsText = ""
-        XCTAssertEqual(c.command, "design_backbone rfd3, target, length=60")
+        XCTAssertEqual(c.command, "binder_design rfd3, target, length=60")
     }
 
     @MainActor
     func testAWhitespaceOnlyHotspotFieldIsTheSameAsEmpty() {
         let c = controller()
         c.hotspotsText = "   "
-        XCTAssertEqual(c.command, "design_backbone rfd3, target, length=60")
+        XCTAssertEqual(c.command, "binder_design rfd3, target, length=60")
     }
 
     @MainActor
@@ -852,10 +881,10 @@ final class RFD3TrayTests: XCTestCase {
 
     func testATypedNumberInRangeIsTakenAsItIs() {
         XCTAssertEqual(
-            DesignBackboneController.committed("120", into: 1...150, fallback: 60), 120)
+            BinderDesignController.committed("120", into: 1...150, fallback: 60), 120)
         // Surrounding whitespace is not a typo worth punishing.
         XCTAssertEqual(
-            DesignBackboneController.committed("  75 ", into: 1...150, fallback: 60), 75)
+            BinderDesignController.committed("  75 ", into: 1...150, fallback: 60), 75)
     }
 
     func testATypedNumberOutOfRangeIsClampedNotRefused() {
@@ -863,11 +892,11 @@ final class RFD3TrayTests: XCTestCase {
         // to compose a command the bar could not otherwise compose. The caller writes the
         // clamped value back into the field, so the snap is visible.
         XCTAssertEqual(
-            DesignBackboneController.committed("999", into: 1...150, fallback: 60), 150)
+            BinderDesignController.committed("999", into: 1...150, fallback: 60), 150)
         XCTAssertEqual(
-            DesignBackboneController.committed("0", into: 1...150, fallback: 60), 1)
+            BinderDesignController.committed("0", into: 1...150, fallback: 60), 1)
         XCTAssertEqual(
-            DesignBackboneController.committed("-4", into: 1...10, fallback: 1), 1)
+            BinderDesignController.committed("-4", into: 1...10, fallback: 1), 1)
     }
 
     func testUnparseableTextRevertsRatherThanSubstitutingABound() {
@@ -875,7 +904,7 @@ final class RFD3TrayTests: XCTestCase {
         // setting the user never touched. Reverting is the only non-destructive answer.
         for text in ["", "   ", "abc", "4.5", "42x", "1e3", "٤٢"] {
             XCTAssertEqual(
-                DesignBackboneController.committed(text, into: 1...150, fallback: 60), 60,
+                BinderDesignController.committed(text, into: 1...150, fallback: 60), 60,
                 "\(text.debugDescription) must leave the value alone")
         }
     }
@@ -888,7 +917,7 @@ final class RFD3TrayTests: XCTestCase {
         """
         let payload = try JSONDecoder().decode(DesignFormPayload.self,
                                                from: Data(json.utf8))
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.loadFormPayload(payload)
         XCTAssertEqual(c.resolveError, "the hotspot selection 'sele' selects no atoms")
         XCTAssertFalse(c.canRun)
@@ -901,7 +930,7 @@ final class RFD3TrayTests: XCTestCase {
         let payload = try JSONDecoder().decode(
             DesignFormPayload.self,
             from: Data("{\"generators\":[],\"target\":null,\"error\":null}".utf8))
-        let c = DesignBackboneController()
+        let c = BinderDesignController()
         c.loadFormPayload(payload)
         XCTAssertEqual(c.generator, "")
         XCTAssertFalse(c.canRun)

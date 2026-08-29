@@ -27,7 +27,7 @@ from pymol.predictors import host  # noqa: E402
 def settle(bundle_id='stubgen', timeout=10.0):
     """Wait out the background weight fetch, then run the main-thread pump.
 
-    `design_backbone` never downloads inline (#284): a cold cache starts a worker thread
+    `binder_design` never downloads inline (#284): a cold cache starts a worker thread
     and the job is submitted later, by pump(), on the main thread. Tests do explicitly what
     the app's panel poll does for them.
 

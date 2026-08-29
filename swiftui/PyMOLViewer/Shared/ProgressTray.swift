@@ -156,9 +156,13 @@ struct ProgressItem: Identifiable, Equatable {
     /// design per object, so there is no "model k of N", and it takes MINUTES rather than
     /// seconds, which makes the elapsed clock the useful half rather than the fallback.
     ///
-    /// The word "binder" appears nowhere. A generated chain is a designed backbone until it
-    /// has been refolded and passed an interface gate, and this card is seen long before
-    /// either.
+    /// No string this card RENDERS calls the result a binder. The tool is called Binder
+    /// Design and the command is `binder_design` — naming the method is a claim about what
+    /// RFdiffusion3 is for, not about any chain it produced — but a generated chain is a
+    /// designed backbone until it has been refolded and passed an interface gate, and this
+    /// card is seen long before either. So the row reads "Designing <object>", never
+    /// "Binder <object>". `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder`
+    /// scans this file for exactly that.
     static func design(_ job: PredictionJobState) -> ProgressItem {
         var parts: [String] = []
         // Diffusion step k of N. On a real target each step is seconds, so this is the
@@ -225,7 +229,7 @@ struct ProgressItem: Identifiable, Equatable {
             bundle: job.bundle)
     }
 
-    /// One `design_backbone n_designs=N` invocation, as ONE row.
+    /// One `binder_design n_designs=N` invocation, as ONE row.
     ///
     /// N designs from one command are not N jobs a user can act on independently: the
     /// runtime runs them on a SERIAL queue, so exactly one is ever running and the rest

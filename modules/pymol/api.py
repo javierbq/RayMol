@@ -45,7 +45,7 @@ from .predicting import \
 # sequence to fold and nothing to put in a PredictionSpec. See docs/generators.md.
 from . import designing
 from .designing import \
-      design_backbone,      \
+      binder_design,      \
       design_status,        \
       design_cancel,        \
       design_result,        \

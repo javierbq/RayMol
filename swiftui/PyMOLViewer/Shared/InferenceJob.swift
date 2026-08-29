@@ -5,7 +5,7 @@ import Foundation
 /// and the file-based plumbing that carries a job from a marker to a settled status.
 ///
 /// RayMol has no Python→Swift call path: `PyMOLBridge.h` is one-directional and no Swift
-/// function carries a C symbol. So `cmd.predict` — and `cmd.design_backbone`, which shares
+/// function carries a C symbol. So `cmd.predict` — and `cmd.binder_design`, which shares
 /// the marker — writes a request JSON and prints a `PREDICT:` marker, which
 /// `PyMOLEngine.pollFeedback()` already scans on a 100 ms timer, exactly how `OBJPANEL:`
 /// and `SETTINGS:ready` work. Payloads travel as tempfiles because the feedback line caps

@@ -1,5 +1,21 @@
 # Live Design-Trajectory View Implementation Plan
 
+> **SUPERSEDED (2026-08-28) — do not execute this plan.**
+>
+> It implements the separate-trajectory architecture from its spec, which was abandoned
+> during the work: every task below that builds, names, tests or documents a
+> `"\(resultObjectName)_traj"` object describes something that does not exist. The merged
+> implementation streams frames into the **result object itself** and deletes an
+> unfinished recording rather than keeping it, so the plan's commands, expected results
+> and lifecycle guidance do not match the tree. Two other constraints have also moved on:
+> the command is now `binder_design`, not `design_backbone`, and the no-"binder" rule is a
+> split rather than a ban — the TOOL is called Binder Design, only its OUTPUT may never be
+> called a binder.
+>
+> Kept as the record of what was planned and in what order. For current behaviour see
+> `docs/generators.md`; for the design discussion see the spec, which carries its own
+> superseded note.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a user watch an RFD3 design diffuse — the designed chain resolving out of noise beside its fixed target — and keep the recording as a scrubbable multi-state object.

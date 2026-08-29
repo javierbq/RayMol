@@ -1,4 +1,4 @@
-"""End-to-end flow through cmd.design_backbone with a stub generator. No Swift, no network.
+"""End-to-end flow through cmd.binder_design with a stub generator. No Swift, no network.
 
     pymol -ckqy testing/testing.py --run testing/tests/generate/generate_api.py
 """
@@ -16,7 +16,7 @@ from generate_harness import (FakeResponse, GeneratorTestCase,  # noqa: E402
                              deliver, install_stub, make_zip, settle)
 
 
-class DesignBackboneTest(GeneratorTestCase):
+class BinderDesignTest(GeneratorTestCase):
 
     def setUp(self):
         GeneratorTestCase.setUp(self)
@@ -33,7 +33,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testADesignLandsAsOneObjectHoldingTargetAndDesignedChain(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5+8+11', length=12)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5+8+11', length=12)
             settle()
         deliver(job)
         name = job.spec.name
@@ -52,7 +52,7 @@ class DesignBackboneTest(GeneratorTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             with redirect_stdout(_io.StringIO()) as buf:
-                job = cmd.design_backbone('stubgen', 'tgt', length=8)
+                job = cmd.binder_design('stubgen', 'tgt', length=8)
             settle()
         deliver(job)
         self.assertEqual(job.spec.target.hotspots, ())
@@ -72,7 +72,7 @@ class DesignBackboneTest(GeneratorTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             with redirect_stdout(_io.StringIO()) as buf:
-                job = cmd.design_backbone('stubgen', 'tgt', 'sele', length=8)
+                job = cmd.binder_design('stubgen', 'tgt', 'sele', length=8)
             settle()
         deliver(job)
         self.assertEqual(job.spec.target.hotspots, ())
@@ -88,7 +88,7 @@ class DesignBackboneTest(GeneratorTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
             with redirect_stdout(_io.StringIO()) as buf:
-                job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=8)
+                job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8)
             settle()
         deliver(job)
         self.assertNotIn('UNGUIDED', buf.getvalue())
@@ -97,10 +97,10 @@ class DesignBackboneTest(GeneratorTestCase):
         # Unguided is a DIFFERENT design from a guided one, so it must not key the same.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            guided = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=8,
+            guided = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=8,
                                          seed=1)
             settle()
-            free = cmd.design_backbone('stubgen', 'tgt', length=8, seed=1)
+            free = cmd.binder_design('stubgen', 'tgt', length=8, seed=1)
             settle()
         self.assertNotEqual(guided.spec.design_key(guided.options),
                             free.spec.design_key(free.options))
@@ -110,7 +110,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # the source atom for atom. Asserted as a real distance rather than a chain count.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         deliver(job)
         name = job.spec.name
@@ -124,7 +124,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testTheObjectNameIsDerivedFromTheDesignKey(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=3)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=3)
             settle()
         from pymol.designing import default_object_name
         key = job.spec.design_key(job.options, weights_version='stubgen v1')
@@ -137,7 +137,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # state with nothing saying which sequence each described.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=3, seed=1)
             settle()
         deliver(jobs)
@@ -151,12 +151,12 @@ class DesignBackboneTest(GeneratorTestCase):
     def testAnIdenticalRerunLandsInTheSameObject(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            first = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            first = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                         seed=42)
             settle()
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not re-download')):
-            second = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            second = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                          seed=42)
             settle()
         self.assertEqual(first.spec.name, second.spec.name)
@@ -164,13 +164,13 @@ class DesignBackboneTest(GeneratorTestCase):
     def testAnExplicitNameIsHonouredAndIndexedForSeveral(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                       name='mine')
             settle()
         self.assertEqual(job.spec.name, 'mine')
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not re-download')):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        name='several', n_designs=2)
             settle()
         self.assertEqual([job.spec.name for job in jobs], ['several_01', 'several_02'])
@@ -181,7 +181,7 @@ class DesignBackboneTest(GeneratorTestCase):
         """Submit `count` designs in one command and return the job handles."""
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=count, **kwargs)
             settle()
         return jobs
@@ -205,7 +205,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def real(job):
         """The submitted job behind a deferred handle -- what a test pokes at.
 
-        `design_backbone` returns a `_DeferredDesignJob` whenever the weights were not
+        `binder_design` returns a `_DeferredDesignJob` whenever the weights were not
         already cached, and the stub it wraps is what records a cancel and what reports a
         status. Same unwrapping the harness's `deliver` does.
         """
@@ -243,7 +243,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # A group of one is noise. n_designs=1 must be untouched by any of this.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         deliver(job)
         self.assertEqual(self.groups(), [])
@@ -419,7 +419,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testAnExplicitNameBecomesTheGroupAndTheIndexedObjectsItsMembers(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        name='several', n_designs=2)
             settle()
         deliver(jobs)
@@ -434,7 +434,7 @@ class DesignBackboneTest(GeneratorTestCase):
         cmd.fab('AAAA', 'several', ss=1)
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        name='several', n_designs=2)
             settle()
         deliver(jobs)
@@ -443,6 +443,73 @@ class DesignBackboneTest(GeneratorTestCase):
                          ['several_01', 'several_02'])
         # And the object that was in the way is untouched.
         self.assertEqual(cmd.count_atoms('several'), 40)
+
+    def testAnExplicitNameThatSomethingElseAnswersToIsRefused(self):
+        # THE DESTRUCTIVE ONE. A design does not land BESIDE the object it names, it
+        # lands IN it: `register_pending` adopts an existing object rather than creating
+        # one, `deliver_result` loads into it -- and `cmd.load` into a non-empty object
+        # ADDS atoms rather than replacing them -- while a live run calls `cmd.delete` on
+        # the name first to start its recording clean. So `name=<the target>` on a live
+        # run deletes the structure the design was generated against, seventeen minutes
+        # after the command returned.
+        #
+        # Refused rather than moved aside, and refused BEFORE the weight fetch: the user
+        # typed this string in order to find the design under it, so quietly delivering
+        # to `tgt_2` is a design they will not look for.
+        from pymol.predictors.errors import PredictionInputError
+        before = cmd.count_atoms('tgt')
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not fetch: refuse before the fetch')):
+            with self.assertRaises(PredictionInputError) as caught:
+                cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                  name='tgt')
+        self.assertIn('already taken', str(caught.exception))
+        # Untouched, and still not pending -- a refusal leaves no bookkeeping behind.
+        self.assertEqual(cmd.count_atoms('tgt'), before)
+        from pymol import designing
+        self.assertNotIn('tgt', designing._PENDING)
+
+    def testAnExplicitNameIsAlsoRefusedForEveryMemberOfABatch(self):
+        # `n_designs=2, name=X` delivers into `X_01` and `X_02`, so those are the names
+        # that have to be free -- checking `X` alone would miss it. `X` itself is only
+        # the GROUP, which is never loaded into and is moved aside non-destructively by
+        # `_free_group_name` (see testAGroupNameAlreadyTakenByAMoleculeMovesAside).
+        from pymol.predictors.errors import PredictionInputError
+        cmd.fab('AAAA', 'several_02', ss=1)
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not fetch: refuse before the fetch')):
+            with self.assertRaises(PredictionInputError) as caught:
+                cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                  name='several', n_designs=2)
+        self.assertIn('several_02', str(caught.exception))
+
+    def testADerivedNameMovesAsideRatherThanLoadingOnTopOfAFinishedDesign(self):
+        # The other half of the rule. Nobody chose `stubgen_design_<key>` -- it is a
+        # digest -- so a suffix costs nothing and is better than a refusal for a name the
+        # user never typed. What it must NOT do is deliver into the finished design that
+        # already holds that name: `cmd.load` would double every atom, leaving one object
+        # holding two copies of a design and nothing saying so.
+        #
+        # This is the case `testAnIdenticalRerunLandsInTheSameObject` does NOT cover: there
+        # the first run is still pending, so its placeholder is empty and sharing it is
+        # right. Here the first run has DELIVERED.
+        with patch('pymol.predictors.weights._urlopen',
+                   return_value=FakeResponse(self.data)):
+            first = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                      seed=42)
+            settle()
+        deliver(first)
+        atoms = cmd.count_atoms(first.spec.name)
+        self.assertGreater(atoms, 0)
+        with patch('pymol.predictors.weights._urlopen',
+                   side_effect=AssertionError('must not re-download')):
+            second = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                                       seed=42)
+            settle()
+        self.assertEqual(second.spec.name, first.spec.name + '_2')
+        deliver(second)
+        # The first design is exactly as it was -- not doubled.
+        self.assertEqual(cmd.count_atoms(first.spec.name), atoms)
 
     def testEveryDesignOfABatchPublishesTheSameBatchIdentity(self):
         # What the tray groups by. Published on the PANEL wire, in the record
@@ -468,7 +535,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # keys are absent unless a batch put them there.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         from pymol import designing
         info = designing.pending_info(job.spec.name)
@@ -586,7 +653,7 @@ class DesignBackboneTest(GeneratorTestCase):
         batched = self._batch(2, seed=7)
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not re-download')):
-            lone = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            lone = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        seed=7)
             settle()
         version = 'stubgen v1'
@@ -620,7 +687,7 @@ class DesignBackboneTest(GeneratorTestCase):
 
     def testLiveViewRidesFromTheCommandOntoEveryDesignsSpec(self):
         # NOTHING else in the suite joins the command parameter to the spec field: with
-        # the one line in design_backbone that carries it deleted, 82 of 82 tests still
+        # the one line in binder_design that carries it deleted, 82 of 82 tests still
         # passed. This is also the only place the Python KWARG NAME is pinned -- it is
         # what a user types, and renaming it broke nothing.
         #
@@ -628,7 +695,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # field that is not carried explicitly silently defaults to off for every design.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=2, live_view=1)
             settle()
         self.assertEqual(len(jobs), 2)
@@ -640,7 +707,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # tests the flag with `== true`, and the wire carries whatever this holds.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         self.assertIs(job.spec.live_view, False)
 
@@ -649,7 +716,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def _design(self, **kwargs):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                       **kwargs)
             settle()
         return job if not isinstance(job, list) else job[0]
@@ -672,7 +739,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # other than a log line, which is all that used to distinguish the two paths.
         from pymol.predictors.errors import PredictionOptionError
         with self.assertRaises(PredictionOptionError) as caught:
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                 live_view=0, live_steps=12)
         message = str(caught.exception)
         self.assertIn('live_steps=12', message)
@@ -691,7 +758,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # not carried explicitly silently reverts for every design after the first.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=2, live_steps=9)
             settle()
         self.assertEqual(len(jobs), 2)
@@ -707,7 +774,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol.predictors.errors import PredictionOptionError
         for bad in (0, -3, 200, 10000):
             with self.assertRaises(PredictionOptionError) as caught:
-                cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                     diffusion_steps=200, live_steps=bad)
             message = str(caught.exception)
             self.assertIn('live_steps must be between 1 and 199', message)
@@ -721,14 +788,14 @@ class DesignBackboneTest(GeneratorTestCase):
         job = self._design(diffusion_steps=20, live_steps=19)
         self.assertEqual(job.spec.live_interval, designing.capture_interval(19, 19))
         with self.assertRaises(PredictionOptionError) as caught:
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                 diffusion_steps=20, live_steps=20)
         self.assertIn('between 1 and 19', str(caught.exception))
 
     def testAMalformedStateCountIsRefusedWithTheSameGuidance(self):
         from pymol.predictors.errors import PredictionOptionError
         with self.assertRaises(PredictionOptionError) as caught:
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                 live_steps='lots')
         self.assertIn('live_steps must be a whole number', str(caught.exception))
 
@@ -793,7 +860,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testKeepingFramesWithTheLiveViewOffIsRefused(self):
         from pymol.predictors.errors import PredictionOptionError
         with self.assertRaises(PredictionOptionError) as caught:
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                 live_view=0, keep_frames=1)
         message = str(caught.exception)
         self.assertIn('keep_frames=1', message)
@@ -803,7 +870,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testEveryDesignOfARunCarriesTheKeepFlag(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=2, keep_frames=1)
             settle()
         self.assertEqual(len(jobs), 2)
@@ -897,7 +964,7 @@ class DesignBackboneTest(GeneratorTestCase):
             designing.colorprinting.parrot = lambda text: said.append(text)
             try:
                 with self.assertRaises(PredictionOptionError) as caught:
-                    cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+                    cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                         diffusion_steps=steps, live_steps=1, quiet=0)
             finally:
                 designing.colorprinting.parrot = original
@@ -1073,7 +1140,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # zero-atom object, so the design appears in the object panel immediately.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             self.assertIn(job.spec.name, designing.pending_objects())
             self.assertEqual(cmd.count_atoms(job.spec.name), 0)
             settle()
@@ -1088,19 +1155,19 @@ class DesignBackboneTest(GeneratorTestCase):
     def testWeightsAreFetchedLazilyAndOnlyOnce(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)) as opener:
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
             self.assertEqual(opener.call_count, 1)
         with patch('pymol.predictors.weights._urlopen',
                    side_effect=AssertionError('must not re-download')):
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=99)
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6, seed=99)
             settle()
 
     def testAPendingPlaceholderIsKeptOutOfASavedSession(self):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             # Mid-flight: the placeholder exists and is empty, and a .pse carrying it
             # would hold an object that can never fill -- the job is gone on reload.
             session = {'names': [[job.spec.name, 1], ['tgt', 1]]}
@@ -1118,7 +1185,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testCancelReachesTheJobHandle(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         cmd.design_cancel(job.job_id)
         # The handle the command returned is the DEFERRED wrapper -- its job id is its own,
@@ -1137,7 +1204,7 @@ class DesignBackboneTest(GeneratorTestCase):
         """
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         real = getattr(job, '_real', None) or job
         self.assertFalse(real.cancelled)
@@ -1151,7 +1218,7 @@ class DesignBackboneTest(GeneratorTestCase):
         # and job ids never collide with object names.
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         real = getattr(job, '_real', None) or job
         cmd.design_cancel(job.job_id)
@@ -1164,7 +1231,7 @@ class DesignBackboneTest(GeneratorTestCase):
     def testStatusReportsEveryJobThisSession(self):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6)
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6)
             settle()
         status = cmd.design_status()
         self.assertIn(job.job_id, status)
@@ -1196,16 +1263,16 @@ class DesignBackboneTest(GeneratorTestCase):
                    side_effect=AssertionError('must not fetch for a refused design')):
             # An UNEVALUABLE hotspot expression -- `tgt and resi 999` resolves fine
             # these days and simply runs unguided, which is the point of that change.
-            self.assertRaises(Exception, cmd.design_backbone,
+            self.assertRaises(Exception, cmd.binder_design,
                               'stubgen', 'tgt', 'chian A and resi 5', length=6)
-            self.assertRaises(Exception, cmd.design_backbone,
+            self.assertRaises(Exception, cmd.binder_design,
                               'stubgen', 'tgt', 'tgt and resi 5', length=0)
-            self.assertRaises(Exception, cmd.design_backbone,
+            self.assertRaises(Exception, cmd.binder_design,
                               'stubgen', 'nosuchobject', 'tgt and resi 5')
 
     def testAnUnknownGeneratorIsRefusedByName(self):
         from pymol.predictors.errors import PredictorNotFound
-        self.assertRaises(PredictorNotFound, cmd.design_backbone,
+        self.assertRaises(PredictorNotFound, cmd.binder_design,
                           'nosuchgenerator', 'tgt', 'tgt and resi 5')
 
     def testHeadlessRefusesRatherThanHanging(self):
@@ -1213,14 +1280,14 @@ class DesignBackboneTest(GeneratorTestCase):
         # forever. Refused by name instead.
         from pymol.predictors.errors import PredictorUnavailable
         os.environ.pop('RAYMOL_PREDICT_HOST', None)
-        self.assertRaises(PredictorUnavailable, cmd.design_backbone,
+        self.assertRaises(PredictorUnavailable, cmd.binder_design,
                           'stubgen', 'tgt', 'tgt and resi 5')
 
     def testNDesignsIsBounded(self):
         from pymol.predictors.errors import PredictionOptionError
-        self.assertRaises(PredictionOptionError, cmd.design_backbone,
+        self.assertRaises(PredictionOptionError, cmd.binder_design,
                           'stubgen', 'tgt', 'tgt and resi 5', n_designs=0)
-        self.assertRaises(PredictionOptionError, cmd.design_backbone,
+        self.assertRaises(PredictionOptionError, cmd.binder_design,
                           'stubgen', 'tgt', 'tgt and resi 5', n_designs=1000)
 
     # -- quiet=0 is the COMMAND-LINE default ---------------------------------
@@ -1237,7 +1304,7 @@ class DesignBackboneTest(GeneratorTestCase):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data, chunk=4)):
             with redirect_stdout(io.StringIO()):
-                job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5+8',
+                job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5+8',
                                           length=6, quiet=0)
                 settle()
         with redirect_stdout(io.StringIO()):
@@ -1257,11 +1324,11 @@ class DesignBackboneTest(GeneratorTestCase):
         from contextlib import redirect_stdout
         for quiet in (0, 1):
             with redirect_stdout(io.StringIO()):
-                self.assertRaises(Exception, cmd.design_backbone, 'stubgen', 'tgt',
+                self.assertRaises(Exception, cmd.binder_design, 'stubgen', 'tgt',
                                   'chian A', quiet=quiet)
 
     def testTheBarsFormFeedResolvesATargetTheSameWayTheCommandDoes(self):
-        """appkit_design.emit is what the Design Backbone bar reads.
+        """appkit_design.emit is what the Binder Design bar reads.
 
         It must resolve through `designing.resolve_target` and the generator's own
         `parse_target`, so the bar reports exactly what a run would design against --
@@ -1341,7 +1408,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5',
                                       length=6, name='my design')
             # The invariant everything else here depends on: the pending key IS the
             # object. session_save looks the placeholder up by the object's real name,
@@ -1358,7 +1425,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5',
                                       length=6, name='my design')
             real = cmd.get_legal_name('my design')
             self.assertEqual(job.spec.name, real)
@@ -1374,7 +1441,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5',
                                 length=6, name='my design')
             settle()
         real = cmd.get_legal_name('my design')
@@ -1393,7 +1460,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+            cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5',
                                 length=6, name='my design')
             settle()
         cmd.design_dismiss('my design')
@@ -1406,7 +1473,7 @@ class DesignBackboneTest(GeneratorTestCase):
         from pymol import designing
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            job = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5',
+            job = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5',
                                       length=6, name='my design')
             settle()
         before = len(cmd.get_names('objects'))
@@ -1448,7 +1515,7 @@ class RunEstimateTest(GeneratorTestCase):
     def submit(self, count=3, **kwargs):
         with patch('pymol.predictors.weights._urlopen',
                    return_value=FakeResponse(self.data)):
-            jobs = cmd.design_backbone('stubgen', 'tgt', 'tgt and resi 5', length=6,
+            jobs = cmd.binder_design('stubgen', 'tgt', 'tgt and resi 5', length=6,
                                        n_designs=count, **kwargs)
             settle()
         return jobs if isinstance(jobs, (list, tuple)) else [jobs]

@@ -4076,7 +4076,7 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     /// through is layout, not time (see compose_progress), so there is nothing
     /// honest to extrapolate a whole-job countdown from.
     let remaining: Double?
-    /// The BATCH this job belongs to: one `design_backbone n_designs=N` invocation, named
+    /// The BATCH this job belongs to: one `binder_design n_designs=N` invocation, named
     /// by the group its finished designs land in. Nil for a design submitted on its own,
     /// and nil for EVERY prediction — `predicting.pending_info` publishes no such key, so
     /// a prediction can never be collapsed and its row is untouched by this.

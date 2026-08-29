@@ -844,10 +844,10 @@ struct ContentView: View {
         PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
     }
 
-    // Design Backbone bar (#342), docked in the same strip and declared here for the same
+    // Binder Design bar (#342), docked in the same strip and declared here for the same
     // scoping reason as predictBar.
-    @ViewBuilder private var designBackboneBar: some View {
-        DesignBackboneBar(controller: engine.designBackboneController,
+    @ViewBuilder private var binderDesignBar: some View {
+        BinderDesignBar(controller: engine.binderDesignController,
                           engine: engine, theme: themeManager)
     }
 
@@ -860,7 +860,7 @@ struct ContentView: View {
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode || engine.designBackboneMode
+            || engine.designMode || engine.binderDesignMode
     }
 
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
@@ -872,8 +872,8 @@ struct ContentView: View {
                 predictBar
                 Divider()
             }
-            if engine.designBackboneMode {
-                designBackboneBar
+            if engine.binderDesignMode {
+                binderDesignBar
                 Divider()
             }
             macViewport
@@ -3385,9 +3385,9 @@ struct ContentView: View {
         #endif
         if engine.predictMode { return ("Predict", "atom", "atom") }
         #if os(macOS)
-        if engine.designBackboneMode {
+        if engine.binderDesignMode {
             // The TOOL's name. The generated chain is still a "designed backbone"
-            // everywhere it is described -- see DesignBackboneBar's header.
+            // everywhere it is described -- see BinderDesignBar's header.
             return ("Binder Design", "wand.and.stars", "wand.and.stars")
         }
         #endif
@@ -3469,9 +3469,9 @@ struct ContentView: View {
         // A toggling MODE with a docked bar, exactly like every item above -- it takes a
         // selection plus options and a Run button, which is the shape Predict already has.
         Button {
-            engine.setDesignBackboneMode(!engine.designBackboneMode)
+            engine.setBinderDesignMode(!engine.binderDesignMode)
         } label: {
-            if engine.designBackboneMode {
+            if engine.binderDesignMode {
                 Label("Binder Design", systemImage: "checkmark")
             } else {
                 Text("Binder Design")

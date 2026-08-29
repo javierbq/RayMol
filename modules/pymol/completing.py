@@ -85,7 +85,7 @@ def _predictor_shortcut():
 
 
 def _generator_shortcut():
-    """Registered backbone generators, for `design_backbone`/`design_weights` completion.
+    """Registered backbone generators, for `binder_design`/`design_weights` completion.
 
     The GENERATOR registry, not the predictor one. Separate deliberately: a generator
     offered where `predict` completes would be a method that command cannot run, and a
@@ -183,7 +183,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'predict_cancel' : aa_predict_job_c,
         'predict_dismiss': aa_predict_card_c,
         'predict_result' : aa_predict_job_c,
-        'design_backbone': aa_generator_c,
+        'binder_design': aa_generator_c,
         'design_weights' : aa_generator_c,
         'design_weights_cancel': aa_generator_c,
         'design_status'  : aa_design_job_c,

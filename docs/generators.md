@@ -75,21 +75,57 @@ of which RayMol does yet. A measured run from the port's own benchmarking makes 
 design scoring min_ipSAE 0.70 had its chain docked 15.6 Å from the reference pose. The scalar
 passed it; the pose is what failed.
 
-**The tool's own name may.** The mode is called **Binder Design**, and that is a claim about
-what RFdiffusion3 is FOR — a property of the method, not of any chain it produced. A menu item
-saying what you came to do asserts nothing about the result; an object called `binder_1` does.
-Where a string is genuinely ambiguous between the two, it says "designed backbone".
+**The tool's own name may.** The tool is called **Binder Design** and its command is
+`binder_design`, and that is a claim about what RFdiffusion3 is FOR — a property of the
+method, not of any chain it produced. A menu item saying what you came to do asserts nothing
+about the result; an object called `binder_1` does. Where a string is genuinely ambiguous
+between the two, it says "designed backbone".
+
+**The split runs through the symbols, which is the quickest way to read which side a name is
+on.** Everything naming the tool carries the tool's name; nothing naming a result does:
+
+| | names the TOOL | names the RESULT |
+| :--- | :--- | :--- |
+| command / mode | `cmd.binder_design`, `engine.binderDesignMode` | — |
+| Swift types | `BinderDesignBar`, `BinderDesignController` | `RFD3ResultWriter` |
+| objects | — | `rfd3_design_<key>`, group `rfd3_batch_<key>` |
+| metrics | — | `design_ca_ca_mean`, `interface_min_distance` |
+| tray | "Binder Design" menu item | "Designing rfd3_design_ab12" |
 
 RFD3Kit's own API says `designBinder` / `binderSequence` / `binderLength`, and those call
 sites are unavoidable. `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder` greps
-for the word over the files that produce user-visible text, allowing those symbols and the
-tool's name, so the boundary is enforced rather than remembered.
+for the word over the files that produce user-visible text — the progress tray included —
+allowing those symbols, the tool's name and the tool's own symbol stems, so the boundary is
+enforced rather than remembered. `generate_api
+.testTheGroupIsNamedForTheBatchAndNeverCallsAnythingABinder` pins the Python half.
+
+## What a design refuses, and when
+
+Three refusals exist because the alternative is a silent wrong answer rather than an error,
+and all three fire **before** the 625 MB weight fetch and the seventeen minutes of GPU:
+
+- **A hotspot in another object.** A hotspot's identity is `(object, chain, resi)`. Matched
+  on `(chain, resi)` alone, a residue picked in a different object collides with the target's
+  own residue of that chain and number and is conditioned on as if it were inside the target
+  — so the design is aimed at a site nobody picked. `hotspots=sele` is the way in, and it is
+  what the bar sends by default.
+- **An output `name=` something else answers to.** A design does not land *beside* the object
+  it names, it lands *in* it: the placeholder is adopted if it exists, `cmd.load` on delivery
+  **adds** atoms rather than replacing them, and a live run calls `cmd.delete` on the name
+  first — which for a group takes its members too. So `name=<your target>` on a live run
+  destroys the structure the design was generated against. A *derived* name moves aside to
+  `..._2` instead, because nobody chose that spelling; a name you typed is refused, because
+  quietly delivering somewhere else is a design you will not look for.
+- **A chain id or residue number the PDB cannot hold.** The result crosses back as PDB text,
+  a fixed-column format whose writer keeps the *suffix* of anything too long: chain `AA`
+  returns as `A`, residue `10000` as `0000`, `-1000` as `1000`. Refused in `parse_target`
+  early and again in `RFD3ResultWriter` on its own terms.
 
 ## Steps
 
 1. **Copy `rfd3.py`** to `modules/pymol/generators/<your_id>.py` and pick a permanent `id`.
    It appears in user scripts and in saved metric records: treat it as API. No id may be a
-   prefix of another, or `design_backbone <Tab>` stops at a dead end
+   prefix of another, or `binder_design <Tab>` stops at a dead end
    (`generate_runtime.testNoGeneratorIdIsAPrefixOfAnother`).
 
 2. **Write the tests first**, in `testing/tests/generate/`. That directory is a *directory*
@@ -196,7 +232,7 @@ tool's name, so the boundary is enforced rather than remembered.
     saying which sequence each described. (`n_models` of a *prediction* is the opposite case,
     which is why it does stack.)
 
-12. **`submit` must not block.** `cmd.design_backbone` is reachable from the console, which
+12. **`submit` must not block.** `cmd.binder_design` is reachable from the console, which
     runs on the main thread, and the app drains PyMOL's feedback buffer from a main-run-loop
     timer — so a blocked main thread cannot even deliver the messages describing why it is
     blocked. The weight fetch is handled for you: `predictors/fetching.py` runs it on a thread
@@ -269,10 +305,10 @@ never from the requested step count, or it stops one step short of the end forev
 
 ## `n_designs`: one command is one batch
 
-`design_backbone ..., n_designs=10` submits ten designs. They are **not** ten independent
+`binder_design ..., n_designs=10` submits ten designs. They are **not** ten independent
 jobs the user can act on separately: `RFD3JobManager`'s queue is **serial**, so exactly one
 of them is ever running and the other nine are waiting their turn. Two things follow, and
-both hang off a single **batch identity** derived once in `design_backbone`, where the N
+both hang off a single **batch identity** derived once in `binder_design`, where the N
 specs are built.
 
 **The identity IS the group name.** One string that is the group the finished designs land
@@ -450,7 +486,7 @@ inference request — the runtime has nothing to do with a batch.
 
 ## Watching a design diffuse
 
-`design_backbone ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
+`binder_design ..., live_view=1` -- or the **Live** checkbox on the bar -- builds the
 design's own object as the rollout runs, one state per captured frame, animating smoothly
 between them. Replay it afterwards from the object panel's per-object state
 control (see "Which state is on show" below for why it is that rather than the frame slider).
@@ -504,7 +540,7 @@ so the default 200-step run leaves **51 states** -- 50 captured frames plus the 
 design. The FIRST captured frame is the object's state 1, not an extra state after an empty
 placeholder.
 
-`design_backbone ..., live_steps=N` asks for a different number. It is a count of STATES,
+`binder_design ..., live_steps=N` asks for a different number. It is a count of STATES,
 not an interval: you say how many you want in the object and the every-Nth-step is derived,
 because scrub granularity and movie length are what a user actually reasons about. Passing
 it turns the live view on by itself.
@@ -644,7 +680,7 @@ that cannot change.
 The cost is driven by the GENERATED CHAIN's length, not by the object's size -- worth stating
 because the object is the obvious thing to measure and it is the wrong variable. Measured
 here, holding the object at 900 atoms and varying only the chain: a 24-residue design costs
-0.060 ms, a 60-residue one -- `design_backbone`'s default `length` -- costs **0.201 ms**, and
+0.060 ms, a 60-residue one -- `binder_design`'s default `length` -- costs **0.201 ms**, and
 100 residues costs 0.528 ms. Going the other way, +40% atoms at a fixed 60-residue chain
 (900 -> 1260) moves it by 3%. So quote the default: **0.201 ms for `dss` plus 0.014 ms for the
 cartoon rebuild it dirties, about 0.02% of one main thread** at roughly one captured frame a
@@ -686,7 +722,7 @@ yourself mid-run, nothing puts it back.
 run therefore leaves the same single-state object a `live_view=0` run does, unless you ask
 for more.
 
-`design_backbone ..., keep_frames=1` — or the **Keep frames** checkbox on the bar, which is
+`binder_design ..., keep_frames=1` — or the **Keep frames** checkbox on the bar, which is
 enabled only while **Live** is checked — keeps every captured model frame as a state you can
 scrub afterwards. `live_steps` still means the number of MODEL frames captured either way:
 with the toggle off they are captured, used to animate, and simply not kept, and the

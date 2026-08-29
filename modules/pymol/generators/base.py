@@ -14,12 +14,22 @@ weight fetch), `predictors.host` (the request/status file transport) and
 `predictors.metrics` (the shared metric spec sets) are all method-agnostic. Only the
 spec, the contract and the command surface are new.
 
-NAMING. A generated chain is a DESIGNED BACKBONE, never a "binder". Nothing here has
-generated an interface until the design has been refolded and passed an interface gate,
-neither of which happens in this package -- so the word is not earned yet, and using it
-early is a claim about a measurement nobody made. The Swift package this drives calls
-its own API `designBinder`; that is upstream's choice, and the boundary where it stops
-is here.
+NAMING, and it is a SPLIT rather than a ban on a word.
+
+The TOOL is called Binder Design and its command is `binder_design`. Naming the method
+is a claim about what RFdiffusion3 is FOR, and that claim is true.
+
+The OUTPUT is a DESIGNED BACKBONE, never a "binder". Nothing here has generated an
+interface until the design has been refolded and passed an interface gate, neither of
+which happens in this package -- so the word is not earned yet, and using it early is a
+claim about a measurement nobody made. Concretely: object names (`rfd3_design_<key>`),
+group names, metric keys and metric labels all say design or backbone, and none of them
+says binder. `generate_api.testTheGroupIsNamedForTheBatchAndNeverCallsAnythingABinder`
+pins the naming half, and `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder`
+pins the Swift surface.
+
+The Swift package this drives calls its own API `designBinder`; that is upstream's
+choice, and the boundary where it stops is here.
 """
 import abc
 import hashlib
@@ -223,7 +233,7 @@ class DesignSpec:
         #: not make it a different design, and two runs differing only here must key the
         #: same and produce the same bytes.
         #:
-        #: The `int()` is a live guard, not decoration: `design_backbone` builds every
+        #: The `int()` is a live guard, not decoration: `binder_design` builds every
         #: per-design copy through this constructor rather than patching the attribute
         #: afterwards, so this is the one path the value takes.
         self.live_interval = None if live_interval is None else int(live_interval)
@@ -360,7 +370,7 @@ class Generator(abc.ABC):
     def submit(self, spec, options, weights_path):
         """Start the run and return a job handle immediately. MUST NOT BLOCK.
 
-        `cmd.design_backbone` is reachable from the console, which runs on the main
+        `cmd.binder_design` is reachable from the console, which runs on the main
         thread; the app drains PyMOL's feedback buffer from a main-run-loop timer, so a
         blocked main thread cannot even deliver the messages describing why it is
         blocked.

@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// Docked Binder Design form (macOS), raised under the alignment when
-/// `engine.designBackboneMode` is on — the peer of ``PredictBar``. Composes
-/// `cmd.design_backbone` via ``DesignBackboneController``.
+/// `engine.binderDesignMode` is on — the peer of ``PredictBar``. Composes
+/// `cmd.binder_design` via ``BinderDesignController``.
 ///
 /// A BAR and a MODE, not a sheet, because that is what every other tool here is: Predict
 /// takes a selection plus options and a Run button in exactly this shape, and a modal for
@@ -14,10 +14,15 @@ import SwiftUI
 /// task is a claim about what RFdiffusion3 is for, which is true. Naming the result would
 /// be a claim that the chain binds, which generation alone does not license — so object
 /// names, metric keys and every string describing what came back say "designed backbone".
-/// `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder` enforces exactly that
-/// split.
-struct DesignBackboneBar: View {
-    @ObservedObject var controller: DesignBackboneController
+///
+/// The split runs through the SYMBOLS too, and that is the quickest way to read which
+/// side of it a name is on: everything naming the tool carries the tool's name
+/// (`binder_design`, ``BinderDesignController``, `engine.binderDesignMode`), and
+/// everything naming a result does not (`rfd3_design_<key>`, `design_ca_ca_mean`,
+/// "Designing <object>"). `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder`
+/// enforces exactly that split.
+struct BinderDesignBar: View {
+    @ObservedObject var controller: BinderDesignController
     @ObservedObject var engine: PyMOLEngine
     @ObservedObject var theme: ThemeManager
 
@@ -59,7 +64,7 @@ struct DesignBackboneBar: View {
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
             }
             Spacer(minLength: 0)
-            Button { engine.setDesignBackboneMode(false) } label: {
+            Button { engine.setBinderDesignMode(false) } label: {
                 Image(systemName: "xmark.circle.fill").font(.system(size: 14))
                     .foregroundColor(theme.active.panelText.color.opacity(0.6))
             }
@@ -77,7 +82,7 @@ struct DesignBackboneBar: View {
             // A definite width plus the Spacer below gives that space back.
             TextField("target selection", text: $controller.targetText)
                 .textFieldStyle(.roundedBorder).frame(width: 150)
-                .accessibilityIdentifier("designBackbone.target")
+                .accessibilityIdentifier("binderDesign.target")
                 .onSubmit { controller.inputChanged() }
                 .onChange(of: controller.targetText) { controller.inputChanged() }
 
@@ -90,7 +95,7 @@ struct DesignBackboneBar: View {
 
             TextField("hotspots (optional)", text: $controller.hotspotsText)
                 .textFieldStyle(.roundedBorder).frame(width: 110)
-                .accessibilityIdentifier("designBackbone.hotspots")
+                .accessibilityIdentifier("binderDesign.hotspots")
                 .onSubmit { controller.inputChanged() }
                 .onChange(of: controller.hotspotsText) { controller.inputChanged() }
 
@@ -108,27 +113,27 @@ struct DesignBackboneBar: View {
             }
 
             SteppedNumberField(value: $controller.length, range: 1...150, suffix: "res",
-                               width: 46, identifier: "designBackbone.length",
+                               width: 46, identifier: "binderDesign.length",
                                help: "Residues in the generated chain")
 
             SteppedNumberField(value: $controller.nDesigns, range: 1...10, suffix: "×",
-                               width: 34, identifier: "designBackbone.count",
+                               width: 34, identifier: "binderDesign.count",
                                help: "Independent designs; each is a full run")
 
             Toggle("Live", isOn: $controller.liveView)
                 .toggleStyle(.checkbox)
-                .accessibilityIdentifier("designBackbone.liveView")
+                .accessibilityIdentifier("binderDesign.liveView")
                 .help("Watch the chain diffuse: the result object animates through the "
                       + "rollout and ends on the finished design")
 
             // Only meaningful while Live is on, so it is disabled rather than hidden --
             // hiding it would reflow the bar every time Live is toggled, and a greyed
             // control says "not applicable right now" where a missing one says nothing.
-            // Its value survives being greyed; see `DesignBackboneController.keepFrames`.
+            // Its value survives being greyed; see `BinderDesignController.keepFrames`.
             Toggle("Keep frames", isOn: $controller.keepFrames)
                 .toggleStyle(.checkbox)
                 .disabled(!controller.liveView)
-                .accessibilityIdentifier("designBackbone.keepFrames")
+                .accessibilityIdentifier("binderDesign.keepFrames")
                 .help("Keep every captured frame as a state you can scrub afterwards. "
                       + "Off, the run animates the same way but leaves just the "
                       + "finished design.")
@@ -141,7 +146,7 @@ struct DesignBackboneBar: View {
             Button("Generate") { controller.run() }
                 .buttonStyle(.borderedProminent)
                 .disabled(!controller.canRun)
-                .accessibilityIdentifier("designBackbone.generate")
+                .accessibilityIdentifier("binderDesign.generate")
                 // Said on the control itself, because it is the last thing touched before
                 // committing to minutes of GPU work.
                 .help("Minutes per design on a full-length target; watch or cancel it in "
@@ -156,17 +161,25 @@ struct DesignBackboneBar: View {
             labeled("diffuse") {
                 SteppedNumberField(value: $controller.diffusionSteps, range: 10...500,
                                    step: 10, suffix: "", width: 46,
-                                   identifier: "designBackbone.diffusionSteps",
+                                   identifier: "binderDesign.diffusionSteps",
                                    help: "Reverse-diffusion steps")
             }
             labeled("recycle") {
                 SteppedNumberField(value: $controller.recyclingSteps, range: 1...10,
                                    suffix: "", width: 34,
-                                   identifier: "designBackbone.recyclingSteps",
+                                   identifier: "binderDesign.recyclingSteps",
                                    help: "Recycling iterations")
             }
+            // Outlined in red rather than silently corrected: Generate is disabled while
+            // the seed does not parse (see `BinderDesignController.seedIsValid`), so
+            // without a visible mark the button would just be dead with nothing saying why.
             labeled("seed") { TextField("auto", text: $controller.seedText)
-                .frame(width: 60).textFieldStyle(.roundedBorder) }
+                .frame(width: 60).textFieldStyle(.roundedBorder)
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.red, lineWidth: controller.seedIsValid ? 0 : 1))
+                .help(controller.seedIsValid
+                      ? "Whole number for a reproducible run; empty for a fresh one"
+                      : "Not a whole number — clear it for a fresh random seed") }
             labeled("name") { TextField("auto", text: $controller.resultName)
                 .frame(width: 110).textFieldStyle(.roundedBorder) }
             Spacer(minLength: 0)
@@ -192,7 +205,7 @@ struct DesignBackboneBar: View {
 /// clicks. A text box beside the arrows is the ordinary macOS answer, and the two stay in
 /// step because they drive the same `value` binding — the box mirrors it, never leads it.
 ///
-/// The typing rules live in ``DesignBackboneController/committed(_:into:fallback:)`` so
+/// The typing rules live in ``BinderDesignController/committed(_:into:fallback:)`` so
 /// they are unit-testable without a view. What is decided HERE is *when* they run:
 ///
 /// * **On Return and on losing focus, identically.** One code path, deliberately — a field
@@ -238,7 +251,7 @@ private struct SteppedNumberField: View {
     }
 
     private func commit() {
-        let settled = DesignBackboneController.committed(text, into: range, fallback: value)
+        let settled = BinderDesignController.committed(text, into: range, fallback: value)
         value = settled
         // Explicit rather than left to `onChange(of: value)`: a rejected entry ("abc")
         // settles on the value the field already had, so the binding does not change and

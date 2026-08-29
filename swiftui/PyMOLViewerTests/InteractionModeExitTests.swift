@@ -29,6 +29,10 @@ final class InteractionModeExitTests: XCTestCase {
     private func resetToViewing() {
         engine.setDesignMode(false)
         engine.setMeasureMode(nil)
+        engine.setPredictMode(false)
+        #if os(macOS)
+        engine.setBinderDesignMode(false)
+        #endif
         engine.setInteractionMode(.viewing)
     }
 
@@ -66,6 +70,58 @@ final class InteractionModeExitTests: XCTestCase {
             XCTAssertNil(engine.measureMode, "\(kind) should have been cleared")
         }
     }
+
+    // MARK: - Binder Design joins the exclusion set (#342)
+
+    #if os(macOS)
+    func testExitsBinderDesignMode() {
+        // The bar had no keyboard way out: `exitActiveInteractionMode` did not know the
+        // mode existed, so Esc fell through to clearing the selection and left the bar up.
+        engine.setBinderDesignMode(true)
+        XCTAssertTrue(engine.binderDesignMode)
+
+        XCTAssertTrue(engine.exitActiveInteractionMode())
+        XCTAssertFalse(engine.binderDesignMode)
+    }
+
+    func testEveryOtherExclusiveModeClearsBinderDesign() {
+        // Exclusivity was implemented in ONE direction only: entering Binder Design
+        // cleared the other four, and `setPredictMode` cleared it back, but Design,
+        // Measure, Move and Box Select did not. Two docked bars then fight for the one
+        // strip above the viewport.
+        //
+        // Table-driven so a mode added later has an obvious place to be listed, and each
+        // case re-enters Binder Design first so they are independent.
+        let entries: [(String, () -> Void)] = [
+            ("Design", { self.engine.setDesignMode(true) }),
+            ("Measure", { self.engine.setMeasureMode(.distance) }),
+            ("Move", { self.engine.setInteractionMode(.move) }),
+            ("Box Select", { self.engine.setInteractionMode(.boxSelect) }),
+            ("Predict", { self.engine.setPredictMode(true) }),
+        ]
+        for (name, enter) in entries {
+            engine.setBinderDesignMode(true)
+            XCTAssertTrue(engine.binderDesignMode, "precondition for \(name)")
+            enter()
+            XCTAssertFalse(engine.binderDesignMode,
+                           "entering \(name) must clear Binder Design — two docked bars "
+                           + "cannot share the strip above the viewport")
+            resetToViewing()
+        }
+    }
+
+    func testEnteringBinderDesignStillClearsTheOthers() {
+        // The direction that already worked, pinned so the refactor into
+        // `clearBinderDesignMode` cannot quietly drop it.
+        engine.setMeasureMode(.distance)
+        engine.setBinderDesignMode(true)
+        XCTAssertNil(engine.measureMode)
+        XCTAssertFalse(engine.designMode)
+        XCTAssertFalse(engine.predictMode)
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertTrue(engine.binderDesignMode)
+    }
+    #endif
 
     // MARK: - No-op when nothing is active
 

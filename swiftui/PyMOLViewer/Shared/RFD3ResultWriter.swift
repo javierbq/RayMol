@@ -88,6 +88,7 @@ enum RFD3ResultWriter {
         case unmatchedTargetAtoms
         case targetDeformed(byAngstrom: Double, tolerance: Double)
         case coordinateOutOfRange(atom: String, resi: String, xyz: SIMD3<Double>)
+        case identifierNotRepresentable(chain: String, resi: String)
 
         var description: String {
             switch self {
@@ -120,6 +121,14 @@ enum RFD3ResultWriter {
                     + " Move the target nearer the origin and design again.",
                     atom, resi, xyz.x, xyz.y, xyz.z,
                     coordinateRange.lowerBound, coordinateRange.upperBound)
+            case .identifierNotRepresentable(let chain, let resi):
+                return "residue \(resi) of chain \"\(chain)\" cannot be written in the"
+                     + " PDB's fixed identifier columns: the chain id gets one column and"
+                     + " the residue number four. Truncating either is not an option here"
+                     + " -- chain \"AA\" would come back as \"A\" and residue 10000 as"
+                     + " 0000, so the target would be reloaded under an identity that is"
+                     + " not its own and the numbering the hotspots were written in would"
+                     + " be gone. Renumber the target, or select a single-letter chain."
             }
         }
 
@@ -326,6 +335,14 @@ enum RFD3ResultWriter {
         // breaks exactly that. See `coordinateRange`.
         func record(serial: Int, name: String, resName: String, chain: String,
                     resi: String, xyz: SIMD3<Double>) throws -> String {
+            // The two ways a record can be unwritable are separated here rather than
+            // collapsed into one error, because they are fixed differently: a coordinate
+            // out of range means "move the target nearer the origin", an identifier that
+            // does not fit means "renumber it, or pick a single-letter chain". Telling a
+            // user with a chain called `AA` to move their structure sends them nowhere.
+            guard isRepresentable(chain: chain, resi: resi) else {
+                throw ComposeError.identifierNotRepresentable(chain: chain, resi: resi)
+            }
             guard let line = atomRecord(serial: serial, name: name, resName: resName,
                                         chain: chain, resi: resi, xyz: xyz) else {
                 throw ComposeError.coordinateOutOfRange(atom: name, resi: resi, xyz: xyz)
@@ -385,7 +402,31 @@ enum RFD3ResultWriter {
                 rest.append(character)
             }
         }
-        return (digits.isEmpty ? "0" : digits, String(rest.prefix(1)))
+        // `rest` is returned WHOLE rather than clipped to the one column the format gives
+        // an insertion code. Clipping here would hide an unrepresentable residue from
+        // ``isRepresentable(chain:resi:)``, which is the only thing standing between a
+        // two-character code and a silently different residue in the reloaded object.
+        return (digits.isEmpty ? "0" : digits, rest)
+    }
+
+    /// Whether `chain` and `resi` survive the PDB's fixed identifier columns unchanged.
+    ///
+    /// The identifier twin of ``isRepresentable(_:)``, and it exists for the same reason:
+    /// ``pad(_:_:)`` keeps the SUFFIX of anything too long, so an over-wide field does not
+    /// merely look wrong, it reads back as a DIFFERENT residue. Residue 10000 becomes
+    /// 0000; -1000 becomes 1000, changing sign as well as magnitude; an mmCIF chain `AA`
+    /// becomes `A` and merges with whatever else that letter names.
+    ///
+    /// Two of the four wrong answers this whole type was written to prevent are "the
+    /// target's identity" and "the numbering the hotspot selection was written in", so
+    /// truncating either is the bug rather than the fix.
+    ///
+    /// The atom serial needs no such check: `MAX_TOKENS` caps a target at 700 residues,
+    /// which at TRP's 14 heavy atoms is under 10,000 — an order of magnitude below the
+    /// five columns the serial gets.
+    static func isRepresentable(chain: String, resi: String) -> Bool {
+        let (number, insertion) = splitResi(resi)
+        return chain.count <= 1 && number.count <= 4 && insertion.count <= 1
     }
 
     /// One ATOM record, or `nil` when `xyz` cannot be written in the PDB's fixed columns.
@@ -404,7 +445,9 @@ enum RFD3ResultWriter {
     /// than ours.
     static func atomRecord(serial: Int, name: String, resName: String, chain: String,
                            resi: String, xyz: SIMD3<Double>) -> String? {
-        guard isRepresentable(xyz) else { return nil }
+        guard isRepresentable(xyz), isRepresentable(chain: chain, resi: resi) else {
+            return nil
+        }
         let (number, insertion) = splitResi(resi)
         // Columns 13-16. A name of four characters starts at 13; a shorter one is indented
         // by one, which is what puts the element letter in column 14 where readers expect
@@ -418,7 +461,10 @@ enum RFD3ResultWriter {
             + pad(String(serial), 5) + " "
             + atomName + " "
             + pad(resName, 3) + " "
-            + (chain.isEmpty ? " " : String(chain.prefix(1)))
+            // Not `prefix(1)`: the guard above has already established that `chain` is at
+            // most one character, and clipping here as well would put the truncation back
+            // in for any caller that reaches this without the guard.
+            + (chain.isEmpty ? " " : chain)
             + pad(number, 4)
             + (insertion.isEmpty ? " " : insertion)
             + "   "

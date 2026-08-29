@@ -1424,7 +1424,7 @@ class LiveObjectTest(GeneratorTestCase):
             self.designing._BATCH_OF.clear()
             cmd.set('auto_color_next', 0)
             if batched:
-                # What `design_backbone` stamps for an n_designs command, in the order the
+                # What `binder_design` stamps for an n_designs command, in the order the
                 # command does it: stamp, create the placeholder, join the group.
                 self.designing._BATCH['a_batch'] = {'names': [self.name], 'total': 2}
                 self.designing._BATCH_OF[self.name] = {'batch': 'a_batch', 'index': 1,

@@ -288,10 +288,13 @@ final class RFD3RuntimeTests: XCTestCase {
         // a claim about the method and not about any particular chain it produced. A menu
         // item is not a result.
         //
-        // Two allowances, therefore, and both are narrow:
+        // Three allowances, therefore, and all of them narrow:
         //   * RFD3Kit's own API spells it `designBinder` / `binderSequence` / ... and those
         //     call sites are unavoidable.
         //   * the exact tool-name phrases below.
+        //   * the tool's OWN symbols, which carry its name because the tool is called
+        //     Binder Design: `binderDesignMode`, `BinderDesignBar`, `binder_design`. Same
+        //     justification as the phrase -- they name the method, never a result.
         // Everything else is a violation.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()          // PyMOLViewerTests
@@ -302,18 +305,28 @@ final class RFD3RuntimeTests: XCTestCase {
         // Case-sensitive and exact: "Binder Design" is a proper noun. "the binder design"
         // in running prose is not this phrase and is not allowed through.
         let toolName = ["Binder Design"]
+        // The three spellings the tool's name takes in code. Deliberately the STEM only --
+        // `binderDesign`, not `binderDesignMode` -- so any identifier built on the tool's
+        // name passes while a fabricated one like `binderRMSD` or `binderScore` still
+        // fails: scrubbing the stem leaves "binder" behind in neither, but leaves the rest
+        // of a non-tool word to be caught by the next case rather than whitelisted here.
+        let toolSymbols = ["BinderDesign", "binderDesign", "binder_design"]
         // Scrubbed rather than whitelisted-by-line. The old test allowed the WHOLE line if
         // it contained an upstream symbol anywhere, so `binderLength` on the same line as a
         // user-facing "your binder" would have passed. Removing the allowed spellings and
         // then looking for what is left is the check the rule actually asks for.
-        let allowances = upstreamSymbols + toolName
+        let allowances = upstreamSymbols + toolName + toolSymbols
         // The two UI files are in here because they are where the rule is easiest to
         // break: a help string and a doc comment are exactly the "what the product SAYS"
         // this test is about, and neither was scanned.
         for name in ["RFD3JobManager.swift", "RFD3ResultWriter.swift",
                      "RFD3SizeGuard.swift", "RFD3Runtime.swift",
-                     "RFD3Trajectory.swift", "DesignBackboneBar.swift",
-                     "DesignBackboneController.swift",
+                     "RFD3Trajectory.swift", "BinderDesignBar.swift",
+                     "BinderDesignController.swift",
+                     // The progress tray is the surface that DESCRIBES a running and a
+                     // finished design in the user's own words, which makes it the one
+                     // place the rule matters most -- and it was not scanned.
+                     "ProgressTray.swift",
                      // Where the tool's NAME lives -- the mode label, the Tools menu
                      // item, the ⌃B command. Scanned so the allowance is watched from
                      // both sides: these files may say "Binder Design" and nothing else.

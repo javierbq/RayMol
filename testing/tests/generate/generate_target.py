@@ -240,6 +240,57 @@ class ResolveTargetTest(GeneratorTestCase):
             self.resolve('t and resi 1-5', 't and resi 8')
         self.assertIn('/8', str(caught.exception))
 
+    def testAHotspotPickedInANOTHERObjectIsRefusedNotMatchedByChainAndNumber(self):
+        # A hotspot's identity is (object, chain, resi). Matched on (chain, resi) alone,
+        # a residue picked in a DIFFERENT object collides with the target's own residue
+        # of the same chain and number and is conditioned on as though it were inside the
+        # target -- so the outside-the-target refusal never fires and the design is
+        # silently aimed at a site the user did not pick.
+        #
+        # `hotspots=sele` is the way in, and it is the default the bar sends: the viewport
+        # writes `sele` for whatever was clicked, in whatever object it was clicked in.
+        from pymol.predictors.errors import PredictionInputError
+        self.helix('t', length=10)
+        self.helix('other', length=10)          # same chain A, same numbering 1-10
+        cmd.select('sele', 'other and resi 4')
+        with self.assertRaises(PredictionInputError) as caught:
+            self.resolve('t', 'sele')
+        message = str(caught.exception)
+        self.assertIn('different object', message)
+        self.assertIn('other', message)
+        # And the same residue picked in the TARGET is still accepted, so the check is
+        # about identity rather than about rejecting anything that looks like a duplicate.
+        structure = self.resolve('t', 't and resi 4')
+        self.assertEqual(tuple(structure.hotspots), (3,))
+
+    def testAChainOrResidueNumberThePDBCannotHoldIsRefusedBeforeTheRun(self):
+        # The result crosses back from the runtime as PDB TEXT, whose identifier columns
+        # are fixed width and whose writer keeps the SUFFIX of anything too long. So chain
+        # `AA` would return as `A` and residue 10000 as `0000` -- a silently different
+        # identity, in the object the user is told holds their target exactly as it was.
+        # Two of the four wrong answers RFD3ResultWriter exists to prevent.
+        #
+        # Refused HERE, in parse_target, so it costs nothing: before the 625 MB download
+        # and before seventeen minutes of GPU. RFD3ResultWriter refuses again on its own.
+        from pymol.predictors.errors import PredictionInputError
+        generator = self.generator.RFD3Generator()
+        self.helix('wide', length=6)
+        cmd.alter('wide', 'chain="AA"')
+        cmd.sort('wide')
+        with self.assertRaises(PredictionInputError) as caught:
+            generator.parse_target(self.resolve('wide', ''), 10)
+        self.assertIn('chain', str(caught.exception))
+
+        self.helix('high', length=6, first=10000)
+        with self.assertRaises(PredictionInputError) as caught:
+            generator.parse_target(self.resolve('high', ''), 10)
+        self.assertIn('four-column', str(caught.exception))
+
+        # A four-digit number and a single-letter chain are fine, and so is an insertion
+        # code -- the format has a column for one.
+        self.helix('ok', length=6, first=9994)
+        generator.parse_target(self.resolve('ok', ''), 10)
+
 
 
 class DesignKeyTest(GeneratorTestCase):
