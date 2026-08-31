@@ -20,9 +20,10 @@
 APP_SHORTCUTS = {
     'CTRL-M': 'Move Objects (Mouse menu)',
     'CTRL-E': 'Measure Distances (Mouse menu)',
-    'CTRL-B': 'Box Select (Mouse menu)',
+    'CTRL-S': 'Box Select (Mouse menu)',
     'CTRL-D': 'Enter/Exit Design Mode (Design menu)',
     'CTRL-P': 'Enter/Exit Predict Mode (Predict menu)',
+    'CTRL-B': 'Binder Design (Binder Design menu)',
 }
 
 # CTRL-D only exists in RAYMOL_MPNN builds, so the caller says whether the

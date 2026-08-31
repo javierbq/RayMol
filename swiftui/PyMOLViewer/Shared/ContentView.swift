@@ -3502,6 +3502,11 @@ struct ContentView: View {
             }
         }
         .disabled(isDesignLocked)
+        // The same constant the Binder Design menu command registers (#360). This row
+        // is where the ⌃B hint the user READS comes from -- every other tool here
+        // carried one and this did not, so it was the only item in the picker with no
+        // shortcut shown beside it.
+        .keyboardShortcut(AppShortcuts.binderDesignTool)
         #endif
     }
 
@@ -3524,7 +3529,7 @@ struct ContentView: View {
             parts.append("Predict structures (\(AppShortcuts.hint(AppShortcuts.predictTool)))")
         }
         #if os(macOS)
-        parts.append("Binder Design")
+        parts.append("Binder Design (\(AppShortcuts.hint(AppShortcuts.binderDesignTool)))")
         #endif
         let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }

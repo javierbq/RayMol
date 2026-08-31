@@ -79,18 +79,30 @@ class AuditShadowedTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
 
     def test_warns_for_measure_boxselect_predict(self):
-        # The #360 additions: ⌃E (Measure) is new, ⌃B (Box Select) and ⌃P
+        # The #360 additions: ⌃E (Measure) is new, ⌃S (Box Select) and ⌃P
         # (Predict) were menu shortcuts the table had fallen behind on. None
         # is design-gated, so has_design stays at its default here.
-        fake = FakeCmd({"CTRL-E": "ray", "CTRL-B": "zoom", "CTRL-P": "orient"})
+        fake = FakeCmd({"CTRL-E": "ray", "CTRL-S": "zoom", "CTRL-P": "orient"})
         lines = raymol_keys.audit_shadowed(_self=fake)
         self.assertEqual(len(lines), 3)
         joined = "\n".join(lines)
         for token, label in (("CTRL-E", "Measure Distances"),
-                             ("CTRL-B", "Box Select"),
+                             ("CTRL-S", "Box Select"),
                              ("CTRL-P", "Predict Mode")):
             self.assertIn(token, joined)
             self.assertIn(label, joined)
+
+    def test_warns_for_binder_design_on_ctrl_b(self):
+        # ⌃B is Binder Design (#342), not Box Select. The two collided when
+        # Binder Design first landed -- it took ⌃B while Box Select still held
+        # it -- so this pins which tool the audit now names for that key, and
+        # that Box Select answers to ⌃S instead.
+        fake = FakeCmd({"CTRL-B": "zoom"})
+        lines = raymol_keys.audit_shadowed(_self=fake)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("CTRL-B", lines[0])
+        self.assertIn("Binder Design", lines[0])
+        self.assertNotIn("Box Select", lines[0])
 
     def test_empty_binding_is_not_a_shadow(self):
         # cmd.set_key(key, '') is how a binding is CLEARED; it shadows nothing.

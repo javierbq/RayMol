@@ -65,13 +65,22 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 /// straight through to the menus, so a user binding can never shadow them.
 enum AppShortcuts {
     // Tool picker (#360): the exclusive viewport modes, one ⌃-mnemonic each —
-    // Move / mEasure / Design / Predict — plus Box Select on the same scheme.
-    // ⌃E is the first letter of "measure" not already spoken for (⌃M is Move).
+    // Move / mEasure / Design / Predict / Binder Design — plus Box Select on the
+    // same scheme. ⌃E is the first letter of "measure" not already spoken for
+    // (⌃M is Move).
+    //
+    // ⌃B IS BINDER DESIGN, and Box Select is ⌃S (#342). Both are first letters,
+    // and the split is the one a user would guess: B for the tool whose name
+    // begins with it, S for "select". Box Select held ⌃B first, and when Binder
+    // Design landed it took ⌃B too — the two registered the same key equivalent
+    // and fought silently, which `AppShortcutsTests.testNoDuplicateBindings`
+    // now catches because both live in `all`.
     static let moveTool = KeyboardShortcut("m", modifiers: .control)
     static let measureTool = KeyboardShortcut("e", modifiers: .control)
     static let designTool = KeyboardShortcut("d", modifiers: .control)
     static let predictTool = KeyboardShortcut("p", modifiers: .control)
-    static let boxSelect = KeyboardShortcut("b", modifiers: .control)
+    static let binderDesignTool = KeyboardShortcut("b", modifiers: .control)
+    static let boxSelect = KeyboardShortcut("s", modifiers: .control)
 
     // Pane toggles (#361): open-if-closed / close-if-open, one numbered ⌘
     // family in the order the panes appear — the rail pills left to right
@@ -83,7 +92,7 @@ enum AppShortcuts {
     /// Every entry above. The collision test runs off this list, so a new
     /// shortcut must be added here too (same contract as PanelLayout.allKeys).
     static let all: [KeyboardShortcut] = [
-        moveTool, measureTool, designTool, predictTool, boxSelect,
+        moveTool, measureTool, designTool, predictTool, binderDesignTool, boxSelect,
         consolePane, sequencePane, sidePanel,
     ]
 
@@ -325,7 +334,9 @@ struct PyMOLApp: App {
                 .disabled(isDesignLocked)
                 .keyboardShortcut(AppShortcuts.measureTool)
                 // Box Select (#358): the other exclusive viewport tool that
-                // reinterprets a drag, so it belongs on the same menu. ⌃B.
+                // reinterprets a drag, so it belongs on the same menu. ⌃S — S for
+                // "select"; it gave up ⌃B to Binder Design, whose name starts with
+                // the letter (#342).
                 Button(engine.interactionMode == .boxSelect ? "Stop Box Select" : "Box Select") {
                     engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
                 }
@@ -379,7 +390,8 @@ struct PyMOLApp: App {
                 #if os(macOS)
                 // Binder Design (#342): the same shape as Predict above, and a REAL
                 // menu command rather than the Tools-pill button's shortcut, so it fires
-                // reliably. ⌃B — ⌃D and ⌃P are taken by Design and Predict.
+                // reliably. ⌃B, from AppShortcuts like every other tool — the first
+                // letter of the tool's name, which is why Box Select moved to ⌃S.
                 // The menu names the TOOL; what it produces is a designed backbone until
                 // a refold and an interface gate say otherwise. Menu and item share the
                 // name, exactly as Predict's do above.
@@ -389,7 +401,7 @@ struct PyMOLApp: App {
                         engine.setBinderDesignMode(!engine.binderDesignMode)
                     }
                     .disabled(isDesignLocked)
-                    .keyboardShortcut("b", modifiers: .control)
+                    .keyboardShortcut(AppShortcuts.binderDesignTool)
                 }
                 #endif
             }
