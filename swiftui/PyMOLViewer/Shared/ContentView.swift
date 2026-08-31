@@ -2448,6 +2448,12 @@ struct ContentView: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // Every call site toggles the side panel (objectsBinding), so the
+        // shortcut lives here rather than as a parameter (#361). Live binding on
+        // iPadOS; on macOS the View-menu command carries the same constant.
+        .keyboardShortcut(AppShortcuts.sidePanel)
+        .help("\(isShown ? "Hide" : "Show") the side panel"
+              + " (\(AppShortcuts.hint(AppShortcuts.sidePanel)))")
         .accessibilityLabel(isShown ? "Hide panel" : "Show panel")
         // Center the little tab within a thin full-width / full-height strip. Only
         // the chevron pill is hit-testable; the rest of the strip passes touches
@@ -2520,10 +2526,12 @@ struct ContentView: View {
     @ViewBuilder
     private func topPaneRail(floating: Bool = true, centered: Bool = true) -> some View {
         let pillRow = HStack(spacing: 8) {
-            railTongue(icon: "terminal", label: "Console", shown: consoleBinding)
+            railTongue(icon: "terminal", label: "Console", shown: consoleBinding,
+                       shortcut: AppShortcuts.consolePane)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
             // rendered as a literal "Abc", so the pill read "Abc Seq".
-            railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible)
+            railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible,
+                       shortcut: AppShortcuts.sequencePane)
             // Move / Measure / Design are mutually-exclusive interaction modes, so
             // they share ONE Tools pill that opens a menu (#304) instead of three
             // toggles — the same consolidation as the Mac toolbar's macToolsMenu,
@@ -2566,7 +2574,12 @@ struct ContentView: View {
 
     // `icon` is optional: a tongue whose label already names the pane (Seq) shows the
     // word alone rather than pairing it with a redundant glyph.
-    private func railTongue(icon: String?, label: String, shown: Binding<Bool>) -> some View {
+    // `shortcut` (#361) both registers the key on the pill — the live binding on
+    // iPadOS hardware keyboards; on macOS the View-menu command with the same
+    // AppShortcuts constant is what fires — and names it in the hover tooltip,
+    // the pill's only surface that can show a hint.
+    private func railTongue(icon: String?, label: String, shown: Binding<Bool>,
+                            shortcut: KeyboardShortcut? = nil) -> some View {
         let on = shown.wrappedValue
         return Button {
             withAnimation(.easeInOut(duration: 0.25)) { shown.wrappedValue.toggle() }
@@ -2599,6 +2612,9 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .keyboardShortcut(shortcut)
+        .help("\(on ? "Hide" : "Show") the \(label) pane"
+              + (shortcut.map { " (\(AppShortcuts.hint($0)))" } ?? ""))
         .accessibilityIdentifier("rail-\(label.lowercased())")
         .accessibilityLabel("\(label) pane, \(on ? "shown" : "hidden")")
     }
@@ -3403,6 +3419,11 @@ struct ContentView: View {
     /// opens mid-inference and shows which mode is active.
     @ViewBuilder
     private var interactionToolItems: some View {
+        // Every row carries its AppShortcuts binding (#360), which is what makes
+        // the shortcut render right-aligned in the row — the menu doubles as the
+        // shortcut cheat sheet. On macOS the real menu-bar command with the SAME
+        // constant is what fires reliably (see PyMOLApp.macCommands); on iPadOS
+        // the row registration is the live one and surfaces in the ⌘-hold HUD.
         Button {
             engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
         } label: {
@@ -3413,6 +3434,7 @@ struct ContentView: View {
             }
         }
         .disabled(isDesignLocked)
+        .keyboardShortcut(AppShortcuts.moveTool)
 
         // (Box Select is deliberately absent: its control is the lasso toggle in
         // the Selections panel header, which both enters the mode and shows that
@@ -3427,6 +3449,7 @@ struct ContentView: View {
             }
         }
         .disabled(isDesignLocked)
+        .keyboardShortcut(AppShortcuts.measureTool)
 
         #if RAYMOL_MPNN
         // Also gated on DesignAvailability: Design needs a minimum iOS version, and
@@ -3443,6 +3466,7 @@ struct ContentView: View {
                 }
             }
             .disabled(isDesignLocked)
+            .keyboardShortcut(AppShortcuts.designTool)
         }
         #endif
         // Gated on PredictAvailability for the same reason Design is gated on
@@ -3460,7 +3484,7 @@ struct ContentView: View {
                 }
             }
             .disabled(isDesignLocked)
-            .keyboardShortcut("p", modifiers: .control)
+            .keyboardShortcut(AppShortcuts.predictTool)
         }
         #if os(macOS)
         // Backbone design (#342). macOS only, because RFD3Kit is: one design against a
@@ -3487,11 +3511,18 @@ struct ContentView: View {
     /// appending rather than as fixed strings so the two conditions compose; the
     /// hardcoded variants this replaced could not express "MPNN but no Predict".
     private var toolsMenuHelp: String {
-        var parts = ["Move objects", "Measure distances"]
+        // Shortcut hints come from the same AppShortcuts constants the rows
+        // register (#360), so the tooltip cannot drift from the menu.
+        var parts = ["Move objects (\(AppShortcuts.hint(AppShortcuts.moveTool)))",
+                     "Measure distances (\(AppShortcuts.hint(AppShortcuts.measureTool)))"]
         #if RAYMOL_MPNN
-        if DesignAvailability.isSupported { parts.append("Design with MPNN") }
+        if DesignAvailability.isSupported {
+            parts.append("Design with MPNN (\(AppShortcuts.hint(AppShortcuts.designTool)))")
+        }
         #endif
-        if PredictAvailability.isSupported { parts.append("Predict structures") }
+        if PredictAvailability.isSupported {
+            parts.append("Predict structures (\(AppShortcuts.hint(AppShortcuts.predictTool)))")
+        }
         #if os(macOS)
         parts.append("Binder Design")
         #endif
