@@ -157,6 +157,7 @@ struct ContentView: View {
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
+
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
     // Pending auto-minimize of the expanded mouse legend (fires ~1s after the
     // pointer leaves it); cancelled if the pointer returns.
@@ -336,7 +337,8 @@ struct ContentView: View {
         // stays ABOVE the busy scrim -- `predict` is not in heavyLabel, so a fetch
         // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
-                                              predictions: engine.predictionJobs)) { item in
+                                              predictions: engine.predictionJobs,
+                                              designs: engine.designJobs)) { item in
             switch item.action {
             case .command(let cmd):   engine.runCommand(cmd)
             case .python(let src):    engine.runPython(src)
@@ -768,6 +770,7 @@ struct ContentView: View {
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
         }
+
         #if !RAYMOL_MAS_RESTRICTED
         .sheet(isPresented: $showConnectSheet) {
             MCPConnectSheet().environmentObject(mcpManager)
@@ -841,6 +844,13 @@ struct ContentView: View {
         PredictBar(controller: engine.predictController, engine: engine, theme: themeManager)
     }
 
+    // Binder Design bar (#342), docked in the same strip and declared here for the same
+    // scoping reason as predictBar.
+    @ViewBuilder private var binderDesignBar: some View {
+        BinderDesignBar(controller: engine.binderDesignController,
+                          engine: engine, theme: themeManager)
+    }
+
     // Is anything docked at the top of the left column? Mirrors the iOS layouts'
     // `anyTop`: the rail sits on a chrome band above the panes when one is open and
     // floats over the viewport otherwise. Move / Measure / Design are included even
@@ -850,7 +860,7 @@ struct ContentView: View {
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode
+            || engine.designMode || engine.binderDesignMode
     }
 
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
@@ -860,6 +870,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if engine.predictMode {
                 predictBar
+                Divider()
+            }
+            if engine.binderDesignMode {
+                binderDesignBar
                 Divider()
             }
             macViewport
@@ -3386,6 +3400,13 @@ struct ContentView: View {
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
         if engine.predictMode { return ("Predict", "atom", "atom") }
+        #if os(macOS)
+        if engine.binderDesignMode {
+            // The TOOL's name. The generated chain is still a "designed backbone"
+            // everywhere it is described -- see BinderDesignBar's header.
+            return ("Binder Design", "wand.and.stars", "wand.and.stars")
+        }
+        #endif
         return nil
     }
 
@@ -3465,6 +3486,28 @@ struct ContentView: View {
             .disabled(isDesignLocked)
             .keyboardShortcut(AppShortcuts.predictTool)
         }
+        #if os(macOS)
+        // Backbone design (#342). macOS only, because RFD3Kit is: one design against a
+        // full-length target peaks near half a 36 GiB Mac.
+        //
+        // A toggling MODE with a docked bar, exactly like every item above -- it takes a
+        // selection plus options and a Run button, which is the shape Predict already has.
+        Button {
+            engine.setBinderDesignMode(!engine.binderDesignMode)
+        } label: {
+            if engine.binderDesignMode {
+                Label("Binder Design", systemImage: "checkmark")
+            } else {
+                Text("Binder Design")
+            }
+        }
+        .disabled(isDesignLocked)
+        // The same constant the Binder Design menu command registers (#360). This row
+        // is where the ⌃B hint the user READS comes from -- every other tool here
+        // carried one and this did not, so it was the only item in the picker with no
+        // shortcut shown beside it.
+        .keyboardShortcut(AppShortcuts.binderDesignTool)
+        #endif
     }
 
     /// Tooltip for the Tools menu. Names only the tools this build actually has —
@@ -3485,6 +3528,9 @@ struct ContentView: View {
         if PredictAvailability.isSupported {
             parts.append("Predict structures (\(AppShortcuts.hint(AppShortcuts.predictTool)))")
         }
+        #if os(macOS)
+        parts.append("Binder Design (\(AppShortcuts.hint(AppShortcuts.binderDesignTool)))")
+        #endif
         let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }
         return "\(active.name) mode is active — Tools: \(tools)"

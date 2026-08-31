@@ -40,6 +40,20 @@ from .predicting import \
       predict_weights_cancel
 
 #--------------------------------------------------------------------
+# Backbone GENERATION, a separate surface from prediction on purpose: a generator is
+# handed a target structure and returns a chain that did not exist, so it has no
+# sequence to fold and nothing to put in a PredictionSpec. See docs/generators.md.
+from . import designing
+from .designing import \
+      binder_design,      \
+      design_status,        \
+      design_cancel,        \
+      design_result,        \
+      design_dismiss,       \
+      design_weights,       \
+      design_weights_cancel
+
+#--------------------------------------------------------------------
 from . import msa
 from .msa import \
       load_msa,             \

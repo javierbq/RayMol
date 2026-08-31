@@ -1,5 +1,5 @@
 {
-  "originHash" : "3f07e7ebcba532a1cffd5811489b6a22b88c92323632d559dfef6fbc8228736a",
+  "originHash" : "50311cec658a5a2318525967affc895e2bf2503f930ab6b7aba40524b6e94b3b",
   "pins" : [
     {
       "identity" : "boltz-mlx",
@@ -34,6 +34,15 @@
       "location" : "https://github.com/javierbq/protenix-mlx.git",
       "state" : {
         "revision" : "965e5143429bd8321cf21971a29c772610f69b7f",
+        "version" : "0.1.3"
+      }
+    },
+    {
+      "identity" : "rfd3-mlx",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/javierbq/rfd3-mlx.git",
+      "state" : {
+        "revision" : "4cfbae9285ec7a2c9bd553a3491cbc07a21367e0",
         "version" : "0.1.3"
       }
     },

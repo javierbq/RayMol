@@ -130,8 +130,14 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // behind `#if os(macOS)`. Advertising "protenix" here would let check_available
     // green-light a predictor whose Swift half does not exist in this binary, and the
     // user would only find out after waiting out a weight download.
+    // "rfd3" is a backbone GENERATOR rather than a predictor, and it is in this same
+    // list on purpose: the list advertises which Swift inference runtimes are LINKED,
+    // and both surfaces ask the same question through host.supported_runtimes(). A
+    // second variable would be a second thing to forget. macOS only, like protenix:
+    // RFD3JobManager, RFD3Runtime and RFD3SizeGuard are all behind `#if os(macOS)`, and
+    // one design against a full-length target peaks near half a 36 GiB Mac.
 #if TARGET_OS_OSX
-    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix", 1);
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix,rfd3", 1);
 #else
     setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
 #endif

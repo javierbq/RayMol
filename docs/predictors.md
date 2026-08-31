@@ -3,6 +3,12 @@
 RayMol's prediction backend is a registry of interchangeable predictors plus a shared,
 predictor-agnostic weight cache. Adding a method means adding one module and one line.
 
+If your method GENERATES a chain rather than folding one -- backbone design, motif
+scaffolding -- it is not a predictor and does not belong here. It has no sequence to put in
+`PredictionSpec.chains`, so it lives in `pymol.generators` behind `cmd.binder_design`; see
+[generators.md](generators.md). The weight cache, the fetcher and the file transport
+documented below are shared with it unchanged.
+
 See [the design](superpowers/specs/2026-08-11-structure-prediction-backend-design.md) for why
 it is shaped this way.
 

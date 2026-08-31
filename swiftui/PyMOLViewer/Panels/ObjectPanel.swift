@@ -4076,6 +4076,38 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     /// through is layout, not time (see compose_progress), so there is nothing
     /// honest to extrapolate a whole-job countdown from.
     let remaining: Double?
+    /// The BATCH this job belongs to: one `binder_design n_designs=N` invocation, named
+    /// by the group its finished designs land in. Nil for a design submitted on its own,
+    /// and nil for EVERY prediction — `predicting.pending_info` publishes no such key, so
+    /// a prediction can never be collapsed and its row is untouched by this.
+    ///
+    /// The runtime runs a batch on a SERIAL queue, so exactly one of its designs is ever
+    /// running; without this the tray listed the other nine as separate jobs reading
+    /// "Queued", which is work that has not started shown as if it had.
+    let batch: String?
+    /// This design's 1-based position in its batch, in submission order — which is also
+    /// the order the serial queue runs them in, so the lowest index that has not settled
+    /// is how far through the batch the run is.
+    let batchIndex: Int?
+    /// How many designs the command asked for. Carried rather than counted from the
+    /// records present: a design that succeeds leaves NO record, so counting rows would
+    /// make the batch shrink as it progressed.
+    let batchTotal: Int?
+    /// Seconds left for the WHOLE run this record belongs to: the entire batch when the
+    /// design is part of one, and the design itself when it is not. Unlike `remaining`,
+    /// which is scoped to the current phase of the current design.
+    ///
+    /// Computed by `designing._run_remaining`, and computed there rather than here for
+    /// two reasons that are not style: a design that has already succeeded leaves NO
+    /// record on the wire, so Swift cannot see how long it took — and it is that
+    /// measured wall time that prices the designs still queued. And the estimate is
+    /// smoothed, which needs state the tray does not have: the tray is recomposed from
+    /// scratch on every poll.
+    ///
+    /// Nil for EVERY prediction — `predicting.pending_info` publishes no such key, so
+    /// the prediction row is untouched by this — and nil for a design that has not been
+    /// running long enough to say anything.
+    let runRemaining: Double?
 
     /// Swift's host writes "failed"; _DeferredJob writes "error". Neither wire is
     /// migrated, so the single consumer accepts both. "cancelled" is included
@@ -4092,17 +4124,23 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         case state, phase, fraction, moving, detail, error, bundle
         case modelsDone = "models_done", modelsTotal = "models_total", elapsed
         case step, totalSteps = "total_steps", remaining
+        case batch, batchIndex = "batch_index", batchTotal = "batch_total"
+        case runRemaining = "run_remaining"
     }
 
     init(id: String, state: String, phase: String, fraction: Double?, moving: Bool,
          detail: String, modelsDone: Int, modelsTotal: Int, elapsed: Double,
          error: String?, bundle: String? = nil,
-         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil) {
+         step: Int? = nil, totalSteps: Int? = nil, remaining: Double? = nil,
+         batch: String? = nil, batchIndex: Int? = nil, batchTotal: Int? = nil,
+         runRemaining: Double? = nil) {
         self.id = id; self.state = state; self.phase = phase
         self.fraction = fraction; self.moving = moving; self.detail = detail
         self.modelsDone = modelsDone; self.modelsTotal = modelsTotal
         self.elapsed = elapsed; self.error = error; self.bundle = bundle
         self.step = step; self.totalSteps = totalSteps; self.remaining = remaining
+        self.batch = batch; self.batchIndex = batchIndex; self.batchTotal = batchTotal
+        self.runRemaining = runRemaining
     }
 
     init(from decoder: Decoder) throws {
@@ -4121,6 +4159,10 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
         step = try c.decodeIfPresent(Int.self, forKey: .step)
         totalSteps = try c.decodeIfPresent(Int.self, forKey: .totalSteps)
         remaining = try c.decodeIfPresent(Double.self, forKey: .remaining)
+        batch = try c.decodeIfPresent(String.self, forKey: .batch)
+        batchIndex = try c.decodeIfPresent(Int.self, forKey: .batchIndex)
+        batchTotal = try c.decodeIfPresent(Int.self, forKey: .batchTotal)
+        runRemaining = try c.decodeIfPresent(Double.self, forKey: .runRemaining)
     }
 
     /// `id` comes from the payload's dictionary key, not the record body.
@@ -4129,7 +4171,8 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
                            moving: moving, detail: detail, modelsDone: modelsDone,
                            modelsTotal: modelsTotal, elapsed: elapsed, error: error,
                            bundle: bundle, step: step, totalSteps: totalSteps,
-                           remaining: remaining)
+                           remaining: remaining, batch: batch, batchIndex: batchIndex,
+                           batchTotal: batchTotal, runRemaining: runRemaining)
     }
 }
 
@@ -4177,6 +4220,16 @@ struct PanelPayload: Decodable {
     /// decode against an older bundled appkit_inspector.py and freeze the panel on
     /// its last list.
     let design_sele: String?
+    /// Running and recently-failed BACKBONE DESIGNS (#342), keyed by object name.
+    ///
+    /// The same record type as `pending_jobs` -- `designing.pending_info` publishes the
+    /// same keys as `predicting.pending_info`, deliberately, so one decoder serves both --
+    /// but a separate key, because the two are separate job tables with separate cancel
+    /// commands. Merging them would send a design's object name to `predict_cancel`, which
+    /// has never heard of it.
+    ///
+    /// Optional, like every field above, and for the same single-`guard let` reason.
+    let design_jobs: [String: PredictionJobState]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -4260,6 +4313,11 @@ extension PyMOLEngine {
         let jobs = (payload.pending_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Backbone designs (#342), same record type, separate array -- see the payload's
+        // `design_jobs` comment for why they are not merged.
+        let designs = (payload.design_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -4281,6 +4339,7 @@ extension PyMOLEngine {
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
+            if self.designJobs != designs { self.designJobs = designs }
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

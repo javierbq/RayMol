@@ -18,11 +18,12 @@
 # swiftui/PyMOLViewer/Shared/PyMOLApp.swift — a new ⌃ shortcut there must be
 # added here too (AppShortcutsTests pins the set on the Swift side).
 APP_SHORTCUTS = {
-    'CTRL-M': 'Move Objects (Mouse menu)',
-    'CTRL-E': 'Measure Distances (Mouse menu)',
-    'CTRL-B': 'Box Select (Mouse menu)',
-    'CTRL-D': 'Enter/Exit Design Mode (Design menu)',
-    'CTRL-P': 'Enter/Exit Predict Mode (Predict menu)',
+    'CTRL-M': 'Move Objects (Tools menu)',
+    'CTRL-E': 'Measure Distances (Tools menu)',
+    'CTRL-S': 'Box Select (Tools menu)',
+    'CTRL-D': 'Enter/Exit Design Mode (Tools menu)',
+    'CTRL-P': 'Enter/Exit Predict Mode (Tools menu)',
+    'CTRL-B': 'Binder Design (Tools menu)',
 }
 
 # CTRL-D only exists in RAYMOL_MPNN builds, so the caller says whether the

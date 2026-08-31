@@ -84,6 +84,39 @@ def _predictor_shortcut():
         return Shortcut([])
 
 
+def _generator_shortcut():
+    """Registered backbone generators, for `binder_design`/`design_weights` completion.
+
+    The GENERATOR registry, not the predictor one. Separate deliberately: a generator
+    offered where `predict` completes would be a method that command cannot run, and a
+    predictor offered here would be a method that needs a sequence rather than a target.
+    Never raises -- a completer that throws breaks the prompt.
+    """
+    try:
+        from pymol.generators import registry
+        return Shortcut(registry.available())
+    except Exception:
+        return Shortcut([])
+
+
+def _design_job_shortcut():
+    """Design job ids submitted this session, for design_status/_cancel/_result."""
+    try:
+        from pymol import designing
+        return Shortcut(designing.job_ids())
+    except Exception:
+        return Shortcut([])
+
+
+def _design_card_shortcut():
+    """Objects with a retained design card, for design_dismiss. Never raises."""
+    try:
+        from pymol import designing
+        return Shortcut(designing.recent_objects())
+    except Exception:
+        return Shortcut([])
+
+
 def _predict_job_shortcut():
     """Job ids submitted this session, for predict_status/_cancel/_result. Never raises."""
     try:
@@ -133,6 +166,9 @@ def get_auto_arg_list(self_cmd=cmd):
     aa_predictor_c = [_predictor_shortcut, 'predictor', ', ']
     aa_predict_job_c = [_predict_job_shortcut, 'job id', ', ']
     aa_predict_card_c = [_pending_card_shortcut, 'object', ', ']
+    aa_generator_c = [_generator_shortcut, 'generator', ', ']
+    aa_design_job_c = [_design_job_shortcut, 'job id', ', ']
+    aa_design_card_c = [_design_card_shortcut, 'object', ', ']
     aa_msa_c = [_msa_shortcut, 'alignment', ', ']
     aa_msa_search_c = [_msa_search_shortcut, 'search id', ', ']
 
@@ -147,6 +183,13 @@ def get_auto_arg_list(self_cmd=cmd):
         'predict_cancel' : aa_predict_job_c,
         'predict_dismiss': aa_predict_card_c,
         'predict_result' : aa_predict_job_c,
+        'binder_design': aa_generator_c,
+        'design_weights' : aa_generator_c,
+        'design_weights_cancel': aa_generator_c,
+        'design_status'  : aa_design_job_c,
+        'design_cancel'  : aa_design_job_c,
+        'design_result'  : aa_design_job_c,
+        'design_dismiss' : aa_design_card_c,
         'alignto'        : aa_obj_c,
         'alter'          : aa_sel_e,
         'alphatoall'     : aa_sel_c,

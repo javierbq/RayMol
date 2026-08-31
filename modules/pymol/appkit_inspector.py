@@ -437,8 +437,8 @@ def group_parents(objs, groups):
     return dict(parents)
 
 
-def _pending_maps():
-    """(detail_map, record_map) for prediction placeholders still waiting.
+def _pending_maps(module='predicting'):
+    """(detail_map, record_map) for placeholders still waiting.
 
     Two maps from ONE pass, so the hover tooltip and the progress card are the
     same computation and cannot disagree.
@@ -456,19 +456,26 @@ def _pending_maps():
                  saying WHY an eleven-minute run produced nothing is the whole
                  reason retention exists.
 
+    `module` names the surface that owns the placeholders -- `predicting` for a
+    prediction, `designing` for a generated backbone (#342). One function over two
+    surfaces rather than two copies: the asymmetry above is subtle enough that a second
+    implementation would get it wrong, and both surfaces publish the same three
+    functions precisely so this can be shared.
+
     Never raises: a failure here would freeze the whole object panel on a stale
     list, because the caller's single `except` writes no file at all.
     """
     try:
-        from pymol import predicting
-        pending = list(predicting.pending_objects())
-        retained = [n for n in predicting.recent_objects() if n not in pending]
+        import importlib
+        surface = importlib.import_module('pymol.%s' % module)
+        pending = list(surface.pending_objects())
+        retained = [n for n in surface.recent_objects() if n not in pending]
         if not pending and not retained:
             return {}, {}
         details, records = {}, {}
         for name in pending:
             try:
-                info = predicting.pending_info(name)
+                info = surface.pending_info(name)
             except Exception:
                 info = None
             if info is None:
@@ -478,7 +485,7 @@ def _pending_maps():
             records[name] = info
         for name in retained:
             try:
-                info = predicting.pending_info(name)
+                info = surface.pending_info(name)
             except Exception:
                 info = None
             if info is not None:
@@ -581,6 +588,15 @@ def poll_panel():
         _msa.pump()
     except Exception:
         pass
+    # Backbone generation's pump (#342), for exactly the reason prediction's is here: a
+    # design whose weights are still downloading is submitted from the main thread, and the
+    # download runs on a thread that must not touch the session. Its own try, and before
+    # the object list is gathered, so a placeholder the pump creates appears on this tick.
+    try:
+        from pymol import designing as _designing
+        _designing.pump()
+    except Exception:
+        pass
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])
@@ -608,6 +624,14 @@ def poll_panel():
         # runs on the MAIN thread every 500 ms and was already a measured hot spot
         # (PR #270), so it must stay O(pending), never O(objects).
         pending_details, pending_records = _pending_maps()
+        # Backbone designs (#342), through the same one pass. A design's record has the
+        # SAME shape as a prediction's -- designing.pending_info publishes the same keys,
+        # deliberately, so one Swift decoder serves both -- but it is a separate key
+        # because the two are separate job tables with separate cancel commands, and a
+        # merged map would send a design's object name to predict_cancel.
+        #
+        # Same cost discipline: normally empty, O(pending) and never O(objects).
+        design_details, design_records = _pending_maps('designing')
         payload = {
             'objects': objs,
             'selections': sels,
@@ -617,8 +641,14 @@ def poll_panel():
             'has_transp': {o: object_has_atom_transp(o) for o in objs},
             'groups': groups,
             'parent': parents,
-            'pending': pending_details,
+            'pending': dict(pending_details, **design_details),
             'pending_jobs': pending_records,
+            # OPTIONAL at the far end, like every field added to PanelPayload: one
+            # non-optional fails the single `guard let` decode and freezes the panel on its
+            # last list. Merged into `pending` above rather than kept separate, because
+            # that map's only consumer greys an object's enable-toggle -- and a design
+            # placeholder needs greying for the same reason a prediction's does.
+            'design_jobs': design_records,
             # Alignments (#296). Not objects -- they have no geometry and nothing in
             # the Executive knows about them -- so the panel draws them as their own
             # section rather than as rows in the object list.

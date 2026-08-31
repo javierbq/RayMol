@@ -76,6 +76,29 @@ packages:
     # triangle-attention heads, and v2's 256-wide pair track needs 8, so all three v2
     # packs died on load. Required for the v2 predictors registered here.
     from: 0.1.3
+  # rfd3-mlx: on-device RFdiffusion3 BACKBONE GENERATION (#342). The first method here
+  # that produces a chain rather than folding one, so it sits behind cmd.binder_design
+  # rather than cmd.predict.
+  #
+  # macOS only, like BoltzMLX was before #328 and like ProtenixMLX still is, and for a
+  # sharper reason than either: one design against a full-length target peaks near half
+  # of a 36 GiB Mac and takes ~17 minutes, and its out-of-memory failure is an
+  # uncatchable SIGABRT rather than a slow fold. iOS follows #249's pattern when it does.
+  #
+  # Pins mlx-swift `exact: 0.31.6` -- the SAME exact pin MPNNKit and BoltzMLX carry, so
+  # resolution composes. `exact:` has no consumer-side override, so if any one of the
+  # three bumps independently, resolution fails outright and the app will not build at
+  # all. Bump them together and re-tag.
+  RFD3MLX:
+    url: https://github.com/javierbq/rfd3-mlx.git
+    # 0.1.3 is a FLOOR, and `from:` means >=0.1.3 <1.0.0, so it is also the only version
+    # this branch can resolve to today. 0.1.3 REPLACED the trajectory hook -- 0.1.2's
+    # `Options.onStepCoords` was removed, not deprecated, in favour of
+    # `Options.onStepDenoised` (same shape, same 1-based step, same lazy closure) -- so a
+    # `from: 0.1.2` pin would resolve to 0.1.3 anyway and fail to compile the moment
+    # Package.resolved was regenerated. `FeatSet.origin`, which the live path also needs,
+    # arrived in 0.1.2 and is still there.
+    from: 0.1.3
   # Sparkle auto-update framework. macOS-only — linked into the macOS slice of the
   # shared PyMOLViewer target via a platformFilter dependency; never the iOS slice.
   # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build by archive_appstore.sh
@@ -618,6 +641,12 @@ targets:
       - package: ProtenixMLX
         product: ProtenixMLX
         platforms: [macOS]
+      # rfd3-mlx: backbone generation (#342). macOS-only filter, so RFD3Kit is kept out of
+      # the iOS link entirely -- and likewise outside the Sparkle markers, or
+      # archive_appstore.sh's sed-strip would remove it from the MAS build.
+      - package: RFD3MLX
+        product: RFD3Kit
+        platforms: [macOS]
 # RAYMOL_SPARKLE_BEGIN — stripped for the Mac App Store build (see archive_appstore.sh)
       # macOS-only: Sparkle has no iOS slice, so the platforms filter keeps it
       # out of the iOS build. All Swift usage is additionally guarded by
@@ -658,6 +687,11 @@ targets:
       # ProtenixMLX: same, for ProtenixJobManager.swift.
       - package: ProtenixMLX
         product: ProtenixMLX
+      # RFD3Kit: same, for RFD3JobManager.swift / RFD3SizeGuard.swift. Unfiltered, because
+      # the test target is macOS-only by its own `platform: macOS` -- and without it
+      # `@testable import RayMol` cannot compile a file that imports RFD3Kit.
+      - package: RFD3MLX
+        product: RFD3Kit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.raymol.RayMol.tests

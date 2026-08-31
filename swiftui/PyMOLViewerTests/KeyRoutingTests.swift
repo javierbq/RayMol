@@ -341,6 +341,8 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.measureTool), "⌃E")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.designTool), "⌃D")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.predictTool), "⌃P")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.binderDesignTool), "⌃B")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.boxSelect), "⌃S")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘1")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘2")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘3")
@@ -357,7 +359,7 @@ final class AppShortcutsTests: XCTestCase {
     func testControlShortcutsMatchPythonAuditTable() {
         let ctrl = AppShortcuts.all.filter { $0.modifiers.contains(.control) }
         XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
-                       ["m", "e", "d", "p", "b"])
+                       ["m", "e", "d", "p", "b", "s"])
     }
 
     /// The pane toggles are one plain-⌘ family (#361): immune to raymolrc

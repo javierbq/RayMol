@@ -130,6 +130,19 @@ final class PyMOLEngine: ObservableObject {
     /// collection here -- an unguarded 2 Hz assignment re-lays-out the tray on
     /// every tick even when nothing changed.
     @Published var predictionJobs: [PredictionJobState] = []
+    /// Running backbone designs (#342), refreshed by the same poll. A separate array from
+    /// `predictionJobs`, not a merged one: they are separate job tables with separate
+    /// cancel commands, and the tray renders them with different words. Same record type,
+    /// because `designing.pending_info` publishes the same keys as
+    /// `predicting.pending_info` deliberately. Guarded on assignment for the same reason.
+    @Published var designJobs: [PredictionJobState] = []
+    #if os(macOS)
+    /// Binder Design mode (#342). macOS only, and GATED rather than merely unused: the
+    /// controller it drives lives behind `#if os(macOS)` because RFD3Kit is macOS-only,
+    /// and this file compiles on both platforms. An ungated reference here is exactly the
+    /// leak that has broken the iOS slice three times (#174, #226/#238).
+    @Published var binderDesignMode = false
+    #endif
     // Restored from the last launch (#332). A session (.pse) that turns seq_view
     // on still wins — it assigns this property after launch, like any other setter.
     @Published var sequenceVisible = UserDefaults.standard
@@ -2114,6 +2127,7 @@ final class PyMOLEngine: ObservableObject {
             if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
             setDesignMode(false)                                            // mutually exclusive
             setPredictMode(false)                                            // mutually exclusive
+            clearBinderDesignMode()                                          // mutually exclusive
             runPython("from pymol import appkit_measure as _am\n_am.set_mode('\(k.rawValue)')")
         } else {
             runPython("from pymol import appkit_measure as _am\n_am.reset()")
@@ -2214,7 +2228,8 @@ final class PyMOLEngine: ObservableObject {
             // ENTERING branch, and the clearing block below is `if on`-guarded.
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
-            setPredictMode(false)   // mutually exclusive
+            setPredictMode(false)        // mutually exclusive
+            clearBinderDesignMode()      // mutually exclusive
         }
         designMode = on
         // Arm/disarm the Design-mode 'sele' digest that poll_panel computes. Off ⇒
@@ -2226,6 +2241,74 @@ final class PyMOLEngine: ObservableObject {
     /// Enter/leave Predict mode. Exclusive with Move/Measure/Design, matching
     /// setDesignMode's entering-branch clears. On entry, refresh the form (loads the
     /// predictor list); on exit, reset any in-flight search/predict tracking.
+    #if os(macOS)
+    /// Leave Binder Design if it is on, and report whether that actually happened.
+    ///
+    /// The teardown half of ``setBinderDesignMode(_:)``, factored out because every other
+    /// exclusive setter needs it and none of them can call the setter itself without
+    /// recursing back through its clearing block. `setPredictMode` open-coded this;
+    /// `setDesignMode`, `setMeasureMode` and `setInteractionMode` simply did not have it,
+    /// so entering Design, Measure, Move or Box Select left Binder Design on and two
+    /// docked bars fighting for the one strip above the viewport — and
+    /// ``exitActiveInteractionMode()`` did not know about it either, so Esc fell through
+    /// to clearing the selection instead of closing the bar. That is the symmetry the
+    /// 2026-07-25 mode-exclusion plan (#235) exists to hold, and a new mode has to join it.
+    ///
+    /// Carries the same `isCalculating` gate the setters do, so a mode blocked mid-inference
+    /// stays blocked here too and `exitActiveInteractionMode` does not report an exit that
+    /// did not happen.
+    @discardableResult
+    func clearBinderDesignMode() -> Bool {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return false }
+        #endif
+        guard binderDesignMode else { return false }
+        MainActor.assumeIsolated { binderDesignController.cancel() }
+        binderDesignMode = false
+        return true
+    }
+    #else
+    /// iOS links no design runtime and never turns the mode on, so there is nothing to
+    /// leave. Defined rather than omitted so its five call sites can stay unconditional:
+    /// an `#if os(macOS)` at each of them, in a file that compiles on both platforms, is
+    /// the exact leak shape that has broken the iOS slice three times (#174, #226/#238).
+    @discardableResult
+    func clearBinderDesignMode() -> Bool { false }
+    #endif
+
+    #if os(macOS)
+    /// Binder Design (#342) is on. macOS only, like the runtime behind it.
+    ///
+    /// A MODE with a docked bar rather than a sheet, because that is what every other tool
+    /// here is -- Predict takes a selection plus options and a Run button in exactly this
+    /// shape. Mutually exclusive with the others for the same reason they are with each
+    /// other: two docked bars would fight for the same strip above the viewport.
+    func setBinderDesignMode(_ on: Bool) {
+        #if RAYMOL_MPNN
+        if MainActor.assumeIsolated({ designController.isCalculating }) { return }
+        #endif
+        if on {
+            if interactionMode == .move { setInteractionMode(.viewing) }
+            if measureMode != nil { setMeasureMode(nil) }
+            setDesignMode(false)
+            setPredictMode(false)
+            binderDesignMode = true
+            MainActor.assumeIsolated {
+                // Seed the target with a loaded structure before resolving, so the bar
+                // opens describing something real. Only fills an EMPTY field, so it never
+                // clobbers a target the user typed and left.
+                binderDesignController.prepare(
+                    defaultTarget: objects.first { !$0.isSelection }?.name ?? "")
+                binderDesignController.refresh()
+            }
+        } else {
+            MainActor.assumeIsolated { binderDesignController.cancel() }
+            binderDesignMode = false
+        }
+    }
+
+    #endif
+
     func setPredictMode(_ on: Bool) {
         #if RAYMOL_MPNN
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
@@ -2234,6 +2317,10 @@ final class PyMOLEngine: ObservableObject {
             if interactionMode == .move { setInteractionMode(.viewing) }
             if measureMode != nil { setMeasureMode(nil) }
             setDesignMode(false)
+            // Not setBinderDesignMode(false): that would recurse back into this function.
+            // `clearBinderDesignMode` is that setter's teardown half, shared with the
+            // three other exclusive setters so all four clear it the same way.
+            clearBinderDesignMode()
             predictMode = true
             MainActor.assumeIsolated { predictController.refresh() }
         } else {
@@ -2242,7 +2329,8 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
-    // MARK: - Exclusive interaction modes (Move / Design / Measure)
+    // MARK: - Exclusive interaction modes
+    //         (Move / Box Select / Design / Measure / Predict / Binder Design)
 
     /// Leave whichever exclusive interaction mode is active, each through that
     /// mode's OWN existing exit path — so the Esc key (see
@@ -2251,10 +2339,13 @@ final class PyMOLEngine: ObservableObject {
     /// whose `.onChange` observer in ContentView runs the visual-state restore and
     /// edit-session teardown; Esc must never grow a second, divergent path. (#235)
     ///
-    /// The three modes are mutually exclusive, so in practice at most one branch
-    /// runs. They are checked independently rather than with early returns so a
-    /// desynchronized state still unwinds completely instead of leaving one mode
-    /// stranded.
+    /// The modes are mutually exclusive, so in practice at most one branch runs. They
+    /// are checked independently rather than with early returns so a desynchronized
+    /// state still unwinds completely instead of leaving one mode stranded.
+    ///
+    /// EVERY exclusive mode must appear here. A mode that enters but is not listed is
+    /// one Esc cannot leave, which is how Binder Design shipped its bar with no keyboard
+    /// way out (#342).
     ///
     /// - Returns: whether any mode was actually exited. Callers use this to fall
     ///   through to their next behavior (Esc clears the selection) when Escape
@@ -2273,6 +2364,10 @@ final class PyMOLEngine: ObservableObject {
         }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         if predictMode { setPredictMode(false); exited = exited || !predictMode }
+        // Binder Design reports its own exit rather than being re-read afterwards: the
+        // flag it clears does not exist on iOS, so `clearBinderDesignMode` returning the
+        // answer is what keeps this line free of a platform gate. It is a no-op there.
+        exited = clearBinderDesignMode() || exited
         return exited
     }
 
@@ -2548,6 +2643,34 @@ final class PyMOLEngine: ObservableObject {
     }()
 #endif
 
+    #if os(macOS)
+    /// Form state for the Binder Design bar (#342), wired to this engine's seams.
+    /// The peer of ``predictController``; same two seams, same reasons.
+    @MainActor
+    lazy var binderDesignController: BinderDesignController = {
+        let dc = BinderDesignController()
+        // The COMMAND channel, not runPython: a binder_design lands in the console
+        // history like anything typed there, which is what lets a user adapt and re-run
+        // it -- and it is how every refusal `pymol.designing` raises gets reported the
+        // way every other command's is, instead of duplicated into a second surface.
+        dc.runCommandSeam = { [weak self] command in self?.runCommand(command) }
+        // Trigger the tempfile-JSON feed; DESIGN_FORM:ready routes back in pollFeedback.
+        dc.refreshTrigger = { [weak self] target, hotspots, generator in
+            // All three are single-line tokens -- a selection expression, a selection
+            // expression, a generator id -- so the newline-deleting `pythonLiteral` is
+            // the right one; `pythonMultilineLiteral` is for PDB payloads. #352 folded
+            // this file's fourth copy of the escaper onto InferenceJob's.
+            let t = InferenceJob.pythonLiteral(target)
+            let h = InferenceJob.pythonLiteral(hotspots)
+            let g = InferenceJob.pythonLiteral(generator)
+            self?.runPython("from pymol import appkit_design as _ad\n"
+                            + "_ad.emit(\(t), \(h), \(g))")
+        }
+        return dc
+    }()
+
+    #endif
+
     lazy var predictController: PredictController = {
         // PredictController is @MainActor; lazy vars run in a nonisolated context.
         // assumeIsolated is safe here: predictController is always first accessed from
@@ -2682,6 +2805,7 @@ final class PyMOLEngine: ObservableObject {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
             setPredictMode(false)                            // mutually exclusive
+            clearBinderDesignMode()                          // mutually exclusive
         }
         if mode == .boxSelect {
             // The box freezes hover picking (MetalViewport.handleMouseMoved), so
@@ -3385,6 +3509,15 @@ final class PyMOLEngine: ObservableObject {
                     // PredictAvailability, so a guard here would only be a third place to
                     // forget.
                     InferenceRouter.handle(marker: line)
+                } else if line.hasPrefix("DESIGN_FORM:ready") {
+                    #if os(macOS)
+                    parseDesignFormFeedback()
+                    #endif
+                } else if line.hasPrefix("DESIGN_FORM:err") {
+                    // Swallowed for the reason PREDICT_FORM:err is: a resolve error is
+                    // already carried in the payload's `error` field on a normal `ready`,
+                    // so this only fires if the WRITE failed, which the bar surfaces as a
+                    // stale form rather than as a second error channel.
                 } else if line.hasPrefix("PREDICT_FORM:ready") {
                     parsePredictFormFeedback()
                 } else if line.hasPrefix("PREDICT_FORM:err") {
@@ -3481,6 +3614,27 @@ final class PyMOLEngine: ObservableObject {
         let pyList = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }.joined(separator: ", ")
         runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
     }
+
+    #if os(macOS)
+    /// The Binder Design bar's resolved target. The peer of
+    /// ``parsePredictFormFeedback()``, and file-based for the same reason: the payload can
+    /// exceed PyMOL's ~1KB feedback-line cap, so only the marker rides the line.
+    ///
+    /// A missing or undecodable file returns silently and leaves the bar showing its last
+    /// resolve. That is deliberate: this runs off a 100 ms poll, and a throw here would
+    /// take the whole feedback drain down.
+    func parseDesignFormFeedback() {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("pymol_design_\(ProcessInfo.processInfo.processIdentifier).json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let payload = try? JSONDecoder().decode(DesignFormPayload.self, from: data)
+        else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.binderDesignController.loadFormPayload(payload)
+        }
+    }
+
+    #endif
 
     func parsePredictFormFeedback() {
         let path = (NSTemporaryDirectory() as NSString)

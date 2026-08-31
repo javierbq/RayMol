@@ -147,6 +147,211 @@ struct ProgressItem: Identifiable, Equatable {
             bundle: job.bundle)
     }
 
+    /// A running or finished BACKBONE DESIGN.
+    ///
+    /// A sibling of `prediction(_:)` rather than a parameter on it. The wire record is the
+    /// same shape -- `designing.pending_info` produces the same keys as
+    /// `predicting.pending_info`, deliberately, so one decoder serves both -- but every
+    /// user-visible word differs, and a design's numbers differ in kind: there is one
+    /// design per object, so there is no "model k of N", and it takes MINUTES rather than
+    /// seconds, which makes the elapsed clock the useful half rather than the fallback.
+    ///
+    /// No string this card RENDERS calls the result a binder. The tool is called Binder
+    /// Design and the command is `binder_design` — naming the method is a claim about what
+    /// RFdiffusion3 is for, not about any chain it produced — but a generated chain is a
+    /// designed backbone until it has been refolded and passed an interface gate, and this
+    /// card is seen long before either. So the row reads "Designing <object>", never
+    /// "Binder <object>". `RFD3RuntimeTests.testNoUserFacingStringCallsTheOutputABinder`
+    /// scans this file for exactly that.
+    static func design(_ job: PredictionJobState) -> ProgressItem {
+        var parts: [String] = []
+        // Diffusion step k of N. On a real target each step is seconds, so this is the
+        // line that says the job is alive at all.
+        if let step = job.step, let total = job.totalSteps, total > 0 {
+            parts.append("step \(step) of \(total)")
+        }
+        let elapsed = "\(ProgressCard.formatElapsed(job.elapsed)) elapsed"
+        // BOTH, unlike a prediction's card. A design is minutes long, so the elapsed clock
+        // is the number a user actually tracks -- dropping it in favour of a countdown
+        // would hide the one honest measure of a seventeen-minute run.
+        //
+        // The WHOLE-DESIGN estimate when there is one, and UNSCOPED: a lone design is the
+        // whole run, so there is nothing on this row for "4 min left" to be confused with
+        // -- the same rule the weight-download card follows. The phase-scoped estimate is
+        // the fallback rather than a second line, because it is what this row said before
+        // a whole-run estimate existed and it covers the window (the first ten seconds,
+        // and any phase that is not the dominant one) where the run estimate refuses to
+        // guess. Never both: two countdowns in one line is a puzzle, not a report.
+        if let run = job.runRemaining {
+            parts.append(ProgressCard.formatRemaining(run))
+        } else if let remaining = job.remaining {
+            parts.append(ProgressCard.formatPhaseRemaining(remaining))
+        }
+        parts.append(elapsed)
+
+        let icon: String
+        let title: String
+        let detail: String
+        if job.isCancelled {
+            icon = "xmark.circle"
+            title = "Design cancelled: \(job.id)"
+            detail = elapsed
+        } else if job.isError {
+            icon = "exclamationmark.triangle.fill"
+            title = "Design failed: \(job.id)"
+            detail = job.error ?? "Unknown error"
+        } else {
+            // Not "atom": a design is not a fold, and the tray may show both at once.
+            icon = "wand.and.stars"
+            title = "Designing \(job.id)"
+            var head = job.phase.capitalized
+            if job.moving, let fraction = job.fraction {
+                head += " \(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+            }
+            detail = ([head] + parts).joined(separator: " · ")
+        }
+
+        return ProgressItem(
+            id: "design:\(job.id)",
+            icon: icon,
+            title: title,
+            detail: detail,
+            fraction: job.fraction,
+            moving: job.moving && !job.isError,
+            isError: job.isError,
+            isCancelled: job.isCancelled,
+            buttonTitle: job.isError ? "Dismiss" : "Cancel",
+            // `design_*`, not `predict_*`: the two surfaces keep separate job tables, so a
+            // design's object name means nothing to predict_cancel. The `.python` channel
+            // and the import are load-bearing for the reasons `prediction(_:)` gives.
+            action: job.isError ? .python(pythonCall("design_dismiss", job.id))
+                                : .python(pythonCall("design_cancel", job.id)),
+            bundle: job.bundle)
+    }
+
+    /// One `binder_design n_designs=N` invocation, as ONE row.
+    ///
+    /// N designs from one command are not N jobs a user can act on independently: the
+    /// runtime runs them on a SERIAL queue, so exactly one is ever running and the rest
+    /// are waiting their turn. Listing ten rows, nine of them reading "Queued", reports
+    /// work that has not started as if it were ten separate jobs, and offers ten Cancels
+    /// where the user wants one.
+    ///
+    /// **The batch does not shrink as it succeeds.** A design that lands leaves no record
+    /// at all -- `deliver_result` pops it from every table -- so the size comes from
+    /// `batchTotal` on the wire and never from counting the rows that are left.
+    ///
+    /// **How far through** is the lowest-indexed member that has not settled. Submission
+    /// order IS queue order, so that member is the one running (or the one about to), and
+    /// every index below it has finished one way or another. Derived rather than counted
+    /// for the same reason: the successes are not there to count.
+    ///
+    /// A PARTIAL FAILURE is not a batch failure. While anything is still running the row
+    /// stays a running row and merely says how many have failed so far; only when nothing
+    /// is left does it become a terminal card, and even then it says how many of the N
+    /// failed rather than implying all of them did.
+    static func designBatch(_ members: [PredictionJobState]) -> ProgressItem {
+        // Sorted by index, with the id as a tiebreak so the choice is total and stable:
+        // the tray is rebuilt from a 2 Hz poll, and a row that reorders under the pointer
+        // makes Cancel unclickable.
+        let ordered = members.sorted {
+            ($0.batchIndex ?? 0, $0.id) < ($1.batchIndex ?? 0, $1.id)
+        }
+        let batch = ordered.first?.batch ?? ""
+        let total = max(ordered.compactMap(\.batchTotal).max() ?? ordered.count, 1)
+        let failed = ordered.filter { $0.isError && !$0.isCancelled }
+        let cancelled = ordered.filter(\.isCancelled)
+        // The batch's own clock, not one design's: every member is registered in the same
+        // instant, so the largest elapsed is the time since the command was typed.
+        let elapsed = "\(ProgressCard.formatElapsed(ordered.map(\.elapsed).max() ?? 0))"
+                    + " elapsed"
+
+        guard let current = ordered.first(where: { !$0.isError }) else {
+            // Nothing left running. Whatever is still on the wire is a terminal record
+            // that has not been dismissed -- the successes are already gone.
+            let icon: String
+            let title: String
+            let detail: String
+            if let first = failed.first {
+                icon = "exclamationmark.triangle.fill"
+                // "designs" is dropped on purpose, and it is not a style choice: the
+                // title is `lineLimit(1)` in a 340 pt card, and MEASURED with the real
+                // font, "1 of 10 designs failed: rfd3_batch_1f4c9e02" is 235.1 pt against
+                // 236.2 pt of room -- and the CANCELLED spelling was 264.1 pt, truncating
+                // by 28. Truncation is at the tail, so what it eats is the batch NAME,
+                // which is the half that identifies the row. Dropping one redundant word
+                // (this is a design card, with a design card's icon) buys 45 pt.
+                title = "\(failed.count) of \(total) failed: \(batch)"
+                // The first failure's own message, plus a count when there are more --
+                // a two-line card cannot carry ten reasons, and the individual cards are
+                // gone by construction.
+                var parts = [first.error ?? "Unknown error"]
+                if failed.count > 1 { parts.append("and \(failed.count - 1) more") }
+                if !cancelled.isEmpty { parts.append("\(cancelled.count) cancelled") }
+                detail = parts.joined(separator: " · ")
+            } else {
+                icon = "xmark.circle"
+                title = "\(cancelled.count) of \(total) cancelled: \(batch)"
+                detail = elapsed
+            }
+            return ProgressItem(
+                id: "design:\(batch)", icon: icon, title: title, detail: detail,
+                fraction: nil, moving: false, isError: true,
+                isCancelled: failed.isEmpty, buttonTitle: "Dismiss",
+                action: .python(pythonCall("design_dismiss", batch)),
+                bundle: ordered.first?.bundle)
+        }
+
+        let index = current.batchIndex ?? 1
+        // Whole-batch: the designs already behind this one, plus how far this one has got.
+        // The bar and the percentage read the same number, as they do on every other card.
+        let fraction = current.fraction.map {
+            (Double(index - 1) + min(max($0, 0), 1)) / Double(total)
+        }
+        var head = current.phase.capitalized
+        if current.moving, let fraction {
+            head += " \(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+        }
+        var parts = ["design \(index) of \(total)"]
+        if let step = current.step, let steps = current.totalSteps, steps > 0 {
+            parts.append("step \(step) of \(steps)")
+        }
+        // THE WHOLE BATCH, which is the question a batch row is asked: the design in
+        // flight plus every one still queued behind it, priced from the measured wall
+        // time of the ones that have already finished. Scoped by count, because this row
+        // is dense with per-design numbers and an unqualified countdown beside "design 3
+        // of 10 · step 100 of 199" would read as the current design's.
+        //
+        // The phase estimate is the fallback, not a companion: it is what this row said
+        // before, it covers the window where the run estimate refuses to guess, and there
+        // is no room on a two-line caption for both.
+        if let run = current.runRemaining {
+            parts.append(ProgressCard.formatRunRemaining(run, designs: total))
+        } else if let remaining = current.remaining {
+            parts.append(ProgressCard.formatPhaseRemaining(remaining))
+        }
+        parts.append(elapsed)
+        // Said while the rest are still running, so a batch that ends with nine designs
+        // and one failure never reads as ten successes.
+        if !failed.isEmpty { parts.append("\(failed.count) failed") }
+        if !cancelled.isEmpty { parts.append("\(cancelled.count) cancelled") }
+
+        return ProgressItem(
+            id: "design:\(batch)",
+            icon: "wand.and.stars",
+            title: "Designing \(batch)",
+            detail: ([head] + parts).joined(separator: " · "),
+            fraction: fraction,
+            moving: current.moving,
+            isError: false,
+            buttonTitle: "Cancel",
+            // The BATCH id, which `design_cancel` resolves to every job of that
+            // invocation still outstanding -- the one running and the ones queued behind
+            // it. One button, because there is one thing the user wants to stop.
+            action: .python(pythonCall("design_cancel", batch)),
+            bundle: current.bundle)
+    }
+
     /// A self-contained Python statement calling `cmd.<function>(<name>)`.
     ///
     /// `_c` rather than `cmd`: the name is bound in `__main__` for the duration of
@@ -160,19 +365,41 @@ struct ProgressItem: Identifiable, Equatable {
     ///
     /// A static rather than a computed property on ContentView so the merge, the
     /// filter and the sort are unit-testable without instantiating a View.
+    /// `designs` is defaulted, so every existing call site and test is unchanged and the
+    /// tray degrades to exactly its previous behaviour when nothing is designing.
     static func tray(weights: WeightsFetchState?,
-                     predictions: [PredictionJobState]) -> [ProgressItem] {
+                     predictions: [PredictionJobState],
+                     designs: [PredictionJobState] = []) -> [ProgressItem] {
         var items: [ProgressItem] = []
         if let weights { items.append(.weights(weights)) }
         // While a bundle is fetching, its OWN card is the measured one; a
         // prediction merely waiting on it would show the same transfer again at a
-        // different number.
+        // different number. A design waiting on a bundle is hidden for the same
+        // reason -- and it is the same `bundle` field, so the same filter covers it.
         let fetching = Set(items.compactMap(\.bundle))
-        items += predictions
-            .map(ProgressItem.prediction)
+        // Designs from ONE `n_designs` command collapse into ONE row; everything else is
+        // a row of its own. `batch` is present only on a design record and only when the
+        // command asked for more than one, so a prediction and a lone design both take
+        // the untouched path -- which is what keeps the prediction lane, shipped
+        // behaviour this feature does not own, exactly as it was.
+        var batches: [String: [PredictionJobState]] = [:]
+        var singles: [PredictionJobState] = []
+        for job in designs {
+            if let batch = job.batch, !batch.isEmpty { batches[batch, default: []].append(job) }
+            else { singles.append(job) }
+        }
+        items += (predictions.map(ProgressItem.prediction)
+                  + singles.map(ProgressItem.design)
+                  // `batches` is a dictionary, so this map's order is undefined -- and it
+                  // does not matter, because the sort below is TOTAL: every row's id is
+                  // unique, so `lhs.id < rhs.id` decides every pair within a tier. Sorting
+                  // the keys here as well was measured to change the answer on nothing.
+                  + batches.values.map(ProgressItem.designBatch))
             .filter { item in item.bundle.map { !fetching.contains($0) } ?? true }
         // Running first, so a live job is never pushed below the fold by a stale
-        // error card the user has not dismissed.
+        // error card the user has not dismissed. Within a tier by id, which puts
+        // "design:" before "predict:" -- arbitrary but STABLE, which is what stops
+        // the rows reordering under the pointer on every poll.
         return items.sorted { lhs, rhs in
             lhs.isError == rhs.isError ? lhs.id < rhs.id : !lhs.isError
         }
@@ -248,6 +475,31 @@ struct ProgressCard: View {
     /// card must never word one estimate two different ways.
     static func formatPhaseRemaining(_ seconds: Double) -> String {
         "this phase: " + formatRemaining(seconds)
+    }
+
+    /// The whole-RUN estimate for a BATCH: "all 10: 41 min left".
+    ///
+    /// Scoped, and scoped by COUNT, because the row it sits on already carries a
+    /// per-design counter ("design 3 of 10") and a per-design step counter, and an
+    /// unqualified "41 min left" beside those reads as the current design's. Naming the
+    /// count is what says the number covers designs that have not started; it is the
+    /// same count the row has already said, two segments earlier.
+    ///
+    /// The terseness is MEASURED, not taste. The caption is `lineLimit(2)` in a 340 pt
+    /// card, and the wording this replaces was already over at the top of its range:
+    /// with `diffusion_steps` at its ceiling of 10,000 and every design below the
+    /// running one settled badly, "this phase: ..." needs THREE lines (626.7 pt against
+    /// a 632 pt budget, which word-wrap cannot pack). "all 10 designs:" needs three at
+    /// the DEFAULT 200 steps. "all 10:" needs two at both — 601.5 pt at the ceiling, 25
+    /// pt shorter than what ships today at every point on the range, so the row can only
+    /// get better. See `testEveryDetailLineFITSTheTwoItIsAllowed`.
+    ///
+    /// A LONE design gets the UNSCOPED `formatRemaining` instead — see
+    /// `ProgressItem.design`. There is nothing there for the number to be confused
+    /// with, and that row is where the weight card's rule applies: the estimate IS the
+    /// whole task, so "4 min left" means what it says.
+    static func formatRunRemaining(_ seconds: Double, designs: Int) -> String {
+        "all \(designs): " + formatRemaining(seconds)
     }
 
     /// Coarse for the same reason, and never counts down -- this one is measured.
