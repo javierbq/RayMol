@@ -4,7 +4,7 @@ Covers the shadow-warning audit (RayMol#258): when a user's ~/.raymolrc binds a
 key that RayMol also uses as a menu shortcut, the user is told once rather than
 left wondering why the menu item stopped responding to its key.
 
-Only the ⌃-letter shortcuts (⌃M/⌃E/⌃B/⌃D/⌃P) can collide: every other RayMol
+Only the ⌃-letter shortcuts (⌃M/⌃E/⌃S/⌃D/⌃P/⌃B) can collide: every other RayMol
 menu shortcut carries ⌘, and the classifier passes ⌘ events straight through to
 the menus.
 """

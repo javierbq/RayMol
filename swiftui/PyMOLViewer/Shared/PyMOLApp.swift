@@ -316,94 +316,98 @@ struct PyMOLApp: App {
                     NotificationCenter.default.post(name: .raymolClearSession, object: nil)
                 }
             }
-            // Mouse menu: the exclusive viewport tools that reinterpret a
-            // click/drag. Shortcuts come from AppShortcuts (#360) so these menu
-            // commands and the tool-picker rows can never disagree.
-            CommandMenu("Mouse") {
+            // TOOLS — every exclusive interaction mode, in one menu.
+            //
+            // These six are mutually exclusive: entering any one leaves the other
+            // five (see PyMOLEngine's clearing setters and
+            // `exitActiveInteractionMode`). Split across four top-level menus --
+            // Mouse, Design, Predict, Binder Design -- that relationship was
+            // invisible, and a tool's shortcut could only be found by opening the
+            // menu it happened to live in. One menu makes the exclusion set legible
+            // and puts all six key equivalents on screen together.
+            //
+            // It also matches the in-app Tools pill, which already carries this
+            // exact list (`ContentView.interactionToolItems`) under this exact
+            // name, so the menu bar and the pill are now two views of one thing.
+            //
+            // Shortcuts come from AppShortcuts (#360), so these commands, the pill
+            // rows and the tooltips cannot disagree. The registration lives HERE
+            // rather than only on the pill because a menu key equivalent is what
+            // fires reliably on macOS (see the ⌘C note above).
+            CommandMenu("Tools") {
+                // The viewport tools first: these three reinterpret a click or a
+                // drag, which is what this menu was called "Mouse" for.
                 Button(engine.interactionMode == .move ? "Stop Moving Objects" : "Move Objects") {
                     engine.setInteractionMode(engine.interactionMode == .move ? .viewing : .move)
                 }
                 .disabled(isDesignLocked)
                 .keyboardShortcut(AppShortcuts.moveTool)
-                // Measure (#360): previously mouse-only; the menu command is what
-                // makes ⌃E fire reliably on macOS (see the ⌘C note above) — the
-                // tool-picker row carries the same constant for the hint.
                 Button(engine.measureMode != nil ? "Stop Measuring" : "Measure Distances") {
                     engine.setMeasureMode(engine.measureMode == nil ? .distance : nil)
                 }
                 .disabled(isDesignLocked)
                 .keyboardShortcut(AppShortcuts.measureTool)
-                // Box Select (#358): the other exclusive viewport tool that
-                // reinterprets a drag, so it belongs on the same menu. ⌃S — S for
-                // "select"; it gave up ⌃B to Binder Design, whose name starts with
-                // the letter (#342).
+                // ⌃S — S for "select"; it gave up ⌃B to Binder Design, whose name
+                // starts with the letter (#342, #358).
                 Button(engine.interactionMode == .boxSelect ? "Stop Box Select" : "Box Select") {
                     engine.setInteractionMode(engine.interactionMode == .boxSelect ? .viewing : .boxSelect)
                 }
                 .disabled(isDesignLocked)
                 .keyboardShortcut(AppShortcuts.boxSelect)
-            }
-            // Grouped so these entries together count as ONE against the
-            // @CommandsBuilder's 10-child ceiling (Group<Commands> exists for
-            // exactly this reason) — the builder is already at capacity.
-            Group {
-                // View menu: the pane toggles (#361) — open if closed, close if
-                // open. One plain-⌘ family, which KeyRouting passes straight
-                // through to the menus, so a ~/.raymolrc binding can never
-                // shadow them. The rail pills / tongue flip the same persisted
-                // flags (PanelLayout keys / engine.sequenceVisible), so menu and
-                // pointer stay in agreement.
-                CommandGroup(after: .sidebar) {
-                    Button(showCommandPanel ? "Hide Console" : "Show Console") {
-                        showCommandPanel.toggle()
-                    }
-                    .keyboardShortcut(AppShortcuts.consolePane)
-                    Button(engine.sequenceVisible ? "Hide Sequence" : "Show Sequence") {
-                        engine.sequenceVisible.toggle()
-                    }
-                    .keyboardShortcut(AppShortcuts.sequencePane)
-                    Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {
-                        showObjectPanel.toggle()
-                    }
-                    .keyboardShortcut(AppShortcuts.sidePanel)
-                }
+
+                Divider()
+
+                // Then the tools that raise a bar or an overlay rather than
+                // reinterpreting the pointer. Same exclusion set, different shape,
+                // which is what the divider says.
                 #if RAYMOL_MPNN
-                // Design menu: toggle Design mode (MPNN score/color overlay). ⌃D.
-                CommandMenu("Design") {
-                    Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
-                        engine.setDesignMode(!engine.designMode)
-                    }
-                    .disabled(isDesignLocked)
-                    .keyboardShortcut(AppShortcuts.designTool)
+                Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
+                    engine.setDesignMode(!engine.designMode)
                 }
+                .disabled(isDesignLocked)
+                .keyboardShortcut(AppShortcuts.designTool)
                 #endif
-                // Predict menu: toggle Predict mode (structure prediction panel). ⌃P.
-                // A real menu command, not the toolbar-Menu button's shortcut, so it
-                // fires reliably (see the ⌘C comment above).
-                CommandMenu("Predict") {
-                    Button(engine.predictMode ? "Exit Predict Mode" : "Enter Predict Mode") {
-                        engine.setPredictMode(!engine.predictMode)
-                    }
-                    .disabled(isDesignLocked)
-                    .keyboardShortcut(AppShortcuts.predictTool)
+                Button(engine.predictMode ? "Exit Predict Mode" : "Enter Predict Mode") {
+                    engine.setPredictMode(!engine.predictMode)
                 }
+                .disabled(isDesignLocked)
+                .keyboardShortcut(AppShortcuts.predictTool)
                 #if os(macOS)
-                // Binder Design (#342): the same shape as Predict above, and a REAL
-                // menu command rather than the Tools-pill button's shortcut, so it fires
-                // reliably. ⌃B, from AppShortcuts like every other tool — the first
-                // letter of the tool's name, which is why Box Select moved to ⌃S.
-                // The menu names the TOOL; what it produces is a designed backbone until
-                // a refold and an interface gate say otherwise. Menu and item share the
-                // name, exactly as Predict's do above.
-                CommandMenu("Binder Design") {
-                    Button(engine.binderDesignMode ? "Exit Binder Design"
-                                                     : "Binder Design…") {
-                        engine.setBinderDesignMode(!engine.binderDesignMode)
-                    }
-                    .disabled(isDesignLocked)
-                    .keyboardShortcut(AppShortcuts.binderDesignTool)
+                // The item names the TOOL; what it produces is a designed backbone
+                // until a refold and an interface gate say otherwise (#342).
+                Button(engine.binderDesignMode ? "Exit Binder Design" : "Binder Design…") {
+                    engine.setBinderDesignMode(!engine.binderDesignMode)
                 }
+                .disabled(isDesignLocked)
+                .keyboardShortcut(AppShortcuts.binderDesignTool)
                 #endif
+            }
+            // View menu: the pane toggles (#361) — open if closed, close if
+            // open. One plain-⌘ family, which KeyRouting passes straight
+            // through to the menus, so a ~/.raymolrc binding can never
+            // shadow them. The rail pills / tongue flip the same persisted
+            // flags (PanelLayout keys / engine.sequenceVisible), so menu and
+            // pointer stay in agreement.
+            //
+            // No longer wrapped in a `Group`: that existed only to make the
+            // Design / Predict / Binder Design menus count as one child against
+            // @CommandsBuilder's 10-child ceiling, and folding those three into
+            // Tools removed the three children it was buying room for. This
+            // builder now sits at exactly 10, so the NEXT top-level menu added
+            // here needs a `Group` around it and a sibling.
+            CommandGroup(after: .sidebar) {
+                Button(showCommandPanel ? "Hide Console" : "Show Console") {
+                    showCommandPanel.toggle()
+                }
+                .keyboardShortcut(AppShortcuts.consolePane)
+                Button(engine.sequenceVisible ? "Hide Sequence" : "Show Sequence") {
+                    engine.sequenceVisible.toggle()
+                }
+                .keyboardShortcut(AppShortcuts.sequencePane)
+                Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {
+                    showObjectPanel.toggle()
+                }
+                .keyboardShortcut(AppShortcuts.sidePanel)
             }
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
