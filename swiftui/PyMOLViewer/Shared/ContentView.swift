@@ -1202,6 +1202,9 @@ struct ContentView: View {
         panel.allowedContentTypes = macImportTypes
         panel.title = "Open Structure"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // A chosen .pse replaces the whole session (no multi-window yet, #29) —
+        // same warn/save/cancel stopgap as the Finder open path (issue #349).
+        guard confirmReplaceSessionIfNeeded(opening: url, engine: engine) else { return }
         let raw = url.deletingPathExtension().lastPathComponent
         var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
         if name.isEmpty { name = "mol" }

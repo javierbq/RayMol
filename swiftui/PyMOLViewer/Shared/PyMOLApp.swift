@@ -3,6 +3,7 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+import UniformTypeIdentifiers
 #endif
 #if os(iOS)
 import UIKit
@@ -522,6 +523,9 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
         }
         return
     }
+    #if os(macOS)
+    guard confirmReplaceSessionIfNeeded(opening: url, engine: engine) else { return }
+    #endif
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
     let ext = url.pathExtension.isEmpty ? "pdb" : url.pathExtension
@@ -542,6 +546,71 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     // so observers read the newly restored embedded Analysis Notes payload.
     engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
 }
+
+// Opening a session file REPLACES the whole current session — PyMOL sessions are
+// app-global and there is no multi-window support yet (#29), so a Finder
+// double-click on a .pse silently wiped whatever was on screen (issue #349).
+// True when that destructive replace is about to happen: a session file is being
+// opened while objects are loaded. Pure and engine-free so it's unit-testable
+// (same pattern as handleOpenedURLs below).
+func openWouldReplaceSession(_ url: URL, hasObjects: Bool) -> Bool {
+    hasObjects && PyMOLEngine.isSessionFile(url.path)
+}
+
+#if os(macOS)
+// Stopgap for issue #349 until sessions can open in their own window/tab: before
+// a .pse/.psw replaces a non-empty session, offer to save the current one first,
+// replace it outright, or cancel the open. Returns false when the open must not
+// proceed (Cancel, or a failed/cancelled save).
+@MainActor
+func confirmReplaceSessionIfNeeded(opening url: URL, engine: PyMOLEngine) -> Bool {
+    guard openWouldReplaceSession(url, hasObjects: !engine.objects.isEmpty)
+    else { return true }
+    let alert = NSAlert()
+    alert.messageText = "Replace the current session?"
+    alert.informativeText = """
+        Opening “\(url.lastPathComponent)” will replace everything in the current \
+        session. RayMol can’t open sessions in separate windows yet.
+        """
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Save and Replace…")
+    alert.addButton(withTitle: "Replace")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+        return saveCurrentSessionForReplace(engine: engine)
+    case .alertSecondButtonReturn:
+        return true
+    default:
+        return false
+    }
+}
+
+// Save the outgoing session before it's replaced, mirroring ⌘S semantics: an open
+// document is overwritten silently; an untitled session shows the Save panel.
+// Ordering is safe without waiting — cmd.save and the subsequent `load` both run
+// synchronously through the bridge on the main actor, in issue order. Returns
+// false when the user cancels the panel, which aborts the replace.
+@MainActor
+private func saveCurrentSessionForReplace(engine: PyMOLEngine) -> Bool {
+    let notes = AnalysisNotesStore.shared
+    let dest: URL
+    if let current = engine.currentSessionURL {
+        dest = current
+    } else {
+        let panel = NSSavePanel()
+        if let pse = UTType(filenameExtension: "pse") { panel.allowedContentTypes = [pse] }
+        panel.nameFieldStringValue = "session.pse"
+        panel.canCreateDirectories = true
+        panel.title = "Save Session"
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        dest = url
+    }
+    notes.sessionDidSave(to: dest)
+    engine.saveSession(to: dest)
+    return true
+}
+#endif
 
 // Load EVERY URL the OS handed us in one open (multi-file Terminal `open`, Finder
 // "Open With" multi-select, Dock-icon drop). Factored out of RayMolAppDelegate so
