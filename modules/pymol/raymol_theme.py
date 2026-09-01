@@ -135,8 +135,17 @@ def apply_default_style(obj):
 
 
 def apply_to(obj):
-    """Theme a NEWLY loaded object: default style + themed chain/element colors."""
+    """Theme a NEWLY loaded object: default style + themed chain/element colors.
+
+    No-op when no object by that name exists — e.g. a caller guessed a name from
+    a filename that the load didn't create (a .pse restores its own object names,
+    issue #272). Skipping BEFORE touching the selector matters: the C++ selector
+    writes `Invalid selection name` straight to the console feedback stream, so
+    the try/except below can't suppress it (same mechanism as issue #219).
+    """
     try:
+        if obj not in cmd.get_names("objects"):
+            return
         apply_default_style(obj)
         cbc("(%s)" % obj)
         cnc("(%s)" % obj)

@@ -1379,12 +1379,34 @@ final class PyMOLEngine: ObservableObject {
         runPython(py)
     }
 
+    /// True when `path` is a session file (.pse/.psw). A session restores its own
+    /// object names, colors, representations and settings, so the coordinate-file
+    /// load contract (object name + theming) does not apply to it.
+    static func isSessionFile(_ path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext == "pse" || ext == "psw"
+    }
+
+    /// The exact command pair `loadStructure` runs — factored pure for tests.
+    /// Sessions load bare: passing an object name to `load foo.pse` is meaningless
+    /// (nothing by that name is created, and the selector logs `Invalid selection
+    /// name` straight to the console — issue #272), and theming would clobber the
+    /// very colors/representations the .pse was saved to keep.
+    static func loadInvocation(path: String, name: String)
+        -> (command: String, theme: String?) {
+        if isSessionFile(path) { return ("load \(path)", nil) }
+        return ("load \(path), \(name)",
+                "from pymol import raymol_theme as _rt; _rt.apply_to('\(name)')")
+    }
+
     /// Load a structure then theme it (default style + chain/element colors) for
-    /// the NEW object only. Routes all UI/agent/open-with load paths.
+    /// the NEW object only — or restore a session untouched. Routes all UI/agent/
+    /// open-with load paths.
     func loadStructure(path: String, name: String) {
         guard isReady else { return }
-        runCommand("load \(path), \(name)")
-        runPython("from pymol import raymol_theme as _rt; _rt.apply_to('\(name)')")
+        let (command, theme) = Self.loadInvocation(path: path, name: name)
+        runCommand(command)
+        if let theme { runPython(theme) }
     }
 
     /// Fetch a PDB id then theme the NEW object.
