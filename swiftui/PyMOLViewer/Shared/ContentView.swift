@@ -4247,7 +4247,7 @@ private struct DesignRegionStripView: View {
                 text: $controller.selectionText,
                 identifier: "design.selection",
                 scope: { controller.useCurrentSelection() },
-                minWidth: 100, maxWidth: 150,
+                width: 130,
                 apply: { controller.applySelection() })
             if !controller.regionModeActive {
                 Text("or click 2 or more residues")
@@ -4772,7 +4772,7 @@ private struct DesignOverlayView: View {
                 identifier: "design.target",
                 objects: controller.allObjects,
                 current: controller.focusObject,
-                minWidth: 110, maxWidth: 170,
+                width: 150,
                 apply: { controller.applyTarget() })
         }
     }

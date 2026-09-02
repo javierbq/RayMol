@@ -56,7 +56,7 @@ struct DesignCompactPanel: View {
                 identifier: "design.target",
                 objects: controller.allObjects,
                 current: controller.focusObject,
-                minWidth: 70, maxWidth: 130,
+                width: 110,
                 apply: { controller.applyTarget() })
 
             if let s = controller.sequenceScore {
@@ -102,7 +102,7 @@ struct DesignCompactPanel: View {
                 text: $controller.selectionText,
                 identifier: "design.selection",
                 scope: { controller.useCurrentSelection() },
-                minWidth: 70, maxWidth: 110,
+                width: 100,
                 apply: { controller.applySelection() })
             if !controller.regionModeActive {
                 Text("or tap 2+")

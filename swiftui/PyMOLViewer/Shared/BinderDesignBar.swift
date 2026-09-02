@@ -76,33 +76,33 @@ struct BinderDesignBar: View {
     // Row 2: target + object picker + hotspots + length + count + advanced + Generate.
     private var mainRow: some View {
         HStack(spacing: 8) {
-            // FIXED widths, not `minWidth`. A TextField is greedy: with `minWidth` these
-            // two absorbed every spare point in the bar, so the target box grew to about
-            // half the row and pushed the controls that matter into a huddle on the right.
-            // A definite width plus the Spacer below gives that space back.
-            TextField("target selection", text: $controller.targetText)
-                .textFieldStyle(.roundedBorder).frame(width: 150)
-                .accessibilityIdentifier("binderDesign.target")
-                .onSubmit { controller.inputChanged() }
-                .onChange(of: controller.targetText) { controller.inputChanged() }
+            // Both boxes are SelectionInputField, the form shared with Design (#371),
+            // so the tools that ask "which structure / which residues" ask it once.
+            // The widths stay DEFINITE, never `minWidth` — that lesson is now recorded
+            // on the shared view: a TextField is greedy, and with `minWidth` these two
+            // absorbed every spare point in the bar, growing the target box to about
+            // half the row and pushing the controls that matter into a huddle on the
+            // right. A definite width plus the Spacer below gives that space back.
+            SelectionInputField(
+                placeholder: "target selection",
+                text: $controller.targetText,
+                identifier: "binderDesign.target",
+                objects: engine.objects.filter { !$0.isSelection }.map(\.name),
+                width: 150,
+                applyOnChange: true,          // the estimate re-prices as you type
+                apply: { controller.inputChanged() })
 
-            Menu {
-                ForEach(engine.objects.filter { !$0.isSelection }, id: \.name) { o in
-                    Button(o.name) { controller.targetText = o.name }
-                }
-            } label: { Image(systemName: "cube") }
-            .menuIndicator(.hidden).help("Use a loaded object")
-
-            TextField("hotspots (optional)", text: $controller.hotspotsText)
-                .textFieldStyle(.roundedBorder).frame(width: 110)
-                .accessibilityIdentifier("binderDesign.hotspots")
-                .onSubmit { controller.inputChanged() }
-                .onChange(of: controller.hotspotsText) { controller.inputChanged() }
-
-            // A selection, not a residue list -- so it composes with `sele` and with
-            // anything else that selects atoms.
-            Button { controller.hotspotsText = "sele" } label: { Image(systemName: "scope") }
-                .buttonStyle(.plain).help("Use the current selection as hotspots")
+            // Hotspots are a selection, not a residue list -- so they compose with
+            // `sele` and with anything else that selects atoms.
+            SelectionInputField(
+                placeholder: "hotspots (optional)",
+                text: $controller.hotspotsText,
+                identifier: "binderDesign.hotspots",
+                scope: { controller.hotspotsText = "sele" },
+                width: 110,
+                scopeHelp: "Use the current selection as hotspots",
+                applyOnChange: true,
+                apply: { controller.inputChanged() })
 
             if controller.availableGenerators.count > 1 {
                 Picker("", selection: $controller.generator) {

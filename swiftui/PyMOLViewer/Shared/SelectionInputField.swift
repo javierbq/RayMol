@@ -24,10 +24,21 @@ struct SelectionInputField: View {
     /// The object currently in use, ticked in the dropdown. nil = nothing ticked.
     var current: String? = nil
     /// When non-nil, a `scope` button that means "read the live selection" — the
-    /// peer of Design Backbone's hotspots button.
+    /// peer of Binder Design's hotspots button.
     var scope: (() -> Void)? = nil
-    var minWidth: CGFloat = 90
-    var maxWidth: CGFloat = 180
+    /// A DEFINITE width, never `minWidth` (the lesson BinderDesignBar learned the
+    /// hard way): a TextField is greedy, so in a docked bar `minWidth` lets these
+    /// absorb every spare point and push the controls that matter into a huddle on
+    /// the right.
+    var width: CGFloat = 150
+    /// Tooltips, since "a loaded object" and "the current selection" mean slightly
+    /// different things per tool (a target vs hotspots vs a design region).
+    var menuHelp: String = "Use a loaded object"
+    var scopeHelp: String = "Use the current selection"
+    /// Re-apply on every keystroke rather than only on Return. For a tool whose
+    /// `apply` is cheap validation (Binder Design re-prices its estimate); Design's
+    /// apply focuses a structure or rewrites 'sele', so it waits for Return.
+    var applyOnChange: Bool = false
     /// Commit the field: on Return, and whenever an accessory fills it.
     let apply: () -> Void
 
@@ -36,8 +47,9 @@ struct SelectionInputField: View {
             TextField(placeholder, text: $text)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
-                .frame(minWidth: minWidth, maxWidth: maxWidth)
+                .frame(width: width)
                 .onSubmit(apply)
+                .onChange(of: text) { if applyOnChange { apply() } }
                 .accessibilityIdentifier(identifier)
             if !objects.isEmpty { objectMenu }
             if let scope { scopeButton(scope) }
@@ -63,7 +75,7 @@ struct SelectionInputField: View {
         }
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Use a loaded object")
+        .help(menuHelp)
         .accessibilityIdentifier(identifier + ".menu")
     }
 
@@ -72,7 +84,7 @@ struct SelectionInputField: View {
             Image(systemName: "scope")
         }
         .buttonStyle(.plain)
-        .help("Use the current selection")
+        .help(scopeHelp)
         .accessibilityIdentifier(identifier + ".scope")
     }
 }
