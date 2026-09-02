@@ -1,6 +1,7 @@
 """RayMol Design-mode core helpers: residue enumeration, coloring, and
 exact visual-state save/restore. Mirrors the appkit_sequence bundled-module
 pattern (writes JSON to TMPDIR, returns a short marker)."""
+import base64
 import hashlib
 import json
 import os
@@ -108,6 +109,51 @@ def _residue_pred(chain, resi):
     if chain:
         return 'chain %s and resi %s' % (chain, resi)
     return 'resi %s' % resi
+
+
+#: mouse_selection_mode -> the selection keyword that expands one residue to what
+#: a CLICK at that level means. Atom (0), residue (1) and C-alpha (6) have no
+#: entry on purpose: as far as Design is concerned they ARE the residue (a lone
+#: atom or a lone CA contains nothing designable, so a click at those levels would
+#: otherwise select nothing at all).
+_LEVEL_KEYWORD = {2: 'bychain', 3: 'bysegi', 4: 'byobject', 5: 'bymol'}
+
+
+def _level_keyword():
+    """The expansion keyword for the CURRENT selection level, or '' for residue."""
+    try:
+        return _LEVEL_KEYWORD.get(int(cmd.get_setting_int('mouse_selection_mode')), '')
+    except Exception:
+        return ''
+
+
+def _scoped_level_sel(obj, chain, resi, src):
+    """What a Design-mode CLICK on (chain, resi) designates, at the current level.
+
+    'sele' IS the design region, so a click has to put in 'sele' exactly what a
+    click puts there everywhere else in the app: in chain mode the chain, in
+    object mode the object. Design used to force residue scope at every level,
+    which left the region saying "one residue" while the mouse mode said "chains"
+    and the viewport drew the whole chain pink -- the selection and the thing being
+    designed disagreed, and only the click path was to blame.
+
+    Re-derived from (obj, chain, resi) rather than shared with
+    metal_pick._mode_expr because the design pick payload carries no atom name;
+    the by* keywords need none, and expansion from any atom of the residue is the
+    same set as expansion from the clicked atom for every level Design honours.
+
+    The expansion happens INSIDE _scope(obj, src) and is re-intersected with it:
+    the scope is what makes the write resolve where the read resolves (see
+    _scoped_residue_sel), and expanding first would grow the intermediate
+    selection through every object that happens to share a residue number before
+    the scope narrowed it back to the same answer.
+    """
+    scope = _scope(obj, src)
+    inner = '%s and (%s)' % (scope, _residue_pred(chain, resi))
+    kw = _level_keyword()
+    if not kw:
+        return inner
+    return '%s and (%s (%s))' % (scope, kw, inner)
 
 
 def _scoped_residue_sel(obj, chain, resi, src):
@@ -253,12 +299,14 @@ def sele_design_indices(obj, state, src=''):
 
 
 def toggle_sele_residue(obj, chain, resi, src=''):
-    """Add or remove one residue in the active 'sele' (a Design-mode click).
+    """Add or remove one CLICK's worth of atoms in the active 'sele'.
 
     Deliberately mirrors metal_pick.pick_at's toggle idiom so that a click means
     the same thing in Design mode as in normal mode: already selected -> remove,
-    otherwise add. Always leaves 'sele' enabled so the renderer's pink committed
-    pass draws it.
+    otherwise add, at the level `mouse_selection_mode` names (see
+    _scoped_level_sel -- in chain mode this designates the chain, not the one
+    residue under the pointer). Always leaves 'sele' enabled so the renderer's
+    pink committed pass draws it.
 
     `src` is the edit-session source object, and it is what makes the toggle
     ACTUALLY a toggle: the residue is resolved through _scoped_residue_sel, the
@@ -266,7 +314,7 @@ def toggle_sele_residue(obj, chain, resi, src=''):
     the working copy AND the original together. See _scoped_residue_sel for what
     an object-scoped write broke. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
     """
-    expr = '(%s)' % _scoped_residue_sel(obj, chain, resi, src)
+    expr = '(%s)' % _scoped_level_sel(obj, chain, resi, src)
     try:
         already = cmd.count_atoms('(?sele) and %s' % expr) > 0
     except Exception:
@@ -279,7 +327,7 @@ def toggle_sele_residue(obj, chain, resi, src=''):
 
 
 def set_sele_residue(obj, chain, resi, src=''):
-    """Replace the active 'sele' with exactly one residue.
+    """Replace the active 'sele' with exactly one click's worth of atoms.
 
     Used when a Design-mode click lands on a DIFFERENT object than the current
     focus: design retargets to that object and the selection starts fresh there,
@@ -288,7 +336,7 @@ def set_sele_residue(obj, chain, resi, src=''):
     must be visible to a read that resolves by residue identity across an edit
     session's working copy and its original. Returns 'DESIGN_SELE_SET:ok'.
     """
-    cmd.select('sele', _scoped_residue_sel(obj, chain, resi, src), enable=1)
+    cmd.select('sele', _scoped_level_sel(obj, chain, resi, src), enable=1)
     return 'DESIGN_SELE_SET:ok'
 
 
@@ -328,6 +376,96 @@ def clear_sele():
     """
     cmd.select('sele', 'none', enable=0)
     return 'DESIGN_SELE_CLEAR:ok'
+
+
+def resolve_target(expr_b64):
+    """Resolve a target expression to the ONE object Design will work on (#371).
+
+    Backs the target text box, which accepts an object name OR any selection
+    expression — 'polymer and chain A', a named selection, '1abc and chain B'.
+    Design itself only ever works on one focused structure, so a multi-object
+    expression narrows to the first object rather than failing; `n_objects` reports
+    that it narrowed, so the caller can say so.
+
+    The argument is base64 of UTF-8: it is USER text that the Swift side
+    interpolates into a runPython string, where a quote or a backslash would
+    otherwise end the literal.
+
+    Output: $TMPDIR/raymol_design_target.json =
+        {'object': str, 'n_objects': int, 'error': str}
+      object     - the resolved object name, '' when nothing matched
+      n_objects  - how many objects the expression covered
+      error      - why it resolved to nothing (a rejected selector, or no match)
+    Returns 'DESIGN_TARGET:<object>'.
+    """
+    payload = {'object': '', 'n_objects': 0, 'error': ''}
+    try:
+        expr = base64.b64decode(expr_b64).decode('utf-8')
+    except Exception as e:
+        expr, payload['error'] = '', 'undecodable expression (%s)' % e
+    if expr:
+        try:
+            names = cmd.get_object_list('(%s)' % expr) or []
+        except Exception as e:
+            # A rejected selector, an unknown name, an unbalanced paren: all the
+            # same to the field, which just needs something to show the user.
+            payload['error'] = str(e) or 'invalid selection'
+        else:
+            payload['n_objects'] = len(names)
+            if names:
+                payload['object'] = names[0]
+            else:
+                payload['error'] = 'no structure matches'
+    try:
+        with open(_tmp('raymol_design_target.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_TARGET:%s' % payload['object']
+
+
+def select_region(expr_b64):
+    """Point the active 'sele' at `expr` (#371).
+
+    Backs the region text box. It WRITES 'sele' rather than keeping a second
+    region of its own, which is the whole point: typing an expression and clicking
+    residues then feed one pipeline, and everything downstream —
+    sele_design_indices, the digest-gated poll, the pink markers — is untouched.
+
+    Base64 for the same reason resolve_target takes it. A rejected selector leaves
+    the live selection exactly as it was.
+
+    enable follows emptiness, as in drop_object_from_sele: an enabled EMPTY 'sele'
+    would suppress every other selection, because cmd.enable is exclusive for
+    selections.
+
+    Output: $TMPDIR/raymol_design_select.json = {'ok': bool, 'count': int, 'error': str}
+      ok     - the selector was accepted (a valid expression matching nothing is
+               ok=True, count=0 — that is an empty region, not a mistake)
+      count  - atoms now in 'sele'
+    Returns 'DESIGN_SELECT:<count>' or 'DESIGN_SELECT:err'.
+    """
+    payload = {'ok': False, 'count': 0, 'error': ''}
+    try:
+        expr = base64.b64decode(expr_b64).decode('utf-8')
+    except Exception as e:
+        expr, payload['error'] = '', 'undecodable expression (%s)' % e
+    if expr:
+        try:
+            n = int(cmd.select('sele', '(%s)' % expr, enable=1) or 0)
+        except Exception as e:
+            payload['error'] = str(e) or 'invalid selection'
+        else:
+            payload['ok'] = True
+            payload['count'] = n
+            if not n:
+                cmd.select('sele', 'none', enable=0)
+    try:
+        with open(_tmp('raymol_design_select.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELECT:%d' % payload['count'] if payload['ok'] else 'DESIGN_SELECT:err'
 
 
 def _record_design_metrics(obj, metric, rows, state=0):

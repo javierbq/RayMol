@@ -4238,11 +4238,19 @@ private struct DesignRegionStripView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            // No region picker: 'sele' IS the region, so the only way to choose one
-            // is to click residues. The hint keeps the strip from rendering as an
-            // empty band before a region exists.
+            // The region field (#371). 'sele' is STILL the one region — the field
+            // writes it rather than keeping a rival of its own — so clicking residues
+            // and typing an expression are two ways into one pipeline, and the scope
+            // button goes back to reading whatever is selected right now.
+            SelectionInputField(
+                placeholder: "sele",
+                text: $controller.selectionText,
+                identifier: "design.selection",
+                scope: { controller.useCurrentSelection() },
+                width: 130,
+                apply: { controller.applySelection() })
             if !controller.regionModeActive {
-                Text("Select 2 or more residues to redesign a region")
+                Text("or click 2 or more residues")
                     .font(.system(size: 11))
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
             }
@@ -4668,7 +4676,7 @@ private struct DesignOverlayView: View {
             DesignErrorBanner(controller: controller, theme: theme)
             // ── Main control strip ──────────────────────────────────────
             HStack(spacing: 10) {
-                focusLabel
+                targetField
                 if let s = controller.sequenceScore {
                     Text(String(format: "score %.2f", s))
                         .font(.system(size: 10, design: .monospaced))
@@ -4748,40 +4756,25 @@ private struct DesignOverlayView: View {
         }
     }
 
-    // Focus-object indicator is a dropdown: click a structure in the viewport OR
-    // pick one here. Lists the objects the controller can focus; current is checked.
-    private var focusLabel: some View {
-        Menu {
-            ForEach(controller.allObjects, id: \.self) { obj in
-                Button {
-                    controller.focus(obj)
-                } label: {
-                    if obj == controller.focusObject {
-                        Label(obj, systemImage: "checkmark")
-                    } else {
-                        Text(obj)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "atom")
-                    .foregroundColor(theme.active.accent.color)
-                Text(controller.focusObject ?? "Select object to design")
-                    .lineLimit(1)
-                    .font(.system(size: 12, weight: controller.focusObject != nil ? .semibold : .regular))
-                    .foregroundColor(controller.focusObject != nil
-                        ? theme.active.panelText.color
-                        : theme.active.panelText.color.opacity(0.6))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
-            }
+    // The target field (#371). Was a dropdown and nothing else, which left Design
+    // the one inference tool with no typed input: a selection expression — a named
+    // selection, 'polymer and chain A', '1abc and chain B' — had no way in at all.
+    // Now it is the same text-box-plus-dropdown Predict and Design Backbone use: type
+    // a target, or let the dropdown fill the box with a loaded object. Clicking a
+    // structure in the viewport still focuses it, and the field follows.
+    private var targetField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "atom")
+                .foregroundColor(theme.active.accent.color)
+            SelectionInputField(
+                placeholder: "target selection",
+                text: $controller.targetText,
+                identifier: "design.target",
+                objects: controller.allObjects,
+                current: controller.focusObject,
+                width: 150,
+                apply: { controller.applyTarget() })
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(controller.allObjects.isEmpty)
     }
 
     // Two-button toggle visually equivalent to a segmented control but with per-mode

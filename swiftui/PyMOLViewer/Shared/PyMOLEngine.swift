@@ -2644,6 +2644,46 @@ final class PyMOLEngine: ObservableObject {
                 from pymol import raymol_design as _rd
                 _rd.drop_object_from_sele('\(obj)')
                 """)
+        },
+        resolveTarget: { [weak self] expression in
+            // #371: the target field takes a selection expression, not just an object
+            // name, so which structure it means is a question only the core can
+            // answer. Base64 because this is USER text going into a Python literal.
+            guard let self else { return nil }
+            let b64 = Data(expression.utf8).base64EncodedString()
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_target.json")
+            // Drop the previous answer first: runPython is a no-op until the core is
+            // ready, and reading a stale file would answer a question nobody asked.
+            try? FileManager.default.removeItem(at: path)
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.resolve_target('\(b64)')
+                """)
+            guard let data = FileManager.default.contents(atPath: path.path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let object = root["object"] as? String, !object.isEmpty else { return nil }
+            return object
+        },
+        selectRegion: { [weak self] expression in
+            // #371: writes the typed region THROUGH 'sele', so the click path and the
+            // text box stay one pipeline. nil means the selector was rejected — which
+            // is a different answer from 0 atoms, and the field reports both.
+            guard let self else { return nil }
+            let b64 = Data(expression.utf8).base64EncodedString()
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("raymol_design_select.json")
+            // Drop the previous answer first: runPython is a no-op until the core is
+            // ready, and reading a stale file would answer a question nobody asked.
+            try? FileManager.default.removeItem(at: path)
+            self.runPython("""
+                from pymol import raymol_design as _rd
+                _rd.select_region('\(b64)')
+                """)
+            guard let data = FileManager.default.contents(atPath: path.path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ok = root["ok"] as? Bool, ok else { return nil }
+            return root["count"] as? Int ?? 0
         }
         )
         // Propagate isCalculating into @Published isDesignCalculating so

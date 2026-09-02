@@ -44,29 +44,20 @@ struct DesignCompactPanel: View {
         }
     }
 
-    // Row 1: focus object picker · score readout · settings · exit.
+    // Row 1: target field + object dropdown · score readout · settings · exit.
     private var headerRow: some View {
         HStack(spacing: 8) {
-            Menu {
-                ForEach(controller.allObjects, id: \.self) { name in
-                    Button { controller.focus(name) } label: {
-                        if name == controller.focusObject {
-                            Label(name, systemImage: "checkmark")
-                        } else {
-                            Text(name)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(controller.focusObject ?? "Choose object")
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 8))
-                }
-                .foregroundColor(theme.active.panelText.color)
-            }
-            .menuIndicator(.hidden)
+            // Target field + object dropdown, the same pair as the macOS overlay
+            // (#371): typing a selection expression has to be possible on iPhone
+            // too, and this is where a 40-residue region is least fun to tap out.
+            SelectionInputField(
+                placeholder: "target",
+                text: $controller.targetText,
+                identifier: "design.target",
+                objects: controller.allObjects,
+                current: controller.focusObject,
+                width: 110,
+                apply: { controller.applyTarget() })
 
             if let s = controller.sequenceScore {
                 Text(String(format: "%.2f", s))
@@ -96,7 +87,7 @@ struct DesignCompactPanel: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
-    // Row 4: region hint (until a region exists) · redesign (region only) ·
+    // Row 4: region field · hint (until a region exists) · redesign (region only) ·
     // revert (if snapshot) · spacer · repack (editing) · compare (editing) ·
     // Keep / Discard (editing).
     //
@@ -104,10 +95,17 @@ struct DesignCompactPanel: View {
     // type-checker, following the pattern in DesignSequenceStripView.seqCols.
     private var actionRow: some View {
         HStack(spacing: 8) {
-            // No region picker: 'sele' IS the region, so tapping residues is the
-            // only way to build one. The hint keeps the row from reading as empty.
+            // The region field (#371); writes 'sele', so tapping residues still
+            // means exactly what it meant. Scope button = read the live selection.
+            SelectionInputField(
+                placeholder: "sele",
+                text: $controller.selectionText,
+                identifier: "design.selection",
+                scope: { controller.useCurrentSelection() },
+                width: 100,
+                apply: { controller.applySelection() })
             if !controller.regionModeActive {
-                Text("Tap 2+ residues to redesign")
+                Text("or tap 2+")
                     .font(.system(size: 11))
                     .foregroundColor(theme.active.panelText.color.opacity(0.5))
                     .lineLimit(1)
