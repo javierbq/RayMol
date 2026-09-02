@@ -111,6 +111,51 @@ def _residue_pred(chain, resi):
     return 'resi %s' % resi
 
 
+#: mouse_selection_mode -> the selection keyword that expands one residue to what
+#: a CLICK at that level means. Atom (0), residue (1) and C-alpha (6) have no
+#: entry on purpose: as far as Design is concerned they ARE the residue (a lone
+#: atom or a lone CA contains nothing designable, so a click at those levels would
+#: otherwise select nothing at all).
+_LEVEL_KEYWORD = {2: 'bychain', 3: 'bysegi', 4: 'byobject', 5: 'bymol'}
+
+
+def _level_keyword():
+    """The expansion keyword for the CURRENT selection level, or '' for residue."""
+    try:
+        return _LEVEL_KEYWORD.get(int(cmd.get_setting_int('mouse_selection_mode')), '')
+    except Exception:
+        return ''
+
+
+def _scoped_level_sel(obj, chain, resi, src):
+    """What a Design-mode CLICK on (chain, resi) designates, at the current level.
+
+    'sele' IS the design region, so a click has to put in 'sele' exactly what a
+    click puts there everywhere else in the app: in chain mode the chain, in
+    object mode the object. Design used to force residue scope at every level,
+    which left the region saying "one residue" while the mouse mode said "chains"
+    and the viewport drew the whole chain pink -- the selection and the thing being
+    designed disagreed, and only the click path was to blame.
+
+    Re-derived from (obj, chain, resi) rather than shared with
+    metal_pick._mode_expr because the design pick payload carries no atom name;
+    the by* keywords need none, and expansion from any atom of the residue is the
+    same set as expansion from the clicked atom for every level Design honours.
+
+    The expansion happens INSIDE _scope(obj, src) and is re-intersected with it:
+    the scope is what makes the write resolve where the read resolves (see
+    _scoped_residue_sel), and expanding first would grow the intermediate
+    selection through every object that happens to share a residue number before
+    the scope narrowed it back to the same answer.
+    """
+    scope = _scope(obj, src)
+    inner = '%s and (%s)' % (scope, _residue_pred(chain, resi))
+    kw = _level_keyword()
+    if not kw:
+        return inner
+    return '%s and (%s (%s))' % (scope, kw, inner)
+
+
 def _scoped_residue_sel(obj, chain, resi, src):
     """One residue within the READ scope: the target object plus its edit source.
 
@@ -254,12 +299,14 @@ def sele_design_indices(obj, state, src=''):
 
 
 def toggle_sele_residue(obj, chain, resi, src=''):
-    """Add or remove one residue in the active 'sele' (a Design-mode click).
+    """Add or remove one CLICK's worth of atoms in the active 'sele'.
 
     Deliberately mirrors metal_pick.pick_at's toggle idiom so that a click means
     the same thing in Design mode as in normal mode: already selected -> remove,
-    otherwise add. Always leaves 'sele' enabled so the renderer's pink committed
-    pass draws it.
+    otherwise add, at the level `mouse_selection_mode` names (see
+    _scoped_level_sel -- in chain mode this designates the chain, not the one
+    residue under the pointer). Always leaves 'sele' enabled so the renderer's
+    pink committed pass draws it.
 
     `src` is the edit-session source object, and it is what makes the toggle
     ACTUALLY a toggle: the residue is resolved through _scoped_residue_sel, the
@@ -267,7 +314,7 @@ def toggle_sele_residue(obj, chain, resi, src=''):
     the working copy AND the original together. See _scoped_residue_sel for what
     an object-scoped write broke. Returns 'DESIGN_SELE_TOGGLE:on' or ':off'.
     """
-    expr = '(%s)' % _scoped_residue_sel(obj, chain, resi, src)
+    expr = '(%s)' % _scoped_level_sel(obj, chain, resi, src)
     try:
         already = cmd.count_atoms('(?sele) and %s' % expr) > 0
     except Exception:
@@ -280,7 +327,7 @@ def toggle_sele_residue(obj, chain, resi, src=''):
 
 
 def set_sele_residue(obj, chain, resi, src=''):
-    """Replace the active 'sele' with exactly one residue.
+    """Replace the active 'sele' with exactly one click's worth of atoms.
 
     Used when a Design-mode click lands on a DIFFERENT object than the current
     focus: design retargets to that object and the selection starts fresh there,
@@ -289,7 +336,7 @@ def set_sele_residue(obj, chain, resi, src=''):
     must be visible to a read that resolves by residue identity across an edit
     session's working copy and its original. Returns 'DESIGN_SELE_SET:ok'.
     """
-    cmd.select('sele', _scoped_residue_sel(obj, chain, resi, src), enable=1)
+    cmd.select('sele', _scoped_level_sel(obj, chain, resi, src), enable=1)
     return 'DESIGN_SELE_SET:ok'
 
 

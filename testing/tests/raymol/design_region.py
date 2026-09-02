@@ -114,21 +114,22 @@ class TestDesignRegion(testing.PyMOLTestCase):
         self.assertEqual(self._sele_resis(), ['5'],
                          'set must replace the selection, not extend it')
 
-    def testToggleIsResidueScopedRegardlessOfMouseSelectionMode(self):
-        # D1: Design clicks always expand to RESIDUE scope. With
-        # mouse_selection_mode = 0 (atom) a normal-mode click would commit a single
-        # ATOM, which maps to zero guide residues -- a click that silently selects
-        # nothing. Design must ignore the setting entirely.
+    def testAtomAndCAlphaModesStillMeanTheResidue(self):
+        # What survives of the old "Design ignores mouse_selection_mode" rule
+        # (which #371 replaced -- see TestDesignClickSelectionLevel): a lone ATOM
+        # (mode 0) or a lone CA (mode 6) maps to a scope with nothing designable in
+        # it, so a click at those levels would select nothing at all. Design's unit
+        # is a residue, so both still expand to one.
         obj = self._peptide()
         from pymol import raymol_design as rd
-        for mode in (0, 1, 2, 4):
+        self.addCleanup(cmd.set, 'mouse_selection_mode', 1)
+        for mode in (0, 1, 6):
             cmd.set('mouse_selection_mode', mode)
             rd.clear_sele()
             rd.toggle_sele_residue(obj, '', '2')
             self.assertEqual(self._sele_resis(), ['2'],
-                             'mouse_selection_mode %d must not change the scope '
-                             'of a Design-mode click' % mode)
-        cmd.set('mouse_selection_mode', 1)   # restore the default
+                             'mouse_selection_mode %d must still mean the residue'
+                             % mode)
 
     def testClearSeleEmpties(self):
         obj = self._peptide()
@@ -461,3 +462,127 @@ class TestDesignFields(testing.PyMOLTestCase):
         data = self._select_payload()
         self.assertTrue(data['ok'])
         self.assertEqual(data['count'], cmd.count_atoms('m1 and chain A'))
+
+
+class TestDesignClickSelectionLevel(testing.PyMOLTestCase):
+    """A Design-mode click means what a click means everywhere else.
+
+    'sele' IS the design region, so what a click puts in 'sele' has to obey the
+    same `mouse_selection_mode` the rest of the app obeys: in chain mode a click
+    designates the chain, not the one residue under the pointer. Design used to
+    force residue scope at every level, which left the region saying "one residue"
+    while the mode said "chains" and the viewport drew the whole chain pink.
+
+    The expansion is re-derived from (obj, chain, resi) rather than taken from
+    metal_pick._mode_expr, because the design pick payload carries no atom name --
+    and the by* selection keywords need none.
+    """
+
+    def setUp(self):
+        super(TestDesignClickSelectionLevel, self).setUp()
+        # Never leak a non-default level: every later test in this interpreter
+        # would inherit it, and a click would silently mean something else.
+        self.addCleanup(cmd.set, 'mouse_selection_mode', 1)
+
+    def _two_chains(self):
+        """One object, chain A = resi 1-3, chain B = resi 4-6."""
+        cmd.reinitialize()
+        cmd.fab('AAAAAA', 'm1')
+        cmd.alter('m1 and resi 1-3', 'chain = "A"')
+        cmd.alter('m1 and resi 4-6', 'chain = "B"')
+        cmd.alter('m1 and resi 1-3', 'segi = "S1"')
+        cmd.alter('m1 and resi 4-6', 'segi = "S2"')
+        cmd.sort()
+        return 'm1'
+
+    def _resis(self, sel='(?sele)'):
+        out = set()
+        cmd.iterate('%s and polymer and guide' % sel, 'out.add(resi)', space={'out': out})
+        return sorted(out, key=int)
+
+    def testChainModeClickSelectsTheWholeChain(self):
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 2)
+        rd.toggle_sele_residue(obj, 'A', '2')
+        self.assertEqual(self._resis(), ['1', '2', '3'])
+
+    def testChainModeClickTogglesTheWholeChainOff(self):
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 2)
+        rd.toggle_sele_residue(obj, 'A', '2')
+        rd.toggle_sele_residue(obj, 'A', '3')   # same chain, different residue
+        self.assertEqual(self._resis(), [],
+                         'a second click at chain level clears the chain it added')
+
+    def testChainModeLeavesTheOtherChainAlone(self):
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 2)
+        rd.toggle_sele_residue(obj, 'B', '5')
+        self.assertEqual(self._resis(), ['4', '5', '6'])
+
+    def testSegmentModeClickSelectsTheSegment(self):
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 3)
+        rd.toggle_sele_residue(obj, 'B', '5')
+        self.assertEqual(self._resis(), ['4', '5', '6'])
+
+    def testObjectModeClickSelectsTheWholeObjectAndNothingElse(self):
+        obj = self._two_chains()
+        cmd.fab('GGG', 'other')
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 4)
+        rd.toggle_sele_residue(obj, 'A', '2')
+        self.assertEqual(self._resis(), ['1', '2', '3', '4', '5', '6'])
+        self.assertEqual(cmd.count_atoms('other and (?sele)'), 0,
+                         'object level means THAT object, not every object')
+
+    def testMoleculeModeClickSelectsTheConnectedMolecule(self):
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 5)
+        rd.toggle_sele_residue(obj, 'A', '2')
+        # cmd.fab builds one continuous peptide, so the molecule is all six
+        # residues even though they were relabelled into two chains.
+        self.assertEqual(self._resis(), ['1', '2', '3', '4', '5', '6'])
+
+    def testTheRegionArmsWithEveryDesignableResidueOfTheChain(self):
+        # The user-visible outcome: the read the UI performs reports the whole
+        # chain, so Redesign says "3 res" rather than "1 res".
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 2)
+        rd.toggle_sele_residue(obj, 'A', '2')
+        rd.sele_design_indices(obj, 1)
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_sele.json')) as f:
+            data = json.load(f)
+        self.assertEqual(data['indices'], [0, 1, 2])
+        self.assertEqual(data['n_off'], 0)
+
+    def testSetSeleResidueHonoursTheSelectionLevel(self):
+        # The refocus path (a click on a DIFFERENT structure) replaces 'sele'
+        # rather than toggling, and must replace it with the same scope.
+        obj = self._two_chains()
+        from pymol import raymol_design as rd
+        cmd.select('sele', '%s and resi 5' % obj)
+        cmd.set('mouse_selection_mode', 2)
+        rd.set_sele_residue(obj, 'A', '2')
+        self.assertEqual(self._resis(), ['1', '2', '3'],
+                         'the replacement is chain-scoped, and drops the old resi 5')
+
+    def testChainModeClickInAnEditSessionReachesBothCopies(self):
+        # Same invariant the residue-scoped toggle has: the write must resolve in
+        # the scope the read uses, or a region member cannot be removed once an
+        # edit session repoints the focus at the working copy.
+        obj = self._two_chains()
+        cmd.create('m1_design', obj, zoom=0)
+        from pymol import raymol_design as rd
+        cmd.set('mouse_selection_mode', 2)
+        rd.toggle_sele_residue('m1_design', 'A', '2', src=obj)
+        self.assertEqual(self._resis('(m1_design and (?sele))'), ['1', '2', '3'])
+        self.assertEqual(self._resis('(m1 and (?sele))'), ['1', '2', '3'],
+                         'the original carries the same membership, by residue identity')
