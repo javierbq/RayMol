@@ -332,3 +332,132 @@ class TestDesignRegion(testing.PyMOLTestCase):
                                 'different objects, whatever they are named')
         finally:
             rd.set_design_active(0)
+
+
+class TestDesignFields(testing.PyMOLTestCase):
+    """The Design tool's two typed inputs (#371).
+
+    `resolve_target` backs the target text box: it answers "which ONE structure
+    does this expression mean", so the field accepts a selection expression and
+    not merely an object name. `select_region` backs the region text box: it
+    points 'sele' at the expression, which is why clicking residues and typing an
+    expression stay one pipeline rather than two.
+
+    Both take base64 so a user's quotes, backslashes and non-ASCII never become
+    Python: the Swift side interpolates the argument into a runPython string.
+    """
+
+    def _b64(self, expr):
+        import base64
+        return base64.b64encode(expr.encode('utf-8')).decode('ascii')
+
+    def _target_payload(self):
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_target.json')) as f:
+            return json.load(f)
+
+    def _select_payload(self):
+        with open(os.path.join(tempfile.gettempdir(),
+                               'raymol_design_select.json')) as f:
+            return json.load(f)
+
+    def _two(self):
+        cmd.reinitialize()
+        cmd.fab('AAAAA', 'm1')
+        cmd.fab('GGGGG', 'm2')
+        # cmd.fab leaves the chain EMPTY, so a chain-scoped expression would match
+        # nothing and every assertion about one would pass vacuously.
+        cmd.alter('m1', 'chain = "A"')
+        cmd.alter('m2', 'chain = "B"')
+        cmd.sort()
+
+    # ── resolve_target ─────────────────────────────────────────────────────────
+
+    def testResolveTargetAcceptsAnObjectName(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.resolve_target(self._b64('m2'))
+        self.assertEqual(self._target_payload()['object'], 'm2')
+
+    def testResolveTargetResolvesASubSelectionToItsObject(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.resolve_target(self._b64('m2 and chain B and resi 2-4'))
+        data = self._target_payload()
+        self.assertEqual(data['object'], 'm2')
+        self.assertEqual(data['error'], '')
+
+    def testResolveTargetTakesTheFirstOfSeveralObjects(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.resolve_target(self._b64('polymer'))
+        data = self._target_payload()
+        # Design only ever works on ONE structure, so a multi-object expression
+        # resolves rather than failing — and reports that it narrowed.
+        self.assertEqual(data['object'], 'm1')
+        self.assertEqual(data['n_objects'], 2)
+
+    def testResolveTargetReportsAnExpressionThatMatchesNothing(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.resolve_target(self._b64('resi 900-999'))
+        data = self._target_payload()
+        self.assertEqual(data['object'], '')
+
+    def testResolveTargetReportsAnInvalidSelector(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.resolve_target(self._b64('chain (('))
+        data = self._target_payload()
+        self.assertEqual(data['object'], '')
+        self.assertTrue(data['error'], 'a rejected selector must say why')
+
+    # ── select_region ──────────────────────────────────────────────────────────
+
+    def testSelectRegionPointsSeleAtTheExpression(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.select_region(self._b64('m1 and resi 2+4'))
+        data = self._select_payload()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['count'], cmd.count_atoms('m1 and resi 2+4'))
+        # 'sele' IS the region: the whole point is that the field feeds the same
+        # selection a click builds.
+        self.assertEqual(cmd.count_atoms('sele'), data['count'])
+
+    def testSelectRegionReplacesAnEarlierSelection(self):
+        self._two()
+        from pymol import raymol_design as rd
+        cmd.select('sele', 'm1 and resi 1')
+        rd.select_region(self._b64('m1 and resi 3+4'))
+        self.assertEqual(cmd.count_atoms('sele and resi 1'), 0)
+        self.assertEqual(cmd.count_atoms('sele'),
+                         cmd.count_atoms('m1 and resi 3+4'))
+
+    def testSelectRegionReportsAnEmptyMatch(self):
+        self._two()
+        from pymol import raymol_design as rd
+        rd.select_region(self._b64('m1 and resi 900'))
+        data = self._select_payload()
+        self.assertTrue(data['ok'], 'valid syntax, no atoms — that is not an error')
+        self.assertEqual(data['count'], 0)
+
+    def testSelectRegionReportsAnInvalidSelector(self):
+        self._two()
+        from pymol import raymol_design as rd
+        cmd.select('sele', 'm1 and resi 1')
+        rd.select_region(self._b64('chain (('))
+        data = self._select_payload()
+        self.assertFalse(data['ok'])
+        self.assertEqual(cmd.count_atoms('sele'), cmd.count_atoms('m1 and resi 1'),
+                         'a rejected selector must leave the live selection alone')
+
+    def testSelectRegionSurvivesQuotesInTheExpression(self):
+        self._two()
+        from pymol import raymol_design as rd
+        # Quotes are legal PyMOL and would end a Python string literal; base64 is
+        # why they reach the selector intact.
+        rd.select_region(self._b64('m1 and chain "A"'))
+        data = self._select_payload()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['count'], cmd.count_atoms('m1 and chain A'))

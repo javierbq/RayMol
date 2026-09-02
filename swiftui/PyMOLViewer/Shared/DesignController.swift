@@ -42,6 +42,22 @@ final class DesignController: ObservableObject {
     /// Residue index that has been pinned by a click. Persists until the user
     /// clicks the same residue again (toggle) or another residue is pinned.
     @Published var pinnedResidueIndex: Int?
+    /// The Design tool's target field (#371). Holds either an object name or any
+    /// selection expression; `applyTarget()` resolves it to the ONE structure Design
+    /// works on. Peer of Design Backbone's `target` and Predict's `sequence /
+    /// selection` — a text box, with the object dropdown as an optional way to fill it.
+    @Published var targetText: String = ""
+    /// The Design tool's region field (#371). The literal 'sele' is the default and
+    /// means "whatever is selected right now", which is exactly what clicking
+    /// residues builds. Any other expression is WRITTEN to 'sele' by
+    /// `applySelection()`, so there is still one region pipeline and the click path
+    /// is untouched.
+    @Published var selectionText: String = DesignController.liveSelection
+
+    /// PyMOL's live selection. Named rather than spelled out at each use because it
+    /// is a sentinel VALUE in `selectionText`, not just a selection name: it means
+    /// "read, do not write".
+    static let liveSelection = "sele"
 
     // MARK: – Closure type aliases (Task 10 wires in real implementations)
 
@@ -141,6 +157,14 @@ final class DesignController: ObservableObject {
     /// Release the cached MPNN model. Invoked on the inference queue from `exit()`,
     /// never on the main thread — the model is owned by that queue.
     typealias ReleaseModelFn = () -> Void
+    /// Resolve a target expression to the name of ONE object. nil = nothing matched
+    /// (or the selector was rejected); the first object of a multi-object match wins,
+    /// because Design only ever works on the focused structure.
+    typealias ResolveTargetFn = (_ expression: String) -> String?
+    /// Replace the active 'sele' with `expression`. Returns the number of atoms
+    /// selected, or nil when PyMOL rejected the selector — 0 and nil are different
+    /// answers ("matched nothing" vs "not a selection"), and the field reports both.
+    typealias SelectRegionFn = (_ expression: String) -> Int?
 
     // MARK: – Injected dependencies
 
@@ -167,6 +191,12 @@ final class DesignController: ObservableObject {
     private var showAllSidechainsFn: ShowAllSidechainsFn = { _, _ in }
     private var designRegionFn: DesignRegionFn = { r, _, _, _, _ in Array(repeating: 0, count: r.count) }
     private var releaseModelFn: ReleaseModelFn = { }
+    private var resolveTargetFn: ResolveTargetFn?
+    private var selectRegionFn: SelectRegionFn?
+    /// The object `targetText` last resolved to. Lets `focusAwait` tell "the field is
+    /// stale" from "the field is the user's own expression for this very object", so
+    /// a typed expression is never silently rewritten to the object name it matched.
+    private var targetResolvedObject: String?
 
     // MARK: – 'sele' access (single source of truth)
     //
@@ -357,7 +387,9 @@ final class DesignController: ObservableObject {
                      toggleSele: ToggleSeleFn? = nil,
                      setSeleResidue: SetSeleResidueFn? = nil,
                      clearSele: ClearSeleFn? = nil,
-                     dropObjectFromSele: DropObjectFromSeleFn? = nil) {
+                     dropObjectFromSele: DropObjectFromSeleFn? = nil,
+                     resolveTarget: ResolveTargetFn? = nil,
+                     selectRegion: SelectRegionFn? = nil) {
         self.enumerate = enumerate
         self.score = score
         self.applyColoring = applyColoring
@@ -382,6 +414,8 @@ final class DesignController: ObservableObject {
         self.setSeleResidueFn = setSeleResidue
         self.clearSeleFn = clearSele
         self.dropObjectFromSeleFn = dropObjectFromSele
+        self.resolveTargetFn = resolveTarget
+        self.selectRegionFn = selectRegion
     }
 
     // MARK: – Public interface
@@ -557,6 +591,63 @@ final class DesignController: ObservableObject {
         if let o = focusObject { recolor(o) }
     }
 
+    // MARK: – The two typed inputs (#371)
+
+    /// Fire-and-forget target apply (used by the UI on submit and by the object
+    /// dropdown). Wraps `applyTargetAwait` in a Task, mirroring `focus`/`focusAwait`.
+    func applyTarget() { Task { await applyTargetAwait() } }
+
+    /// Resolve `targetText` to one structure and focus it. Awaitable so tests (and
+    /// any caller that needs the focus to have happened) do not have to guess yields.
+    func applyTargetAwait() async {
+        let expr = targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expr.isEmpty else { return }
+        // An exact object name needs no engine round-trip. That is the dropdown's own
+        // path, and the only one that works before the resolve seam is wired.
+        let resolved: String?
+        if allObjects.contains(expr) { resolved = expr } else { resolved = resolveTargetFn?(expr) }
+        guard let object = resolved, !object.isEmpty else {
+            errorText = "No structure matches '\(expr)'"
+            return
+        }
+        errorText = nil
+        targetText = expr               // normalise away the whitespace we trimmed
+        targetResolvedObject = object
+        await focusAwait(object)
+    }
+
+    /// Apply the region field: point 'sele' at `selectionText`, then re-derive the
+    /// region from it — the same single pipeline a click goes through.
+    func applySelection() {
+        let expr = selectionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Empty, or the literal 'sele', means "what is selected right now". Rewriting
+        // 'sele' from itself would be a no-op at best and would clobber the user's
+        // clicks at worst, so this path only re-reads it.
+        guard !expr.isEmpty, expr != Self.liveSelection else {
+            if selectionText != Self.liveSelection { selectionText = Self.liveSelection }
+            errorText = nil
+            syncFromSele()
+            return
+        }
+        guard let count = selectRegionFn?(expr) else {
+            errorText = "Invalid selection '\(expr)'"
+            return
+        }
+        selectionText = expr            // normalise away the whitespace we trimmed
+        // A syntactically fine expression that matches nothing is worth saying out
+        // loud: 'sele' is now empty, so the region silently disappeared.
+        errorText = count > 0 ? nil : "No residues match '\(expr)'"
+        syncFromSele()
+    }
+
+    /// The region field's scope button: go back to reading the live 'sele'. Peer of
+    /// Design Backbone's hotspots scope button.
+    func useCurrentSelection() {
+        selectionText = Self.liveSelection
+        errorText = nil
+        syncFromSele()
+    }
+
     /// Fire-and-forget focus (used by the UI). Wraps `focusAwait` in a Task.
     func focus(_ object: String) {
         Task { await focusAwait(object) }
@@ -584,6 +675,13 @@ final class DesignController: ObservableObject {
             clearRegionState()
         }
         focusObject = object
+        // Keep the target field showing what caused this focus: the object name for a
+        // dropdown pick or auto-focus, the user's own expression when that is what
+        // resolved here (#371).
+        if targetResolvedObject != object {
+            targetText = object
+            targetResolvedObject = object
+        }
         for o in allObjects where o != object { dim(o) }
         // Hoist token capture so both the success continuation and the catch can guard against it.
         rescoreToken += 1
@@ -1458,6 +1556,15 @@ final class DesignController: ObservableObject {
         if let setSeleResidue { self.setSeleResidueFn = setSeleResidue }
         if let clearSele { self.clearSeleFn = clearSele }
         if let dropObjectFromSele { self.dropObjectFromSeleFn = dropObjectFromSele }
+    }
+
+    /// Override the target/region field closures for testing (#371). Any argument
+    /// left nil keeps the engine-free behaviour for that operation: an unresolvable
+    /// target reports "no structure matches", and a typed region reports "invalid".
+    func injectFields(resolveTarget: ResolveTargetFn? = nil,
+                      selectRegion: SelectRegionFn? = nil) {
+        if let resolveTarget { self.resolveTargetFn = resolveTarget }
+        if let selectRegion { self.selectRegionFn = selectRegion }
     }
 
     /// Override the model-release closure for testing (Phase 2d).

@@ -1,6 +1,7 @@
 """RayMol Design-mode core helpers: residue enumeration, coloring, and
 exact visual-state save/restore. Mirrors the appkit_sequence bundled-module
 pattern (writes JSON to TMPDIR, returns a short marker)."""
+import base64
 import hashlib
 import json
 import os
@@ -328,6 +329,96 @@ def clear_sele():
     """
     cmd.select('sele', 'none', enable=0)
     return 'DESIGN_SELE_CLEAR:ok'
+
+
+def resolve_target(expr_b64):
+    """Resolve a target expression to the ONE object Design will work on (#371).
+
+    Backs the target text box, which accepts an object name OR any selection
+    expression — 'polymer and chain A', a named selection, '1abc and chain B'.
+    Design itself only ever works on one focused structure, so a multi-object
+    expression narrows to the first object rather than failing; `n_objects` reports
+    that it narrowed, so the caller can say so.
+
+    The argument is base64 of UTF-8: it is USER text that the Swift side
+    interpolates into a runPython string, where a quote or a backslash would
+    otherwise end the literal.
+
+    Output: $TMPDIR/raymol_design_target.json =
+        {'object': str, 'n_objects': int, 'error': str}
+      object     - the resolved object name, '' when nothing matched
+      n_objects  - how many objects the expression covered
+      error      - why it resolved to nothing (a rejected selector, or no match)
+    Returns 'DESIGN_TARGET:<object>'.
+    """
+    payload = {'object': '', 'n_objects': 0, 'error': ''}
+    try:
+        expr = base64.b64decode(expr_b64).decode('utf-8')
+    except Exception as e:
+        expr, payload['error'] = '', 'undecodable expression (%s)' % e
+    if expr:
+        try:
+            names = cmd.get_object_list('(%s)' % expr) or []
+        except Exception as e:
+            # A rejected selector, an unknown name, an unbalanced paren: all the
+            # same to the field, which just needs something to show the user.
+            payload['error'] = str(e) or 'invalid selection'
+        else:
+            payload['n_objects'] = len(names)
+            if names:
+                payload['object'] = names[0]
+            else:
+                payload['error'] = 'no structure matches'
+    try:
+        with open(_tmp('raymol_design_target.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_TARGET:%s' % payload['object']
+
+
+def select_region(expr_b64):
+    """Point the active 'sele' at `expr` (#371).
+
+    Backs the region text box. It WRITES 'sele' rather than keeping a second
+    region of its own, which is the whole point: typing an expression and clicking
+    residues then feed one pipeline, and everything downstream —
+    sele_design_indices, the digest-gated poll, the pink markers — is untouched.
+
+    Base64 for the same reason resolve_target takes it. A rejected selector leaves
+    the live selection exactly as it was.
+
+    enable follows emptiness, as in drop_object_from_sele: an enabled EMPTY 'sele'
+    would suppress every other selection, because cmd.enable is exclusive for
+    selections.
+
+    Output: $TMPDIR/raymol_design_select.json = {'ok': bool, 'count': int, 'error': str}
+      ok     - the selector was accepted (a valid expression matching nothing is
+               ok=True, count=0 — that is an empty region, not a mistake)
+      count  - atoms now in 'sele'
+    Returns 'DESIGN_SELECT:<count>' or 'DESIGN_SELECT:err'.
+    """
+    payload = {'ok': False, 'count': 0, 'error': ''}
+    try:
+        expr = base64.b64decode(expr_b64).decode('utf-8')
+    except Exception as e:
+        expr, payload['error'] = '', 'undecodable expression (%s)' % e
+    if expr:
+        try:
+            n = int(cmd.select('sele', '(%s)' % expr, enable=1) or 0)
+        except Exception as e:
+            payload['error'] = str(e) or 'invalid selection'
+        else:
+            payload['ok'] = True
+            payload['count'] = n
+            if not n:
+                cmd.select('sele', 'none', enable=0)
+    try:
+        with open(_tmp('raymol_design_select.json'), 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+    return 'DESIGN_SELECT:%d' % payload['count'] if payload['ok'] else 'DESIGN_SELECT:err'
 
 
 def _record_design_metrics(obj, metric, rows, state=0):
