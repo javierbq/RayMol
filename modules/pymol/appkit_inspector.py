@@ -65,7 +65,7 @@ TRANSP_SETTINGS = ['cartoon_transparency', 'sphere_transparency', 'transparency'
 
 SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_ssao',
                   'metal_rt_samples', 'metal_rt_ao_radius', 'metal_rt_ao_intensity',
-                  'metal_rt_shadow_intensity',
+                  'metal_rt_shadow_intensity', 'metal_rt_scale',
                   'metal_outline', 'metal_outline_width', 'metal_msaa',
                   'metal_tonemap', 'metal_exposure',
                   'metal_sss_wrap', 'metal_dof', 'metal_dof_focus',

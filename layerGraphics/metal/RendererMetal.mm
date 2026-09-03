@@ -778,6 +778,31 @@ void RendererMetal::endFrame()
   }
 
   if (_cmdBuffer) {
+    // RAYMOL_GPU_TIMING=<file>: append rendered frames/s and mean GPU time per
+    // frame every ~2 s to <file> (dev diagnostics for "GPU usage is high":
+    // distinguishes an expensive frame from a view that keeps re-rendering
+    // while static). A file, not NSLog: the unified log does not reliably
+    // surface this app's NSLog output when it is launched via `open --env`.
+    static const char* gpuTimingPath = getenv("RAYMOL_GPU_TIMING");
+    if (gpuTimingPath && *gpuTimingPath) {
+      [_cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        static double accum = 0.0, windowStart = 0.0;
+        static int frames = 0;
+        double now = CFAbsoluteTimeGetCurrent();
+        if (windowStart == 0.0) windowStart = now;
+        accum += (cb.GPUEndTime - cb.GPUStartTime) * 1000.0;
+        frames++;
+        if (now - windowStart >= 2.0) {
+          if (FILE* f = fopen(gpuTimingPath, "a")) {
+            fprintf(f, "%.0f frames/s=%.1f gpu_ms/frame=%.2f gpu_busy=%.0f%%\n", now,
+                    frames / (now - windowStart), accum / frames,
+                    100.0 * (accum / 1000.0) / (now - windowStart));
+            fclose(f);
+          }
+          accum = 0.0; frames = 0; windowStart = now;
+        }
+      }];
+    }
     [_cmdBuffer commit];
     _cmdBuffer = nil;
   }
@@ -1478,6 +1503,37 @@ fragment float4 post_ao_accum(PostVOut in [[stage_in]],
 }
 )";
 
+// Raw RT terms: ambient occlusion in .r, traced light-visibility (hard shadow)
+// in .g, "caster is a nearby sphere" flag in .b. Kept in its own float texture
+// so the composite pass can depth-aware-blur AO and visibility — that blur is
+// what removes the Monte-Carlo speckle the raw estimates would otherwise show,
+// and it is also what lets this pass run BELOW scene resolution: at
+// metal_rt_scale 0.5 a quarter of the rays are traced per frame (the RT pass
+// dominated frame time at 20-30 ms on a 4 Mpx window), and the bilinear
+// upsample + 5x5 depth-aware blur in rt_composite hides the lower resolution.
+// Offscreen exports always trace at full resolution.
+void RendererMetal::ensureRTAOTargets(NSUInteger w, NSUInteger h)
+{
+  if (w == 0 || h == 0) return;
+  float const scale = _offscreen ? 1.0f : _rtScale;
+  NSUInteger tw = (NSUInteger) std::max(1.0f, std::round((float) w * scale));
+  NSUInteger th = (NSUInteger) std::max(1.0f, std::round((float) h * scale));
+  if (_rtAO && _rtAOHistory && _rtAOAccum && _rtAO.width == tw && _rtAO.height == th)
+    return;
+  // MRC: release the previous set before reallocating (see ensurePostTargets).
+  [_rtAO release];        [_rtAOHistory release];   [_rtAOAccum release];
+  MTLTextureDescriptor* aod = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:tw height:th mipmapped:NO];
+  aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  aod.storageMode = MTLStorageModePrivate;
+  _rtAO = [_device newTextureWithDescriptor:aod];
+  // Temporal-AO history + accumulation targets (same layout/size as _rtAO).
+  _rtAOHistory = [_device newTextureWithDescriptor:aod];
+  _rtAOAccum = [_device newTextureWithDescriptor:aod];
+  _rtAOHistoryValid = false;
+}
+
 void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
 {
   if (w == 0 || h == 0) return;
@@ -1529,21 +1585,9 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   // against _sceneDepth so only front-most cartoon/ribbon pixels are marked.
   _aoExemptMaskTex = [_device newTextureWithDescriptor:covd];
 
-  // Raw RT terms: ambient occlusion in .r, traced light-visibility (hard
-  // shadow) in .g. Kept in its own float texture so the composite pass can
-  // depth-aware-blur both — that blur is what removes the Monte-Carlo speckle
-  // the raw estimates would otherwise show. RG (not R) so the metal_rt_shadows
-  // path can carry the traced shadow term alongside AO at no extra pass.
-  MTLTextureDescriptor* aod = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
-                                   width:w height:h mipmapped:NO];
-  aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-  aod.storageMode = MTLStorageModePrivate;
-  _rtAO = [_device newTextureWithDescriptor:aod];
-  // Temporal-AO history + accumulation targets (same RG16Float layout as _rtAO).
-  _rtAOHistory = [_device newTextureWithDescriptor:aod];
-  _rtAOAccum = [_device newTextureWithDescriptor:aod];
-  _rtAOHistoryValid = false;
+  // Raw RT terms (AO in .r, traced light-visibility in .g, sphere-caster flag
+  // in .b) live at the RT pass resolution — see ensureRTAOTargets.
+  ensureRTAOTargets(w, h);
 
   MTLTextureDescriptor* dd = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
@@ -1784,11 +1828,12 @@ void RendererMetal::setLightingParams(float ambient, float direct,
 }
 
 void RendererMetal::setRayTraceParams(int samples, float aoRadius,
-    float aoIntensity, float shadowIntensity)
+    float aoIntensity, float shadowIntensity, float scale)
 {
   // Clamp defensively: nSamples bounds the per-pixel AO ray loop, so an absurd
   // value would hang the GPU; intensities are [0,1] multipliers; radius > 0.
   _rtSamples = samples < 1 ? 1 : (samples > 256 ? 256 : samples);
+  _rtScale = scale < 0.25f ? 0.25f : (scale > 1.0f ? 1.0f : scale);
   _rtAORadius = aoRadius < 0.1f ? 0.1f : aoRadius;
   _rtAOIntensity = aoIntensity < 0.0f ? 0.0f : (aoIntensity > 1.0f ? 1.0f : aoIntensity);
   _rtShadowIntensity =
@@ -1958,11 +2003,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
 
   intersector<instancing> it;
   it.assume_geometry_type(geometry_type::triangle);
-  // Nearest hit (not any-hit): a near hit on the world-tri mesh whose facet is
-  // parallel to this pixel's own surface is the ribbon's OWN faceted relief
-  // (adjacent rings of a twisted strand), not an occluder, and is discarded
-  // below. That needs the actual hit, so the cheaper any-hit query is out.
-  it.accept_any_intersection(false);
+  it.accept_any_intersection(true);   // occlusion: stop at first hit (cheapest query)
 
   // AO near-range skip. 6% of the AO radius (0.3 A at the default 5 A): the
   // coarse ribbon mesh has sub-Angstrom micro-relief (each ring a flat facet)
@@ -1992,15 +2033,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     rr.min_distance = bias / max(dirT.z, 0.15);
     rr.max_distance = u.aoRadius;
     auto res = it.intersect(rr, accel);
-    if (res.type != intersection_type::none) {
-      bool ownRelief = false;
-      if (u.triInstance >= 0.0 && int(res.instance_id) == int(u.triInstance)
-          && res.distance < 2.5) {
-        float3 fn = rt_tri_normal_smooth(tris, res.primitive_id, uint(u.triCount));
-        ownRelief = abs(dot(fn, nSelf)) > 0.8;   // same surface, a ring or two along
-      }
-      if (!ownRelief) occ += 1.0;
-    }
+    if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
 
@@ -2303,11 +2336,12 @@ void RendererMetal::buildSphereProtoAS()
       0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11, 1,5,9, 5,11,4, 11,10,2, 10,7,6,
       7,1,8, 3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9, 4,9,5, 2,4,11, 6,2,10,
       8,6,7, 9,8,1};
-  // Three levels of midpoint subdivision projected to the unit sphere
-  // (20 -> 1280 triangles). The proto is ONE shared mesh instanced per atom,
-  // so this is free in memory/build time; with a single level (80 tris) the
-  // hard traced shadows of spheres showed their polygonal silhouette at high
-  // zoom (jagged shadow edges on neighbouring spheres/cartoon).
+  // Two levels of midpoint subdivision projected to the unit sphere
+  // (20 -> 320 triangles). The proto is ONE shared mesh instanced per atom, so
+  // memory/build time are free, but every ray traverses these triangles: with
+  // a single level (80 tris) the hard traced shadows of spheres showed their
+  // polygonal silhouette at high zoom; three levels (1280) cost ray time on
+  // sphere-heavy scenes for no visible gain over two.
   std::unordered_map<uint64_t, uint32_t> midCache;
   auto midpoint = [&](uint32_t a, uint32_t b) -> uint32_t {
     uint64_t key = (uint64_t)std::min(a, b) << 32 | std::max(a, b);
@@ -2321,7 +2355,7 @@ void RendererMetal::buildSphereProtoAS()
   };
   for (auto& p : v) p = simd_normalize(p);   // icosahedron verts are not unit length
   std::vector<uint32_t> f2 = f;
-  for (int level = 0; level < 3; ++level) {
+  for (int level = 0; level < 2; ++level) {
     std::vector<uint32_t> next;
     next.reserve(f2.size() * 4);
     for (size_t i = 0; i < f2.size(); i += 3) {
@@ -2524,6 +2558,7 @@ void RendererMetal::runPostChain()
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
   bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
+  if (_rtEnabled) ensureRTAOTargets(_rtW, _rtH);   // metal_rt_scale may have changed
   bool doRT = _rtEnabled && _rtReady && _rtResolvePipeline && _rtAOPipeline &&
               _rtInstanceAS && _postColor && _rtAO;
   id<MTLTexture> sceneSrc = _sceneColor;

@@ -166,7 +166,7 @@ public:
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
-      float shadowIntensity) override;
+      float shadowIntensity, float scale = 1.0f) override;
   void setDofQuality(int level) override;
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
@@ -582,6 +582,11 @@ private:
   bool _rtCompileTried = false;   // latch: attempt the RT library compile at most once
   // Real-time RT quality knobs (metal_rt_* settings, set via setRayTraceParams).
   int   _rtSamples = 16;           // AO rays/pixel (live); offscreen uses max(48, this)
+  float _rtScale = 0.5f;           // metal_rt_scale: RT AO/shadow pass resolution (live); offscreen = 1
+  // (Re)allocate _rtAO / history / accum at the RT pass resolution for the
+  // current scene size + scale; no-op when already right. Called from
+  // ensurePostTargets and at the top of the RT pass (scale can change live).
+  void ensureRTAOTargets(NSUInteger w, NSUInteger h);
   float _rtAORadius = 5.0f;        // AO hemisphere radius (Angstroms)
   float _rtAOIntensity = 0.72f;    // AO darkening strength (0..1)
   float _rtShadowIntensity = 0.45f;// cast-shadow darkening strength (0..1)
