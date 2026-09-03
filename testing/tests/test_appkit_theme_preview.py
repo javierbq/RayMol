@@ -4,7 +4,9 @@ Focuses on the scene-safety invariants of the theme-studio live preview:
 begin() must never mutate the user's scene unless it holds a valid session
 snapshot to restore from, must not overwrite an existing snapshot on a second
 begin(), and restore() must put the captured session back and clear the
-snapshot. `cmd` and `pymol.raymol_theme` are replaced with fakes after import.
+snapshot. `cmd` and `pymol.raymol_theme` are replaced with fakes for the
+duration of each test only (see _IsolatedPreviewTest) -- this file shares a
+process with the rest of the embedded suite.
 """
 
 import io
@@ -26,19 +28,48 @@ if "pymol" not in sys.modules or not hasattr(sys.modules["pymol"], "__path__"):
 if not hasattr(sys.modules["pymol"], "cmd"):
     sys.modules["pymol"].cmd = types.SimpleNamespace()
 
-# style() does `from pymol import raymol_theme as _rt`; give it a fake when the
-# real one isn't present (standalone run). Inside real pymol the real module is used.
-if "pymol.raymol_theme" not in sys.modules and \
-        not hasattr(sys.modules["pymol"], "raymol_theme"):
-    _rt = types.ModuleType("pymol.raymol_theme")
-    _rt._flat_sheets = True
-    _rt._fancy_helices = False
-    _rt.cbc = lambda sel: None
-    _rt.cnc = lambda sel: None
-    sys.modules["pymol.raymol_theme"] = _rt
-    sys.modules["pymol"].raymol_theme = _rt
-
 from pymol import appkit_theme_preview as tp
+
+
+def _fake_raymol_theme():
+    """The minimal `pymol.raymol_theme` that tp.style() touches."""
+    rt = types.ModuleType("pymol.raymol_theme")
+    rt._flat_sheets = True
+    rt._fancy_helices = False
+    rt.cbc = lambda sel: None
+    rt.cnc = lambda sel: None
+    return rt
+
+
+class _IsolatedPreviewTest(unittest.TestCase):
+    """Swap in the fakes for ONE test and put everything back afterwards.
+
+    style() does `from pymol import raymol_theme as _rt` at call time, so the
+    fake has to sit in sys.modules (and on the pymol package attribute, which
+    `from pymol import x` consults first) while begin()/restore() run. It used
+    to be installed at module import for the rest of the process whenever the
+    real module had not been imported yet -- which in the embedded CI run
+    (`pymol -ckqy testing/testing.py --run <many files>`) is always, since
+    nothing imports raymol_theme before this file. Every later test that did
+    `from pymol import raymol_theme` then got this stub (no apply_to, no
+    set_palette): test_raymol_theme_apply.py failed on all three cases in CI
+    while passing alone. Same for tp.cmd: the FakeCmd was left behind.
+    """
+
+    def setUp(self):
+        import unittest.mock as mock
+        pkg = sys.modules["pymol"]
+        fake = _fake_raymol_theme()
+        self._patches = [
+            mock.patch.dict(sys.modules, {"pymol.raymol_theme": fake}),
+            mock.patch.object(pkg, "raymol_theme", fake, create=True),
+            mock.patch.object(tp, "cmd", tp.cmd),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+        tp._saved = None
+        self.addCleanup(setattr, tp, "_saved", None)
 
 
 class FakeCmd:
@@ -73,9 +104,7 @@ class FakeCmd:
         return [c[0] for c in self.calls]
 
 
-class BeginTest(unittest.TestCase):
-    def setUp(self):
-        tp._saved = None
+class BeginTest(_IsolatedPreviewTest):
 
     def test_begin_without_snapshot_leaves_scene_untouched(self):
         # get_session fails and there is no prior snapshot: begin() must bail
@@ -121,9 +150,7 @@ class BeginTest(unittest.TestCase):
         self.assertIn("fab", cmd._names())
 
 
-class RestoreTest(unittest.TestCase):
-    def setUp(self):
-        tp._saved = None
+class RestoreTest(_IsolatedPreviewTest):
 
     def test_restore_puts_back_session_and_clears_saved(self):
         tp._saved = {"captured": 1}
