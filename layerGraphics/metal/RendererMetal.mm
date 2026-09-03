@@ -5562,6 +5562,7 @@ struct SphereU {
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else atom*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
   float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
+  float _pad0, _pad1;   // explicit tail padding (192 bytes); C++ mirror must match
 };
 struct SphereVOut {
   float4 position [[position]];
@@ -5870,6 +5871,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     float interiorCap;
     float interiorColor[4];
     float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
+    float _pad0, _pad1;   // matches MSL SphereU padding (192 bytes)
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
@@ -5934,6 +5936,9 @@ struct CylU {
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else bond*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
   float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
+  float _pad0, _pad1;   // explicit tail padding: MSL rounds the struct up to 208
+                        // (float4x4 alignment); the C++ mirror must match, or
+                        // Metal validation aborts the draw (iOS from Xcode).
 };
 struct CylVOut {
   float4 position [[position]];
@@ -6327,6 +6332,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     float interiorCap;
     float interiorColor[4];
     float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
+    float _pad0, _pad1;   // matches MSL CylU padding (208 bytes)
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
