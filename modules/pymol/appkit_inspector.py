@@ -20,7 +20,7 @@ REPS = ['lines', 'sticks', 'ribbon', 'cartoon', 'dots', 'spheres',
 REP_SETTINGS = {
     'cartoon':    ['cartoon_transparency', 'cartoon_loop_radius',
                    'cartoon_tube_radius', 'cartoon_fancy_helices',
-                   'cartoon_flat_sheets'],
+                   'cartoon_flat_sheets', 'cartoon_spline'],
     'surface':    ['transparency', 'surface_quality', 'solvent_radius',
                    'surface_clip_front', 'surface_clip_back', 'metal_interior_cap',
                    'surface_contour', 'surface_contour_width',

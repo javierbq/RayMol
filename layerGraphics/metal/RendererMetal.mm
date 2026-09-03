@@ -414,6 +414,7 @@ RendererMetal::~RendererMetal()
   // Real-time ray-tracing buffers + acceleration structures (+1).
   [_rtProtoVerts release];       [_rtProtoIndices release];
   [_rtSphereProtoAS release];    [_rtTriProtoAS release];   [_rtInstanceAS release];
+  [_rtTriBuffer release];
   [_bezierTessFactors release];
 
   // Reusable batch buffer (+1; grown via newBufferWithLength).
@@ -1436,14 +1437,16 @@ fragment float4 post_ao_accum(PostVOut in [[stage_in]],
     texture2d<float> histTex [[texture(1)]],
     sampler s [[sampler(0)]],
     constant AoAccumU& u [[buffer(0)]]) {
-  float2 cur = curTex.sample(s, in.uv).rg;
+  float3 cur = curTex.sample(s, in.uv).rgb;
   float2 hist = histTex.sample(s, in.uv).rg;
   // On reset take the current frame DIRECTLY — do not mix(hist, cur, 1.0): the
   // history texture is uninitialized (NaN) on the first frame, and mix computes
   // hist*(1-a)+cur*a, where NaN*0 = NaN would poison even the reset output and
   // propagate black through the feedback loop.
-  float2 outv = u.reset > 0.5 ? cur : mix(hist, cur, u.alpha);
-  return float4(outv.x, outv.y, 0.0, 1.0);
+  float2 outv = u.reset > 0.5 ? cur.rg : mix(hist, cur.rg, u.alpha);
+  // .b is the per-frame "shadowing hit is a nearby sphere" flag for the
+  // composite's facing gate; it is a classification, not a signal to average.
+  return float4(outv.x, outv.y, cur.b, 1.0);
 }
 )";
 
@@ -1504,7 +1507,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   // the raw estimates would otherwise show. RG (not R) so the metal_rt_shadows
   // path can carry the traced shadow term alongside AO at no extra pass.
   MTLTextureDescriptor* aod = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:w height:h mipmapped:NO];
   aod.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   aod.storageMode = MTLStorageModePrivate;
@@ -1690,7 +1693,7 @@ void RendererMetal::buildPostPipelines()
     if (vfn && afn) {
       MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
       psd.vertexFunction = vfn; psd.fragmentFunction = afn;
-      psd.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
+      psd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
       NSError* e = nil;
       _rtAOAccumPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&e];
       if (!_rtAOAccumPipeline)
@@ -1805,7 +1808,29 @@ struct RTU {
   float shadowRadius;      // world half-extent of the shadow ortho box (Angstroms)
   float shadowBias;        // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;         // >0.5: orthographic projection (linear eye-z / no foreshortening)
+  float triInstance;       // instance_id of the world-triangle mesh in the AS (-1 = none)
+  float triCount;          // number of triangles in the world-tri buffer
+  float pad0, pad1;
 };
+
+// Facet normal of world-tri p, averaged with its strip neighbours p-1 and p+1.
+// Ribbon strips arrive as consecutive triangles, and on a twisted quad the two
+// triangles tilt in alternate directions by a few degrees; any threshold on a
+// single facet's normal then flips between neighbours and stripes the shadow.
+// The 3-facet average cancels the alternation (for a caster in a different
+// strip the average is still a sane local normal).
+static float3 rt_facet_normal(device const packed_float3* tris, uint q) {
+  float3 a = float3(tris[3 * q]), b = float3(tris[3 * q + 1]), c = float3(tris[3 * q + 2]);
+  return normalize(cross(b - a, c - a));
+}
+static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uint n) {
+  float3 fp = rt_facet_normal(tris, p);
+  float3 acc = fp;
+  // winding is not guaranteed consistent between neighbours: align each to fp
+  if (p > 0)     { float3 f = rt_facet_normal(tris, p - 1); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  if (p + 1 < n) { float3 f = rt_facet_normal(tris, p + 1); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  return normalize(acc);
+}
 
 static float rt_hash(float2 p) {
   return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
@@ -1835,7 +1860,8 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     depth2d<float> depthTex [[texture(1)]],
     sampler s [[sampler(0)]],
     instance_acceleration_structure accel [[buffer(0)]],
-    constant RTU& u [[buffer(1)]]) {
+    constant RTU& u [[buffer(1)]],
+    device const packed_float3* tris [[buffer(2)]]) {
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
 
@@ -1845,8 +1871,12 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
   // ray-origin bias in a 1-2px band along every silhouette.
   float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho);
   float2 invres = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
-  float3 nEye = post_eye_normal(depthTex, s, in.uv, invres, d, pEye,
-                                u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+  // SMOOTH normal (bilateral over the facets, silhouette-preserving), like the
+  // shadow-map path: the plain per-triangle reconstruction made the ray-origin
+  // offset and the light-facing test flip per triangle on coarse cartoon
+  // strands -> "triangles under shadows" in the traced-shadow path too.
+  float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho);
 
   float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
   float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
@@ -1888,19 +1918,76 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
   // 0 occluded. Back-facing fragments skip the ray (vis=1); the composite
   // faceGate zeroes their cast-shadow term so diffuse alone darkens them.
   float vis = 1.0;
+  float selfSphere = 0.0;   // 1: the shadowing hit is a sphere within ~4 A (may be our own atom)
   if (u.rtShadow > 0.5) {
     float3 Lm = normalize(u.lightDirModel.xyz);
-    if (dot(nModel, Lm) > 0.0) {
+    {
+      // The depth-reconstructed normal is NOT trusted for the shadow decision on
+      // triangle meshes: on twisted ribbon quads it alternates per triangle, and
+      // every normal-based rule (origin offset, facing gate, slope-scaled skip)
+      // turned that into stripes at low light incidence. So the ray does all
+      // the work here, for every fragment:
+      //  * origin on the surface, tiny fixed skip;
+      //  * nearest-hit walk: a world-tri hit within 12 A whose facet is within
+      //    ~30 deg of the ray is a grazing self-hit (terminator problem) ->
+      //    step past it;
+      //  * a broadside world-tri hit within ~one slab thickness is this
+      //    fragment's OWN far face (we are on the unlit side of a thin
+      //    ribbon/surface, or inside a stick) -> stay lit, diffuse darkens it;
+      //  * anything else is a caster.
+      // Sphere impostors have an analytic depth (smooth normal), so for them
+      // the composite keeps a normal-based facing gate: a sphere hit within
+      // ~4 A is flagged as "maybe our own atom" (.b), and the composite fades
+      // that shadow on the unlit hemisphere instead of double-darkening it.
+      float skip = 0.05 * u.shadowBias;
+      intersector<instancing> sit;
+      sit.assume_geometry_type(geometry_type::triangle);
+      sit.accept_any_intersection(false);
       ray sr;
-      sr.origin = origin;            // already pModel + nModel*bias
+      sr.origin = pModel + nModel * 0.02;
       sr.direction = Lm;
-      sr.min_distance = bias;
+      sr.min_distance = skip;
       sr.max_distance = 1.0e4;       // full directional shadow, not just contact
-      auto sres = it.intersect(sr, accel);
-      if (sres.type != intersection_type::none) vis = 0.0;
+      float const nL = dot(nModel, Lm);
+      // How far along the ray this fragment's OWN slab can extend: the far
+      // face of a ~0.5 A ribbon is ~1.2 A away broadside, but at grazing
+      // incidence the ray travels inside the slab for thickness/sin(angle).
+      float const ownReach = 1.2 * u.shadowBias / max(abs(nL), 0.15);
+      for (int k = 0; k < 4; ++k) {
+        auto sres = sit.intersect(sr, accel);
+        if (sres.type == intersection_type::none) break;
+        bool onTri = (u.triInstance >= 0.0 && int(sres.instance_id) == int(u.triInstance));
+        bool ownFace = false, grazingSelf = false;
+        if (onTri && sres.distance < 12.0 * u.shadowBias) {
+          float3 fn = rt_tri_normal_smooth(tris, sres.primitive_id, uint(u.triCount));
+          // OWN face: a facet (near-)parallel to this fragment's surface, within
+          // the slab reach. That is the far face when we sit on the unlit side
+          // of a thin ribbon/surface (ray entered the slab), or the ribbon's own
+          // top face when a grazing ray skims it. Not a caster -> stay lit and
+          // let the diffuse term darken the unlit side. Neighbouring parallel
+          // strands in a sheet are ~5 A apart laterally, i.e. far beyond
+          // ownReach along a grazing ray, so real sheet-on-sheet shadows stay.
+          ownFace = abs(dot(fn, nModel)) > 0.8 && sres.distance < ownReach;
+          // Otherwise a NEARBY facet within ~30 deg of the ray is a terminator
+          // self-hit: step past it and keep tracing. Near range only (3 A):
+          // farther out, a tangential hit is the silhouette zone of a genuine
+          // caster, and skipping those eroded the shadow edge ring by ring
+          // into a comb. Own-surface hits beyond 3 A are the parallel-face
+          // case above.
+          grazingSelf = !ownFace && abs(dot(fn, Lm)) < 0.5
+                        && sres.distance < 3.0 * u.shadowBias;
+        }
+        if (ownFace) break;
+        if (!grazingSelf) {
+          vis = 0.0;
+          if (!onTri && sres.distance < 4.0) selfSphere = 1.0;
+          break;
+        }
+        sr.min_distance = sres.distance + 0.01;
+      }
     }
   }
-  return float4(ao, vis, 0.0, 1.0);
+  return float4(ao, vis, selfSphere, 1.0);
 }
 
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
@@ -1957,7 +2044,16 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   if (u.shadowIntensity > 0.0 && u.rtShadow > 0.5) {
     float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
     float3 Lm = normalize(u.lightDirModel.xyz);
-    float faceGate = smoothstep(0.0, 0.35, dot(nModel, Lm));
+    // Facing gate ONLY when rt_ao flagged the shadowing hit as a nearby sphere
+    // (.b): sphere impostors have an analytic depth, so the reconstructed
+    // normal is reliable there and the 0..0.35 ramp fades self-shadow on the
+    // unlit hemisphere. For triangle meshes (cartoon/surface/sticks) the ray
+    // result is used as-is: the depth-reconstructed normal alternates per
+    // triangle on twisted ribbon quads, and any normal-based gate striped the
+    // shadow at low light incidence; rt_ao's own-far-face rule already keeps
+    // thin meshes' unlit side from being double-darkened.
+    float selfSphere = aoTex.sample(s, in.uv).b;
+    float faceGate = selfSphere > 0.5 ? smoothstep(0.0, 0.35, dot(nModel, Lm)) : 1.0;
     float shadow = (1.0 - vis) * faceGate;
     col *= (1.0 - shadow * u.shadowIntensity);
   } else if (u.shadowIntensity > 0.0) {
@@ -2016,7 +2112,9 @@ static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3
                                         : simd_make_float3(1, 0, 0);
   simd_float3 t1 = simd_normalize(simd_cross(up, axis));
   simd_float3 t2 = simd_cross(axis, t1);
-  const int K = 6;
+  // 12 sides: the shadow/AO proxy for sticks. Six sides cast visibly hexagonal
+  // hard shadows at high zoom; twelve is still 2 tris/side (24 tris per stick).
+  const int K = 12;
   simd_float3 ringA[K], ringB[K];
   for (int i = 0; i < K; ++i) {
     float ang = 6.2831853f * (float)i / (float)K;
@@ -2105,7 +2203,11 @@ void RendererMetal::buildSphereProtoAS()
       0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11, 1,5,9, 5,11,4, 11,10,2, 10,7,6,
       7,1,8, 3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9, 4,9,5, 2,4,11, 6,2,10,
       8,6,7, 9,8,1};
-  // One level of subdivision (midpoint split), then project to the unit sphere.
+  // Three levels of midpoint subdivision projected to the unit sphere
+  // (20 -> 1280 triangles). The proto is ONE shared mesh instanced per atom,
+  // so this is free in memory/build time; with a single level (80 tris) the
+  // hard traced shadows of spheres showed their polygonal silhouette at high
+  // zoom (jagged shadow edges on neighbouring spheres/cartoon).
   std::unordered_map<uint64_t, uint32_t> midCache;
   auto midpoint = [&](uint32_t a, uint32_t b) -> uint32_t {
     uint64_t key = (uint64_t)std::min(a, b) << 32 | std::max(a, b);
@@ -2117,13 +2219,18 @@ void RendererMetal::buildSphereProtoAS()
     midCache[key] = idx;
     return idx;
   };
-  std::vector<uint32_t> f2;
-  f2.reserve(f.size() * 4);
-  for (size_t i = 0; i < f.size(); i += 3) {
-    uint32_t a = f[i], b = f[i + 1], c = f[i + 2];
-    uint32_t ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
-    uint32_t tri[] = {a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca};
-    f2.insert(f2.end(), tri, tri + 12);
+  for (auto& p : v) p = simd_normalize(p);   // icosahedron verts are not unit length
+  std::vector<uint32_t> f2 = f;
+  for (int level = 0; level < 3; ++level) {
+    std::vector<uint32_t> next;
+    next.reserve(f2.size() * 4);
+    for (size_t i = 0; i < f2.size(); i += 3) {
+      uint32_t a = f2[i], b = f2[i + 1], c = f2[i + 2];
+      uint32_t ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
+      uint32_t tri[] = {a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca};
+      next.insert(next.end(), tri, tri + 12);
+    }
+    f2.swap(next);
   }
   for (auto& p : v) p = simd_normalize(p);
 
@@ -2201,10 +2308,16 @@ void RendererMetal::ensureRayTracingAS()
           [MTLPrimitiveAccelerationStructureDescriptor descriptor];
       pd.geometryDescriptors = @[tgeo];
       _rtTriProtoAS = buildAccelStructure(pd);
-      // MRC: buildAccelStructure committed+waited, so the source vertex buffer
-      // (+1) is no longer needed (the AS holds its own compacted geometry).
-      [tb release];
+      // MRC: keep the (+1) vertex buffer alive as _rtTriBuffer — the AS holds
+      // its own compacted geometry, but rt_ao reads the hit triangle's vertices
+      // from this buffer to reject grazing self-hits of the shadow ray.
+      [_rtTriBuffer release];
+      _rtTriBuffer = tb;
+    } else {
+      [_rtTriBuffer release];
+      _rtTriBuffer = nil;
     }
+    _rtTriInstance = -1;
 
     // Top-level instance AS: N icosphere instances (atoms) + 1 world-tri
     // instance (identity). instancedAccelerationStructures indexes the protos.
@@ -2238,6 +2351,7 @@ void RendererMetal::ensureRayTracingAS()
       }
     }
     if (triIdx >= 0) {
+      _rtTriInstance = (int)ii;   // instance_id the shadow ray sees for world tris
       MTLPackedFloat4x3 m;
       m.columns[0].x = 1; m.columns[0].y = 0; m.columns[0].z = 0;
       m.columns[1].x = 0; m.columns[1].y = 1; m.columns[1].z = 0;
@@ -2286,7 +2400,7 @@ void RendererMetal::ensureRayTracingAS()
       MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
       pa.vertexFunction = [lib newFunctionWithName:@"rt_vertex"];
       pa.fragmentFunction = [lib newFunctionWithName:@"rt_ao"];
-      pa.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
+      pa.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
       _rtAOPipeline = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
       // Pass B: blur AO + shadow/fog composite -> BGRA8.
       MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
@@ -2328,6 +2442,9 @@ void RendererMetal::runPostChain()
       float shadowRadius;        // matches MSL RTU: shadow ortho half-extent
       float shadowBias;          // matches MSL RTU: metal_shadow_bias multiplier
       float projOrtho;           // matches MSL RTU: 1 = orthographic (#139)
+      float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
+      float triCount;            // matches MSL RTU: world-tri triangle count
+      float pad0, pad1;
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2363,6 +2480,9 @@ void RendererMetal::runPostChain()
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
     u.shadowBias = _shadowBias;
+    u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
+    u.triCount = (float)((_rtTris.size() / 3) / 3);
+    u.pad0 = u.pad1 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2385,6 +2505,12 @@ void RendererMetal::runPostChain()
     [ea setFragmentSamplerState:_postSampler atIndex:0];
     [ea setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
     [ea setFragmentBytes:&u length:sizeof(u) atIndex:1];
+    if (_rtTriBuffer && _rtTriInstance >= 0) {
+      [ea setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
+    } else {
+      float dummyTri[9] = {0};   // never read: triInstance = -1 gates the lookup
+      [ea setFragmentBytes:dummyTri length:sizeof(dummyTri) atIndex:2];
+    }
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [ea endEncoding];
 

@@ -571,6 +571,9 @@ private:
   id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
   id<MTLAccelerationStructure> _rtTriProtoAS = nil;     // world triangle mesh
   id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
+  id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
+                                      // shadow ray can read the hit facet's plane (grazing-hit reject)
+  int _rtTriInstance = -1;            // top-level instance index of the world-tri mesh (-1 = none)
   id<MTLBuffer> _rtProtoVerts = nil;
   id<MTLBuffer> _rtProtoIndices = nil;
   uint32_t _rtProtoIndexCount = 0;
