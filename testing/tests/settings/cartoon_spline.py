@@ -25,7 +25,10 @@ class TestCartoonSpline(testing.PyMOLTestCase):
         cmd.bg_color('black')
         return self.get_imagearray(width=200, height=200, ray=1)
 
-    def test_default_is_classic(self):
+    def test_default_is_spline(self):
+        # spline tessellation is the default; the classic path stays selectable
+        self.assertEqual(cmd.get_setting_int('cartoon_spline'), 1)
+        cmd.set('cartoon_spline', 0)
         self.assertEqual(cmd.get_setting_int('cartoon_spline'), 0)
 
     def test_spline_renders_cartoon(self):
