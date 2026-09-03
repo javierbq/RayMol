@@ -91,6 +91,13 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *drawable, void *pa
 
 // Debug: execute raw Python (PyRun_SimpleString) under the GIL.
 void PyMOLBridge_RunPython(const char *code);
+// Run read-only Python (the periodic UI polls) WITHOUT leaving a redisplay
+// behind: if PyMOL's redisplay flag was clear before, it is cleared again
+// afterwards. The polls create/destroy temporary selections (count_atoms,
+// count_states, ...), and the core marks the scene changed for those, so an
+// idle window was re-rendering a full frame — with ray tracing, 20-30 ms of
+// GPU — on every poll (~2-3 frames/s while nothing moved).
+void PyMOLBridge_RunPythonQuiet(PyMOLHandle instance, const char *code);
 
 // Tap-to-select: NDC coords in [-1,1], aspect = width/height. Runs the CPU-side
 // metal_pick.pick_at (GL color picking is unavailable on the Metal backend).

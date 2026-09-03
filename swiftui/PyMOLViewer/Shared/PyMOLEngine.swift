@@ -758,7 +758,7 @@ final class PyMOLEngine: ObservableObject {
     // Ask the core for the current frame / length / play state. Cheap (a few
     // cmd gets); the PLAYBACK: line is read on the next pollFeedback tick.
     private func pollPlayback() {
-        runPython("from pymol import appkit_movie as _am\n_am.poll()")
+        runPythonQuiet("from pymol import appkit_movie as _am\n_am.poll()")
     }
 
     func shutdown() {
@@ -1246,6 +1246,20 @@ final class PyMOLEngine: ObservableObject {
 #endif
         guard isReady else { return }
         PyMOLBridge_RunPython(code)
+    }
+
+    /// Read-only Python for the periodic UI polls: runs like `runPython` but
+    /// does not leave a redisplay behind. The polls' temporary selections
+    /// (count_atoms / count_states) make the core mark the scene changed, which
+    /// re-rendered a full frame on every poll — 2-3 frames/s on a static view,
+    /// 20-30 ms of GPU each with ray tracing on. Use ONLY for code that changes
+    /// nothing visible.
+    func runPythonQuiet(_ code: String) {
+#if DEBUG
+        pythonTap?(code)
+#endif
+        guard isReady, let inst = instance else { return }
+        PyMOLBridge_RunPythonQuiet(inst, code)
     }
 
     /// Two-stage "clear selection" used by both the selection-chip X and the Esc
@@ -3094,7 +3108,7 @@ final class PyMOLEngine: ObservableObject {
         // The query (incl. BIMO-style alignment gap layout) lives in the bundled
         // pymol.appkit_sequence module so it stays readable and testable.
         let preview = themePreviewActive ? "True" : "False"
-        runPython(
+        runPythonQuiet(
             "from pymol import appkit_sequence as _sq\n"
             + "_sq.poll(preview=\(preview))\n"
             + "print('SEQPANEL:ready')"
@@ -3106,7 +3120,7 @@ final class PyMOLEngine: ObservableObject {
     // ("obj/chain/resi") to a temp file; emits a short SEQSEL marker.
     func fetchSequenceSelection() {
         guard isReady else { return }
-        runPython(
+        runPythonQuiet(
             "import json, os, tempfile\n"
             + "from pymol import cmd as _sc\n"
             + "_sel = []\n"
@@ -3647,7 +3661,8 @@ final class PyMOLEngine: ObservableObject {
         // the feedback buffer (parsed by pollFeedback); only the echo is avoided.
         // poll_panel writes the list to a temp file and prints just that marker,
         // so the payload can't overflow the ~1KB feedback-line cap (#231).
-        runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
+        // Quiet: a poll must not cost a re-render of a static scene.
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
 
         pollDetails()
         // Discover/refresh the timeline length + frame (cheap). Fast updates
@@ -3674,7 +3689,7 @@ final class PyMOLEngine: ObservableObject {
         var names: [String] = []
         if let d = expandedDetail, d != Self.sceneDetailKey { names = [d] }
         let pyList = names.map { "'\($0.replacingOccurrences(of: "'", with: ""))'" }.joined(separator: ", ")
-        runPython("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll([\(pyList)])")
     }
 
     #if os(macOS)
