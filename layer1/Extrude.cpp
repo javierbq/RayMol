@@ -33,6 +33,7 @@ Z* -------------------------------------------------------------------
 
 static
 void ExtrudeInit(PyMOLGlobals * G, CExtrude * I);
+static void ExtrudeTwistNormals(float* TV, float* TN, int N, int Ns);
 
 #define CopyArray(dst,src,type,count) memcpy(dst,src,sizeof(type)*(count))
 
@@ -1555,7 +1556,9 @@ int ExtrudeCGOSurfacePolygon(const CExtrude * I, CGO * cgo, cCylCap cap, const f
 	sv += 3;
 	sn += 3;
       }
-      
+      if (I->twist_normals)
+        ExtrudeTwistNormals(TV, TN, I->N, I->Ns);
+
       /* fill in each strip separately */
       
       tv = TV;
@@ -1843,6 +1846,52 @@ int ExtrudeCGOSurfacePolygonTaper(const CExtrude * I, CGO * cgo, int sampling,
   return ok;
 }
 
+/**
+ * Replace the cross-section face normals in TN with normals of the swept
+ * surface itself. TV/TN hold (Ns+1) rows of N points (row Ns duplicates row 0);
+ * the rectangle cross sections list every corner twice so that rows (2k, 2k+1)
+ * form one flat-shaded face. When the frame twists along the path the quad
+ * between two rings is a saddle: the surface normal differs between its two
+ * edges, but both edges were given the same face normal, so Gouraud
+ * interpolation over the two triangles of the quad meets at the diagonal in a
+ * visible crease (a fan of streaks on a twisting strand). Here each vertex gets
+ * normalize(cross(along, across)) with `along` the path direction at that edge
+ * (central difference of its own row) and `across` the vector spanning the face
+ * at that ring, oriented to agree with the original face normal. Degenerate
+ * spans (an arrow tip, a zero-length step) keep the original normal.
+ */
+static void ExtrudeTwistNormals(float* TV, float* TN, int N, int Ns)
+{
+  if (N < 2 || Ns < 2 || (Ns % 2))
+    return;
+  auto V = [&](int b, int a) { return TV + 3 * (b * N + a); };
+  auto Nn = [&](int b, int a) { return TN + 3 * (b * N + a); };
+  for (int b = 0; b < Ns; b++) {
+    int const partner = (b % 2 == 0) ? b + 1 : b - 1;
+    for (int a = 0; a < N; a++) {
+      float along[3], across[3], nn[3];
+      int const a0 = (a > 0) ? a - 1 : a;
+      int const a1 = (a + 1 < N) ? a + 1 : a;
+      subtract3f(V(b, a1), V(b, a0), along);
+      if (b % 2 == 0)
+        subtract3f(V(partner, a), V(b, a), across);
+      else
+        subtract3f(V(b, a), V(partner, a), across);
+      if (length3f(along) < R_SMALL4 || length3f(across) < R_SMALL4)
+        continue;   // arrow tip / degenerate step: keep the face normal
+      cross_product3f(along, across, nn);
+      if (length3f(nn) < R_SMALL8)
+        continue;
+      normalize3f(nn);
+      if (dot_product3f(nn, Nn(b, a)) < 0.0F)
+        invert3f(nn);
+      copy3f(nn, Nn(b, a));
+    }
+  }
+  for (int a = 0; a < N; a++)   // row Ns is the wrap-around copy of row 0
+    copy3f(Nn(0, a), Nn(Ns, a));
+}
+
 int ExtrudeCGOSurfaceStrand(const CExtrude * I, CGO * cgo, int sampling, const float *color_override)
 {
   int a, b;
@@ -1897,6 +1946,8 @@ int ExtrudeCGOSurfaceStrand(const CExtrude * I, CGO * cgo, int sampling, const f
 	sv += 3;
 	sn += 3;
       }
+      if (I->twist_normals)
+        ExtrudeTwistNormals(TV, TN, I->N, I->Ns);
 
       /* fill in each strip of arrow separately */
       
@@ -2033,6 +2084,8 @@ int ExtrudeCGOSurfaceStrand(const CExtrude * I, CGO * cgo, int sampling, const f
 	sv += 3;
 	sn += 3;
       }
+      if (I->twist_normals)
+        ExtrudeTwistNormals(TV, TN, I->N, I->Ns);
     }
 
     tv = TV;

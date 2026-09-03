@@ -41,6 +41,12 @@ struct CExtrude {
   float* sn{};
   float* tn{};
   int Ns;
+  /* cartoon_spline: recompute the per-vertex normals of rectangular strips
+   * (strand / arrow / polygon) from the swept geometry instead of using the
+   * cross-section face normal, so a TWISTED quad (its two edges see different
+   * frames) shades as the saddle it is rather than showing its triangle
+   * diagonal as a crease. */
+  int twist_normals{};
 };
 
 CExtrude *ExtrudeNew(PyMOLGlobals * G);

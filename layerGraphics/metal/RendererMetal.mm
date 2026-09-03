@@ -1856,9 +1856,14 @@ static float3 rt_facet_normal(device const packed_float3* tris, uint q) {
 static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uint n) {
   float3 fp = rt_facet_normal(tris, p);
   float3 acc = fp;
-  // winding is not guaranteed consistent between neighbours: align each to fp
-  if (p > 0)     { float3 f = rt_facet_normal(tris, p - 1); acc += (dot(f, fp) < 0.0) ? -f : f; }
-  if (p + 1 < n) { float3 f = rt_facet_normal(tris, p + 1); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  // Two strip neighbours each side (= one full quad on either side, so the
+  // alternating tilt of a twisted quad's two triangles cancels even when the
+  // twist per ring is large). Winding is not guaranteed consistent between
+  // neighbours: align each to fp.
+  for (uint k = 1; k <= 2; ++k) {
+    if (p >= k)     { float3 f = rt_facet_normal(tris, p - k); acc += (dot(f, fp) < 0.0) ? -f : f; }
+    if (p + k < n)  { float3 f = rt_facet_normal(tris, p + k); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  }
   return normalize(acc);
 }
 
@@ -1910,16 +1915,61 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
 
   float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
   float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
-  float3 upv = abs(nModel.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
-  float3 tx = normalize(cross(upv, nModel));
-  float3 ty = cross(nModel, tx);
+
+  // The pixel's OWN surface normal for everything that orients rays from it
+  // (AO hemisphere + origin offset, shadow self-hit tests). The depth-
+  // reconstructed nModel still steps per triangle on a twisted ribbon (the two
+  // triangles of a quad tilt in alternate directions), which striped both the
+  // AO and the shadow term ring by ring on strongly twisted strands
+  // (cartoon_flat_sheets off). So find the triangle this pixel actually lies
+  // on with a primary ray (eye -> pixel) and use its strip-smoothed facet
+  // normal; pixels on sphere impostors (analytic depth) keep nModel.
+  float3 nSelf = nModel;
+  {
+    float3 camM, dirM;
+    if (u.projOrtho > 0.5) {
+      dirM = normalize((u.invModelview * float4(0.0, 0.0, -1.0, 0.0)).xyz);
+      camM = pModel - dirM * 1000.0;
+    } else {
+      camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+      dirM = normalize(pModel - camM);
+    }
+    float const dEye = length(pModel - camM);
+    intersector<instancing> pit;
+    pit.assume_geometry_type(geometry_type::triangle);
+    pit.accept_any_intersection(false);
+    ray pr;
+    pr.origin = camM;
+    pr.direction = dirM;
+    pr.min_distance = 0.0;
+    pr.max_distance = dEye + 0.5;
+    auto pres = pit.intersect(pr, accel);
+    if (pres.type != intersection_type::none && u.triInstance >= 0.0
+        && int(pres.instance_id) == int(u.triInstance)
+        && abs(pres.distance - dEye) < 0.5) {
+      nSelf = rt_tri_normal_smooth(tris, pres.primitive_id, uint(u.triCount));
+      if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;   // face the camera side
+    }
+  }
+
+  float3 upv = abs(nSelf.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+  float3 tx = normalize(cross(upv, nSelf));
+  float3 ty = cross(nSelf, tx);
 
   intersector<instancing> it;
   it.assume_geometry_type(geometry_type::triangle);
-  it.accept_any_intersection(true);   // occlusion: stop at first hit
+  // Nearest hit (not any-hit): a near hit on the world-tri mesh whose facet is
+  // parallel to this pixel's own surface is the ribbon's OWN faceted relief
+  // (adjacent rings of a twisted strand), not an occluder, and is discarded
+  // below. That needs the actual hit, so the cheaper any-hit query is out.
+  it.accept_any_intersection(false);
 
-  float bias = max(u.aoRadius * 0.03, 0.02);
-  float3 origin = pModel + nModel * bias;
+  // AO near-range skip. 6% of the AO radius (0.3 A at the default 5 A): the
+  // coarse ribbon mesh has sub-Angstrom micro-relief (each ring a flat facet)
+  // that is NOT real occlusion; sampling it produced ring-periodic bands on
+  // twisted strands. Pockets and contacts that AO is meant to show are >1 A.
+  float bias = max(u.aoRadius * 0.06, 0.3);
+  float3 origin = pModel + nSelf * bias;
 
   int N = max(int(u.nSamples), 1);
   float rot = rt_hash(in.uv * 1024.0 + u.frame); // per-pixel Cranley-Patterson rotation; +frame jitters per-frame for temporal AO (frame=0 => identical to before)
@@ -1930,14 +1980,27 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     float phi = 6.2831853 * fract(hx.y + rot);
     float r = sqrt(h1);                  // cosine-weighted hemisphere
     float3 dirT = float3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - h1)));
-    float3 dir = normalize(dirT.x * tx + dirT.y * ty + dirT.z * nModel);
+    float3 dir = normalize(dirT.x * tx + dirT.y * ty + dirT.z * nSelf);
     ray rr;
     rr.origin = origin;
     rr.direction = dir;
-    rr.min_distance = bias;
+    // Terminator guard: a ray leaving nearly parallel to the surface (small
+    // dirT.z) skims its own neighbouring facets, which on a twisted ribbon bend
+    // up and down alternately -> ring-periodic AO bands. Skip a longer near
+    // range for such rays (up to ~1 A at 10 deg); real occluders that close and
+    // that grazing contribute almost nothing to a cosine-weighted estimate.
+    rr.min_distance = bias / max(dirT.z, 0.15);
     rr.max_distance = u.aoRadius;
     auto res = it.intersect(rr, accel);
-    if (res.type != intersection_type::none) occ += 1.0;
+    if (res.type != intersection_type::none) {
+      bool ownRelief = false;
+      if (u.triInstance >= 0.0 && int(res.instance_id) == int(u.triInstance)
+          && res.distance < 2.5) {
+        float3 fn = rt_tri_normal_smooth(tris, res.primitive_id, uint(u.triCount));
+        ownRelief = abs(dot(fn, nSelf)) > 0.8;   // same surface, a ring or two along
+      }
+      if (!ownRelief) occ += 1.0;
+    }
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
 
@@ -1974,11 +2037,18 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
       sit.assume_geometry_type(geometry_type::triangle);
       sit.accept_any_intersection(false);
       ray sr;
-      sr.origin = pModel + nModel * 0.02;
+      sr.origin = pModel + nSelf * 0.02;
       sr.direction = Lm;
       sr.min_distance = skip;
       sr.max_distance = 1.0e4;       // full directional shadow, not just contact
-      float const nL = dot(nModel, Lm);
+      // The pixel's OWN surface normal for the self-hit tests below. The
+      // depth-reconstructed nModel still steps per triangle on a twisted
+      // ribbon, and a threshold on |fn . nModel| then flips ring by ring
+      // (stripes on strongly twisted strands, e.g. cartoon_flat_sheets off).
+      // So find the triangle this pixel actually lies on with a primary ray
+      // (eye -> pixel) and use its strip-smoothed facet normal instead; pixels
+      // on sphere impostors (analytic depth) keep nModel.
+      float const nL = dot(nSelf, Lm);
       // How far along the ray this fragment's OWN slab can extend: the far
       // face of a ~0.5 A ribbon is ~1.2 A away broadside, but at grazing
       // incidence the ray travels inside the slab for thickness/sin(angle).
@@ -1997,7 +2067,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
           // let the diffuse term darken the unlit side. Neighbouring parallel
           // strands in a sheet are ~5 A apart laterally, i.e. far beyond
           // ownReach along a grazing ray, so real sheet-on-sheet shadows stay.
-          ownFace = abs(dot(fn, nModel)) > 0.8 && sres.distance < ownReach;
+          ownFace = abs(dot(fn, nSelf)) > 0.8 && sres.distance < ownReach;
           // Otherwise a NEARBY facet within ~30 deg of the ray is a terminator
           // self-hit: step past it and keep tracing. Near range only (3 A):
           // farther out, a tangential hit is the silhouette zone of a genuine

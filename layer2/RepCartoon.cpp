@@ -2878,8 +2878,12 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
   if(nAt > 1) {
     ex = ExtrudeNew(G);
     CHECKOK(ok, ex);
-    if (ok)
+    if (ok) {
+      // Spline mode shades twisted strand/arrow quads with true surface normals
+      // (see ExtrudeTwistNormals); the classic path keeps its face normals.
+      ex->twist_normals = spline_mode ? 1 : 0;
       ok &= ExtrudeAllocPointsNormalsColors(ex, cs->NIndex * (3 * sampling + 3));
+    }
   }
   /* process cylindrical helices first */
   if(ok && (nAt > 1) && cylindrical_helices == CARTOON_CYLINDRICAL_HELICES_STRAIGHT) {
