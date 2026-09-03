@@ -296,6 +296,33 @@ fragment float4 batch_fragment(BatchVertexOut in [[stage_in]])
 void RendererMetal::setSampleCount(NSUInteger n)
 {
   if (n < 1) n = 1;
+  // The MSAA scene pass resolves the Depth32Float_Stencil8 depth attachment
+  // (StoreAndMultisampleResolve, see ensurePostTargets). A depth-stencil
+  // format is only a legal MSAA resolve target on Apple GPU family 5+ (A12 and
+  // later) and on Mac GPUs; the iOS *simulator* and older iPhones reject it —
+  // under Metal API validation (any run from Xcode) that is a hard assert in
+  // beginFrame on the very first frame, i.e. a crash on launch. Fall back to
+  // single-sample rendering there rather than resolving an unsupported format.
+  if (n > 1 && _device) {
+    bool depthStencilResolveOK = false;
+#if TARGET_OS_SIMULATOR
+    depthStencilResolveOK = false;
+#else
+    if (@available(macOS 10.15, iOS 13.0, *)) {
+      depthStencilResolveOK = [_device supportsFamily:MTLGPUFamilyApple5]
+                           || [_device supportsFamily:MTLGPUFamilyMac2];
+    }
+#endif
+    if (!depthStencilResolveOK) {
+      static bool warned = false;
+      if (!warned) {
+        NSLog(@"RendererMetal: MSAA depth-stencil resolve unsupported on this GPU; "
+              @"rendering single-sample (metal_msaa ignored)");
+        warned = true;
+      }
+      n = 1;
+    }
+  }
   if (n == _sampleCount) return;
   _sampleCount = n;
   // Rebuild every sample-count-dependent (opaque-pass) pipeline. OIT and
@@ -1089,6 +1116,7 @@ struct PostU {
   float shadowRadius;    // world half-extent of the shadow ortho box (Angstroms)
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
+  float pad0;            // 16-byte multiple: the C++ mirror must be >= this size
 };
 
 // Linear eye distance (positive, toward the scene) from window depth [0,1].
@@ -1810,7 +1838,9 @@ struct RTU {
   float projOrtho;         // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float triInstance;       // instance_id of the world-triangle mesh in the AS (-1 = none)
   float triCount;          // number of triangles in the world-tri buffer
-  float pad0, pad1;
+  float pad0, pad1, pad2;  // -> 8 floats after lightViewProj: struct size is a
+                           //    multiple of 16 on both sides (validation checks
+                           //    setFragmentBytes length >= argument size)
 };
 
 // Facet normal of world-tri p, averaged with its strip neighbours p-1 and p+1.
@@ -2444,7 +2474,7 @@ void RendererMetal::runPostChain()
       float projOrtho;           // matches MSL RTU: 1 = orthographic (#139)
       float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
       float triCount;            // matches MSL RTU: world-tri triangle count
-      float pad0, pad1;
+      float pad0, pad1, pad2;    // matches MSL RTU padding (16-byte multiple)
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2482,7 +2512,7 @@ void RendererMetal::runPostChain()
     u.shadowBias = _shadowBias;
     u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
     u.triCount = (float)((_rtTris.size() / 3) / 3);
-    u.pad0 = u.pad1 = 0.0f;
+    u.pad0 = u.pad1 = u.pad2 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2587,7 +2617,9 @@ void RendererMetal::runPostChain()
       float shadowRadius;      // matches MSL PostU: shadow ortho half-extent
       float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
+      float pad0;              // matches MSL PostU padding (16-byte multiple)
     } u;
+    u.pad0 = 0.0f;
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
     u.bgR = _bgR; u.bgG = _bgG; u.bgB = _bgB;
