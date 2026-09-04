@@ -34,10 +34,14 @@ class FakeCmd:
       - `mm[index] = (chain, resi)`                   over `obj`
     """
 
-    def __init__(self, objects, enabled=None, raw=None):
+    def __init__(self, objects, enabled=None, raw=None, parents=None):
         # objects: {name: {"type": str, "atoms": [ {chain,resi,resn,color,index}, ... ]}}
         self._objects = objects
-        self._enabled = set(enabled or objects.keys())
+        # {child: parent_group} — what appkit_inspector.group_parents would report.
+        self.parents = dict(parents or {})
+        # `enabled=None` means "everything"; an explicit empty set means nothing
+        # is enabled and must NOT fall back to all (that masked the #380 case).
+        self._enabled = set(objects.keys()) if enabled is None else set(enabled)
         self._raw = raw or {}
 
     def get_type(self, name):
@@ -45,6 +49,9 @@ class FakeCmd:
 
     def get_names(self, kind="objects", enabled_only=0):
         names = list(self._objects.keys())
+        if kind == "public_group_objects":
+            names = [n for n in names
+                     if self._objects[n]["type"] == "object:group"]
         if enabled_only:
             names = [n for n in names if n in self._enabled]
         return names
@@ -69,6 +76,52 @@ class FakeCmd:
             ns = dict(space)
             ns.update(atom)
             exec(expression, {}, ns)
+
+
+class _FakeInspector:
+    """Stands in for pymol.appkit_inspector's cached group_parents().
+
+    _visible_objects() imports it lazily to walk the group chain; the real one
+    reads `get_session`, which this fake cmd deliberately does not model, so the
+    map is served straight from FakeCmd instead.
+    """
+
+    @staticmethod
+    def group_parents(objs, groups):
+        return dict(getattr(seq.cmd, "parents", {}))
+
+
+_MISSING = object()
+_saved_inspector = (_MISSING, _MISSING)
+
+
+def setUpModule():
+    # Scoped, not global: `from pymol import appkit_inspector` resolves the
+    # attribute on the package first, so leaving either binding in place hands
+    # the fake to every later test module in the same pytest process (that took
+    # out test_appkit_objpanel_poll / _widen_clip / _inspector_transparency).
+    global _saved_inspector
+    _saved_inspector = (
+        sys.modules.get("pymol.appkit_inspector", _MISSING),
+        getattr(sys.modules["pymol"], "appkit_inspector", _MISSING),
+    )
+    sys.modules["pymol.appkit_inspector"] = _FakeInspector
+    setattr(sys.modules["pymol"], "appkit_inspector", _FakeInspector)
+
+
+def tearDownModule():
+    mod, attr = _saved_inspector
+    if mod is _MISSING:
+        sys.modules.pop("pymol.appkit_inspector", None)
+    else:
+        sys.modules["pymol.appkit_inspector"] = mod
+    if attr is _MISSING:
+        try:
+            delattr(sys.modules["pymol"], "appkit_inspector")
+        except AttributeError:
+            pass
+    else:
+        setattr(sys.modules["pymol"], "appkit_inspector", attr)
 
 
 def _mol(name_atoms):
@@ -177,6 +230,122 @@ class ApplyAlignmentsTest(unittest.TestCase):
         seq.cmd = cmd
         data = seq._build(["molA"], preview=False)
         self.assertEqual(data["colors"]["5"], (0.5, 0.2, 0.3))
+
+
+class PollTest(unittest.TestCase):
+    """poll() must publish rows for ENABLED objects only (issue #380)."""
+
+    def _payload(self, cmd, preview=False):
+        import json
+        import tempfile
+        seq.cmd = cmd
+        seq.poll(preview=preview)
+        p = os.path.join(tempfile.gettempdir(), "pymol_seq.json")
+        with open(p) as f:
+            return json.load(f)
+
+    def _two_mols(self, enabled):
+        return FakeCmd({
+            "molA": _mol([_atom("A", "1", "ALA", 5, 101)]),
+            "molB": _mol([_atom("B", "1", "GLY", 6, 201)]),
+        }, enabled=enabled)
+
+    def test_disabled_object_gets_no_row(self):
+        data = self._payload(self._two_mols({"molA"}))
+        self.assertEqual([d["name"] for d in data["objects"]], ["molA"])
+
+    def test_all_enabled_gets_all_rows(self):
+        data = self._payload(self._two_mols({"molA", "molB"}))
+        self.assertEqual([d["name"] for d in data["objects"]], ["molA", "molB"])
+
+    def test_all_disabled_gets_no_rows(self):
+        data = self._payload(self._two_mols(set()))
+        self.assertEqual(data["objects"], [])
+
+    def test_requests_enabled_only_from_the_core(self):
+        # Guard the actual mechanism: get_names must be asked with enabled_only,
+        # not filtered afterwards (a plain 'public_objects' call regressed #380).
+        cmd = self._two_mols({"molA"})
+        calls = []
+        inner = cmd.get_names
+
+        def spy(kind="objects", enabled_only=0):
+            calls.append((kind, enabled_only))
+            return inner(kind, enabled_only)
+
+        cmd.get_names = spy
+        self._payload(cmd)
+        self.assertIn(("public_objects", 1), calls)
+
+    def test_preview_ignores_enabled_state(self):
+        # The theme-studio example is enabled-agnostic: it is the only thing on
+        # screen during a preview, and it is not a public object at all.
+        cmd = FakeCmd({
+            "__theme_preview": _mol([_atom("A", "1", "ALA", 5, 101)]),
+        }, enabled=set())
+        data = self._payload(cmd, preview=True)
+        self.assertEqual([d["name"] for d in data["objects"]], ["example"])
+
+
+class VisibleObjectsTest(unittest.TestCase):
+    """Group ancestry, which `enabled_only` alone does not cover (issue #380).
+
+    Disabling a group hides its members in the viewport but leaves each member's
+    own enabled flag set, so the row set has to require the whole chain.
+    """
+
+    def _grouped(self, enabled):
+        # g_outer > g_inner > molA ; molB at top level.
+        objects = {
+            "molA": _mol([_atom("A", "1", "ALA", 5, 101)]),
+            "molB": _mol([_atom("B", "1", "GLY", 6, 201)]),
+            "g_inner": {"type": "object:group", "atoms": []},
+            "g_outer": {"type": "object:group", "atoms": []},
+        }
+        parents = {"molA": "g_inner", "g_inner": "g_outer"}
+        return FakeCmd(objects, enabled=enabled, parents=parents)
+
+    def test_all_groups_enabled_keeps_the_member(self):
+        cmd = self._grouped({"molA", "molB", "g_inner", "g_outer"})
+        seq.cmd = cmd
+        self.assertEqual(seq._visible_objects(), ["molA", "molB"])
+
+    def test_disabled_parent_group_drops_the_member(self):
+        cmd = self._grouped({"molA", "molB", "g_outer"})   # g_inner off
+        seq.cmd = cmd
+        self.assertEqual(seq._visible_objects(), ["molB"])
+
+    def test_disabled_grandparent_group_drops_the_member(self):
+        cmd = self._grouped({"molA", "molB", "g_inner"})   # g_outer off
+        seq.cmd = cmd
+        self.assertEqual(seq._visible_objects(), ["molB"])
+
+    def test_groups_do_not_hide_top_level_objects(self):
+        cmd = self._grouped({"molB"})                      # everything else off
+        seq.cmd = cmd
+        self.assertEqual(seq._visible_objects(), ["molB"])
+
+    def test_cyclic_parent_map_terminates(self):
+        # A corrupt/stale parent map must not spin. Both are enabled, so the only
+        # thing under test is that the walk ends.
+        objects = {
+            "molA": _mol([_atom("A", "1", "ALA", 5, 101)]),
+            "gx": {"type": "object:group", "atoms": []},
+        }
+        seq.cmd = FakeCmd(objects, enabled={"molA", "gx"},
+                          parents={"molA": "gx", "gx": "molA"})
+        self.assertEqual(seq._visible_objects(), ["molA"])   # 'gx' is a group
+
+    def test_group_member_gets_no_sequence_row(self):
+        # End to end through poll(), the way the panel sees it.
+        cmd = self._grouped({"molA", "molB", "g_outer"})   # g_inner off
+        seq.cmd = cmd
+        seq.poll()
+        import json
+        import tempfile
+        with open(os.path.join(tempfile.gettempdir(), "pymol_seq.json")) as f:
+            data = json.load(f)
+        self.assertEqual([d["name"] for d in data["objects"]], ["molB"])
 
 
 class GapConstantTest(unittest.TestCase):
