@@ -91,8 +91,37 @@ class _FakeInspector:
         return dict(getattr(seq.cmd, "parents", {}))
 
 
-sys.modules["pymol.appkit_inspector"] = _FakeInspector
-setattr(sys.modules["pymol"], "appkit_inspector", _FakeInspector)
+_MISSING = object()
+_saved_inspector = (_MISSING, _MISSING)
+
+
+def setUpModule():
+    # Scoped, not global: `from pymol import appkit_inspector` resolves the
+    # attribute on the package first, so leaving either binding in place hands
+    # the fake to every later test module in the same pytest process (that took
+    # out test_appkit_objpanel_poll / _widen_clip / _inspector_transparency).
+    global _saved_inspector
+    _saved_inspector = (
+        sys.modules.get("pymol.appkit_inspector", _MISSING),
+        getattr(sys.modules["pymol"], "appkit_inspector", _MISSING),
+    )
+    sys.modules["pymol.appkit_inspector"] = _FakeInspector
+    setattr(sys.modules["pymol"], "appkit_inspector", _FakeInspector)
+
+
+def tearDownModule():
+    mod, attr = _saved_inspector
+    if mod is _MISSING:
+        sys.modules.pop("pymol.appkit_inspector", None)
+    else:
+        sys.modules["pymol.appkit_inspector"] = mod
+    if attr is _MISSING:
+        try:
+            delattr(sys.modules["pymol"], "appkit_inspector")
+        except AttributeError:
+            pass
+    else:
+        setattr(sys.modules["pymol"], "appkit_inspector", attr)
 
 
 def _mol(name_atoms):
