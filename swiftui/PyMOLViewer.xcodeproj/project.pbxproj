@@ -63,6 +63,7 @@
 		3F96563B0EA8F919B068A421 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F059BB95517CE91BD3E26E /* ContentView.swift */; };
 		40DAE7C10C0EEEC2C1EB09F2 /* whatsnew-1100-interface.png in Resources */ = {isa = PBXBuildFile; fileRef = 283BC19B58F7146F72950E97 /* whatsnew-1100-interface.png */; };
 		4128B469229CEE6A6A4E4B68 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F059BB95517CE91BD3E26E /* ContentView.swift */; };
+		7C0379A1B2C3D4E5F6071379 /* ColorMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0379A1B2C3D4E5F6072379 /* ColorMenuTests.swift */; };
 		42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */; };
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
@@ -111,6 +112,7 @@
 		6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */; };
 		6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		6D67CAB3F655837D48E68AF3 /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
+		7C0379A1B2C3D4E5F6073379 /* ColorMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0379A1B2C3D4E5F6074379 /* ColorMenuUITests.swift */; };
 		6E6BAB43588CEBE88230F5C5 /* WhatsNewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */; };
 		6E8C51546C660EE26D379D14 /* whatsnew-1100-metrics.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */; };
 		6E945630A8B9A6195B98A958 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FBA4CCD670BAF318F243E692 /* MLX */; };
@@ -282,6 +284,7 @@
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
 		1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzJobManagerMSATests.swift; sourceTree = "<group>"; };
 		1AA9F6B00A6FC98E37CB26EC /* PredictScreenAwakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictScreenAwakeTests.swift; sourceTree = "<group>"; };
+		7C0379A1B2C3D4E5F6072379 /* ColorMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorMenuTests.swift; sourceTree = "<group>"; };
 		1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignColorTests.swift; sourceTree = "<group>"; };
 		1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBindingDispatchTests.swift; sourceTree = "<group>"; };
 		221117550FAD97CF81924E05 /* MousePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MousePanel.swift; sourceTree = "<group>"; };
@@ -315,6 +318,7 @@
 		56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNGate.swift; sourceTree = "<group>"; };
 		57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "dylib-Info-template.plist"; sourceTree = "<group>"; };
 		589928DEEE69075B965DB9F2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		7C0379A1B2C3D4E5F6074379 /* ColorMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorMenuUITests.swift; sourceTree = "<group>"; };
 		58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewUITests.swift; sourceTree = "<group>"; };
 		5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzJobManager.swift; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
@@ -502,6 +506,7 @@
 				104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */,
 				B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */,
 				E8EE6573045A81CF52A9CDF5 /* PyMOLGestureUITests.swift */,
+				7C0379A1B2C3D4E5F6074379 /* ColorMenuUITests.swift */,
 				58BAC08EBD7DD4DCB8C18EDC /* WhatsNewUITests.swift */,
 			);
 			path = PyMOLViewerUITests;
@@ -601,6 +606,7 @@
 				193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */,
 				BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */,
 				2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */,
+				7C0379A1B2C3D4E5F6072379 /* ColorMenuTests.swift */,
 				1B045EA1D04163863BD9DA94 /* DesignColorTests.swift */,
 				F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */,
 				4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */,
@@ -1324,6 +1330,7 @@
 				72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */,
 				5E0DDAA214299444AB084E74 /* KeyboardDismissUITests.swift in Sources */,
 				CCA9FAAAD0E59CE43443B7DA /* PyMOLGestureUITests.swift in Sources */,
+				7C0379A1B2C3D4E5F6073379 /* ColorMenuUITests.swift in Sources */,
 				6E6BAB43588CEBE88230F5C5 /* WhatsNewUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1338,6 +1345,7 @@
 				6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */,
 				6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */,
 				B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */,
+				7C0379A1B2C3D4E5F6071379 /* ColorMenuTests.swift in Sources */,
 				42BC62ABCFB3CDB9C2CE3518 /* DesignColorTests.swift in Sources */,
 				FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */,
 				FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */,
