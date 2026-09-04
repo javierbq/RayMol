@@ -262,7 +262,7 @@ enum SceneCatalog {
     static let params: [SceneParam] = [
         // --- Canvas: background + multi-object/state layout ---
         SceneParam(setting: "bg_rgb",     label: "Background", kind: .toggle, group: "Canvas", isColor: true,
-                   help: "Viewport background color."),
+                   help: "Viewport background color. Opacity below 50% exports images with a transparent background (the same switch as Share ▸ Transparent background); the live view stays opaque."),
         // grid_mode is an int (0=off, 1=by object, 2=by state); the toggle maps
         // off→0 / on→1 and reads on for any non-zero mode.
         SceneParam(setting: "grid_mode",  label: "Grid", kind: .toggle, group: "Canvas",
@@ -2047,6 +2047,10 @@ private func colorFromHex(_ hex: String) -> Color? {
 struct DebouncedColorPicker: View {
     let get: () -> Color
     let apply: (Color) -> Void
+    // Off by default: PyMOL colors (set_color, bg_rgb) have no alpha channel, so
+    // the system picker's opacity slider would be a dead control (issue #378).
+    // Only the Background swatch opts in, where alpha drives ray_opaque_background.
+    var supportsOpacity: Bool = false
     @State private var pending: Color? = nil
     @State private var work: DispatchWorkItem? = nil
 
@@ -2059,23 +2063,52 @@ struct DebouncedColorPicker: View {
                 let w = DispatchWorkItem { apply(c) }   // debounced: hit the core
                 work = w
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
-            }))
+            }), supportsOpacity: supportsOpacity)
             .labelsHidden()
     }
 }
 
-/// SwiftUI Color → PyMOL set_color list "[r,g,b]" in 0…1.
-private func rgb01List(_ color: Color) -> String {
+/// SwiftUI Color → sRGB components in 0…1, alpha included.
+private func rgba01(_ color: Color) -> (r: Double, g: Double, b: Double, a: Double) {
 #if canImport(AppKit)
     let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.white
-    return String(format: "[%.3f,%.3f,%.3f]", ns.redComponent, ns.greenComponent, ns.blueComponent)
+    return (ns.redComponent, ns.greenComponent, ns.blueComponent, ns.alphaComponent)
 #elseif canImport(UIKit)
     var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
     UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
-    return String(format: "[%.3f,%.3f,%.3f]", r, g, b)
+    return (r, g, b, a)
 #else
-    return "[1,1,1]"
+    return (1, 1, 1, 1)
 #endif
+}
+
+/// SwiftUI Color → PyMOL set_color list "[r,g,b]" in 0…1. Alpha is dropped:
+/// PyMOL colors have none (see `BackgroundOpacity` for the one place it matters).
+private func rgb01List(_ color: Color) -> String {
+    let c = rgba01(color)
+    return String(format: "[%.3f,%.3f,%.3f]", c.r, c.g, c.b)
+}
+
+/// How the Background swatch's opacity maps onto PyMOL. `bg_rgb` has no alpha;
+/// transparency is the separate, binary `ray_opaque_background` setting, and it
+/// only affects rendered/exported images (the live viewport stays opaque). The
+/// swatch shares the `exportTransparent` default with the Share menu's
+/// "Transparent background" toggle, so the two affordances are one state
+/// rather than a real switch next to a dead one (issue #378).
+enum BackgroundOpacity {
+    /// The `@AppStorage` key ContentView's export menu already persists.
+    static let defaultsKey = "exportTransparent"
+
+    /// Alpha below one half reads as "transparent"; the setting is binary.
+    static func isTransparent(alpha: Double) -> Bool { alpha < 0.5 }
+
+    /// The alpha the swatch shows for the persisted state.
+    static func alpha(transparent: Bool) -> Double { transparent ? 0 : 1 }
+
+    /// The PyMOL command that makes `ray`/`png`/exports honor the choice.
+    static func command(transparent: Bool) -> String {
+        "set ray_opaque_background, \(transparent ? 0 : 1)"
+    }
 }
 
 private func sanitizeName(_ s: String) -> String {
@@ -3086,6 +3119,9 @@ struct SceneCard: View {
 struct SceneParamRow: View {
     let param: SceneParam
     @ObservedObject var engine: PyMOLEngine
+    // Shared with ContentView's Share ▸ "Transparent background" toggle; the
+    // Background swatch's opacity is a second handle on the same state.
+    @AppStorage(BackgroundOpacity.defaultsKey) private var exportTransparent = false
     // Compact layout for the camera dock: natural-width label and no trailing
     // Spacer, so the slider fills the row instead of splitting the space with a
     // Spacer (the dock card bounds the overall width). Inspector uses the default.
@@ -3108,15 +3144,19 @@ struct SceneParamRow: View {
     @ViewBuilder
     private func sceneControl(_ p: SceneParam) -> some View {
         if p.isColor {
+            let isBackground = p.setting == "bg_rgb"
             DebouncedColorPicker(
                 get: {
-                    let c = (p.setting == "bg_rgb") ? engine.sceneState.bg : engine.sceneState.outlineColor
+                    let c = isBackground ? engine.sceneState.bg : engine.sceneState.outlineColor
+                    let alpha = isBackground ? BackgroundOpacity.alpha(transparent: exportTransparent) : 1
                     return Color(.sRGB, red: c.count > 0 ? c[0] : 0,
-                                 green: c.count > 1 ? c[1] : 0, blue: c.count > 2 ? c[2] : 0)
+                                 green: c.count > 1 ? c[1] : 0, blue: c.count > 2 ? c[2] : 0,
+                                 opacity: alpha)
                 },
                 apply: { c in
-                    if p.setting == "bg_rgb" { setBackground(c) } else { setOutlineColor(c) }
-                })
+                    if isBackground { setBackground(c) } else { setOutlineColor(c) }
+                },
+                supportsOpacity: isBackground)
                 .frame(width: 28)
         } else {
             let v = engine.sceneState.values[p.setting] ?? 0
@@ -3223,7 +3263,11 @@ struct SceneParamRow: View {
     }
 
     private func setBackground(_ color: Color) {
-        engine.runCommand("set_color _bgcol, \(rgb01List(color))\nbg_color _bgcol")
+        let transparent = BackgroundOpacity.isTransparent(alpha: rgba01(color).a)
+        // Persisting through the shared default also flips the Share menu toggle.
+        exportTransparent = transparent
+        engine.runCommand("set_color _bgcol, \(rgb01List(color))\nbg_color _bgcol\n"
+                          + BackgroundOpacity.command(transparent: transparent))
     }
 
     private func setOutlineColor(_ color: Color) {

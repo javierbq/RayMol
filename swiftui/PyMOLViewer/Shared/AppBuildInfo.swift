@@ -35,6 +35,12 @@ enum AppBuildInfo {
     /// True when this build came off the beta pipeline.
     static var isBeta: Bool { betaLabel != nil }
 
+    /// The line the in-app console prints first at launch, e.g.
+    /// " [build] RayMol 1.10.0 (27)". Derived from the bundle so it can never go
+    /// stale: it replaced a hand-bumped "v35" marker that sat two months behind
+    /// the real version (GitHub issue #377).
+    static var consoleBanner: String { consoleBanner(displayVersion: displayVersion) }
+
     // MARK: - Pure logic (unit-tested; no Bundle access)
 
     /// Treat a missing key and a present-but-blank one identically. The
@@ -59,6 +65,13 @@ enum AppBuildInfo {
         case (true, false):  return "(\(build))"
         case (true, true):   return ""
         }
+    }
+
+    /// Leading space matches the console's other status lines. An Info.plist
+    /// with neither key still prints an honest line rather than "RayMol ".
+    static func consoleBanner(displayVersion: String) -> String {
+        displayVersion.isEmpty ? " [build] RayMol (unknown version)"
+                               : " [build] RayMol \(displayVersion)"
     }
 
     // MARK: - Bundle access

@@ -103,4 +103,29 @@ final class AppBuildInfoTests: XCTestCase {
     func testBundleDisplayVersionIsNonEmpty() {
         XCTAssertFalse(AppBuildInfo.displayVersion.isEmpty)
     }
+
+    // MARK: - consoleBanner (#377)
+
+    // The console's first line must come from the bundle, not a hand-bumped
+    // string: the old marker read "v35" for two months of unrelated releases.
+    func testConsoleBannerCarriesTheDisplayVersion() {
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)"),
+                       " [build] RayMol 1.10.0 (27)")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.9.1-beta27"),
+                       " [build] RayMol 1.9.1-beta27")
+    }
+
+    // A plist missing both keys must still print something a tester can quote,
+    // not a trailing-space "RayMol " that looks like a rendering glitch.
+    func testConsoleBannerWithoutVersionSaysSo() {
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: ""),
+                       " [build] RayMol (unknown version)")
+    }
+
+    // The live property must go through the same formatter as the tested one.
+    func testLiveConsoleBannerMatchesDisplayVersion() {
+        XCTAssertEqual(AppBuildInfo.consoleBanner,
+                       AppBuildInfo.consoleBanner(displayVersion: AppBuildInfo.displayVersion))
+        XCTAssertTrue(AppBuildInfo.consoleBanner.hasPrefix(" [build] RayMol "))
+    }
 }

@@ -232,7 +232,16 @@ struct ContentView: View {
         Toggle(isOn: $exportRayTraced) {
             Label("Ray-traced (AO + shadows)", systemImage: "sparkles")
         }
-        Toggle(isOn: $exportTransparent) {
+        // Applies ray_opaque_background to the core on the spot (not only at
+        // export time) so a typed `ray`/`png` honors it too. The Canvas Background
+        // swatch's opacity writes the same default and does the same (#378); an
+        // .onChange on the @AppStorage did not fire for toolbar-menu toggles.
+        Toggle(isOn: Binding(
+            get: { exportTransparent },
+            set: { on in
+                exportTransparent = on
+                engine.runCommand(BackgroundOpacity.command(transparent: on))
+            })) {
             Label("Transparent background", systemImage: "square.dashed")
         }
     }
@@ -3104,7 +3113,7 @@ struct ContentView: View {
             // chain — including depth-of-field. The old transparent branch used the
             // CPU ray-tracer, which is slow and drops every Metal post-effect (DOF,
             // outline, tone-map). rtFlag still selects hardware-RT AO/shadows.
-            engine.runCommand("set ray_opaque_background, \(exportTransparent ? 0 : 1)")
+            engine.runCommand(BackgroundOpacity.command(transparent: exportTransparent))
             engine.renderHiResPNG(url.path, width: width, height: height,
                                   rayTraced: exportRayTraced ? 1 : 0)
             done(FileManager.default.fileExists(atPath: url.path) ? url : nil)
@@ -3684,7 +3693,7 @@ struct ContentView: View {
     private func renderExportPNG(_ path: String, _ w: Int, _ h: Int,
                                  done: @escaping () -> Void = {}) {
         engine.runHeavy("Rendering image…") {
-            engine.runCommand("set ray_opaque_background, \(exportTransparent ? 0 : 1)")
+            engine.runCommand(BackgroundOpacity.command(transparent: exportTransparent))
             engine.renderHiResPNG(path, width: w, height: h, rayTraced: rtFlag)
             done()
         }

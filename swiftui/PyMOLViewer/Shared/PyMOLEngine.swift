@@ -470,11 +470,11 @@ final class PyMOLEngine: ObservableObject {
 
         isReady = true
 
-        // Build marker — lets us confirm the device is running THIS binary (not a
-        // cached/stale install) when verifying gesture-direction fixes. Bump the
-        // tag whenever gesture behavior changes; it shows at the top of the log.
+        // Build banner — lets anyone confirm which binary a device is running (not
+        // a cached/stale install). Generated from the bundle's version + build
+        // number, never hand-maintained (issue #377). Shows at the top of the log.
         DispatchQueue.main.async { [weak self] in
-            self?.feedbackLog.append(" [build] v35  (Long-press context menu + iOS reset menu)")
+            self?.feedbackLog.append(AppBuildInfo.consoleBanner)
         }
 
         // `fetch` downloads into fetch_path. Use the temp directory: it's always
