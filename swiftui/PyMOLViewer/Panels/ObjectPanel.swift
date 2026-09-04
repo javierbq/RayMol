@@ -4581,6 +4581,10 @@ extension PyMOLEngine {
         #endif
 
         let enabledSet = Set(payload.enabled)
+        // Enabled *objects* only — a selection's pink markers don't put a row in
+        // the sequence strip, so folding them in here would trigger pointless
+        // re-fetches every time a selection is (de)selected. See #380.
+        let enabledObjects = Set(payload.objects.filter { enabledSet.contains($0) })
         let groupSet = Set(payload.groups ?? [])
         let parentMap = payload.parent ?? [:]
         var entries: [ObjectEntry] = []
@@ -4645,6 +4649,16 @@ extension PyMOLEngine {
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.
             if self.msaSearches != searches { self.msaSearches = searches }
+            // The sequence strip rows only enabled objects (#380). This is the
+            // core's own view of what is enabled, so it catches every path that
+            // can change it and cannot race the optimistic checkbox flip. Track
+            // the set even while the panel is hidden — `sequenceVisible`'s
+            // false->true edge does its own fetch, and a stale tracker would
+            // otherwise suppress the next real change.
+            if self.lastSequenceEnabled != enabledObjects {
+                self.lastSequenceEnabled = enabledObjects
+                if self.sequenceVisible { self.fetchSequences() }
+            }
         }
     }
 }

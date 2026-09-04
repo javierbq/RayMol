@@ -158,6 +158,15 @@ final class PyMOLEngine: ObservableObject {
             if sequenceVisible && !oldValue { fetchSequences() }
         }
     }
+    // Names the sequence strip was last built from (issue #380): the panel only
+    // rows ENABLED objects, so any path that changes what is enabled — the object
+    // panel checkbox, "all", a group cascade, `disable` at the prompt, a scene or
+    // session recall — has to republish it. Rather than hooking each of those,
+    // parseObjectPanelFeedback compares the core's authoritative enabled set
+    // against this and re-fetches on a mismatch, which is also immune to the
+    // optimistic-UI flip racing the enable/disable command.
+    var lastSequenceEnabled: Set<String> = []
+
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
     // object (it's underscore-prefixed → excluded from public_objects) to stay
@@ -913,6 +922,13 @@ final class PyMOLEngine: ObservableObject {
             DispatchQueue.main.async { self.applyEnabledOptimistically(name, enabled) }
         }
         runCommand(enabled ? "enable \(name)" : "disable \(name)")
+        // The sequence panel only lists ENABLED objects (issue #380), so a toggle
+        // changes its rows. SequencePanel does re-fetch on `objects` change, but
+        // that fires from SwiftUI's next update pass — after the optimistic flip
+        // above and with no guarantee it lands after the enable/disable reaches
+        // the core. Republish here, right after the command, so the strip is
+        // built from the new visibility instead of racing it.
+        if sequenceVisible { fetchSequences() }
     }
 
     /// Flip `name` and, when it is a group, its whole subtree.

@@ -1,8 +1,9 @@
 """Sequence-viewer data query for the native SwiftUI app.
 
-Emits one residue row per enabled molecular object (one guide atom per residue,
-carrying its color index) for the SwiftUI SequencePanel. Mirrors the
-appkit_inspector / appkit_object_panel bundled-module pattern.
+Emits one residue row per *visible* molecular object (one guide atom per
+residue, carrying its color index) for the SwiftUI SequencePanel. Visible means
+enabled and not inside a disabled group — see `_visible_objects` (issue #380).
+Mirrors the appkit_inspector / appkit_object_panel bundled-module pattern.
 
 Alignment behavior (BIMO-style): an alignment object never appears as its own
 row (it has no guide atoms, so it is naturally skipped). When an alignment
@@ -192,6 +193,58 @@ def _apply_alignments(out, posmap):
             done.add(m)
 
 
+def _visible_objects():
+    """Public objects that are actually DRAWN — the sequence panel's row set (#380).
+
+    Two conditions, not one. `enabled_only=1` covers the object's own flag, but
+    disabling a GROUP hides its members while leaving each member's own flag set
+    (`ExecutiveGetNames` tests `rec->visible`, which the group cascade does not
+    clear — verified 2026-09-04), so a member of a switched-off group would still
+    get a row for something nowhere on screen. Walking the group chain and
+    requiring every ancestor closes that.
+
+    Reuses `appkit_inspector.group_parents`, which caches the (expensive)
+    `get_session` parent walk behind a cheap tree-shape fingerprint — the
+    inspector polls at the same cadence, so the map is normally already built.
+    """
+    try:
+        enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])
+    except Exception:
+        return []
+    try:
+        names = list(cmd.get_names('public_objects') or [])
+    except Exception:
+        return sorted(enabled)
+    try:
+        groups = list(cmd.get_names('public_group_objects') or [])
+    except Exception:
+        groups = []
+    parents = {}
+    if groups:
+        try:
+            from pymol import appkit_inspector
+            parents = appkit_inspector.group_parents(names, groups) or {}
+        except Exception:
+            parents = {}
+    gset = set(groups)
+    out = []
+    for o in names:
+        # A group is a container, never a row (it has no atoms of its own), but it
+        # still gates its members below — so it is excluded here, not earlier.
+        if o not in enabled or o in gset:
+            continue
+        p = parents.get(o)
+        seen = set()            # a corrupt parent map must terminate, not spin
+        while p is not None and p not in seen:
+            if p not in enabled:
+                break
+            seen.add(p)
+            p = parents.get(p)
+        else:
+            out.append(o)
+    return out
+
+
 def _build(names, preview):
     out, cols, posmap = _object_rows(names)
     if not preview:
@@ -208,7 +261,12 @@ def poll(preview=False):
     """Write the sequence-panel JSON to a temp file; caller prints the marker.
 
     `preview` True reads only the reserved '__theme_preview' object (theme studio
-    live preview); otherwise all public objects.
+    live preview); otherwise every visible public object.
+
+    Only objects that are actually drawn get a row (issue #380) — a disabled
+    object, or one inside a disabled group, contributes nothing to the viewport,
+    so a sequence row for it is dead weight whose residue cells select atoms you
+    cannot see. See `_visible_objects`.
     """
     import json
     import os
@@ -216,10 +274,7 @@ def poll(preview=False):
     if preview:
         names = ['__theme_preview']
     else:
-        try:
-            names = list(cmd.get_names('public_objects') or [])
-        except Exception:
-            names = []
+        names = _visible_objects()
     data = _build(names, preview)
     p = os.path.join(tempfile.gettempdir(), 'pymol_seq.json')
     with open(p, 'w') as f:
