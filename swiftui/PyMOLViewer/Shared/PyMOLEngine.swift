@@ -873,10 +873,13 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// Reload the autosaved session on cold launch. One-shot per process, and
-    /// suppressed when the launch is opening a specific file. Routing through
-    /// runCommand("load …pse") reuses handleSessionViewport, which restores the
-    /// saved camera and letterbox aspect; refreshAfterRestore republishes the
-    /// panels. The .pse carries its own scene settings (bg_color, metal_*), so
+    /// suppressed when the launch is opening a specific file. The load runs
+    /// DEFERRED, behind the busy overlay — see the comment at the call below;
+    /// restoring inline blocks SwiftUI's first commit and gets the app killed by
+    /// the launch watchdog. Routing through `load …pse` reuses
+    /// handleSessionViewport, which restores the saved camera and letterbox
+    /// aspect; refreshAfterRestore republishes the panels. The .pse carries its
+    /// own scene settings (bg_color, metal_*), so
     /// we deliberately do NOT re-assert the active theme here — that would
     /// override the saved scene and the goal is to resume it exactly. Loading
     /// into the empty cold-launch scene reproduces the prior session exactly.
@@ -893,13 +896,36 @@ final class PyMOLEngine: ObservableObject {
            let snap = UIImage(data: data) {
             restoreSnapshot = snap
         }
-        runCommand("load \(url.path)")
-        refreshAfterRestore()
-        // Clear the snapshot once the restored scene has had time to build and
-        // render its first frame; cross-fade so the handoff is seamless.
-        if restoreSnapshot != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-                self?.restoreSnapshot = nil   // ContentView fades it via .animation(value:)
+        // DEFERRED, never inline. start() runs from ContentView's .onAppear,
+        // which SwiftUI executes inside the FIRST CATransaction commit — before
+        // any scene exists. A synchronous `load` there holds the main thread for
+        // the whole restore, so iOS's "scene create after launch" watchdog
+        // (19.81s) SIGKILLs the app with 0x8BADF00D before it ever draws a
+        // frame: the user sees a crash on launch, with no way back in, because
+        // the same autosave is retried on every subsequent launch. A 194MB /
+        // 620k-atom session needed ~15s on an M3 Pro and comfortably more than
+        // the budget on an iPhone 15 Pro (measured 2026-09-04).
+        //
+        // runHeavy hops one runloop turn, so the first commit finishes and the
+        // scene is created — the watchdog is satisfied before the load starts —
+        // and it paints the busy overlay for the duration. The restore is still
+        // main-thread: the core's GIL model (PAutoBlock) is not safe off-main.
+        // runCommandCore, not runCommand, because we already are inside
+        // runHeavy; it keeps handleSessionViewport (saved camera + letterbox).
+        let path = url.path
+        runHeavy("Restoring session…") { [weak self] in
+            guard let self else { return }
+            self.runCommandCore("load \(path)")
+            self.refreshAfterRestore()
+            // Clear the snapshot once the restored scene has had time to build
+            // and render its first frame; cross-fade so the handoff is seamless.
+            // Armed HERE rather than at call time: the load above can take tens
+            // of seconds, and a timer started before it would strip the snapshot
+            // mid-restore and expose the empty scene it exists to hide.
+            if self.restoreSnapshot != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                    self?.restoreSnapshot = nil   // ContentView fades it via .animation(value:)
+                }
             }
         }
     }
