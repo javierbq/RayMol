@@ -23,7 +23,7 @@ def _hex(rgb):
 
 
 def set_palette(bg=None, outline=False, flat_sheets=False, fancy_helices=False,
-                ray_trace=False, shadows=True,
+                ray_trace=True, shadows=True,
                 default_style="cartoon", chain_cycle=None, element_colors=None,
                 apply_render_toggles=True):
     """Store the active palette and apply the immediate scene-wide settings.

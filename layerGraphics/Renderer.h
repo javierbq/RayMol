@@ -381,7 +381,7 @@ public:
   // AO hemisphere radius (Angstroms), AO darkening strength, cast-shadow
   // darkening strength. Fed each frame from SceneRender. Default: no-op.
   virtual void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
-      float shadowIntensity)
+      float shadowIntensity, float scale = 1.0f)
   {
   }
 

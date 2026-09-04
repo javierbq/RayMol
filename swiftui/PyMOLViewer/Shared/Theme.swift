@@ -95,7 +95,7 @@ struct Theme: Codable, Identifiable, Equatable {
          panelBackground: RGBA, panelText: RGBA, chainCycle: [RGBA],
          elementColors: [String: RGBA], defaultStyle: RepStyle,
          outline: Bool, flatSheets: Bool, fancyHelices: Bool,
-         rayTrace: Bool = false, shadows: Bool = false) {
+         rayTrace: Bool = true, shadows: Bool = true) {
         self.id = id; self.name = name; self.builtIn = builtIn; self.appearance = appearance
         self.accent = accent; self.bubble = bubble; self.selectionName = selectionName
         self.tabTint = tabTint; self.viewportBackground = viewportBackground
@@ -130,8 +130,8 @@ struct Theme: Codable, Identifiable, Equatable {
         outline = try c.decode(Bool.self, forKey: .outline)
         flatSheets = try c.decode(Bool.self, forKey: .flatSheets)
         fancyHelices = try c.decode(Bool.self, forKey: .fancyHelices)
-        rayTrace = try c.decodeIfPresent(Bool.self, forKey: .rayTrace) ?? false
-        shadows = try c.decodeIfPresent(Bool.self, forKey: .shadows) ?? false
+        rayTrace = try c.decodeIfPresent(Bool.self, forKey: .rayTrace) ?? true
+        shadows = try c.decodeIfPresent(Bool.self, forKey: .shadows) ?? true
     }
 }
 
@@ -189,7 +189,7 @@ extension Theme {
         panelBackground: RGBA(0.13, 0.13, 0.15), panelText: RGBA(0.88, 0.88, 0.90),
         chainCycle: [], elementColors: [:],
         defaultStyle: .cartoon, outline: false, flatSheets: false, fancyHelices: false,
-        rayTrace: false, shadows: false)
+        rayTrace: true, shadows: true)
 
     static let paper = Theme(
         id: paperID, name: "Paper", builtIn: true, appearance: .light,
@@ -200,7 +200,7 @@ extension Theme {
         panelBackground: RGBA(0.95, 0.95, 0.96), panelText: RGBA(0.12, 0.12, 0.14),
         chainCycle: defaultChainCycle, elementColors: defaultElementColors,
         defaultStyle: .cartoon, outline: false, flatSheets: true, fancyHelices: false,
-        rayTrace: false, shadows: true)
+        rayTrace: true, shadows: true)
 
     /// Sunset: warm dusk — deep plum viewport, orange/magenta accents, fancy
     /// helices + shadows for a rich dark look.
@@ -213,7 +213,7 @@ extension Theme {
         panelBackground: RGBA(0.16, 0.11, 0.16), panelText: RGBA(0.95, 0.90, 0.86),
         chainCycle: defaultChainCycle, elementColors: defaultElementColors,
         defaultStyle: .cartoon, outline: false, flatSheets: false, fancyHelices: true,
-        rayTrace: false, shadows: true)
+        rayTrace: true, shadows: true)
 
     /// Dawn: soft sunrise — warm off-white viewport, coral accents, flat sheets
     /// for a clean light look.
@@ -226,7 +226,7 @@ extension Theme {
         panelBackground: RGBA(0.98, 0.94, 0.90), panelText: RGBA(0.22, 0.15, 0.13),
         chainCycle: defaultChainCycle, elementColors: defaultElementColors,
         defaultStyle: .cartoon, outline: false, flatSheets: true, fancyHelices: false,
-        rayTrace: false, shadows: true)
+        rayTrace: true, shadows: true)
 
     static let builtInPresets: [Theme] = [classic, paper, sunset, dawn]
 

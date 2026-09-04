@@ -128,6 +128,7 @@ enum RepCatalog {
                 RepProperty(setting: "cartoon_tube_radius",   label: "Tube radius",  kind: .slider),
                 RepProperty(setting: "cartoon_fancy_helices", label: "Fancy helices", kind: .toggle),
                 RepProperty(setting: "cartoon_flat_sheets",   label: "Flat sheets",   kind: .toggle),
+                RepProperty(setting: "cartoon_spline",        label: "Spline ribbon", kind: .toggle),
             ]),
         "surface": RepSpec(rep: "surface", display: "Surface",
             colorSetting: "surface_color", defaultColor: -1, properties: [
@@ -325,6 +326,8 @@ enum SceneCatalog {
                    help: "Accumulate ray-traced AO across frames while the view is still, for cleaner, smoother occlusion. Needs ray tracing on."),
         SceneParam(setting: "metal_rt_samples", label: "RT quality (rays)", kind: .slider, min: 4, max: 128, step: 4, decimals: 0, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "Ambient-occlusion rays traced per pixel in the live view. Higher is smoother but slower — lower it on mobile for speed (exports always use at least 48)."),
+        SceneParam(setting: "metal_rt_scale", label: "RT resolution", kind: .slider, min: 0.25, max: 1, step: 0.25, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Resolution of the ray-traced AO and shadow pass in the live view, as a fraction of the window. 0.5 traces a quarter of the rays and is hard to tell apart after the composite blur; 1 is full resolution. Exports always render at full resolution."),
         SceneParam(setting: "metal_rt_ao_radius", label: "AO radius (Å)", kind: .slider, min: 1, max: 15, step: 0.5, decimals: 1, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "How far ambient occlusion reaches, in Angstroms. Larger darkens broad pockets and cavities; smaller keeps it to tight contact creases."),
         SceneParam(setting: "metal_rt_ao_intensity", label: "AO strength", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",

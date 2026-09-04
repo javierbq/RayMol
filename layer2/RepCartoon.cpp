@@ -17,9 +17,11 @@ Z* -------------------------------------------------------------------
 */
 
 #include <array>
+#include <cmath>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include"os_predef.h"
 #include"os_std.h"
@@ -2288,6 +2290,225 @@ void CartoonGenerateRefine(int refine, int sampling, float *v, float *vn, float 
   }
 }
 
+/* ------------------------------------------------------------------------
+ * cartoon_spline: ChimeraX-style path tessellation.
+ *
+ * Instead of blending each CA->CA interval separately (CartoonGenerateSample,
+ * with cartoon_throw/cartoon_power and a CartoonGenerateRefine pass), fit ONE
+ * natural cubic spline through the control points of every cartoon segment
+ * and place the `sampling` points of each interval on it.  The orientation
+ * vector is carried along the interval by parallel transport and twisted with
+ * a sigmoid profile so it lands exactly on the next residue's orientation
+ * vector (RepCartoonRefineNormals / RepCartoonFlattenSheets have already made
+ * consecutive orientation vectors sign-consistent, so no flip test is needed).
+ * Everything downstream (ExtrudeComputeTangents, ExtrudeBuildNormals2f, the
+ * per-type extruders including the strand arrow) is unchanged.
+ * ------------------------------------------------------------------------ */
+
+struct CartoonSplineCoefs {
+  std::vector<float> coef;   // 12 floats per atom index a: [axis][c0 c1 c2 c3]
+  std::vector<char> valid;   // coef valid for interval a -> a+1
+};
+
+/**
+ * Natural cubic spline coefficients for every contiguous cartoon segment in
+ * pv (parameter s in [0,1] per interval).  Cyclic segments are left invalid
+ * so that they fall back to the classic sampler (their closing edge is not
+ * part of the open spline).
+ */
+static CartoonSplineCoefs CartoonBuildSplineCoefs(int nAt, const int* seg,
+    const float* pv,
+    const std::unordered_map<int, CyclicSegmentInfo>* cyclicSegs)
+{
+  CartoonSplineCoefs out;
+  if (nAt < 2)
+    return out;
+  out.coef.assign(nAt * 12, 0.0f);
+  out.valid.assign(nAt, 0);
+  int start = 0;
+  while (start < nAt) {
+    int end = start;
+    while (end + 1 < nAt && seg[end + 1] == seg[start])
+      end++;
+    int const n = end - start + 1;
+    bool const cyclic = cyclicSegs && cyclicSegs->count(seg[start]);
+    if (n >= 2 && !cyclic) {
+      // second derivatives M (natural ends: M[0] = M[n-1] = 0) via the
+      // tridiagonal system  M[i-1] + 4 M[i] + M[i+1] = 6 (y[i+1] - 2 y[i] + y[i-1])
+      std::vector<double> M(3 * n, 0.0);
+      if (n > 2) {
+        int const k = n - 2;
+        std::vector<double> diag(k), rhs(k);
+        for (int ax = 0; ax < 3; ax++) {
+          for (int i = 0; i < k; i++) {
+            const float* y = pv + 3 * (start + i + 1) + ax;
+            diag[i] = 4.0;
+            rhs[i] = 6.0 * ((double) y[3] - 2.0 * (double) y[0] + (double) y[-3]);
+          }
+          for (int i = 1; i < k; i++) {
+            double const w = 1.0 / diag[i - 1];
+            diag[i] -= w;
+            rhs[i] -= w * rhs[i - 1];
+          }
+          M[3 * (k) + ax] = rhs[k - 1] / diag[k - 1];   // point index k == n-2
+          for (int i = k - 2; i >= 0; i--) {
+            M[3 * (i + 1) + ax] = (rhs[i] - M[3 * (i + 2) + ax]) / diag[i];
+          }
+        }
+      }
+      for (int i = 0; i < n - 1; i++) {
+        int const a = start + i;
+        float* c = out.coef.data() + 12 * a;
+        for (int ax = 0; ax < 3; ax++) {
+          double const y0 = pv[3 * a + ax], y1 = pv[3 * (a + 1) + ax];
+          double const m0 = M[3 * i + ax], m1 = M[3 * (i + 1) + ax];
+          c[4 * ax + 0] = (float) y0;
+          c[4 * ax + 1] = (float) ((y1 - y0) - (2.0 * m0 + m1) / 6.0);
+          c[4 * ax + 2] = (float) (m0 / 2.0);
+          c[4 * ax + 3] = (float) ((m1 - m0) / 6.0);
+        }
+        out.valid[a] = 1;
+      }
+    }
+    start = end + 1;
+  }
+  return out;
+}
+
+/// Rodrigues rotation of v about unit axis k by angle ang (in place).
+static inline void CartoonRotateAbout(float* v, const float* k, float ang)
+{
+  float const c = cosf(ang), s = sinf(ang);
+  float kxv[3], out[3];
+  cross_product3f(k, v, kxv);
+  float const kd = dot_product3f(k, v) * (1.0F - c);
+  for (int i = 0; i < 3; i++)
+    out[i] = v[i] * c + kxv[i] * s + k[i] * kd;
+  copy3f(out, v);
+}
+
+/// Sigmoid twist profile (ChimeraX smooth_twist), rescaled to hit 0 and 1 exactly.
+static inline float CartoonTwistProfile(float f)
+{
+  auto const sig = [](float x) { return 1.0F / (1.0F + expf(-8.0F * (x - 0.5F))); };
+  return (sig(f) - sig(0.0F)) / (sig(1.0F) - sig(0.0F));
+}
+
+/**
+ * cartoon_spline replacement for CartoonGenerateSample for one interval.
+ * Output layout is identical: positions in v, orientation vector in the middle
+ * triple of each 9-float block of vn (the tangent triple is filled later by
+ * ExtrudeComputeTangents), plus colors, alpha and pick ids per point.
+ */
+static void CartoonGenerateSampleSpline(PyMOLGlobals* G, int sampling, int* n_p,
+    const float* coef, const float* vo, int c1, int c2, float alpha1,
+    float alpha2, int atom_index1, int atom_index2, float** vc_p,
+    float** valpha_p, unsigned int** vi_p, float** v_p, float** vn_p)
+{
+  int const np = sampling + 1;
+  std::vector<float> pos(3 * np), tan(3 * np), nrm(3 * np);
+
+  // positions and unit tangents on the cubic
+  for (int b = 0; b < np; b++) {
+    double const s = (double) b / sampling;
+    float* p = pos.data() + 3 * b;
+    float* t = tan.data() + 3 * b;
+    for (int ax = 0; ax < 3; ax++) {
+      const float* c = coef + 4 * ax;
+      p[ax] = (float) (c[0] + s * (c[1] + s * (c[2] + s * c[3])));
+      t[ax] = (float) (c[1] + s * (2.0 * c[2] + 3.0 * s * c[3]));
+    }
+    if (length3f(t) > R_SMALL8) {
+      normalize3f(t);
+    } else if (b > 0) {
+      copy3f(t - 3, t);
+    } else {
+      // degenerate start tangent: use the chord
+      subtract3f(pos.data() + 3 * (np - 1), p, t);
+      normalize3f(t);
+    }
+  }
+
+  // parallel transport of the first orientation vector along the interval
+  float n[3];
+  remove_component3f(vo, tan.data(), n);
+  if (length3f(n) > R_SMALL8) {
+    normalize3f(n);
+  } else {
+    float dummy[3];
+    get_system1f3f(tan.data(), n, dummy);
+  }
+  copy3f(n, nrm.data());
+  for (int b = 1; b < np; b++) {
+    const float* t0 = tan.data() + 3 * (b - 1);
+    const float* t1 = tan.data() + 3 * b;
+    float axis[3];
+    cross_product3f(t0, t1, axis);
+    float const al = length3f(axis);
+    if (al > R_SMALL8) {
+      scale3f(axis, 1.0F / al, axis);
+      CartoonRotateAbout(n, axis, atan2f(al, dot_product3f(t0, t1)));
+    }
+    remove_component3f(n, t1, n);
+    if (length3f(n) > R_SMALL8)
+      normalize3f(n);
+    copy3f(n, nrm.data() + 3 * b);
+  }
+
+  // twist so the end lands on the next residue's orientation vector
+  const float* tEnd = tan.data() + 3 * sampling;
+  float tgt[3];
+  remove_component3f(vo + 3, tEnd, tgt);
+  if (length3f(tgt) > R_SMALL8) {
+    normalize3f(tgt);
+    float cx[3];
+    cross_product3f(nrm.data() + 3 * sampling, tgt, cx);
+    float const ang = atan2f(dot_product3f(tEnd, cx),
+        dot_product3f(nrm.data() + 3 * sampling, tgt));
+    for (int b = 1; b < sampling; b++) {
+      CartoonRotateAbout(nrm.data() + 3 * b, tan.data() + 3 * b,
+          ang * CartoonTwistProfile((float) b / sampling));
+    }
+    copy3f(tgt, nrm.data() + 3 * sampling);
+  }
+
+  // emit points, mirroring CartoonGenerateSample's bookkeeping
+  unsigned int* vi = *vi_p;
+  float* valpha = *valpha_p;
+  float *vc = *vc_p, *v = *v_p, *vn = *vn_p;
+  auto emit = [&](int b, int color, int idx, float a0) {
+    const float* col = ColorGet(G, color);
+    *(vc++) = col[0];
+    *(vc++) = col[1];
+    *(vc++) = col[2];
+    *(valpha++) = a0;
+    *(vi++) = idx;
+    copy3f(pos.data() + 3 * b, v);
+    v += 3;
+    vn += 3;
+    copy3f(nrm.data() + 3 * b, vn);
+    vn += 6;
+    (*n_p)++;
+  };
+  for (int b = 0; b < sampling; b++) {
+    if (*n_p == 0) {
+      // first point of the extrusion only; later intervals share it
+      emit(0, c1, atom_index1, alpha1);
+    }
+    float const f0 = ((float) b + 1) / sampling;
+    if (f0 <= 0.5F) {
+      emit(b + 1, c1, atom_index1, alpha1);
+    } else {
+      emit(b + 1, c2, atom_index2, alpha2);
+    }
+  }
+  *vc_p = vc;
+  *valpha_p = valpha;
+  *vi_p = vi;
+  *v_p = v;
+  *vn_p = vn;
+}
+
 static
 int CartoonExtrudeTube(short use_cylinders_for_strands, CExtrude *ex, CGO *cgo, float tube_radius, int tube_quality, cCylCap tube_cap){
   int ok = true;
@@ -2587,6 +2808,21 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
   putty_quality = GetCartoonQuality(cs, cSetting_cartoon_putty_quality, 11, 9, 7, 5);
   loop_quality  = GetCartoonQuality(cs, cSetting_cartoon_loop_quality,   6, 6, 5, 4);
   sampling      = GetCartoonQuality(cs, cSetting_cartoon_sampling,       7, 5, 3, 2, 1);
+  // cartoon_spline pairs with denser sampling: the spline path has no
+  // per-residue kinks to hide, but shadow-casting silhouettes (Metal RT) still
+  // show the ring polyline at the classic 7/residue. Double the AUTO tiers
+  // only; an explicit cartoon_sampling is respected as-is.
+  const bool spline_mode =
+      SettingGet_b(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_spline);
+  if (spline_mode &&
+      SettingGet<int>(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_sampling) < 0) {
+    sampling *= 2;
+    // Small structures can afford ChimeraX's full 20 rings/residue outright:
+    // cast-shadow silhouettes of a 14-ring strand still show the ring polyline
+    // at high zoom.
+    if (cs->NIndex < 100000 && sampling < 20)
+      sampling = 20;
+  }
 
   PRINTFB(G, FB_RepCartoon, FB_Blather)
     " RepCartoon: Use settings tube_quality=%d oval_quality=%d putty_quality=%d loop_quality=%d sampling=%d\n",
@@ -2597,6 +2833,13 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
     if(loop_quality < 12)
       loop_quality *= 2;
   refine = SettingGet_i(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_refine);
+
+  // cartoon_spline: one natural cubic spline per segment instead of the
+  // per-interval blend below (see CartoonGenerateSampleSpline).
+  CartoonSplineCoefs spline_coefs;
+  if (spline_mode) {
+    spline_coefs = CartoonBuildSplineCoefs(nAt, seg, pv, cyclicSegs);
+  }
   power_a = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_power);
   power_b = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_power_b);
   throw_ = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_throw);
@@ -2635,8 +2878,12 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
   if(nAt > 1) {
     ex = ExtrudeNew(G);
     CHECKOK(ok, ex);
-    if (ok)
+    if (ok) {
+      // Spline mode shades twisted strand/arrow quads with true surface normals
+      // (see ExtrudeTwistNormals); the classic path keeps its face normals.
+      ex->twist_normals = spline_mode ? 1 : 0;
       ok &= ExtrudeAllocPointsNormalsColors(ex, cs->NIndex * (3 * sampling + 3));
+    }
   }
   /* process cylindrical helices first */
   if(ok && (nAt > 1) && cylindrical_helices == CARTOON_CYLINDRICAL_HELICES_STRAIGHT) {
@@ -2716,14 +2963,22 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
                                         ? sampling_cylindrical_helices
                                         : sampling;
 
-          CartoonGenerateSample(G, cur_sampling, &n_p, dev, vo, v1, v2, c1, c2,
-              alpha1, alpha2, ai1->masked ? -1 : atom_index1,
-              ai2->masked ? -1 : atom_index2, power_a, power_b, &vc, &valpha,
-              &vi, &v, &vn);
+          int const interval = (int) ((v1 - pv) / 3);   // atom index of this interval's start
+          if (!spline_coefs.valid.empty() && spline_coefs.valid[interval]) {
+            CartoonGenerateSampleSpline(G, cur_sampling, &n_p,
+                spline_coefs.coef.data() + 12 * interval, vo, c1, c2, alpha1,
+                alpha2, ai1->masked ? -1 : atom_index1,
+                ai2->masked ? -1 : atom_index2, &vc, &valpha, &vi, &v, &vn);
+          } else {
+            CartoonGenerateSample(G, cur_sampling, &n_p, dev, vo, v1, v2, c1, c2,
+                alpha1, alpha2, ai1->masked ? -1 : atom_index1,
+                ai2->masked ? -1 : atom_index2, power_a, power_b, &vc, &valpha,
+                &vi, &v, &vn);
 
-          /* now do a smoothing pass along orientation 
-             vector to smooth helices, etc... */
-          CartoonGenerateRefine(refine, cur_sampling, v, vn, vo, sampling_tmp);
+            /* now do a smoothing pass along orientation
+               vector to smooth helices, etc... */
+            CartoonGenerateRefine(refine, cur_sampling, v, vn, vo, sampling_tmp);
+          }
         }
         v1 += 3;
         v2 += 3;

@@ -909,18 +909,18 @@ enum {
   REC_b( 799, metal_shadows                           , global    , true ),  /* Metal screen-space directional shadows */
   REC_b( 800, metal_outline                           , global    , false ), /* Metal silhouette/toon outline post pass */
   REC_b( 801, metal_msaa                              , global    , true ),  /* Metal 4x MSAA scene rendering */
-  REC_b( 802, metal_raytrace                          , global    , false ), /* Metal real-time ray-traced AO + shadows */
+  REC_b( 802, metal_raytrace                          , global    , true ), /* Metal real-time ray-traced AO + shadows */
   REC_b( 803, metal_interior_cap                      , object    , false ), /* Metal: fill (cap) the slab cross-section of clipped spheres/sticks with a solid interior color */
   REC_b( 804, metal_tonemap                           , global    , false ), /* Metal filmic (ACES) tone-mapping + exposure post pass */
   REC_f( 805, metal_exposure                          , global    , 1.0F ),  /* Metal tone-map exposure multiplier (1.0 = neutral) */
-  REC_b( 806, metal_rt_shadows                         , global    , false ), /* Metal: trace hard shadow rays (needs metal_raytrace) instead of shadow-map PCF */
+  REC_b( 806, metal_rt_shadows                         , global    , true ), /* Metal: trace hard shadow rays (needs metal_raytrace) instead of shadow-map PCF */
   REC_c( 807, metal_outline_color                     , global    , "0x000000" ), /* Metal outline contour color (color setting, like ray_trace_color) */
   REC_f( 808, metal_outline_width                     , global    , 1.4F ),  /* Metal outline thickness in pixels (post-pass neighbor sample step) */
   REC_f( 809, metal_sss_wrap                          , global    , 0.0F ),  /* Metal wrapped/subsurface diffuse term; 0 = pure Lambert (identical), up to ~1 wraps light around the terminator for a soft waxy look */
   REC_b( 810, metal_dof                               , global    , false ), /* Metal depth-of-field post pass (circle-of-confusion blur by distance from focus) */
   REC_f( 811, metal_dof_focus                         , global    , 0.0F ),  /* Metal DOF focus distance in eye-space units; 0 = auto (center of interest) */
   REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum */
-  REC_b( 813, metal_temporal_ao                       , global    , false ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
+  REC_b( 813, metal_temporal_ao                       , global    , true ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
   REC_b( 814, metal_upscale                           , global    , false ), /* Metal: render the scene at reduced resolution and upscale to native (mobile perf; bilinear, MetalFX follow-up) */
   REC_f( 815, metal_dof_aperture                      , global    , 14.0F ), /* Metal DOF aperture: max out-of-focus blur radius in px (bokeh strength); larger = wider aperture / stronger blur */
   REC_f( 816, surface_clip_front                      , object    , 0.0F ),  /* Per-rep surface clip, referenced to the surface's center of mass: fraction 0..1 of the molecule depth to shave off the NEAR (front) side. 0 = no clip, 1 = clip to the COM. Lets the surface clip while cartoon/sticks stay whole so you can peek inside. */
@@ -931,13 +931,15 @@ enum {
   REC_b( 821, surface_contour_opaque                  , object    , true ),  /* Metal: surface outer-contour is fully opaque (crisp); off = the line picks up the surface transparency. */
   REC_b( 822, metal_ssao_cartoon                      , global    , false ), /* Metal: include cartoon/ribbon in the screen-space SSAO (crease/contour) pass. Default off => cartoons are excluded from SSAO darkening (avoids spurious contour lines on ribbon silhouettes/self-folds, #79); they still receive directional shadows, and surface pockets keep their AO. */
   REC_f( 823, metal_shadow_bias                       , global    , 1.0F ),  /* Metal: multiplier on the self-shadow depth bias. 1.0 = default. Raise (e.g. 2-4) if flat cartoon strands still show striped self-shadow "triangle" acne at steep/grazing angles; lower toward 0 for tighter contact shadows. */
-  REC_i( 824, metal_rt_samples                        , global    , 16 ),    /* Metal real-time RT: ambient-occlusion rays traced per pixel in the LIVE view (quality vs performance). Higher = smoother/less-noisy AO but slower. Offscreen PNG/movie export always traces at least 48. Clamped to 1..256. */
+  REC_i( 824, metal_rt_samples                        , global    , 32 ),    /* Metal real-time RT: ambient-occlusion rays traced per pixel in the LIVE view (quality vs performance). Higher = smoother/less-noisy AO but slower. Offscreen PNG/movie export always traces at least 48. Clamped to 1..256. */
   REC_f( 825, metal_rt_ao_radius                      , global    , 5.0F ),  /* Metal real-time RT: ambient-occlusion hemisphere radius in Angstroms (occlusion reach). Larger = broader pocket/cavity darkening; smaller = tight contact AO. */
   REC_f( 826, metal_rt_ao_intensity                   , global    , 0.72F ), /* Metal real-time RT: ambient-occlusion darkening strength (0..1). */
   REC_f( 827, metal_rt_shadow_intensity               , global    , 0.45F ), /* Metal real-time RT: cast-shadow darkening strength (0..1); still gated by metal_shadows. */
   REC_b( 828, metal_dof_hq                            , global    , false ), /* Metal depth-of-field: high-quality two-pass bokeh (more gather samples + a de-noise smoothing pass) vs the single-pass gather. */
   REC_b( 829, metal_dof_autofocus                     , global    , false ), /* Metal depth-of-field: lock the focal plane onto the "dof_focus" selection's centroid (snapshotted from 'sele' when enabled) and track it each frame as the camera moves; empty selection falls back to the center of interest. */
   REC_i( 830, metal_dof_quality                       , global    , 4 ),     /* Metal depth-of-field: bokeh quality level 1..4. Higher traces more gather samples (1->16, 2->32, 3->64, 4->96) for denser, cleaner out-of-focus blur; levels >=2 also run a de-noise smoothing pass (two-pass). 1 = fast single-pass. */
+  REC_b( 831, cartoon_spline                          , ostate    , 1 ),
+  REC_f( 832, metal_rt_scale                          , global    , 0.5F ),  /* Metal real-time RT: resolution scale of the ray-traced AO + shadow pass in the LIVE view (0.25..1). 0.5 traces a quarter of the rays; the depth-aware composite blur hides the upscale. Offscreen PNG/movie export always traces at full resolution. */     /* Cartoon path tessellation: 0 = classic per-residue Hermite blend (cartoon_throw/power, cartoon_refine); 1 = ChimeraX-style natural cubic spline through the CA trace with parallel-transported, smoothly twisted orientation frames (no per-residue bulges or facets; pairs well with cartoon_sampling 14-20 and Metal ray-traced shadows). */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

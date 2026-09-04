@@ -2093,7 +2093,8 @@ void SceneRenderMetal(PyMOLGlobals* G)
         SettingGetGlobal_i(G, cSetting_metal_rt_samples),
         SettingGetGlobal_f(G, cSetting_metal_rt_ao_radius),
         SettingGetGlobal_f(G, cSetting_metal_rt_ao_intensity),
-        SettingGetGlobal_f(G, cSetting_metal_rt_shadow_intensity));
+        SettingGetGlobal_f(G, cSetting_metal_rt_shadow_intensity),
+        SettingGetGlobal_f(G, cSetting_metal_rt_scale));
     G->Renderer->setDofQuality(
         SettingGetGlobal_i(G, cSetting_metal_dof_quality));
     // Lighting model — the Metal lit shaders read these instead of hard-coded
