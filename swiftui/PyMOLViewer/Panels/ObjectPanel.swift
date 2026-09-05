@@ -2133,6 +2133,40 @@ private struct ColorMenuButton: View {
     let name: String
     @EnvironmentObject var engine: PyMOLEngine
     @State private var customColor: Color = .white
+
+#if os(iOS)
+    @State private var showColors = false
+
+    // A UIMenu row has ONE hit area: a tap anywhere on a row that carries a
+    // submenu opens the submenu, so the `primaryAction:` the macOS menu below
+    // relies on is dropped and applying plain red cost two taps. The
+    // iOS color menu is therefore a popover laid out here rather than a
+    // UIMenu, which lets a row be two controls: the name applies that color,
+    // the chevron beside it expands the hue's shades in place.
+    var body: some View {
+        Button { showColors = true } label: { buttonFace }
+            .buttonStyle(.plain)
+            .foregroundColor(PanelTheme.accentColor)
+            // Stable AX hook so UI tests can open a specific row's color menu
+            // (the visible label "C" is shared by every row).
+            .accessibilityIdentifier("colorMenu.\(name)")
+            .popover(isPresented: $showColors) {
+                ColorMenuPopover(
+                    apply: { command in
+                        applyColor(command: command)
+                        showColors = false
+                    },
+                    customColor: $customColor,
+                    applyCustom: { applyCustomColor($0) })
+                    // Keep it a popover on iPhone; the default compact
+                    // adaptation would turn it into a full-width sheet. The
+                    // thick material keeps the rows legible over a bright
+                    // molecule the way a UIMenu's own backdrop would.
+                    .presentationCompactAdaptation(.popover)
+                    .presentationBackground(.thickMaterial)
+            }
+    }
+#else
     @State private var showCustom = false
 
     var body: some View {
@@ -2151,10 +2185,9 @@ private struct ColorMenuButton: View {
             Divider()
             // Desktop PyMOL's tiered colors (#379): each row is a base color —
             // click it to apply — and the same row expands into that hue's
-            // named variants from the core table. On macOS the row's click
-            // fires primaryAction and the arrow opens the variants; UIKit
-            // menus can't do both, so on iOS tapping the row drills into the
-            // variants, where the base color is the first entry.
+            // named variants from the core table. Clicking the row fires
+            // primaryAction, the arrow opens the variants (see the iOS body
+            // above, which builds the same two affordances by hand).
             ForEach(PyMOLColorMenu.rows, id: \.family.label) { row in
                 if let primary = row.primary {
                     Menu {
@@ -2177,11 +2210,7 @@ private struct ColorMenuButton: View {
             // "Custom…" opens a popover that hosts a working ColorPicker.
             Button("Custom…") { showCustom = true }
         } label: {
-            Text("C")
-                .frame(width: kActBtnW, height: kActBtnH)
-                .background(PanelTheme.buttonBackground)
-                .cornerRadius(2)
-                .contentShape(Rectangle())
+            buttonFace
         }
         .repMenuChrome()
         // Stable AX hook so UI tests can open a specific row's color menu
@@ -2208,10 +2237,11 @@ private struct ColorMenuButton: View {
         }
     }
 
-    /// Menu rows are native menu items on both platforms (NSMenuItem / UIMenu
-    /// element), which render only a label's text and image — a `Circle()`
-    /// swatch is silently dropped (the flat list's swatches were never visible
-    /// on macOS). So the swatch is rasterised into a small image.
+    /// A menu row is an NSMenuItem, which renders only a label's text and
+    /// image — a `Circle()` swatch is silently dropped (the flat list's
+    /// swatches were never visible on macOS). So the swatch is rasterised
+    /// into a small image. The iOS menu draws its own rows, so it fills a
+    /// real `Circle()` instead.
     @ViewBuilder
     private func swatchLabel(_ text: String, swatch: Color?) -> some View {
         if let swatch {
@@ -2219,6 +2249,15 @@ private struct ColorMenuButton: View {
         } else {
             Text(text)
         }
+    }
+#endif
+
+    private var buttonFace: some View {
+        Text("C")
+            .frame(width: kActBtnW, height: kActBtnH)
+            .background(PanelTheme.buttonBackground)
+            .cornerRadius(2)
+            .contentShape(Rectangle())
     }
 
     private func applyColor(command: String) {
@@ -2240,6 +2279,150 @@ private struct ColorMenuButton: View {
         engine.runCommand("set_color raymol_custom, \(rgb01List(color))\ncolor raymol_custom, \(name)")
     }
 }
+
+#if os(iOS)
+/// The iOS "C" menu (see ColorMenuButton). Hand-drawn rather than a UIMenu so
+/// each hue can be a split row: the left control applies the base color in one
+/// tap, the chevron on the right expands that hue's named shades underneath
+/// it. Picking any color closes the menu; expanding never does.
+struct ColorMenuPopover: View {
+    /// Applies a color name or a coloring-mode command, then closes the menu.
+    let apply: (String) -> Void
+    @Binding var customColor: Color
+    let applyCustom: (Color) -> Void
+
+    /// Which hue family is currently expanded (family label), if any.
+    @State private var expanded: String? = nil
+
+    private let rowHeight: CGFloat = 44
+    private let swatchSize: CGFloat = 13
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(colorOptions, id: \.label) { opt in
+                    if let command = opt.command {
+                        pickRow(opt.label, swatch: opt.swatch) { apply(command) }
+                    }
+                }
+                separator
+                ForEach(PyMOLColorMenu.rows, id: \.family.label) { row in
+                    colorRow(row)
+                    if expanded == row.family.label {
+                        ForEach(row.family.shades, id: \.name) { shade in
+                            pickRow(shade.name, swatch: shade.swatch, indent: 24) {
+                                apply(shade.name)
+                            }
+                            .accessibilityIdentifier("colorShade.\(shade.name)")
+                        }
+                        separator
+                    }
+                }
+                separator
+                customRow
+            }
+        }
+        .frame(width: 264)
+        .frame(maxHeight: 460)
+    }
+
+    /// One hue: name applies it, chevron expands its shades. `tints` has no
+    /// base color of its own, so both halves of that row expand.
+    private func colorRow(_ row: PyMOLColorMenuRow) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                if let primary = row.primary { apply(primary.name) } else { toggle(row) }
+            } label: {
+                rowLabel(row.title, swatch: row.swatch, indent: 0)
+            }
+            .buttonStyle(ColorMenuRowStyle())
+            .accessibilityIdentifier("colorRow.\(row.title)")
+
+            Divider().frame(height: rowHeight * 0.5)
+
+            Button { toggle(row) } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .rotationEffect(.degrees(expanded == row.family.label ? 90 : 0))
+                    .frame(width: 46, height: rowHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(ColorMenuRowStyle())
+            .accessibilityIdentifier("colorRow.\(row.title).expand")
+            .accessibilityLabel(Text("\(row.family.label) shades"))
+        }
+    }
+
+    private func pickRow(_ text: String, swatch: Color?, indent: CGFloat = 0,
+                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            rowLabel(text, swatch: swatch, indent: indent)
+        }
+        .buttonStyle(ColorMenuRowStyle())
+    }
+
+    /// Swatch + name, filling the row so the whole width is tappable. Unlike a
+    /// UIMenu item this is a real view hierarchy, so a `Circle()` swatch draws.
+    private func rowLabel(_ text: String, swatch: Color?, indent: CGFloat) -> some View {
+        HStack(spacing: 9) {
+            Group {
+                if let swatch {
+                    Circle()
+                        .fill(swatch)
+                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.2), lineWidth: 0.5))
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: swatchSize, height: swatchSize)
+            Text(text)
+                .font(.system(size: 16))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 16 + indent)
+        .padding(.trailing, 10)
+        .frame(height: rowHeight)
+        .contentShape(Rectangle())
+    }
+
+    /// The ColorPicker that "Custom…" used to open in a nested popover; inline
+    /// here because this menu is a plain view, so the picker works in place.
+    private var customRow: some View {
+        HStack(spacing: 9) {
+            Text("Custom…")
+                .font(.system(size: 16))
+                .foregroundColor(.primary)
+            Spacer(minLength: 0)
+            DebouncedColorPicker(get: { customColor },
+                                 apply: { customColor = $0; applyCustom($0) })
+        }
+        .padding(.horizontal, 16)
+        .frame(height: rowHeight)
+    }
+
+    private var separator: some View {
+        Divider().padding(.vertical, 4)
+    }
+
+    private func toggle(_ row: PyMOLColorMenuRow) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            expanded = expanded == row.family.label ? nil : row.family.label
+        }
+    }
+}
+
+/// Menu-like press feedback: `.plain` leaves a row visually dead on touch, and
+/// a bordered style would box each half of a split row.
+private struct ColorMenuRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Color.primary.opacity(0.12) : Color.clear)
+    }
+}
+#endif
 
 // MARK: - Inspector: color helpers
 

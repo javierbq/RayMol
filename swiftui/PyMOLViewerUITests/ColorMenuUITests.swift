@@ -1,8 +1,10 @@
 // ColorMenuUITests.swift — the tiered per-object color menu (#379) on iOS.
 //
 // Desktop PyMOL's "C" menu lists colors as rows that both apply (click "red")
-// and expand into that hue's named variants (firebrick, salmon, …). This
-// drives the real SwiftUI Menu through UIKit and confirms the viewport
+// and expand into that hue's named variants (firebrick, salmon, …). On iOS
+// the menu is a hand-drawn popover (a UIMenu row cannot do both), so each row
+// is split: the name applies the color in ONE tap, the chevron beside it
+// expands the hue. These drive the real popover and confirm the viewport
 // actually recoloured (pixel-diff, as in PyMOLGestureUITests).
 //
 // Run: xcodebuild test -scheme PyMOLViewer_iOS -sdk iphonesimulator \
@@ -52,17 +54,16 @@ final class ColorMenuUITests: XCTestCase {
         settle(1.5)
     }
 
-    /// The chevron end of a row: on iOS a row that both acts and expands is a
-    /// UIKit menu with a submenu, and which half of the row does what has
-    /// changed between OS versions, so the tests target it explicitly.
-    private func chevron(of row: XCUIElement) -> XCUICoordinate {
-        row.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5))
+    /// The expand half of a split row. It is its own button, so address it by
+    /// identifier rather than by poking at coordinates inside the name half.
+    private func expander(_ color: String) -> XCUIElement {
+        app.descendants(matching: .any)["colorRow.\(color).expand"]
     }
 
-    /// Tapping the "red" row applies red — either directly (primaryAction) or
-    /// by drilling into the variants, where red is the first entry. Both paths
-    /// must end with the menu closed and the molecule recoloured.
-    func testRedRowAppliesRed() {
+    /// Tapping the name half of the "red" row applies red in one tap: no
+    /// submenu opens, the menu closes, and the molecule recolours. (It used to
+    /// drill into the reds and cost a second tap on the shade.)
+    func testRedRowAppliesRedInOneTap() {
         app.launch()
         XCTAssertTrue(waitForRender(timeout: 30),
                       "molecule never rendered (embedded Python boot + load)")
@@ -75,13 +76,8 @@ final class ColorMenuUITests: XCTestCase {
         settle(0.5)
 
         item("red").tap()
-        if item("firebrick").waitForExistence(timeout: 3) {
-            // Drilled into the variants: the base color leads the list. "red"
-            // now appears twice (submenu header + shade); the shade is last.
-            attach("color-menu-red-variants")
-            let reds = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'red'"))
-            reds.element(boundBy: reds.count - 1).tap()
-        }
+        XCTAssertFalse(item("firebrick").waitForExistence(timeout: 2),
+                       "tapping 'red' expanded the reds instead of applying red")
         waitForMenuToClose()
         attach("after-red")
         XCTAssertTrue(changed(before, viewportSignature()),
@@ -89,21 +85,20 @@ final class ColorMenuUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "app crashed after applying a color")
     }
 
-    /// The row's chevron opens that hue's named variants, and picking one
-    /// recolours the object.
-    func testVariantAppliesToTheObject() {
+    /// The row's chevron expands that hue's named variants in place — without
+    /// closing the menu or recolouring anything — and picking one applies it.
+    func testChevronExpandsTheHueAndAVariantApplies() {
         app.launch()
         XCTAssertTrue(waitForRender(timeout: 30),
                       "molecule never rendered (embedded Python boot + load)")
         let before = viewportSignature()
         openMenu()
         settle(0.5)
-        chevron(of: item("red")).tap()
-        if !item("firebrick").waitForExistence(timeout: 3) {
-            item("red").tap()   // older layouts expand from anywhere on the row
-        }
+        XCTAssertTrue(expander("red").waitForExistence(timeout: 5), "the reds chevron is missing")
+        expander("red").tap()
         XCTAssertTrue(item("firebrick").waitForExistence(timeout: 5), "'firebrick' variant never appeared")
         XCTAssertTrue(item("salmon").exists, "'salmon' variant missing")
+        XCTAssertTrue(item("by element").exists, "expanding closed the menu")
         attach("color-menu-red-variants")
 
         item("firebrick").tap()
