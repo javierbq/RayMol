@@ -94,35 +94,44 @@ struct DesignCompactPanel: View {
     // Decomposed into leaf properties to keep each expression short for the Swift
     // type-checker, following the pattern in DesignSequenceStripView.seqCols.
     private var actionRow: some View {
-        HStack(spacing: 8) {
-            // The region field (#371); writes 'sele', so tapping residues still
-            // means exactly what it meant. Scope button = read the live selection.
-            SelectionInputField(
-                placeholder: "sele",
-                text: $controller.selectionText,
-                identifier: "design.selection",
-                scope: { controller.useCurrentSelection() },
-                width: 100,
-                apply: { controller.applySelection() })
-            if !controller.regionModeActive {
-                Text("or tap 2+")
-                    .font(.system(size: 11))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
-                    .lineLimit(1)
+        // Horizontally scrollable (#386). A plain HStack here reports a MINIMUM
+        // width — the region field is a fixed 100pt and Cmp/Keep/Discard are
+        // .fixedSize() — that exceeds an iPhone's ~390pt once an edit session is
+        // live. An over-wide row does not merely clip itself: a VStack adopts the
+        // width of its widest child, so the whole iPhone stack (title row, rail,
+        // viewport, inspector) was displaced sideways and lost its trailing edge
+        // off-screen. A ScrollView never reports an oversized ideal width, so the
+        // row scrolls and its siblings keep the screen's geometry.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                // The region field (#371); writes 'sele', so tapping residues still
+                // means exactly what it meant. Scope button = read the live selection.
+                SelectionInputField(
+                    placeholder: "sele",
+                    text: $controller.selectionText,
+                    identifier: "design.selection",
+                    scope: { controller.useCurrentSelection() },
+                    width: 100,
+                    apply: { controller.applySelection() })
+                if !controller.regionModeActive {
+                    Text("or tap 2+")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                        .lineLimit(1)
+                }
+                if controller.seleResiduesOffFocus > 0 {
+                    Label("\(controller.seleResiduesOffFocus)", systemImage: "eye.slash")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(theme.active.panelText.color.opacity(0.5))
+                        .accessibilityLabel(
+                            "\(controller.seleResiduesOffFocus) selected residues on other structures, ignored")
+                }
+                if controller.regionModeActive { redesignButton }
+                if controller.redesignSnapshot != nil { revertButton }
+                if controller.editing { editControls }
             }
-            if controller.seleResiduesOffFocus > 0 {
-                Label("\(controller.seleResiduesOffFocus)", systemImage: "eye.slash")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(theme.active.panelText.color.opacity(0.5))
-                    .accessibilityLabel(
-                        "\(controller.seleResiduesOffFocus) selected residues on other structures, ignored")
-            }
-            if controller.regionModeActive { redesignButton }
-            if controller.redesignSnapshot != nil { revertButton }
-            Spacer(minLength: 0)
-            if controller.editing { editControls }
+            .padding(.horizontal, 12).padding(.vertical, 6)
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
     }
 
     private var redesignButton: some View {
@@ -189,8 +198,8 @@ struct DesignCompactPanel: View {
         .fixedSize()
         .accessibilityLabel("Compare with original")
 
-        // Keep/Discard: .fixedSize() so nothing to their left can push them
-        // off-screen.
+        // Keep/Discard: .fixedSize() so the scroll content sizes them to their
+        // labels rather than squeezing the text.
         Button { Task { await controller.keepEditsAwait() } } label: {
             Text("Keep").font(.system(size: 12, weight: .semibold))
         }
