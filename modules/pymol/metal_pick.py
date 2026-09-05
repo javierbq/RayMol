@@ -452,6 +452,51 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
                 cands.append((d2, depth, obj, at.chain or '', at.resi,
                               at.resn, at.segi or (at.chain or ''), at.name, sx, sy))
 
+        # SNFG glycan cartoons are CGO geometry and therefore have no native atom
+        # identity. Their generator registers ring centroids mapped to real source
+        # residues. Project those virtual targets with the same camera math and
+        # prefer them when the click lands on a visible symbol; the tuple returned
+        # below still names a genuine atom, so selection modes, hover, long-press,
+        # residue information and sequence synchronization continue unchanged.
+        glycan_cands = []
+        try:
+            from pymol import raymol_glycan
+            enabled = set(cmd.get_names('objects', enabled_only=1) or [])
+            allowed = enabled if pick_objs is None else enabled.intersection(pick_objs)
+            for target in raymol_glycan.get_pick_targets():
+                if target['cgo_object'] not in allowed:
+                    continue
+                cx, cy, cz = target['coord']
+                dx, dy, dz = cx - ox, cy - oy, cz - oz
+                ex = r00 * dx + r01 * dy + r02 * dz + tx
+                ey = r10 * dx + r11 * dy + r12 * dz + ty
+                ez = r20 * dx + r21 * dy + r22 * dz + tz
+                depth = -ez
+                if depth <= 0.01:
+                    continue
+                if clip_front is not None and clip_back > clip_front \
+                        and (depth < clip_front or depth > clip_back):
+                    continue
+                half_h = depth * tan_half
+                half_w = half_h * aspect
+                sx, sy = ex / half_w, ey / half_h
+                d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
+                radius = float(target['radius'])
+                screen_radius = max(radius / half_w, radius / half_h)
+                if d2 > max(thresh, screen_radius * screen_radius):
+                    continue
+                glycan_cands.append((
+                    d2, depth, target['object'], target['chain'], target['resi'],
+                    target['resn'], target['segi'] or target['chain'],
+                    target['name'], sx, sy,
+                ))
+        except Exception:
+            pass
+
+        if glycan_cands:
+            cands = glycan_cands
+            ncand += len(glycan_cands)
+
         # Choose the FRONT-MOST atom among those clustered nearest the click, so
         # that where atoms overlap on screen we select the one actually visible
         # (closest to the camera), not whichever projects marginally nearer the
