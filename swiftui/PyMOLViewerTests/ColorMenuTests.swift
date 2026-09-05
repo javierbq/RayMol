@@ -126,4 +126,19 @@ final class ColorMenuTests: XCTestCase {
             XCTAssertNotNil(opt.command)
         }
     }
+
+    /// The iOS menu splits every color row into "apply the base color" plus a
+    /// chevron that expands the hue. A chevron that opened a list with
+    /// nothing but the color already on the row would be a dead control, so
+    /// each family must carry variants beyond its base.
+    func testEveryRowHasVariantsBehindItsChevron() {
+        for row in PyMOLColorMenu.rows {
+            XCTAssertGreaterThan(row.family.shades.count, 1,
+                                 "\(row.family.label) has nothing to expand into")
+            if let primary = row.primary {
+                XCTAssertTrue(row.family.shades.contains { $0.name != primary.name },
+                              "\(row.family.label) expands to just \(primary.name)")
+            }
+        }
+    }
 }
