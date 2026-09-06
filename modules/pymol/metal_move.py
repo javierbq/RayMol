@@ -16,17 +16,16 @@ through the object's current transform (TTT), so it tumbles with the molecule.
 The SAME frame drives both translation (drag an axis arrow) and rotation (drag a
 ring) — there is no mode switch. All manipulation is non-destructive TTT
 (cmd.translate/cmd.rotate with object=); Reset is matrix_reset. Gizmo geometry is
-written to <tmpdir>/pymol_gizmo.json, which Swift reads back synchronously.
+written to <tmpdir>/pymol_gizmo_<pid>.json, which Swift reads back synchronously.
 
 NDC convention matches metal_pick / the gesture handlers: bottom-left origin,
 +x right, +y up, in [-1, 1].
 """
 import json
 import math
-import os
-import tempfile
 
 from pymol import cmd
+from pymol import raymol_tmp
 
 # Module state --------------------------------------------------------------
 _active = None          # active object name, or None
@@ -63,7 +62,7 @@ _RING_SEG = 48
 _ELEM_MASS = {'H': 1.008, 'C': 12.011, 'N': 14.007, 'O': 15.999, 'S': 32.06,
               'P': 30.974, 'FE': 55.845, 'ZN': 65.38, 'MG': 24.305,
               'CA': 40.078, 'NA': 22.99, 'CL': 35.45, 'K': 39.098}
-_PATH = os.path.join(tempfile.gettempdir(), 'pymol_gizmo.json')
+_PATH = raymol_tmp.channel_path('pymol_gizmo')
 
 
 # --- vector helpers ---------------------------------------------------------

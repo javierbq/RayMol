@@ -9,10 +9,9 @@ short marker PREDICT_FORM:ready rides the feedback line.
 """
 
 import json
-import os
-import tempfile
 
 from pymol import cmd
+from pymol import raymol_tmp
 
 
 def _predictors():
@@ -97,7 +96,7 @@ def emit(input_str=''):
         chains, error = _chains(input_str)
         payload = {'predictors': _predictors(), 'chains': chains, 'error': error}
         blob = json.dumps(payload)
-        p = os.path.join(tempfile.gettempdir(), 'pymol_predict_%d.json' % os.getpid())
+        p = raymol_tmp.channel_path('pymol_predict')
         with open(p, 'w') as f:
             f.write(blob)
         print('PREDICT_FORM:ready')

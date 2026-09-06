@@ -45,6 +45,7 @@ jobs:
       - name: Run RayMol unit tests under embedded pymol
         run: |
           pymol -ckqy testing/testing.py --run \
+              testing/tests/test_raymol_tmp.py \
               testing/tests/test_appkit_measure.py \
               testing/tests/test_appkit_sequence.py \
               testing/tests/test_appkit_object_panel.py \

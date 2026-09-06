@@ -269,13 +269,12 @@ def poll(preview=False):
     cannot see. See `_visible_objects`.
     """
     import json
-    import os
-    import tempfile
+    from pymol import raymol_tmp
     if preview:
         names = ['__theme_preview']
     else:
         names = _visible_objects()
     data = _build(names, preview)
-    p = os.path.join(tempfile.gettempdir(), 'pymol_seq.json')
+    p = raymol_tmp.channel_path('pymol_seq')
     with open(p, 'w') as f:
         f.write(json.dumps(data))

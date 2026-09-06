@@ -122,9 +122,13 @@ class SetValueTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("SETTINGS:err") for l in _lines(buf)))
 
     def test_path_is_in_tempdir(self):
+        import os
         import tempfile
         self.assertTrue(st._path().startswith(tempfile.gettempdir()))
-        self.assertTrue(st._path().endswith("pymol_settings.json"))
+        # pid-scoped (#399): a second RayMol on the same machine must not be
+        # able to hand this instance its settings catalog.
+        self.assertTrue(st._path().endswith(
+            "pymol_settings_%d.json" % os.getpid()))
 
 
 if __name__ == "__main__":

@@ -380,7 +380,7 @@ extension PyMOLEngine {
     ///            "colors": { "<idx>": [r, g, b] } }
     func parseSequencePanelFeedback(_ line: String) {
         guard line.hasPrefix("SEQPANEL:") else { return }
-        let path = NSTemporaryDirectory() + "pymol_seq.json"
+        let path = TempChannel.path(TempChannel.Stem.sequence)
         guard let data = FileManager.default.contents(atPath: path) else { return }
 
         struct Payload: Decodable {
@@ -481,7 +481,7 @@ extension PyMOLEngine {
     /// `selectedResidueKeys` for highlight sync.
     func parseSequenceSelectionFeedback(_ line: String) {
         guard line.hasPrefix("SEQSEL:") else { return }
-        let path = NSTemporaryDirectory() + "pymol_seqsel.json"
+        let path = TempChannel.path(TempChannel.Stem.sequenceSelection)
         guard let data = FileManager.default.contents(atPath: path) else { return }
         guard let keys = try? JSONDecoder().decode([String].self, from: data) else { return }
         let set = Set(keys)

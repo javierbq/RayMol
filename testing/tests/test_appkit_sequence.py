@@ -25,6 +25,7 @@ if not hasattr(sys.modules["pymol"], "cmd"):
     sys.modules["pymol"].cmd = types.SimpleNamespace()
 
 from pymol import appkit_sequence as seq
+from pymol import raymol_tmp
 
 
 class FakeCmd:
@@ -237,10 +238,9 @@ class PollTest(unittest.TestCase):
 
     def _payload(self, cmd, preview=False):
         import json
-        import tempfile
         seq.cmd = cmd
         seq.poll(preview=preview)
-        p = os.path.join(tempfile.gettempdir(), "pymol_seq.json")
+        p = raymol_tmp.channel_path("pymol_seq")
         with open(p) as f:
             return json.load(f)
 
@@ -342,8 +342,7 @@ class VisibleObjectsTest(unittest.TestCase):
         seq.cmd = cmd
         seq.poll()
         import json
-        import tempfile
-        with open(os.path.join(tempfile.gettempdir(), "pymol_seq.json")) as f:
+        with open(raymol_tmp.channel_path("pymol_seq")) as f:
             data = json.load(f)
         self.assertEqual([d["name"] for d in data["objects"]], ["molB"])
 

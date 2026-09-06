@@ -62,12 +62,12 @@ _PRESELECT = '_preselect'
 # readout just keeps it instead of discarding it. Swift formats the text (see
 # HoverReadout.text); Python stays a dumb reporter so the formatting rules are
 # unit-testable without a live core.
-_HOVER_INFO_JSON = 'pymol_hover_info.json'
+_HOVER_INFO_STEM = 'pymol_hover_info'
 
 
 def _hover_info_path():
-    import os, tempfile
-    return os.path.join(tempfile.gettempdir(), _HOVER_INFO_JSON)
+    from pymol import raymol_tmp
+    return raymol_tmp.channel_path(_HOVER_INFO_STEM)
 
 
 def _write_hover_info(out):
@@ -807,7 +807,7 @@ def hover_preview_at(ndc_x, ndc_y, aspect, preview=1, info=0):
     over every drawn atom is the expensive part, so it must not run twice):
       preview=1  update the '_preselect' highlight   (Mouse / Hover)
       info=1     write the top-right readout payload (issue #359) to
-                 <tmpdir>/pymol_hover_info.json for Swift to format
+                 <tmpdir>/pymol_hover_info_<pid>.json for Swift to format
     The caller passes whichever its user has left on; with both off it should not
     call at all.
     """

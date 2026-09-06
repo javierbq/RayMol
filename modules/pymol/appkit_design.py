@@ -15,10 +15,9 @@ tells you what it will do and one that waits seventeen minutes to disagree.
 """
 
 import json
-import os
-import tempfile
 
 from pymol import cmd
+from pymol import raymol_tmp
 
 
 def _generators():
@@ -105,8 +104,7 @@ def emit(target_str='', hotspots_str='', generator_id=''):
         summary, error = _target(target_str, hotspots_str, generator_id)
         payload = {'generators': _generators(), 'target': summary, 'error': error}
         blob = json.dumps(payload)
-        path = os.path.join(tempfile.gettempdir(),
-                            'pymol_design_%d.json' % os.getpid())
+        path = raymol_tmp.channel_path('pymol_design')
         with open(path, 'w') as handle:
             handle.write(blob)
         print('DESIGN_FORM:ready')
