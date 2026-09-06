@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <stack>
@@ -585,13 +586,67 @@ private:
   int  _rtEnabled = 0;            // requested (gated by _rtSupported)
   int  _rtShadowEnabled = 0;      // metal_rt_shadows: traced hard shadow ray
   bool _rtReady = false;          // instance acceleration structure is built
-  // Atom-sphere geometry accumulated each frame (model space, center+radius).
-  std::vector<float> _rtSpheres;  // x,y,z,r per sphere
-  // Solid triangle geometry (model space): tessellated sticks + cartoon/surface
-  // meshes. 3 verts (9 floats) per triangle, non-indexed.
-  std::vector<float> _rtTris;
-  uint64_t _rtSphereHash = 0;     // checksum of the built set (rebuild on change)
+  // Model-space RT geometry, cached per CPU buffer. Spheres (center+radius) and
+  // triangles (tessellated sticks + cartoon/surface meshes, 3 verts / 9 floats
+  // per triangle, non-indexed) are derived from the SAME CPU buffers _vboCache
+  // keys on, so they are extracted once on first sight and kept alive with the
+  // cache entry. A frame then only records WHICH entries it used, which leaves
+  // pure camera motion doing no gathering, no copying and no hashing at all.
+  struct RTGeom {
+    std::vector<float> spheres;  // x,y,z,r per sphere (size scale applied)
+    std::vector<float> tris;     // 9 floats per triangle
+    uint64_t params = 0;         // draw-call scalars the extraction used
+    uint64_t gen = 0;            // bumped on every (re)extraction; 0 = never
+  };
+  std::unordered_map<const void*, RTGeom> _rtGeomCache;
+  // Secondary CPU buffer (index data) -> primary key, so invalidating an index
+  // buffer also drops the entry keyed on its vertex buffer.
+  std::unordered_map<const void*, const void*> _rtGeomAlias;
+  // Keys contributing to the frame being accumulated, in draw order (a key may
+  // repeat). Keys and not RTGeom* because invalidateVBOCacheEntry can erase an
+  // entry mid-frame, and the concatenation runs one frame later.
+  std::vector<const void*> _rtFrameKeys;
+  uint64_t _rtFrameSig = 1469598103934665603ULL;  // running signature of
+                                  // _rtFrameKeys (+ gens); FNV-1a offset basis
+  uint64_t _rtGeomGen = 0;        // monotonic source of RTGeom::gen
+  bool _rtGeomDirty = false;      // an entry was invalidated: force a rebuild
+  size_t _rtTriCount = 0;         // triangles in the built _rtTriBuffer
+  uint64_t _rtSphereHash = 0;     // signature of the built set (rebuild on change)
   size_t _rtBuiltCount = 0;
+
+  // Record this frame's use of the RT geometry derived from the CPU buffer
+  // `key`, calling `extract(RTGeom&)` only when it has not been extracted yet
+  // or when `params` (the draw-call scalars it depends on) changed. `alias`, if
+  // non-null, is a second CPU buffer the extraction read (the index buffer).
+  template <class Extract>
+  void rtNoteGeometry(const void* key, const void* alias, uint64_t params,
+      Extract&& extract)
+  {
+    RTGeom& g = _rtGeomCache[key];
+    if (g.gen == 0 || g.params != params) {
+      g.spheres.clear();
+      g.tris.clear();
+      extract(g);
+      g.params = params;
+      g.gen = ++_rtGeomGen;
+      if (alias)
+        _rtGeomAlias[alias] = key;
+    }
+    // Buffers that yield no RT geometry (lines, points, degenerate meshes) are
+    // cached as empty but left OUT of the frame record, so churn in e.g. the
+    // selection-indicator CGO does not signal a geometry change and force an
+    // acceleration-structure rebuild. rtDropGeometry keeps the same rule.
+    if (g.spheres.empty() && g.tris.empty())
+      return;
+    _rtFrameKeys.push_back(key);
+    _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
+    _rtFrameSig *= 1099511628211ULL;
+    _rtFrameSig ^= g.gen;
+    _rtFrameSig *= 1099511628211ULL;
+  }
+  // Drop the cached RT geometry derived from a CPU buffer that is about to be
+  // freed (or whose contents changed). Handles both primary and alias keys.
+  void rtDropGeometry(const void* cpuData);
   id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
   id<MTLAccelerationStructure> _rtTriProtoAS = nil;     // world triangle mesh
   id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
