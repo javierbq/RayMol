@@ -239,3 +239,71 @@ class TestDesignEditing(testing.PyMOLTestCase):
         self.assertEqual(obj_count, trp_count,
                          "atom count after replace (%d) != TRP source (%d)" %
                          (obj_count, trp_count))
+
+    def testProlineRingClosesInSidechainSticks(self):
+        """Proline's ring must not be drawn open (#405).
+
+        PRO closes its ring CD->N onto the *backbone* nitrogen, which PyMOL's
+        `sidechain` selection excludes. Showing sidechain sticks without that N
+        leaves the CD->N bond with only one drawn endpoint, so the ring renders
+        as an open, dangling zig-zag. Every other residue is unaffected: their
+        N's heavy neighbours are CA and the preceding C, neither a sidechain
+        atom.
+        """
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        cmd.fragment('pro', 'm')
+        # Fragments arrive with representations already on, which would make the
+        # assertions below pass without show_all_sidechains doing anything.
+        cmd.hide('everything', 'm')
+
+        rd.show_all_sidechains('m', True)
+
+        shown = set()
+        cmd.iterate('m and rep sticks', 'shown.add(name)', space={'shown': shown})
+        # All five ring atoms, so all five ring bonds have both endpoints drawn.
+        for atom in ('N', 'CA', 'CB', 'CG', 'CD'):
+            self.assertIn(atom, shown,
+                          "PRO ring atom %s missing from sidechain sticks: "
+                          "the ring renders open (#405)" % atom)
+
+        # ...and hiding takes the N back off, or it is orphaned on the backbone.
+        rd.show_all_sidechains('m', False)
+        self.assertEqual(cmd.count_atoms('m and name N and rep sticks'), 0,
+                         "PRO backbone N left behind as a stick after hide")
+
+    def testSidechainSticksAddNoBackboneNOutsideProline(self):
+        """The proline fix must not drag backbone N into other residues (#405)."""
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        for frag in ('arg', 'gly', 'ala', 'trp'):
+            cmd.delete('m')
+            cmd.fragment(frag, 'm')
+            cmd.hide('everything', 'm')
+            rd.show_all_sidechains('m', True)
+            self.assertEqual(
+                cmd.count_atoms('m and name N and rep sticks'), 0,
+                "%s: backbone N should not be in sidechain sticks" % frag.upper())
+
+    def testSidechainSticksSkipHydrogenatedNTerminus(self):
+        """Only PRO's N joins the sticks, even with hydrogens present (#405).
+
+        `h_add` puts an extra amide H on the N-terminal nitrogen, and PyMOL
+        classifies that H as *sidechain*. A neighbour test that does not exclude
+        hydrogens therefore pulls residue 1's backbone N into the sticks of
+        every hydrogenated structure.
+        """
+        from pymol import raymol_design as rd
+        cmd.reinitialize()
+        cmd.fab('AGPRA', 'pep')      # N-terminus, plus PRO at residue 3
+        cmd.h_add('pep')
+        cmd.hide('everything', 'pep')
+
+        rd.show_all_sidechains('pep', True)
+
+        got = set()
+        cmd.iterate('pep and name N and rep sticks', 'got.add(resi)',
+                    space={'got': got})
+        self.assertEqual(got, {'3'},
+                         "backbone N drawn outside PRO 3 (got residues %s): the "
+                         "neighbour test is matching an amide hydrogen" % sorted(got))

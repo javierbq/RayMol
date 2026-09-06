@@ -37,6 +37,29 @@ private let kGutterW: CGFloat = 26
 private let kIndentW: CGFloat = 13
 private let kMaxIndentDepth: Int = 3
 
+/// Atom predicate behind the S ▸ / H ▸ "side chains" menu items.
+///
+/// PyMOL's `sidechain` selection drops two backbone atoms the sticks need:
+///
+/// - **CA**, always — without it the CA–CB bond is missing and every side chain
+///   floats detached from the backbone.
+/// - **N**, in proline — PRO's ring closes CD back onto the backbone N, so
+///   without N the ring renders as an open, dangling zig-zag (#405). The
+///   `neighbor` clause restores it there and nowhere else: in every other
+///   residue N's heavy neighbours are CA and the preceding C, neither of which
+///   is a sidechain atom. Written as a bond query rather than `resn PRO` so HYP
+///   and other N-alkylated residues are covered too.
+///
+/// `and not hydro` inside the neighbour test is load-bearing: on a hydrogenated
+/// N-terminus `h_add` produces an extra amide H that PyMOL classifies as
+/// *sidechain*, so a bare `neighbor sidechain` would drag residue 1's backbone N
+/// into every hydrogenated structure.
+///
+/// Keep in sync with `raymol_design.SIDECHAIN_STICKS_PRED`. Show and hide must
+/// use the identical predicate, or hiding leaves proline's N stick behind.
+private let kSidechainPred =
+    "(sidechain or name CA or (name N and neighbor (sidechain and not hydro)))"
+
 // MARK: - Representation inspector: polled state models
 // (Inlined here rather than a separate file so they're in both app targets
 // without editing the Xcode project's explicit file references.)
@@ -2009,15 +2032,13 @@ private struct ShowButton: View {
             // with the cartoon side-chain helper so it composes cleanly with a
             // cartoon. A common daily-use shortcut absent from the plain rep list.
             Menu("side chains") {
-                // Include `name CA` so the CA–CB bond is drawn (PyMOL's `sidechain`
-                // selection excludes the alpha-carbon, leaving sidechains floating
-                // off the backbone); cartoon_side_chain_helper yields the CA from
-                // the cartoon so the stick connects cleanly. Hydrogens excluded.
+                // cartoon_side_chain_helper yields the CA from the cartoon so the
+                // stick connects cleanly. Hydrogens excluded.
                 Button("as sticks") {
-                    engine.runCommand("show sticks, (\(name)) and (sidechain or name CA) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
+                    engine.runCommand("show sticks, (\(name)) and \(kSidechainPred) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
                 }
                 Button("as lines") {
-                    engine.runCommand("show lines, (\(name)) and (sidechain or name CA) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
+                    engine.runCommand("show lines, (\(name)) and \(kSidechainPred) and not hydro; set cartoon_side_chain_helper, 1, \(name)")
                 }
                 Button("as spheres") {
                     engine.runCommand("show spheres, (\(name)) and sidechain")
@@ -2061,7 +2082,9 @@ private struct HideButton: View {
     var body: some View {
         Menu {
             Button("side chains") {
-                engine.runCommand("hide sticks, (\(name)) and (sidechain or name CA); hide lines, (\(name)) and (sidechain or name CA)")
+                // Same predicate as S ▸ side chains, so hiding takes back exactly
+                // what showing put up — including proline's N (#405).
+                engine.runCommand("hide sticks, (\(name)) and \(kSidechainPred); hide lines, (\(name)) and \(kSidechainPred)")
             }
             // Hydrogens are a selection, not a rep, so they sit beside "side
             // chains" rather than in the shared rep list (#353). Mirrors

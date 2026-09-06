@@ -58,9 +58,11 @@ def style():
     already reflect the live edit. Re-run on every theme edit while open."""
     try:
         from pymol import raymol_theme as _rt
+        from pymol import raymol_design as _rd
         cmd.hide("everything", OBJ)
         cmd.show("cartoon", OBJ)
-        cmd.show("sticks", "(%s and (sidechain or name CA) and not hydro)" % OBJ)
+        cmd.show("sticks", "(%s and %s and not hydro)"
+                 % (OBJ, _rd.SIDECHAIN_STICKS_PRED))
         # CA shared cleanly between cartoon trace and sidechain stick.
         cmd.set("cartoon_side_chain_helper", 1, OBJ)
         cmd.set("cartoon_flat_sheets", 1 if _rt._flat_sheets else 0, OBJ)
