@@ -19,6 +19,7 @@ The modelview is MV = T(pos) * R * T(-origin), i.e. eye = R*(model-origin) + pos
 """
 import collections
 import math
+import os
 
 # Screen pick radius (squared, in NDC). Clicks farther than this from any
 # atom's projection are treated as empty space (which clears 'sele').
@@ -321,6 +322,233 @@ def _is_identity(m, eps=1e-6):
     return all(abs(m[i] - ident[i]) < eps for i in range(16))
 
 
+# --- the pick --------------------------------------------------------------
+#
+# Hover preview and hover readout both ride on this, throttled to ~22 picks/s
+# while the pointer moves, so it runs on the main thread between frames. The
+# per-atom work therefore lives in C++ (_cmd.metal_pick, layer3/MetalPick.cpp):
+# rebuilding a chempy model of every drawn atom per pick cost ~1.5 us/atom, so
+# ~75 ms/pick at 50k drawn atoms, more than saturating the main thread (#394).
+# _python_pick is the same math in Python, kept as the reference the native
+# path is tested against, for the PYMOL_PICKDEBUG harness (which reports
+# projection diagnostics the C++ path doesn't collect), and for cores built
+# without the metal_pick entry point.
+
+# Reps drawn AT THE ATOM's own position, as a visRep bitmask for the native
+# pick -- the same filter _DRAWN_REPS spells out as a selection (still used by
+# _python_pick and box_select). The two must name the same reps;
+# testing/tests/raymol/metal_pick.py asserts they agree atom for atom.
+_DRAWN_REP_NAMES = ('spheres', 'sticks', 'lines', 'nb_spheres', 'nonbonded',
+                    'surface', 'dots', 'mesh', 'ellipsoids')
+_GUIDE_REP_NAMES = ('cartoon', 'ribbon')
+
+# State sentinel for _cmd.metal_pick: each object's OWN current state, which is
+# the state the renderer draws it at (pymol::CObject::getObjectState). An object
+# with fewer states than the current frame draws nothing, and correspondingly
+# picks nothing.
+_CURRENT_STATE = -2
+
+_rep_masks_cache = None
+_native_pick_cache = None
+
+
+def _rep_masks():
+    """(drawn_mask, guide_only_mask) for _cmd.metal_pick. Resolved on first use
+    so importing this module still costs nothing without a live core."""
+    global _rep_masks_cache
+    if _rep_masks_cache is None:
+        from pymol.constants import repmasks
+        drawn = guide = 0
+        for rep in _DRAWN_REP_NAMES:
+            drawn |= repmasks[rep]
+        for rep in _GUIDE_REP_NAMES:
+            guide |= repmasks[rep]
+        _rep_masks_cache = (drawn, guide)
+    return _rep_masks_cache
+
+
+def _have_native_pick():
+    """Whether this core carries the C++ pick. Cached — it cannot change within
+    a session, and this sits on the hover path."""
+    global _native_pick_cache
+    if _native_pick_cache is None:
+        try:
+            from pymol.cmd import _cmd
+            _native_pick_cache = hasattr(_cmd, 'metal_pick')
+        except Exception:
+            _native_pick_cache = False
+    return _native_pick_cache
+
+
+def _native_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh):
+    """_pick_atom's hit tuple, computed in C++ (see layer3/MetalPick.cpp)."""
+    from pymol import cmd
+    from pymol.cmd import _cmd
+    drawn_mask, guide_mask = _rep_masks()
+    # A None clip layout means the view didn't carry usable planes; a degenerate
+    # slab is how the C++ side spells "don't cull on depth".
+    front = 0.0 if cam.clip_front is None else float(cam.clip_front)
+    back = 0.0 if cam.clip_back is None else float(cam.clip_back)
+    # Both sequences must be lists — that is what PConvFromPyObject accepts.
+    cam_v = list(cam.rot) + list(cam.pos) + list(cam.origin) + \
+        [cam.tan_half, aspect, front, back]
+    with cmd.lockcm:
+        best = _cmd.metal_pick(cmd._COb, list(pick_objs), cam_v, _CURRENT_STATE,
+                               ndc_x, ndc_y, thresh, _CLUSTER_NDC2,
+                               drawn_mask, guide_mask)
+    if best is None:
+        return None
+    d2, obj, chain, resi, resn, segi, name, sx, sy = best
+    # segi falls back to chain, matching the chempy model _python_pick reads.
+    return (d2, obj, chain, resi, resn, segi or chain, name, sx, sy)
+
+
+def _python_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh):
+    """Reference implementation of _native_pick: project every drawn atom in
+    pure Python. Same result, ~1.5 us per drawn atom."""
+    from pymol import cmd
+    v = cam.view
+    r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
+    tx, ty, tz = cam.pos
+    ox, oy, oz = cam.origin
+    fov_deg, tan_half = cam.fov, cam.tan_half
+    clip_front, clip_back = cam.clip_front, cam.clip_back
+
+    best = None  # (screen_d2, obj, chain, resi, resn, segi, name, sx, sy)
+    cands = []   # (d2, depth, obj, chain, resi, resn, segi, name, sx, sy)
+    ncand = 0    # atoms whose projection fell within the pick radius
+    _ext = [1e9, -1e9, 1e9, -1e9]  # projected-NDC extent: sx_min,sx_max,sy_min,sy_max
+
+    # Displayed movie/model state: pick against the coordinates actually
+    # RENDERED. get_model defaults to state 1, so a multi-state (NMR /
+    # trajectory) object shown at a later state would otherwise be picked at
+    # its state-1 positions — residues can be 20+ A (≈0.4 NDC) off, so a click
+    # or hover lands on the wrong residue.
+    try:
+        cur_state = int(cmd.get_state())
+    except Exception:
+        cur_state = 1
+    for obj in pick_objs:
+        # Skip non-molecule objects (distance/angle measurements, maps, CGOs,
+        # groups). Passing their name to the atom-selection parser (below)
+        # raises a C++ "Invalid selection name" Selector-Error that prints to
+        # the feedback log on every click even though Python catches it.
+        try:
+            if cmd.get_type(obj) != 'object:molecule':
+                continue
+        except Exception:
+            continue
+        try:
+            # Only consider atoms that are actually DRAWN, so a click can't
+            # select an invisible atom (e.g. a hidden water under a cartoon).
+            # get_model(obj) alone returns EVERY atom; the `visible` selector
+            # over-reports because cartoon/ribbon set their visRep bit on all
+            # atoms (incl. solvent) though only guide atoms draw — hence the
+            # per-rep _DRAWN_REPS filter (see its definition).
+            sel = '(%s) and (%s)' % (obj, _DRAWN_REPS)
+            model = None
+            # Prefer the displayed state so the pick matches the render.
+            # Only when it isn't state 1 (get_model already defaults to 1),
+            # and fall back to the default if an explicit-state query returns
+            # no atoms — some embedded cores return empty for
+            # get_model(state=N); we must never regress those to a dead pick.
+            if cur_state > 1:
+                try:
+                    m = cmd.get_model(sel, state=cur_state)
+                    if m and m.atom:
+                        model = m
+                except Exception:
+                    model = None
+            if model is None:
+                model = cmd.get_model(sel)
+        except Exception:
+            continue
+        if not model or not model.atom:
+            continue
+        # get_model() already returns coordinates with the object's display
+        # transform (TTT) BAKED IN — verified: get_model() == TTT x raw_coords
+        # for a moved object. So we must NOT re-apply the object matrix here:
+        # doing so DOUBLE-transforms a MOVED object (non-identity TTT) and the
+        # pick lands far from where the atom renders. Non-moved objects only
+        # appeared correct because their TTT is identity (the re-apply was a
+        # no-op) — which is why picking broke only after moving an object.
+        for at in model.atom:
+            cx, cy, cz = at.coord[0], at.coord[1], at.coord[2]
+            dx = cx - ox
+            dy = cy - oy
+            dz = cz - oz
+            # eye = R*(model-origin) + pos
+            ex = r00 * dx + r01 * dy + r02 * dz + tx
+            ey = r10 * dx + r11 * dy + r12 * dz + ty
+            ez = r20 * dx + r21 * dy + r22 * dz + tz
+            depth = -ez                     # camera looks down -Z
+            if depth <= 0.01:
+                continue
+            # Pickability respects the clip slab: an atom clipped away (outside
+            # [front,back]) isn't visible, so it must not be selectable. Guarded
+            # to a sane slab so a bad view layout can never disable picking. (What
+            # IS selected is drawn clip-invariant separately in the renderer.)
+            if clip_front is not None and clip_back > clip_front \
+                    and (depth < clip_front or depth > clip_back):
+                continue
+            half_h = depth * tan_half
+            half_w = half_h * aspect
+            sx = ex / half_w                # NDC x, +1 = right
+            sy = ey / half_h                # NDC y, +1 = up (bottom-left)
+            if sx < _ext[0]: _ext[0] = sx
+            if sx > _ext[1]: _ext[1] = sx
+            if sy < _ext[2]: _ext[2] = sy
+            if sy > _ext[3]: _ext[3] = sy
+            d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
+            if d2 > thresh:
+                continue
+            ncand += 1
+            cands.append((d2, depth, obj, at.chain or '', at.resi,
+                          at.resn, at.segi or (at.chain or ''), at.name, sx, sy))
+
+    # Choose the FRONT-MOST atom among those clustered nearest the click, so
+    # that where atoms overlap on screen we select the one actually visible
+    # (closest to the camera), not whichever projects marginally nearer the
+    # cursor. Atoms within _CLUSTER_NDC2 of the closest are treated as
+    # overlapping; the smallest depth (front-most) wins.
+    if cands:
+        cands.sort(key=lambda c: c[0])           # by screen distance²
+        d2min = cands[0][0]
+        cluster = [c for c in cands if c[0] <= d2min + _CLUSTER_NDC2]
+        c = min(cluster, key=lambda c: c[1])     # front-most (min depth)
+        best = (c[0], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9])
+
+    _pickdbg(ndc_x, ndc_y, aspect, best, ncand)
+    import os as _os
+    if _os.environ.get('PYMOL_PICKDEBUG'):
+        try:
+            _nv = cmd.count_atoms('visible')
+            _nt = cmd.count_atoms('all')
+            _nhv = cmd.count_atoms('resn HOH and visible')
+            with open(_os.environ['PYMOL_PICKDEBUG'], 'a') as _f:
+                _f.write('  VIS total=%d visible=%d hoh_visible=%d\n' % (_nt, _nv, _nhv))
+                _f.write('  params len(v)=%d fov=%.2f tan_half=%.4f aspect=%.4f '
+                         'pos=(%.2f,%.2f,%.2f) origin=(%.2f,%.2f,%.2f) '
+                         'projext sx=[%.3f,%.3f] sy=[%.3f,%.3f]\n' % (
+                             len(v), fov_deg, tan_half, aspect,
+                             tx, ty, tz, ox, oy, oz,
+                             _ext[0], _ext[1], _ext[2], _ext[3]))
+                _f.write('  rawview=%s\n' % ','.join('%.5f' % x for x in v))
+                if best is not None:
+                    _be = best[1]; _bc = best[2]; _br = best[3]; _bn = best[6]
+                    _xyz = []
+                    cmd.iterate_state(1, '%s and resi %s and name %s%s' % (
+                        _be, _br, _bn,
+                        (' and chain %s' % _bc) if _bc else ''),
+                        '_xyz.extend([x,y,z])', space={'_xyz': _xyz})
+                    if len(_xyz) >= 3:
+                        _f.write('  pickedxyz=(%.3f,%.3f,%.3f)\n' % (_xyz[0], _xyz[1], _xyz[2]))
+        except Exception:
+            pass
+
+    return best
+
+
 def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
     """Project all DRAWN atoms and return the front-most atom under the click as
     (screen_d2, obj, chain, resi, resn, segi, name, sx, sy), or None for empty
@@ -336,12 +564,6 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
         cam = camera()
         if cam is None or aspect <= 0.0:
             return None
-        v = cam.view
-        r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
-        tx, ty, tz = cam.pos
-        ox, oy, oz = cam.origin
-        fov_deg, tan_half = cam.fov, cam.tan_half
-        clip_front, clip_back = cam.clip_front, cam.clip_back
 
         # Grid mode (by-object): the renderer draws each object in its own
         # viewport cell, so a full-window projection wouldn't line up with what
@@ -356,143 +578,16 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
                 return None  # empty cell → treat as empty-space click
             pick_objs = [target_obj]
 
-        best = None  # (screen_d2, obj, chain, resi, resn, segi, name, sx, sy)
-        cands = []   # (d2, depth, obj, chain, resi, resn, segi, name, sx, sy)
-        ncand = 0    # atoms whose projection fell within the pick radius
-        _ext = [1e9, -1e9, 1e9, -1e9]  # projected-NDC extent: sx_min,sx_max,sy_min,sy_max
-
         if pick_objs is None:
-            pick_objs = (cmd.get_names('objects', enabled_only=1) or [])
-        # Displayed movie/model state: pick against the coordinates actually
-        # RENDERED. get_model defaults to state 1, so a multi-state (NMR /
-        # trajectory) object shown at a later state would otherwise be picked at
-        # its state-1 positions — residues can be 20+ A (≈0.4 NDC) off, so a click
-        # or hover lands on the wrong residue.
-        try:
-            cur_state = int(cmd.get_state())
-        except Exception:
-            cur_state = 1
-        for obj in pick_objs:
-            if obj.startswith('_'):
-                continue
-            # Skip non-molecule objects (distance/angle measurements, maps, CGOs,
-            # groups). Passing their name to the atom-selection parser (below)
-            # raises a C++ "Invalid selection name" Selector-Error that prints to
-            # the feedback log on every click even though Python catches it.
-            try:
-                if cmd.get_type(obj) != 'object:molecule':
-                    continue
-            except Exception:
-                continue
-            try:
-                # Only consider atoms that are actually DRAWN, so a click can't
-                # select an invisible atom (e.g. a hidden water under a cartoon).
-                # get_model(obj) alone returns EVERY atom; the `visible` selector
-                # over-reports because cartoon/ribbon set their visRep bit on all
-                # atoms (incl. solvent) though only guide atoms draw — hence the
-                # per-rep _DRAWN_REPS filter (see its definition).
-                sel = '(%s) and (%s)' % (obj, _DRAWN_REPS)
-                model = None
-                # Prefer the displayed state so the pick matches the render.
-                # Only when it isn't state 1 (get_model already defaults to 1),
-                # and fall back to the default if an explicit-state query returns
-                # no atoms — some embedded cores return empty for
-                # get_model(state=N); we must never regress those to a dead pick.
-                if cur_state > 1:
-                    try:
-                        m = cmd.get_model(sel, state=cur_state)
-                        if m and m.atom:
-                            model = m
-                    except Exception:
-                        model = None
-                if model is None:
-                    model = cmd.get_model(sel)
-            except Exception:
-                continue
-            if not model or not model.atom:
-                continue
-            # get_model() already returns coordinates with the object's display
-            # transform (TTT) BAKED IN — verified: get_model() == TTT x raw_coords
-            # for a moved object. So we must NOT re-apply the object matrix here:
-            # doing so DOUBLE-transforms a MOVED object (non-identity TTT) and the
-            # pick lands far from where the atom renders. Non-moved objects only
-            # appeared correct because their TTT is identity (the re-apply was a
-            # no-op) — which is why picking broke only after moving an object.
-            for at in model.atom:
-                cx, cy, cz = at.coord[0], at.coord[1], at.coord[2]
-                dx = cx - ox
-                dy = cy - oy
-                dz = cz - oz
-                # eye = R*(model-origin) + pos
-                ex = r00 * dx + r01 * dy + r02 * dz + tx
-                ey = r10 * dx + r11 * dy + r12 * dz + ty
-                ez = r20 * dx + r21 * dy + r22 * dz + tz
-                depth = -ez                     # camera looks down -Z
-                if depth <= 0.01:
-                    continue
-                # Pickability respects the clip slab: an atom clipped away (outside
-                # [front,back]) isn't visible, so it must not be selectable. Guarded
-                # to a sane slab so a bad view layout can never disable picking. (What
-                # IS selected is drawn clip-invariant separately in the renderer.)
-                if clip_front is not None and clip_back > clip_front \
-                        and (depth < clip_front or depth > clip_back):
-                    continue
-                half_h = depth * tan_half
-                half_w = half_h * aspect
-                sx = ex / half_w                # NDC x, +1 = right
-                sy = ey / half_h                # NDC y, +1 = up (bottom-left)
-                if sx < _ext[0]: _ext[0] = sx
-                if sx > _ext[1]: _ext[1] = sx
-                if sy < _ext[2]: _ext[2] = sy
-                if sy > _ext[3]: _ext[3] = sy
-                d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
-                if d2 > thresh:
-                    continue
-                ncand += 1
-                cands.append((d2, depth, obj, at.chain or '', at.resi,
-                              at.resn, at.segi or (at.chain or ''), at.name, sx, sy))
+            pick_objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+                         if not o.startswith('_')]
 
-        # Choose the FRONT-MOST atom among those clustered nearest the click, so
-        # that where atoms overlap on screen we select the one actually visible
-        # (closest to the camera), not whichever projects marginally nearer the
-        # cursor. Atoms within _CLUSTER_NDC2 of the closest are treated as
-        # overlapping; the smallest depth (front-most) wins.
-        if cands:
-            cands.sort(key=lambda c: c[0])           # by screen distance²
-            d2min = cands[0][0]
-            cluster = [c for c in cands if c[0] <= d2min + _CLUSTER_NDC2]
-            c = min(cluster, key=lambda c: c[1])     # front-most (min depth)
-            best = (c[0], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9])
-
-        _pickdbg(ndc_x, ndc_y, aspect, best, ncand)
-        import os as _os
-        if _os.environ.get('PYMOL_PICKDEBUG'):
-            try:
-                _nv = cmd.count_atoms('visible')
-                _nt = cmd.count_atoms('all')
-                _nhv = cmd.count_atoms('resn HOH and visible')
-                with open(_os.environ['PYMOL_PICKDEBUG'], 'a') as _f:
-                    _f.write('  VIS total=%d visible=%d hoh_visible=%d\n' % (_nt, _nv, _nhv))
-                    _f.write('  params len(v)=%d fov=%.2f tan_half=%.4f aspect=%.4f '
-                             'pos=(%.2f,%.2f,%.2f) origin=(%.2f,%.2f,%.2f) '
-                             'projext sx=[%.3f,%.3f] sy=[%.3f,%.3f]\n' % (
-                                 len(v), fov_deg, tan_half, aspect,
-                                 tx, ty, tz, ox, oy, oz,
-                                 _ext[0], _ext[1], _ext[2], _ext[3]))
-                    _f.write('  rawview=%s\n' % ','.join('%.5f' % x for x in v))
-                    if best is not None:
-                        _be = best[1]; _bc = best[2]; _br = best[3]; _bn = best[6]
-                        _xyz = []
-                        cmd.iterate_state(1, '%s and resi %s and name %s%s' % (
-                            _be, _br, _bn,
-                            (' and chain %s' % _bc) if _bc else ''),
-                            '_xyz.extend([x,y,z])', space={'_xyz': _xyz})
-                        if len(_xyz) >= 3:
-                            _f.write('  pickedxyz=(%.3f,%.3f,%.3f)\n' % (_xyz[0], _xyz[1], _xyz[2]))
-            except Exception:
-                pass
-
-        return best
+        # The debug harness wants the projection diagnostics only the Python
+        # path collects (candidate count, projected extent), and has no use for
+        # the native path's speed.
+        if _have_native_pick() and not os.environ.get('PYMOL_PICKDEBUG'):
+            return _native_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh)
+        return _python_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh)
 
     except Exception as e:
         print('metal_pick error: %s' % e)

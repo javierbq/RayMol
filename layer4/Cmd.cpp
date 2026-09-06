@@ -79,6 +79,7 @@ Z* -------------------------------------------------------------------
 #include "CifFile.h"
 
 #include "MoleculeExporter.h"
+#include "MetalPick.h"
 
 #define tmpSele "_tmp"
 #define tmpSele1 "_tmp1"
@@ -2269,6 +2270,68 @@ static PyObject *CmdPushUndo(PyObject * self, PyObject * args)
     APIExit(G);
   }
   return APIResultOk(ok);
+}
+
+/**
+ * Screen-space atom pick for the Metal backend (see layer3/MetalPick.h).
+ *
+ * `cam` is a 19-float list: 3x3 row-major rotation, camera position, rotation
+ * origin, tan_half, aspect, clip_front, clip_back. `objects` is a list naming
+ * the objects to search, in tie-break order; names that aren't molecular
+ * objects are skipped. Returns None for empty space, else the tuple
+ * (d2, object, chain, resi, resn, segi, name, ndc_x, ndc_y).
+ */
+static PyObject *CmdMetalPick(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  PyObject *objects_py, *cam_py;
+  int state, rep_mask, guide_rep_mask;
+  float ndc_x, ndc_y, max_ndc2, cluster_ndc2;
+  API_SETUP_ARGS(G, self, args, "OOOiffffii", &self, &objects_py, &cam_py,
+      &state, &ndc_x, &ndc_y, &max_ndc2, &cluster_ndc2, &rep_mask,
+      &guide_rep_mask);
+
+  std::vector<std::string> names;
+  std::vector<float> cam_v;
+  API_ASSERT(PConvFromPyObject(G, objects_py, names));
+  API_ASSERT(PConvFromPyObject(G, cam_py, cam_v));
+  API_ASSERT(cam_v.size() == 19);
+
+  MetalPickCamera cam;
+  std::copy_n(cam_v.begin(), 9, cam.rot);
+  std::copy_n(cam_v.begin() + 9, 3, cam.pos);
+  std::copy_n(cam_v.begin() + 12, 3, cam.origin);
+  cam.tan_half = cam_v[15];
+  cam.aspect = cam_v[16];
+  cam.clip_front = cam_v[17];
+  cam.clip_back = cam_v[18];
+
+  API_ASSERT(APIEnterBlockedNotModal(G));
+
+  std::vector<ObjectMolecule*> objects;
+  objects.reserve(names.size());
+  for (const auto& name : names) {
+    if (auto* obj = ExecutiveFindObjectMoleculeByName(G, name.c_str()))
+      objects.push_back(obj);
+  }
+
+  auto hit = MetalPickAtom(G, objects, state, cam, ndc_x, ndc_y, max_ndc2,
+      cluster_ndc2, rep_mask, guide_rep_mask);
+
+  PyObject *result = nullptr;
+  if (!hit.obj) {
+    result = PConvAutoNone(nullptr);
+  } else {
+    const AtomInfoType* ai = hit.obj->AtomInfo + hit.atm;
+    char resi[8];
+    AtomResiFromResv(resi, sizeof(resi), ai);
+    result = Py_BuildValue("(fssssssff)", hit.d2, hit.obj->Name,
+        LexStr(G, ai->chain), resi, LexStr(G, ai->resn), LexStr(G, ai->segi),
+        LexStr(G, ai->name), hit.sx, hit.sy);
+  }
+
+  APIExitBlocked(G);
+  return result;
 }
 
 static PyObject *CmdGetType(PyObject * self, PyObject * args)
@@ -6588,6 +6651,7 @@ static PyMethodDef Cmd_methods[] = {
   {"mem", CmdMem, METH_VARARGS},
   {"memory_available", CmdMemoryAvailable, METH_VARARGS},
   {"memory_usage", CmdMemoryUsage, METH_VARARGS},
+  {"metal_pick", CmdMetalPick, METH_VARARGS},
   {"mmodify", CmdMModify, METH_VARARGS},
   {"move", CmdMove, METH_VARARGS},
   {"mset", CmdMSet, METH_VARARGS},
