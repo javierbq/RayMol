@@ -8,6 +8,9 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <initializer_list>
+#include <iterator>
 #include "MyPNG.h"
 #include "Image.h"
 
@@ -748,8 +751,11 @@ void RendererMetal::beginFrame()
   // render command buffer is in flight (that stalls/blackouts the frame).
   // Model-space geometry is stable, so one-frame latency is invisible.
   if (_rtEnabled) ensureRayTracingAS();
-  _rtSpheres.clear();  // re-accumulated during this frame's opaque pass
-  _rtTris.clear();
+  // Start this frame's geometry record. Only the LIST of contributing cache
+  // entries is re-accumulated during the opaque pass; the geometry itself stays
+  // in _rtGeomCache and is touched again only when that list changes.
+  _rtFrameKeys.clear();
+  _rtFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
   _encoder = nil;
@@ -2260,6 +2266,24 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
 )";
 
 
+// FNV-1a over the draw-call scalars an extraction depends on. The RT geometry
+// derived from a CPU buffer is a function of its contents AND of these, so a
+// change must re-extract even though the buffer pointer is unchanged.
+static inline uint64_t rtMixParams(std::initializer_list<uint64_t> vals)
+{
+  uint64_t h = 1469598103934665603ULL;
+  for (uint64_t v : vals) { h ^= v; h *= 1099511628211ULL; }
+  return h;
+}
+
+// Reinterpret a float as its bit pattern, so it can be folded into rtMixParams.
+static inline uint64_t rtFloatBits(float f)
+{
+  uint32_t b;
+  std::memcpy(&b, &f, 4);
+  return b;
+}
+
 // Tessellate a cylinder (a→b, radius r) into a K-sided tube (no caps — bonded
 // atoms cover the ends) and append the triangles (x,y,z per vertex) to `out`.
 static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3 b, float r)
@@ -2430,34 +2454,50 @@ void RendererMetal::buildSphereProtoAS()
 void RendererMetal::ensureRayTracingAS()
 {
   if (!_rtEnabled || !_rtSupported) { _rtReady = false; return; }
-  size_t nSph = _rtSpheres.size() / 4;
-  size_t nTris = (_rtTris.size() / 3) / 3;   // verts→triangles
-  if (nSph == 0 && nTris == 0) { _rtReady = false; return; }
 
-  if (nSph > 0) buildSphereProtoAS();
+  // Change signature: the identity + generation of every cache entry the frame
+  // drew, folded in draw order as the frame accumulated it. It is exact (not a
+  // sampled hash of the coordinates) and costs nothing here, because the
+  // geometry itself was never gathered — a pure camera move re-draws the same
+  // entries at the same generations and lands on the same signature.
+  uint64_t h = _rtFrameSig;
+  if (_rtReady && _rtInstanceAS && !_rtGeomDirty && h == _rtSphereHash) {
+    /* unchanged */
+  } else {
+    // Concatenate the frame's cached geometry. Entries can have been erased
+    // since (invalidateVBOCacheEntry runs between draws), so tolerate misses:
+    // the redraw next frame yields a new signature and rebuilds again.
+    size_t nSph = 0, nTriFloats = 0;
+    for (const void* k : _rtFrameKeys) {
+      auto it = _rtGeomCache.find(k);
+      if (it == _rtGeomCache.end()) continue;
+      nSph += it->second.spheres.size() / 4;
+      nTriFloats += it->second.tris.size();
+    }
+    size_t nTris = nTriFloats / 9;   // floats→triangles
+    _rtGeomDirty = false;
+    if (nSph == 0 && nTris == 0) { _rtTriCount = 0; _rtReady = false; return; }
 
-  // Cheap change signature (counts + sampled coords) — rebuild only when the
-  // geometry actually changes (stable across camera rotation, so no rebuild
-  // while orbiting). Full FNV over big surface meshes every frame is wasteful.
-  uint64_t h = 1469598103934665603ULL;
-  auto mix = [&](uint64_t x) { h ^= x; h *= 1099511628211ULL; };
-  mix(nSph); mix(nTris);
-  auto sampleHash = [&](const std::vector<float>& vv) {
-    size_t m = vv.size();
-    if (!m) return;
-    size_t step = m > 1024 ? m / 1024 : 1;
-    for (size_t i = 0; i < m; i += step) { uint32_t b; std::memcpy(&b, &vv[i], 4); mix(b); }
-  };
-  sampleHash(_rtSpheres); sampleHash(_rtTris);
-  if (_rtReady && _rtInstanceAS && h == _rtSphereHash) { /* unchanged */ }
-  else {
+    if (nSph > 0) buildSphereProtoAS();
     // (Re)build the world-triangle primitive AS (sticks + cartoon/surface).
     [_rtTriProtoAS release];  // MRC: release the previous rebuild's proto AS (+1)
     _rtTriProtoAS = nil;
+    // Written entry by entry straight into the shared buffer: the old per-frame
+    // std::vector<float> _rtTris only ever existed as an intermediate copy.
+    id<MTLBuffer> tb = nTris > 0
+        ? [_device newBufferWithLength:nTriFloats * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    if (!tb) nTris = 0;
     if (nTris > 0) {
-      id<MTLBuffer> tb = [_device newBufferWithBytes:_rtTris.data()
-                                              length:_rtTris.size() * sizeof(float)
-                                             options:MTLResourceStorageModeShared];
+      float* dst = static_cast<float*>(tb.contents);
+      for (const void* k : _rtFrameKeys) {
+        auto it = _rtGeomCache.find(k);
+        if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
+        std::memcpy(dst, it->second.tris.data(),
+                    it->second.tris.size() * sizeof(float));
+        dst += it->second.tris.size();
+      }
       MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
           [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
       tgeo.vertexBuffer = tb;
@@ -2487,7 +2527,7 @@ void RendererMetal::ensureRayTracingAS()
     if (nSph > 0 && _rtSphereProtoAS) { sphereIdx = (int)protos.count; [protos addObject:_rtSphereProtoAS]; }
     if (_rtTriProtoAS) { triIdx = (int)protos.count; [protos addObject:_rtTriProtoAS]; }
     size_t nInst = (sphereIdx >= 0 ? nSph : 0) + (triIdx >= 0 ? 1 : 0);
-    if (nInst == 0 || protos.count == 0) { _rtReady = false; return; }
+    if (nInst == 0 || protos.count == 0) { _rtTriCount = 0; _rtReady = false; return; }
 
     id<MTLBuffer> instBuf =
         [_device newBufferWithLength:nInst * sizeof(MTLAccelerationStructureInstanceDescriptor)
@@ -2495,20 +2535,25 @@ void RendererMetal::ensureRayTracingAS()
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
     size_t ii = 0;
     if (sphereIdx >= 0) {
-      for (size_t i = 0; i < nSph; ++i, ++ii) {
-        float x = _rtSpheres[i * 4], y = _rtSpheres[i * 4 + 1],
-              z = _rtSpheres[i * 4 + 2], r = _rtSpheres[i * 4 + 3];
-        if (r <= 0.0f) r = 0.001f;
-        MTLPackedFloat4x3 m;
-        m.columns[0].x = r; m.columns[0].y = 0; m.columns[0].z = 0;
-        m.columns[1].x = 0; m.columns[1].y = r; m.columns[1].z = 0;
-        m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = r;
-        m.columns[3].x = x; m.columns[3].y = y; m.columns[3].z = z;
-        inst[ii].transformationMatrix = m;
-        inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
-        inst[ii].mask = 0xFF;
-        inst[ii].intersectionFunctionTableOffset = 0;
-        inst[ii].accelerationStructureIndex = sphereIdx;
+      for (const void* k : _rtFrameKeys) {
+        auto git = _rtGeomCache.find(k);
+        if (git == _rtGeomCache.end()) continue;
+        const std::vector<float>& sp = git->second.spheres;
+        for (size_t i = 0; i * 4 + 3 < sp.size(); ++i, ++ii) {
+          float x = sp[i * 4], y = sp[i * 4 + 1],
+                z = sp[i * 4 + 2], r = sp[i * 4 + 3];
+          if (r <= 0.0f) r = 0.001f;
+          MTLPackedFloat4x3 m;
+          m.columns[0].x = r; m.columns[0].y = 0; m.columns[0].z = 0;
+          m.columns[1].x = 0; m.columns[1].y = r; m.columns[1].z = 0;
+          m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = r;
+          m.columns[3].x = x; m.columns[3].y = y; m.columns[3].z = z;
+          inst[ii].transformationMatrix = m;
+          inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
+          inst[ii].mask = 0xFF;
+          inst[ii].intersectionFunctionTableOffset = 0;
+          inst[ii].accelerationStructureIndex = sphereIdx;
+        }
       }
     }
     if (triIdx >= 0) {
@@ -2536,6 +2581,7 @@ void RendererMetal::ensureRayTracingAS()
     [instBuf release];  // MRC: build committed+waited; instance descriptor buffer (+1) done
     _rtSphereHash = h;
     _rtBuiltCount = nSph;
+    _rtTriCount = nTris;
     _rtReady = (_rtInstanceAS != nil);
 
     static int once = 0;
@@ -2643,7 +2689,7 @@ void RendererMetal::runPostChain()
     u.shadowRadius = _shadowRadius;
     u.shadowBias = _shadowBias;
     u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
-    u.triCount = (float)((_rtTris.size() / 3) / 3);
+    u.triCount = (float)_rtTriCount;
     u.pad0 = u.pad1 = u.pad2 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
@@ -5027,9 +5073,16 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
-  if (_rtEnabled && !_shadowMode && !_oitActive)
-    rtAppendVBOTris(_rtTris, mode, vertexCount, data, stride, posOffset, nullptr);
+  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
+  // buffer — the frame only records that this buffer contributed.
+  if (_rtEnabled && !_shadowMode && !_oitActive) {
+    rtNoteGeometry(data, nullptr,
+        rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
+                     (uint64_t)posOffset}),
+        [&](RTGeom& g) {
+          rtAppendVBOTris(g.tris, mode, vertexCount, data, stride, posOffset, nullptr);
+        });
+  }
 
   // Reuse cached Metal buffer if same data pointer, otherwise create new
   id<MTLBuffer> vbo = nil;
@@ -5308,9 +5361,19 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   ensureEncoder();
   if (!_encoder) return;
 
-  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per frame.
-  if (_rtEnabled && !_shadowMode && !_oitActive)
-    rtAppendVBOTris(_rtTris, mode, indexCount, vertexData, stride, posOffset, indexData);
+  // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
+  // buffer. Keyed on the vertex data, with the index buffer as an alias so
+  // freeing either one drops the cached triangles.
+  if (_rtEnabled && !_shadowMode && !_oitActive) {
+    rtNoteGeometry(vertexData, indexData,
+        rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
+                     (uint64_t)posOffset,
+                     (uint64_t)reinterpret_cast<uintptr_t>(indexData)}),
+        [&](RTGeom& g) {
+          rtAppendVBOTris(g.tris, mode, indexCount, vertexData, stride, posOffset,
+              indexData);
+        });
+  }
 
   // Reuse cached Metal buffers
   id<MTLBuffer> vbo = nil;
@@ -5551,10 +5614,38 @@ void RendererMetal::invalidateVBOCache(uint64_t key)
   // command buffer completes (same reasoning as ensurePostTargets).
   for (auto& kv : _vboCache) [kv.second release];
   _vboCache.clear();
+  _rtGeomCache.clear();
+  _rtGeomAlias.clear();
+  _rtGeomDirty = true;
+}
+
+void RendererMetal::rtDropGeometry(const void* cpuData)
+{
+  // An index buffer is registered as an alias of the vertex buffer its
+  // triangles were extracted with, so resolve it to the primary key first.
+  const void* key = cpuData;
+  auto a = _rtGeomAlias.find(cpuData);
+  if (a != _rtGeomAlias.end()) {
+    key = a->second;
+    _rtGeomAlias.erase(a);
+  }
+  auto g = _rtGeomCache.find(key);
+  if (g == _rtGeomCache.end())
+    return;
+  // Only geometry that made it into the frame record can invalidate the built
+  // acceleration structure (see rtNoteGeometry).
+  if (!g->second.spheres.empty() || !g->second.tris.empty())
+    _rtGeomDirty = true;
+  _rtGeomCache.erase(g);
+  // Drop any remaining aliases of the entry just erased (the alias map has one
+  // entry per indexed VBO, so this scan is cheap and runs only on a rep rebuild).
+  for (auto it = _rtGeomAlias.begin(); it != _rtGeomAlias.end();)
+    it = (it->second == key) ? _rtGeomAlias.erase(it) : std::next(it);
 }
 
 void RendererMetal::invalidateVBOCacheEntry(const void* cpuData)
 {
+  rtDropGeometry(cpuData);
   auto it = _vboCache.find(cpuData);
   if (it == _vboCache.end())
     return;
@@ -5859,20 +5950,29 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   NSUInteger vertexCount = call.stride ? (call.dataSize / call.stride) : 0;
   if (vertexCount < 3) return;
 
-  // Ray tracing: accumulate model-space sphere centers + radii once per frame
+  // Ray tracing: extract model-space sphere centers + radii once per CPU buffer
   // (only the main opaque pass, not the shadow/OIT replays). Each sphere is 6
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
+  // sphereSizeScale is baked into the stored radius, so it is part of the
+  // params signature: changing sphere_scale re-extracts.
   if (_rtEnabled && !_shadowMode && !_oitActive) {
-    const uint8_t* base = static_cast<const uint8_t*>(call.data);
-    NSUInteger nSph = vertexCount / 6;
-    _rtSpheres.reserve(_rtSpheres.size() + nSph * 4);
-    for (NSUInteger k = 0; k < nSph; ++k) {
-      const float* c = reinterpret_cast<const float*>(base + (6 * k) * call.stride + call.posRadiusOff);
-      _rtSpheres.push_back(c[0]);
-      _rtSpheres.push_back(c[1]);
-      _rtSpheres.push_back(c[2]);
-      _rtSpheres.push_back(c[3] * call.sphereSizeScale);
-    }
+    rtNoteGeometry(call.data, nullptr,
+        rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
+                     (uint64_t)call.posRadiusOff,
+                     rtFloatBits(call.sphereSizeScale)}),
+        [&](RTGeom& g) {
+          const uint8_t* base = static_cast<const uint8_t*>(call.data);
+          NSUInteger nSph = vertexCount / 6;
+          g.spheres.reserve(nSph * 4);
+          for (NSUInteger k = 0; k < nSph; ++k) {
+            const float* c = reinterpret_cast<const float*>(
+                base + (6 * k) * call.stride + call.posRadiusOff);
+            g.spheres.push_back(c[0]);
+            g.spheres.push_back(c[1]);
+            g.spheres.push_back(c[2]);
+            g.spheres.push_back(c[3] * call.sphereSizeScale);
+          }
+        });
   }
 
   if (_shadowMode) {
@@ -6317,19 +6417,28 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   if (!vbo || !ibo) return;
 
   // Ray tracing: tessellate cylinders (sticks) into the world-triangle set,
-  // once per frame (opaque pass only). 8 verts/cylinder share v1/v2/radius.
+  // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
+  // stick regenerated on every frame, including pure camera moves. 8
+  // verts/cylinder share v1/v2/radius.
   if (_rtEnabled && !_shadowMode && !_oitActive && call.cylinderCount > 0) {
-    const uint8_t* vb = static_cast<const uint8_t*>(call.vdata);
-    for (int k = 0; k < call.cylinderCount; ++k) {
-      size_t bptr = (size_t)(8 * k) * call.stride;
-      const float* p1 = reinterpret_cast<const float*>(vb + bptr + call.v1Off);
-      const float* p2 = reinterpret_cast<const float*>(vb + bptr + call.v2Off);
-      float r = call.uniRadius > 0.0f
-                    ? call.uniRadius
-                    : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
-      rtAppendCylinder(_rtTris, simd_make_float3(p1[0], p1[1], p1[2]),
-                       simd_make_float3(p2[0], p2[1], p2[2]), r);
-    }
+    rtNoteGeometry(call.vdata, nullptr,
+        rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
+                     (uint64_t)call.v1Off, (uint64_t)call.v2Off,
+                     (uint64_t)call.radiusOff, rtFloatBits(call.uniRadius)}),
+        [&](RTGeom& g) {
+          const uint8_t* vb = static_cast<const uint8_t*>(call.vdata);
+          g.tris.reserve((size_t)call.cylinderCount * 24 * 9);
+          for (int k = 0; k < call.cylinderCount; ++k) {
+            size_t bptr = (size_t)(8 * k) * call.stride;
+            const float* p1 = reinterpret_cast<const float*>(vb + bptr + call.v1Off);
+            const float* p2 = reinterpret_cast<const float*>(vb + bptr + call.v2Off);
+            float r = call.uniRadius > 0.0f
+                          ? call.uniRadius
+                          : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
+            rtAppendCylinder(g.tris, simd_make_float3(p1[0], p1[1], p1[2]),
+                             simd_make_float3(p2[0], p2[1], p2[2]), r);
+          }
+        });
   }
 
   if (_shadowMode) {
