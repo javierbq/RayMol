@@ -5,7 +5,9 @@
 #import <MetalKit/MetalKit.h>
 
 #include <array>
+#include <atomic>
 #include <cstring>
+#include <memory>
 #include <stack>
 #include <string>
 #include <unordered_map>
@@ -18,16 +20,34 @@ public:
   RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue);
   ~RendererMetal() override;
 
-  // Call before each frame to provide the view's drawable and pass descriptor
-  void setDrawable(
+  // Live frame setup, deliberately split in two (#396). Only the FINAL post
+  // pass writes to the drawable, so the drawable is acquired as late as
+  // possible: everything that just needs the target SIZE (MSAA rebuild,
+  // offscreen post targets) happens in beginLiveFrame from the drawable's
+  // dimensions, and setPresentTarget hands over the actual CAMetalDrawable
+  // right before endFrame. Waiting on `currentDrawable` before encoding the
+  // scene blocked the main thread (and therefore input) for roughly half of
+  // every GPU-bound frame.
+  //
+  // beginLiveFrame clears any previous drawable, so a frame whose drawable
+  // never arrives presents nothing rather than re-presenting a stale one.
+  void beginLiveFrame(int drawableW, int drawableH);
+  void setPresentTarget(
       id<CAMetalDrawable> drawable, MTLRenderPassDescriptor* passDesc);
+
+  // Live command buffers that have been committed but whose GPU work has not
+  // completed yet. The render loop uses this to skip a tick instead of piling
+  // frames onto the queue, which is what keeps the (now late) currentDrawable
+  // wait short — see RenderGate in MetalViewport.swift. Offscreen/export
+  // frames block until completion and are never counted.
+  int framesInFlight() const { return _inFlight ? _inFlight->load() : 0; }
 
   // Frame lifecycle
   void beginFrame() override;
   void endFrame() override;
 
   // MSAA: stash the desired sample count (from metal_msaa). Applied at the top
-  // of the next setDrawable, before any encoder is open, so a toggle never
+  // of the next beginLiveFrame, before any encoder is open, so a toggle never
   // mismatches an in-flight encoder. n < 1 is clamped to 1.
   void setDesiredSampleCount(int n) override
   {
@@ -192,7 +212,7 @@ public:
   // the PNG capture; the caller then runs the normal beginFrame / scene-draw /
   // endOffscreen sequence. endOffscreen runs the full post chain (skipping the
   // drawable blit), commits, and blocks until the GPU has written the PNG.
-  // Targets self-heal to the window size on the next live setDrawable.
+  // Targets self-heal to the window size on the next live beginLiveFrame.
   void beginOffscreen(int w, int h, const std::string& path);
   void endOffscreen();
   void beginTransparentOIT() override;
@@ -269,6 +289,10 @@ private:
   id<MTLRenderCommandEncoder> _encoder;
   MTLRenderPassDescriptor* _passDesc;
   id<CAMetalDrawable> _drawable;
+  // In-flight live frame count. Held behind a shared_ptr because the command
+  // buffer's completion handler (a background thread) decrements it and may
+  // outlive this renderer.
+  std::shared_ptr<std::atomic<int>> _inFlight;
 
   // Buffer pool
   uint32_t _nextBufferId = 1;
@@ -331,13 +355,13 @@ private:
   id<MTLTexture> _sceneColorMS = nil;
   id<MTLTexture> _sceneDepthMS = nil;
   NSUInteger _sampleCount = 4;        // 4x MSAA by default (metal_msaa)
-  NSUInteger _desiredSampleCount = 4; // applied at next setDrawable (no encoder)
+  NSUInteger _desiredSampleCount = 4; // applied at next beginLiveFrame (no encoder)
   void setSampleCount(NSUInteger n);  // rebuilds targets+pipelines on change
   void buildBatchPipeline();
   MTLRenderPassDescriptor* _scenePassDesc = nil;
   MTLRenderPassDescriptor* _screenPassDesc = nil;
   NSUInteger _rtW = 0, _rtH = 0;
-  // Live render-target height, captured in setDrawable. Pixel-radius post passes
+  // Live render-target height, captured in beginLiveFrame. Pixel-radius post passes
   // (DoF aperture, outline thickness) are authored against the live resolution;
   // offscreen exports run at a higher _rtH, so scaling those radii by
   // _rtH/_liveRefH keeps the effect resolution-relative (WYSIWYG). 0 until the

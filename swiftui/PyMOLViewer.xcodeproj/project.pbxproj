@@ -246,6 +246,7 @@
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
 		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
+		A3960001396A396A396A0001 /* RenderGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3960002396A396A396A0002 /* RenderGateTests.swift */; };
 		FF325D5404E69D05274EEB81 /* SelectionInputField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EF2F596852510DDACA576 /* SelectionInputField.swift */; };
 /* End PBXBuildFile section */
 
@@ -300,6 +301,7 @@
 		3697F74BD2283492B5A7790C /* KeyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRouting.swift; sourceTree = "<group>"; };
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
 		3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadoutTests.swift; sourceTree = "<group>"; };
+		A3960002396A396A396A0002 /* RenderGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderGateTests.swift; sourceTree = "<group>"; };
 		3F5377EE69A856479317FD61 /* WhatsNewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModel.swift; sourceTree = "<group>"; };
 		3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3ResultWriter.swift; sourceTree = "<group>"; };
 		3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-metrics.png"; sourceTree = "<group>"; };
@@ -623,6 +625,7 @@
 				EE3CAE980896763CAAAF2034 /* DesignSizeGuardTests.swift */,
 				FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */,
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
+				A3960002396A396A396A0002 /* RenderGateTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
 				1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */,
@@ -1363,6 +1366,7 @@
 				917ABB57816FDCD8B1D1E9CE /* DesignSizeGuardTests.swift in Sources */,
 				D0505F6B98C64B96BE87A753 /* DesignTargetSelectionTests.swift in Sources */,
 				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
+				A3960001396A396A396A0001 /* RenderGateTests.swift in Sources */,
 				C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,
 				CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */,

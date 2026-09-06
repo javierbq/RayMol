@@ -3514,12 +3514,32 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_SetupMetalRenderer(inst, Unmanaged.passUnretained(view).toOpaque())
     }
 
-    // Hand the current frame's drawable + render-pass descriptor to RendererMetal.
-    func renderMetalFrame(drawable: CAMetalDrawable, passDescriptor: MTLRenderPassDescriptor, width: Int, height: Int) {
-        guard let inst = instance else { return }
-        let dPtr = Unmanaged.passUnretained(drawable as AnyObject).toOpaque()
-        let pPtr = Unmanaged.passUnretained(passDescriptor).toOpaque()
-        PyMOLBridge_RenderMetalFrame(inst, dPtr, pPtr, Int32(width), Int32(height))
+    // Render one live frame at width x height (backing pixels).
+    //
+    // The view — not a drawable — is what gets handed over: the bridge acquires
+    // the CAMetalDrawable itself, after the scene has been encoded, since only
+    // the final post pass writes to it (#396). Returns false when no drawable
+    // arrived, i.e. nothing was presented and the caller should render again.
+    @discardableResult
+    func renderMetalFrame(view: MTKView, width: Int, height: Int) -> Bool {
+        guard let inst = instance else { return false }
+        let vPtr = Unmanaged.passUnretained(view).toOpaque()
+        return PyMOLBridge_RenderMetalFrame(inst, vPtr, Int32(width), Int32(height)) != 0
+    }
+
+    /// Live Metal frames committed but not yet completed on the GPU. The render
+    /// loop caps this (RenderGate.maxFramesInFlight) so it skips a tick instead
+    /// of queueing frames the GPU cannot retire.
+    var metalFramesInFlight: Int {
+        guard let inst = instance else { return 0 }
+        return Int(PyMOLBridge_MetalFramesInFlight(inst))
+    }
+
+    /// Current `metal_raytrace` setting — the GPU-bound case, which the render
+    /// loop runs at a lower tick rate.
+    var metalRayTracing: Bool {
+        guard let inst = instance else { return false }
+        return PyMOLBridge_GetMetalRaytrace(inst) != 0
     }
 
     // MARK: - Polling

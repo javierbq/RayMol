@@ -555,17 +555,16 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle h, void *mtkViewPtr)
     G->Renderer = new pymol::RendererMetal(g_metalDevice, g_metalQueue);
 }
 
-void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
-                                  void *passDescPtr, int width, int height)
+int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
+                                 int width, int height)
 {
-    if (!h) return;
+    if (!h || !mtkViewPtr) return 0;
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
-    if (!G) return;
+    if (!G) return 0;
     auto *renderer = static_cast<pymol::RendererMetal *>(G->Renderer);
-    if (!renderer) return;
-    id<CAMetalDrawable> drawable = (__bridge id<CAMetalDrawable>)drawablePtr;
-    MTLRenderPassDescriptor *passDesc = (__bridge MTLRenderPassDescriptor *)passDescPtr;
-    if (!drawable || !passDesc) return;
+    if (!renderer) return 0;
+    MTKView *view = (__bridge MTKView *)mtkViewPtr;
+    if (width < 1 || height < 1) return 0;
 
     // Keep PyMOL's window/scene-block size in sync with the actual drawable
     // (backing pixels). Without this the scene block stays at the default
@@ -597,7 +596,8 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
     }
 
     // Mirror main_appkit.mm drawInMTKView (805-869); ordering is load-bearing.
-    renderer->setDrawable(drawable, passDesc);
+    // beginLiveFrame takes only the SIZE — the drawable is fetched below (#396).
+    renderer->beginLiveFrame(width, height);
     renderer->setLetterboxOrigin(ox, oy);
     renderer->viewport(ox, oy, vpW, vpH);
     renderer->beginFrame();
@@ -606,7 +606,38 @@ void PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *drawablePtr,
     SceneRenderMetal(G);
     PyMOL_PopValidContext(INST(h));
     ImmBatch_SetActiveRenderer(nullptr);
+
+    // Now — with the whole scene already encoded into the offscreen targets —
+    // ask for the drawable that only the final post pass needs. Any wait the
+    // display server imposes has been overlapped with this frame's CPU encoding
+    // instead of preceding it. Both properties must come from the same access
+    // window; `currentRenderPassDescriptor` is derived from `currentDrawable`,
+    // so a nil drawable means we simply present nothing this frame and endFrame
+    // commits the offscreen work as-is.
+    id<CAMetalDrawable> drawable = view.currentDrawable;
+    MTLRenderPassDescriptor *passDesc =
+        drawable ? view.currentRenderPassDescriptor : nil;
+    if (drawable && passDesc)
+        renderer->setPresentTarget(drawable, passDesc);
     renderer->endFrame();
+    return (drawable && passDesc) ? 1 : 0;
+}
+
+int PyMOLBridge_MetalFramesInFlight(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    auto *renderer = static_cast<pymol::RendererMetal *>(G->Renderer);
+    return renderer ? renderer->framesInFlight() : 0;
+}
+
+int PyMOLBridge_GetMetalRaytrace(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    return SettingGetGlobal_b(G, cSetting_metal_raytrace) ? 1 : 0;
 }
 
 // Render one offscreen frame at the current (already-reshaped) size. path may be
