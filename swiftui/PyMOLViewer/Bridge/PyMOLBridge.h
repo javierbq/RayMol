@@ -87,7 +87,27 @@ void PyMOLBridge_RenderMetal(PyMOLHandle instance);
 // per-frame drawable + render-pass descriptor (mtkView/drawable/passDescriptor
 // passed as opaque void* so this C header needs no Metal import).
 void PyMOLBridge_SetupMetalRenderer(PyMOLHandle instance, void *mtkView);
-void PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *drawable, void *passDescriptor, int width, int height);
+
+// Render one live frame at width x height (backing pixels).
+//
+// The CAMetalDrawable is acquired HERE, from the view, only once the scene has
+// been encoded — not by the caller beforehand (#396). Only the final post pass
+// writes to the drawable, so asking for it earlier just parked the main thread
+// in `currentDrawable` (and stalled input) for as long as the GPU was behind.
+//
+// Returns 1 if a frame was presented, 0 if the drawable never arrived (the
+// offscreen work is still committed; the caller should render again) or if
+// there is no renderer yet.
+int PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *mtkView, int width, int height);
+
+// Live Metal frames committed but not yet completed on the GPU. The render loop
+// skips a tick above a small cap so the late currentDrawable wait stays short.
+// 0 when there is no renderer.
+int PyMOLBridge_MetalFramesInFlight(PyMOLHandle instance);
+
+// Current value of cSetting_metal_raytrace (1/0). Ray tracing is the GPU-bound
+// case, where the render loop drops its display link to 60 Hz.
+int PyMOLBridge_GetMetalRaytrace(PyMOLHandle instance);
 
 // Debug: execute raw Python (PyRun_SimpleString) under the GIL.
 void PyMOLBridge_RunPython(const char *code);

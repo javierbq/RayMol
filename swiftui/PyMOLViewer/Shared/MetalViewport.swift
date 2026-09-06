@@ -7,6 +7,68 @@ import MetalKit
 import UIKit
 #endif
 
+// MARK: - Render-loop gate (#396)
+
+/// The decision the render loop makes on every display-link tick, factored out
+/// as a pure type so it can be tested (a test cannot drive a CADisplayLink).
+///
+/// Two things had to change here. The old gate consumed PyMOL's redisplay flag
+/// with `GetRedisplay(inst, reset: 1)` *before* the drawable was acquired, so a
+/// frame that then failed to get a drawable dropped both the frame and the
+/// request for it — the same shape as the earlier "mouse rotate silently
+/// dropped" bug. And with ray tracing on, the GPU is the bottleneck: the loop
+/// would keep handing frames to a queue that could not retire them, so the main
+/// thread sat in `currentDrawable` (blocking input, the feedback timer and
+/// SwiftUI commits) for about half of every rotation.
+///
+/// So: the gate PEEKS the flag (`reset: 0`), a separate in-flight cap makes the
+/// loop skip a tick rather than pile on, and the flag is consumed only once the
+/// frame is actually about to be encoded.
+enum RenderGate {
+
+    /// Committed-but-not-completed frames allowed before a tick is skipped.
+    ///
+    /// `CAMetalLayer.maximumDrawableCount` is 3, so staying below it leaves a
+    /// drawable free and keeps the (now late) `currentDrawable` wait short.
+    /// Two is still enough in-flight work to keep the GPU fed.
+    static let maxFramesInFlight = 2
+
+    enum Decision: Equatable {
+        /// Encode a frame. The caller consumes the redisplay flag first.
+        case render
+        /// Nothing has changed; leave the last presented frame on screen.
+        case skip
+        /// There IS work to do, but too many frames are already in flight.
+        /// The redisplay flag is left set, so a later tick picks this up.
+        case throttle
+    }
+
+    static func decide(forceRedraw: Bool,
+                       hasRenderedOnce: Bool,
+                       redisplayPending: Bool,
+                       framesInFlight: Int) -> Decision {
+        // The very first frame always renders (defensive against a blank start
+        // before anything has flagged a redisplay), and so does a forced one
+        // after a wake/activate — the display can discard the drawable's
+        // contents while asleep, and an unchanged scene flags no redisplay.
+        let wants = forceRedraw || !hasRenderedOnce || redisplayPending
+        guard wants else { return .skip }
+        return framesInFlight >= maxFramesInFlight ? .throttle : .render
+    }
+
+    /// Whether the next tick must render unconditionally, given whether the
+    /// frame just encoded reached the screen. A frame with no drawable rendered
+    /// into the offscreen targets but presented nothing, and its redisplay flag
+    /// is already consumed — without this the viewport would hold a stale image
+    /// until the next interaction.
+    static func forceRedrawAfterRender(presented: Bool) -> Bool { !presented }
+
+    /// Display-link ceiling. Ray tracing makes frames GPU-bound well below
+    /// 120 Hz, where the extra ticks buy nothing and each one still costs a
+    /// `PyMOL_Idle` poll on the main thread.
+    static func preferredFPS(rayTracing: Bool) -> Float { rayTracing ? 60 : 120 }
+}
+
 #if os(macOS)
 struct MetalViewport: NSViewRepresentable {
     @EnvironmentObject var engine: PyMOLEngine
@@ -20,7 +82,9 @@ struct MetalViewport: NSViewRepresentable {
         // Allow ProMotion (120Hz) on capable displays; the system clamps this to
         // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
         // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
-        // costs a cheap idle poll when nothing is moving.
+        // costs a cheap idle poll when nothing is moving. The rate actually in
+        // force comes from the view's own display link (setPreferredFPS), which
+        // draw(in:) halves while ray tracing is on (#396).
         view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
@@ -154,10 +218,31 @@ class PyMOLMTKView: MTKView {
         let link = displayLink(target: self, selector: #selector(renderTick))
         link.add(to: .main, forMode: .common)
         renderLink = link
+        applyFPSToLink()  // re-assert a rate requested before the link existed
         isPaused = true   // ours drives now; don't let both loops draw
     }
 
     @objc private func renderTick() { draw() }
+
+    // Ceiling for our display link, in Hz. Called every tick by the render loop
+    // (which lowers it while ray tracing is on, #396) and applied only on a
+    // change, so a steady rate costs one comparison. The link is created in
+    // viewDidMoveToWindow, which may not have run yet — the value is remembered
+    // and re-applied there.
+    private var appliedFPS: Float = 0
+    func setPreferredFPS(_ fps: Float) {
+        guard fps > 0 else { return }
+        appliedFPS = fps
+        applyFPSToLink()
+    }
+    private func applyFPSToLink() {
+        guard let link = renderLink, appliedFPS > 0 else { return }
+        // A range, not a fixed rate: the system is free to tick slower when the
+        // display or thermal state calls for it. The 30 Hz floor keeps a scene
+        // that IS animating from being throttled to a crawl.
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: min(30, appliedFPS), maximum: appliedFPS, preferred: appliedFPS)
+    }
 
     // Track pointer motion over the viewport so the hover pre-selection preview
     // (issue #165) can update as the mouse moves WITHOUT any button held. A
@@ -230,7 +315,8 @@ struct MetalViewport: UIViewRepresentable {
         // Allow ProMotion (120Hz) on capable displays; the system clamps this to
         // the panel's actual max (e.g. 60 on non-ProMotion). The on-demand gate in
         // draw(in:) keeps the GPU idle on a static scene, so the higher tick only
-        // costs a cheap idle poll when nothing is moving.
+        // costs a cheap idle poll when nothing is moving. draw(in:) lowers this
+        // to 60 while ray tracing is on, where frames are GPU-bound anyway (#396).
         view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
@@ -445,6 +531,22 @@ extension MetalViewport {
         private var hasRenderedOnce = false
         private var moveSyncCounter = 0
 
+        // Keep the tick rate matched to how expensive frames currently are
+        // (#396). On macOS the view owns the display link we drive; on iOS
+        // MetalKit's own loop is still in charge, so this goes through the
+        // view's preferredFramesPerSecond.
+        private func applyPreferredFPS(to view: MTKView, engine: PyMOLEngine) {
+            let fps = RenderGate.preferredFPS(rayTracing: engine.metalRayTracing)
+            #if os(macOS)
+            (view as? PyMOLMTKView)?.setPreferredFPS(fps)
+            #else
+            let target = Int(fps)
+            if view.preferredFramesPerSecond != target {
+                view.preferredFramesPerSecond = target
+            }
+            #endif
+        }
+
         func draw(in view: MTKView) {
             guard let engine = engine, engine.isReady else { return }
             // A movie export renders frames off the main thread and owns the core
@@ -494,32 +596,51 @@ extension MetalViewport {
                 }
             }
             // Build RendererMetal on the first frame (bridge no-ops thereafter),
-            // then hand off this frame's drawable + pass descriptor and render.
+            // then run PyMOL's idle work (advances movies/animations and sets the
+            // redisplay flag).
             engine.setupMetalRenderer(view: view)
+            // Ray tracing makes frames GPU-bound far below 120 Hz; drop the tick
+            // rate so the surplus ticks stop costing a PyMOL_Idle each (#396).
+            // Cheap and idempotent, so it can ride along on every tick.
+            applyPreferredFPS(to: view, engine: engine)
             engine.idle()
-            // On-demand rendering: after idle() (which advances movies/animations
-            // and sets PyMOL's redisplay flag), skip the GPU-expensive frame when
-            // nothing needs redrawing — a static structure then costs only a cheap
-            // idle poll instead of a full render every tick, the bulk of the
+
+            // On-demand rendering: skip the GPU-expensive frame when nothing
+            // needs redrawing — a static structure then costs only a cheap idle
+            // poll instead of a full render every tick, the bulk of the
             // battery/thermal win. The last presented frame stays on screen.
-            // Mirrors the legacy AppKit loop (main_appkit.mm). The first frame
-            // always renders (defensive against a blank start before any redisplay).
-            // forceRedraw bypasses the gate after a wake/activate: the display can
-            // discard the drawable's contents during sleep, and since the scene is
-            // unchanged the redisplay flag alone wouldn't repaint it (-> a black
-            // viewport until the next interaction). It's cleared only once a frame
-            // actually renders below, so a not-yet-ready drawable doesn't drop it.
-            if !forceRedraw, hasRenderedOnce, let inst = engine.instance,
-               PyMOLBridge_GetRedisplay(inst, 1) == 0 {
+            // Mirrors the legacy AppKit loop (main_appkit.mm).
+            //
+            // The flag is PEEKED here (reset: 0) and consumed below only once
+            // this tick has committed to encoding a frame, so a throttled tick
+            // leaves the request standing instead of swallowing it (#396).
+            let pending = engine.instance.map { PyMOLBridge_GetRedisplay($0, 0) != 0 } ?? false
+            switch RenderGate.decide(forceRedraw: forceRedraw,
+                                     hasRenderedOnce: hasRenderedOnce,
+                                     redisplayPending: pending,
+                                     framesInFlight: engine.metalFramesInFlight) {
+            case .skip, .throttle:
                 return
+            case .render:
+                break
             }
-            guard let drawable = view.currentDrawable,
-                  let passDesc = view.currentRenderPassDescriptor else { return }
+
+            // Consume the flag NOW, before the scene traversal: PyMOL sets it
+            // again from inside SceneRenderMetal when queued input (a drag, a
+            // click) needs another frame, so clearing it afterwards would eat
+            // the next frame of every drag.
+            if let inst = engine.instance { _ = PyMOLBridge_GetRedisplay(inst, 1) }
+
+            // The bridge acquires the drawable itself, after the scene is
+            // encoded — see PyMOLBridge_RenderMetalFrame. `presented` is false
+            // when no drawable arrived: the frame rendered offscreen but nothing
+            // reached the screen, so force the next tick to render again.
             let size = view.drawableSize
-            engine.renderMetalFrame(drawable: drawable, passDescriptor: passDesc,
-                                    width: Int(size.width), height: Int(size.height))
-            hasRenderedOnce = true
-            forceRedraw = false
+            let presented = engine.renderMetalFrame(view: view,
+                                                    width: Int(size.width),
+                                                    height: Int(size.height))
+            hasRenderedOnce = hasRenderedOnce || presented
+            forceRedraw = RenderGate.forceRedrawAfterRender(presented: presented)
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.

@@ -2233,7 +2233,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
         specPower,
         SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
-    // stashes this and applies it at the next setDrawable (no encoder open),
+    // stashes this and applies it at the next beginLiveFrame (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.
     G->Renderer->setDesiredSampleCount(
         SettingGetGlobal_b(G, cSetting_metal_msaa) ? 4 : 1);

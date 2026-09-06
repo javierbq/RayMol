@@ -167,6 +167,7 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _sphereImpostorPipeline(nil)
     , _cylinderImpostorPipeline(nil)
     , _depthStencilState(nil)
+    , _inFlight(std::make_shared<std::atomic<int>>(0))
 {
   _modelviewMatrix = identityMatrix();
   _modelviewInv = identityMatrix();
@@ -463,11 +464,13 @@ RendererMetal::~RendererMetal()
 #pragma mark - Drawable setup
 // ---------------------------------------------------------------------------
 
-void RendererMetal::setDrawable(
-    id<CAMetalDrawable> drawable, MTLRenderPassDescriptor* passDesc)
+void RendererMetal::beginLiveFrame(int drawableW, int drawableH)
 {
-  _drawable = drawable;
-  _screenPassDesc = passDesc;       // the drawable target (final composite pass)
+  // No drawable yet — it is acquired after the scene is encoded (#396). Clear
+  // the previous frame's target so a frame that never gets one cannot present
+  // stale contents; setPresentTarget fills these in before endFrame.
+  _drawable = nil;
+  _screenPassDesc = nil;
   // Apply any pending MSAA sample-count change here, before any encoder is open
   // (endFrame ended the previous one and beginFrame hasn't run yet). This
   // rebuilds the opaque pipelines + forces target recreation below, so the new
@@ -475,14 +478,17 @@ void RendererMetal::setDrawable(
   setSampleCount(_desiredSampleCount);
   // Render the scene into offscreen targets sized to the drawable; the existing
   // scene-draw code keys off _passDesc, so point it at the offscreen descriptor.
-  id<MTLTexture> tex = drawable.texture;
+  // The size comes from the caller (MTKView.drawableSize) rather than
+  // drawable.texture, precisely so no drawable has to exist yet.
+  if (drawableW < 1) drawableW = 1;
+  if (drawableH < 1) drawableH = 1;
   // Reduced-resolution rendering (metal_upscale): size the scene + post-chain
   // targets at _renderScale of the drawable; the final blit upscales to the
   // native drawable. _renderScale==1 (upscale off, the default) is byte-identical.
   // Forced to native when a frame PNG capture is pending so exports stay full-res.
   _renderScale = (_upscaleEnabled && _capturePath.empty()) ? 0.667f : 1.0f;
-  NSUInteger rw = (NSUInteger)lround(tex.width * _renderScale);
-  NSUInteger rh = (NSUInteger)lround(tex.height * _renderScale);
+  NSUInteger rw = (NSUInteger)lround(drawableW * _renderScale);
+  NSUInteger rh = (NSUInteger)lround(drawableH * _renderScale);
   if (rw < 1) rw = 1;
   if (rh < 1) rh = 1;
   ensurePostTargets(rw, rh);
@@ -492,6 +498,13 @@ void RendererMetal::setDrawable(
   // pixelRadiusScale()==1, so the on-screen appearance is unchanged.
   _liveRefH = rh;
   _passDesc = _scenePassDesc;
+}
+
+void RendererMetal::setPresentTarget(
+    id<CAMetalDrawable> drawable, MTLRenderPassDescriptor* passDesc)
+{
+  _drawable = drawable;
+  _screenPassDesc = passDesc;       // the drawable target (final composite pass)
 }
 
 void RendererMetal::ensureUpscaler(NSUInteger inW, NSUInteger inH,
@@ -770,6 +783,11 @@ void RendererMetal::endFrame()
 
   // The scene was rendered to _sceneColor/_sceneDepth; run the post-process
   // chain, whose final pass writes to the drawable.
+  //
+  // No drawable is a legitimate outcome now that it is acquired after the scene
+  // is encoded (#396): `currentDrawable` can time out. Nothing is presented and
+  // any pending PNG capture stays pending (runPostChain owns _capturePath), so
+  // the caller re-renders — see the forced redraw in MetalViewport's RenderGate.
   if (_drawable && _cmdBuffer && _screenPassDesc && _sceneColor) {
     runPostChain();
     [_cmdBuffer presentDrawable:_drawable];
@@ -803,6 +821,15 @@ void RendererMetal::endFrame()
         }
       }];
     }
+    // Count this frame as in flight until the GPU reports it done, so the
+    // render loop can throttle itself instead of queueing frames faster than
+    // they retire (#396). The handler runs on a background thread and can fire
+    // after this renderer is gone, hence the shared atomic.
+    auto inFlight = _inFlight;
+    inFlight->fetch_add(1, std::memory_order_relaxed);
+    [_cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+      inFlight->fetch_sub(1, std::memory_order_relaxed);
+    }];
     [_cmdBuffer commit];
     _cmdBuffer = nil;
   }
@@ -840,7 +867,7 @@ void RendererMetal::beginOffscreen(int w, int h, const std::string& path)
 // End the offscreen render: close the scene encoder, run the full post chain
 // (which writes the PNG via the capture block), commit, and block until the
 // GPU finishes so the file exists on return. Leaves _offscreen=false; the next
-// live setDrawable recreates the targets at the window size.
+// live beginLiveFrame recreates the targets at the window size.
 void RendererMetal::endOffscreen()
 {
   if (_encoder) {

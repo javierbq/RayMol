@@ -856,13 +856,14 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     auto* renderer = static_cast<pymol::RendererMetal*>(G->Renderer);
     if (!renderer) return;
 
-    // Get drawable and pass descriptor for this frame
-    id<CAMetalDrawable> drawable = self.currentDrawable;
-    MTLRenderPassDescriptor *passDesc = self.currentRenderPassDescriptor;
-    if (!drawable || !passDesc) return;
-
-    // Hand the drawable to the renderer and begin the frame
-    renderer->setDrawable(drawable, passDesc);
+    // Size the offscreen scene/post targets for this frame. The drawable itself
+    // is acquired after the scene is encoded, at the bottom of this method —
+    // only the final post pass writes to it, and waiting on `currentDrawable`
+    // here blocked the main thread (and input) whenever the GPU was behind
+    // (#396).
+    CGSize drawableSize = self.drawableSize;
+    if (drawableSize.width < 1 || drawableSize.height < 1) return;
+    renderer->beginLiveFrame((int)drawableSize.width, (int)drawableSize.height);
 
     // Process idle work (needs GIL for Python callbacks).
     // PyMOL_Idle uses PYMOL_API_TRYLOCK which calls PTryLockAPIAndUnblock:
@@ -911,6 +912,15 @@ static void handleKeyDown(NSView *view, NSEvent *event) {
     PyMOL_PopValidContext(pymolInstance);
 
     ImmBatch_SetActiveRenderer(nullptr);
+
+    // Late drawable acquisition (see beginLiveFrame above): the display server's
+    // wait now overlaps this frame's CPU encoding instead of preceding it. A nil
+    // drawable presents nothing; the next tick renders again.
+    id<CAMetalDrawable> drawable = self.currentDrawable;
+    MTLRenderPassDescriptor *passDesc =
+        drawable ? self.currentRenderPassDescriptor : nil;
+    if (drawable && passDesc)
+        renderer->setPresentTarget(drawable, passDesc);
 
     renderer->endFrame();
 }
