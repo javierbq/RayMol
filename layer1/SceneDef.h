@@ -136,6 +136,19 @@ class CScene : public Block {
   float FogStart{};
   float FogEnd{};
 
+  /* Model-space extents the Metal render path needs once per frame: the
+     shadow-map frustum box (non-solvent geometry) and the DOF autofocus
+     target's center. Both are independent of the camera, so they are computed
+     lazily and reused until the scene's contents change -- recomputing them per
+     frame walks every atom of every object on the main thread (#393). See
+     SceneInvalidateExtentCache(). */
+  bool ShadowExtentValid{};
+  bool ShadowExtentFlag{}; /* false = nothing to bound (empty scene) */
+  float ShadowExtentMin[3]{}, ShadowExtentMax[3]{};
+  bool DofExtentValid{};
+  bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
+  float DofExtentCenter[3]{};
+
   /* Scene Names */
   int ButtonsShown{}, ButtonDrag{}, ButtonMargin{}, ButtonsValid{};
   int Over{-1}, Pressed{-1}, PressMode{}, HowFarDown{}, NSkip{};

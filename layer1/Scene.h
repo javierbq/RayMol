@@ -77,6 +77,24 @@ void SceneDirty(PyMOLGlobals * G);      /* scene dirty, but leave the overlay if
 void SceneInvalidate(PyMOLGlobals * G); /* scene dirty and remove the overlay */
 void SceneChanged(PyMOLGlobals * G);    /* update 3D objects */
 
+/**
+ * Drop the cached model-space extents used to size the Metal shadow frustum and
+ * the DOF autofocus plane. Implied by SceneChanged(); call it directly from
+ * paths that change what those extents cover without going through
+ * SceneChanged() (e.g. creating or deleting a named selection).
+ */
+void SceneInvalidateExtentCache(PyMOLGlobals * G);
+
+/**
+ * Model-space bounding box of the shadow-casting geometry: every enabled scene
+ * object, solvent atoms excluded (all atoms if the scene is solvent-only).
+ * Cached; see SceneInvalidateExtentCache().
+ *
+ * @param[out] mn,mx min/max corners, only written when this returns true
+ * @return false if the scene holds no geometry to bound
+ */
+bool SceneGetShadowExtent(PyMOLGlobals * G, float *mn, float *mx);
+
 int SceneCountFrames(PyMOLGlobals * G);
 int SceneGetNFrame(PyMOLGlobals * G, int *has_movie=nullptr);
 void SceneSetMatrix(PyMOLGlobals * G, float *);

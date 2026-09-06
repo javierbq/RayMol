@@ -4506,6 +4506,24 @@ static PyObject *CmdSetMatrix(PyObject * self, PyObject * args)
 }
 #endif
 
+/**
+ * Model-space bounding box the Metal shadow-map frustum is sized to: every
+ * enabled object, solvent excluded. Introspection hook for the regression tests
+ * around #393 -- the value is cached in CScene and must track scene content.
+ */
+static PyObject *CmdGetShadowExtent(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  float mn[3], mx[3];
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnter(G);
+  int flag = SceneGetShadowExtent(G, mn, mx);
+  APIExit(G);
+  if(!flag)
+    Py_RETURN_NONE;
+  return Py_BuildValue("[[fff],[fff]]", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
+}
+
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -6483,6 +6501,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_m2io_first_block_properties", CmdM2ioFirstBlockProperties, METH_VARARGS},
 //  {"get_matrix", CmdGetMatrix, METH_VARARGS},
   {"get_min_max", CmdGetMinMax, METH_VARARGS},
+  {"get_shadow_extent", CmdGetShadowExtent, METH_VARARGS},
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},
   {"get_property", CmdGetProperty, METH_VARARGS},

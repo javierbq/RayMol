@@ -2946,6 +2946,7 @@ pymol::Result<> ExecutiveResetMatrix(
   if (!obj_found) {
     return pymol::make_error("No object found");
   }
+  SceneInvalidateExtentCache(G); // moves the shadow frustum's box (#393)
   return {};
 }
 
@@ -3008,6 +3009,7 @@ static int ExecutiveSetObjectMatrix2(
   } else {
     if (auto* objstate = obj->getObjectState(state)) {
       ObjectStateSetMatrix(objstate, matrix);
+      SceneInvalidateExtentCache(G); // moves the shadow frustum's box (#393)
       ok = true;
     }
   }
@@ -7606,6 +7608,9 @@ void ExecutiveObjectFuncTTT(PyMOLGlobals* G, pymol::zstring_view name,
     int store, Func func, Args... args)
 {
   auto I = G->Executive;
+  // Moving an object by its TTT moves the shadow frustum's box with it, and
+  // none of the callees goes through SceneChanged() (#393).
+  SceneInvalidateExtentCache(G);
   if (name.empty() || name == cKeywordAll || name == cKeywordSame) {
     for (auto& rec : pymol::make_list_adapter(I->Spec)) {
       switch (rec.type) {
@@ -14615,6 +14620,7 @@ void ExecutivePurgeSpec(PyMOLGlobals* G, SpecRec* rec, bool save)
       SceneInvalidate(G);
       SeqDirty(G);
     }
+    SceneInvalidateExtentCache(G); // see ExecutiveManageSelection (#393)
     ExecutiveDelKey(I, rec);
     SelectorDelete(G, rec->name);
     TrackerDelCand(I->Tracker, rec->cand_id);
@@ -15073,6 +15079,9 @@ void ExecutiveManageSelection(PyMOLGlobals* G, const char* name)
   }
   if (rec->visible)
     SceneInvalidate(G);
+  // The DOF autofocus plane is cached off the 'dof_focus' selection's extent,
+  // which this (re)definition may have just moved (#393).
+  SceneInvalidateExtentCache(G);
   ExecutiveDoAutoGroup(G, rec);
   SeqDirty(G);
 }

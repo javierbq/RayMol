@@ -2280,10 +2280,20 @@ void SceneRovingDirty(PyMOLGlobals * G)
 
 
 /*========================================================================*/
+void SceneInvalidateExtentCache(PyMOLGlobals * G)
+{
+  CScene *I = G->Scene;
+  if(I) {
+    I->ShadowExtentValid = false;
+    I->DofExtentValid = false;
+  }
+}
+
 void SceneChanged(PyMOLGlobals * G)
 {
   CScene *I = G->Scene;
   I->ChangedFlag = true;
+  SceneInvalidateExtentCache(G);
   SceneInvalidateCopy(G, false);
   SceneDirty(G);
   SeqChanged(G);
@@ -2707,6 +2717,7 @@ int SceneObjectDel(PyMOLGlobals * G, pymol::CObject * obj, int allow_purge)
     }
   }
   SceneCountFrames(G);
+  SceneInvalidateExtentCache(G);
   SceneInvalidate(G);
   SceneInvalidatePicking(G);
   return 0;
@@ -2725,6 +2736,7 @@ bool SceneObjectRemove(PyMOLGlobals* G, pymol::CObject* obj)
     return false;
   }
   obj_list.erase(it, obj_list.end());
+  SceneInvalidateExtentCache(G);
   return true;
 }
 
