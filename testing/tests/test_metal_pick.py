@@ -172,7 +172,14 @@ class TestPickAtIntegration(unittest.TestCase):
 
         self.addCleanup(_restore)
 
-    def test_pick_at_creates_selection(self):
+    def _install_mock_cmd(self, native):
+        """A cmd stand-in holding one atom at the rotation origin, so a click at
+        NDC (0,0) lands on it.
+
+        `native` decides which of metal_pick's two paths the module takes: with
+        a metal_pick entry on _cmd it hands the projection to C++, without one
+        it walks a chempy model in Python. Both must end at the same 'sele'.
+        """
         mock_cmd = MagicMock()
         mock_cmd.get_view.return_value = (
             1.0, 0.0, 0.0,
@@ -203,17 +210,31 @@ class TestPickAtIntegration(unittest.TestCase):
         mock_cmd.get_names.side_effect = \
             lambda kind, **kw: ["protein"] if kind == "objects" else []
 
+        if native:
+            # The C++ pick returns the hit tuple ready-made:
+            # (d2, obj, chain, resi, resn, segi, name, sx, sy).
+            mock_cmd._cmd.metal_pick.return_value = (
+                0.0, "protein", "A", "42", "ALA", "A", "CA", 0.0, 0.0)
+        else:
+            # spec=[] gives an object with NO attributes, so metal_pick's
+            # hasattr(_cmd, 'metal_pick') probe fails and it falls back.
+            mock_cmd._cmd = MagicMock(spec=[])
+
         # Patch pymol.cmd inside metal_pick
         _pymol_mod = sys.modules["pymol"]
         _pymol_mod.cmd = mock_cmd
         sys.modules["pymol.cmd"] = mock_cmd
+        return mock_cmd
 
-        # Force re-import of metal_pick
+    def _import_metal_pick(self):
+        """Re-import the module so it re-probes for the native pick (the answer
+        is cached in a module global) against the mock just installed."""
         if "pymol.metal_pick" in sys.modules:
             del sys.modules["pymol.metal_pick"]
-        from pymol.metal_pick import pick_at
-        pick_at(0.0, 0.0, 1.0)
+        import pymol.metal_pick
+        return sys.modules["pymol.metal_pick"]
 
+    def _assertSelectedResidue42(self, mock_cmd):
         # pick_at toggles the clicked residue into the named 'sele' (selection
         # indicators are rendered in C++, NOT via a pseudoatom marker) and enables
         # it. Default mouse_selection_mode is residue, so the expr is resi-scoped.
@@ -223,6 +244,21 @@ class TestPickAtIntegration(unittest.TestCase):
         self.assertIn("resi 42", sel_expr)
         self.assertIn("chain A", sel_expr)
         mock_cmd.enable.assert_called_with("sele")
+
+    def test_pick_at_creates_selection(self):
+        mock_cmd = self._install_mock_cmd(native=False)
+        self._import_metal_pick().pick_at(0.0, 0.0, 1.0)
+        self._assertSelectedResidue42(mock_cmd)
+        # The Python path is the one that reads the chempy model.
+        self.assertTrue(mock_cmd.get_model.called)
+
+    def test_pick_at_uses_the_native_pick_when_the_core_has_one(self):
+        mock_cmd = self._install_mock_cmd(native=True)
+        self._import_metal_pick().pick_at(0.0, 0.0, 1.0)
+        self._assertSelectedResidue42(mock_cmd)
+        # ...and it must not rebuild a chempy model of every drawn atom (#394).
+        self.assertFalse(mock_cmd.get_model.called)
+        mock_cmd._cmd.metal_pick.assert_called_once()
 
 
 if __name__ == "__main__":
