@@ -4,13 +4,16 @@
 
 #include <algorithm>
 
+#include "AtomInfo.h"
 #include "CGO.h"
 #include "Control.h"
+#include "CoordSet.h"
 #include "Editor.h"
 #include "Err.h"
 #include "Executive.h"
 #include "Feedback.h"
 #include "Matrix.h"
+#include "ObjectMolecule.h"
 #include "Ortho.h"
 #include "P.h"
 #include "Picking.h"
@@ -1836,6 +1839,112 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
   SceneRenderAA(G, parentImage);
 }
 
+/**
+ * Model-space bounding box of the geometry that casts shadows: every object
+ * enabled in the scene, with solvent atoms left out.
+ *
+ * This deliberately does NOT go through ExecutiveGetExtent(). That takes an
+ * object/selection *name pattern*, not an atom selection, so the "not solvent"
+ * it used to be handed was parsed as name negation -- it matched every object
+ * and every named selection not literally called `solvent` (double-counting
+ * atoms covered by a selection) and never excluded a single water (#393).
+ * Walking the scene's own object list instead gets the intended semantics, and
+ * costs one pass over the coordinates with no per-atom SelectorIsMember().
+ *
+ * Transformation matches ExecutiveGetExtent(transformed=true, state=-1): all
+ * coordinate sets, state matrix (under matrix_mode) then object TTT.
+ *
+ * @param[out] mn,mx model-space min/max corners
+ * @param skip_solvent exclude atoms flagged as solvent
+ * @return false if nothing contributed (mn/mx untouched)
+ */
+static bool SceneComputeShadowExtent(
+    PyMOLGlobals* G, float* mn, float* mx, bool skip_solvent)
+{
+  CScene* I = G->Scene;
+  bool have_extent = false;
+
+  auto include = [&](const float* v) {
+    if (!have_extent) {
+      copy3f(v, mn);
+      copy3f(v, mx);
+      have_extent = true;
+    } else {
+      min3f(v, mn, mn);
+      max3f(v, mx, mx);
+    }
+  };
+
+  for (auto* obj : I->Obj) {
+    if (obj->type != cObjectMolecule) {
+      // Maps, meshes, surfaces, CGOs: they already carry a cached extent.
+      if (obj->ExtentFlag) {
+        include(obj->ExtentMin);
+        include(obj->ExtentMax);
+      }
+      continue;
+    }
+
+    auto* objMol = static_cast<ObjectMolecule*>(obj);
+    int use_matrices =
+        SettingGet_i(G, objMol->Setting.get(), nullptr, cSetting_matrix_mode);
+    if (use_matrices < 0)
+      use_matrices = 0;
+
+    for (int b = 0; b < objMol->NCSet; b++) {
+      CoordSet* cs = objMol->CSet[b];
+      if (!cs)
+        continue;
+      for (int idx = 0; idx < cs->NIndex; idx++) {
+        if (skip_solvent &&
+            (objMol->AtomInfo[cs->IdxToAtm[idx]].flags & cAtomFlag_solvent))
+          continue;
+        const float* coord = cs->coordPtr(idx);
+        float v[3];
+        if (use_matrices && !cs->Matrix.empty()) {
+          transform44d3f(cs->Matrix.data(), coord, v);
+          coord = v;
+        }
+        if (objMol->TTTFlag) {
+          transformTTT44f3f(objMol->TTT, coord, v);
+          coord = v;
+        }
+        include(coord);
+      }
+    }
+  }
+
+  return have_extent;
+}
+
+/**
+ * Cached accessor for SceneComputeShadowExtent(). The box is model-space, so it
+ * survives every camera move; SceneChanged() drops it when the scene's contents
+ * change. Recomputing it per frame was ~63% of the main thread's render work at
+ * 56k atoms (#393).
+ */
+bool SceneGetShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
+{
+  CScene* I = G->Scene;
+  if (!I->ShadowExtentValid) {
+    // Scattered crystallographic waters would inflate the box, coarsening
+    // shadow-map depth precision (-> slab self-shadow) and resolution. A
+    // solvent-only scene still needs a frustum, so fall back to all atoms.
+    I->ShadowExtentFlag = SceneComputeShadowExtent(
+        G, I->ShadowExtentMin, I->ShadowExtentMax, true);
+    if (!I->ShadowExtentFlag) {
+      I->ShadowExtentFlag = SceneComputeShadowExtent(
+          G, I->ShadowExtentMin, I->ShadowExtentMax, false);
+    }
+    I->ShadowExtentValid = true;
+  }
+  if (I->ShadowExtentFlag) {
+    copy3f(I->ShadowExtentMin, mn);
+    copy3f(I->ShadowExtentMax, mx);
+  }
+  return I->ShadowExtentFlag;
+}
+
 // Build the directional key light's view*projection in EYE space, so the post
 // pass can reuse its existing eye-space position reconstruction (no camera
 // inverse needed). The light dir matches the shading key light (eye-space
@@ -1849,13 +1958,7 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
   float radius = 10.0f;
-  // Size the frustum to the non-solvent geometry: scattered crystallographic
-  // waters would otherwise inflate the box, coarsening shadow-map depth
-  // precision (→ slab self-shadow) and resolution. Fall back to all atoms.
-  bool gotExtent = ExecutiveGetExtent(G, "not solvent", mn, mx, true, -1, false);
-  if (!gotExtent)
-    gotExtent = ExecutiveGetExtent(G, "all", mn, mx, true, -1, false);
-  if (gotExtent) {
+  if (SceneGetShadowExtent(G, mn, mx)) {
     glm::vec3 cw(
         (mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
     glm::vec3 dw(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]);
@@ -2048,12 +2151,24 @@ void SceneRenderMetal(PyMOLGlobals* G)
       // centroid's eye-space depth every frame so the element stays sharp as the
       // camera zooms/rotates/pans. Overrides the manual focus slider; an empty
       // selection leaves dofFocus at 0 and falls through to the origin below.
+      // The centroid itself is model-space, so it is cached alongside the
+      // shadow extent and only recomputed when the scene changes -- the
+      // ExecutiveGetExtent() walk cost as much as the shadow one (#393). Only
+      // the eye-space projection below runs per frame.
       dofFocus = 0.0f;
-      float mn[3], mx[3];
-      if (ExecutiveGetExtent(G, "dof_focus", mn, mx, true, -1, false)) {
-        float cx = (mn[0] + mx[0]) * 0.5f, cy = (mn[1] + mx[1]) * 0.5f,
-              cz = (mn[2] + mx[2]) * 0.5f;
-        float ez = mv[2] * cx + mv[6] * cy + mv[10] * cz + mv[14];
+      if (!I->DofExtentValid) {
+        float mn[3], mx[3];
+        I->DofExtentFlag =
+            ExecutiveGetExtent(G, "dof_focus", mn, mx, true, -1, false);
+        if (I->DofExtentFlag) {
+          for (int a = 0; a < 3; a++)
+            I->DofExtentCenter[a] = (mn[a] + mx[a]) * 0.5f;
+        }
+        I->DofExtentValid = true;
+      }
+      if (I->DofExtentFlag) {
+        const float* c = I->DofExtentCenter;
+        float ez = mv[2] * c[0] + mv[6] * c[1] + mv[10] * c[2] + mv[14];
         if (-ez > 0.0f)
           dofFocus = -ez;
       }
