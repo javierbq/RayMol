@@ -1,0 +1,35 @@
+---
+title: RayMol Documentation
+description: Molecular visualization built natively for Apple Silicon with real-time Metal rendering.
+template: splash
+hero:
+  tagline: Hardware-accelerated molecular graphics powered by the PyMOL engine and Metal.
+  actions:
+    - text: Get Started
+      link: /RayMol/getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/javierbq/RayMol
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Key Features
+
+<CardGrid stagger>
+  <Card title="Metal Real-Time Rendering" icon="rocket">
+    Hardware ray-traced ambient occlusion and shadows, weighted-blended transparency, and real-time shadow mapping on supported Apple Silicon devices.
+  </Card>
+  <Card title="Built on PyMOL" icon="document">
+    The genuine open-source PyMOL core, an embedded Python 3.13 runtime, and native `.pse` session support in a modern Apple-platform interface.
+  </Card>
+  <Card title="Built-in MCP Server" icon="setting">
+    Direct Model Context Protocol integration lets supported AI apps inspect and manipulate molecular scenes through explicit tool calls.
+  </Card>
+  <Card title="Native Across Apple Platforms" icon="laptop">
+    A shared SwiftUI and Metal codebase designed for macOS, iPad, and iPhone.
+  </Card>
+</CardGrid>
