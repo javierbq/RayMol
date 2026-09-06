@@ -2,6 +2,9 @@
 // A Theme is fully Codable so custom themes persist as JSON in UserDefaults.
 
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// sRGB color, Codable (SwiftUI.Color is not Codable).
 struct RGBA: Codable, Equatable {
@@ -10,6 +13,13 @@ struct RGBA: Codable, Equatable {
         self.r = r; self.g = g; self.b = b; self.a = a
     }
     var color: Color { Color(.sRGB, red: r, green: g, blue: b, opacity: a) }
+#if canImport(AppKit)
+    /// AppKit twin of `color`, for the parts of the UI that are AppKit views
+    /// rather than SwiftUI ones (the console log, #406). Built straight from the
+    /// components rather than via `NSColor(color)` so it is a plain sRGB color
+    /// that compares equal to another one made from the same theme values.
+    var nsColor: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: a) }
+#endif
     /// "r, g, b" in 0..1 for PyMOL set_color.
     var pymolTriplet: String { String(format: "%.4f, %.4f, %.4f", r, g, b) }
     /// Linear blend toward `other` by `t` (0…1). Keeps alpha solid for both
@@ -33,6 +43,26 @@ struct FontSpec: Codable, Equatable {
         }
     }
     var font: Font { .system(size: size, design: design) }
+#if canImport(AppKit)
+    /// AppKit twin of `font` (#406). `withDesign` is how a system font picks up
+    /// the monospaced/serif/rounded variant, matching what `Font.system(size:
+    /// design:)` resolves to on the SwiftUI side.
+    var nsFont: NSFont {
+        let base = NSFont.systemFont(ofSize: size)
+        guard let descriptor = base.fontDescriptor.withDesign(nsDesign),
+              let styled = NSFont(descriptor: descriptor, size: size) else { return base }
+        return styled
+    }
+
+    private var nsDesign: NSFontDescriptor.SystemDesign {
+        switch family {
+        case .monospaced: return .monospaced
+        case .serif:      return .serif
+        case .rounded:    return .rounded
+        case .system:     return .default
+        }
+    }
+#endif
 }
 
 enum Appearance: String, Codable, CaseIterable, Identifiable {

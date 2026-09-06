@@ -928,9 +928,10 @@ struct ContentView: View {
     //   editing — focused AND non-empty (drives Tier B, the arrows/home/end/
     //     ctrl-letter yield while the user is composing).
     // We require the text view to be editable or a field editor: the feedback
-    // log uses .textSelection(.enabled), and if SwiftUI's selectable-but-not-
-    // editable NSTextView ever becomes first responder its `string` is the
-    // entire log, which would silently disable arrows/home/end until focus moved.
+    // log is a selectable-but-not-editable NSTextView (ConsoleTextView, #406),
+    // and it DOES take first responder when clicked — its `string` is the entire
+    // log, so counting it as a focused field would silently disable arrows/
+    // home/end for as long as the console held focus.
     private func textFocusFlags() -> (focused: Bool, editing: Bool) {
         let responder = NSApp.keyWindow?.firstResponder
         if let tv = responder as? NSTextView, tv.isEditable || tv.isFieldEditor {
