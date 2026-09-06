@@ -9,7 +9,6 @@ AppKit/objc/Foundation stubbed permissively before import.
 import importlib
 import os
 import sys
-import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock
@@ -91,7 +90,7 @@ class OverlayTestBase(unittest.TestCase):
         ro._image_view = None
         ro._metal_view = None
         ro._event_monitor = None
-        self._tmp = os.path.join(tempfile.gettempdir(), "_pymol_ray_overlay.png")
+        self._tmp = ro.raymol_tmp.channel_path("_pymol_ray_overlay", "png")
         try:
             os.unlink(self._tmp)
         except OSError:

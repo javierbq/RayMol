@@ -22,6 +22,9 @@
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
+		A3990001399A399A399A0001 /* TempChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3990002399A399A399A0002 /* TempChannel.swift */; };
+		A3990003399A399A399A0003 /* TempChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3990002399A399A399A0002 /* TempChannel.swift */; };
+		A3990004399A399A399A0004 /* TempChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3990005399A399A399A0005 /* TempChannelTests.swift */; };
 		13B48E7F8C2A51ADAF48F4C3 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		13C5A803C8072DE180EB23CC /* ProtenixRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7845A3EB6A6BF8A14F090062 /* ProtenixRuntime.swift */; };
 		13E8687216067D92666E3078 /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
@@ -342,6 +345,8 @@
 		7D3E805AC2D63B01AB7EE29C /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		7DEAB18A89F026148528C71E /* PendingJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingJobTests.swift; sourceTree = "<group>"; };
 		80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadout.swift; sourceTree = "<group>"; };
+		A3990002399A399A399A0002 /* TempChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempChannel.swift; sourceTree = "<group>"; };
+		A3990005399A399A399A0005 /* TempChannelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempChannelTests.swift; sourceTree = "<group>"; };
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
 		86E93358875495F499780A00 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
@@ -561,6 +566,7 @@
 				9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */,
 				AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */,
 				80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */,
+				A3990002399A399A399A0002 /* TempChannel.swift */,
 				87825A30DE5C455B6270187F /* InferenceJob.swift */,
 				71574A2074A14803B91ED695 /* InferenceRouter.swift */,
 				3697F74BD2283492B5A7790C /* KeyRouting.swift */,
@@ -626,6 +632,7 @@
 				FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */,
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				A3960002396A396A396A0002 /* RenderGateTests.swift */,
+				A3990005399A399A399A0005 /* TempChannelTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
 				1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */,
@@ -1367,6 +1374,7 @@
 				D0505F6B98C64B96BE87A753 /* DesignTargetSelectionTests.swift in Sources */,
 				FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */,
 				A3960001396A396A396A0001 /* RenderGateTests.swift in Sources */,
+				A3990004399A399A399A0004 /* TempChannelTests.swift in Sources */,
 				C98E23FB46AC666B6D1B5A72 /* InferenceRouterTests.swift in Sources */,
 				57E2333020DE9DC8910BDC3E /* InteractionModeExitTests.swift in Sources */,
 				CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */,
@@ -1415,6 +1423,7 @@
 				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
 				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
+				A3990001399A399A399A0001 /* TempChannel.swift in Sources */,
 				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
@@ -1489,6 +1498,7 @@
 				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
 				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
+				A3990003399A399A399A0003 /* TempChannel.swift in Sources */,
 				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,

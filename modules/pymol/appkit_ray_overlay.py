@@ -13,8 +13,9 @@ Usage from Python:
 """
 
 import os
-import tempfile
 import threading
+
+from pymol import raymol_tmp
 
 try:
     import objc
@@ -151,7 +152,7 @@ def show_ray_image(cmd_module):
 
     # Save the scene image to a temporary PNG file.
     # prior=1 reads CScene::Image without re-rendering.
-    tmp_path = os.path.join(tempfile.gettempdir(), "_pymol_ray_overlay.png")
+    tmp_path = raymol_tmp.channel_path("_pymol_ray_overlay", "png")
     try:
         cmd_module.png(tmp_path, prior=1, quiet=1)
     except Exception:

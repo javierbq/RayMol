@@ -32,7 +32,7 @@ enum HoverReadout {
 
     private static let separator = " / "
 
-    /// Decode a `pymol_hover_info.json` payload.
+    /// Decode a `pymol_hover_info_<pid>.json` payload.
     ///
     /// Returns nil for BOTH "unreadable" and "the pick missed": either way there
     /// is nothing to name, and unlike the design-pick payload (where a miss must

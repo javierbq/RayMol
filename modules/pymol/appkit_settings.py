@@ -9,15 +9,14 @@ Setting types (pymol.setting): 1 boolean, 2 int, 3 float, 4 float3, 5 color,
 6 string.
 """
 import json
-import os
-import tempfile
 
 from pymol import cmd
+from pymol import raymol_tmp
 from pymol import setting as _setting
 
 
 def _path():
-    return os.path.join(tempfile.gettempdir(), 'pymol_settings.json')
+    return raymol_tmp.channel_path('pymol_settings')
 
 
 def catalog():

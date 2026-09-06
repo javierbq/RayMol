@@ -367,10 +367,10 @@ def poll(objs):
     leaked into the terminal log. So write the full JSON to a temp file (same
     TMPDIR the Swift app reads) and emit only `OBJDETAIL:ready` — same pattern as
     the sequence panel."""
-    import json, os, tempfile
+    import json
+    from pymol import raymol_tmp
     try:
-        p = os.path.join(tempfile.gettempdir(),
-                         'pymol_objdetail_%d.json' % os.getpid())
+        p = raymol_tmp.channel_path('pymol_objdetail')
         with open(p, 'w') as _f:
             _f.write(json.dumps(_build(objs)))
         print('OBJDETAIL:ready')
@@ -568,7 +568,8 @@ def poll_panel():
     prefix but failed JSON decode (so the panel froze on the stale list), and the
     prefix-less continuation leaked into the console on every poll tick. Keep the
     payload off the feedback line entirely and emit only `OBJPANEL:ready`."""
-    import json, os, tempfile
+    import json
+    from pymol import raymol_tmp
     # Structure prediction's main-thread pump (#284). A prediction whose weights are
     # still downloading is submitted from HERE, because the download runs on a thread
     # that must not touch the session. Done before the object list is gathered, so a
@@ -678,8 +679,7 @@ def poll_panel():
         # filename prevents an empty instance from replacing another instance's
         # populated object list and briefly showing the empty-state overlay over
         # a rendered molecule.
-        p = os.path.join(tempfile.gettempdir(),
-                         'pymol_objpanel_%d.json' % os.getpid())
+        p = raymol_tmp.channel_path('pymol_objpanel')
         with open(p, 'w') as _f:
             _f.write(blob)
         print('OBJPANEL:ready')

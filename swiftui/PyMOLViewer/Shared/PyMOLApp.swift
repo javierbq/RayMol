@@ -17,6 +17,13 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         return Self.mask
     }
+
+    /// Drop this process's pid-scoped tempfile channels (#399). iOS is not
+    /// guaranteed to call this before a kill, which is why the names are unique
+    /// rather than merely cleaned up — this only keeps the container tidy.
+    func applicationWillTerminate(_ application: UIApplication) {
+        TempChannel.removeAll()
+    }
 }
 #endif
 
@@ -46,6 +53,9 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         PyMOLEngine.shared.runPython(
             "from pymol import predicting as _p; _p.clear_pending()")
+        // The tempfile channels are named after this pid (#399), so nothing will
+        // ever reuse them — without this they'd accumulate one set per run.
+        TempChannel.removeAll()
     }
 }
 #endif

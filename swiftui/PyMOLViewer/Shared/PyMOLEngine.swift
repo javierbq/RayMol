@@ -3005,7 +3005,7 @@ final class PyMOLEngine: ObservableObject {
     // TMPDIR), synchronously — called right after each metal_move call (the
     // longPressPick pattern). Updates the published gizmo + active object.
     private func readGizmo() {
-        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_gizmo.json")
+        let path = TempChannel.path(TempChannel.Stem.gizmo)
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
@@ -3039,7 +3039,7 @@ final class PyMOLEngine: ObservableObject {
 
     // Read the settings catalog JSON the bridge wrote to the temp dir.
     private func loadSettingsCatalogFile() {
-        let path = NSTemporaryDirectory() + "pymol_settings.json"
+        let path = TempChannel.path(TempChannel.Stem.settings)
         guard let data = FileManager.default.contents(atPath: path),
               let items = try? JSONDecoder().decode([SettingItem].self, from: data)
         else { return }
@@ -3137,15 +3137,16 @@ final class PyMOLEngine: ObservableObject {
     func fetchSequenceSelection() {
         guard isReady else { return }
         runPythonQuiet(
-            "import json, os, tempfile\n"
+            "import json\n"
             + "from pymol import cmd as _sc\n"
+            + "from pymol import raymol_tmp as _rt\n"
             + "_sel = []\n"
             + "try:\n"
             + "    if 'sele' in (_sc.get_names('selections') or []):\n"
             + "        _sc.iterate('sele and guide', '_sel.append(model+chr(47)+chain+chr(47)+resi)', space={'_sel': _sel})\n"
             + "except Exception:\n"
             + "    pass\n"
-            + "open(os.path.join(tempfile.gettempdir(), 'pymol_seqsel.json'), 'w').write(json.dumps(_sel))\n"
+            + "open(_rt.channel_path('\(TempChannel.Stem.sequenceSelection)'), 'w').write(json.dumps(_sel))\n"
             + "print('SEQSEL:ready')"
         )
     }
@@ -3248,8 +3249,7 @@ final class PyMOLEngine: ObservableObject {
     /// ignored: keeping the last text on screen would name a residue the cursor
     /// has already left, which is worse than showing nothing.
     private func readHoverInfo() {
-        let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_hover_info.json")
+        let path = TempChannel.path(TempChannel.Stem.hoverInfo)
         let data = FileManager.default.contents(atPath: path)
         let root = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
         let text = HoverReadout.text(payload: root)
@@ -3737,8 +3737,7 @@ final class PyMOLEngine: ObservableObject {
     /// resolve. That is deliberate: this runs off a 100 ms poll, and a throw here would
     /// take the whole feedback drain down.
     func parseDesignFormFeedback() {
-        let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_design_\(ProcessInfo.processInfo.processIdentifier).json")
+        let path = TempChannel.path(TempChannel.Stem.designForm)
         guard let data = FileManager.default.contents(atPath: path),
               let payload = try? JSONDecoder().decode(DesignFormPayload.self, from: data)
         else { return }
@@ -3750,8 +3749,7 @@ final class PyMOLEngine: ObservableObject {
     #endif
 
     func parsePredictFormFeedback() {
-        let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_predict_\(ProcessInfo.processInfo.processIdentifier).json")
+        let path = TempChannel.path(TempChannel.Stem.predictForm)
         guard let data = FileManager.default.contents(atPath: path),
               let payload = try? JSONDecoder().decode(PredictFormPayload.self, from: data)
         else { return }
@@ -3765,8 +3763,7 @@ final class PyMOLEngine: ObservableObject {
     // sceneState. File-based to avoid the ~1KB feedback-line cap splitting the
     // payload and leaking continuation lines into the terminal log.
     func parseObjectDetailFeedback(_ line: String) {
-        let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_objdetail_\(ProcessInfo.processInfo.processIdentifier).json")
+        let path = TempChannel.path(TempChannel.Stem.objectDetail)
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }

@@ -8,7 +8,7 @@ final class DesignModeStateTests: XCTestCase {
     /// _emit(), but a stale file from a real RayMol run must never be able to
     /// leak an active gizmo into a fixture.
     static let gizmoJSONPath =
-        (NSTemporaryDirectory() as NSString).appendingPathComponent("pymol_gizmo.json")
+        TempChannel.path(TempChannel.Stem.gizmo)
 
     override func setUp() {
         super.setUp()

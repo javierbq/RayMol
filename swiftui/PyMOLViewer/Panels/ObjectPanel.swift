@@ -4766,8 +4766,7 @@ extension PyMOLEngine {
     /// list after e.g. `split_states`) and the continuation leaked to the log (#231).
     func parseObjectPanelFeedback(_ line: String) {
         guard line.hasPrefix("OBJPANEL:") else { return }
-        let path = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("pymol_objpanel_\(ProcessInfo.processInfo.processIdentifier).json")
+        let path = TempChannel.path(TempChannel.Stem.objectPanel)
         guard let data = FileManager.default.contents(atPath: path) else { return }
 
         guard let payload = try? JSONDecoder().decode(PanelPayload.self, from: data) else {
