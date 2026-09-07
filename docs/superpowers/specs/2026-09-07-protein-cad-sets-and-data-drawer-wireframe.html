@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RayMol — Protein CAD workspace wireframe (2026-09-07)</title>
+<style>
+  :root { --ink:#222; --mid:#777; --pale:#bbb; --fill:#f2f2f2; --fill2:#e4e4e4; --hi:#000; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px; background:#fafafa; color:var(--ink);
+         font: 13px/1.45 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 40px 0 8px; }
+  p.note { color: var(--mid); max-width: 900px; margin: 0 0 12px; }
+  .frame { border: 1px solid var(--ink); background:#fff; width: 1100px; display: grid; }
+  .box { border: 1px solid var(--ink); background:#fff; padding: 6px 8px; overflow: hidden; }
+  .pale { border-color: var(--pale); color: var(--mid); }
+  .fill { background: var(--fill); }
+  .fill2 { background: var(--fill2); }
+  .label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--mid); }
+  .tab { display:inline-block; border:1px solid var(--pale); padding: 1px 8px; margin-right: 4px; color: var(--mid); }
+  .tab.on { border-color: var(--ink); color: var(--ink); background: var(--fill2); }
+  .btn { display:inline-block; border:1px solid var(--ink); padding: 1px 8px; margin-left: 4px; }
+  .row { display:flex; align-items:center; gap: 6px; padding: 2px 0; white-space: nowrap; }
+  .row.dim { color: var(--mid); }
+  .row.sel { background: var(--fill2); }
+  .cb { display:inline-block; width: 11px; height: 11px; border:1px solid var(--ink); }
+  .cb.on::after { content:"✓"; font-size: 9px; line-height: 9px; display:block; text-align:center; }
+  .cb.mixed::after { content:"–"; font-size: 9px; line-height: 9px; display:block; text-align:center; }
+  .ashlc { margin-left:auto; color: var(--mid); letter-spacing: .3em; }
+  .hist { display:inline-flex; align-items:flex-end; gap:1px; height: 12px; }
+  .hist i { display:block; width: 3px; background: var(--mid); }
+  table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  table.grid th, table.grid td { border-bottom: 1px solid var(--fill2); padding: 2px 6px; text-align: left; white-space: nowrap; }
+  table.grid th { font-weight: 600; border-bottom: 1px solid var(--ink); vertical-align: bottom; }
+  table.grid tr.sel td { background: var(--fill2); }
+  table.grid tr.peek td { outline: 1px dashed var(--ink); outline-offset: -1px; }
+  table.grid tr.rej td { color: var(--pale); text-decoration: line-through; }
+  .ramp { display:inline-block; width: 40px; height: 6px; background: linear-gradient(90deg,#ddd,#555); vertical-align: middle; }
+  .viewport { position: relative; background: #fff; }
+  .callout { position:absolute; font-size: 11px; color: var(--mid); border-left: 1px solid var(--pale); padding-left: 6px; }
+  .mol { position:absolute; border: 2px solid var(--ink); border-radius: 40% 60% 55% 45%; }
+  .mol.target { border-width: 3px; }
+  .mol.ghost { border: 1px dotted var(--pale); }
+  .mol.peek { border: 1.5px dashed var(--ink); }
+  .legend { display:flex; gap: 18px; color: var(--mid); font-size: 11px; margin: 8px 0 0; }
+  .legend span::before { content:""; display:inline-block; width: 18px; height: 10px; margin-right: 5px; vertical-align: -1px; border: 1px solid var(--ink); }
+  .legend .l-ghost::before { border: 1px dotted var(--pale); }
+  .legend .l-peek::before { border: 1.5px dashed var(--ink); }
+  .legend .l-target::before { border-width: 3px; }
+  .concept { display:grid; grid-template-columns: repeat(5, 1fr); gap: 16px; width: 1100px; align-items: start; }
+  .concept .box { min-height: 130px; }
+  .concept .box b { display:block; margin-bottom: 4px; }
+  .concept .box small { color: var(--mid); display:block; }
+  .arrowrow { width: 1100px; display:grid; grid-template-columns: repeat(5,1fr); gap:16px; color: var(--mid); font-size: 11px; text-align:center; }
+  .seq { font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: .12em; white-space: pre; }
+  .heat { height: 5px; margin: -2px 0 4px 126px; background: repeating-linear-gradient(90deg,#ccc 0 8px,#888 8px 14px,#eee 14px 22px,#666 22px 30px); }
+  .dag { position: relative; height: 200px; }
+  .node { position:absolute; border:1px solid var(--ink); border-radius: 50%; width: 16px; height: 16px; background:#fff; }
+  .node.big { width: 24px; height: 24px; background: var(--fill2); }
+  .node.dead { border-color: var(--pale); }
+  .col-l { position:absolute; top: 4px; font-size: 10px; color: var(--mid); text-transform: uppercase; letter-spacing: .08em; }
+  .line { position:absolute; height: 1px; background: var(--pale); transform-origin: 0 0; }
+</style>
+</head>
+<body>
+
+<h1>RayMol as a protein CAD: Sets, Entries and the Data drawer</h1>
+<p class="note">Wireframe for the design note of the same date. Grayscale on purpose. Everything drawn as a box is a real control; dotted or dashed things are transient. Frame 0 is the concept model; frames 1–5 are the macOS layout with the Data drawer on each of its tabs; frame 6 is iPad.</p>
+
+<h2>0 · Concept model — one noun becomes two</h2>
+<div class="concept">
+  <div class="box"><b>Set</b><small>collection of entries, one column schema</small>
+    made by: batch job · import · tool run on another set<br>
+    owns: one group (its scene footprint), saved views<br>
+    e.g. <code>rfd3_a1</code> 1024 entries</div>
+  <div class="box"><b>Entry</b><small>one candidate — data, never drawn by itself</small>
+    id · sequences · structure ref (lazy) · scalar metrics · residue arrays (lazy) · provenance/parents · ★ tag rejected note</div>
+  <div class="box"><b>View</b><small>saved filter + sort + columns over a set</small>
+    smart-folder semantics; what you feed to the next tool<br>
+    e.g. <code>rfd3_a1/top50</code></div>
+  <div class="box fill"><b>Object</b><small>unchanged: a scene actor</small>
+    staged entry → object linked by entry id<br>
+    lives in the set's group<br>
+    A/S/H/L/C, reps, states, as today</div>
+  <div class="box"><b>Selection ×2, linked</b><small>entry rows ⇄ atoms</small>
+    rows selected → points ringed in plot, staged objects highlighted<br>
+    click a staged object → its row</div>
+</div>
+<div class="arrowrow" style="margin-top:8px">
+  <div>batch / import → set</div>
+  <div>hover = <b>peek</b> (one hidden reusable object)</div>
+  <div>filter · sort · brush → view</div>
+  <div>space = <b>stage</b> · pin keeps it</div>
+  <div>Send to ▾ → child set with parent ids</div>
+</div>
+
+<h2>1 · macOS layout — Data drawer on the Table tab</h2>
+<p class="note">Inspector stays the scene column and gains a SETS section (like Alignments, not an object). The drawer replaces the sequence strip's slot; the strip is its Sequences tab. Row hover peeks (dashed outline in viewport); ● staged, ○ not staged, ◐ peeked.</p>
+<div class="frame" style="grid-template-columns: 1fr 340px; grid-template-rows: 30px 380px 250px 60px;">
+  <div class="box fill2" style="grid-column:1/3; display:flex; gap:8px; align-items:center;">
+    <span class="label">tools</span>
+    <span class="tab on">View</span><span class="tab">Move</span><span class="tab">Measure</span><span class="tab">Design</span><span class="tab">Binder</span>
+    <span style="margin-left:auto" class="tab">Predict ▾</span><span class="tab">Data ▾</span>
+  </div>
+  <div class="box viewport">
+    <div class="mol target" style="left:220px; top:70px; width:260px; height:230px;"></div>
+    <div class="mol" style="left:430px; top:120px; width:120px; height:80px; transform:rotate(-15deg)"></div>
+    <div class="mol" style="left:440px; top:150px; width:110px; height:75px; transform:rotate(10deg); border-color:#666"></div>
+    <div class="mol peek" style="left:425px; top:135px; width:125px; height:85px; transform:rotate(30deg)"></div>
+    <div class="mol ghost" style="left:415px; top:110px; width:140px; height:100px; transform:rotate(-40deg)"></div>
+    <div class="mol ghost" style="left:435px; top:125px; width:130px; height:95px; transform:rotate(55deg)"></div>
+    <div class="callout" style="left:600px; top:80px; width:130px">reference: 4HHB_target<br>all staged/peeked superposed on it</div>
+    <div class="callout" style="left:600px; top:150px; width:130px">focus d_0417 solid<br>pinned d_0088 second color<br>peek d_0351 dashed</div>
+    <div class="callout" style="left:600px; top:230px; width:130px">ensemble ghost (opt.)<br>212 passing, CA traces, capped</div>
+    <div class="label" style="position:absolute; left:10px; bottom:8px;">viewport · superpose on reference ☑ · ensemble ghost ☐ · color by ▾ entry</div>
+  </div>
+  <div class="box" style="padding:0">
+    <div style="padding:4px 8px; border-bottom:1px solid var(--ink)"><span class="tab on">Objects</span><span class="tab">Scenes</span><span class="tab">Movie</span><span class="tab">Notes</span><span class="tab">Display</span></div>
+    <div style="padding:6px 8px">
+      <div class="label">▾ objects</div>
+      <div class="row"><span class="cb on"></span>4HHB_target<span class="ashlc">A S H L C</span></div>
+      <div class="row"><span class="cb mixed"></span>▾ rfd3_a1 <span class="pale" style="border:1px solid var(--pale); padding:0 4px; font-size:10px">5 of 1024 staged</span><span class="ashlc">A S H L C</span></div>
+      <div class="row" style="padding-left:18px"><span class="cb on"></span>d_0417 ★ 📌<span class="ashlc">A S H L C</span></div>
+      <div class="row" style="padding-left:18px"><span class="cb on"></span>d_0088 📌<span class="ashlc">A S H L C</span></div>
+      <div class="row" style="padding-left:18px"><span class="cb on"></span>d_0102<span class="ashlc">A S H L C</span></div>
+      <div class="row dim" style="padding-left:18px">… 2 more</div>
+      <div class="label" style="margin-top:10px">▾ sets</div>
+      <div class="row sel"><b>rfd3_a1</b> <span class="pale">1024</span> <span class="hist"><i style="height:3px"></i><i style="height:6px"></i><i style="height:11px"></i><i style="height:8px"></i><i style="height:4px"></i><i style="height:2px"></i></span><span style="margin-left:auto" class="pale">▸ open</span></div>
+      <div class="row">mpnn_a1 <span class="pale">8192</span> <span class="hist"><i style="height:2px"></i><i style="height:5px"></i><i style="height:9px"></i><i style="height:12px"></i><i style="height:7px"></i><i style="height:3px"></i></span><span style="margin-left:auto" class="pale">▸ open</span></div>
+      <div class="row">boltz_a1 <span class="pale">212</span> <span class="pale" style="border:1px solid var(--pale); padding:0 4px; font-size:10px">running 140/212</span><span style="margin-left:auto" class="pale">▸ open</span></div>
+      <div class="row dim">+ New set from folder…</div>
+      <div class="label" style="margin-top:10px">▾ selections</div>
+      <div class="row dim">sele (14)</div>
+      <div class="label" style="margin-top:10px">▾ alignments</div>
+      <div class="row dim">4HHB_A_msa 8 × 24</div>
+    </div>
+  </div>
+  <div class="box" style="grid-column:1/3; padding:0">
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--ink)">
+      <span class="label">data</span> <b>rfd3_a1</b> <span class="pale">view: all ▾</span>
+      <span class="tab on" style="margin-left:12px">Table</span><span class="tab">Plot</span><span class="tab">Sequences</span><span class="tab">Lineage</span>
+      <span class="box pale" style="margin-left:auto; padding:1px 8px; width:340px">filter: plddt &gt; 80 and rmsd &lt; 1.5 and not rejected</span>
+      <span class="pale">212 of 1024</span>
+    </div>
+    <table class="grid">
+      <tr>
+        <th>★</th><th>◉</th><th>id</th>
+        <th>plddt ▾<br><span class="hist"><i style="height:2px"></i><i style="height:4px"></i><i style="height:9px"></i><i style="height:12px"></i><i style="height:6px"></i></span> <span class="ramp"></span></th>
+        <th>iptm<br><span class="hist"><i style="height:5px"></i><i style="height:10px"></i><i style="height:7px"></i><i style="height:3px"></i><i style="height:2px"></i></span></th>
+        <th>rmsd Å<br><span class="hist"><i style="height:12px"></i><i style="height:8px"></i><i style="height:4px"></i><i style="height:2px"></i><i style="height:1px"></i></span></th>
+        <th>len</th><th>native_fit</th><th>tool</th><th>parent</th><th>tags</th><th>thumb</th>
+      </tr>
+      <tr class="sel"><td>★</td><td>●</td><td>d_0417</td><td>91.2</td><td>0.84</td><td>1.1</td><td>72</td><td>-1.42</td><td>rfd3 v3.0</td><td>4HHB</td><td>patch-A</td><td>▣</td></tr>
+      <tr class="sel"><td>☆</td><td>●</td><td>d_0088</td><td>89.7</td><td>0.81</td><td>0.9</td><td>68</td><td>-1.51</td><td>rfd3 v3.0</td><td>4HHB</td><td></td><td>▣</td></tr>
+      <tr class="peek"><td>☆</td><td>◐</td><td>d_0351</td><td>88.0</td><td>0.77</td><td>1.4</td><td>75</td><td>-1.60</td><td>rfd3 v3.0</td><td>4HHB</td><td></td><td>▣</td></tr>
+      <tr><td>☆</td><td>○</td><td>d_0102</td><td>87.4</td><td>0.79</td><td>1.2</td><td>70</td><td>-1.58</td><td>rfd3 v3.0</td><td>4HHB</td><td></td><td>▣</td></tr>
+      <tr class="rej"><td>☆</td><td>○</td><td>d_0777</td><td>86.9</td><td>0.61</td><td>1.3</td><td>66</td><td>-1.93</td><td>rfd3 v3.0</td><td>4HHB</td><td>rejected</td><td>▣</td></tr>
+      <tr><td>☆</td><td>○</td><td>d_0019</td><td>86.2</td><td>0.80</td><td>1.0</td><td>73</td><td>-1.49</td><td>rfd3 v3.0</td><td>4HHB</td><td></td><td>▣</td></tr>
+      <tr class="dim"><td colspan="12" style="color:var(--mid)">⋮ virtualized rows … keys: ↑↓ peek · space stage · s star · x reject · ⌘A select all matching</td></tr>
+    </table>
+    <div style="display:flex; align-items:center; gap:4px; padding:4px 8px; border-top:1px solid var(--fill2)">
+      <span class="pale">2 selected</span>
+      <span class="btn">Stage</span><span class="btn">Pin</span><span class="btn">Export ▾</span><span class="btn">Send to ▾</span><span class="btn">Save view…</span>
+      <span style="margin-left:auto" class="pale">stage budget 5 · <u>change</u></span>
+    </div>
+  </div>
+  <div class="box fill" style="grid-column:1/3"><span class="label">console</span><br><span class="pale">PyMOL&gt; set_filter rfd3_a1, "plddt &gt; 80 and rmsd &lt; 1.5"   → 212 of 1024</span></div>
+</div>
+<div class="legend"><span class="l-target">reference / target</span><span>staged (solid)</span><span class="l-peek">peek (dashed, transient)</span><span class="l-ghost">ensemble ghost (dotted, optional)</span></div>
+
+<h2>2 · Drawer — Plot tab</h2>
+<p class="note">Same filtered rows as the table. Axis histograms are the range filters; brushing the scatter selects rows; staged points ringed, peek point large. Color-by takes any numeric column or a category (set, tag, parent).</p>
+<div class="frame" style="grid-template-columns: 1fr; grid-template-rows: 250px;">
+  <div class="box" style="padding:0">
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--ink)">
+      <span class="label">data</span> <b>rfd3_a1</b>
+      <span class="tab" style="margin-left:12px">Table</span><span class="tab on">Plot</span><span class="tab">Sequences</span><span class="tab">Lineage</span>
+      <span style="margin-left:16px" class="pale">x</span><span class="tab">rmsd ▾</span><span class="pale">y</span><span class="tab">plddt ▾</span><span class="pale">color</span><span class="tab">iptm ▾</span>
+      <span class="pale" style="margin-left:auto">212 of 1024 · 2 selected · brush to select</span>
+    </div>
+    <div style="display:grid; grid-template-columns: 60px 1fr 220px; grid-template-rows: 1fr 24px; height:200px">
+      <div class="box pale" style="border:0; border-right:1px solid var(--pale); display:flex; align-items:center; justify-content:center"><span class="hist" style="transform:rotate(-90deg)"><i style="height:3px"></i><i style="height:7px"></i><i style="height:12px"></i><i style="height:9px"></i><i style="height:4px"></i></span></div>
+      <div class="viewport" style="border:0">
+        <div style="position:absolute; left:120px; top:20px; width:260px; height:110px; border:1px dashed var(--ink); background:rgba(0,0,0,.03)"></div>
+        <div class="callout" style="left:390px; top:22px">brush = selection</div>
+        <div class="node" style="left:150px; top:40px; width:9px; height:9px; background:#333"></div>
+        <div class="node" style="left:190px; top:60px; width:9px; height:9px; background:#333; box-shadow:0 0 0 3px #fff, 0 0 0 4px #333"></div>
+        <div class="node" style="left:230px; top:50px; width:9px; height:9px; background:#333; box-shadow:0 0 0 3px #fff, 0 0 0 4px #333"></div>
+        <div class="node" style="left:260px; top:90px; width:14px; height:14px; border:1.5px dashed #333"></div>
+        <div class="node" style="left:320px; top:110px; width:7px; height:7px; background:#999"></div><div class="node" style="left:360px; top:140px; width:7px; height:7px; background:#aaa"></div><div class="node" style="left:420px; top:150px; width:7px; height:7px; background:#bbb"></div><div class="node" style="left:470px; top:160px; width:7px; height:7px; background:#ccc"></div><div class="node" style="left:500px; top:120px; width:7px; height:7px; background:#bbb"></div><div class="node" style="left:540px; top:165px; width:7px; height:7px; background:#ccc"></div><div class="node" style="left:300px; top:70px; width:7px; height:7px; background:#888"></div><div class="node" style="left:400px; top:100px; width:7px; height:7px; background:#aaa"></div><div class="node" style="left:600px; top:150px; width:7px; height:7px; background:#ddd"></div><div class="node" style="left:640px; top:170px; width:7px; height:7px; background:#ddd"></div>
+        <div class="callout" style="left:270px; top:100px">◐ peek d_0351</div>
+        <div class="callout" style="left:560px; top:60px; width:150px">rejected points drawn hollow; unfiltered (812) hidden or faint ☐</div>
+      </div>
+      <div class="box" style="border:0; border-left:1px solid var(--pale)">
+        <div class="label">hover</div>
+        <b>d_0351</b> <span class="pale">rfd3 · parent 4HHB</span><br>
+        plddt 88.0 · iptm 0.77 · rmsd 1.4 · len 75<br>
+        <div class="box fill" style="height:60px; margin-top:6px; display:flex; align-items:center; justify-content:center" ><span class="pale">thumbnail (from peek object)</span></div>
+        <span class="btn" style="margin:6px 0 0 0">Stage</span><span class="btn">★</span><span class="btn">✕</span>
+      </div>
+      <div></div>
+      <div class="box pale" style="border:0; border-top:1px solid var(--pale); display:flex; align-items:center; gap:8px"><span class="hist"><i style="height:12px"></i><i style="height:8px"></i><i style="height:4px"></i><i style="height:2px"></i><i style="height:1px"></i></span><span>rmsd Å 0 ——[ brushed 0–1.5 ]—— 6</span></div>
+      <div></div>
+    </div>
+  </div>
+</div>
+
+<h2>3 · Drawer — Sequences tab (today's strip, generalized)</h2>
+<p class="note">Rows are scene objects plus the selected/filtered entries, aligned by shared parent position or by an enabled alignment object. Per-residue metrics draw as a heat strip under each row, using the Design-mode domains. Above a few hundred rows the tab collapses to a consensus/logo band with the selected rows on top.</p>
+<div class="frame" style="grid-template-columns: 1fr; grid-template-rows: 230px;">
+  <div class="box" style="padding:0">
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--ink)">
+      <span class="label">data</span> <b>mpnn_a1</b> <span class="pale">view: from d_0417 ▾</span>
+      <span class="tab" style="margin-left:12px">Table</span><span class="tab">Plot</span><span class="tab on">Sequences</span><span class="tab">Lineage</span>
+      <span style="margin-left:16px" class="pale">heat</span><span class="tab">native_fit ▾</span><span class="pale">rows</span><span class="tab">selected + staged ▾</span>
+      <span class="pale" style="margin-left:auto">8 of 8192 · residue click selects atoms, as today</span>
+    </div>
+    <div style="padding:6px 8px">
+      <div class="seq"><span style="display:inline-block;width:118px;color:var(--mid)">4HHB_target/A</span>VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHF</div>
+      <div class="heat" style="opacity:.35"></div>
+      <div class="seq"><span style="display:inline-block;width:118px;color:var(--mid)">d_0417 ●★    </span>MKEELLKKAEELIKRAKELG--LDPEEVKKLLEEAKKLLEEAG</div>
+      <div class="heat"></div>
+      <div class="seq"><span style="display:inline-block;width:118px;color:var(--mid)">s_0417_03 ●  </span>MREELIRKAEEIIRKAKEIG--LDPETVRRLLEEARRLIEEAG</div>
+      <div class="heat"></div>
+      <div class="seq"><span style="display:inline-block;width:118px;color:var(--mid)">s_0417_05 ◐  </span>MKEEIVKRAEELVKKAKEMG--IDPEEIKKLIEEAKKIVEEAG</div>
+      <div class="heat"></div>
+      <div class="seq" style="color:var(--mid)"><span style="display:inline-block;width:118px">consensus (8)</span>MkEEl.kkAEEli.kAKElG--lDPEev.kLleEAkkl.eEAG</div>
+      <div class="box fill" style="margin:6px 0 0 118px; height:26px; display:flex; align-items:center"><span class="pale">logo / conservation band for the rest of the view (8184 rows not drawn)</span></div>
+    </div>
+  </div>
+</div>
+
+<h2>4 · Drawer — Lineage tab</h2>
+<p class="note">Left-to-right DAG over sets: target → backbones → sequences → folds. Node fill from a chosen metric; hollow nodes were rejected or failed. Clicking a node filters the Table to its descendants, so "which backbones gave foldable sequences" is one click.</p>
+<div class="frame" style="grid-template-columns: 1fr; grid-template-rows: 240px;">
+  <div class="box" style="padding:0">
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--ink)">
+      <span class="label">data</span> <b>campaign a1</b>
+      <span class="tab" style="margin-left:12px">Table</span><span class="tab">Plot</span><span class="tab">Sequences</span><span class="tab on">Lineage</span>
+      <span style="margin-left:16px" class="pale">size by</span><span class="tab">iptm ▾</span>
+      <span class="pale" style="margin-left:auto">click node → filter table to descendants</span>
+    </div>
+    <div class="dag">
+      <div class="col-l" style="left:40px">target</div><div class="col-l" style="left:300px">rfd3_a1 · 1024 backbones</div><div class="col-l" style="left:600px">mpnn_a1 · 8192 sequences</div><div class="col-l" style="left:900px">boltz_a1 · 212 folds</div>
+      <div class="node big" style="left:60px; top:90px"></div>
+      <div class="node big" style="left:330px; top:40px"></div><div class="node" style="left:330px; top:80px"></div><div class="node" style="left:330px; top:110px"></div><div class="node dead" style="left:330px; top:140px"></div><div class="node dead" style="left:330px; top:170px"></div>
+      <div class="node big" style="left:630px; top:30px"></div><div class="node" style="left:630px; top:55px"></div><div class="node dead" style="left:630px; top:80px"></div><div class="node" style="left:630px; top:105px"></div><div class="node dead" style="left:630px; top:130px"></div><div class="node" style="left:630px; top:155px"></div>
+      <div class="node big" style="left:930px; top:30px"></div><div class="node" style="left:930px; top:70px"></div><div class="node dead" style="left:930px; top:110px"></div>
+      <div class="line" style="left:84px; top:102px; width:250px; transform:rotate(-13deg)"></div><div class="line" style="left:84px; top:102px; width:246px; transform:rotate(-3deg)"></div><div class="line" style="left:84px; top:102px; width:248px; transform:rotate(4deg)"></div><div class="line" style="left:84px; top:102px; width:250px; transform:rotate(10deg)"></div>
+      <div class="line" style="left:354px; top:52px; width:278px; transform:rotate(-3deg)"></div><div class="line" style="left:354px; top:52px; width:280px; transform:rotate(3deg)"></div><div class="line" style="left:346px; top:88px; width:290px; transform:rotate(6deg)"></div><div class="line" style="left:346px; top:118px; width:290px; transform:rotate(8deg)"></div>
+      <div class="line" style="left:654px; top:42px; width:278px; transform:rotate(0deg)"></div><div class="line" style="left:646px; top:63px; width:290px; transform:rotate(3deg)"></div><div class="line" style="left:646px; top:113px; width:290px; transform:rotate(1deg)"></div>
+      <div class="callout" style="left:700px; top:180px">hollow = rejected / failed · big = selected · ★ overlays</div>
+      <div class="callout" style="left:40px; top:150px; width:200px">4HHB_target · hotspots A:42,45,49<br>the run's inputs live here</div>
+    </div>
+  </div>
+</div>
+
+<h2>5 · What the panel looks like without any set (unchanged experience)</h2>
+<p class="note">A session with three PDBs sees no drawer by default, an empty SETS section collapsed, and the Sequences tab where the strip used to be. Nothing about A/S/H/L/C, groups, states or the inspector cards changes. <code>n_designs=1</code> still yields one object; it just also has a one-entry set behind it.</p>
+<div class="frame" style="grid-template-columns: 1fr 340px; grid-template-rows: 160px 70px;">
+  <div class="box viewport"><div class="mol target" style="left:300px; top:20px; width:220px; height:120px;"></div></div>
+  <div class="box"><div class="label">▾ objects</div>
+    <div class="row"><span class="cb on"></span>1abc<span class="ashlc">A S H L C</span></div>
+    <div class="row"><span class="cb on"></span>2xyz<span class="ashlc">A S H L C</span></div>
+    <div class="row"><span class="cb on"></span>rfd3_design_a1<span class="ashlc">A S H L C</span></div>
+    <div class="label" style="margin-top:8px">▸ sets <span class="pale">1</span></div></div>
+  <div class="box" style="grid-column:1/3; padding:4px 8px"><span class="tab">Table</span><span class="tab">Plot</span><span class="tab on">Sequences</span><span class="tab">Lineage</span>
+    <div class="seq" style="margin-top:4px"><span style="display:inline-block;width:118px;color:var(--mid)">1abc/A</span>MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEK</div></div>
+</div>
+
+<h2>6 · iPad — drawer is the existing bottom panel</h2>
+<p class="note">Same tabs in the bottom pane the app already sizes with <code>panelFrac</code>. Inspector collapses to a side sheet; SETS is its own section there. iPhone: sets open as a full-screen sheet with Table and Plot only; tap = peek, swipe = stage/star/reject.</p>
+<div class="frame" style="width:720px; grid-template-columns: 1fr; grid-template-rows: 32px 220px 200px;">
+  <div class="box fill2" style="display:flex; gap:8px; align-items:center"><span class="tab on">View</span><span class="tab">Design</span><span class="tab">Binder</span><span style="margin-left:auto" class="tab">Objects</span><span class="tab">Data</span></div>
+  <div class="box viewport"><div class="mol target" style="left:260px; top:30px; width:200px; height:150px;"></div><div class="mol" style="left:400px; top:70px; width:90px; height:60px"></div><div class="mol peek" style="left:395px; top:80px; width:95px; height:65px; transform:rotate(25deg)"></div>
+    <div class="callout" style="left:20px; top:20px">tap row → peek · long-press → stage</div></div>
+  <div class="box" style="padding:0">
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--ink)"><b>rfd3_a1</b><span class="tab on" style="margin-left:8px">Table</span><span class="tab">Plot</span><span class="tab">Sequences</span><span class="pale" style="margin-left:auto">212 of 1024 · ⌕</span></div>
+    <table class="grid">
+      <tr><th>★</th><th>◉</th><th>id</th><th>plddt ▾</th><th>iptm</th><th>rmsd</th><th>len</th></tr>
+      <tr class="sel"><td>★</td><td>●</td><td>d_0417</td><td>91.2</td><td>0.84</td><td>1.1</td><td>72</td></tr>
+      <tr><td>☆</td><td>●</td><td>d_0088</td><td>89.7</td><td>0.81</td><td>0.9</td><td>68</td></tr>
+      <tr class="peek"><td>☆</td><td>◐</td><td>d_0351</td><td>88.0</td><td>0.77</td><td>1.4</td><td>75</td></tr>
+      <tr><td>☆</td><td>○</td><td>d_0102</td><td>87.4</td><td>0.79</td><td>1.2</td><td>70</td></tr>
+    </table>
+  </div>
+</div>
+
+<p class="note" style="margin-top:40px">Not drawn: the Send to ▾ menu (Predict · Design/MPNN · Binder Design · Export), the stage-budget prompt, the import sheet for a folder + score file, and the set row's context menu (rename, delete, embed structures into session).</p>
+</body>
+</html>
