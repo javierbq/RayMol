@@ -599,23 +599,29 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     if not os.path.isfile(filename):
         raise SetInputError('no such file: %s' % filename)
     new = store.Container(filename)          # SetFormatError if it is not ours
+    blob = new.read_session()
+    if not blob and not partial:
+        # A container written by the store alone (a batch that never saw Save, an
+        # exported set) carries no session. Clear the scene FIRST: `reinitialize`
+        # resets the store to a fresh working file, which would close the document if
+        # it were already installed.
+        _self.reinitialize()
     old = container()
     old_path = old.path
     store.replace(new)
-    if os.path.abspath(old_path) == os.path.abspath(store.working_path()):
+    if os.path.abspath(old_path) == os.path.abspath(store.working_path()) \
+            and os.path.abspath(old_path) != os.path.abspath(filename):
         for suffix in ('', '-wal', '-shm'):
             try:
                 os.remove(old_path + suffix)
             except OSError:
                 pass
-    blob = new.read_session()
     _LOADING_RAYMOL = True
     try:
         if blob:
             session = pickle.loads(blob)
             r = _self.set_session(session, quiet=quiet, partial=partial, steal=1)
         else:
-            _self.reinitialize()
             reconcile(_self=_self)
             r = _self.DEFAULT_SUCCESS
     finally:

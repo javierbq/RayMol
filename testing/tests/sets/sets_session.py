@@ -128,6 +128,22 @@ class RaymolRoundTrip(SetSessionTestCase):
         cmd.load(pse)
         self.assertNotIn(binding.PEEK, cmd.get_names('all'))
 
+    def testLoadingAContainerWithoutASessionKeepsItsSets(self):
+        cmd.set_create('s')
+        cmd.fab('ACD', 'p')
+        cmd.set_add('s', 'p')
+        path = self.path('nosession.raymol')
+        moved = store.active().save_into(path)     # the store alone: no session blob
+        moved.close()
+        cmd.reinitialize()
+        cmd.fab('GGG', 'junk')
+        cmd.load(path)
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(path))
+        self.assertEqual([s['name'] for s in cmd.set_list()], ['s'])
+        self.assertNotIn('junk', cmd.get_names('all'), 'a document load replaces the scene')
+        cmd.set_stage('s', 'p')
+        self.assertIn('p', cmd.get_names('all'))
+
     def testLoadingANonRaymolFileRaises(self):
         bogus = self.path('bogus.raymol')
         with open(bogus, 'wb') as h:
