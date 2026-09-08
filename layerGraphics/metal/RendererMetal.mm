@@ -174,6 +174,8 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
 {
   _modelviewMatrix = identityMatrix();
   _modelviewInv = identityMatrix();
+  _rtBaseModelView = identityMatrix();
+  _rtBaseModelViewInv = identityMatrix();
   _projectionMatrix = identityMatrix();
   std::memset(_uniformData, 0, sizeof(_uniformData));
   // Hardware ray tracing capability (M-series Apple GPUs support it). Gated so
@@ -621,6 +623,16 @@ void RendererMetal::setInteriorCapColor(float r, float g, float b, bool override
   _capColorOverride = overrideColor;
 }
 
+void RendererMetal::setBaseModelView(const float* m)
+{
+  if (!m) return;
+  std::memcpy(_rtBaseModelView.data(), m, 16 * sizeof(float));
+  simd_float4x4 mv;
+  std::memcpy(&mv, m, 64);
+  simd_float4x4 inv = simd_inverse(mv);
+  std::memcpy(_rtBaseModelViewInv.data(), &inv, 64);
+}
+
 void RendererMetal::setRepClip(float front, float back)
 {
   _repClipFront = front;       // < 0 disables per-rep clip in the lit fragment
@@ -755,6 +767,8 @@ void RendererMetal::beginFrame()
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
   _rtFrameKeys.clear();
+  _rtFrameXform.clear();
+  _rtFrameClip.clear();
   _rtFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
@@ -2478,6 +2492,23 @@ void RendererMetal::ensureRayTracingAS()
     _rtGeomDirty = false;
     if (nSph == 0 && nTris == 0) { _rtTriCount = 0; _rtReady = false; return; }
 
+    // Bake the CURRENT visible pose into each caster (#427, #425). `xf` is the
+    // occurrence's pose delta (base^-1 · M_obj); applying it puts the cached
+    // model-space geometry into the shared world space the rays trace against.
+    // `clip` is the eye-depth slab active for that draw — a caster fully outside
+    // it is dropped so surface-clipped-open cavities stop occluding.
+    auto xformPt = [](const Mat4& M, float x, float y, float z, float o[3]) {
+      o[0] = M[0] * x + M[4] * y + M[8] * z + M[12];
+      o[1] = M[1] * x + M[5] * y + M[9] * z + M[13];
+      o[2] = M[2] * x + M[6] * y + M[10] * z + M[14];
+    };
+    const Mat4& base = _rtBaseModelView;
+    auto eyeDepth = [&](const float w[3]) {  // -(base·world).z, positive toward cam
+      return -(base[2] * w[0] + base[6] * w[1] + base[10] * w[2] + base[14]);
+    };
+    // Identity fallback for keys whose parallel pose slot is somehow missing.
+    static const Mat4 kIdentity = identityMatrix();
+
     if (nSph > 0) buildSphereProtoAS();
     // (Re)build the world-triangle primitive AS (sticks + cartoon/surface).
     [_rtTriProtoAS release];  // MRC: release the previous rebuild's proto AS (+1)
@@ -2489,15 +2520,40 @@ void RendererMetal::ensureRayTracingAS()
                                options:MTLResourceStorageModeShared]
         : nil;
     if (!tb) nTris = 0;
+    size_t actualTris = 0;   // triangles kept after pose-baking + clip drop
     if (nTris > 0) {
       float* dst = static_cast<float*>(tb.contents);
-      for (const void* k : _rtFrameKeys) {
-        auto it = _rtGeomCache.find(k);
+      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
+        auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
         if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
-        std::memcpy(dst, it->second.tris.data(),
-                    it->second.tris.size() * sizeof(float));
-        dst += it->second.tris.size();
+        const std::vector<float>& tr = it->second.tris;
+        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+        const bool clipOn = cf >= 0.0f;
+        for (size_t t = 0; t + 8 < tr.size(); t += 9) {
+          float w[3][3];
+          xformPt(xf, tr[t + 0], tr[t + 1], tr[t + 2], w[0]);
+          xformPt(xf, tr[t + 3], tr[t + 4], tr[t + 5], w[1]);
+          xformPt(xf, tr[t + 6], tr[t + 7], tr[t + 8], w[2]);
+          if (clipOn) {
+            float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
+            // Drop only triangles fully outside the slab, so the clip cut edge
+            // (partially-inside tris) still casts and the cavity walls stay lit.
+            if ((d0 < cf && d1 < cf && d2 < cf) ||
+                (d0 > cb && d1 > cb && d2 > cb))
+              continue;
+          }
+          std::memcpy(dst + 0, w[0], 3 * sizeof(float));
+          std::memcpy(dst + 3, w[1], 3 * sizeof(float));
+          std::memcpy(dst + 6, w[2], 3 * sizeof(float));
+          dst += 9;
+          ++actualTris;
+        }
       }
+    }
+    nTris = actualTris;
+    if (nTris > 0) {
       MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
           [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
       tgeo.vertexBuffer = tb;
@@ -2515,6 +2571,9 @@ void RendererMetal::ensureRayTracingAS()
       [_rtTriBuffer release];
       _rtTriBuffer = tb;
     } else {
+      // No triangles survived (none present, or all clipped away). Release the
+      // upper-bound buffer we may have allocated so it does not leak (#425).
+      [tb release];
       [_rtTriBuffer release];
       _rtTriBuffer = nil;
     }
@@ -2535,24 +2594,38 @@ void RendererMetal::ensureRayTracingAS()
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
     size_t ii = 0;
     if (sphereIdx >= 0) {
-      for (const void* k : _rtFrameKeys) {
-        auto git = _rtGeomCache.find(k);
+      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
+        auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
         if (git == _rtGeomCache.end()) continue;
         const std::vector<float>& sp = git->second.spheres;
-        for (size_t i = 0; i * 4 + 3 < sp.size(); ++i, ++ii) {
+        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+        const bool clipOn = cf >= 0.0f;
+        for (size_t i = 0; i * 4 + 3 < sp.size(); ++i) {
           float x = sp[i * 4], y = sp[i * 4 + 1],
                 z = sp[i * 4 + 2], r = sp[i * 4 + 3];
           if (r <= 0.0f) r = 0.001f;
+          // Bake the pose delta: world center = xf·center, and the sphere's
+          // linear block is xf's rotation scaled by r (a rotation keeps it a
+          // sphere), so the instance transform is xf · (scale(r)·translate(c)).
+          float wc[3];
+          xformPt(xf, x, y, z, wc);
+          if (clipOn) {
+            float d = eyeDepth(wc);
+            if (d + r < cf || d - r > cb) continue;  // sphere fully outside slab
+          }
           MTLPackedFloat4x3 m;
-          m.columns[0].x = r; m.columns[0].y = 0; m.columns[0].z = 0;
-          m.columns[1].x = 0; m.columns[1].y = r; m.columns[1].z = 0;
-          m.columns[2].x = 0; m.columns[2].y = 0; m.columns[2].z = r;
-          m.columns[3].x = x; m.columns[3].y = y; m.columns[3].z = z;
+          m.columns[0].x = xf[0] * r; m.columns[0].y = xf[1] * r; m.columns[0].z = xf[2] * r;
+          m.columns[1].x = xf[4] * r; m.columns[1].y = xf[5] * r; m.columns[1].z = xf[6] * r;
+          m.columns[2].x = xf[8] * r; m.columns[2].y = xf[9] * r; m.columns[2].z = xf[10] * r;
+          m.columns[3].x = wc[0]; m.columns[3].y = wc[1]; m.columns[3].z = wc[2];
           inst[ii].transformationMatrix = m;
           inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
           inst[ii].mask = 0xFF;
           inst[ii].intersectionFunctionTableOffset = 0;
           inst[ii].accelerationStructureIndex = sphereIdx;
+          ++ii;
         }
       }
     }
@@ -2571,10 +2644,19 @@ void RendererMetal::ensureRayTracingAS()
       ++ii;
     }
 
+    // Everything the frame recorded may have been clipped away (#425): nothing
+    // to trace against, so leave RT off this frame rather than build an empty AS.
+    if (ii == 0) {
+      [instBuf release];
+      _rtTriCount = 0;
+      _rtReady = false;
+      return;
+    }
+
     MTLInstanceAccelerationStructureDescriptor* idesc =
         [MTLInstanceAccelerationStructureDescriptor descriptor];
     idesc.instancedAccelerationStructures = protos;
-    idesc.instanceCount = (NSUInteger)nInst;
+    idesc.instanceCount = (NSUInteger)ii;
     idesc.instanceDescriptorBuffer = instBuf;
     [_rtInstanceAS release];  // MRC: release the previous rebuild's instance AS (+1)
     _rtInstanceAS = buildAccelStructure(idesc);

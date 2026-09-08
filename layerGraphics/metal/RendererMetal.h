@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#include <simd/simd.h>
 
 #include <array>
 #include <atomic>
@@ -166,6 +167,7 @@ public:
       const void* indexData, size_t indexDataSize, int interiorCap = 0) override;
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
   void setRepClip(float front, float back) override;
+  void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
@@ -614,6 +616,20 @@ private:
   uint64_t _rtSphereHash = 0;     // signature of the built set (rebuild on change)
   size_t _rtBuiltCount = 0;
 
+  // Per-occurrence pose + clip captured alongside every _rtFrameKeys entry so
+  // the built AS reflects the CURRENTLY VISIBLE geometry, not the cached
+  // model-space geometry alone:
+  //  * _rtFrameXform: the object's Move-mode pose delta, base^-1 · M_obj. The
+  //    shared camera is divided out, so it is identity for an unmoved object and
+  //    equals its TTT for a moved one — a pure orbit leaves it unchanged (#427).
+  //  * _rtFrameClip: the per-rep clip slab {front,back} in eye depth active for
+  //    that draw (front<0 = none). Casters fully outside the slab are dropped so
+  //    surface-clipped-open cavities stop occluding (#425).
+  std::vector<Mat4> _rtFrameXform;
+  std::vector<std::array<float, 2>> _rtFrameClip;
+  Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
+  Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
+
   // Record this frame's use of the RT geometry derived from the CPU buffer
   // `key`, calling `extract(RTGeom&)` only when it has not been extracted yet
   // or when `params` (the draw-call scalars it depends on) changed. `alias`, if
@@ -639,10 +655,48 @@ private:
     if (g.spheres.empty() && g.tris.empty())
       return;
     _rtFrameKeys.push_back(key);
+
+    // Pose delta = base^-1 · M_obj: divides the shared camera out of this draw's
+    // modelview, leaving identity for an unmoved object and its Move-mode TTT for
+    // a moved one. Baked into the caster geometry at build so shadows/AO follow
+    // the object (#427); being camera-independent, an orbit does not perturb it.
+    simd_float4x4 baseInv, mObj;
+    std::memcpy(&baseInv, _rtBaseModelViewInv.data(), 64);
+    std::memcpy(&mObj, _modelviewMatrix.data(), 64);
+    simd_float4x4 d = simd_mul(baseInv, mObj);
+    Mat4 delta;
+    std::memcpy(delta.data(), &d, 64);
+    _rtFrameXform.push_back(delta);
+    _rtFrameClip.push_back({_repClipFront, _repClipBack});
+
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
     _rtFrameSig ^= g.gen;
     _rtFrameSig *= 1099511628211ULL;
+    // Fold the pose delta so a Move rebuilds the AS (camera-removed, so a pure
+    // orbit does not) ...
+    for (float f : delta) {
+      uint32_t b;
+      std::memcpy(&b, &f, 4);
+      _rtFrameSig = (_rtFrameSig ^ b) * 1099511628211ULL;
+    }
+    // ... and the clip slab so dragging the clip re-syncs the caster set. When
+    // the clip is active the slab is eye-space, so also fold the camera-space
+    // modelview: an orbit then correctly rebuilds the clipped-away set (#425).
+    {
+      uint32_t bf, bb;
+      std::memcpy(&bf, &_repClipFront, 4);
+      std::memcpy(&bb, &_repClipBack, 4);
+      _rtFrameSig = (_rtFrameSig ^ bf) * 1099511628211ULL;
+      _rtFrameSig = (_rtFrameSig ^ bb) * 1099511628211ULL;
+    }
+    if (_repClipFront >= 0.0f) {
+      for (float f : _modelviewMatrix) {
+        uint32_t b;
+        std::memcpy(&b, &f, 4);
+        _rtFrameSig = (_rtFrameSig ^ b) * 1099511628211ULL;
+      }
+    }
   }
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

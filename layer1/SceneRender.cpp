@@ -411,6 +411,10 @@ void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo)
       G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
       G->Renderer->matrixMode(0); // modelview
       G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+      // Real-time RT: remember the camera-only modelview so each object's
+      // Move-mode TTT can be separated out and its casters placed in the shared
+      // world space the shadow/AO rays trace against (#427, #425).
+      G->Renderer->setBaseModelView(SceneGetModelViewMatrixPtr(G));
     }
 
     /* get the Z axis vector for sorting transparent objects */
