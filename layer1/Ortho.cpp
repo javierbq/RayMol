@@ -2472,6 +2472,21 @@ void OrthoReshape(PyMOLGlobals* G, int width, int height, int force)
     block->setMargin(height - textBottom, 0, 0, 0);
     block->active = textBottom ? true : false;
 
+    // The Metal backend renders the Scene block only: the native app has its
+    // own panels for the internal GUI, feedback, movie strip and sequence
+    // viewer, and never draws the Ortho blocks. Reserving window space for
+    // them anyway shrinks the Scene block while the renderer still fills the
+    // whole drawable, so the projection aspect (Scene W/H) no longer matches
+    // the viewport and the picture is stretched vertically (#426). In practice
+    // the strip was the 15 px movie panel that any multi-state object brings
+    // in; it is a fixed pixel count, so it distorts twice as much on a 1x
+    // display as on a 2x one. Let the Scene block span the full window.
+    if (G->Renderer) {
+      sceneTop = 0;
+      sceneBottom = 0;
+      sceneRight = 0;
+    }
+
     block = SceneGetBlock(G);
     block->setMargin(sceneTop, 0, sceneBottom, sceneRight);
 
