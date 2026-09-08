@@ -50,10 +50,13 @@ readable by `sqlite3` anywhere.
   not worked around.
 - **One writer.** Python on the main thread, which is where `designing.pump` and every
   `cmd.*` already run. Readers (a future Swift connection, #417) open read-only.
-- **Always open.** The store has a database from startup. Untitled sessions use a
-  pid-scoped working file, `raymol_sets_<pid>.raymol` in `TMPDIR` (or `RAYMOL_SETS_DIR`),
-  for the reason #399 pid-scoped the panel channels. It is deleted on clean exit and
-  swept on next launch.
+- **Always open.** The store has a database from startup, so a run never requires a
+  Save first. In the app the working file for an untitled session IS the autosave: it
+  lives where `PyMOLEngine` keeps `autosave.pse` today and is offered back on cold
+  launch, so an untitled session with a six-hour batch survives a crash and a quit. Under
+  command-line PyMOL with no app, the fallback is a pid-scoped `raymol_sets_<pid>.raymol`
+  in `TMPDIR` (or `RAYMOL_SETS_DIR`), deleted on clean exit and swept on next launch, for
+  the reason #399 pid-scoped the panel channels.
 - **Results are written when they land**, not on Save. Opening a document opens it in
   place, so a batch that runs for six hours is on disk in the user's file after the first
   design. Only the session blob waits for an explicit Save. This is a deliberate trade:
@@ -67,7 +70,12 @@ readable by `sqlite3` anywhere.
   `.pse` as ordinary objects; `entries.staged_object` says which entry each is.
 - **`save x.pse`** writes plain PyMOL as today. When any set is non-empty it prints a
   warning naming the sets left out. Nothing set-related is embedded in a `.pse`, so an
-  older RayMol or upstream PyMOL opens it unchanged.
+  older RayMol or upstream PyMOL opens it unchanged. In the app, ⌘S on an open legacy
+  `.pse` whose session has since gained sets must not overwrite silently: a sheet offers
+  Save as `.raymol` beside it, save the `.pse` without sets, or cancel (#417).
+  **Open:** whether `.raymol` is the default extension for every new session, or only
+  once a session holds a set. Recommended: always, with "Export PyMOL Session" as the
+  `.pse` path.
 - **`load x.pse`** clears the store to a fresh working file. A session restore task
   registered like the metrics one does this, so a `.pse` opened after a `.raymol` does
   not inherit the previous document's sets.
