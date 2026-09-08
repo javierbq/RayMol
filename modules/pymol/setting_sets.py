@@ -103,17 +103,14 @@ USAGE
     """
     row = _set(name)
     new_name = str(new_name).strip()
-    _c().rename_set(row['id'], new_name)
+    _c().rename_set(row['id'], new_name)       # rewrites group_name too
     group = row.get('group_name') or row['name']
-    if group in (_self.get_names('public_group_objects') or []) and group != new_name:
+    if group != new_name and group in (_self.get_names('public_group_objects') or []):
         try:
             _self.set_name(group, new_name)
         except Exception as exc:
             colorprinting.warning(' set_rename: group %s kept its name (%s)' % (group, exc))
-        else:
-            _c().update_set(row['id'], group_name=new_name)
-    else:
-        _c().update_set(row['id'], group_name=new_name)
+            _c().update_set(row['id'], group_name=group)
     return new_name
 
 
@@ -130,15 +127,16 @@ USAGE
     """
     c = _c()
     if not str(name).strip():
-        rows = c.sets()
+        rows = [dict(s, count=c.count(s['id']),
+                     staged=c.count(s['id'], 'e.staged_object IS NOT NULL'))
+                for s in c.sets()]
         if not int(quiet):
             if not rows:
                 colorprinting.parrot(' set_list: no sets')
             for s in rows:
                 colorprinting.parrot(' %-24s %-11s %6d entries  %d staged'
-                                     % (s['name'], s['kind'], c.count(s['id']),
-                                        c.count(s['id'], 'e.staged_object IS NOT NULL')))
-        return [dict(s, count=c.count(s['id'])) for s in rows]
+                                     % (s['name'], s['kind'], s['count'], s['staged']))
+        return rows
     row = _set(name)
     entries = selectors.filtered(c, row)
     if not int(quiet):
@@ -428,6 +426,11 @@ USAGE
 
     set_filter name [, expr ]
 
+NOTES
+
+    On the command line everything after the set name is the expression, so '=' and
+    commas inside it are safe. Clearing: `set_filter name` with nothing after it.
+
 EXAMPLES
 
     set_filter rfd3_a1, plddt > 80 and rmsd < 1.5 and not rejected
@@ -470,16 +473,23 @@ def set_view_save(name, view, filter=None, sort='', quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "set_view_save" saves the active filter and sort (or the given ones) as a named
-    view, usable as the selector view:NAME.
+    "set_view_save" saves the active filter and sort as a named view, usable as the
+    selector view:NAME. A filter expression given as the third argument replaces the
+    active one; on the command line everything after the view name is that expression
+    (the sort is always the active sort there; pass sort= from Python).
 
 USAGE
 
-    set_view_save name, view [, filter [, sort ]]
+    set_view_save name, view [, filter ]
+
+EXAMPLES
+
+    set_view_save rfd3_a1, top50
+    set_view_save rfd3_a1, tight, rmsd < 1.0 and plddt > 85
     """
     c = _c()
     row = _set(name)
-    expr = row.get('filter') or '' if filter is None else str(filter)
+    expr = (row.get('filter') or '') if filter is None else str(filter).strip()
     selectors.count_filtered(c, row, expr=expr)    # validate
     sort = str(sort).strip() or (row.get('sort_key') or '')
     c.save_view(row['id'], str(view).strip(), filter=expr, sort_key=sort,

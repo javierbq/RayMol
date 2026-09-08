@@ -132,8 +132,8 @@ class MappingTest(SetStoreTestCase):
 
     def testColumnName(self):
         self.assertEqual(schema.column_name('plddt'), 'plddt')
-        self.assertEqual(schema.column_name('plddt', 'B'), 'plddt__B')
-        self.assertEqual(schema.column_name('plddt', 'A/1'), 'plddt__A_1')
+        self.assertEqual(schema.column_name('plddt', 'B'), 'plddt__b')
+        self.assertEqual(schema.column_name('plddt', 'A/1'), 'plddt__a_1')
         self.assertEqual(schema.metrics_table('abcd1234'), 'm_abcd1234')
 
     def testKeyAlphabet(self):
@@ -217,7 +217,7 @@ class ColumnTest(SetStoreTestCase):
         c.declare_columns(sid, self.specs())
         cols = self.columns_of(c, sid)
         self.assertEqual(cols, ['entry_id', 'plddt', 'n_models', 'label', 'ok',
-                                'iptm__B'])
+                                'iptm__b'])
         types = {r[1]: r[2] for r in c._conn.execute('PRAGMA table_info("m_%s")' % sid)}
         self.assertEqual(types['plddt'], 'REAL')
         self.assertEqual(types['n_models'], 'INTEGER')
@@ -229,7 +229,7 @@ class ColumnTest(SetStoreTestCase):
         declared = c.columns(sid)
         self.assertEqual(len(declared), 6)
         self.assertEqual([d['column'] for d in declared],
-                         ['plddt', 'n_models', 'label', 'ok', 'iptm__B', None])
+                         ['plddt', 'n_models', 'label', 'ok', 'iptm__b', None])
         self.assertEqual(declared[5]['scope'], 'pair')
 
     def testToolSurvivesTheRoundTrip(self):
@@ -288,7 +288,7 @@ class EntryTest(SetStoreTestCase):
         self.assertEqual(e['sequences'], {'A': 'ACDEFG', 'B': 'KLM'})
         self.assertEqual(e['parents'], [])
         self.assertEqual(e['scalars'], {'plddt': 80.0, 'n_models': 5, 'label': 'x',
-                                        'ok': 1, 'iptm__B': 0.5})
+                                        'ok': 1, 'iptm__b': 0.5})
         self.assertEqual(c.chain_cifs(eid), [('A', CIF_A), ('B', CIF_B)])
         index, values = c.array(eid, 'pae')
         self.assertEqual(index, [['A', '1'], ['A', '2'], ['B', '1']])
@@ -393,7 +393,7 @@ class EntryTest(SetStoreTestCase):
         c.set_scalar(eid, 'plddt', float('nan'))
         e = c.entry_by_id(eid)
         self.assertIsNone(e['scalars']['plddt'])
-        self.assertEqual(e['scalars']['iptm__B'], 0.9)
+        self.assertEqual(e['scalars']['iptm__b'], 0.9)
         self.assertRaises(SetInputError, c.set_scalar, eid, 'nope', 1)
         self.assertRaises(SetInputError, c.set_scalar, eid, 'n_models', 'seven')
 

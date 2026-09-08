@@ -254,6 +254,51 @@ class StageAndPeek(SetCommandTestCase):
         self.assertNotIn('p1', cmd.get_names('all'))
         self.assertEqual(cmd.set_info('s')['counts']['all'], 1)
 
+    def testMultiChainEntryStagesAsOneObject(self):
+        cmd.set_create('s')
+        cmd.fab('ACD', 'ca', chain='A')
+        cmd.fab('EFGH', 'cb', chain='B')
+        cmd.create('dimer', 'ca or cb')
+        cmd.delete('ca or cb')
+        cmd.set_add('s', 'dimer')
+        cmd.delete('dimer')
+        self.assertEqual(cmd.set_stage('s', 'dimer'), ['dimer'])
+        self.assertEqual(cmd.get_chains('dimer'), ['A', 'B'])
+        self.assertEqual(cmd.count_atoms('dimer and name CA'), 7)
+        self.assertEqual([n for n in cmd.get_names('all') if n.startswith('_raymol_chain')], [])
+        cmd.set_peek('s', 'dimer')
+        self.assertEqual(cmd.get_chains(binding.PEEK), ['A', 'B'])
+
+    def testEntryNamesFromObjectsAreSanitised(self):
+        cmd.set_create('s')
+        cmd.fab('AAA', 'starred')
+        cmd.fab('AAA', 'ab')
+        self.assertEqual(cmd.set_add('s', 'starred'), ['starred_'])
+        self.assertEqual(cmd.set_add('s', 'ab'), ['ab'])
+        self.assertEqual(sorted(cmd.set_get('s', 'starred')), [], 'the keyword still means the flag')
+        self.assertEqual(sorted(cmd.set_get('s', 'starred_+ab')), ['ab', 'starred_'])
+        self.assertRaises(SetInputError, store.active().add_entry,
+                          store.active().get_set('s')['id'], 'a+b')
+
+    def testChainScalarColumnsAreFilterable(self):
+        cmd.set_create('s')
+        cmd.fab('ACD', 'pc', chain='A')
+        mschema.register('chaintool', [mschema.MetricSpec('iptm', mschema.CHAIN, lo=0, hi=1)],
+                         replace=True)
+        mbinding.record('pc', 'chaintool', [mstore.value('chaintool', 'iptm', value=0.9, chain='A')])
+        cmd.set_add('s', 'pc')
+        self.assertIn('iptm__a', [c['column'] for c in cmd.set_info('s')['columns']])
+        self.assertEqual(cmd.set_filter('s', 'iptm__a > 0.5'), 1)
+
+    def testAGhostLinkIsClearedWhenTheUserDeletesTheObject(self):
+        self.populated(2)
+        cmd.set_budget('s', 1)
+        cmd.set_stage('s', 'p0')
+        cmd.delete('p0')
+        self.assertEqual(cmd.set_stage('s', 'p1'), ['p1'], 'the ghost does not count')
+        cmd.delete('p1')
+        self.assertEqual(cmd.set_stage('s', 'p1'), ['p1'], 're-staging a deleted object works')
+
     def testReconcileClearsLinksOfDeletedObjects(self):
         self.populated(1)
         cmd.set_stage('s', 'p0')

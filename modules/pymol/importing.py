@@ -833,6 +833,17 @@ SEE ALSO
         except AttributeError as e:
             raise pymol.CmdException('PSE contains objects which cannot be unpickled (%s)' % str(e))
 
+        # RayMol sets (#415): opening a .pse ON ITS OWN is a new session, so the set
+        # store starts fresh. Here and not in a session-restore task: set_session is
+        # also how the theme preview restores an in-memory snapshot, and a partial load
+        # merges into the current session -- neither may discard the current document.
+        if not partial:
+            try:
+                from pymol.sets import store as _set_store
+                _set_store.reset()
+            except Exception:
+                pass
+
         r = _self.set_session(session, quiet=quiet, partial=partial, steal=1)
 
         if not partial:

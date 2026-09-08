@@ -30,6 +30,7 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import tempfile
 import time
 
@@ -81,22 +82,47 @@ def _parse_json(record, fields):
     return record
 
 
+#: Extra rules for ENTRY names, which also have to survive the selector language
+#: (spec §4.1): '+' joins names and ':' introduces top:/view:/run:, and the keyword
+#: forms are resolved before a bare name is.
+_ENTRY_FORBIDDEN_CHARS = set('+:')
+ENTRY_RESERVED = frozenset(('all', 'filtered', 'starred', 'rejected', 'staged', 'pinned'))
+
+
 def check_name(name, what='set'):
-    """`name` if it can be a set or entry name, else raise SetInputError.
+    """`name` if it can be a set, entry or view name, else raise SetInputError.
 
     The alphabet is the MSA store's: an entry name becomes the staged object's name
     and a set name a group's, and both pass through the command parser, which splits
-    on ',' and whitespace and quotes with the rest.
+    on ',' and whitespace and quotes with the rest. An entry name additionally may not
+    contain '+' or ':' or be one of the selector keywords, or `set_stage s, <name>`
+    could never mean it.
     """
     if not isinstance(name, str) or not name.strip():
         raise SetInputError('a %s needs a name' % what)
     name = name.strip()
-    bad = sorted(set(name) & _FORBIDDEN_NAME_CHARS)
+    forbidden = _FORBIDDEN_NAME_CHARS
+    if what == 'entry':
+        forbidden = forbidden | _ENTRY_FORBIDDEN_CHARS
+        if name.lower() in ENTRY_RESERVED:
+            raise SetInputError('%r is a selector keyword and cannot name an entry' % name)
+    bad = sorted(set(name) & forbidden)
     if bad:
         raise SetInputError(
             'invalid %s name %r: %s cannot appear in it'
             % (what, name, ', '.join(repr(c) for c in bad)))
     return name
+
+
+def legal_entry_name(name):
+    """The nearest legal entry name: forbidden characters become '_', a reserved word
+    gets a trailing '_', an empty name becomes 'entry'. For names that come from files
+    and objects, where refusing would be unhelpful; `check_name` is for names typed."""
+    text = ''.join('_' if c in (_FORBIDDEN_NAME_CHARS | _ENTRY_FORBIDDEN_CHARS) else c
+                   for c in str(name or '').strip()) or 'entry'
+    if text.lower() in ENTRY_RESERVED:
+        text += '_'
+    return text
 
 
 def _coerce(dtype, value):
@@ -120,13 +146,21 @@ def _coerce(dtype, value):
 
 
 class _Transaction:
-    """Reentrant BEGIN/COMMIT with a single version bump at the outermost level."""
+    """Reentrant BEGIN/COMMIT with a single version bump at the outermost level.
+
+    Holds the container's lock for the whole transaction. PyMOL runs commands from more
+    than one thread (the GUI/parser thread, `cmd.do`, the MCP server, `spawn`), so the
+    connection is opened with `check_same_thread=False` and every statement goes
+    through this lock or the `_q`/`_one`/`_all` helpers, which take it too. A reentrant
+    lock, because `add_entry` nests `declare_columns` inside its own transaction.
+    """
 
     def __init__(self, container):
         self.container = container
 
     def __enter__(self):
         c = self.container
+        c._lock.acquire()
         if c._depth == 0:
             c._conn.execute('BEGIN IMMEDIATE')
         c._depth += 1
@@ -134,17 +168,20 @@ class _Transaction:
 
     def __exit__(self, exc_type, exc, tb):
         c = self.container
-        c._depth -= 1
-        if c._depth:
+        try:
+            c._depth -= 1
+            if c._depth:
+                return False
+            if exc_type is None:
+                c._conn.execute(
+                    "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+                    " WHERE key = 'version'")
+                c._conn.execute('COMMIT')
+            else:
+                c._conn.execute('ROLLBACK')
             return False
-        if exc_type is None:
-            c._conn.execute(
-                "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
-                " WHERE key = 'version'")
-            c._conn.execute('COMMIT')
-        else:
-            c._conn.execute('ROLLBACK')
-        return False
+        finally:
+            c._lock.release()
 
 
 class Container:
@@ -162,8 +199,9 @@ class Container:
         self._path = path
         self._depth = 0
         self._conn = None
+        self._lock = threading.RLock()
         try:
-            conn = sqlite3.connect(path, isolation_level=None)
+            conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         except sqlite3.Error as exc:
             raise SetFormatError('cannot open %s: %s' % (path, exc))
         try:
@@ -197,16 +235,20 @@ class Container:
         return _Transaction(self)
 
     def _q(self, sql, params=()):
-        return self._conn.execute(sql, params)
+        with self._lock:
+            return self._conn.execute(sql, params)
 
     def _one(self, sql, params=()):
-        cursor = self._conn.execute(sql, params)
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            row = cursor.fetchone()
         return None if row is None else _row(cursor, row)
 
     def _all(self, sql, params=()):
-        cursor = self._conn.execute(sql, params)
-        return [_row(cursor, row) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows = cursor.fetchall()
+        return [_row(cursor, row) for row in rows]
 
     def close(self):
         """Checkpoint and close. Idempotent, so `save_into` and `replace` may both call
@@ -913,6 +955,12 @@ def working_dir():
 def working_path():
     return os.path.join(working_dir(), '%s%d%s'
                         % (_WORKING_PREFIX, os.getpid(), _WORKING_SUFFIX))
+
+
+def is_open():
+    """True when a container is open, without opening one. For code paths that only
+    want to LOOK (the .pse warning) and must not create a working file as a side effect."""
+    return _ACTIVE is not None and not _ACTIVE.closed
 
 
 def active():

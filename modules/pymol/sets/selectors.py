@@ -16,7 +16,7 @@ mistypes a name over MCP must hear about it rather than stage nothing.
 No session access here. `resolve` needs only a Container and the filter compiler.
 """
 from . import filter as _filter
-from .errors import SetInputError, SetNotFound
+from .errors import SetInputError
 
 FLAGS = ('starred', 'rejected', 'staged', 'pinned')
 KEYWORDS = ('all', 'filtered') + FLAGS

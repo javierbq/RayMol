@@ -152,12 +152,15 @@ def column_name(key, chain=None):
     """The wide-table column for a scalar: `key`, or `key__chain` for a chain scalar.
 
     `__` because `/` -- the separator MetricRun.scalars uses -- is not a legal
-    identifier character. The chain is reduced to [A-Za-z0-9_] for the same reason.
+    identifier character. The chain is reduced to [a-z0-9_] for the same reason, and
+    LOWERCASED so the filter grammar (whose identifiers are lowercase) can name the
+    column: `plddt__b > 80`. SQLite identifiers are case-insensitive anyway, so two
+    chains differing only by case were never going to be two columns.
     """
     key = check_key(key)
     if chain is None or chain == '':
         return key
-    return '%s__%s' % (key, _CHAIN_UNSAFE.sub('_', str(chain)))
+    return '%s__%s' % (key, _CHAIN_UNSAFE.sub('_', str(chain)).lower())
 
 
 def quote(identifier):

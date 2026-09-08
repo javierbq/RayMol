@@ -181,6 +181,34 @@ class PlainPse(SetSessionTestCase):
         self.assertEqual(cmd.set_list(), [], 'a bare .pse is a new session')
         self.assertIn('p2', cmd.get_names('all'), 'the staged object is still an object')
 
+    def testSnapshotRestoreAndPartialLoadKeepTheStore(self):
+        self.campaign()
+        snapshot = cmd.get_session()
+        cmd.set_session(snapshot)                    # what the theme preview does
+        self.assertEqual([s['name'] for s in cmd.set_list()], ['s'])
+        self.assertEqual(cmd.set_info('s')['counts']['staged'], 1)
+        pse = self.path('extra.pse')
+        cmd.reinitialize()
+        cmd.fab('GGG', 'extra')
+        cmd.save(pse)
+        cmd.reinitialize()
+        self.campaign()
+        cmd.load(pse, partial=1)
+        self.assertIn('extra', cmd.get_names('all'))
+        self.assertEqual([s['name'] for s in cmd.set_list()], ['s'], 'a partial load merges')
+
+    def testSavingDoesNotDisturbThePeek(self):
+        self.campaign()
+        cmd.set_peek('s', 'p0')
+        cmd.save(self.path('k.raymol'))
+        self.assertIn(binding.PEEK, cmd.get_names('all'))
+
+    def testAPseSaveWithoutSetsOpensNoWorkingFile(self):
+        store.reset()
+        cmd.fab('AAA', 'x1')
+        cmd.save(self.path('plain.pse'))
+        self.assertFalse(store.is_open(), 'a plain save must not create a working file')
+
     def testReinitializeResetsTheStore(self):
         self.campaign()
         p = store.active().path

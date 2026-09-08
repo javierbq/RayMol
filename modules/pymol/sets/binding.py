@@ -18,6 +18,8 @@ import os
 import pickle
 
 from pymol import cmd, colorprinting
+from pymol.metrics import binding as mbinding, schema as mschema, store as mstore
+from pymol.metrics.errors import MetricError
 
 from . import document, store
 from .errors import SetBudgetExceeded, SetInputError, SetNameConflict, SetNotFound
@@ -73,6 +75,39 @@ def _load_cif_text(text, name, _self=cmd):
     _self.load_raw(text, 'cif', name, 0, 1, -1, 1, None, 0)
 
 
+def _load_chains(chains, obj, _self=cmd):
+    """An entry's chain CIFs as ONE object.
+
+    The CIF reader refuses to load into an existing object ("please use 'create' to
+    append"), so each chain goes into its own hidden temporary and one `create` merges
+    them. `_`-prefixed temporaries stay out of the panel for the instant they exist.
+    """
+    temps = []
+    try:
+        for i, (_chain, text) in enumerate(chains):
+            temp = '_raymol_chain_%d' % i
+            if _exists(temp, _self=_self):
+                _self.delete(temp)
+            _load_cif_text(text, temp, _self=_self)
+            temps.append(temp)
+        if _exists(obj, _self=_self):
+            _self.delete(obj)
+        _self.create(obj, ' or '.join(temps), zoom=0, quiet=1)
+    finally:
+        for temp in temps:
+            if _exists(temp, _self=_self):
+                _self.delete(temp)
+
+
+def _spec_or_none(tool, key):
+    """`MetricSpec` for a declared (tool, key), else None. `schema.spec` raises for an
+    undeclared tool or key; here absence is a normal case, not an error."""
+    try:
+        return mschema.spec(tool, key)
+    except MetricError:
+        return None
+
+
 def _superpose(obj, ref, _self=cmd):
     """`super` obj onto ref; a failure is a warning, never an error."""
     if not ref or ref == obj or not _exists(ref, _self=_self):
@@ -108,17 +143,13 @@ def _metric_payload(obj, state):
     Object-scope values apply to every state. State-bearing values are taken only when
     they name this state, or name none.
     """
-    try:
-        from pymol.metrics import schema as mschema, store as mstore
-    except Exception:
-        return {}, [], [], []
     scalars, arrays, specs, runs = {}, [], [], []
     for run in mstore.runs(object=obj):
         runs.append(run)
         for entry in run.values:
             if entry.state is not None and int(entry.state) != int(state):
                 continue
-            spec = mschema.spec(run.tool, entry.key)
+            spec = _spec_or_none(run.tool, entry.key)
             spec_dict = dict(spec.as_dict()) if spec is not None else \
                 {'key': entry.key, 'scope': entry.scope, 'dtype': 'float'}
             spec_dict['tool'] = run.tool
@@ -157,7 +188,7 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
         state_list = [min(max(cur, 1), n_states)]
     else:
         state_list = list(range(1, n_states + 1))
-    base = name or obj
+    base = store.legal_entry_name(name or obj)
     chains = _chains(obj, _self=_self)
     ids = []
     for state in state_list:
@@ -260,7 +291,12 @@ def _apply_sidecar_row(c, entry_id, row, coltypes):
         if row.get(key):
             fields[key] = row[key]
     if row.get('parents'):
-        fields['parents'] = row['parents']
+        try:
+            parents = json.loads(row['parents'])
+        except ValueError:
+            parents = [p for p in row['parents'].split('+') if p]
+        if isinstance(parents, list):
+            fields['parents'] = parents
     if fields:
         c.update_entry(entry_id, **fields)
     for col, dtype in coltypes.items():
@@ -287,8 +323,17 @@ def budget(set_row):
         return DEFAULT_BUDGET
 
 
-def _staged(c, set_id):
-    return c.entries(set_id, where='e.staged_object IS NOT NULL')
+def _staged(c, set_id, _self=cmd):
+    """Entries whose staged object still exists. A link to an object the user deleted
+    is cleared here, so a ghost never counts against the budget or blocks a re-stage."""
+    present = set(_self.get_names('all') or [])
+    live = []
+    for e in c.entries(set_id, where='e.staged_object IS NOT NULL'):
+        if e['staged_object'] in present:
+            live.append(e)
+        else:
+            c.update_entry(e['id'], staged_object=None, pinned=0)
+    return live
 
 
 def _free_object_name(name, _self=cmd):
@@ -311,41 +356,31 @@ def _ensure_group(group, _self=cmd):
 
 def _write_back_metrics(c, entry, obj, _self=cmd):
     """The entry's columns and arrays as metrics-store runs on the staged object, one run
-    per tool this build declares. Undeclared tools are skipped: the numbers stay in the
-    set, they just cannot colour an object here."""
-    try:
-        from pymol.metrics import binding as mbinding, schema as mschema, store as mstore
-    except Exception:
-        return
+    per tool this build declares. Undeclared tools and keys are skipped: the numbers stay
+    in the set, they just cannot colour an object here."""
+    columns = c.columns(entry['set_id'])
+    array_tool = {col.get('key'): col.get('tool') or '' for col in columns
+                  if not col.get('column')}
     by_tool = {}
-    for col in c.columns(entry['set_id']):
+    for col in columns:
         if not col.get('column'):
             continue                      # an array declaration; handled below
         tool = col.get('tool') or ''
         key = col.get('key') or col['column']
-        if not tool or not mschema.declared(tool) or mschema.spec(tool, key) is None:
+        if not tool or _spec_or_none(tool, key) is None:
             continue
         value = (entry.get('scalars') or {}).get(col['column'])
         if value is None:
             continue
-        scope = col.get('scope', 'object')
         kw = {}
-        if scope == 'state':
+        if col.get('scope', 'object') == 'state':
             kw['state'] = 1
         if col.get('chain'):
             kw['chain'] = col['chain']
         by_tool.setdefault(tool, []).append(mstore.value(tool, key, value=value, **kw))
     for row in c.arrays_of(entry['id']):
-        spec = None
-        tool = ''
-        for col in c.columns(entry['set_id']):
-            if col.get('key') == row['key'] and col.get('tool'):
-                tool = col['tool']
-                break
-        if not tool or not mschema.declared(tool):
-            continue
-        spec = mschema.spec(tool, row['key'])
-        if spec is None:
+        tool = array_tool.get(row['key'], '')
+        if not tool or _spec_or_none(tool, row['key']) is None:
             continue
         index, values = c.array(entry['id'], row['key'], chain=row.get('chain'))
         kw = {'state': 1, 'index': [tuple(p) for p in index], 'values': values}
@@ -366,8 +401,7 @@ def _load_entry_into(c, entry, obj, _self=cmd):
     chains = c.chain_cifs(entry['id'])
     if not chains:
         raise SetInputError('%s has no structure to show' % entry['name'])
-    for _chain, text in chains:
-        _load_cif_text(text, obj, _self=_self)
+    _load_chains(chains, obj, _self=_self)
     try:
         _self.dss(obj)
     except Exception:
@@ -383,7 +417,7 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
     """
     c = container()
     set_id = set_row['id']
-    staged = _staged(c, set_id)
+    staged = _staged(c, set_id, _self=_self)
     already = {e['id'] for e in staged}
     todo = [e for e in entries if e['id'] not in already]
     limit = int(budget_override) if budget_override else budget(set_row)
@@ -409,8 +443,7 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
             colorprinting.warning(' sets: could not add %s to group %s (%s)' % (obj, group, exc))
         _superpose(obj, ref, _self=_self)
         c.update_entry(e['id'], staged_object=obj)
-        full = c.entry_by_id(e['id'])
-        _write_back_metrics(c, full, obj, _self=_self)
+        _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
     return names
 
@@ -427,7 +460,6 @@ def unstage(set_row, entries, include_pinned=False, _self=cmd):
         if e.get('pinned') and not include_pinned:
             continue
         try:
-            from pymol.metrics import store as mstore
             mstore.forget_object(obj)
         except Exception:
             pass
@@ -443,7 +475,7 @@ def _drop_empty_group(set_row, _self=cmd):
     group = set_row.get('group_name') or set_row['name']
     if group not in (_self.get_names('public_group_objects') or []):
         return
-    if _staged(container(), set_row['id']):
+    if _staged(container(), set_row['id'], _self=_self):
         return
     children = _group_children(group, _self=_self)
     if children is None or children:
@@ -457,12 +489,11 @@ def _drop_empty_group(set_row, _self=cmd):
 def reconcile(_self=cmd):
     """Clear links whose object is gone (deleted by the user, or absent from the session
     that was just loaded). Called after every session restore."""
+    if not store.is_open():
+        return
     c = container()
-    present = set(_self.get_names('all') or [])
     for s in c.sets():
-        for e in _staged(c, s['id']):
-            if e['staged_object'] not in present:
-                c.update_entry(e['id'], staged_object=None, pinned=0)
+        _staged(c, s['id'], _self=_self)
 
 
 # -- Peek ------------------------------------------------------------------------------
@@ -511,7 +542,7 @@ def warn_if_pse_leaves_sets(filename='', _self=cmd):
     """Called by `save` on the .pse/.psw path (not from the session task: `get_session`
     is also used for reads like the group-membership check, and a warning on every read
     would be noise). Names the sets a plain .pse leaves behind."""
-    if _SAVING_RAYMOL:
+    if _SAVING_RAYMOL or not store.is_open():
         return False
     try:
         names = [s['name'] for s in container().sets()]
@@ -526,19 +557,14 @@ def warn_if_pse_leaves_sets(filename='', _self=cmd):
 
 
 def session_restore(session, _self=cmd, **_kwargs):
-    """Session-restore task. A .pse opened on its own means a new session: the store
-    goes back to a fresh working file, so the previous document's sets do not linger
-    beside objects that are gone. A .raymol load sets the flag and reconciles instead."""
-    if _LOADING_RAYMOL:
-        try:
-            reconcile(_self=_self)
-        except Exception as exc:
-            colorprinting.warning(' sets: could not reconcile staged objects: %s' % exc)
-        return 1
+    """Session-restore task: drop links to staged objects the incoming session does not
+    have. Never resets the store -- `set_session` also restores in-memory snapshots
+    (the theme preview) and partial loads merge, so the reset for a bare `load x.pse`
+    lives in `importing.load_pse`, which knows it is one."""
     try:
-        store.reset()
+        reconcile(_self=_self)
     except Exception as exc:
-        colorprinting.warning(' sets: could not reset the store: %s' % exc)
+        colorprinting.warning(' sets: could not reconcile staged objects: %s' % exc)
     return 1
 
 
@@ -553,8 +579,8 @@ def _pse_bytes(_self=cmd):
     global _SAVING_RAYMOL
     _SAVING_RAYMOL = True
     try:
-        clear_peek(_self=_self)
-        session = _self.get_session('', 0, 1)
+        session = _self.get_session('', 0, 1)      # session_save strips the peek
+
         return pickle.dumps(session, 1)
     finally:
         _SAVING_RAYMOL = False

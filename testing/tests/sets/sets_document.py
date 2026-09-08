@@ -50,6 +50,8 @@ class SetDocumentTestCase(testing.PyMOLTestCase):
         cmd.set_star('s', 'd1')
         cmd.set_tag('s', 'd1', 'keep')
         cmd.set_set('s', 'd2', 'note', 'a note')
+        c = store.active()
+        c.update_entry(c.entry(c.get_set('s')['id'], 'd2')['id'], parents=['abc123'])
 
 
 class Helpers(SetDocumentTestCase):
@@ -102,6 +104,11 @@ class RoundTrips(SetDocumentTestCase):
         self.assertEqual(cols['score']['tool'], 'import')
         cmd.set_stage('out', 'd1')
         self.assertEqual(cmd.count_atoms('d1 and name CA'), 3)
+        c = store.active()
+        e = c.entry(c.get_set('out')['id'], 'd1')
+        self.assertEqual(e['parents'], [], 'an empty JSON list re-imports as no parents')
+        e2 = c.entry(c.get_set('out')['id'], 'd2')
+        self.assertEqual(e2['parents'], ['abc123'], 'parents survive the CSV round trip')
 
     def testCsvAndFastaExport(self):
         self.populated()
