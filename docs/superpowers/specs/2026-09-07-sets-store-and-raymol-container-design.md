@@ -68,14 +68,31 @@ readable by `sqlite3` anywhere.
 - **Load** (`load x.raymol`): close the current database, open `x.raymol`, read the
   session blob, hand it to `set_session`. Peek and staged objects come back from the
   `.pse` as ordinary objects; `entries.staged_object` says which entry each is.
-- **`save x.pse`** writes plain PyMOL as today. When any set is non-empty it prints a
-  warning naming the sets left out. Nothing set-related is embedded in a `.pse`, so an
-  older RayMol or upstream PyMOL opens it unchanged. In the app, ⌘S on an open legacy
-  `.pse` whose session has since gained sets must not overwrite silently: a sheet offers
-  Save as `.raymol` beside it, save the `.pse` without sets, or cancel (#417).
-  **Open:** whether `.raymol` is the default extension for every new session, or only
-  once a session holds a set. Recommended: always, with "Export PyMOL Session" as the
-  `.pse` path.
+- **`.pse` stays the default session format.** A session with no sets saves, opens and
+  autosaves exactly as today; a user who never touches a set never sees `.raymol`.
+  Decided 2026-09-07.
+- **The format changes only when sets come into play**, and the user is told once. The
+  first time a session that holds a non-empty set is saved (⌘S or Save As) with no
+  `.raymol` document open, the app shows a sheet before the Save panel:
+
+  > **This session now includes a set, which the PyMOL `.pse` format can't hold.**
+  > RayMol will save it as a `.raymol` file: one file that carries the whole session,
+  > including sets and their structures. It opens only in RayMol. You can still produce a
+  > `.pse` for PyMOL at any time with File ▸ Export PyMOL Session…; it will contain the
+  > loaded objects but not the sets.
+  > [Save as .raymol]  [Save .pse without sets]  [Cancel]
+
+  Save as `.raymol` copies the working database to the chosen path (beside the open
+  `.pse`, with the same stem, when there is one) and makes it the live document.
+  Saving the `.pse` without sets writes plain PyMOL and logs the warning below. The sheet
+  is not shown again for that session once either choice is made; it does appear again
+  in a new session that reaches the same point. On iOS the same text is an alert.
+- **`save x.pse`** from the console or MCP writes plain PyMOL as today and, when any set
+  is non-empty, prints one warning naming the sets left out and pointing at
+  `save x.raymol`. Nothing set-related is embedded in a `.pse`, so an older RayMol or
+  upstream PyMOL opens it unchanged.
+- **Export PyMOL Session…** is a menu item that always writes a `.pse`, present whether
+  or not the session has sets, so the escape hatch is visible before it is needed (#417).
 - **`load x.pse`** clears the store to a fresh working file. A session restore task
   registered like the metrics one does this, so a `.pse` opened after a `.raymol` does
   not inherit the previous document's sets.
