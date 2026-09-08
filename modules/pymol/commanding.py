@@ -403,6 +403,13 @@ USAGE
                 _metric_store.clear()
             except Exception:
                 pass
+            # And the set store (#415): a fresh session gets a fresh working file, so a
+            # document's sets do not outlive the objects they were staged as.
+            try:
+                from pymol.sets import store as _set_store
+                _set_store.reset()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

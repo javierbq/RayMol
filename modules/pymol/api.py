@@ -79,6 +79,35 @@ from .metric import \
       metrics_schema
 
 #--------------------------------------------------------------------
+from . import setting_sets
+from .setting_sets import \
+      set_create,           \
+      set_delete,           \
+      set_rename,           \
+      set_list,             \
+      set_info,             \
+      set_schema,           \
+      set_add,              \
+      set_remove,           \
+      set_get,              \
+      set_set,              \
+      set_star,             \
+      set_reject,           \
+      set_pin,              \
+      set_tag,              \
+      set_filter,           \
+      set_sort,             \
+      set_view_save,        \
+      set_view_delete,      \
+      set_stage,            \
+      set_unstage,          \
+      set_peek,             \
+      set_reference,        \
+      set_budget,           \
+      set_export,           \
+      set_import
+
+#--------------------------------------------------------------------
 from . import creating
 from .creating import \
       copy,               \

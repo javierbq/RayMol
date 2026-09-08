@@ -1630,6 +1630,7 @@ DESCRIPTION
         'idx': load_idx,
         'pse': load_pse,
         'psw': load_pse,
+        'raymol': 'pymol.sets.binding:load_raymol',
         'ply': load_ply,
         'r3d': load_r3d,
         'cc1': load_cc1,
