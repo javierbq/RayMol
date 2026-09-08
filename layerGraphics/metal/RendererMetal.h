@@ -166,7 +166,8 @@ public:
       int posOffset, int normalOffset, int colorOffset, int colorType,
       const void* indexData, size_t indexDataSize, int interiorCap = 0) override;
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
-  void setRepClip(float front, float back) override;
+  void setRepClip(float front, float back, float fracFront = 0.0f,
+      float fracBack = 0.0f) override;
   void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepScreenAO(bool exempt) override;
@@ -448,6 +449,14 @@ private:
   // _repClipFront < 0 => disabled (use the global slab). Set via setRepClip.
   float _repClipFront = -1.0f;
   float _repClipBack = 1e6f;
+  // The clip's VIEW-INDEPENDENT fractions (surface_clip_front/back, 0..1,
+  // referenced to the surface COM). Unlike the eye-space {front,back} depths
+  // above (which drift with the camera), these change only when the user drags
+  // the clip, so the RT rebuild signature folds THESE — a plain zoom/orbit then
+  // triggers no acceleration-structure rebuild (no shadow/AO pop). Set via
+  // setRepClip alongside the eye-space depths.
+  float _repClipFracFront = 0.0f;
+  float _repClipFracBack = 0.0f;
   // Surface outer-contour outline (per-surface, coverage-boundary). When armed
   // (setRepContour), the next surface draw is stashed; after the scene the
   // stashed geometry is rendered to a coverage mask and a post pass outlines the
@@ -680,22 +689,22 @@ private:
       std::memcpy(&b, &f, 4);
       _rtFrameSig = (_rtFrameSig ^ b) * 1099511628211ULL;
     }
-    // ... and the clip slab so dragging the clip re-syncs the caster set. When
-    // the clip is active the slab is eye-space, so also fold the camera-space
-    // modelview: an orbit then correctly rebuilds the clipped-away set (#425).
+    // ... and the CLIP FRACTIONS so dragging the clip re-syncs the caster set.
+    // surface_clip_front/back are referenced to the surface's center of mass — a
+    // VIEW-INDEPENDENT 0..1 fraction of the molecule depth — so the set of
+    // casters the clip drops depends only on the geometry, the pose delta (both
+    // folded above) and these fractions, NOT on the camera. Folding the
+    // fractions (rather than the camera-dependent eye-space slab / modelview)
+    // rebuilds the AS when the user drags the clip, while a plain zoom/orbit
+    // leaves the fractions unchanged and triggers NO rebuild — so RT shadows/AO
+    // no longer pop/flicker during camera moves while a surface clip is active
+    // (#425 stays fixed; regression from the earlier camera-folded signature).
     {
       uint32_t bf, bb;
-      std::memcpy(&bf, &_repClipFront, 4);
-      std::memcpy(&bb, &_repClipBack, 4);
+      std::memcpy(&bf, &_repClipFracFront, 4);
+      std::memcpy(&bb, &_repClipFracBack, 4);
       _rtFrameSig = (_rtFrameSig ^ bf) * 1099511628211ULL;
       _rtFrameSig = (_rtFrameSig ^ bb) * 1099511628211ULL;
-    }
-    if (_repClipFront >= 0.0f) {
-      for (float f : _modelviewMatrix) {
-        uint32_t b;
-        std::memcpy(&b, &f, 4);
-        _rtFrameSig = (_rtFrameSig ^ b) * 1099511628211ULL;
-      }
     }
   }
   // Drop the cached RT geometry derived from a CPU buffer that is about to be

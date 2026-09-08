@@ -633,10 +633,13 @@ void RendererMetal::setBaseModelView(const float* m)
   std::memcpy(_rtBaseModelViewInv.data(), &inv, 64);
 }
 
-void RendererMetal::setRepClip(float front, float back)
+void RendererMetal::setRepClip(float front, float back, float fracFront,
+    float fracBack)
 {
   _repClipFront = front;       // < 0 disables per-rep clip in the lit fragment
   _repClipBack = back;
+  _repClipFracFront = fracFront; // view-independent 0..1 (RT rebuild signature)
+  _repClipFracBack = fracBack;
 }
 
 void RendererMetal::setRepContour(bool enabled, const float* rgba, float widthPx)
