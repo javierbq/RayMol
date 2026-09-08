@@ -92,7 +92,7 @@ class CreateAndAdd(SetCommandTestCase):
         index, values = cmd.set_get('s', 'pep', key='conf')['pep']
         self.assertEqual(len(index), 5)
         self.assertEqual(values[1], 10.0)
-        entry = store.active().entry(info and store.active().get_set('s')['id'], 'pep')
+        entry = store.active().entry(store.active().get_set('s')['id'], 'pep')
         self.assertEqual(entry['n_chains'], 1)
         self.assertEqual(entry['sequences'], {'A': 'ACDEF'})
         chains = store.active().chain_cifs(entry['id'])
@@ -108,11 +108,32 @@ class CreateAndAdd(SetCommandTestCase):
         self.assertEqual(cmd.set_add('s', 'm', entries='current'), ['m'],
                          'a single captured state takes the bare name')
 
-    def testAddDuplicateNameIsSuffixedOnlyByImportNotByObjectAdd(self):
+    def testAddingTheSameNameTwiceIsSuffixed(self):
         cmd.set_create('s')
         self.peptide('pep')
-        cmd.set_add('s', 'pep')
-        self.assertRaises(SetNameConflict, cmd.set_add, 's', 'pep')
+        self.assertEqual(cmd.set_add('s', 'pep'), ['pep'])
+        self.assertEqual(cmd.set_add('s', 'pep'), ['pep_2'])
+        self.assertEqual(cmd.set_add('s', 'pep'), ['pep_3'])
+        # A name TYPED for an entry is still refused on conflict, at the store.
+        c = store.active()
+        self.assertRaises(SetNameConflict, c.add_entry, c.get_set('s')['id'], 'pep')
+
+    def testProvenanceArgumentsOnSetAdd(self):
+        cmd.set_create('s')
+        self.peptide('pep')
+        cmd.set_add('s', 'pep', tool='rfd3', tool_version='3.0', inputs='{"seed": 7}')
+        got = cmd.set_get('s', 'pep')['pep']
+        c = store.active()
+        run = c.run(got['run_id'])
+        self.assertEqual((run['tool'], run['tool_version'], run['inputs']),
+                         ('rfd3', '3.0', {'seed': 7}))
+        self.assertEqual(sorted(cmd.set_get('s', 'run:%s' % got['run_id'])), ['pep'])
+        self.assertEqual(cmd.set_add('s', 'pep', run=got['run_id'], parents=got['id']),
+                         ['pep_2'])
+        self.assertEqual(cmd.set_get('s', 'pep_2', key='parents')['pep_2'], [got['id']])
+        self.assertRaises(SetNotFound, cmd.set_add, 's', 'pep', run='nosuch')
+        self.assertRaises(SetInputError, cmd.set_add, 's', 'pep', tool='t', inputs='{bad')
+        self.assertRaises(SetNotFound, cmd.set_get, 's', 'run:nosuch')
 
     def testAddFromFileAndFasta(self):
         cmd.set_create('s')
@@ -167,12 +188,24 @@ class SelectorsAndFlags(SetCommandTestCase):
         self.assertEqual(cmd.set_info('s')['filter'], '', 'a bad filter must not be stored')
         self.assertRaises(SetInputError, cmd.set_sort, 's', 'nosuch')
 
-    def testSetSetWritesNoteTagsAndColumns(self):
+    def testSetSetWritesNoteTagsAndUserColumnsOnly(self):
         self.populated(2)
         cmd.set_set('s', 'p0', 'note', 'hello')
-        cmd.set_set('s', 'all', 'score', '7')
-        self.assertEqual(cmd.set_get('s', 'p0')['p0']['score'], 7.0)
+        self.assertEqual(cmd.set_get('s', 'p0', key='note')['p0'], 'hello')
+        self.assertEqual(cmd.set_get('s', 'p0')['p0']['note'], 'hello')
+        # `score` was measured by a tool: read-only from here.
+        self.assertRaises(SetInputError, cmd.set_set, 's', 'all', 'score', '7')
+        c = store.active()
+        c.declare_columns(c.get_set('s')['id'],
+                          [{'key': 'rank', 'scope': 'object', 'dtype': 'int', 'tool': 'user'}])
+        cmd.set_set('s', 'all', 'rank', '3')
+        self.assertEqual(cmd.set_get('s', 'p1')['p1']['rank'], 3)
         self.assertRaises(SetInputError, cmd.set_set, 's', 'p0', 'nosuch', 1)
+
+    def testSortSetsTheRankingKey(self):
+        self.populated(2)
+        cmd.set_sort('s', 'score')
+        self.assertEqual(store.active().get_set('s')['ranking_key'], 'score')
 
 
 class StageAndPeek(SetCommandTestCase):
@@ -207,7 +240,7 @@ class StageAndPeek(SetCommandTestCase):
 
     def testBudgetRefusesAndNamesUnpinned(self):
         self.populated(4)
-        cmd.set_budget('s', 2)
+        cmd.set_budget(2, 's')
         cmd.set_stage('s', 'p0+p1')
         cmd.set_pin('s', 'p0')
         try:
@@ -221,9 +254,9 @@ class StageAndPeek(SetCommandTestCase):
         self.assertIn('p0', cmd.get_names('all'))
         self.assertEqual(cmd.set_unstage('s', 'p0'), ['p0'], 'named explicitly, it goes')
         self.assertRaises(SetInputError, cmd.set_pin, 's', 'p3')
-        cmd.set_budget('', 9)
+        cmd.set_budget(9)
         self.assertEqual(store.active().meta_get('stage_budget'), '9')
-        self.assertRaises(SetInputError, cmd.set_budget, 's', 0)
+        self.assertRaises(SetInputError, cmd.set_budget, 0, 's')
 
     def testReferenceSuperposes(self):
         self.populated(1)
@@ -290,9 +323,25 @@ class StageAndPeek(SetCommandTestCase):
         self.assertIn('iptm__a', [c['column'] for c in cmd.set_info('s')['columns']])
         self.assertEqual(cmd.set_filter('s', 'iptm__a > 0.5'), 1)
 
+    def testARecycledObjectNameIsNotOursToDelete(self):
+        self.populated(1)
+        cmd.set_stage('s', 'p0')
+        cmd.delete('p0')                       # the hook clears the link at once
+        cmd.fab('GGGGGGGG', 'p0')              # the user's own object under that name
+        self.assertEqual(cmd.set_unstage('s'), [])
+        self.assertEqual(cmd.count_atoms('p0 and name CA'), 8, 'the user\'s p0 survives')
+
+    def testRenamingAStagedObjectKeepsItsLink(self):
+        self.populated(1)
+        cmd.set_stage('s', 'p0')
+        cmd.set_name('p0', 'renamed')
+        self.assertEqual(cmd.set_get('s', 'p0')['p0']['staged'], 'renamed')
+        self.assertEqual(cmd.set_unstage('s'), ['renamed'])
+        self.assertNotIn('renamed', cmd.get_names('all'))
+
     def testAGhostLinkIsClearedWhenTheUserDeletesTheObject(self):
         self.populated(2)
-        cmd.set_budget('s', 1)
+        cmd.set_budget(1, 's')
         cmd.set_stage('s', 'p0')
         cmd.delete('p0')
         self.assertEqual(cmd.set_stage('s', 'p1'), ['p1'], 'the ghost does not count')

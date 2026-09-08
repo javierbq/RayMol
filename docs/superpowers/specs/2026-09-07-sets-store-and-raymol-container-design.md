@@ -63,8 +63,19 @@ readable by `sqlite3` anywhere.
   "nothing changes until I save" is worth less than "nothing is lost when it crashes"
   when a change is an hour of GPU time.
 - **Save** (`save x.raymol`): if the open database *is* `x.raymol`, write the session
-  blob and commit. Otherwise `VACUUM INTO 'x.raymol'`, write the session blob there,
-  close the old connection, and continue on the new file. Save As is the second path.
+  blob and commit. Otherwise `VACUUM INTO` a temporary beside the target, remove the
+  target and any stale `-wal`/`-shm` a crashed session left there, rename, open the
+  copy and write the session blob, and only then remove the previous working file; on
+  any failure the previous container is reopened, so no step can lose data. Save As is
+  the second path.
+- **Threads.** PyMOL reaches `cmd.*` from the GUI thread, `cmd.do`, the MCP server and
+  `spawn`, so the connection is opened with `check_same_thread=False` and every
+  statement runs under one reentrant lock; a failed `COMMIT` rolls back so the
+  connection is never wedged in an open transaction. The active container has a
+  `generation()` counter that a long-running writer (#416) checks before each write.
+- **Process-global.** Like the metrics and MSA stores, there is one active container
+  per process, shared by every `pymol2` instance. A limitation these stores share, not
+  a decision taken here.
 - **Load** (`load x.raymol`): close the current database, open `x.raymol`, read the
   session blob, hand it to `set_session`. Peek and staged objects come back from the
   `.pse` as ordinary objects; `entries.staged_object` says which entry each is.
@@ -191,6 +202,14 @@ would need `ALTER TABLE` for every new predictor. Identity and lineage stay in t
 else so a key can be quoted into SQL by construction, never interpolated. Chain scalars
 use `__` because `/` is not a legal identifier character.
 
+**As built.** `sets` also has `reference TEXT NOT NULL DEFAULT ''` (the superposition
+target) and `meta` holds `stage_budget`; `n_residues` is the total sequence length
+rather than a guide-atom count. Array-scope declarations are kept in `sets.columns`
+with `column = NULL` so a set can list its arrays and their tool. Keys that collide
+with `entries` fields (`name`, `tags`, ...) are refused, because `SELECT e.*, m.*`
+would be ambiguous. Chain-scalar columns are lowercased (`plddt__b`) so the filter
+grammar, whose identifiers are lowercase, can name them.
+
 **Migrations.** `meta.format_version` is checked on open. A newer version than the build
 knows refuses to open with a message that says which build wrote it. Older versions are
 migrated forward inside a transaction; there is no downgrade path.
@@ -255,10 +274,10 @@ language in §4.1.
 | `set_info name` | columns with their specs, counts (all / filtered / staged / starred / rejected), budget, group, tool(s) | dict |
 | `set_add name, source [, entries=, run=, parents=, tool=, tool_version=, inputs=]` | add entries from an **object** (captures chains, sequences and every metrics-store run on it), a **structure file**, a **folder** of structure files, or a **FASTA** (sequence entries). Names default to the object / file stem, made unique within the set | entry names |
 | `set_remove name, entries` | drop entries (unstaging first) | |
-| `set_get name, entries [, key=]` | scalars of the entries, or one array as `(index, values)` | |
-| `set_set name, entries, key, value` | write a scalar for a user column (`note`, `tags`, or a key declared under tool `user`) | |
+| `set_get name, entries [, key=]` | scalars plus `id`, `run_id`, `parents`, `sequences`, flags, `tags`, `note`, `staged`; or one field; or one array as `(index, values)` | |
+| `set_set name, entries, key, value` | write `note`, `tags`, or a column declared under tool `user` or `import`; a tool's own measurements are read-only | |
 | `set_filter name [, expr=]` | set (or clear) the active filter; prints `n of N match` | count |
-| `set_sort name, key [, desc=1]` | set the active sort | |
+| `set_sort name, key [, desc=1]` | set the active sort; a column also becomes the set's `ranking_key` | |
 | `set_stage name, entries [, budget=]` | load each entry as an object named after it inside the set's group, superposed on the reference (§6); write its metrics into the metrics store; refuse past the budget with the names it would have to unstage | object names |
 | `set_unstage name [, entries=staged]` | delete the objects (pinned ones only if named explicitly), remove their metrics runs, clear the links | |
 | `set_pin name, entries [, on=1]` | pin/unpin staged entries | |
@@ -266,7 +285,8 @@ language in §4.1.
 | `set_reject name, entries [, on=1]` | | |
 | `set_tag name, entries, tag [, remove=0]` | | |
 | `set_peek name, entry` / `set_peek` | draw one entry in the hidden peek object, replacing the previous; no args clears it | |
-| `set_reference name [, object=]` | the object staged and peeked entries are superposed on; default: the set's `target` input if loaded, else none | |
+| `set_reference name [, object=]` | the object staged and peeked entries are superposed on; none until set (deriving it from a run's `target` input is #416's job, once batches write runs) | |
+| `set_budget n [, name=]` | the stage budget for one set, or without a name the file's default (`meta.stage_budget`) | |
 | `set_view_save name, view [, filter=, sort=]` | save the active (or given) filter and sort as a named view | |
 | `set_view_delete name, view` | | |
 | `set_export name, path [, entries=filtered, format=]` | `folder`: one CIF per entry plus `entries.csv`; `csv`: the table; `fasta`: sequences. Format from the path's extension when not given | path |
@@ -274,6 +294,14 @@ language in §4.1.
 | `set_schema name` | print the columns as `metrics_schema` prints a tool's | |
 
 `load x.raymol` and `save x.raymol` are the existing commands with a new format.
+`load x.raymol, partial=1` is refused: a partial load merges a scene, and two documents'
+sets have no meaningful merge. `set_filter` and `set_view_save` are registered with
+`parsing.LITERAL1`/`LITERAL2`, so on the command line everything after the fixed
+arguments is the expression and `=` and commas inside it survive.
+
+Names taken from objects and files are sanitised (`legal_entry_name`) and made unique
+within the set with `_2`, `_3`...; a name typed for an entry is validated and a
+conflict is refused.
 
 ### 4.1 Entry selectors
 
@@ -349,9 +377,19 @@ over `set_get`.
   `public_objects`, the panel, and the sequence rows. `set_peek` loads the entry's
   chains into it (after `delete` of the previous content), superposes, and applies a
   fixed look: cartoon only, one dim colour, `cartoon_transparency 0.5`. It is never
-  written to a `.pse`: the session save task deletes it before the pickle and the
-  restore recreates nothing. `set_stage` of the peeked entry reuses nothing; it loads
-  fresh, so a peek can never leak its look into a real object.
+  written to a `.pse`: the session save task strips it from the session dictionary,
+  so saving does not disturb what the user is looking at. `set_stage` of the peeked
+  entry reuses nothing; it loads fresh, so a peek can never leak its look into a real
+  object.
+- **Loading an entry.** The CIF reader refuses to load into an existing object, so an
+  entry's N chain blobs go into N hidden `_raymol_chain_<i>` temporaries and one
+  `create` merges them; the temporaries are deleted at once. A peek or stage therefore
+  costs N loads, one create and N deletes, not one load. The same merge reads a folder
+  export back, whose CIF per entry is one `data_` block per chain.
+- **Links follow the scene.** `delete` clears links whose objects are gone at once, so
+  an object later created under a recycled name is never mistaken for the entry;
+  `set_name` moves a link to the new name; a staged object missing from a loaded
+  session is unlinked on restore.
 
 ## 7. What `set_add` captures from an object
 

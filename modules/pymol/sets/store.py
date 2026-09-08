@@ -173,10 +173,19 @@ class _Transaction:
             if c._depth:
                 return False
             if exc_type is None:
-                c._conn.execute(
-                    "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
-                    " WHERE key = 'version'")
-                c._conn.execute('COMMIT')
+                try:
+                    c._conn.execute(
+                        "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+                        " WHERE key = 'version'")
+                    c._conn.execute('COMMIT')
+                except sqlite3.Error:
+                    # A failed COMMIT (disk full, BUSY) leaves the transaction open;
+                    # without this every later BEGIN fails for the rest of the process.
+                    try:
+                        c._conn.execute('ROLLBACK')
+                    except sqlite3.Error:
+                        pass
+                    raise
             else:
                 c._conn.execute('ROLLBACK')
             return False
@@ -204,6 +213,19 @@ class Container:
             conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         except sqlite3.Error as exc:
             raise SetFormatError('cannot open %s: %s' % (path, exc))
+        if not fresh:
+            # Look before touching: setting WAL on someone else's database (a file
+            # misnamed .raymol) would persist in THEIR file.
+            try:
+                has_meta = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+                ).fetchone()
+            except sqlite3.DatabaseError as exc:
+                conn.close()
+                raise SetFormatError('%s is not a .raymol file: %s' % (path, exc))
+            if not has_meta:
+                conn.close()
+                raise SetFormatError('%s is not a .raymol file (no meta table)' % path)
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=NORMAL')
@@ -291,15 +313,16 @@ class Container:
         path = os.fspath(path)
         if os.path.abspath(path) == os.path.abspath(self._path):
             raise SetInputError('%s is already the open document' % path)
-        if self._depth:
-            raise SetInputError('cannot save while a write is in progress')
-        _remove_db_files(path)
-        try:
-            self._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-            self._conn.execute('VACUUM INTO ?', (path,))
-        except sqlite3.Error as exc:
-            raise SetFormatError('could not save into %s: %s' % (path, exc))
-        self.close()
+        with self._lock:
+            if self._depth:
+                raise SetInputError('cannot save while a write is in progress')
+            remove_db_files(path)
+            try:
+                self._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                self._conn.execute('VACUUM INTO ?', (path,))
+            except sqlite3.Error as exc:
+                raise SetFormatError('could not save into %s: %s' % (path, exc))
+            self.close()
         return Container(path)
 
     # -- session -----------------------------------------------------------------
@@ -761,13 +784,15 @@ class Container:
         """
         sql, tail = self._entries_sql(set_id, 'SELECT e.*, m.*', where, order_by,
                                       limit, offset)
-        cursor = self._conn.execute(sql, (set_id,) + tuple(params) + tail)
+        with self._lock:
+            cursor = self._conn.execute(sql, (set_id,) + tuple(params) + tail)
+            fetched = cursor.fetchall()
         names = [d[0] for d in cursor.description]
         split = names.index('entry_id')     # e.* has no entry_id; m.* starts with it
         entry_names = names[:split]
         m_names = names[split:]
         out = []
-        for row in cursor.fetchall():
+        for row in fetched:
             record = dict(zip(entry_names, row[:len(entry_names)]))
             record = _parse_json(record, _ENTRY_JSON)
             record['scalars'] = {k: v for k, v in zip(m_names, row[len(entry_names):])
@@ -777,7 +802,8 @@ class Container:
 
     def count(self, set_id, where='', params=()):
         sql, _ = self._entries_sql(set_id, 'SELECT count(*)', where, order_by=None)
-        return int(self._conn.execute(sql, (set_id,) + tuple(params)).fetchone()[0])
+        with self._lock:
+            return int(self._conn.execute(sql, (set_id,) + tuple(params)).fetchone()[0])
 
     def update_entry(self, entry_id, **fields):
         bad = sorted(set(fields) - ENTRY_FIELDS)
@@ -928,7 +954,7 @@ def _chunks(items, size=_CHUNK):
         yield items[i:i + size]
 
 
-def _remove_db_files(path):
+def remove_db_files(path):
     for suffix in ('', '-wal', '-shm'):
         try:
             os.unlink(path + suffix)
@@ -963,20 +989,45 @@ def is_open():
     return _ACTIVE is not None and not _ACTIVE.closed
 
 
+#: Bumped every time the active container changes. A long-running writer (a batch
+#: delivering results) captures it when it starts and compares before each write, so a
+#: `load other.raymol` under its feet is a clean SetError rather than a write into the
+#: wrong document or a raw sqlite ProgrammingError on a closed connection.
+_GENERATION = 0
+_SWEPT = False
+
+
+def generation():
+    return _GENERATION
+
+
 def active():
-    """The open container, opening the working file if there is none."""
-    global _ACTIVE
+    """The open container, opening the working file if there is none.
+
+    The first open in a process sweeps working files of dead RayMols (spec §2.1) and
+    treats a file already under THIS pid as one of them: a pid is reused after a wrap,
+    and inheriting a dead session's sets is worse than starting empty.
+    """
+    global _ACTIVE, _GENERATION, _SWEPT
     if _ACTIVE is None or _ACTIVE.closed:
-        _ACTIVE = Container(working_path())
+        path = working_path()
+        if not _SWEPT:
+            _SWEPT = True
+            sweep_stale_working_files()
+            if os.path.exists(path):
+                remove_db_files(path)
+        _ACTIVE = Container(path)
+        _GENERATION += 1
     return _ACTIVE
 
 
 def replace(container):
     """Install `container` as the active one, closing the previous. The previous FILE
     is left alone: whether it goes is binding's call, which knows if it was a document."""
-    global _ACTIVE
+    global _ACTIVE, _GENERATION
     previous = _ACTIVE
     _ACTIVE = container
+    _GENERATION += 1
     if previous is not None and previous is not container:
         previous.close()
     return container
@@ -988,14 +1039,15 @@ def reset():
     `load x.pse` and tests call this so a session that never had sets does not
     inherit the previous document's. A user's document is closed, never deleted.
     """
-    global _ACTIVE
+    global _ACTIVE, _GENERATION
     previous = _ACTIVE
     _ACTIVE = None
+    _GENERATION += 1
     if previous is None:
         return
     previous.close()
     if os.path.abspath(previous.path) == os.path.abspath(working_path()):
-        _remove_db_files(previous.path)
+        remove_db_files(previous.path)
 
 
 def sweep_stale_working_files():
@@ -1018,7 +1070,7 @@ def sweep_stale_working_files():
         if _alive(int(pid_text)):
             continue
         path = os.path.join(working_dir(), name)
-        _remove_db_files(path)
+        remove_db_files(path)
         removed.append(path)
     return removed
 

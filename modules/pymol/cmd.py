@@ -129,8 +129,9 @@ def _deferred_init_pymol_internals(_pymol):
         print("raymol metrics registration failed: %s" % _mt_e)
 
     # RayMol sets (#415): campaign records kept in a .raymol container, NOT in the .pse.
-    # The save task strips the peek object from a session and warns when a plain .pse
-    # leaves sets behind; the restore task resets the store on a bare .pse load.
+    # The save task strips the peek object from a session; the restore task drops links
+    # to staged objects the incoming session does not have. The reset for a bare .pse
+    # load lives in importing.load_pse, and the .pse warning in exporting.save.
     try:
         from pymol.sets import binding as _sets_binding
         if _sets_binding.session_restore not in _pymol._session_restore_tasks:

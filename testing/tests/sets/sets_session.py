@@ -96,6 +96,45 @@ class RaymolRoundTrip(SetSessionTestCase):
         self.assertEqual(con.execute('SELECT COUNT(*) FROM session').fetchone()[0], 1)
         con.close()
 
+    def testSaveAsOverAStaleWalKeepsTheData(self):
+        self.campaign()
+        target = self.path('t.raymol')
+        with open(target + '-wal', 'wb') as h:
+            h.write(b'\x00' * 4096)               # left by a crashed session
+        with open(target, 'wb') as h:
+            h.write(b'old')
+        cmd.save(target)
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(target))
+        self.assertEqual([s['name'] for s in cmd.set_list()], ['s'])
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3)
+        self.assertFalse(os.path.exists(target + '.saving'))
+
+    def testAFailedSaveAsKeepsTheWorkingDocument(self):
+        self.campaign()
+        working = store.active().path
+        bad = os.path.join(self._dir, 'no', 'such', 'dir', 't.raymol')
+        self.assertRaises(Exception, cmd.save, bad)
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(working))
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3, 'nothing lost')
+
+    def testPartialLoadOfARaymolIsRefused(self):
+        self.campaign()
+        path = self.path('p.raymol')
+        cmd.save(path)
+        from pymol.sets.errors import SetInputError
+        self.assertRaises(SetInputError, cmd.load, path, partial=1)
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3)
+
+    def testLoadReconcilesLinksTheBlobPredates(self):
+        self.campaign()
+        path = self.path('r.raymol')
+        cmd.save(path)
+        cmd.set_stage('s', 'p1')             # written to the document, not to the blob
+        cmd.reinitialize()
+        cmd.load(path)
+        self.assertEqual(cmd.set_get('s', 'p1')['p1']['staged'], None)
+        self.assertEqual(cmd.set_get('s', 'p2')['p2']['staged'], 'p2')
+
     def testSaveAsMovesTheDocument(self):
         self.campaign()
         a, b = self.path('a.raymol'), self.path('b.raymol')

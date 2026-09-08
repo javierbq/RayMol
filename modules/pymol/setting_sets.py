@@ -85,6 +85,7 @@ USAGE
     row = _set(name)
     entries = selectors.resolve(_c(), row, 'staged')
     binding.unstage(row, entries, include_pinned=True, _self=_self)
+    binding.clear_peek(_self=_self)
     _c().delete_set(row['id'])
     if not int(quiet):
         colorprinting.parrot(' set_delete: %s' % row['name'])
@@ -206,7 +207,8 @@ USAGE
 # -- Entries -------------------------------------------------------------------------
 
 
-def set_add(name, source, entries='all', parents='', quiet=1, _self=cmd):
+def set_add(name, source, entries='all', parents='', run='', tool='', tool_version='',
+            inputs='', quiet=1, _self=cmd):
     """
 DESCRIPTION
 
@@ -215,20 +217,38 @@ DESCRIPTION
 
 USAGE
 
-    set_add name, source [, entries [, parents ]]
+    set_add name, source [, entries [, parents [, run [, tool [, tool_version [, inputs ]]]]]]
 
 ARGUMENTS
 
     source = str: an object name, or a path
     entries = all | current: every state of an object, or the current one {default: all}
     parents = str: entry ids this came from, '+'-separated
+    run = str: an existing run id of this set to attach the entries to
+    tool, tool_version, inputs = str: create a run (inputs as JSON) and attach to it
+
+NOTES
+
+    Names are taken from the object or the file stem and made unique within the set
+    (d_0417, d_0417_2, ...). Without run/tool, entries captured from an object are
+    attached to one run per metrics-store run on that object.
     """
     row = _set(name)
     sid = row['id']
     source = str(source).strip()
     parent_ids = [p for p in str(parents).split('+') if p]
+    run_id = str(run).strip() or None
+    if run_id:
+        _c().run(run_id)                               # SetNotFound if absent
+    elif str(tool).strip():
+        try:
+            run_inputs = json.loads(inputs) if str(inputs).strip() else {}
+        except ValueError:
+            raise SetInputError('inputs must be JSON, got %r' % inputs)
+        run_id = _c().add_run(sid, str(tool).strip(), tool_version=str(tool_version),
+                              inputs=run_inputs)
     if source in (_self.get_names('all') or []):
-        ids = binding.capture_object(sid, source, parents=parent_ids,
+        ids = binding.capture_object(sid, source, run_id=run_id, parents=parent_ids,
                                      states=str(entries), _self=_self)
     else:
         path = _self.exp_path(source)
@@ -239,7 +259,8 @@ ARGUMENTS
             if any(low.endswith(ext) for ext in document.SEQUENCE_EXTS):
                 ids = binding.capture_fasta(sid, path, _self=_self)
             else:
-                ids = binding.capture_file(sid, path, parents=parent_ids, _self=_self)
+                ids = binding.capture_file(sid, path, run_id=run_id, parents=parent_ids,
+                                           _self=_self)
         else:
             raise SetNotFound('%r is neither an object nor a path' % source)
     names = [_c().entry_by_id(i)['name'] for i in ids]
@@ -278,8 +299,9 @@ USAGE
 
 NOTES
 
-    Without a key: {entry name: {column: value}}. With an array key: {entry name:
-    (index, values)}; with a scalar key: {entry name: value}.
+    Without a key: {entry name: {column: value, plus id, run_id, parents, sequences,
+    starred, rejected, pinned, tags, note, staged}}. With an array key: {entry name:
+    (index, values)}; with a scalar key or one of the fields above: {entry name: value}.
     """
     c = _c()
     row = _set(name)
@@ -288,11 +310,16 @@ NOTES
     out = {}
     for e in found:
         scalars = e.get('scalars') or {}
+        fields = dict(id=e['id'], run_id=e.get('run_id'), parents=e.get('parents') or [],
+                      sequences=e.get('sequences') or {}, starred=e.get('starred'),
+                      rejected=e.get('rejected'), pinned=e.get('pinned'),
+                      tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'))
         if not key:
-            out[e['name']] = dict(scalars, starred=e.get('starred'), rejected=e.get('rejected'),
-                                  tags=e.get('tags'), staged=e.get('staged_object'))
+            out[e['name']] = dict(scalars, **fields)
         elif key in scalars:
             out[e['name']] = scalars[key]
+        elif key in fields:
+            out[e['name']] = fields[key]
         else:
             arrays = [a for a in c.arrays_of(e['id']) if a['key'] == key]
             if not arrays:
@@ -308,7 +335,9 @@ def set_set(name, entries, key, value, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "set_set" writes a value into entries: note, tags, or a declared column.
+    "set_set" writes a value into entries: note, tags, or a column that belongs to the
+    user (tool 'user' or 'import'). A tool's own measurements are read-only here: a
+    number a predictor wrote must keep meaning what the predictor measured.
 
 USAGE
 
@@ -318,7 +347,8 @@ USAGE
     row = _set(name)
     found = selectors.resolve(c, row, entries)
     key = str(key).strip()
-    cols = {col['column']: col for col in c.columns(row['id']) if col.get('column')}
+    cols = {col['column']: col for col in c.columns(row['id'])
+            if col.get('column') and (col.get('tool') or 'user') in ('user', 'import')}
     for e in found:
         if key in ('note', 'tags'):
             c.update_entry(e['id'], **{key: str(value)})
@@ -327,7 +357,8 @@ USAGE
                          document.coerce_sidecar_value(cols[key].get('dtype', 'float'),
                                                        str(value)))
         else:
-            raise SetInputError('%r is not note, tags, or a column of %s' % (key, row['name']))
+            raise SetInputError('%r is not note, tags, or a user column of %s'
+                                % (key, row['name']))
     return len(found)
 
 
@@ -452,7 +483,9 @@ def set_sort(name, key, desc=1, quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "set_sort" sets a set's active sort: a column, or name / ord / created.
+    "set_sort" sets a set's active sort: a column, or name / ord / created. A column
+    also becomes the set's ranking key, the one `top:N`, the inspector histogram and
+    the wide table's index follow.
 
 USAGE
 
@@ -465,7 +498,10 @@ USAGE
     if key and key not in cols and key not in ('name', 'ord', 'created'):
         raise SetInputError('%r is not a column of %s (columns: %s)'
                             % (key, row['name'], ', '.join(sorted(cols)) or 'none'))
-    c.update_set(row['id'], sort_key=key, sort_desc=1 if int(desc) else 0)
+    fields = dict(sort_key=key, sort_desc=1 if int(desc) else 0)
+    if key in cols:
+        fields['ranking_key'] = key
+    c.update_set(row['id'], **fields)
     return key
 
 
@@ -604,16 +640,16 @@ USAGE
     return row.get('reference') or ''
 
 
-def set_budget(name='', n=0, quiet=1, _self=cmd):
+def set_budget(n, name='', quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "set_budget" sets how many staged objects a set may put in the scene, or with an
-    empty name the default for every set in this file.
+    "set_budget" sets how many staged objects a set may put in the scene, or without a
+    set name the default for every set in this file.
 
 USAGE
 
-    set_budget [ name ], n
+    set_budget n [, name ]
     """
     n = int(n)
     if n < 1:

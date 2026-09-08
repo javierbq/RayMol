@@ -110,6 +110,31 @@ class RoundTrips(SetDocumentTestCase):
         e2 = c.entry(c.get_set('out')['id'], 'd2')
         self.assertEqual(e2['parents'], ['abc123'], 'parents survive the CSV round trip')
 
+    def testMultiChainEntriesSurviveFolderRoundTrip(self):
+        cmd.set_create('s')
+        cmd.fab('ACD', 'ca', chain='A')
+        cmd.fab('EFGH', 'cb', chain='B')
+        cmd.create('dimer', 'ca or cb')
+        cmd.delete('ca or cb')
+        cmd.set_add('s', 'dimer')
+        cmd.delete('dimer')
+        out = self.path('dimers')
+        cmd.set_export('s', out, entries='all')
+        cmd.set_import(out, name='back')
+        self.assertEqual(cmd.get_names('public_objects'), [], 'import leaves nothing in the scene')
+        e = cmd.set_get('back', 'dimer')['dimer']
+        self.assertEqual(sorted(e['sequences']), ['A', 'B'])
+        cmd.set_stage('back', 'dimer')
+        self.assertEqual(cmd.get_chains('dimer'), ['A', 'B'])
+        self.assertEqual(cmd.count_atoms('dimer and name CA'), 7)
+
+    def testImportIntoANonEmptySetSuffixesNames(self):
+        self.populated()
+        out = self.path('again')
+        cmd.set_export('s', out, entries='all')
+        names = cmd.set_add('s', out)
+        self.assertEqual(sorted(names), ['d0_2', 'd1_2', 'd2_2'])
+
     def testCsvAndFastaExport(self):
         self.populated()
         cmd.set_filter('s', 'score > 1')

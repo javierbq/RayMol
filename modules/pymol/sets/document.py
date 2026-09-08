@@ -237,8 +237,9 @@ def write_folder(container, set_id, entries, folder):
     """A folder with one CIF per structure entry and the sidecar CSV.
 
     The CIF is the entry's chain blobs concatenated, each already a complete mmCIF
-    document from `get_cifstr`. PyMOL reads multi-block CIF text into one object, which
-    is what `binding.capture_file` will do on re-import.
+    data block from `get_cifstr`. PyMOL would read such a file as one object PER BLOCK,
+    so `binding.capture_file` splits on `data_` and merges the blocks itself, the way
+    staging does.
     """
     os.makedirs(folder, exist_ok=True)
     for e in entries:

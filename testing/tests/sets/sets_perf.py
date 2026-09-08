@@ -9,6 +9,8 @@ import time
 from pymol import cmd, testing
 from pymol.sets import filter as sfilter, selectors, store
 
+# 20k rather than the spec's 100k so the suite stays under ~3 s; the assertions are
+# proportionally loose, which makes this a smoke test of the scaling shape, not a gate.
 N = 20000
 
 

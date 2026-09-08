@@ -475,6 +475,8 @@ PYMOL API
         try:
             from pymol.metrics import store as _metric_store
             _metric_store.rename_object(str(old_name), str(new_name))
+            from pymol.sets import binding as _sets_binding
+            _sets_binding.on_object_renamed(str(old_name), str(new_name))
         except Exception as _mt_e:
             print(" metrics: could not follow %s -> %s (%s)"
                   % (old_name, new_name, _mt_e))

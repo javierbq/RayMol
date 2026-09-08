@@ -593,6 +593,14 @@ SEE ALSO
                     _metric_store.forget_object(_gone)
         except Exception as _mt_e:
             print(" metrics: could not reconcile after delete (%s)" % _mt_e)
+        # And the set store's staged links (#415), eagerly and for the same reason: a
+        # new object created under a recycled name must not be deleted by a later
+        # `set_unstage` as if it were still the entry that once bore that name.
+        try:
+            from pymol.sets import binding as _sets_binding
+            _sets_binding.on_objects_deleted(_self=_self)
+        except Exception as _st_e:
+            print(" sets: could not reconcile after delete (%s)" % _st_e)
         return r
 
     def delete_states(name: str, states: str, *, _self=cmd):
