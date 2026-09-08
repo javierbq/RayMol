@@ -93,6 +93,12 @@ struct SequencePanel: View {
     @State private var residueFrames: [String: CGRect] = [:]
     @State private var lastRange: ClosedRange<Int>? = nil
     @State private var anchorIndex: Int? = nil  // for Shift-click range
+    // Optimistic live-highlight during a drag: the selKeys currently under the
+    // sweep, unioned into the per-cell highlight test so they light up
+    // immediately, without waiting for the async PyMOL selection round-trip
+    // (issue #429). Cleared/reconciled against selectedResidueKeys when the drag
+    // ends. This is purely visual — the real 'sele' still comes from applyToggle.
+    @State private var dragSelKeys: Set<String> = []
 
     /// Flattened residue list (object order) for range/index mapping.
     private var flat: [SequenceResidue] { engine.sequences.flatMap { $0.residues } }
@@ -210,7 +216,9 @@ struct SequencePanel: View {
     }
 
     private func realResidueCell(_ r: SequenceResidue) -> some View {
-        let selected = r.isSelectable && engine.selectedResidueKeys.contains(r.selKey)
+        let selected = r.isSelectable
+            && (engine.selectedResidueKeys.contains(r.selKey)
+                || dragSelKeys.contains(r.selKey))
         return Text(r.oneLetter)
             .font(.system(size: 11, design: .monospaced))
             .foregroundColor(selected ? selectionFG : r.color)
@@ -304,13 +312,35 @@ struct SequencePanel: View {
                 guard let startIdx = residueIndex(at: value.startLocation) else { return }
                 let curIdx = residueIndex(at: value.location) ?? startIdx
                 let range = min(startIdx, curIdx)...max(startIdx, curIdx)
+                // Optimistic live highlight: light up the swept residues right
+                // now, even before the async 'sele' round-trip resolves. Updated
+                // every time the pointer enters a new cell so the visible span
+                // tracks the cursor. (issue #429)
+                dragSelKeys = Set(flat[range].filter { $0.isSelectable }.map { $0.selKey })
                 guard range != lastRange else { return }
                 lastRange = range
                 // Drag adds the swept range to the selection (additive).
                 applyToggle(residues: Array(flat[range]), add: true)
                 anchorIndex = startIdx
             }
-            .onEnded { _ in lastRange = nil }
+            .onEnded { _ in
+                lastRange = nil
+                // Reconcile the optimistic highlight against the confirmed
+                // selection: pull the real 'sele' back, then drop the local
+                // overlay once it has arrived. Deferring the clear (rather than
+                // wiping it here) avoids a one-frame flicker between the overlay
+                // disappearing and selectedResidueKeys catching up; the delayed
+                // block guarantees the overlay can never get stuck on.
+                let dragged = dragSelKeys
+                self.engine.fetchSequenceSelection()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    // Only clear what this drag added; leave alone if a new drag
+                    // has already repopulated the set.
+                    if self.dragSelKeys == dragged {
+                        self.dragSelKeys = []
+                    }
+                }
+            }
     }
 
     private func residueIndex(at point: CGPoint) -> Int? {
