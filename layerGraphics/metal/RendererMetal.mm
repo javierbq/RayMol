@@ -923,7 +923,7 @@ static float post_linear_depth(float d, float projA, float projB,
 }
 
 // Screen-space crease occlusion: the SSAO ring test shared by post_ssao_fog and
-// rt_composite (#436). Samples N depths on a disk of radiusPx pixels around uv
+// by rt_composite, see #436. Samples N depths on a disk of radiusPx pixels around uv
 // and counts neighbours that are 1..6% closer to the camera than the centre
 // (zc, linear eye distance) — a depth step of that size is a crease / contact /
 // occluding silhouette, which is exactly the contact darkening users read as
