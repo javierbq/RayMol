@@ -930,6 +930,19 @@ static float3 post_eye_pos(float2 uv, float d, float projA, float projB,
   return float3(ndcx * (-ez) / projX, ndcy * (-ez) / projY, ez);
 }
 
+// Linear eye distance (positive, toward the scene) from window depth [0,1].
+// ortho>0.5: the projection is orthographic, so eye-z is LINEAR in ndc-z
+//   (ez = (ndcz - projB)/projA with projA=proj[10], projB=proj[14]); the
+//   perspective inverse (-projB/(ndcz+projA)) would divide by a near-zero /
+//   wrong denominator and produce garbage distances.
+static float post_linear_depth(float d, float projA, float projB,
+                               float ortho = 0.0) {
+  float ndcz = 2.0 * d - 1.0;
+  float ez = (ortho > 0.5) ? ((ndcz - projB) / projA)  // ortho: linear
+                           : (-projB / (ndcz + projA)); // persp: inverse
+  return -ez;                         // distance from camera (positive)
+}
+
 // Robust eye-space surface normal from the depth buffer. Plain
 // cross(dfdx(p), dfdy(p)) uses the 2x2 quad derivative, which at a silhouette
 // straddles the depth discontinuity to the background/behind geometry: the
@@ -993,7 +1006,8 @@ static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 
 
 // Fullscreen-triangle vertex shader + post-process fragment shaders. A single
 // library so all post pipelines share the vertex function. Compiled with the
-// shared kEyeReconSrc helpers prepended (post_eye_pos/normal/normal_smooth).
+// shared kEyeReconSrc helpers prepended (post_linear_depth/eye_pos/normal/
+// normal_smooth).
 static NSString* const kPostSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -1177,23 +1191,11 @@ struct PostU {
   float pad0;            // 16-byte multiple: the C++ mirror must be >= this size
 };
 
-// Linear eye distance (positive, toward the scene) from window depth [0,1].
-// ortho>0.5: the projection is orthographic, so eye-z is LINEAR in ndc-z
-//   (ez = (ndcz - projB)/projA with projA=proj[10], projB=proj[14]); the
-//   perspective inverse (-projB/(ndcz+projA)) would divide by a near-zero /
-//   wrong denominator and produce garbage distances.
-static float post_linear_depth(float d, float projA, float projB,
-                               float ortho = 0.0) {
-  float ndcz = 2.0 * d - 1.0;
-  float ez = (ortho > 0.5) ? ((ndcz - projB) / projA)  // ortho: linear
-                           : (-projB / (ndcz + projA)); // persp: inverse
-  return -ez;                         // distance from camera (positive)
-}
-
-// post_eye_pos / post_eye_normal / post_eye_normal_smooth are defined once in the
-// shared kEyeReconSrc block, prepended to this library (and to kRTSrc) at compile
-// time — see the newLibraryWithSource call sites. Keeping a single copy is what
-// prevents the RT library from silently losing them again (the #83/#87 regression).
+// post_linear_depth / post_eye_pos / post_eye_normal / post_eye_normal_smooth are
+// defined once in the shared kEyeReconSrc block, prepended to this library (and to
+// kRTSrc) at compile time — see the newLibraryWithSource call sites. Keeping a
+// single copy is what prevents the RT library from silently losing them again
+// (the #83/#87 regression).
 
 fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
@@ -2190,7 +2192,15 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 uv = in.uv + float2(i, j) * texel;
       float dn = depthTex.sample(s, uv);
       if (dn >= 0.99999) continue;
-      float ezn = -u.projB / ((2.0 * dn - 1.0) + u.projA);
+      // Neighbour eye-z via the shared, ortho-aware inverse (post_linear_depth
+      // returns the POSITIVE eye distance, hence the sign flip), reconstructed
+      // the same way as pEye.z. The old inline -projB / (ndcz + projA) was the
+      // PERSPECTIVE-only inverse, so under an orthographic projection (#139) the
+      // weights compared mismatched quantities and the blur collapsed to the
+      // centre sample (raw AO speckle) or bled across silhouettes. Perspective
+      // output is unchanged up to 8-bit rounding (same inverse, now behind the
+      // helper's ortho/perspective select).
+      float ezn = -post_linear_depth(dn, u.projA, u.projB, u.projOrtho);
       float w = exp(-abs(ezn - pEye.z) / ztol);
       float2 rg = aoTex.sample(s, uv).rg;
       aoSum += rg.r * w;
@@ -2594,7 +2604,8 @@ void RendererMetal::ensureRayTracingAS()
   // (_rtCompileTried latch): a compile failure must NOT busy-recompile the source
   // every frame (that was a real perf sink while RT was broken). If it fails the RT
   // pass is skipped and the SSAO/shadow path runs — zero regression. kEyeReconSrc
-  // is prepended so rt_ao/rt_composite can call post_eye_pos/normal/normal_smooth.
+  // is prepended so rt_ao/rt_composite can call post_linear_depth/eye_pos/normal/
+  // normal_smooth.
   if (_rtReady && !_rtResolvePipeline && !_rtCompileTried) {
     _rtCompileTried = true;
     NSError* err = nil;
