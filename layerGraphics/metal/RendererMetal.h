@@ -186,6 +186,7 @@ public:
       int ortho = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
+  void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
   void setDofQuality(int level) override;
@@ -572,6 +573,10 @@ private:
   // Defaults match the values the shaders previously hard-coded.
   float _lightAmbient = 0.14f, _lightDirect = 0.45f, _lightReflect = 0.481f;
   float _lightSpecular = 0.5f, _lightShininess = 55.0f;
+  // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
+  // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
+  // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
+  float _keyLightEye[3] = {0.34815531f, 0.34815531f, 0.87038828f};
   float _sssWrap = 0.0f;  // cSetting_metal_sss_wrap: 0 = pure Lambert (identity)
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]

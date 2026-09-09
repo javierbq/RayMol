@@ -397,6 +397,13 @@ public:
   {
   }
 
+  // PyMOL key-light direction (cSetting_light). The direction toward the light
+  // used for shading and shadow casting is -normalize(light). Default: no-op
+  // (the GL renderer reads cSetting_light itself). The Metal renderer stores
+  // it and feeds it into its lit/shadow/RT shaders so shading and shadows
+  // follow the light setting. lightv is a 3-vector (eye space, PyMOL's light).
+  virtual void setKeyLightDir(const float* /*lightv*/) {}
+
   // MSAA sample count for the scene (opaque) pass. SceneRenderMetal calls this
   // each frame from the metal_msaa setting (4 = on, 1 = off). The renderer
   // stashes it and applies the rebuild at the next frame's setDrawable (before

@@ -1174,7 +1174,8 @@ struct PostU {
   float shadowRadius;    // world half-extent of the shadow ortho box (Angstroms)
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
-  float pad0;            // 16-byte multiple: the C++ mirror must be >= this size
+  float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
+  float pad0, pad1;      // 16-byte multiple: the C++ mirror must be >= this size
 };
 
 // Linear eye distance (positive, toward the scene) from window depth [0,1].
@@ -1277,7 +1278,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     // "triangles under shadows". The bilateral average removes that.
     float3 nrm = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, p,
                                         u.projA, u.projB, u.projX, u.projY, u.projOrtho);
-    float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
+    float3 Ldir = normalize(float3(u.klx, u.kly, u.klz)); // key light (cSetting_light)
     float faceGate = smoothstep(0.0, 0.35, dot(nrm, Ldir));
     // Scale-aware, in ANGSTROMS: the light ortho box spans (radius*4 - 0.05) in
     // world Z, so an Angstrom bias maps to light-space fragDepth as sepA/S. This
@@ -1860,6 +1861,27 @@ void RendererMetal::setLightingParams(float ambient, float direct,
   _sssWrap = sssWrap;
 }
 
+void RendererMetal::setKeyLightDir(const float* lightv)
+{
+  // Direction TOWARD the light (used in dot(N,L) and for shadow/RT rays) is
+  // -normalize(cSetting_light). PyMOL's default light yields the historical
+  // normalize(0.4,0.4,1.0), so default behavior is unchanged.
+  if (!lightv)
+    return;
+  float x = lightv[0], y = lightv[1], z = lightv[2];
+  float len = std::sqrt(x * x + y * y + z * z);
+  if (len < 1e-6f) {
+    // Degenerate light vector: fall back to the historical key-light direction.
+    _keyLightEye[0] = 0.34815531f;
+    _keyLightEye[1] = 0.34815531f;
+    _keyLightEye[2] = 0.87038828f;
+    return;
+  }
+  _keyLightEye[0] = -x / len;
+  _keyLightEye[1] = -y / len;
+  _keyLightEye[2] = -z / len;
+}
+
 void RendererMetal::setRayTraceParams(int samples, float aoRadius,
     float aoIntensity, float shadowIntensity, float scale)
 {
@@ -1916,7 +1938,8 @@ struct RTU {
   float projOrtho;         // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float triInstance;       // instance_id of the world-triangle mesh in the AS (-1 = none)
   float triCount;          // number of triangles in the world-tri buffer
-  float pad0, pad1, pad2;  // -> 8 floats after lightViewProj: struct size is a
+  float klx, kly, klz;     // key-light dir (toward light, eye space) = -normalize(cSetting_light)
+                           // -> still 8 floats after lightViewProj: struct size is a
                            //    multiple of 16 on both sides (validation checks
                            //    setFragmentBytes length >= argument size)
 };
@@ -2226,7 +2249,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     // Default RT path shadow-map fallback: same scale-aware, normal-offset,
     // Angstrom-bias treatment as post_ssao_fog, so cartoons get proper
     // inter-element shadows without per-triangle self-shadow acne here too.
-    float3 Ldir = normalize(float3(0.4, 0.4, 1.0));      // key light (eye space)
+    float3 Ldir = normalize(float3(u.klx, u.kly, u.klz)); // key light (cSetting_light)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
     float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
     float worldTexel = 2.0 * u.shadowRadius / 4096.0;
@@ -2652,12 +2675,16 @@ void RendererMetal::runPostChain()
       float projOrtho;           // matches MSL RTU: 1 = orthographic (#139)
       float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
       float triCount;            // matches MSL RTU: world-tri triangle count
-      float pad0, pad1, pad2;    // matches MSL RTU padding (16-byte multiple)
+      float klx, kly, klz;       // matches MSL RTU: key-light dir (toward light, eye space)
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
     std::memcpy(&inv, _modelviewInv.data(), 64);
-    simd_float4 le = simd_normalize(simd_make_float4(0.4f, 0.4f, 1.0f, 0.0f));
+    // Key-light direction TOWARD the light in eye space (from cSetting_light).
+    // Default reproduces the historical normalize(0.4,0.4,1.0). `lm` transforms it
+    // to model space for the hardware-RT shadow rays (lightDirModel).
+    simd_float4 le = simd_normalize(simd_make_float4(
+        _keyLightEye[0], _keyLightEye[1], _keyLightEye[2], 0.0f));
     simd_float4 lm = simd_mul(inv, simd_make_float4(le.x, le.y, le.z, 0.0f));
     u.lightDirModel[0] = lm.x; u.lightDirModel[1] = lm.y;
     u.lightDirModel[2] = lm.z; u.lightDirModel[3] = 0.0f;
@@ -2690,7 +2717,7 @@ void RendererMetal::runPostChain()
     u.shadowBias = _shadowBias;
     u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
     u.triCount = (float)_rtTriCount;
-    u.pad0 = u.pad1 = u.pad2 = 0.0f;
+    u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2795,9 +2822,11 @@ void RendererMetal::runPostChain()
       float shadowRadius;      // matches MSL PostU: shadow ortho half-extent
       float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
-      float pad0;              // matches MSL PostU padding (16-byte multiple)
+      float klx, kly, klz;     // matches MSL PostU: key-light dir (toward light)
+      float pad0, pad1;        // matches MSL PostU padding (16-byte multiple)
     } u;
-    u.pad0 = 0.0f;
+    u.pad0 = 0.0f; u.pad1 = 0.0f;
+    u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
     u.bgR = _bgR; u.bgG = _bgG; u.bgB = _bgB;
@@ -4097,8 +4126,9 @@ void RendererMetal::endBatch()
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
+  { struct { float a, d, r, s, sh, w, klx, kly, klz; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
+      _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Always use the built-in batch pipeline for batch rendering.
@@ -4281,7 +4311,8 @@ static void apply_rep_clip(ClipU clip, float eyeDist) {
 // hard-coded constants, so the sliders take effect. Two-sided: the interpolated
 // normal is flipped to face the viewer so cartoon undersides / surface
 // interiors light up instead of going dark.
-struct LightU { float ambient, direct, reflect, spec, shininess, wrap; };
+struct LightU { float ambient, direct, reflect, spec, shininess, wrap;
+                 float klx, kly, klz; };  // klx/y/z: key-light dir (toward light, eye space)
 // Wrapped diffuse: at w=0 this is saturate(n)=max(n,0) for unit-vector dots,
 // i.e. pixel-identical to the old `n>0 ? n : 0` Lambert. w>0 lets light bleed
 // past the terminator (soft subsurface/waxy look). Specular stays gated on the
@@ -4296,7 +4327,7 @@ static float3 vbo_shade(float3 baseColor, float3 nEye, LightU lt) {
   float spec_value = lt.spec;
   float shininess  = max(lt.shininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
-  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
@@ -4448,7 +4479,8 @@ fragment float4 cap_fill_fragment(constant float4& interiorColor [[buffer(0)]]) 
   // The cut cross-section faces the viewer, so light it with a +Z normal
   // through the shared two-light model (matches desktop's interior_normal
   // {0,0,1}). Caps use the default lighting (a minor flat fill).
-  LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0, 0.0};
+  LightU lt = {0.14, 0.45, 0.481, 0.5, 55.0, 0.0,
+               0.34815531, 0.34815531, 0.87038828};  // default key light (+Z-ish)
   return float4(vbo_shade(interiorColor.rgb, float3(0.0, 0.0, 1.0), lt), interiorColor.a);
 }
 
@@ -5235,8 +5267,9 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
+  { struct { float a, d, r, s, sh, w, klx, kly, klz; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
+      _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
   // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
   // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
@@ -5298,8 +5331,9 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment / vbo_fragment_oit at
   // fragment buffer(0). Harmless for the unlit/flat pipelines (they don't read
   // it). Scoped so the local doesn't clash across multiple draw paths.
-  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
+  { struct { float a, d, r, s, sh, w, klx, kly, klz; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
+      _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
       // MARK pass: per-rep clip (front-only) so stencil parity marks the cut at
       // the per-rep front plane; no-op (enabled=0) when per-rep clip is off.
@@ -5492,8 +5526,9 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Lighting (Scene sliders) for the lit vbo_fragment at fragment buffer(0).
   // Without this, indexed lit geometry (molecular surfaces) reads an unbound
   // LightU (ambient/direct = 0) and renders black. Mirrors drawVBO.
-  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
+  { struct { float a, d, r, s, sh, w, klx, kly, klz; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
+      _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
   // Per-rep clip planes for the lit vbo_fragment / vbo_fragment_oit at fragment
   // buffer(1). enabled=0 (front<0) leaves the rep clipped only by the global slab.
@@ -5680,7 +5715,8 @@ struct SphereU {
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else atom*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
   float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
-  float _pad0, _pad1;   // explicit tail padding (192 bytes); C++ mirror must match
+  float klx, kly, klz;  // key-light dir (toward light, eye space) = -normalize(cSetting_light)
+  float _pad0, _pad1, _pad2;   // explicit tail padding (208 bytes); C++ mirror must match
 };
 struct SphereVOut {
   float4 position [[position]];
@@ -5791,7 +5827,7 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
   float spec_value = u.lSpecular;
   float shininess  = max(u.lShininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
-  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+  const float3 L1 = normalize(float3(u.klx, u.kly, u.klz));  // key light (cSetting_light)
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
@@ -5998,7 +6034,8 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     float interiorCap;
     float interiorColor[4];
     float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
-    float _pad0, _pad1;   // matches MSL SphereU padding (192 bytes)
+    float klx, kly, klz;  // key-light dir (toward light, eye space)
+    float _pad0, _pad1, _pad2;   // matches MSL SphereU padding (208 bytes)
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
@@ -6006,6 +6043,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
   u.lShininess = _lightShininess;
   u.lSSSWrap = _sssWrap;
+  u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.sphere_size_scale = call.sphereSizeScale;
   u.ortho = (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
@@ -6063,7 +6101,8 @@ struct CylU {
   float4 interiorColor; // rgb cap color; .a > 0.5 => use it (else bond*0.45)
   // PyMOL lighting model (Scene sliders): ambient/direct/reflect/spec/shininess.
   float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
-  float _pad0, _pad1;   // explicit tail padding: MSL rounds the struct up to 208
+  float klx, kly, klz;  // key-light dir (toward light, eye space) = -normalize(cSetting_light)
+  float _pad0, _pad1, _pad2;   // explicit tail padding: MSL rounds the struct up to 224
                         // (float4x4 alignment); the C++ mirror must match, or
                         // Metal validation aborts the draw (iOS from Xcode).
 };
@@ -6249,7 +6288,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   float spec_value = u.lSpecular;
   float shininess  = max(u.lShininess, 1.0);
   const float3 L0 = float3(0.0, 0.0, 1.0);
-  const float3 L1 = normalize(float3(0.4, 0.4, 1.0));
+  const float3 L1 = normalize(float3(u.klx, u.kly, u.klz));  // key light (cSetting_light)
   float intensity = ambient;
   float specular = 0.0;
   float n0 = dot(normal, L0);
@@ -6468,7 +6507,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     float interiorCap;
     float interiorColor[4];
     float lAmbient, lDirect, lReflect, lSpecular, lShininess, lSSSWrap;
-    float _pad0, _pad1;   // matches MSL CylU padding (208 bytes)
+    float klx, kly, klz;  // key-light dir (toward light, eye space)
+    float _pad0, _pad1, _pad2;   // matches MSL CylU padding (224 bytes)
   } u;
   std::memcpy(u.modelview, _modelviewMatrix.data(), 64);
   std::memcpy(u.projection, _projectionMatrix.data(), 64);
@@ -6476,6 +6516,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.lReflect = _lightReflect; u.lSpecular = _lightSpecular;
   u.lShininess = _lightShininess;
   u.lSSSWrap = _sssWrap;
+  u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.uni_radius = call.uniRadius;
   u.ortho = (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
@@ -6556,7 +6597,8 @@ vertex TubeOut bezier_tube_vertex(
   return o;
 }
 
-struct LightU { float ambient, direct, reflect, spec, shininess, wrap; };
+struct LightU { float ambient, direct, reflect, spec, shininess, wrap;
+                 float klx, kly, klz; };  // klx/y/z: key-light dir (toward light, eye space)
 fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
     constant LightU& lt [[buffer(0)]]) {
   // PyMOL two-light model driven by the live lighting settings (Scene sliders).
@@ -6568,7 +6610,7 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
   float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
   float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
   const float3 L0 = float3(0.0,0.0,1.0);
-  const float3 L1 = normalize(float3(0.4,0.4,1.0));
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
   float intensity = ambient, specular = 0.0;
   float n0 = dot(nrm, L0);
   intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
@@ -6690,8 +6732,9 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   u.color[0] = r; u.color[1] = g; u.color[2] = b; u.color[3] = 1.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
   // Lighting (Scene sliders) for bezier_tube_fragment at fragment buffer(0).
-  { struct { float a, d, r, s, sh, w; } _lt = { _lightAmbient, _lightDirect,
-      _lightReflect, _lightSpecular, _lightShininess, _sssWrap };
+  { struct { float a, d, r, s, sh, w, klx, kly, klz; } _lt = { _lightAmbient, _lightDirect,
+      _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
+      _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];
