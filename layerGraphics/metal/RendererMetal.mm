@@ -1052,7 +1052,8 @@ static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 
 
 // Fullscreen-triangle vertex shader + post-process fragment shaders. A single
 // library so all post pipelines share the vertex function. Compiled with the
-// shared kEyeReconSrc helpers prepended (post_eye_pos/normal/normal_smooth).
+// shared kEyeReconSrc helpers prepended (post_linear_depth/eye_pos/normal/
+// normal_smooth).
 static NSString* const kPostSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -2221,7 +2222,15 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 uv = in.uv + float2(i, j) * texel;
       float dn = depthTex.sample(s, uv);
       if (dn >= 0.99999) continue;
-      float ezn = -u.projB / ((2.0 * dn - 1.0) + u.projA);
+      // Neighbour eye-z via the shared, ortho-aware inverse (post_linear_depth
+      // returns the POSITIVE eye distance, hence the sign flip), reconstructed
+      // the same way as pEye.z. The old inline -projB / (ndcz + projA) was the
+      // PERSPECTIVE-only inverse, so under an orthographic projection (#139) the
+      // weights compared mismatched quantities and the blur collapsed to the
+      // centre sample (raw AO speckle) or bled across silhouettes. Perspective
+      // output is unchanged up to 8-bit rounding (same inverse, now behind the
+      // helper's ortho/perspective select).
+      float ezn = -post_linear_depth(dn, u.projA, u.projB, u.projOrtho);
       float w = exp(-abs(ezn - pEye.z) / ztol);
       float2 rg = aoTex.sample(s, uv).rg;
       aoSum += rg.r * w;
@@ -2646,7 +2655,8 @@ void RendererMetal::ensureRayTracingAS()
   // (_rtCompileTried latch): a compile failure must NOT busy-recompile the source
   // every frame (that was a real perf sink while RT was broken). If it fails the RT
   // pass is skipped and the SSAO/shadow path runs — zero regression. kEyeReconSrc
-  // is prepended so rt_ao/rt_composite can call post_eye_pos/normal/normal_smooth.
+  // is prepended so rt_ao/rt_composite can call post_linear_depth/eye_pos/normal/
+  // normal_smooth.
   if (_rtReady && !_rtResolvePipeline && !_rtCompileTried) {
     _rtCompileTried = true;
     NSError* err = nil;
