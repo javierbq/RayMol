@@ -2111,6 +2111,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->loadMatrixf(proj);
     G->Renderer->matrixMode(0x1700); // GL_MODELVIEW = 0x1700
     G->Renderer->loadMatrixf(mv);
+    // Real-time RT (#427/#425): record the camera-only modelview on THIS path
+    // too — the Metal app renders through SceneRenderMetal, not SceneRender, so
+    // without it the pose delta degenerates to the full camera matrix and every
+    // caster is baked into eye space while the rays trace model space (#436).
+    G->Renderer->setBaseModelView(mv);
 
     // Push per-frame post-process params (depth-cue/fog + SSAO). Fog matches
     // SceneSetFog: FogStart/FogEnd are eye-space distances; proj[10]/[14] let
