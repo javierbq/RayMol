@@ -909,6 +909,65 @@ static NSString* const kEyeReconSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
 
+// Linear eye distance (positive, toward the scene) from window depth [0,1].
+// ortho>0.5: the projection is orthographic, so eye-z is LINEAR in ndc-z
+//   (ez = (ndcz - projB)/projA with projA=proj[10], projB=proj[14]); the
+//   perspective inverse (-projB/(ndcz+projA)) would divide by a near-zero /
+//   wrong denominator and produce garbage distances.
+static float post_linear_depth(float d, float projA, float projB,
+                               float ortho = 0.0) {
+  float ndcz = 2.0 * d - 1.0;
+  float ez = (ortho > 0.5) ? ((ndcz - projB) / projA)  // ortho: linear
+                           : (-projB / (ndcz + projA)); // persp: inverse
+  return -ez;                         // distance from camera (positive)
+}
+
+// Screen-space crease occlusion: the SSAO ring test shared by post_ssao_fog and
+// rt_composite (#436). Samples N depths on a disk of radiusPx pixels around uv
+// and counts neighbours that are 1..6% closer to the camera than the centre
+// (zc, linear eye distance) — a depth step of that size is a crease / contact /
+// occluding silhouette, which is exactly the contact darkening users read as
+// depth. Returns the occluded fraction 0..1; callers scale it by an intensity.
+static float post_ssao_occlusion(depth2d<float> depthTex, sampler s, float2 uv,
+                                 float2 invres, float zc, float radiusPx,
+                                 float projA, float projB, float ortho) {
+  const int N = 12;
+  const float TWO_PI = 6.28318530718;
+  const float range = 0.06; // ignore occluders farther than 6% of center z
+  float occ = 0.0;
+  for (int i = 0; i < N; i++) {
+    float ang = (float(i) + 0.5) * (TWO_PI / float(N));
+    // vary the radius across the ring to cover the disk
+    float rr = radiusPx * (0.35 + 0.65 * float((i % 4) + 1) / 4.0);
+    float2 off = float2(cos(ang), sin(ang)) * rr * invres;
+    float dn = depthTex.sample(s, uv + off);
+    if (dn >= 0.99999) continue; // background neighbor: no occlusion (no halo)
+    float zn = post_linear_depth(dn, projA, projB, ortho);
+    float diff = zc - zn; // > 0 when neighbor is closer to camera (occluder)
+    if (diff > 0.0) {
+      float rel = diff / max(zc, 1e-4);
+      float w = smoothstep(0.0, 0.01, rel) *
+                (1.0 - smoothstep(range * 0.5, range, rel));
+      occ += w;
+    }
+  }
+  return occ / float(N);
+}
+
+// Per-rep AO exemption (#79): aoMaskTex.r == 1 on front-most cartoon/ribbon
+// pixels, where the crease term paints dark contour lines on ribbon silhouettes
+// and self-folds. Dilated by two texels so grazing cartoon triangles at folds
+// (whose single-sample re-raster depth can just miss the MSAA-resolved scene
+// depth) are still covered and no AO line leaks through at the fold.
+static bool post_ao_exempt(texture2d<float> aoMaskTex, sampler s, float2 uv,
+                           float2 invres) {
+  float m = 0.0;
+  for (int dy = -2; dy <= 2; dy++)
+    for (int dx = -2; dx <= 2; dx++)
+      m = max(m, aoMaskTex.sample(s, uv + float2(float(dx), float(dy)) * invres).r);
+  return m > 0.5;
+}
+
 // Eye-space position from a window depth at a given screen uv (the inverse of the
 // projection; matches the reconstruction used by the shadow/AO passes). ortho>0.5
 // selects the ORTHOGRAPHIC inverse: eye-z is linear in ndc-z and the eye x/y do
@@ -1177,23 +1236,12 @@ struct PostU {
   float pad0;            // 16-byte multiple: the C++ mirror must be >= this size
 };
 
-// Linear eye distance (positive, toward the scene) from window depth [0,1].
-// ortho>0.5: the projection is orthographic, so eye-z is LINEAR in ndc-z
-//   (ez = (ndcz - projB)/projA with projA=proj[10], projB=proj[14]); the
-//   perspective inverse (-projB/(ndcz+projA)) would divide by a near-zero /
-//   wrong denominator and produce garbage distances.
-static float post_linear_depth(float d, float projA, float projB,
-                               float ortho = 0.0) {
-  float ndcz = 2.0 * d - 1.0;
-  float ez = (ortho > 0.5) ? ((ndcz - projB) / projA)  // ortho: linear
-                           : (-projB / (ndcz + projA)); // persp: inverse
-  return -ez;                         // distance from camera (positive)
-}
-
-// post_eye_pos / post_eye_normal / post_eye_normal_smooth are defined once in the
-// shared kEyeReconSrc block, prepended to this library (and to kRTSrc) at compile
-// time — see the newLibraryWithSource call sites. Keeping a single copy is what
-// prevents the RT library from silently losing them again (the #83/#87 regression).
+// post_linear_depth / post_eye_pos / post_eye_normal / post_eye_normal_smooth and
+// the SSAO crease helpers (post_ssao_occlusion / post_ao_exempt) are defined once
+// in the shared kEyeReconSrc block, prepended to this library (and to kRTSrc) at
+// compile time — see the newLibraryWithSource call sites. Keeping a single copy is
+// what prevents the RT library from silently losing them again (the #83/#87
+// regression) and keeps the crease term identical in both paths (#436).
 
 fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
@@ -1223,38 +1271,16 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
   bool aoExempt = false;
   if (u.aoExemptEnabled > 0.5) {
     float2 iv = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
-    float m = 0.0;
-    for (int dy = -2; dy <= 2; dy++)
-      for (int dx = -2; dx <= 2; dx++)
-        m = max(m, aoMaskTex.sample(s, in.uv + float2(float(dx), float(dy)) * iv).r);
-    aoExempt = (m > 0.5);
+    aoExempt = post_ao_exempt(aoMaskTex, s, in.uv, iv);
   }
 
   float ao = 1.0;
   if (u.aoEnabled > 0.5 && d < 0.99999 && !flatCap && !aoExempt) {
     float zc = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
     float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
-    const int N = 12;
-    const float TWO_PI = 6.28318530718;
-    const float range = 0.06; // ignore occluders farther than 6% of center z
-    float occ = 0.0;
-    for (int i = 0; i < N; i++) {
-      float ang = (float(i) + 0.5) * (TWO_PI / float(N));
-      // vary the radius across the ring to cover the disk
-      float rr = u.aoRadiusPx * (0.35 + 0.65 * float((i % 4) + 1) / 4.0);
-      float2 off = float2(cos(ang), sin(ang)) * rr * invres;
-      float dn = depthTex.sample(s, in.uv + off);
-      if (dn >= 0.99999) continue; // background neighbor: no occlusion (no halo)
-      float zn = post_linear_depth(dn, u.projA, u.projB, u.projOrtho);
-      float diff = zc - zn; // > 0 when neighbor is closer to camera (occluder)
-      if (diff > 0.0) {
-        float rel = diff / max(zc, 1e-4);
-        float w = smoothstep(0.0, 0.01, rel) *
-                  (1.0 - smoothstep(range * 0.5, range, rel));
-        occ += w;
-      }
-    }
-    ao = clamp(1.0 - (occ / float(N)) * u.aoIntensity, 0.0, 1.0);
+    float occ = post_ssao_occlusion(depthTex, s, in.uv, invres, zc, u.aoRadiusPx,
+                                    u.projA, u.projB, u.projOrtho);
+    ao = clamp(1.0 - occ * u.aoIntensity, 0.0, 1.0);
   }
   color *= ao;
 
@@ -1919,6 +1945,10 @@ struct RTU {
   float pad0, pad1, pad2;  // -> 8 floats after lightViewProj: struct size is a
                            //    multiple of 16 on both sides (validation checks
                            //    setFragmentBytes length >= argument size)
+  float aoCrease;          // metal_ssao under RT: crease-term intensity (0 = off), #436
+  float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
+  float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
+  float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
 };
 
 // Facet normal of world-tri p, averaged with its strip neighbours p-1 and p+1.
@@ -2164,6 +2194,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     depth2d<float> depthTex [[texture(1)]],
     depth2d<float> shadowTex [[texture(2)]],
     texture2d<float> aoTex [[texture(3)]],
+    texture2d<float> aoMaskTex [[texture(4)]],
     sampler s [[sampler(0)]],
     sampler shadowSamp [[sampler(1)]],
     constant RTU& u [[buffer(1)]]) {
@@ -2199,6 +2230,27 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
   float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
+
+  // Screen-space crease term (metal_ssao), kept ON under ray tracing (#436).
+  // The traced hemisphere AO is physically right but SMOOTH: on packed spheres
+  // and crossing sticks it produces broad, soft darkening and none of the crisp
+  // contact/silhouette rims the raster SSAO pass draws, so switching RT on read
+  // as "flatter" even though the image got darker overall (measured: RT AO alone
+  // has ~40% less fine-scale contrast than SSAO on spheres, and is near-absent
+  // on sticks). Run the identical ring test here (same helper, same radius and
+  // intensity as post_ssao_fog) and combine by taking the DARKER of the two
+  // terms: creases get the crisp rim, pockets keep the traced occlusion, and
+  // nothing is double-darkened. Honors the cartoon exemption (#79) so ribbons
+  // are unchanged, and the Ambient-occlusion toggle now matters under RT.
+  if (u.aoCrease > 0.0) {
+    bool exempt = (u.aoExemptEnabled > 0.5) && post_ao_exempt(aoMaskTex, s, in.uv, invres);
+    if (!exempt) {
+      float zc = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
+      float occ = post_ssao_occlusion(depthTex, s, in.uv, invres, zc,
+                                      u.aoCreaseRadiusPx, u.projA, u.projB, u.projOrtho);
+      ao = min(ao, clamp(1.0 - occ * u.aoCrease, 0.0, 1.0));
+    }
+  }
   col *= ao;
 
   // Cast shadows. Two paths share the shadowIntensity gate:
@@ -2621,6 +2673,13 @@ void RendererMetal::ensureRayTracingAS()
   }
 }
 
+// Screen-space AO (metal_ssao) tuning shared by the raster pass (post_ssao_fog)
+// and the crease term of the ray-traced composite (rt_composite, #436): the same
+// darkening strength and the same ring radius (a fraction of the render height),
+// so the crease look is identical whichever path draws it.
+static const float kSSAOIntensity = 0.8f;
+static const float kSSAORadiusFrac = 0.015f;   // ~1.5% of height
+
 void RendererMetal::runPostChain()
 {
   if (!_blitPipeline) return;
@@ -2653,6 +2712,10 @@ void RendererMetal::runPostChain()
       float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
       float triCount;            // matches MSL RTU: world-tri triangle count
       float pad0, pad1, pad2;    // matches MSL RTU padding (16-byte multiple)
+      float aoCrease;            // matches MSL RTU: crease-term intensity (0 = off)
+      float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
+      float aoExemptEnabled;     // matches MSL RTU: cartoon mask bound at texture(4)
+      float pad3;                // matches MSL RTU padding (16-byte multiple)
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2691,6 +2754,14 @@ void RendererMetal::runPostChain()
     u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
     u.triCount = (float)_rtTriCount;
     u.pad0 = u.pad1 = u.pad2 = 0.0f;
+    // Screen-space crease term under RT (#436): gated by the Ambient-occlusion
+    // toggle exactly like the raster pass, with the same cartoon/ribbon exemption
+    // mask (#79) rasterized first so rt_composite can skip ribbon pixels.
+    bool aoMaskReady = doAO ? renderAOExemptMask() : false;
+    u.aoCrease = doAO ? kSSAOIntensity : 0.0f;
+    u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
+    u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
+    u.pad3 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2770,6 +2841,9 @@ void RendererMetal::runPostChain()
     [er setFragmentTexture:_sceneDepth atIndex:1];
     [er setFragmentTexture:_shadowDepth atIndex:2];
     [er setFragmentTexture:aoForComposite atIndex:3];
+    // texture(4) = cartoon AO-exempt mask; bind a valid 2D texture even when
+    // unused (aoExemptEnabled gates the sample), since the shader declares it.
+    [er setFragmentTexture:(aoMaskReady ? _aoExemptMaskTex : _sceneColor) atIndex:4];
     [er setFragmentSamplerState:_postSampler atIndex:0];
     [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
@@ -2803,8 +2877,8 @@ void RendererMetal::runPostChain()
     u.bgR = _bgR; u.bgG = _bgG; u.bgB = _bgB;
     u.fogEnabled = doFog ? 1.0f : 0.0f;
     u.aoEnabled = doAO ? 1.0f : 0.0f;
-    u.aoIntensity = 0.8f;
-    u.aoRadiusPx = (float)_rtH * 0.015f; // ~1.5% of height
+    u.aoIntensity = kSSAOIntensity;
+    u.aoRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.projX = _projX; u.projY = _projY;
     u.shadowEnabled = doShadow ? 1.0f : 0.0f;
     u.shadowIntensity = 0.45f;
