@@ -208,7 +208,19 @@ public:
   // NEXT lit-VBO draw (cartoon/surface). Lets one rep clip tighter than the
   // global slab. front<0 disables per-rep clip (use the global slab only). The
   // member persists, so callers must set it before every draw. Default: no-op.
-  virtual void setRepClip(float front, float back) {}
+  // front/back are the eye-space clip depths for the lit fragment discard;
+  // fracFront/fracBack are the view-independent clip fractions (0..1, COM-
+  // referenced) the real-time RT rebuild signature folds so a camera move does
+  // not rebuild the acceleration structure. Default: no-op.
+  virtual void setRepClip(
+      float front, float back, float fracFront = 0.0f, float fracBack = 0.0f) {}
+
+  // Record the frame's BASE (camera-only) modelview, before any per-object
+  // Move-mode TTT is folded in. Real-time ray tracing uses it to express each
+  // caster in a single shared world space regardless of per-object pose, so
+  // shadows/AO follow a moved object (#427). Set once per frame by the scene,
+  // right after the camera modelview is loaded. Default: no-op.
+  virtual void setBaseModelView(const float* m) {}
 
   // Arm the surface outer-contour outline for the NEXT surface draw: enabled=true
   // stashes that draw to be outlined (coverage-boundary) after the scene; rgba is

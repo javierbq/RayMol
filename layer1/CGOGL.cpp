@@ -140,7 +140,10 @@ static void metalApplyRepClip(CCGORenderer* I)
       float bb = bFrac < 0.0f ? 0.0f : (bFrac > 1.0f ? 1.0f : bFrac);
       float front = center - halfD * (1.0f - ff); // ff=0 -> near face (no clip)
       float back = center + halfD * (1.0f - bb);   // bb=0 -> far face (no clip)
-      G->Renderer->setRepClip(front, back);
+      // Pass the view-independent fractions too: real-time RT folds THEM (not
+      // the camera-dependent eye-space depths) into its rebuild signature, so a
+      // zoom/orbit does not rebuild the acceleration structure (no shadow pop).
+      G->Renderer->setRepClip(front, back, ff, bb);
       return;
     }
     // Surface, no per-rep clip: keep the contour state set above, slab disabled.
