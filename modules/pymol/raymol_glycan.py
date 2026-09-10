@@ -24,22 +24,22 @@ RED = _rgb(237, 28, 36)
 # Curated common mammalian monosaccharides for the first release. ``ring`` is
 # deliberately ordered: it drives both the centroid and a stable ring normal.
 SNFG_CATALOG = {
-    "NAG": {"shape": "cube", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "NDG": {"shape": "cube", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "A2G": {"shape": "cube", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "NGA": {"shape": "cube", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "BM3": {"shape": "cube", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "MAN": {"shape": "sphere", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "BMA": {"shape": "sphere", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "GAL": {"shape": "sphere", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "GLA": {"shape": "sphere", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "GLC": {"shape": "sphere", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "BGC": {"shape": "sphere", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "FUC": {"shape": "cone", "color": RED, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "FUL": {"shape": "cone", "color": RED, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
-    "SIA": {"shape": "diamond", "color": PURPLE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
-    "SLB": {"shape": "diamond", "color": PURPLE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
-    "NGC": {"shape": "diamond", "color": LIGHT_BLUE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
+    "NAG": {"symbol": "GlcNAc", "shape": "cube", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "NDG": {"symbol": "GlcNAc", "shape": "cube", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "A2G": {"symbol": "GalNAc", "shape": "cube", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "NGA": {"symbol": "GalNAc", "shape": "cube", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "BM3": {"symbol": "ManNAc", "shape": "cube", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "MAN": {"symbol": "Man", "shape": "sphere", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "BMA": {"symbol": "Man", "shape": "sphere", "color": GREEN, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "GAL": {"symbol": "Gal", "shape": "sphere", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "GLA": {"symbol": "Gal", "shape": "sphere", "color": YELLOW, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "GLC": {"symbol": "Glc", "shape": "sphere", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "BGC": {"symbol": "Glc", "shape": "sphere", "color": BLUE, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "FUC": {"symbol": "Fuc", "shape": "cone", "color": RED, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "FUL": {"symbol": "Fuc", "shape": "cone", "color": RED, "ring": ("C1", "C2", "C3", "C4", "C5", "O5")},
+    "SIA": {"symbol": "Neu5Ac", "shape": "diamond", "color": PURPLE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
+    "SLB": {"symbol": "Neu5Ac", "shape": "diamond", "color": PURPLE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
+    "NGC": {"symbol": "Neu5Gc", "shape": "diamond", "color": LIGHT_BLUE, "ring": ("C2", "C3", "C4", "C5", "C6", "O6")},
 }
 
 
