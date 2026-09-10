@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0162102F61A7D39A781DCB53 /* LightsOrbitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595D421CC5DB21F3162789F /* LightsOrbitTests.swift */; };
+		012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
@@ -67,6 +68,7 @@
 		32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		325EE49F9617F5A907D7BDF7 /* whatsnew-1100-msa.png in Resources */ = {isa = PBXBuildFile; fileRef = 727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */; };
 		33925DA4B65039A7C4C0DE8F /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
+		31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		33C46A7EB6127A6A99D7048D /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
 		3494764DF6FC43A45FB259AF /* PredictSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */; };
 		34985FCB3C0FBC450384D4C9 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
@@ -395,6 +397,7 @@
 		2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsInspectorTests.swift; sourceTree = "<group>"; };
 		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSAServerControls.swift; sourceTree = "<group>"; };
+		2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlycanTopologyView.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		35444C782524F25C4DDD4F9F /* LightsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBar.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -601,6 +604,7 @@
 			isa = PBXGroup;
 			children = (
 				B50D264C420888CBF7FDE633 /* CommandPanel.swift */,
+				2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */,
 				CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */,
 				B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */,
 				FB1304C662D9011F7C4505FC /* MCPStatusView.swift */,
@@ -1663,6 +1667,7 @@
 				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
 				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
+				012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
 				5EF0E37865315509A3D51202 /* LightGizmoGeometry.swift in Sources */,
 				BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */,
@@ -1755,6 +1760,7 @@
 				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
 				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
+				31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,
 				709CFA72F2FF7502C4043BB3 /* LightGizmoGeometry.swift in Sources */,
 				1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */,

@@ -566,6 +566,7 @@ cmd._COb = None
 
 # RayMol's SNFG glycan helpers register their commands through cmd.extend.
 from . import raymol_glycan
+from . import glyco
 
 try:
     import epymol
