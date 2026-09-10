@@ -3505,6 +3505,8 @@ struct ContentView: View {
         //
         // A toggling MODE with a docked bar, exactly like every item above -- it takes a
         // selection plus options and a Run button, which is the shape Predict already has.
+        // Experimental — shown only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
+        if PyMOLEngine.binderDesignExperimentalEnabled {
         Button {
             engine.setBinderDesignMode(!engine.binderDesignMode)
         } label: {
@@ -3520,6 +3522,7 @@ struct ContentView: View {
         // carried one and this did not, so it was the only item in the picker with no
         // shortcut shown beside it.
         .keyboardShortcut(AppShortcuts.binderDesignTool)
+        }
         #endif
     }
 
@@ -3542,7 +3545,9 @@ struct ContentView: View {
             parts.append("Predict structures (\(AppShortcuts.hint(AppShortcuts.predictTool)))")
         }
         #if os(macOS)
-        parts.append("Binder Design (\(AppShortcuts.hint(AppShortcuts.binderDesignTool)))")
+        if PyMOLEngine.binderDesignExperimentalEnabled {
+            parts.append("Binder Design (\(AppShortcuts.hint(AppShortcuts.binderDesignTool)))")
+        }
         #endif
         let tools = parts.joined(separator: " · ")
         guard let active = activeInteractionTool else { return "Tools: \(tools)" }

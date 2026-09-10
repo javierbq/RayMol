@@ -386,11 +386,14 @@ struct PyMOLApp: App {
                 #if os(macOS)
                 // The item names the TOOL; what it produces is a designed backbone
                 // until a refold and an interface gate say otherwise (#342).
-                Button(engine.binderDesignMode ? "Exit Binder Design" : "Binder Design…") {
-                    engine.setBinderDesignMode(!engine.binderDesignMode)
+                // Experimental — offered only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
+                if PyMOLEngine.binderDesignExperimentalEnabled {
+                    Button(engine.binderDesignMode ? "Exit Binder Design" : "Binder Design…") {
+                        engine.setBinderDesignMode(!engine.binderDesignMode)
+                    }
+                    .disabled(isDesignLocked)
+                    .keyboardShortcut(AppShortcuts.binderDesignTool)
                 }
-                .disabled(isDesignLocked)
-                .keyboardShortcut(AppShortcuts.binderDesignTool)
                 #endif
             }
             // View menu: the pane toggles (#361) — open if closed, close if
