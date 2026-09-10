@@ -6,81 +6,79 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.10.0</title>
+      <title>RayMol 1.11.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.10.0
+## RayMol 1.11.0
 
-A feature release: on-device structure prediction, MSA search, per-tool
-metrics, and a reworked Design mode selection model — plus a batch of
-interface fixes.
+A feature release: a smoother spline cartoon with real-time ray tracing on by
+default, box selection with a live hover readout, a richer color menu, and a
+long list of macOS fixes.
 
-### Predict
+### Rendering
+- **Spline cartoon.** A new ChimeraX-style path tessellation removes the
+  per-residue creases and facets on strands. On by default; the classic
+  cartoon stays selectable as *Spline ribbon* in the object panel and
+  inspector.
+- **Real-time ray tracing on by default** on Macs that support it, with
+  traced shadows and temporal ambient occlusion. The RT pass now costs about
+  half as much (new *RT resolution* control in the Display panel) and caches
+  its geometry per object instead of rebuilding it every frame.
+- **Fixed: ray-traced shadows and AO ignored moved objects and surface
+  clipping**, and lost the crease shading that ambient occlusion provides.
+  Traced shadows no longer show acne, stripes or sawtooth edges on twisted
+  strands.
+- **Fixed: the key light and shadows now follow PyMOL's `light` setting.**
+- **Fixed: settings like Exposure, Outline and the surface clip sliders only
+  took effect after the next mouse move.** Every setting change repaints.
+- **Fixed: a horizontally squeezed scene on 1x displays** whenever a
+  multi-state object was loaded.
+- **Fixed: a static scene re-rendered a few times a second** on every UI
+  poll, and a static frame could steal the drawable from a drag.
 
-- **Predict a structure right in RayMol.** *Tools ▸ Predict* (or `⌃P`) opens
-  a bar where you type or select a sequence and fold it on-device with
-  Boltz-2 or Protenix — no server round-trip, no export/import.
-- **A live progress tray** shows weight downloads and running predictions as
-  stacked, dismissible cards, with a per-phase ETA.
-- **Feed an MSA to a predictor** as a declared capability; results load into
-  a pending placeholder object you can inspect as it fills in.
-- **Failed jobs stay on screen** so you can see why, and retry.
+### Selecting and inspecting
+- **Box select.** *Tools ▸ Box Select* (⌃S), or the button on the Selections
+  panel: drag a rectangle over the viewport to select what's inside. The
+  camera holds still while it's on, and it respects clipping, visibility and
+  grid cells the same way a click does.
+- **Hover readout.** A chip in the viewport's top-right names what the
+  cursor is over, at the granularity a click would commit — object, chain,
+  residue or atom.
+- **Fixed: the sequence viewer listed objects that weren't displayed**, and
+  now highlights residues live while you drag-select.
 
-### Sequence search
+### Panels and menus
+- **PyMOL's tiered color menu is back.** The per-object *C* menu lists one
+  row per hue; click the row for the base color or open it for the named
+  variants (firebrick, salmon, …).
+- **Center all objects.** *A ▸ Center all objects* on the `all` row stacks
+  every object on a common center so you stop re-zooming between unrelated
+  structures; a second entry resets them. Command form: `center_all`.
+- **Hydrogens in the S and H menus.** Show or hide all/non-polar hydrogens
+  where you'd look for them, not only under *A*.
+- **Resizable sidebar.** Drag the seam between the viewport and the right
+  column; object rows also get a full-name tooltip.
+- **One Tools menu.** Move, Measure, Box Select, Design and Predict live in a
+  single menu with every shortcut visible. New pane toggles: Console ⌘1,
+  Sequence ⌘2, Side Panel ⌘3.
 
-- **Search a ColabFold MSA server**, public or private, from inside RayMol —
-  alignments come back as named, session-stored objects you can browse
-  alongside your structures.
-
-### Metrics
-
-- **Numbers a tool measures are kept with the object it measured.**
-  `metrics_get` / `metrics_color` surface per-chain and whole-object values
-  (Boltz's pLDDT/PAE, for example) without leaving the object panel.
-
-### Design mode
-
-- **Selection is now driven by `sele`**, the same selection every other
-  RayMol tool uses — pick residues in Design mode the same way you would
-  anywhere else, and the two stay in sync.
-- **Sidechains show by default** on the design target, and the mode reports
-  how many selected residues it's ignoring.
-- The old named-selection picker is gone — one selection model, not two.
-
-### Interface
-
-- **Move, Measure and Design now live under one Tools menu.**
-- **Object groups render as a tree** in the panel, instead of a flat list.
-- **The console remembers its size.** It now defaults to 1/5 of the window
-  height, and your panel layout (console + inspector) persists across
-  launches.
-- **Cycle the selection mode with `Tab` / `Shift+Tab`.**
-
-### Notes
-
-- **Inserting no longer kicks you into Preview.** Adding an image, view link
-  or snippet leaves the editor in whichever mode you were working in.
-- **View links show a thumbnail**, so you can see where a link goes before
-  following it.
-
-### Fixes
-
-- Label backgrounds, outlines and connectors render correctly again.
-- The object panel no longer stalls on large sessions with many objects.
-- A text selection wins over the viewport image on `⌘C`.
-- **Fixed: cancelling a weight download during unpacking wedged the card.**
-  The tray could stick at "Unpacking… 67%" forever, and every later download
-  of that pack silently did nothing.
-- **The prediction countdown says what it measures.** A fold's estimate covers
-  the current phase, so it now reads "this phase: 2 min left" instead of a
-  bare "almost done" that looked like it described the whole run.
+### Sessions and console
+- **Opening a .pse no longer silently replaces your work.** Opening a
+  session from Finder, drag-and-drop or the Open panel over a non-empty
+  session asks to Save and Replace, Replace, or Cancel. Sessions also load
+  bare, so a restored session's colors are never re-themed.
+- **Fixed: the console showed a stale build number.** The banner now reads
+  the real version, and you can select and copy across log lines.
+- **Fixed: the Background swatch's opacity did nothing.** It now drives the
+  transparent-background export toggle.
+- **Fixed: proline's ring was left open in sidechain sticks.**
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Mon, 24 Aug 2026 19:07:31 +0000</pubDate>
-      <sparkle:version>27</sparkle:version>
-      <sparkle:shortVersionString>1.10.0</sparkle:shortVersionString>
+      <pubDate>Thu, 10 Sep 2026 05:37:26 +0000</pubDate>
+      <sparkle:version>28</sparkle:version>
+      <sparkle:shortVersionString>1.11.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.10.0/RayMol-1.10.0.dmg" type="application/octet-stream" sparkle:edSignature="r6eHkgBMeHITDTj/bKlrZiC8s3PIvQ9BxSpHkmTBr8VBk6ugAy4QTg3sQlqXGC3XplAF3lMgWvvbLbB5vHPSAA==" length="90896559" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.0/RayMol-1.11.0.dmg" type="application/octet-stream" sparkle:edSignature="XTvgNZxk8QQRLWzt6sDbIEVB557anzguvGm77Qd8Ww8icpJlVNXtAtoNdiSp5SARmEFAqQsB3hxVjyw6sSikBQ==" length="83112732" />
     </item>
   </channel>
 </rss>
