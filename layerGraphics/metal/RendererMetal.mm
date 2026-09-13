@@ -338,9 +338,7 @@ void RendererMetal::setSampleCount(NSUInteger n)
   // Lazy ones (sphere/cylinder/bezier/label/line) rebuild on next use; the eager
   // batch/VBO pipelines are rebuilt by build*Pipelines() below.
   [_sphereImpostorPipeline release];   _sphereImpostorPipeline = nil;
-  [_cylinderImpostorPipeline release]; _cylinderImpostorPipeline = nil;
-  _cylinderPipelineStride = 0;
-  _cylinderPipelineCapOff = -2;
+  releaseCylinderPipelines();
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
@@ -406,12 +404,13 @@ RendererMetal::~RendererMetal()
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
   [_vboPipelineUByte release];        [_vboPipelineFloat release];
-  [_sphereImpostorPipeline release];  [_cylinderImpostorPipeline release];
+  [_sphereImpostorPipeline release];
   [_vboOitPipelineUByte release];     [_vboOitPipelineFloat release];
-  [_sphereOitPipeline release];       [_cylinderOitPipeline release];
+  [_sphereOitPipeline release];
   [_oitResolvePipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
-  [_sphereShadowPipeline release];    [_cylinderShadowPipeline release];
+  [_sphereShadowPipeline release];
+  releaseCylinderPipelines(); // per-layout cylinder pipelines (owner)
   [_shadowDebugPipeline release];
   [_capMarkPipeline release];         [_capFillPipeline release];
   [_coveragePipeline release];        [_surfaceContourPipeline release];
@@ -6243,8 +6242,11 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
 // Inline MSL port of data/shaders/cylinder.vs + cylinder.fs. An 8-vertex box
 // impostor (36 indices) with per-pixel ray-cylinder intersection, flat/round
 // caps, two-color interpolation along the bond, [[depth(any)]] output, and the
-// same PyMOL two-light shading as the sphere impostor. `a_cap` is supplied as a
-// uniform constant (cap_const), not a vertex attribute.
+// same PyMOL two-light shading as the sphere impostor. `a_cap` arrives EITHER as
+// vertex attribute 6 (when the CGO baked the cap/interp bits per cylinder — the
+// stick rep always does) OR, when the CGO emitted one constant for every
+// cylinder, as the cap_const uniform; cap_const < 0 selects the per-vertex path.
+// Both are live — see CylU::cap_const and GitHub issue #441.
 static NSString* const kCylinderImpostorSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -6518,13 +6520,25 @@ fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
 void RendererMetal::buildCylinderImpostorPipeline(
     const CylinderImpostorDrawCall& call)
 {
-  // The a_cap offset is part of the vertex layout, so it belongs in the cache
-  // key: a stick VBO (per-vertex a_cap) and a gizmo VBO (constant a_cap) can
-  // share a stride yet need different descriptors.
-  if (_cylinderImpostorPipeline && _cylinderPipelineStride == call.stride &&
-      _cylinderPipelineCapOff == call.capOff)
-    return; // already built for this layout
+  // Cache per vertex layout. a_cap's offset is part of the descriptor, so a
+  // stick VBO (per-vertex a_cap) and a CGO VBO (constant a_cap) need different
+  // pipelines even at the same stride — and Move mode draws both every frame, so
+  // a single slot would recompile the MSL library twice per frame and (MRC) leak
+  // the displaced pipelines. Point the ivars at this layout's entry instead.
+  const auto layout = std::make_pair(
+      static_cast<NSUInteger>(call.stride), call.capOff);
+  {
+    auto it = _cylinderPipelines.find(layout);
+    if (it != _cylinderPipelines.end()) {
+      _cylinderImpostorPipeline = it->second.opaque;
+      _cylinderOitPipeline = it->second.oit;
+      _cylinderShadowPipeline = it->second.shadow;
+      return;
+    }
+  }
   _cylinderImpostorPipeline = nil;
+  _cylinderOitPipeline = nil;
+  _cylinderShadowPipeline = nil;
 
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:kCylinderImpostorSrc
@@ -6573,9 +6587,6 @@ void RendererMetal::buildCylinderImpostorPipeline(
   _cylinderImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
   if (!_cylinderImpostorPipeline)
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
-  else
-    _cylinderPipelineStride = call.stride;
-    _cylinderPipelineCapOff = call.capOff;
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
   id<MTLFunction> offn = [lib newFunctionWithName:@"cyl_impostor_fragment_oit"];
@@ -6609,9 +6620,35 @@ void RendererMetal::buildCylinderImpostorPipeline(
     sp.rasterSampleCount = 1;
     sp.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     _cylinderShadowPipeline = [_device newRenderPipelineStateWithDescriptor:sp error:&err];
-    if (_cylinderShadowPipeline) _cylinderShadowStride = call.stride;
-    else NSLog(@"RendererMetal: cyl shadow pipeline failed: %@", err);
+    if (!_cylinderShadowPipeline)
+      NSLog(@"RendererMetal: cyl shadow pipeline failed: %@", err);
   }
+
+  // The map takes ownership of the +1 pipelines; the ivars stay as aliases.
+  // Only cache a layout whose opaque pipeline compiled, so a transient failure
+  // is retried rather than cached forever.
+  if (_cylinderImpostorPipeline) {
+    _cylinderPipelines[layout] = CylinderPipelines{
+        _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline};
+  } else {
+    [_cylinderOitPipeline release];    _cylinderOitPipeline = nil;
+    [_cylinderShadowPipeline release]; _cylinderShadowPipeline = nil;
+  }
+}
+
+// Release every cached cylinder pipeline (MRC: clear() does not send -release)
+// and drop the aliases pointing into the cache.
+void RendererMetal::releaseCylinderPipelines()
+{
+  for (auto& kv : _cylinderPipelines) {
+    [kv.second.opaque release];
+    [kv.second.oit release];
+    [kv.second.shadow release];
+  }
+  _cylinderPipelines.clear();
+  _cylinderImpostorPipeline = nil;
+  _cylinderOitPipeline = nil;
+  _cylinderShadowPipeline = nil;
 }
 
 void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)

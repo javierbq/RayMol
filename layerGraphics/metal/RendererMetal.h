@@ -12,7 +12,9 @@
 #include <memory>
 #include <stack>
 #include <string>
+#include <map>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace pymol {
@@ -241,6 +243,7 @@ private:
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
   // and rebuilt only if a later call has a different stride.
+  void releaseCylinderPipelines();
   void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
@@ -334,9 +337,21 @@ private:
   id<MTLFunction> _vboVertexUnlitFlatFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
-  id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil;
-  NSUInteger _cylinderPipelineStride = 0; // stride the cyl pipeline was built for
-  int _cylinderPipelineCapOff = -2;      // a_cap offset it was built for (-1 = constant)
+  // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
+  // offset) — not in a single slot. a_cap's offset is part of the vertex
+  // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
+  // a_cap) need different pipelines even at the same stride; a single slot would
+  // recompile the MSL library on every draw in a scene that has both, which is
+  // exactly Move mode (issue #441). Values are +1-owned (MRC): release each
+  // before erasing, like _vboCache. The three ivars below are NON-OWNING aliases
+  // of the entry selected by the last buildCylinderImpostorPipeline().
+  struct CylinderPipelines {
+    id<MTLRenderPipelineState> opaque = nil;
+    id<MTLRenderPipelineState> oit = nil;
+    id<MTLRenderPipelineState> shadow = nil;
+  };
+  std::map<std::pair<NSUInteger, int>, CylinderPipelines> _cylinderPipelines;
+  id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
   // fullscreen passes (SSAO, fog/depth-cue, FXAA) composite to the drawable.
@@ -418,7 +433,7 @@ private:
       size_t stride, int posOffset, int normalOffset, int colorOffset,
       int colorType, MTLVertexDescriptor* vd);
   id<MTLRenderPipelineState> _sphereOitPipeline = nil;
-  id<MTLRenderPipelineState> _cylinderOitPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;
   bool _oitActive = false;      // true while the transparent pass is rendering
@@ -502,8 +517,7 @@ private:
   id<MTLRenderPipelineState> _vboShadowPipelineUByte = nil; // stride 28
   id<MTLRenderPipelineState> _vboShadowPipelineFloat = nil; // stride 40
   id<MTLRenderPipelineState> _sphereShadowPipeline = nil;   // Stage 3
-  id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3
-  NSUInteger _cylinderShadowStride = 0;
+  id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3, alias
   bool _shadowMode = false;       // true between begin/endShadowPass
   float _lightViewProjEye[16];    // eye-space light VP, column-major (PostU)
   float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box

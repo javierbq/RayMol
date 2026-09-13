@@ -40,20 +40,26 @@ from pymol import cmd, cgo
 FLAG = '$WORK/flag'
 if os.path.exists(FLAG):
     cmd.delete('cyl')
+    print('CAPTEST: cgo deleted')
 else:
     open(FLAG, 'w').write('1')
     cmd.load_cgo([cgo.CYLINDER, 100.0, 100.0, 100.0, 100.6, 100.0, 100.0, 0.05,
                   1.0, 0.0, 0.0, 0.0, 0.0, 1.0], 'cyl', zoom=0)
+    print('CAPTEST: cgo created')
 PY
 
 SCENE="fragment trp;hide everything;show sticks;util.cnc all;bg_color black"
-SCENE="$SCENE;set stick_radius, 0.40;orient trp;zoom trp, -0.3"
+# metal_raytrace defaults ON (SettingInfo.h). Force it off, and force the
+# export to honour that (the 4th PYMOL_AUTOEXPORT field), so this measures the
+# raster impostor path only: the RT acceleration structure keeps a deleted
+# object's triangles, which would otherwise contaminate the post-delete frame.
+SCENE="$SCENE;set stick_radius, 0.40;set metal_raytrace, 0;orient trp;zoom trp, -0.3"
 
 render() {  # render <out.png> [extra cmds]
   local out="$1" extra="${2:-}" cmds="$SCENE"
   [ -n "$extra" ] && cmds="$cmds;$extra"
   rm -f "$out"
-  PYMOL_AUTOCMD="$cmds" PYMOL_AUTOEXPORT="$out,800,600" "$BIN" >"$WORK/log" 2>&1 &
+  PYMOL_AUTOCMD="$cmds" PYMOL_AUTOEXPORT="$out,800,600,0" "$BIN" >"$WORK/log" 2>&1 &
   local pid=$!
   for _ in $(seq 1 90); do [ -s "$out" ] && break; /bin/sleep 1; done
   /bin/sleep 2; kill $pid 2>/dev/null; wait $pid 2>/dev/null
@@ -64,6 +70,16 @@ echo "== rendering (app: $APP)"
 render "$WORK/a_clean.png"
 render "$WORK/b_present.png" "run $WORK/poison.py"
 render "$WORK/c_deleted.png" "run $WORK/poison_once.py"
+# The post-deletion frame is only meaningful if the CGO was actually created,
+# drawn, and then deleted inside that one process. PYMOL_AUTOEXPORT re-asserts
+# PYMOL_AUTOCMD immediately before the render, so the script runs twice and
+# takes a different branch each time. Prove it rather than assume it.
+grep -q 'CAPTEST: cgo created' "$WORK/log" && grep -q 'CAPTEST: cgo deleted' "$WORK/log" || {
+  echo "FAIL: the post-deletion case did not create AND delete the CGO in one process;"
+  echo "      it is not exercising the leak this test exists for."
+  grep 'CAPTEST' "$WORK/log" || echo "      (no CAPTEST markers in the log at all)"
+  exit 1
+}
 
 /usr/bin/python3 - "$WORK" <<'PY'
 import sys, struct, zlib, pathlib
