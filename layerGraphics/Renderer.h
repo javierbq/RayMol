@@ -362,10 +362,14 @@ public:
     int color2Off = -1;   // a_Color2
     int radiusOff = -1;   // attr_radius (Float)
     int flagsOff = -1;    // attr_flags (UByte: out/up/right corner code)
+    int capOff = -1;      // a_cap (UByte), when the CGO baked the cap/interp
+                          // bits PER CYLINDER; -1 => it emitted one constant
+                          // for the whole CGO, so use capConst instead
     int colorIsFloat = 0; // a_Color/a_Color2 format: 1=Float4, 0=UByte4Norm
     int flagsIsFloat = 0; // attr_flags format: 1=Float, 0=UByte
     float uniRadius = 0.0f;  // uni_radius (0 => use attr_radius directly)
-    float capConst = 15.0f;  // a_cap bits (default cCylShaderBothCapsRound)
+    float capConst = 15.0f;  // a_cap bits (default cCylShaderBothCapsRound);
+                             // only consulted when capOff < 0
     int ortho = 0;
     int noFlatCaps = 1;      // 1 => round caps (matches GL shader default)
     int interiorCap = 0;     // 1 = fill the slab cross-section with interior color
