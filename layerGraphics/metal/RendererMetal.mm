@@ -340,6 +340,7 @@ void RendererMetal::setSampleCount(NSUInteger n)
   [_sphereImpostorPipeline release];   _sphereImpostorPipeline = nil;
   [_cylinderImpostorPipeline release]; _cylinderImpostorPipeline = nil;
   _cylinderPipelineStride = 0;
+  _cylinderPipelineCapOff = -2;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
@@ -6255,6 +6256,7 @@ struct CylIn {
   float4 color2  [[attribute(3)]];
   float  radius  [[attribute(4)]];
   uchar  flags   [[attribute(5)]];
+  uchar  cap     [[attribute(6)]];
 };
 struct CylU {
   float4x4 modelview;
@@ -6263,7 +6265,8 @@ struct CylU {
   float ortho;
   float depthZeroToOne;
   float no_flat_caps;
-  float cap_const;
+  float cap_const;      // >= 0: the CGO supplied one constant a_cap for every
+                        // cylinder, use it. < 0: a_cap is per-vertex (attribute 6).
   float half_bond;
   float inv_height;
   float interiorCap;    // 1 = cap the slab cross-section with a solid interior color
@@ -6285,6 +6288,8 @@ struct CylVOut {
   float3 V;
   float radius;
   float inv_sqr_height;
+  float cap;            // resolved a_cap bits: per-vertex when the CGO baked
+                        // them per cylinder, else the CGO's constant (cap_const)
   float4 color1;
   float4 color2;
 };
@@ -6349,6 +6354,11 @@ vertex CylVOut cyl_impostor_vertex(CylIn in [[stage_in]],
   pos.z = 0.5 * (pos.z + pos.w);
   o.position = pos;
   o.radius = radius / uniformglscale;
+  // Resolve a_cap here, once: CGOConvertShaderCylindersToCylinderShader emits it
+  // as a constant only when every cylinder in the CGO shares one value, and bakes
+  // it per-vertex otherwise (sticks, whose caps vary per bond). cap_const < 0
+  // means "the VBO carries it" — see CylU::cap_const.
+  o.cap = (u.cap_const >= 0.0) ? u.cap_const : float(in.cap);
   return o;
 }
 
@@ -6386,7 +6396,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   float3 normal = normalize(tmp_point - in.axis * dot(tmp_point, in.axis));
 
   // cap bits: 0 frontcap, 1 endcap, 2 frontcapround, 3 endcapround, 4 interp
-  float fcap = u.cap_const + 0.001;
+  float fcap = in.cap + 0.001;
   bool frontcap      = cyl_bit(fcap) > 0.5;
   bool endcap        = cyl_bit(fcap) > 0.5;
   bool frontcapround = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
@@ -6508,7 +6518,11 @@ fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
 void RendererMetal::buildCylinderImpostorPipeline(
     const CylinderImpostorDrawCall& call)
 {
-  if (_cylinderImpostorPipeline && _cylinderPipelineStride == call.stride)
+  // The a_cap offset is part of the vertex layout, so it belongs in the cache
+  // key: a stick VBO (per-vertex a_cap) and a gizmo VBO (constant a_cap) can
+  // share a stride yet need different descriptors.
+  if (_cylinderImpostorPipeline && _cylinderPipelineStride == call.stride &&
+      _cylinderPipelineCapOff == call.capOff)
     return; // already built for this layout
   _cylinderImpostorPipeline = nil;
 
@@ -6535,6 +6549,13 @@ void RendererMetal::buildCylinderImpostorPipeline(
   vd.attributes[4].offset = call.radiusOff; vd.attributes[4].bufferIndex = 0;
   vd.attributes[5].format = MTLVertexFormatUChar;        // attr_flags (UByte)
   vd.attributes[5].offset = call.flagsOff;  vd.attributes[5].bufferIndex = 0;
+  // a_cap (UByte). Metal requires every attribute the MSL declares to exist in
+  // the descriptor, so when the CGO supplied a CONSTANT a_cap (capOff < 0) we
+  // still bind slot 6 — to attr_flags, a byte we know is in range — and the
+  // shader ignores it because cap_const >= 0. See CylU::cap_const.
+  vd.attributes[6].format = MTLVertexFormatUChar;        // a_cap (UByte)
+  vd.attributes[6].offset = (call.capOff >= 0) ? call.capOff : call.flagsOff;
+  vd.attributes[6].bufferIndex = 0;
   vd.layouts[0].stride = call.stride;
   vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
@@ -6554,6 +6575,7 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
   else
     _cylinderPipelineStride = call.stride;
+    _cylinderPipelineCapOff = call.capOff;
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
   id<MTLFunction> offn = [lib newFunctionWithName:@"cyl_impostor_fragment_oit"];
@@ -6690,7 +6712,10 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.ortho = (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
   u.no_flat_caps = (float)call.noFlatCaps;
-  u.cap_const = call.capConst;
+  // Negative tells the shader to read a_cap per-vertex (attribute 6) instead.
+  // Sticks always land here: their caps vary per bond, so the CGO bakes a_cap
+  // per-vertex and never emits a constant (GitHub issue #441).
+  u.cap_const = (call.capOff >= 0) ? -1.0f : call.capConst;
   u.half_bond = 0.0f;      // smooth_half_bonds default off
   u.inv_height = 1.0f;     // only used when half_bond != 0
   // Cap the slab cross-section only in the opaque pass (not shadow/OIT).

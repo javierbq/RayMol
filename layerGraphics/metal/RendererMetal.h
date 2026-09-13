@@ -336,6 +336,7 @@ private:
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil;
   NSUInteger _cylinderPipelineStride = 0; // stride the cyl pipeline was built for
+  int _cylinderPipelineCapOff = -2;      // a_cap offset it was built for (-1 = constant)
 
   // Post-processing: the scene renders to offscreen color+depth, then
   // fullscreen passes (SSAO, fog/depth-cue, FXAA) composite to the drawable.

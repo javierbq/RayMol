@@ -318,13 +318,20 @@ static void drawCylinderImpostorsViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     else if (d.attr_name == "attr_flags") {
       call.flagsOff = off;
       call.flagsIsFloat = (d.m_format == VertexFormat::Float) ? 1 : 0;
-    }
+    } else if (d.attr_name == "a_cap")
+      call.capOff = off;
   }
   // Sticks bake their radius into attr_radius and leave uniRadius 0; dashes
   // (distances/dihedrals/angles) supply the real radius via the
   // CYLINDER_WIDTH_FOR_DISTANCES special op, captured into metalCylUniRadius.
   call.uniRadius = I->metalCylUniRadius;
-  call.capConst = I->metalCylCapConst; // captured from CGO_VERTEX_ATTRIBUTE_1F
+  // a_cap: per-vertex when the CGO baked the cap/interp bits per cylinder (the
+  // stick rep always does — RepCylBond varies caps per bond). Only when the CGO
+  // emitted ONE constant for every cylinder does it arrive via
+  // CGO_VERTEX_ATTRIBUTE_1F, captured into metalCylCapConst. Before GitHub issue
+  // #441, capOff didn't exist and every cylinder used the captured constant, so
+  // one cgo.CYLINDER (the Move gizmo) permanently re-capped every stick.
+  call.capConst = I->metalCylCapConst;
   call.noFlatCaps = 1;   // round caps (matches Get_CylinderShader GL default)
   call.ortho = SettingGetGlobal_b(G, cSetting_ortho) ? 1 : 0;
   {
@@ -2154,11 +2161,16 @@ static void CGO_gl_enable(CCGORenderer* I, CGO_op_data pc)
             I->info ? I->info->pass : RenderPass::Antialias);
         break;
       case GL_CYLINDER_SHADER:
-        // Metal path: uni_radius is per-rep state. Reset it at shader-enable so
-        // sticks (which never emit CYLINDER_WIDTH_FOR_DISTANCES) use attr_radius
-        // directly; a following dash special op sets it before that rep's draw.
-        if (I->G->Renderer)
+        // Metal path: uni_radius and the a_cap constant are per-rep state. Reset
+        // both at shader-enable so sticks (which emit neither
+        // CYLINDER_WIDTH_FOR_DISTANCES nor a constant a_cap) start from the GL
+        // defaults; a following special op / attribute op sets them before that
+        // rep's draw. Without the cap reset, one CGO's constant leaked into
+        // every later rep for the life of the process (GitHub issue #441).
+        if (I->G->Renderer) {
           I->metalCylUniRadius = 0.0f;
+          I->metalCylCapConst = 15.0f; // cCylShaderBothCapsRound
+        }
         shaderMgr->Enable_CylinderShader(
             I->info ? I->info->pass : RenderPass::Antialias);
         break;
