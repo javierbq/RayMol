@@ -110,11 +110,19 @@ enum PanelLayout {
     /// The drawer's height in a window of `windowHeight`: the same arithmetic as
     /// the console's (a stored fraction wins over the absolute default, the
     /// ceiling wins over both), with the drawer's own bounds.
-    static func drawerHeight(frac: CGFloat, windowHeight: CGFloat) -> CGFloat {
+    ///
+    /// `maxHeight` overrides the ceiling. The drawer shares its column with the
+    /// console, the rail and the sequence strip, and the viewport under them has a
+    /// hard 360pt minimum, so the layout passes the height LEFT after those panes
+    /// — the drawer yields, rather than pushing its own bottom rows off the window
+    /// in a short one. The stored fraction is still of the whole window, so what
+    /// the user dragged to means the same thing whether or not the console is up.
+    static func drawerHeight(frac: CGFloat, windowHeight: CGFloat,
+                             maxHeight: CGFloat? = nil) -> CGFloat {
         consoleHeight(frac: frac, windowHeight: windowHeight,
                       defaultHeight: macDefaultDrawerHeight,
                       minHeight: macMinDrawerHeight,
-                      maxHeight: maxDrawerHeight(windowHeight: windowHeight))
+                      maxHeight: maxHeight ?? maxDrawerHeight(windowHeight: windowHeight))
     }
 
     /// #350: the macOS inspector column's width on a launch with nothing stored.

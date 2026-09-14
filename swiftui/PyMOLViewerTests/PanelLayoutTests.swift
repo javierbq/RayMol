@@ -313,6 +313,20 @@ final class PanelLayoutTests: XCTestCase {
                        PanelLayout.maxConsoleHeight(windowHeight: 684), accuracy: 1e-9)
     }
 
+    func testDrawerYieldsToAnExplicitCeiling() {
+        // The layout hands the drawer the height LEFT after the console band, the
+        // rail and the strip (the viewport has a hard 360pt minimum); the ceiling
+        // it passes wins over the default AND over a stored fraction.
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0, windowHeight: 771, maxHeight: 180),
+                       180, accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0.5, windowHeight: 771, maxHeight: 180),
+                       180, accuracy: 1e-9)
+        // A ceiling under the floor: the floor is lifted, not the other way round —
+        // better a cramped drawer than one that draws nothing.
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0, windowHeight: 771, maxHeight: 40),
+                       40, accuracy: 1e-9)
+    }
+
     // MARK: - key namespace
 
     func testEveryKeyIsNamespaced() {

@@ -546,18 +546,38 @@ struct ContentView: View {
     // so here "the strip's slot" means the viewport column, not the strip's
     // pixels.
     private func macDrawerBand(windowHeight: CGFloat) -> some View {
-        let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight)
+        let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
+                                         maxHeight: macDrawerCeiling(windowHeight: windowHeight))
         return VStack(spacing: 0) {
             macDrawerDivider(windowHeight: windowHeight)
             DataDrawer().frame(height: h)
         }
     }
 
+    // The most the drawer may take: the console's ceiling rule applied to what is
+    // LEFT of the column after the console band, the rail and the strip's minimum.
+    // The viewport has a hard 360pt minimum (macViewport), so without this a
+    // 220pt drawer under a 130pt console in a 771pt window ran its bottom rows off
+    // the window. The drawer yields; the console keeps its own rule.
+    private func macDrawerCeiling(windowHeight: CGFloat) -> CGFloat {
+        var used: CGFloat = 0
+        if showCommandPanel {
+            used += PanelLayout.consoleHeight(
+                frac: CGFloat(consoleFrac), windowHeight: windowHeight,
+                defaultHeight: PanelLayout.macDefaultConsoleHeight,
+                minHeight: PanelLayout.macMinConsoleHeight,
+                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight)) + 5
+        }
+        if macAnyTopPane { used += 23 }
+        if engine.sequenceVisible { used += 24 }
+        return PanelLayout.maxDrawerHeight(windowHeight: max(windowHeight - used, 0))
+    }
+
     // The drag handle ABOVE the drawer. Dragging up grows the drawer (the sign is
     // the console divider's negated, since that one sits below its pane).
     @ViewBuilder
     private func macDrawerDivider(windowHeight: CGFloat) -> some View {
-        let maxH = PanelLayout.maxDrawerHeight(windowHeight: windowHeight)
+        let maxH = macDrawerCeiling(windowHeight: windowHeight)
         Rectangle()
             .fill(hairlineColor)
             .frame(height: 1)
@@ -572,7 +592,8 @@ struct ContentView: View {
                 DragGesture(minimumDistance: 1)
                     .onChanged { v in
                         let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
-                            frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight)
+                            frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
+                            maxHeight: maxH)
                         macDrawerDragAnchor = start
                         let h = min(max(start - v.translation.height,
                                         PanelLayout.macMinDrawerHeight), maxH)
