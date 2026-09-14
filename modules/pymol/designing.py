@@ -241,7 +241,7 @@ def _legal_object_name(name, _self=cmd):
 
 
 
-def _free_group_name(name, tool='', _self=cmd):
+def _free_group_name(name, tool='', reference='', _self=cmd):
     """`name` legalised, and moved aside if something else already answers to it.
 
     `cmd.group` on a name that is already a MOLECULE raises -- measured, not assumed -- so
@@ -255,13 +255,14 @@ def _free_group_name(name, tool='', _self=cmd):
     """
     base = _legal_object_name(name, _self=_self)
     candidate, suffix = base, 1
-    while not _group_name_is_available(candidate, tool=tool, _self=_self):
+    while not _group_name_is_available(candidate, tool=tool, reference=reference,
+                                       _self=_self):
         suffix += 1
         candidate = _legal_object_name('%s_%d' % (base, suffix), _self=_self)
     return candidate
 
 
-def _group_name_is_available(name, tool='', _self=cmd):
+def _group_name_is_available(name, tool='', reference='', _self=cmd):
     """True when a batch may put its designs in a group called `name`.
 
     The GROUP rules, which are not the object rules (`_name_is_available`): an existing
@@ -276,11 +277,12 @@ def _group_name_is_available(name, tool='', _self=cmd):
     name = _legal_object_name(name, _self=_self)
     if name in _PENDING or name in _BATCH:
         return False
-    # A SET of that name is taken too (#416) -- unless `tool` made it, in which case the
-    # batch id is that set's name and the re-run EXTENDS it, exactly as it lands back in
-    # the existing group. A set another tool wrote, or one a user imported, is left alone.
+    # A SET of that name is taken too (#416) -- unless `tool` made it against the same
+    # target (`reference`), in which case the batch id is that set's name and the re-run
+    # EXTENDS it, exactly as it lands back in the existing group. A set another tool
+    # wrote, one a user imported, or one built against another target is left alone.
     sb = _sets_batch()
-    if sb is not None and sb.name_taken(name, tool):
+    if sb is not None and sb.name_taken(name, tool, reference, _self=_self):
         return False
     try:
         groups = set(_self.get_names('public_group_objects') or [])
@@ -548,7 +550,7 @@ def _batch_inputs(spec, options, generator_id, seeds):
     return inputs
 
 
-def _open_set_batch(set_name, generator_obj, spec, options, seeds, target, count,
+def _open_set_batch(set_name, generator_obj, spec, options, seeds, reference, count,
                     _self=cmd):
     """Create the batch's set and run. Never raises: a design that cannot be recorded in
     a set still runs, and the warning says why the SETS section will not show it."""
@@ -559,7 +561,7 @@ def _open_set_batch(set_name, generator_obj, spec, options, seeds, target, count
         return sb.open(set_name, generator_obj.id,
                        tool_version=_weight_version(generator_obj.id),
                        inputs=_batch_inputs(spec, options, generator_obj.id, seeds),
-                       total=count, reference=_target_object(target, _self=_self),
+                       total=count, reference=reference,
                        group=count > 1, superpose=False, _self=_self)
     except Exception as exc:
         colorprinting.warning(' design: no set for this run (%s); the designs land as'
@@ -3033,6 +3035,10 @@ SEE ALSO
     # that already exists -- so a single design is untouched by every line below.
     batch_id = ''
     first_key = spec.design_key(options, weights_version=_weight_version(generator_obj.id))
+    # The set's reference, decided before the name: a same-tool set of the same name
+    # built against ANOTHER target must not be extended (its reference would then be
+    # stale for every `predict set:` superposition).
+    target_object = _target_object(target, _self=_self)
     if count > 1:
         if name:
             # The members are `<name>_01`, `<name>_02`, ... so the group is `<name>`
@@ -3043,7 +3049,8 @@ SEE ALSO
             # in (target, options, weights version) -- so the group is named for the same
             # identity its first member is, and an identical re-run names the same group.
             candidate = default_group_name(first_key, generator_obj.id)
-        batch_id = _free_group_name(candidate, tool=generator_obj.id, _self=_self)
+        batch_id = _free_group_name(candidate, tool=generator_obj.id,
+                                    reference=target_object, _self=_self)
         _BATCH[batch_id] = {'names': [], 'total': count}
 
     # A distinct seed per design, or every one would be the same molecule. The first uses
@@ -3065,10 +3072,14 @@ SEE ALSO
     if count > 1 or sb is None:
         set_name = batch_id
     else:
+        # `need_slot`: a single design extending a set with no free stage slot would
+        # land, be measured, and then lose its object -- so it gets its own `_2` set
+        # instead and stays on screen exactly as a single design always has.
         set_name = sb.free_name(default_group_name(first_key, generator_obj.id),
-                                tool=generator_obj.id, _self=_self)
+                                tool=generator_obj.id, reference=target_object,
+                                need_slot=True, _self=_self)
     set_batch = _open_set_batch(set_name, generator_obj, spec, options,
-                                [o.seed for o in per_design], target, count,
+                                [o.seed for o in per_design], target_object, count,
                                 _self=_self)
 
     jobs = []

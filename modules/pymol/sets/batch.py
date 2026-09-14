@@ -59,11 +59,9 @@ class _Batch:
     """One tool invocation delivering into one set."""
 
     __slots__ = ('id', 'set_id', 'run_id', 'tool', 'total', 'settled', 'landed',
-                 'generation', 'group', 'superpose', 'budget', 'members', 'order',
-                 'detached')
+                 'group', 'superpose', 'slots', 'members', 'order', 'detached')
 
-    def __init__(self, id, set_id, run_id, tool, total, generation, group, superpose,
-                 budget):
+    def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots):
         self.id = id
         self.set_id = set_id
         self.run_id = run_id
@@ -72,8 +70,6 @@ class _Batch:
         #: Names that have left the run one way or another: landed, failed, cancelled.
         self.settled = set()
         self.landed = 0
-        #: `store.generation()` when the set was created. Compared before every write.
-        self.generation = generation
         #: Whether staged members join a group named after the set. False for a single
         #: design, whose object stays at the top level exactly as it does today.
         self.group = bool(group)
@@ -81,9 +77,11 @@ class _Batch:
         #: is -- a folding backend returns each model in its own frame. A design is not:
         #: its object holds the target where the target already is.
         self.superpose = bool(superpose)
-        #: How many members get a placeholder at submit. Read once here rather than at
-        #: every `expect`, so the N-th call costs a dict lookup and not a meta read.
-        self.budget = int(budget)
+        #: How many members get a placeholder at submit: the set's FREE stage slots
+        #: when the batch opened (budget less what a set being extended already has
+        #: staged), so a re-run into a full set creates no placeholder it would then
+        #: have to delete. Read once here rather than at every `expect`.
+        self.slots = int(slots)
         #: object name -> {'entry', 'parents', 'scalars', 'specs'}
         self.members = {}
         self.order = []
@@ -99,14 +97,18 @@ def _container():
 # -- Naming ----------------------------------------------------------------------------
 
 
-def name_taken(name, tool=''):
+def name_taken(name, tool='', reference='', need_slot=False, _self=cmd):
     """True when a set of this name exists and a batch of `tool` may not extend it.
 
-    A set written by the SAME tool is not taken: an identical re-run lands back in the
-    set its first run made, as a second run row with more entries, which is what the
-    group already did ("adding to it is the whole point") and what a user asking for
-    ten more designs like these means. A set of another tool -- or one nobody's batch
-    made, when `tool` is '' -- is somebody else's record and is left alone.
+    A set written by the SAME tool against the SAME reference is not taken: an
+    identical re-run lands back in the set its first run made, as a second run row with
+    more entries, which is what the group already did ("adding to it is the whole
+    point") and what a user asking for ten more designs like these means. Taken, and
+    left alone, when: another tool wrote it (or nobody's batch did, when `tool` is '');
+    it was built against a different reference (`predict set:` would superpose the new
+    designs on the OLD target -- measured); or `need_slot` and it has no free stage slot
+    (a single design extending a full set would land, be measured, and then have its
+    object deleted, which for `n_designs=1` breaks "indistinguishable from today").
 
     Never raises, never opens a container: a caller deciding a group name must not
     create a working file as a side effect.
@@ -114,18 +116,29 @@ def name_taken(name, tool=''):
     if not store.is_open():
         return False
     try:
-        row = _container().get_set(name)
+        c = _container()
+        row = c.get_set(name)
     except SetError:
         return False
     except Exception:
         return False
-    return not (tool and row.get('tool') == tool)
+    if not tool or row.get('tool') != tool:
+        return True
+    if reference and row.get('reference') and row.get('reference') != reference:
+        return True
+    if need_slot:
+        try:
+            staged = len(binding._staged(c, row['id'], _self=_self))
+            return staged >= binding.budget(row)
+        except Exception:
+            return True
+    return False
 
 
-def free_name(base, tool='', _self=cmd):
+def free_name(base, tool='', reference='', need_slot=False, _self=cmd):
     """`base` legalised and moved aside (`_2`, `_3`, ...) until nothing answers to it:
-    no set (other than one of `tool`'s own, see `name_taken`), no object or group, no
-    pending name and no live batch.
+    no set (other than one of `tool`'s own this batch may extend, see `name_taken`), no
+    object or group, no pending name and no live batch.
 
     The batch id is the set's name AND its group's name, so it has to be free on every
     axis at once. `binding._free_object_name` covers objects; sets and live batches are
@@ -136,7 +149,8 @@ def free_name(base, tool='', _self=cmd):
     legal = _self.get_legal_name(str(base))
     groups = set(_self.get_names('public_group_objects') or [])
     candidate, n = legal, 1
-    while (name_taken(candidate, tool) or candidate in _BATCHES
+    while (name_taken(candidate, tool, reference, need_slot, _self=_self)
+           or candidate in _BATCHES
            or candidate in (set(_self.get_names('all') or []) - groups)):
         n += 1
         candidate = _self.get_legal_name('%s_%d' % (legal, n))
@@ -178,7 +192,6 @@ def open(name, tool, tool_version='', inputs=None, total=1, reference='',
     name = str(name)
     if name in _BATCHES:
         raise SetNameConflict('a batch named %r is already running' % name)
-    generation = store.generation()
     try:
         set_row = c.get_set(name)
     except SetError:
@@ -191,10 +204,17 @@ def open(name, tool, tool_version='', inputs=None, total=1, reference='',
     elif set_row.get('tool') != tool:
         raise SetNameConflict('set %r belongs to %s, not %s; pick another name'
                               % (name, set_row.get('tool') or 'no tool', tool))
+    elif reference and set_row.get('reference') and set_row['reference'] != reference:
+        raise SetNameConflict('set %r was built against %s, not %s; pick another name'
+                              % (name, set_row['reference'], reference))
     run_id = c.add_run(set_row['id'], tool, tool_version=tool_version,
                        inputs=dict(inputs or {}), parent_set_id=parent_set_id)
-    batch = _Batch(name, set_row['id'], run_id, tool, total, generation, group,
-                   superpose, binding.budget(set_row))
+    # Free stage slots NOW, not the budget: a set being extended may already hold
+    # staged objects, and a placeholder for a member that could never be staged is a
+    # finished design deleted in front of the user.
+    staged_now = len(binding._staged(c, set_row['id'], _self=_self))
+    slots = max(binding.budget(set_row) - staged_now, 0)
+    batch = _Batch(name, set_row['id'], run_id, tool, total, group, superpose, slots)
     _BATCHES[name] = batch
     return batch
 
@@ -224,7 +244,7 @@ def expect(batch, object_name, entry_name='', parents=(), scalars=None, specs=()
     }
     batch.order.append(object_name)
     _MEMBER[object_name] = batch.id
-    return len(batch.order) <= batch.budget
+    return len(batch.order) <= batch.slots
 
 
 def is_running(name):
@@ -241,8 +261,27 @@ def batch_of(object_name):
 # -- Delivery ----------------------------------------------------------------------------
 
 
-def _check_generation(batch):
-    if batch.generation != store.generation():
+def _still_ours(batch):
+    """True while the active container holds this batch's run in this batch's set.
+
+    IDENTITY, not a counter. `store.generation()` bumps on every `replace`, and Save As
+    from an untitled session (`save x.raymol`) is a replace -- the same document, moved
+    -- so a counter check detached a batch on the very flow the docs recommend
+    (measured: deliver 1, save, deliver 3 -> three plain objects and an empty
+    `running()`). Ids are token_hex(4), so a run id resolving to the right set in
+    whatever container is open now IS the document the batch was writing into.
+    """
+    if not store.is_open():
+        return False
+    try:
+        run = _container().run(batch.run_id)
+    except Exception:
+        return False
+    return run.get('set_id') == batch.set_id
+
+
+def _check_document(batch):
+    if not _still_ours(batch):
         batch.detached = True
         raise SetError(
             'the set document changed while batch %s was running (a .raymol or .pse'
@@ -268,7 +307,7 @@ def land(object_name, state=None, _self=cmd):
     if batch is None or batch.detached:
         return None
     member = batch.members[object_name]
-    _check_generation(batch)
+    _check_document(batch)
     c = _container()
     n_states = max(1, int(_self.count_states(object_name) or 1))
     which = n_states if state is None else int(state)
@@ -279,12 +318,23 @@ def land(object_name, state=None, _self=cmd):
                                  specs=member['specs'], _self=_self)
     entry_id = ids[0]
     batch.landed += 1
-    staged = _stage_or_discard(batch, c, entry_id, object_name, _self=_self)
+    # The entry is on disk. From here a failure is "written, not staged", which the
+    # caller must hear as such: reporting it as "not written" sent a design into the
+    # batch group with no staged link behind it.
+    try:
+        staged = _stage_or_discard(batch, c, entry_id, entry_name, object_name,
+                                   _self=_self)
+    except Exception as exc:
+        colorprinting.warning(
+            ' sets: %s is written to %s as entry %s but could not be staged (%s); the'
+            ' object is left where it is, unlinked' % (object_name, batch.id, entry_name, exc))
+        staged = False
     _settle(batch, object_name)
-    return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': staged}
+    return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': staged,
+            'entry': entry_name}
 
 
-def _stage_or_discard(batch, c, entry_id, object_name, _self=cmd):
+def _stage_or_discard(batch, c, entry_id, entry_name, object_name, _self=cmd):
     """Keep the delivered object as the entry's staged object if the set has room,
     else delete it. Decided from the LIVE staged count, not from the member's index, so
     a failed member frees its slot and a user who unstaged mid-batch gets it refilled.
@@ -295,12 +345,20 @@ def _stage_or_discard(batch, c, entry_id, object_name, _self=cmd):
     """
     set_row = c.get_set(batch.set_id)
     staged_now = len(binding._staged(c, batch.set_id, _self=_self))
-    if staged_now >= binding.budget(set_row):
+    limit = binding.budget(set_row)
+    if staged_now >= limit:
         try:
             mstore.forget_object(object_name)
         except Exception:
             pass
         _self.delete(object_name)
+        # Said, always: a finished design leaving the scene with an empty console
+        # looks like a lost design. Not gated on `quiet` -- delivery has none to read.
+        colorprinting.parrot(
+            ' sets: %s landed as entry %s of %s (%d of %d staged; budget full).'
+            ' "set_stage %s, %s" shows it.'
+            % (object_name, entry_name, set_row['name'], staged_now, limit,
+               set_row['name'], entry_name))
         return False
     if batch.group:
         group = set_row.get('group_name') or set_row['name']
@@ -342,7 +400,7 @@ def _reap(batch):
     for name in batch.order:
         _MEMBER.pop(name, None)
     _BATCHES.pop(batch.id, None)
-    if batch.detached or batch.landed or batch.generation != store.generation():
+    if batch.detached or batch.landed or not _still_ours(batch):
         return
     try:
         c = _container()
