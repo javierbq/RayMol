@@ -110,6 +110,51 @@ final class PyMOLEngine: ObservableObject {
     // not an alignment yet — it has no depth, no columns and nothing to attach — and it
     // stops existing the moment it becomes one.
     @Published var msaSearches: [MSASearchEntry] = []
+    // Sets (#417). Read from the `.raymol` container by SetsStore when the `SETS:`
+    // marker's version changes — never per poll tick, so none of these grows the
+    // 500 ms poll with the entry count (#421). `sets` is every set in the file;
+    // `setRows` is the ACTIVE set's entries for the drawer; `activeSetID` and
+    // `peekedEntryID` are Python's (appkit_sets owns them; the marker carries them),
+    // assigned optimistically here so a click does not wait a tick to show.
+    @Published var sets: [SetEntry] = []
+    @Published var setRows: [SetRow] = []
+    @Published var activeSetID: String? = nil
+    @Published var peekedEntryID: String? = nil
+    /// Batches still landing, by set id (#416's table, forwarded by the marker).
+    @Published var setsRunning: [String: BatchProgress] = [:]
+    /// True when the marker had to drop the progress COUNTS to stay under PyMOL's
+    /// feedback-line cap. The badge then shows a spinner with no numbers rather
+    /// than a confident "0 / 0" (#417 review).
+    @Published var setsRunningTruncated = false
+    /// The Data drawer's visibility, persisted like the other panes (#332). Hidden
+    /// until a set is opened; macOS only draws it (#420 does mobile).
+    @Published var dataDrawerVisible = UserDefaults.standard
+        .bool(forKey: PanelLayout.dataDrawerVisibleKey) {
+        didSet {
+            UserDefaults.standard.set(dataDrawerVisible, forKey: PanelLayout.dataDrawerVisibleKey)
+        }
+    }
+    /// Spec §2.1: the "this session now includes a set" sheet is shown once per
+    /// session. Reset by Clear Session and when a different document opens.
+    ///
+    /// `private(set)` with two named mutators, because the way this went wrong the
+    /// first time was a stray `= true` on a save path (#417 review): a Save As
+    /// performed BEFORE any set existed recorded "the user has decided", and the
+    /// ⌘S after a six-hour batch then wrote a plain `.pse` and dropped the set with
+    /// only a console warning. Nothing but the sheet's own answer may set it, so
+    /// only the sheet gets a way to.
+    private(set) var setsSaveChoiceMade = false
+
+    /// The user answered spec §2.1's sheet. Call ONLY from the sheet.
+    func recordSetsSaveChoice() { setsSaveChoiceMade = true }
+
+    /// A new session, or a different document: the question applies again.
+    func resetSetsSaveChoice() { setsSaveChoiceMade = false }
+    /// The open read-only connection and what it was opened on. Owned by
+    /// applySetsMarker (SetsStore.swift); nothing else touches them.
+    var setsStore: SetsStore? = nil
+    var setsStorePath = ""
+    var setsVersion = -1
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);
@@ -472,6 +517,15 @@ final class PyMOLEngine: ObservableObject {
         // system cert file reachable from the sandbox. Must precede Py init.
         if let ca = Bundle.main.path(forResource: "cacert", ofType: "pem", inDirectory: "data") {
             setenv("SSL_CERT_FILE", ca, 1)
+        }
+        // Sets' working file (#417, spec §2.1). An untitled session's `.raymol`
+        // container is where a six-hour batch lands before any Save, so it must
+        // not live in $TMPDIR, which the system may purge; pymol.sets.store reads
+        // RAYMOL_SETS_DIR before its TMPDIR fallback. Same folder that holds the
+        // iOS autosave.pse (see autosaveURL), for the same reason. Before Py init,
+        // like SSL_CERT_FILE: the store reads the environment when first imported.
+        if let dir = Self.stateDirectory() {
+            setenv("RAYMOL_SETS_DIR", dir.path, 1)
         }
 
         PyMOLBridge_InitPython(inst, resourcePath)
@@ -1311,6 +1365,16 @@ final class PyMOLEngine: ObservableObject {
         currentSessionURL = url
     }
 
+    /// Write a plain `.pse` WITHOUT adopting it as the open document (#417, spec
+    /// §2.1's "Export PyMOL Session…"). The distinction is the point: exporting a
+    /// `.pse` from a `.raymol` session is handing someone a copy for PyMOL, not
+    /// moving your work into a format that cannot hold your sets — so the next ⌘S
+    /// must still go to the `.raymol`. Python prints the warning naming what the
+    /// `.pse` left out.
+    func exportSession(to url: URL) {
+        runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+    }
+
     /// Stage/export Analysis Notes through the Python session extension. Paths
     /// are base64 encoded so quotes and non-ASCII filenames never become Python.
     func stageAnalysisNotes(documentURL: URL, assetsDirectory: URL) -> Bool {
@@ -1412,9 +1476,112 @@ final class PyMOLEngine: ObservableObject {
     /// True when `path` is a session file (.pse/.psw). A session restores its own
     /// object names, colors, representations and settings, so the coordinate-file
     /// load contract (object name + theming) does not apply to it.
+    /// A file whose `load` REPLACES the session: PyMOL's .pse/.psw, and the `.raymol`
+    /// container (#417), which carries a .pse as one blob plus the sets. Drives the
+    /// bare-load path (no object name, no theming) and the #349 replace guard.
     static func isSessionFile(_ path: String) -> Bool {
         let ext = (path as NSString).pathExtension.lowercased()
-        return ext == "pse" || ext == "psw"
+        return ext == "pse" || ext == "psw" || ext == "raymol"
+    }
+
+    /// The `.raymol` document (#417, spec §2.1): a SQLite container that `load`
+    /// opens IN PLACE and later results write into, so — unlike every other format
+    /// the app opens — it must never be copied to a temp path first.
+    static func isRayMolDocument(_ path: String) -> Bool {
+        (path as NSString).pathExtension.lowercased() == "raymol"
+    }
+
+    /// Formats tracked as the open document for ⌘S and the window title: `.pse` (as
+    /// before) and `.raymol`. `.psw` is a show file and was never tracked.
+    static func isTrackedDocument(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ext == "pse" || ext == "raymol"
+    }
+
+    /// Spec §2.1: the first time a session holding a non-empty set is saved with no
+    /// `.raymol` document open, the app asks once whether to save as `.raymol` or as
+    /// a plain `.pse` without the sets. Pure so OpenFilesTests can pin the rule: no
+    /// set → never; a `.raymol` already open → never (it simply saves); decided once
+    /// this session → never again.
+    static func sessionNeedsRaymolPrompt(hasNonEmptySet: Bool, currentDocument: URL?,
+                                         alreadyDecided: Bool) -> Bool {
+        guard hasNonEmptySet, !alreadyDecided else { return false }
+        if let currentDocument, isRayMolDocument(currentDocument.path) { return false }
+        return true
+    }
+
+    /// One step of the session-save decision (#417). `askAboutSets` re-enters
+    /// `sessionSaveStep` with `forcingRaymol` set by the sheet's answer, so the
+    /// second call can never ask again.
+    enum SessionSaveStep: Equatable {
+        /// Put spec §2.1's one-time sheet up before anything is written.
+        case askAboutSets
+        /// Overwrite this document silently (⌘S over a tracked document).
+        case overwrite(URL)
+        /// Show the Save panel offering these extensions, preferred first.
+        case panel([String])
+    }
+
+    /// True when any set in this session holds an entry — the fact spec §2.1's
+    /// sheet turns on. Read from `sets`, which the `SETS:` marker fills from the
+    /// container, so no Python round trip is needed to answer it.
+    var hasNonEmptySet: Bool { sets.contains { $0.count > 0 } }
+
+    /// What a save request must do NEXT, before any sheet or panel is put on screen.
+    ///
+    /// One rule for all three ways a session gets saved — ⌘S, ⇧⌘S, and the #349
+    /// "Save and Replace…" before an open wipes the session — because the thing
+    /// they can get wrong is the same thing: writing a `.pse` for a session that
+    /// holds a set drops the set, and the batch that filled it took hours. Keeping
+    /// this pure is what lets `OpenFilesTests` walk the campaign end to end
+    /// (untitled → Save As `.pse` → a batch fills a set → ⌘S must still ask).
+    static func sessionSaveStep(hasNonEmptySet: Bool, currentDocument: URL?,
+                                setsChoiceMade: Bool, forcingRaymol: Bool,
+                                alwaysPanel: Bool) -> SessionSaveStep {
+        // 1. The §2.1 sheet comes first, and only the sheet's own answers can
+        //    satisfy it — never a save that happened before the set existed.
+        if !forcingRaymol,
+           sessionNeedsRaymolPrompt(hasNonEmptySet: hasNonEmptySet,
+                                    currentDocument: currentDocument,
+                                    alreadyDecided: setsChoiceMade) {
+            return .askAboutSets
+        }
+        // 2. Converting to `.raymol` ALWAYS needs a destination, even when a `.pse`
+        //    is tracked: the whole point of the answer is not to write that `.pse`.
+        if forcingRaymol { return .panel(["raymol", "pse"]) }
+        // 3. ⌘S over a tracked document overwrites it with no panel; `cmd.save`
+        //    routes by extension, so a `.raymol` document stays `.raymol`.
+        if !alwaysPanel, let currentDocument { return .overwrite(currentDocument) }
+        // 4. Untitled, or Save As.
+        return .panel(sessionSaveExtensions(currentDocument: currentDocument))
+    }
+
+    /// The save panel's prefilled name: the open document's stem in the chosen
+    /// format — "beside the open `.pse`, with the same stem" is what spec §2.1 asks
+    /// of the `.raymol` conversion — else `session.<ext>`.
+    static func sessionSaveName(currentDocument: URL?, preferred: String) -> String {
+        guard let currentDocument else { return "session.\(preferred)" }
+        return currentDocument.deletingPathExtension().lastPathComponent + "." + preferred
+    }
+
+    /// The URL a save panel's result should actually be written to. `NSSavePanel`
+    /// with `allowsOtherFileTypes` lets the user type any extension, and a session
+    /// written to `campaign.backup` is a `.pse` in disguise that neither `load` nor
+    /// Finder can recognise — so an extension we did not offer gets ours appended
+    /// rather than replaced (nothing the user typed is thrown away).
+    static func sessionSaveURL(_ url: URL, extensions: [String]) -> URL {
+        guard let preferred = extensions.first else { return url }
+        return extensions.contains(url.pathExtension.lowercased())
+            ? url : url.appendingPathExtension(preferred)
+    }
+
+    /// Save-panel extension order: the open document's format first, so a `.raymol`
+    /// document keeps saving as `.raymol` and a `.pse` as `.pse`, with the other
+    /// offered second. `forcing` is the sheet's "Save as .raymol" choice.
+    static func sessionSaveExtensions(currentDocument: URL?, forcing: String? = nil) -> [String] {
+        let preferred = forcing
+            ?? ((currentDocument.map { isRayMolDocument($0.path) } ?? false) ? "raymol" : "pse")
+        return preferred == "raymol" ? ["raymol", "pse"] : ["pse", "raymol"]
     }
 
     /// The exact command pair `loadStructure` runs — factored pure for tests.
@@ -1452,10 +1619,25 @@ final class PyMOLEngine: ObservableObject {
     /// (bg/palette/render toggles) so the empty viewport keeps the app's look
     /// instead of PyMOL's bare defaults. The objects panel refreshes on the next
     /// poll tick.
+    /// `~/Library/RayMolState` (the app container's Library on a sandboxed build):
+    /// the space-free, purge-safe folder that holds the iOS autosave and, on both
+    /// platforms, an untitled session's `.raymol` working file (#417). Created on
+    /// first use; nil only if Library itself is unavailable.
+    static func stateDirectory() -> URL? {
+        guard let dir = FileManager.default.urls(
+            for: .libraryDirectory, in: .userDomainMask).first else { return nil }
+        let appDir = dir.appendingPathComponent("RayMolState", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        return appDir
+    }
+
     func clearSession() {
         guard isReady else { return }
         // No document is open after a clear — the next ⌘S becomes a Save As.
         currentSessionURL = nil
+        // A new session gets the "this session now includes a set" sheet again
+        // (spec §2.1); `reinitialize` below resets the store, so the sets go too.
+        resetSetsSaveChoice()
         // reinitialize wipes the core movie (mset/mview); drop the camera track's
         // keyframes so the Timeline doesn't show diamonds for frames that no
         // longer exist.
@@ -3559,6 +3741,12 @@ final class PyMOLEngine: ObservableObject {
             for line in text.components(separatedBy: "\n") {
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
+                } else if line.hasPrefix("SETS:") {
+                    // Sets change notice (#417): version + path + active/peek ids,
+                    // printed by appkit_sets.poll only when one of them changed. The
+                    // contents are read from the .raymol file by SetsStore, so this
+                    // is the ONLY thing about sets that rides the feedback line.
+                    parseSetsFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
                     parseObjectDetailFeedback(line)
                 } else if line.hasPrefix("SESSIONVP:") {

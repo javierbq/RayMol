@@ -9,6 +9,11 @@
 /* Begin PBXBuildFile section */
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
+		F84E7EEEA0EF173518ACDD0F /* SetTableModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */; };
+		6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
+		5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
+		63F74F260E91A9424EED005C /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
+		263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
 		04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB1F4D491FA24E65DD3B011 /* RFD3Runtime.swift */; };
 		047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */; };
 		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
@@ -305,12 +310,14 @@
 		3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewLogic.swift; sourceTree = "<group>"; };
 		3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadoutTests.swift; sourceTree = "<group>"; };
 		A3960002396A396A396A0002 /* RenderGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderGateTests.swift; sourceTree = "<group>"; };
+		A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetTableModelTests.swift; sourceTree = "<group>"; };
 		3F5377EE69A856479317FD61 /* WhatsNewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModel.swift; sourceTree = "<group>"; };
 		3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3ResultWriter.swift; sourceTree = "<group>"; };
 		3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-metrics.png"; sourceTree = "<group>"; };
 		42F41684D508836307667157 /* RFD3Trajectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3Trajectory.swift; sourceTree = "<group>"; };
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
+		DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataDrawer.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
 		4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenFilesTests.swift; sourceTree = "<group>"; };
@@ -373,6 +380,7 @@
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
 		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
+		11FAF50505ACF64A3F06AF73 /* SetsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetsStore.swift; sourceTree = "<group>"; };
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
 		B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3SizeGuard.swift; sourceTree = "<group>"; };
 		B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayoutTests.swift; sourceTree = "<group>"; };
@@ -474,6 +482,7 @@
 				35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */,
 				A73267D4D7B506E647B7A995 /* ObjectPanel.swift */,
 				474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */,
+				DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */,
 				85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */,
 				B820FE9080BF73526A54CD66 /* TimelinePanel.swift */,
 				C562306A5AD1EEDDBA931B98 /* TransportBar.swift */,
@@ -578,6 +587,7 @@
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */,
+				11FAF50505ACF64A3F06AF73 /* SetsStore.swift */,
 				2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */,
 				F14E7328C4421ADC9E81417D /* PredictBar.swift */,
 				C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */,
@@ -632,6 +642,7 @@
 				FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */,
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				A3960002396A396A396A0002 /* RenderGateTests.swift */,
+				A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */,
 				A3990005399A399A399A0005 /* TempChannelTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
@@ -944,7 +955,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
+			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"RayMol Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"com.raymol.session\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"com.raymol.session\",\"UTTypeDescription\":\"RayMol Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"raymol\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
 		2A47BF2FE69ED02355B5F8B5 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1101,7 +1112,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
+			shellScript = "set -e\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace CFBundleDocumentTypes -json '[\n  {\"CFBundleTypeName\":\"PyMOL Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"org.pymol.pse\"]},\n  {\"CFBundleTypeName\":\"RayMol Session\",\"CFBundleTypeRole\":\"Editor\",\"LSHandlerRank\":\"Owner\",\"LSItemContentTypes\":[\"com.raymol.session\"]},\n  {\"CFBundleTypeName\":\"Molecular Structure\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.structure\"]},\n  {\"CFBundleTypeName\":\"Small Molecule\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.small-molecule\"]},\n  {\"CFBundleTypeName\":\"Electron Density / Map\",\"CFBundleTypeRole\":\"Viewer\",\"LSHandlerRank\":\"Default\",\"LSItemContentTypes\":[\"org.pymol.map\"]}\n]' \"$PLIST\"\n/usr/bin/plutil -replace UTImportedTypeDeclarations -json '[\n  {\"UTTypeIdentifier\":\"org.pymol.pse\",\"UTTypeDescription\":\"PyMOL Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pse\"]}},\n  {\"UTTypeIdentifier\":\"com.raymol.session\",\"UTTypeDescription\":\"RayMol Session\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"raymol\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.structure\",\"UTTypeDescription\":\"Molecular Structure\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"pdb\",\"ent\",\"cif\",\"mmcif\",\"mcif\",\"mmtf\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.small-molecule\",\"UTTypeDescription\":\"Small Molecule\",\"UTTypeConformsTo\":[\"public.data\",\"public.text\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"sdf\",\"mol\",\"mol2\",\"xyz\",\"mae\"]}},\n  {\"UTTypeIdentifier\":\"org.pymol.map\",\"UTTypeDescription\":\"Electron Density / Map\",\"UTTypeConformsTo\":[\"public.data\"],\"UTTypeTagSpecification\":{\"public.filename-extension\":[\"ccp4\",\"mtz\",\"dx\",\"xplor\",\"map\",\"mrc\"]}}\n]' \"$PLIST\"\n# A document-based app declaring CFBundleDocumentTypes must also state\n# whether it opens files in place (App Store warning 90737). RayMol opens\n# documents in place (Files / drag-drop), so declare it.\n/usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES \"$PLIST\"\necho \"CFBundleDocumentTypes + UTImportedTypeDeclarations -> $PLIST\"\n";
 		};
 		888776999785F66075FFBDFD /* iOS: Bundle PyMOL modules + data */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1352,6 +1363,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F84E7EEEA0EF173518ACDD0F /* SetTableModelTests.swift in Sources */,
 				EF5E8D2D6A7BA6B77D164707 /* AnalysisNotesStoreTests.swift in Sources */,
 				057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */,
 				238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */,
@@ -1405,6 +1417,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */,
+				63F74F260E91A9424EED005C /* SetsStore.swift in Sources */,
 				B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */,
 				124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */,
 				876C79ECB2F8DA63EE7BAC84 /* BinderDesignBar.swift in Sources */,
@@ -1480,6 +1494,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */,
+				263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */,
 				AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */,
 				45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */,
 				9C6CB8E2C25DB4AE13D42756 /* BinderDesignBar.swift in Sources */,

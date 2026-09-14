@@ -47,6 +47,9 @@ extension Notification.Name {
     static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
     static let raymolSaveSessionAs = Notification.Name("raymol.menu.saveSessionAs")
     static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
+    /// File ▸ Export PyMOL Session… (#417, spec §2.1): always writes a plain .pse
+    /// and never changes the open document.
+    static let raymolExportSession = Notification.Name("raymol.menu.exportSession")
     static let raymolCopyImage    = Notification.Name("raymol.menu.copyImage")
     static let raymolToggleTimeline = Notification.Name("raymol.menu.toggleTimeline")
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
@@ -181,6 +184,12 @@ struct ContentView: View {
     @AppStorage(PanelLayout.inspectorFracKey) private var inspectorFrac = 0.0
     // The inspector width the current macOS seam drag started from, in points.
     @State private var macInspectorDragAnchor: CGFloat? = nil
+    // The Data drawer height the USER chose (#417), as a fraction of the window
+    // height, for the console's reason (#332). 0 = never resized → the absolute
+    // default. The drawer's visibility lives on the engine (dataDrawerVisible),
+    // like the sequence strip's, because Python's SETS row click flips it too.
+    @AppStorage(PanelLayout.dataDrawerFracKey) private var dataDrawerFrac = 0.0
+    @State private var macDrawerDragAnchor: CGFloat? = nil
 
     // ~/.raymolrc first-run migration prompt (RayMol#225): shown once, before
     // raymolrc.load() ever runs, when an existing ~/.pymolrc(.py) could be
@@ -529,6 +538,120 @@ struct ContentView: View {
             )
     }
 
+    // macOS: the Data drawer (#417) as a definite-height band BELOW the viewport,
+    // with its own drag divider above it — the console's recipe (macConsoleBand),
+    // for the console's reason: a VSplitView pane converges on its content height
+    // and cannot report a size to persist. It is a BOTTOM band, and the sequence
+    // strip stays where it is at the top of the split, on purpose: the strip's
+    // ideal height is driven by its row count and until #419 folds it into the
+    // drawer as a tab the two must not fight over one slot. Spec §4's frame puts
+    // DATA across the bottom, above the console, which on the Mac is a top pane —
+    // so here "the strip's slot" means the viewport column, not the strip's
+    // pixels.
+    @ViewBuilder
+    private func macDrawerBand(windowHeight: CGFloat) -> some View {
+        let ceiling = macDrawerCeiling(windowHeight: windowHeight)
+        if PanelLayout.drawerFits(ceiling: ceiling) {
+            let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac),
+                                             windowHeight: windowHeight, maxHeight: ceiling)
+            VStack(spacing: 0) {
+                macDrawerDivider(windowHeight: windowHeight)
+                DataDrawer().frame(height: h)
+            }
+        } else {
+            // Not enough column left for even one row (#417 review). A stub that
+            // shows only its own chrome is worse than saying so, and the drag
+            // divider is clamped to this same ceiling, so dragging could not have
+            // recovered it either — the way out is to close a pane, which is what
+            // this offers.
+            macDrawerNoRoomHint
+        }
+    }
+
+    // One line in place of the band, with the two panes that are in its way.
+    private var macDrawerNoRoomHint: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(hairlineColor).frame(height: 1).frame(maxWidth: 12)
+            Text("Data drawer needs more room")
+                .font(.system(size: 10))
+                .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
+            if showCommandPanel {
+                Button("Hide Console") { showCommandPanel = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            if engine.sequenceVisible {
+                Button("Hide Sequence") { engine.sequenceVisible = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            Button("Close") { engine.closeDataDrawer() }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(themeManager.active.accent.color)
+            Rectangle().fill(hairlineColor).frame(height: 1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 22)
+        .background(themeChromeBg)
+        .help("Enlarge the window, or close the console or the sequence strip, to "
+              + "make room for the Data drawer. The set stays open.")
+    }
+
+    // The most the drawer may take: what is LEFT of the column once the console
+    // band, the rail and the sequence strip have taken theirs (the viewport has a
+    // hard 360pt minimum — macViewport). Without it a 220pt drawer under a 130pt
+    // console in a 771pt window ran its bottom rows off the window. The drawer
+    // yields; the console and the strip keep their own rules. The arithmetic lives
+    // in PanelLayout so PanelLayoutTests can pin it.
+    private func macDrawerCeiling(windowHeight: CGFloat) -> CGFloat {
+        let console: CGFloat? = showCommandPanel
+            ? PanelLayout.consoleHeight(
+                frac: CGFloat(consoleFrac), windowHeight: windowHeight,
+                defaultHeight: PanelLayout.macDefaultConsoleHeight,
+                minHeight: PanelLayout.macMinConsoleHeight,
+                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight))
+            : nil
+        let used = PanelLayout.drawerColumnUsed(
+            consoleHeight: console, topRail: macAnyTopPane,
+            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil)
+        return PanelLayout.drawerCeiling(windowHeight: windowHeight, used: used)
+    }
+
+    // The drag handle ABOVE the drawer. Dragging up grows the drawer (the sign is
+    // the console divider's negated, since that one sits below its pane).
+    @ViewBuilder
+    private func macDrawerDivider(windowHeight: CGFloat) -> some View {
+        let maxH = macDrawerCeiling(windowHeight: windowHeight)
+        Rectangle()
+            .fill(hairlineColor)
+            .frame(height: 1)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                #if os(macOS)
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                #endif
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { v in
+                        let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
+                            frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
+                            maxHeight: maxH)
+                        macDrawerDragAnchor = start
+                        let h = min(max(start - v.translation.height,
+                                        PanelLayout.macMinDrawerHeight), maxH)
+                        if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
+                            dataDrawerFrac = Double(f)
+                        }
+                    }
+                    .onEnded { _ in macDrawerDragAnchor = nil }
+            )
+    }
+
     // The right (inspector / Theme Studio) column's current width: the share the
     // user dragged the seam to, or the absolute 340pt default until they have
     // (#350) — clamped every layout pass so a window shrink can't squeeze the
@@ -688,6 +811,12 @@ struct ContentView: View {
                     }
                 }
             }
+            // Data drawer (#417): below the viewport, outside the split (see
+            // macDrawerBand for why). Hidden until a set is opened, so a session
+            // that never touches a set sees no change here.
+            if engine.dataDrawerVisible {
+                macDrawerBand(windowHeight: winGeo.size.height)
+            }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
@@ -766,6 +895,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in engine.clearSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSessionAs)) { _ in saveSessionAs() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolExportSession)) { _ in exportPyMOLSession(engine: engine) }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
         .onReceive(NotificationCenter.default.publisher(for: .raymolCopyImage)) { _ in copyImageToClipboard() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolToggleTimeline)) { _ in
@@ -951,9 +1081,10 @@ struct ContentView: View {
     // The ladder, in order (issues #163 + #166, then #235):
     //   (a) a sheet / panel / popover is up (their window is key, not the main
     //       RayMol window) — Esc belongs to it, pass through so it dismisses;
-    //   (b) an exclusive interaction mode (Move / Design / Measure) is active —
+    //   (b) a Data-drawer peek is on screen (#417) — drop the ghost, then consume;
+    //   (c) an exclusive interaction mode (Move / Design / Measure) is active —
     //       leave it, then consume;
-    //   (c) otherwise — two-stage clear selection, then consume.
+    //   (d) otherwise — two-stage clear selection, then consume.
     // Non-Esc keys always pass through untouched.
     // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here);
     // the routing itself lives on PyMOLEngine and is platform-neutral, so wiring
@@ -970,12 +1101,16 @@ struct ContentView: View {
             // is focused), per product decision. Only true modal/sheet/panel
             // windows above still get Esc for dismissal.
             //
-            // (b) Leaving an interaction mode outranks clearing the selection —
+            // (b) A peek is the most transient thing on screen and the most
+            // recently created, so it is the innermost level to back out of —
+            // ahead of a mode the user set up deliberately (#417).
+            if engine.clearPeekIfShowing() { return nil }
+            // (c) Leaving an interaction mode outranks clearing the selection —
             // #166 anticipated exactly this ("exiting a mode should take priority
             // before the selection stages kick in"). Routed through the engine so
             // Esc reuses each mode's own exit path rather than duplicating it.
             if engine.exitActiveInteractionMode() { return nil }
-            // (c) No mode was active → the selection stages.
+            // (d) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
         }
@@ -1181,7 +1316,7 @@ struct ContentView: View {
     // identical files.
     private var macImportTypes: [UTType] {
         let exts = ["pdb", "ent", "cif", "mmcif", "mcif", "sdf", "mol", "mol2",
-                    "xyz", "pdbqt", "pqr", "mae", "pse", "ccp4", "mrc", "map",
+                    "xyz", "pdbqt", "pqr", "mae", "pse", "raymol", "ccp4", "mrc", "map",
                     "dx", "mtz", "fasta", "pir"]
         return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
     }
@@ -1219,9 +1354,18 @@ struct ContentView: View {
         var name = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
         if name.isEmpty { name = "mol" }
         engine.loadStructure(path: url.path, name: name)
-        // Track an opened .pse as the current document so ⌘S overwrites it; a
-        // non-.pse structure clears the tracked document.
-        engine.currentSessionURL = (url.pathExtension.lowercased() == "pse") ? url : nil
+        // Track an opened .pse or .raymol (#417) as the current document so ⌘S
+        // overwrites it; a non-session structure clears the tracked document.
+        trackOpenedDocument(url)
+    }
+
+    /// Publish `url` as the open document when it is one (.pse / .raymol), else
+    /// clear it. A DIFFERENT document also re-arms the one-time sets sheet (spec
+    /// §2.1): the choice was made for the session that was replaced.
+    private func trackOpenedDocument(_ url: URL) {
+        let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
+        if next != engine.currentSessionURL { engine.resetSetsSaveChoice() }
+        engine.currentSessionURL = next
     }
 
     private func macFetch() {
@@ -2969,7 +3113,7 @@ struct ContentView: View {
 
     private var iosImportTypes: [UTType] {
         let exts = ["pdb", "ent", "cif", "mmcif", "mcif", "sdf", "mol", "mol2",
-                    "xyz", "pdbqt", "pqr", "mae", "pse", "ccp4", "mrc", "map",
+                    "xyz", "pdbqt", "pqr", "mae", "pse", "raymol", "ccp4", "mrc", "map",
                     "dx", "mtz", "fasta", "pir"]
         return exts.compactMap { UTType(filenameExtension: $0) } + [.data]
     }
@@ -2991,8 +3135,12 @@ struct ContentView: View {
         // store rebinds and surfaces the notes embedded in THAT session; a
         // non-.pse structure clears it. Without this the panel keeps the
         // previous note and stages it back over the opened session's payload.
-        // Published after loadStructure, like macOpenFile / loadOpenedFile.
-        engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
+        // Published after loadStructure, like macOpenFile / loadOpenedFile. A
+        // .raymol counts too (#417), though on iOS it was loaded from the copy
+        // above, so results do not land in the picked file until #420.
+        let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
+        if next != engine.currentSessionURL { engine.resetSetsSaveChoice() }
+        engine.currentSessionURL = next
     }
 
     // iPad export/share menu (the macOS Export menu lives in the window toolbar;
@@ -3724,33 +3872,18 @@ struct ContentView: View {
         }
     }
 
-    // ⌘S: overwrite the currently-open .pse with no panel. Falls back to Save As
-    // when no document is tracked (never-saved session, or a non-.pse was opened).
+    // ⌘S: overwrite the currently-open document (.pse or .raymol, #417) with no
+    // panel — cmd.save routes by the extension, so a .raymol document keeps saving
+    // as .raymol. Falls back to Save As when no document is tracked (never-saved
+    // session, or a non-session structure was opened).
     private func saveSession() {
-        if let url = engine.currentSessionURL {
-            notes.sessionDidSave(to: url)
-            engine.saveSession(to: url)
-        } else {
-            saveSessionAs()
-        }
+        performSessionSave(engine: engine, notes: notes, alwaysPanel: false)
     }
 
-    // ⇧⌘S: always show the Save panel, prefilled from the tracked document when
-    // there is one, then save to the chosen URL and make it the open document.
+    // ⇧⌘S: always show the Save panel. Same one path as ⌘S (performSessionSave),
+    // which asks spec §2.1's question first when the session holds a set.
     private func saveSessionAs() {
-        let panel = NSSavePanel()
-        if let pse = UTType(filenameExtension: "pse") { panel.allowedContentTypes = [pse] }
-        if let current = engine.currentSessionURL {
-            panel.directoryURL = current.deletingLastPathComponent()
-            panel.nameFieldStringValue = current.lastPathComponent
-        } else {
-            panel.nameFieldStringValue = "session.pse"
-        }
-        panel.canCreateDirectories = true
-        panel.title = "Save Session"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        notes.sessionDidSave(to: url)
-        engine.saveSession(to: url)
+        performSessionSave(engine: engine, notes: notes, alwaysPanel: true)
     }
 
     // Save the whole scene to a molecular or 3D file. cmd.save infers the format

@@ -44,6 +44,12 @@ enum PanelLayout {
     static let panelFracKey = ns + "panelFrac"
     /// Sequence strip visible. Written by PyMOLEngine, which owns the flag.
     static let sequenceVisibleKey = ns + "sequenceVisible"
+    /// Data drawer (#417) visible. Written by PyMOLEngine, which owns the flag,
+    /// like the sequence strip's. macOS only until #420.
+    static let dataDrawerVisibleKey = ns + "dataDrawerVisible"
+    /// The user's Data drawer height, as a fraction of the window height. Absent
+    /// until they drag its divider, which selects the absolute default.
+    static let dataDrawerFracKey = ns + "dataDrawerFrac"
 
     /// Every key this type defines — the namespace/uniqueness check in the tests
     /// runs off this list, so a new key must be added here too.
@@ -51,6 +57,7 @@ enum PanelLayout {
         consoleVisibleKey, objectsVisibleKey,
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
         consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
+        dataDrawerVisibleKey, dataDrawerFracKey,
     ]
 
     // MARK: - Bounds
@@ -83,6 +90,88 @@ enum PanelLayout {
     static let defaultPanelFrac: CGFloat = 0.53
     static let minPanelFrac: CGFloat = 0.2
     static let maxPanelFrac: CGFloat = 0.8
+
+    // MARK: - macOS Data drawer (#417)
+
+    /// The drawer's height on a launch with nothing stored. ABSOLUTE points, for
+    /// the console's reason: an untouched drawer looks the same on a laptop and a
+    /// 6K display. 220 fits the header, eight rows at 22pt and the footer.
+    static let macDefaultDrawerHeight: CGFloat = 220
+    /// What the drawer spends before it can show a single row: the set header (26),
+    /// the column header (20), the footer (24) and three hairlines. A drawer given
+    /// less than this draws no data at all, which is why `macMinDrawerHeight` is
+    /// this plus one 22pt row and why a column that cannot afford it shows the hint
+    /// instead of a band (#417 review).
+    static let macDrawerChromeHeight: CGFloat = 73
+    /// Header + one row + footer; below this the table is chrome and no data.
+    static let macMinDrawerHeight: CGFloat = 96
+
+    /// Height the panes ABOVE the drawer have already claimed in the viewport
+    /// column, so the drawer can size itself against what is actually left.
+    ///
+    /// `sequenceRows` is the strip's row count when it is showing (nil = hidden),
+    /// charged at its IDEAL height — the same formula the VSplitView is given — not
+    /// at its 24pt floor: the split only squeezes the strip when the user drags it,
+    /// so sizing against the floor overflowed the column by a row.
+    static func drawerColumnUsed(consoleHeight: CGFloat?, topRail: Bool,
+                                 sequenceRows: Int?) -> CGFloat {
+        var used: CGFloat = 0
+        if let consoleHeight { used += consoleHeight + macConsoleDividerHeight }
+        if topRail { used += macTopRailHeight }
+        if let sequenceRows {
+            used += CGFloat(min(max(sequenceRows, 1), 5)) * 30 + 30
+        }
+        // Chrome that is not a pane but still takes column height: the two drag
+        // dividers' padding, the MCP "controlling" banner, a docked Predict or
+        // Binder bar. An allowance rather than a measurement — a few points of
+        // under-use beat a footer off the window.
+        return used + macColumnChromeAllowance
+    }
+
+    static let macConsoleDividerHeight: CGFloat = 5
+    static let macTopRailHeight: CGFloat = 23
+    static let macColumnChromeAllowance: CGFloat = 48
+
+    /// The most the Data drawer may take, given `used` by the panes above it. The
+    /// viewport keeps its own minimum out of what remains, exactly as the console's
+    /// ceiling works — the drawer is the pane that yields, because the console and
+    /// the strip were there first and resizing them under the user is worse.
+    static func drawerCeiling(windowHeight: CGFloat, used: CGFloat) -> CGFloat {
+        maxDrawerHeight(windowHeight: max(windowHeight - used, 0))
+    }
+
+    /// False when the column cannot give the drawer even one row of data. The band
+    /// then shows a one-line hint instead of a table: a stub too short to draw a
+    /// row is worse than no band at all, and the drag divider is clamped to this
+    /// same ceiling so the user could not have recovered it by dragging either.
+    static func drawerFits(ceiling: CGFloat) -> Bool {
+        ceiling >= macMinDrawerHeight
+    }
+    /// The drawer shares the viewport's column with the console and may grow until
+    /// the viewport is at its minimum — the same bracket `maxConsoleHeight` uses,
+    /// so a window that fits the console fits the drawer at the same size.
+    static func maxDrawerHeight(windowHeight: CGFloat,
+                                viewportMin: CGFloat = macViewportMinHeight) -> CGFloat {
+        maxConsoleHeight(windowHeight: windowHeight, viewportMin: viewportMin)
+    }
+
+    /// The drawer's height in a window of `windowHeight`: the same arithmetic as
+    /// the console's (a stored fraction wins over the absolute default, the
+    /// ceiling wins over both), with the drawer's own bounds.
+    ///
+    /// `maxHeight` overrides the ceiling. The drawer shares its column with the
+    /// console, the rail and the sequence strip, and the viewport under them has a
+    /// hard 360pt minimum, so the layout passes the height LEFT after those panes
+    /// — the drawer yields, rather than pushing its own bottom rows off the window
+    /// in a short one. The stored fraction is still of the whole window, so what
+    /// the user dragged to means the same thing whether or not the console is up.
+    static func drawerHeight(frac: CGFloat, windowHeight: CGFloat,
+                             maxHeight: CGFloat? = nil) -> CGFloat {
+        consoleHeight(frac: frac, windowHeight: windowHeight,
+                      defaultHeight: macDefaultDrawerHeight,
+                      minHeight: macMinDrawerHeight,
+                      maxHeight: maxHeight ?? maxDrawerHeight(windowHeight: windowHeight))
+    }
 
     /// #350: the macOS inspector column's width on a launch with nothing stored.
     /// ABSOLUTE points for the same reason as the console default — an untouched
