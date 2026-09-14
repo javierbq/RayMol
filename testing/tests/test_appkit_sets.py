@@ -174,42 +174,72 @@ class TestMarker(AppkitSetsTestCase):
         self.assertEqual(found, [{'v': 0, 'path': '', 'active': '', 'peek': '',
                                   'running': {}}])
 
-    def test_marker_stays_under_the_feedback_cap(self):
+    def _fake_batches(self, n):
+        self.install_fake_batch({
+            ('%08x' % i): {'done': i, 'total': 1000, 'tool': 'binder_design'}
+            for i in range(n)})
+
+    def test_marker_keeps_the_ids_when_only_the_counts_must_go(self):
+        # The COUNTS go first, not the sets: the badge must still appear on the
+        # right rows saying "a batch is running", because a vanished badge reads as
+        # "the batch finished".
+        #
+        # The truncated form is a LIST of ids for a measured reason. Carrying
+        # {"id": {"done": 0, "total": 0, "tool": ""}} instead costs ~41 bytes a
+        # batch and crosses the cap at about twenty, so the stage fell through to
+        # "drop everything" exactly when it was needed; a bare id costs ~11.
         self.populated(1)
         appkit_sets.open_set('s')
         appkit_sets.peek('s', 'p0')
-        self.install_fake_batch({
-            ('%08x' % i): {'done': i, 'total': 1000, 'tool': 'binder_design'}
-            for i in range(40)})
+        self._fake_batches(40)
         text = appkit_sets.marker()
         self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH)
         payload = json.loads(text[len(appkit_sets.MARKER_PREFIX):])
         self.assertEqual(payload['trunc'], 1)
-        # The COUNTS go first, not the sets: the badge must still appear on the
-        # right rows saying "a batch is running", because a vanished badge reads as
-        # "the batch finished".
+        self.assertIsInstance(payload['running'], list)
         self.assertEqual(len(payload['running']), 40)
-        self.assertEqual(set(map(tuple, (sorted(v.items()) for v in payload['running'].values()))),
-                         {tuple(sorted(appkit_sets.EMPTY_PROGRESS.items()))})
+        self.assertEqual(payload['running'], sorted('%08x' % i for i in range(40)))
         self.assertTrue(payload['path'])
         self.assertTrue(payload['active'])
         self.assertTrue(payload['peek'])
 
-    def test_marker_drops_running_entirely_when_even_the_ids_do_not_fit(self):
-        # Second stage: hundreds of concurrent batches. The fields the drawer
-        # cannot work without survive; `running` is what goes.
+    def test_the_ids_stage_is_reached_before_the_cap_not_after(self):
+        # The regression this pins: the truncated form has to be small enough that
+        # a realistic number of concurrent batches actually reaches it. At 20 and
+        # at 60 the ids must survive -- the previous encoding lost them at both.
         self.populated(1)
         appkit_sets.open_set('s')
-        self.install_fake_batch({
-            ('%08x' % i): {'done': i, 'total': 1000, 'tool': 'binder_design'}
-            for i in range(400)})
+        for n in (20, 60):
+            self._fake_batches(n)
+            payload = json.loads(appkit_sets.marker()[len(appkit_sets.MARKER_PREFIX):])
+            self.assertEqual(len(payload['running']), n,
+                             'the ids must survive at %d batches' % n)
+            self.assertEqual(payload['trunc'], 1)
+
+    def test_marker_drops_running_entirely_when_even_the_ids_do_not_fit(self):
+        # Last stage: hundreds of concurrent batches, where even bare ids are
+        # thousands of bytes. The fields the drawer cannot work without survive.
+        self.populated(1)
+        appkit_sets.open_set('s')
+        self._fake_batches(400)
         text = appkit_sets.marker()
         self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH)
         payload = json.loads(text[len(appkit_sets.MARKER_PREFIX):])
-        self.assertEqual(payload['running'], {})
+        self.assertEqual(payload['running'], [])
         self.assertEqual(payload['trunc'], 1)
         self.assertTrue(payload['path'])
         self.assertTrue(payload['active'])
+
+    def test_every_stage_stays_under_the_cap(self):
+        # Whatever the batch count, the line must never split -- that is the whole
+        # reason the ladder exists.
+        self.populated(1)
+        appkit_sets.open_set('s')
+        for n in (0, 1, 19, 20, 40, 68, 69, 70, 200, 400, 2000):
+            self._fake_batches(n)
+            text = appkit_sets.marker()
+            self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH,
+                            '%d batches produced a %d-byte marker' % (n, len(text)))
 
     def test_untruncated_marker_carries_no_trunc_flag(self):
         self.populated(1)

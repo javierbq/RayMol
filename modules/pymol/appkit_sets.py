@@ -22,6 +22,9 @@ in it changed since the last poll:
              landing, from pymol.sets.batch (#416) when that module exists; {} when it
              does not. Imported lazily and guarded, because the two tickets land
              independently and the badge must simply appear the day both are in.
+             With `trunc` set it is instead a LIST of set ids, the counts having been
+             dropped to keep the line under the cap -- see `marker`.
+    trunc    present and 1 only when something was dropped to fit the line.
 
 The helpers below are what the drawer calls so that Swift sends one short line per
 action rather than composing Python. Every one of them goes through a public `set_*`
@@ -38,9 +41,6 @@ from pymol import cmd, colorprinting
 MARKER_PREFIX = 'SETS:'
 MAX_MARKER_BYTES = 900
 
-#: What a running batch degrades to when the counts will not fit: enough for the
-#: spinner, honest about knowing nothing else.
-EMPTY_PROGRESS = {'done': 0, 'total': 0, 'tool': ''}
 
 _last_marker = None
 _active_set_id = ''
@@ -185,24 +185,32 @@ def _encode(payload):
 
 
 def marker(_self=cmd):
-    """The marker line, trimmed in two stages so it can never split.
+    """The marker line, trimmed in stages so it can never split.
 
-    The counts go before the SETS THEMSELVES do. A badge that says only "a batch is
-    running" on the right rows is still true and still useful; dropping `running`
-    outright makes the badge vanish, which reads as "the batch finished". Both
-    stages set `trunc` so the far side can say the numbers are missing rather than
-    show a confident zero.
+    The COUNTS go before the sets themselves do. A badge that says only "a batch is
+    running", on the right rows, is still true and still useful; dropping `running`
+    outright makes the badge vanish, which reads as "the batch finished".
+
+    So the truncated form is a LIST OF IDS, not a dict of emptied records. The
+    difference is the whole point of the stage: `{"id":{"done":0,"total":0,"tool":""}}`
+    costs ~41 bytes per batch and blows the 900-byte cap at about twenty, which is
+    fewer than the number of batches that would make anyone want the stage in the
+    first place -- so it fell through to "drop everything" exactly when it was
+    needed. A bare `"id"` costs ~11, so around sixty-nine fit. `trunc` is set either
+    way, and the far side reads it as "these are running, the numbers are unknown".
     """
     payload = state(_self=_self)
     text = _encode(payload)
     if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
         return text
-    payload['running'] = dict.fromkeys(payload.get('running') or {}, EMPTY_PROGRESS)
     payload['trunc'] = 1
+    payload['running'] = sorted(payload.get('running') or {})
     text = _encode(payload)
     if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
         return text
-    payload['running'] = {}
+    # Even the ids do not fit. Nothing left to give: the fields the drawer cannot
+    # work without (path, version, active set, peek) are the ones that stay.
+    payload['running'] = []
     return _encode(payload)
 
 

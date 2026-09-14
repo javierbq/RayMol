@@ -138,18 +138,70 @@ struct BatchProgress: Equatable, Hashable, Decodable {
     let done: Int
     let total: Int
     let tool: String
+
+    /// A batch known to be running, with nothing else known: the marker dropped the
+    /// counts to stay under the feedback-line cap and sent bare ids.
+    static let unknown = BatchProgress(done: 0, total: 0, tool: "")
+
+    init(done: Int, total: Int, tool: String) {
+        self.done = done
+        self.total = total
+        self.tool = tool
+    }
 }
 
-/// The `SETS:` marker's payload. Every field is what appkit_sets.state() documents;
-/// `running` and `trunc` are optional because the marker drops the former (and adds
-/// the latter) when it would otherwise cross PyMOL's feedback-line cap.
+/// The `SETS:` marker's payload. Every field is what appkit_sets.state() documents.
+///
+/// `running` arrives in TWO shapes, and both have to decode or the whole marker is
+/// dropped and the drawer freezes on its last state:
+///
+///   * `{"<set id>": {"done": n, "total": n, "tool": "..."}}` — the normal case.
+///   * `["<set id>", ...]` — the counts were dropped to keep the line under PyMOL's
+///     feedback-line cap (`trunc` is then 1). The badge still belongs on those rows;
+///     it just cannot show numbers.
+///
+/// Normalised here into one dictionary, with a zeroed `BatchProgress` for the ids,
+/// so nothing downstream has to know which shape arrived — `truncated` is what the
+/// badge reads to keep it from rendering a confident "0 / 0".
 struct SetsMarker: Decodable, Equatable {
     let v: Int
     let path: String
     let active: String
     let peek: String
-    let running: [String: BatchProgress]?
+    let running: [String: BatchProgress]
     let trunc: Int?
+
+    var truncated: Bool { (trunc ?? 0) != 0 }
+
+    private enum CodingKeys: String, CodingKey { case v, path, active, peek, running, trunc }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        v = try c.decode(Int.self, forKey: .v)
+        path = try c.decode(String.self, forKey: .path)
+        active = try c.decode(String.self, forKey: .active)
+        peek = try c.decode(String.self, forKey: .peek)
+        trunc = try? c.decodeIfPresent(Int.self, forKey: .trunc)
+        if let detailed = try? c.decodeIfPresent([String: BatchProgress].self, forKey: .running) {
+            running = detailed
+        } else if let ids = try? c.decodeIfPresent([String].self, forKey: .running) {
+            running = Dictionary(ids.map { ($0, BatchProgress.unknown) },
+                                 uniquingKeysWith: { a, _ in a })
+        } else {
+            running = [:]
+        }
+    }
+
+    /// For tests and previews.
+    init(v: Int, path: String, active: String = "", peek: String = "",
+         running: [String: BatchProgress] = [:], trunc: Int? = nil) {
+        self.v = v
+        self.path = path
+        self.active = active
+        self.peek = peek
+        self.running = running
+        self.trunc = trunc
+    }
 }
 
 // MARK: - Read-only connection
@@ -422,11 +474,12 @@ extension PyMOLEngine {
                 setsStore = SetsStore(path: marker.path)
             }
         }
-        let running = marker.running ?? [:]
         // The marker drops the COUNTS before it drops the sets (appkit_sets.marker),
-        // so a truncated line still says which sets are busy; `trunc` is what stops
-        // the badge from rendering "0 / 0" as though it knew.
-        let truncated = (marker.trunc ?? 0) != 0
+        // so a truncated line still says which sets are busy as a list of ids, which
+        // the decode above has already normalised; `truncated` is what stops the
+        // badge from rendering "0 / 0" as though it knew.
+        let running = marker.running
+        let truncated = marker.truncated
         let versionChanged = marker.v != setsVersion
         let active: String? = marker.active.isEmpty ? nil : marker.active
         let peek: String? = marker.peek.isEmpty ? nil : marker.peek

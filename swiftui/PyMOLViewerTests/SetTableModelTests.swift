@@ -289,6 +289,63 @@ final class SetsStoreTests: XCTestCase {
         }
     }
 
+    // MARK: - the SETS: marker decode (#417 review)
+
+    private func marker(_ json: String) throws -> SetsMarker {
+        try JSONDecoder().decode(SetsMarker.self, from: Data(json.utf8))
+    }
+
+    func testMarkerDecodesTheNormalRunningShape() throws {
+        let m = try marker("""
+            {"v":12,"path":"/tmp/x.raymol","active":"ab12cd34","peek":"","running":\
+            {"ab12cd34":{"done":3,"total":10,"tool":"rfd3"}}}
+            """)
+        XCTAssertEqual(m.v, 12)
+        XCTAssertEqual(m.running["ab12cd34"], BatchProgress(done: 3, total: 10, tool: "rfd3"))
+        XCTAssertFalse(m.truncated)
+    }
+
+    /// The truncated line carries BARE IDS, because a dict of zeroed records costs
+    /// ~41 bytes a batch and blew the feedback-line cap at about twenty — so the
+    /// stage that exists to keep the badge alive dropped it instead. Both shapes
+    /// must decode: one unhandled shape fails the whole marker, and the drawer then
+    /// freezes on its last state.
+    func testMarkerDecodesTheTruncatedIdListShape() throws {
+        let m = try marker("""
+            {"v":9,"path":"/tmp/x.raymol","active":"","peek":"",\
+            "running":["ab12cd34","ff00ff00"],"trunc":1}
+            """)
+        XCTAssertTrue(m.truncated)
+        XCTAssertEqual(Set(m.running.keys), ["ab12cd34", "ff00ff00"])
+        XCTAssertEqual(m.running["ab12cd34"], BatchProgress.unknown,
+                       "a batch with no numbers is still a batch that is running")
+        // Which is exactly what keeps the badge from claiming "0 / 0" — see
+        // RunningBadge.countsKnown.
+        XCTAssertEqual(m.running["ab12cd34"]?.done, 0)
+        XCTAssertEqual(m.running["ab12cd34"]?.total, 0)
+    }
+
+    func testMarkerDecodesTheEmptyAndAbsentCases() throws {
+        for json in [
+            #"{"v":1,"path":"","active":"","peek":"","running":{}}"#,
+            #"{"v":1,"path":"","active":"","peek":"","running":[],"trunc":1}"#,
+            #"{"v":1,"path":"","active":"","peek":""}"#,
+        ] {
+            let m = try marker(json)
+            XCTAssertTrue(m.running.isEmpty, json)
+            XCTAssertEqual(m.v, 1, json)
+        }
+    }
+
+    func testAnUnreadableRunningFieldDoesNotCostTheWholeMarker() throws {
+        // A future shape, or a half-written line: the version and path are what the
+        // drawer cannot do without, so they must survive anything `running` does.
+        let m = try marker(#"{"v":7,"path":"/tmp/x.raymol","active":"a","peek":"","running":42}"#)
+        XCTAssertEqual(m.v, 7)
+        XCTAssertEqual(m.path, "/tmp/x.raymol")
+        XCTAssertTrue(m.running.isEmpty)
+    }
+
     func testMissingFileOpensAsNil() {
         XCTAssertNil(SetsStore(path: NSTemporaryDirectory() + "does_not_exist_\(UUID()).raymol"))
     }
