@@ -357,6 +357,9 @@ targets:
       # the text-based ones) so RayMol becomes a first-class handler and the
       # default where nothing else claims the type. macOS registration happens via
       # lsregister; iOS surfaces these in Files / Open-in.
+      # .raymol (#417) is RayMol's own session container -- a SQLite file carrying
+      # the .pse as a blob plus the sets -- so it is declared as our own UTI
+      # (com.raymol.session, Owner) beside the inherited org.pymol.pse.
       - name: "Brand: register molecular document types"
         basedOnDependencyAnalysis: false
         # Input dependency on the generated Info.plist forces this to run AFTER
@@ -369,12 +372,14 @@ targets:
           [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
           /usr/bin/plutil -replace CFBundleDocumentTypes -json '[
             {"CFBundleTypeName":"PyMOL Session","CFBundleTypeRole":"Editor","LSHandlerRank":"Owner","LSItemContentTypes":["org.pymol.pse"]},
+            {"CFBundleTypeName":"RayMol Session","CFBundleTypeRole":"Editor","LSHandlerRank":"Owner","LSItemContentTypes":["com.raymol.session"]},
             {"CFBundleTypeName":"Molecular Structure","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.structure"]},
             {"CFBundleTypeName":"Small Molecule","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.small-molecule"]},
             {"CFBundleTypeName":"Electron Density / Map","CFBundleTypeRole":"Viewer","LSHandlerRank":"Default","LSItemContentTypes":["org.pymol.map"]}
           ]' "$PLIST"
           /usr/bin/plutil -replace UTImportedTypeDeclarations -json '[
             {"UTTypeIdentifier":"org.pymol.pse","UTTypeDescription":"PyMOL Session","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["pse"]}},
+            {"UTTypeIdentifier":"com.raymol.session","UTTypeDescription":"RayMol Session","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["raymol"]}},
             {"UTTypeIdentifier":"org.pymol.structure","UTTypeDescription":"Molecular Structure","UTTypeConformsTo":["public.data","public.text"],"UTTypeTagSpecification":{"public.filename-extension":["pdb","ent","cif","mmcif","mcif","mmtf"]}},
             {"UTTypeIdentifier":"org.pymol.small-molecule","UTTypeDescription":"Small Molecule","UTTypeConformsTo":["public.data","public.text"],"UTTypeTagSpecification":{"public.filename-extension":["sdf","mol","mol2","xyz","mae"]}},
             {"UTTypeIdentifier":"org.pymol.map","UTTypeDescription":"Electron Density / Map","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["ccp4","mtz","dx","xplor","map","mrc"]}}

@@ -1239,6 +1239,54 @@ private extension View {
     }
 }
 
+// MARK: - Sets (#417)
+
+/// One set: a collection of entries browsed in the Data drawer, drawn only when
+/// peeked or staged (spec §3, tracking #421).
+///
+/// Deliberately NOT an `ObjectEntry`, for the reason `AlignmentEntry` is not: a set
+/// has no geometry and no row in the Executive — its GROUP does, holding exactly the
+/// staged objects, and that group is an ordinary `ObjectEntry` under OBJECTS. The
+/// set row is the door to the drawer. Everything here is read from the `.raymol`
+/// file by `SetsStore` on a version change, never per poll tick.
+struct SetEntry: Identifiable, Equatable {
+    /// The store's stable id (8 hex chars); renames keep it.
+    let id: String
+    let name: String
+    /// structures | sequences | mixed
+    let kind: String
+    let tool: String
+    /// Entries in the set, all of them — the filter (#418) is not applied here.
+    let count: Int
+    /// Entries with a live `staged_object` link.
+    let stagedCount: Int
+    /// The effective stage budget: the set's own, else the file's default.
+    let budget: Int
+    /// The footprint group's name, which is what the OBJECTS row is called.
+    let groupName: String
+    /// The object staged and peeked entries are superposed on; "" until set.
+    let reference: String
+    /// The column the inspector histogram and `top:N` follow; "" for none.
+    let rankingKey: String
+    let sortKey: String
+    let sortDescending: Bool
+    /// The active filter expression, as text. Shown, not applied, in this step.
+    let filter: String
+    /// Every declared column, scalar and array, in declaration order.
+    let columns: [MetricColumn]
+    /// The ranking column binned into `SetsStore.histogramBins`; empty when the set
+    /// has no ranking key or nothing measured yet.
+    let histogram: [Int]
+    /// A batch still landing in this set (#416), or nil.
+    var running: BatchProgress? = nil
+
+    var rankingColumn: MetricColumn? {
+        columns.first { $0.column == rankingKey && $0.isScalar }
+    }
+    /// "5 of 1024 staged" — the group row's badge and the drawer header's count.
+    var stagedLabel: String { "\(stagedCount) of \(count) staged" }
+}
+
 // MARK: - ObjectPanel View
 
 struct ObjectPanel: View {
@@ -1253,7 +1301,7 @@ struct ObjectPanel: View {
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
     @State private var openSections: Set<String> = ["objects", "selections",
-                                                    "alignments"]
+                                                    "alignments", "sets"]
     // Which group rows are expanded. Deliberately NOT engine.expandedDetail: that
     // is a single-slot accordion for the rep inspector whose didSet re-polls and
     // which ContentView reads to resize the panel, so reusing it would make
@@ -1431,6 +1479,24 @@ struct ObjectPanel: View {
                                 AlignmentRowView(
                                     entry: aln,
                                     isAlt: (index + engine.msaSearches.count) % 2 == 1)
+                            }
+                        }
+                    }
+
+                    // SETS (#417) — collapses when empty, like ALIGNMENTS: with no
+                    // set open, nothing about the panel changes. A set's GROUP is
+                    // already a row under OBJECTS (holding only its staged objects);
+                    // this section is the set itself — its size, the shape of its
+                    // ranking column, whether a batch is still landing — and the
+                    // door to the Data drawer.
+                    if !engine.sets.isEmpty {
+                        sectionHeader("SETS", id: "sets", tag: "\(engine.sets.count)") {
+                            EmptyView()
+                        }
+                        if openSections.contains("sets") {
+                            ForEach(Array(engine.sets.enumerated()), id: \.element.id) { index, set in
+                                SetRowView(entry: set, isAlt: index % 2 == 1,
+                                           isActive: engine.activeSetID == set.id)
                             }
                         }
                     }
@@ -2887,6 +2953,140 @@ private struct ObjectColorRow: View {
     }
 }
 
+// MARK: - Set row (#417)
+
+/// One set in the SETS section: name, entry count, a tiny histogram of the ranking
+/// column, a running badge while its batch is still landing, and the "open in
+/// drawer" affordance. Clicking anywhere on the row opens the drawer on this set.
+///
+/// No visibility toggle and no A/S/H/L/C, for the same reason the alignment rows
+/// have none: a set is data. What IS drawable — its staged objects — already has its
+/// rows, inside the set's group under OBJECTS, and that group row says "n of N
+/// staged" so the two halves read as one thing.
+private struct SetRowView: View {
+    let entry: SetEntry
+    let isAlt: Bool
+    let isActive: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Line up with the object rows' chevron + checkbox gutter.
+            Spacer().frame(width: 13 + kGutterW)
+
+            if let running = entry.running {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.mini)
+                    .frame(width: 10, height: 10)
+                    .help(runningText(running))
+            }
+
+            Text(entry.name)
+                .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                .foregroundColor(PanelTheme.textColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 4)
+
+            if !entry.histogram.isEmpty {
+                SetHistogramView(bins: entry.histogram)
+                    .frame(width: 40, height: 12)
+                    .help(histogramText)
+            }
+
+            Text("\(entry.count)")
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+
+            #if os(macOS)
+            Button { engine.openSet(entry) } label: {
+                Image(systemName: isActive ? "rectangle.bottomthird.inset.filled"
+                                           : "rectangle.bottomthird.inset")
+                    .font(.system(size: 11))
+                    .foregroundColor(isActive ? PanelTheme.accentColor : PanelTheme.headerColor)
+            }
+            .buttonStyle(.plain)
+            .help(isActive ? "Open in the Data drawer (showing)" : "Open in the Data drawer")
+            #endif
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(height: kRowH)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        #if os(macOS)
+        .onTapGesture { engine.openSet(entry) }
+        #endif
+        .help(tooltip)
+        .contextMenu {
+            #if os(macOS)
+            Button("Open in Data drawer") { engine.openSet(entry) }
+            Divider()
+            #endif
+            Button("Unstage all") {
+                engine.runPython("from pymol import cmd as _c\n_c.set_unstage('\(cleanName)')")
+            }
+            .disabled(entry.stagedCount == 0)
+            Divider()
+            Button("Delete set", role: .destructive) {
+                engine.runPython("from pymol import cmd as _c\n_c.set_delete('\(cleanName)')")
+            }
+        }
+    }
+
+    private var cleanName: String { entry.name.replacingOccurrences(of: "'", with: "") }
+
+    private func runningText(_ p: BatchProgress) -> String {
+        let tool = p.tool.isEmpty ? "a batch" : p.tool
+        return p.total > 0 ? "\(tool): \(p.done) of \(p.total) landed" : "\(tool): \(p.done) landed"
+    }
+
+    private var histogramText: String {
+        guard let column = entry.rankingColumn else { return "" }
+        return "Distribution of \(column.title) across the set"
+    }
+
+    private var tooltip: String {
+        var text = "\(entry.count) entr\(entry.count == 1 ? "y" : "ies"), \(entry.stagedLabel)"
+        if entry.count > 0, entry.stagedCount > entry.budget {
+            text += " (over the budget of \(entry.budget))"
+        }
+        if !entry.tool.isEmpty { text += " · from \(entry.tool)" }
+        if let column = entry.rankingColumn { text += " · ranked by \(column.title)" }
+        #if os(macOS)
+        text += " — click to open in the Data drawer"
+        #else
+        text += " — the Data drawer arrives on iPad and iPhone with #420"
+        #endif
+        return text
+    }
+}
+
+/// The mini histogram in a set row: one bar per bin, scaled to the tallest.
+/// Pure drawing; the binning happened once, in `SetsStore`, on a version change.
+struct SetHistogramView: View {
+    let bins: [Int]
+
+    var body: some View {
+        GeometryReader { geo in
+            let peak = CGFloat(max(bins.max() ?? 1, 1))
+            let gap: CGFloat = 1
+            let w = max((geo.size.width - gap * CGFloat(max(bins.count - 1, 0))) / CGFloat(max(bins.count, 1)), 1)
+            HStack(alignment: .bottom, spacing: gap) {
+                ForEach(Array(bins.enumerated()), id: \.offset) { _, n in
+                    RoundedRectangle(cornerRadius: 0.5)
+                        .fill(PanelTheme.headerColor)
+                        .frame(width: w, height: max(CGFloat(n) / peak * geo.size.height, n > 0 ? 1 : 0))
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .bottomLeading)
+        }
+    }
+}
+
 // MARK: - Object row content (shared by selection rows and object cards)
 
 private struct ObjectRowContent: View {
@@ -2921,6 +3121,22 @@ private struct ObjectRowContent: View {
             // ("…_relaxed_model_2") truncate to the same thing. Widening the panel
             // is the fix; this tooltip reads the full name without resizing at all.
             .help(entry.displayName)
+
+        // A set's footprint group (#417): "5 of 1024 staged", so the group row and
+        // the SETS row read as two halves of one thing. Matched by the group's NAME
+        // — the store records `group_name`, and a `set_rename` renames both — and
+        // only for groups, so an object that happens to share a set's name is not
+        // badged. Free per render: `engine.sets` is a handful of entries.
+        if entry.isGroup, let set = engine.sets.first(where: { $0.groupName == entry.name }) {
+            Text(set.stagedLabel)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundColor(set.stagedCount > set.budget ? PanelTheme.atomTranspColor
+                                                               : PanelTheme.disabledColor)
+                .lineLimit(1)
+                .help("\(set.stagedLabel) — the group holds exactly the set's staged "
+                      + "objects; the rest of the set is in the Data drawer"
+                      + (set.stagedCount > set.budget ? " (over the budget of \(set.budget))" : ""))
+        }
 
         // Model / state count, right of the name (the structure's "frame count").
         if entry.stateCount > 1 {

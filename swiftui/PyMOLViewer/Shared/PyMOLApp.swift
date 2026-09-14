@@ -99,12 +99,14 @@ enum AppShortcuts {
     static let consolePane = KeyboardShortcut("1", modifiers: .command)
     static let sequencePane = KeyboardShortcut("2", modifiers: .command)
     static let sidePanel = KeyboardShortcut("3", modifiers: .command)
+    /// The Data drawer (#417): next in the same numbered family.
+    static let dataDrawerPane = KeyboardShortcut("4", modifiers: .command)
 
     /// Every entry above. The collision test runs off this list, so a new
     /// shortcut must be added here too (same contract as PanelLayout.allKeys).
     static let all: [KeyboardShortcut] = [
         moveTool, measureTool, designTool, predictTool, binderDesignTool, boxSelect,
-        consolePane, sequencePane, sidePanel,
+        consolePane, sequencePane, sidePanel, dataDrawerPane,
     ]
 
     /// The macOS-style symbol hint ("⌃M", "⌘1") for the surfaces that don't
@@ -419,6 +421,13 @@ struct PyMOLApp: App {
                     showObjectPanel.toggle()
                 }
                 .keyboardShortcut(AppShortcuts.sidePanel)
+                // The Data drawer (#417). Closing goes through the engine so the
+                // Python side drops its active set and clears the peek too.
+                Button(engine.dataDrawerVisible ? "Hide Data Drawer" : "Show Data Drawer") {
+                    if engine.dataDrawerVisible { engine.closeDataDrawer() }
+                    else { engine.dataDrawerVisible = true }
+                }
+                .keyboardShortcut(AppShortcuts.dataDrawerPane)
             }
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
@@ -543,7 +552,19 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
         .appendingPathComponent("open_\(UUID().uuidString.prefix(8)).\(ext)")
     try? FileManager.default.removeItem(at: temp)
     let path: String
-    if (try? FileManager.default.copyItem(at: url, to: temp)) != nil {
+    #if os(macOS)
+    // A .raymol (#417) is a SQLite container that `load` opens IN PLACE and later
+    // results write into. Loading a temp copy would put an hour of GPU output in a
+    // file nobody can find, so on macOS — where the path is a plain local file —
+    // it is opened where it is. (iOS still copies: its security scope ends when
+    // this function returns, before anything is written. #420 owns that.)
+    let inPlace = PyMOLEngine.isRayMolDocument(url.path)
+    #else
+    let inPlace = false
+    #endif
+    if inPlace {
+        path = url.path
+    } else if (try? FileManager.default.copyItem(at: url, to: temp)) != nil {
         path = temp.path
     } else {
         path = url.path   // fall back to the original path (e.g. local macOS file)
@@ -553,8 +574,12 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     if name.isEmpty { name = "mol" }
     engine.loadStructure(path: path, name: name)
     // Publish the original document URL only after PyMOL has restored the PSE,
-    // so observers read the newly restored embedded Analysis Notes payload.
-    engine.currentSessionURL = (ext.lowercased() == "pse") ? url : nil
+    // so observers read the newly restored embedded Analysis Notes payload. A
+    // .raymol is a document too (#417); a different one re-arms the one-time
+    // sets sheet (spec §2.1).
+    let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
+    if next != engine.currentSessionURL { engine.setsSaveChoiceMade = false }
+    engine.currentSessionURL = next
 }
 
 // Opening a session file REPLACES the whole current session — PyMOL sessions are
@@ -608,9 +633,15 @@ private func saveCurrentSessionForReplace(engine: PyMOLEngine) -> Bool {
     if let current = engine.currentSessionURL {
         dest = current
     } else {
+        // An untitled session that holds a set is offered .raymol first (#417):
+        // a .pse would drop the sets on the way out, and this is the one save it
+        // gets before being replaced.
+        let hasSets = engine.sets.contains { $0.count > 0 }
+        let exts = PyMOLEngine.sessionSaveExtensions(currentDocument: nil,
+                                                     forcing: hasSets ? "raymol" : nil)
         let panel = NSSavePanel()
-        if let pse = UTType(filenameExtension: "pse") { panel.allowedContentTypes = [pse] }
-        panel.nameFieldStringValue = "session.pse"
+        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
+        panel.nameFieldStringValue = "session.\(exts[0])"
         panel.canCreateDirectories = true
         panel.title = "Save Session"
         guard panel.runModal() == .OK, let url = panel.url else { return false }

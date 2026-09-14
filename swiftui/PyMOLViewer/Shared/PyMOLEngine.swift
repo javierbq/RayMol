@@ -110,6 +110,34 @@ final class PyMOLEngine: ObservableObject {
     // not an alignment yet — it has no depth, no columns and nothing to attach — and it
     // stops existing the moment it becomes one.
     @Published var msaSearches: [MSASearchEntry] = []
+    // Sets (#417). Read from the `.raymol` container by SetsStore when the `SETS:`
+    // marker's version changes — never per poll tick, so none of these grows the
+    // 500 ms poll with the entry count (#421). `sets` is every set in the file;
+    // `setRows` is the ACTIVE set's entries for the drawer; `activeSetID` and
+    // `peekedEntryID` are Python's (appkit_sets owns them; the marker carries them),
+    // assigned optimistically here so a click does not wait a tick to show.
+    @Published var sets: [SetEntry] = []
+    @Published var setRows: [SetRow] = []
+    @Published var activeSetID: String? = nil
+    @Published var peekedEntryID: String? = nil
+    /// Batches still landing, by set id (#416's table, forwarded by the marker).
+    @Published var setsRunning: [String: BatchProgress] = [:]
+    /// The Data drawer's visibility, persisted like the other panes (#332). Hidden
+    /// until a set is opened; macOS only draws it (#420 does mobile).
+    @Published var dataDrawerVisible = UserDefaults.standard
+        .bool(forKey: PanelLayout.dataDrawerVisibleKey) {
+        didSet {
+            UserDefaults.standard.set(dataDrawerVisible, forKey: PanelLayout.dataDrawerVisibleKey)
+        }
+    }
+    /// Spec §2.1: the "this session now includes a set" sheet is shown once per
+    /// session. Reset by Clear Session and when a different document opens.
+    var setsSaveChoiceMade = false
+    /// The open read-only connection and what it was opened on. Owned by
+    /// applySetsMarker (SetsStore.swift); nothing else touches them.
+    var setsStore: SetsStore? = nil
+    var setsStorePath = ""
+    var setsVersion = -1
     @Published var sequences: [SequenceObject] = []
     @Published var selectedResidueKeys: Set<String> = []
     // Set when an iOS long-press identifies an atom/residue (or empty space);
@@ -472,6 +500,15 @@ final class PyMOLEngine: ObservableObject {
         // system cert file reachable from the sandbox. Must precede Py init.
         if let ca = Bundle.main.path(forResource: "cacert", ofType: "pem", inDirectory: "data") {
             setenv("SSL_CERT_FILE", ca, 1)
+        }
+        // Sets' working file (#417, spec §2.1). An untitled session's `.raymol`
+        // container is where a six-hour batch lands before any Save, so it must
+        // not live in $TMPDIR, which the system may purge; pymol.sets.store reads
+        // RAYMOL_SETS_DIR before its TMPDIR fallback. Same folder that holds the
+        // iOS autosave.pse (see autosaveURL), for the same reason. Before Py init,
+        // like SSL_CERT_FILE: the store reads the environment when first imported.
+        if let dir = Self.stateDirectory() {
+            setenv("RAYMOL_SETS_DIR", dir.path, 1)
         }
 
         PyMOLBridge_InitPython(inst, resourcePath)
@@ -1412,9 +1449,47 @@ final class PyMOLEngine: ObservableObject {
     /// True when `path` is a session file (.pse/.psw). A session restores its own
     /// object names, colors, representations and settings, so the coordinate-file
     /// load contract (object name + theming) does not apply to it.
+    /// A file whose `load` REPLACES the session: PyMOL's .pse/.psw, and the `.raymol`
+    /// container (#417), which carries a .pse as one blob plus the sets. Drives the
+    /// bare-load path (no object name, no theming) and the #349 replace guard.
     static func isSessionFile(_ path: String) -> Bool {
         let ext = (path as NSString).pathExtension.lowercased()
-        return ext == "pse" || ext == "psw"
+        return ext == "pse" || ext == "psw" || ext == "raymol"
+    }
+
+    /// The `.raymol` document (#417, spec §2.1): a SQLite container that `load`
+    /// opens IN PLACE and later results write into, so — unlike every other format
+    /// the app opens — it must never be copied to a temp path first.
+    static func isRayMolDocument(_ path: String) -> Bool {
+        (path as NSString).pathExtension.lowercased() == "raymol"
+    }
+
+    /// Formats tracked as the open document for ⌘S and the window title: `.pse` (as
+    /// before) and `.raymol`. `.psw` is a show file and was never tracked.
+    static func isTrackedDocument(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ext == "pse" || ext == "raymol"
+    }
+
+    /// Spec §2.1: the first time a session holding a non-empty set is saved with no
+    /// `.raymol` document open, the app asks once whether to save as `.raymol` or as
+    /// a plain `.pse` without the sets. Pure so OpenFilesTests can pin the rule: no
+    /// set → never; a `.raymol` already open → never (it simply saves); decided once
+    /// this session → never again.
+    static func sessionNeedsRaymolPrompt(hasNonEmptySet: Bool, currentDocument: URL?,
+                                         alreadyDecided: Bool) -> Bool {
+        guard hasNonEmptySet, !alreadyDecided else { return false }
+        if let currentDocument, isRayMolDocument(currentDocument.path) { return false }
+        return true
+    }
+
+    /// Save-panel extension order: the open document's format first, so a `.raymol`
+    /// document keeps saving as `.raymol` and a `.pse` as `.pse`, with the other
+    /// offered second. `forcing` is the sheet's "Save as .raymol" choice.
+    static func sessionSaveExtensions(currentDocument: URL?, forcing: String? = nil) -> [String] {
+        let preferred = forcing
+            ?? ((currentDocument.map { isRayMolDocument($0.path) } ?? false) ? "raymol" : "pse")
+        return preferred == "raymol" ? ["raymol", "pse"] : ["pse", "raymol"]
     }
 
     /// The exact command pair `loadStructure` runs — factored pure for tests.
@@ -1452,10 +1527,25 @@ final class PyMOLEngine: ObservableObject {
     /// (bg/palette/render toggles) so the empty viewport keeps the app's look
     /// instead of PyMOL's bare defaults. The objects panel refreshes on the next
     /// poll tick.
+    /// `~/Library/RayMolState` (the app container's Library on a sandboxed build):
+    /// the space-free, purge-safe folder that holds the iOS autosave and, on both
+    /// platforms, an untitled session's `.raymol` working file (#417). Created on
+    /// first use; nil only if Library itself is unavailable.
+    static func stateDirectory() -> URL? {
+        guard let dir = FileManager.default.urls(
+            for: .libraryDirectory, in: .userDomainMask).first else { return nil }
+        let appDir = dir.appendingPathComponent("RayMolState", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        return appDir
+    }
+
     func clearSession() {
         guard isReady else { return }
         // No document is open after a clear — the next ⌘S becomes a Save As.
         currentSessionURL = nil
+        // A new session gets the "this session now includes a set" sheet again
+        // (spec §2.1); `reinitialize` below resets the store, so the sets go too.
+        setsSaveChoiceMade = false
         // reinitialize wipes the core movie (mset/mview); drop the camera track's
         // keyframes so the Timeline doesn't show diamonds for frames that no
         // longer exist.
@@ -3559,6 +3649,12 @@ final class PyMOLEngine: ObservableObject {
             for line in text.components(separatedBy: "\n") {
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
+                } else if line.hasPrefix("SETS:") {
+                    // Sets change notice (#417): version + path + active/peek ids,
+                    // printed by appkit_sets.poll only when one of them changed. The
+                    // contents are read from the .raymol file by SetsStore, so this
+                    // is the ONLY thing about sets that rides the feedback line.
+                    parseSetsFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
                     parseObjectDetailFeedback(line)
                 } else if line.hasPrefix("SESSIONVP:") {

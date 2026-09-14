@@ -44,6 +44,12 @@ enum PanelLayout {
     static let panelFracKey = ns + "panelFrac"
     /// Sequence strip visible. Written by PyMOLEngine, which owns the flag.
     static let sequenceVisibleKey = ns + "sequenceVisible"
+    /// Data drawer (#417) visible. Written by PyMOLEngine, which owns the flag,
+    /// like the sequence strip's. macOS only until #420.
+    static let dataDrawerVisibleKey = ns + "dataDrawerVisible"
+    /// The user's Data drawer height, as a fraction of the window height. Absent
+    /// until they drag its divider, which selects the absolute default.
+    static let dataDrawerFracKey = ns + "dataDrawerFrac"
 
     /// Every key this type defines — the namespace/uniqueness check in the tests
     /// runs off this list, so a new key must be added here too.
@@ -51,6 +57,7 @@ enum PanelLayout {
         consoleVisibleKey, objectsVisibleKey,
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
         consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
+        dataDrawerVisibleKey, dataDrawerFracKey,
     ]
 
     // MARK: - Bounds
@@ -83,6 +90,32 @@ enum PanelLayout {
     static let defaultPanelFrac: CGFloat = 0.53
     static let minPanelFrac: CGFloat = 0.2
     static let maxPanelFrac: CGFloat = 0.8
+
+    // MARK: - macOS Data drawer (#417)
+
+    /// The drawer's height on a launch with nothing stored. ABSOLUTE points, for
+    /// the console's reason: an untouched drawer looks the same on a laptop and a
+    /// 6K display. 220 fits the header, eight rows at 22pt and the footer.
+    static let macDefaultDrawerHeight: CGFloat = 220
+    /// Header + one row + footer; below this the table is chrome and no data.
+    static let macMinDrawerHeight: CGFloat = 96
+    /// The drawer shares the viewport's column with the console and may grow until
+    /// the viewport is at its minimum — the same bracket `maxConsoleHeight` uses,
+    /// so a window that fits the console fits the drawer at the same size.
+    static func maxDrawerHeight(windowHeight: CGFloat,
+                                viewportMin: CGFloat = macViewportMinHeight) -> CGFloat {
+        maxConsoleHeight(windowHeight: windowHeight, viewportMin: viewportMin)
+    }
+
+    /// The drawer's height in a window of `windowHeight`: the same arithmetic as
+    /// the console's (a stored fraction wins over the absolute default, the
+    /// ceiling wins over both), with the drawer's own bounds.
+    static func drawerHeight(frac: CGFloat, windowHeight: CGFloat) -> CGFloat {
+        consoleHeight(frac: frac, windowHeight: windowHeight,
+                      defaultHeight: macDefaultDrawerHeight,
+                      minHeight: macMinDrawerHeight,
+                      maxHeight: maxDrawerHeight(windowHeight: windowHeight))
+    }
 
     /// #350: the macOS inspector column's width on a launch with nothing stored.
     /// ABSOLUTE points for the same reason as the console default — an untouched
