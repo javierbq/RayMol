@@ -1197,7 +1197,7 @@ private let allActionMenuItems: [ActionMenuItem] = [
 // blending panelBackground -> panelText so they stay solid (alpha 1), which keeps
 // the existing `.opacity(1.3)` call sites a no-op as before. Views that read these
 // must observe ThemeManager (@EnvironmentObject) so they re-render on theme switch.
-private enum PanelTheme {
+enum PanelTheme {
     private static var t: Theme { ThemeManager.shared.active }
     static var background: Color { t.panelBackground.color }
     static var rowBackground: Color { t.panelBackground.blended(with: t.panelText, 0.06).color }

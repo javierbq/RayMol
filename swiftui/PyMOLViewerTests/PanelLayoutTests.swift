@@ -283,6 +283,36 @@ final class PanelLayoutTests: XCTestCase {
             360, accuracy: 1e-9)
     }
 
+    // MARK: - Data drawer (#417)
+
+    func testDrawerKeysAreRegistered() {
+        // The namespace/uniqueness tests below run off allKeys, so a key missing
+        // from it would silently escape them.
+        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.dataDrawerVisibleKey))
+        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.dataDrawerFracKey))
+    }
+
+    func testUntouchedDrawerIsTheAbsoluteDefault() {
+        // Same rule as the console (#331): an unresized drawer is 220pt on a laptop
+        // and on a 6K display, not a share of either.
+        for window in [CGFloat(900), 1400, 2400] {
+            XCTAssertEqual(PanelLayout.drawerHeight(frac: 0, windowHeight: window),
+                           PanelLayout.macDefaultDrawerHeight, accuracy: 1e-9)
+        }
+    }
+
+    func testDrawerHonoursAStoredFractionInsideItsBounds() {
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0.3, windowHeight: 1000), 300, accuracy: 1e-9)
+        // Too small is lifted to the floor; too large is capped by the same ceiling
+        // the console uses, so the viewport keeps its minimum.
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0.02, windowHeight: 1000),
+                       PanelLayout.macMinDrawerHeight, accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.drawerHeight(frac: 0.9, windowHeight: 1000),
+                       PanelLayout.maxDrawerHeight(windowHeight: 1000), accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.maxDrawerHeight(windowHeight: 684),
+                       PanelLayout.maxConsoleHeight(windowHeight: 684), accuracy: 1e-9)
+    }
+
     // MARK: - key namespace
 
     func testEveryKeyIsNamespaced() {

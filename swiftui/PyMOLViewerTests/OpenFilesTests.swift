@@ -84,4 +84,61 @@ final class OpenFilesTests: XCTestCase {
         let pdb = URL(fileURLWithPath: "/tmp/5hbh.pdb")
         XCTAssertFalse(openWouldReplaceSession(pdb, hasObjects: true))
     }
+
+    // MARK: - #417: the .raymol document is a session
+
+    func testRaymolLoadsBareAndReplacesTheSession() {
+        // A .raymol carries a .pse as one blob plus the sets, so `load` replaces
+        // the session exactly as a .pse does: no object name, no theming, and the
+        // #349 guard applies.
+        for path in ["/tmp/campaign.raymol", "/tmp/CAMPAIGN.RAYMOL"] {
+            let (command, theme) = PyMOLEngine.loadInvocation(path: path, name: "campaign")
+            XCTAssertEqual(command, "load \(path)", path)
+            XCTAssertNil(theme, path)
+            XCTAssertTrue(openWouldReplaceSession(URL(fileURLWithPath: path), hasObjects: true))
+            XCTAssertFalse(openWouldReplaceSession(URL(fileURLWithPath: path), hasObjects: false))
+        }
+        XCTAssertTrue(PyMOLEngine.isRayMolDocument("/tmp/x.raymol"))
+        XCTAssertFalse(PyMOLEngine.isRayMolDocument("/tmp/x.pse"))
+    }
+
+    func testRaymolIsTrackedAsTheOpenDocumentPswIsNot() {
+        XCTAssertTrue(PyMOLEngine.isTrackedDocument(URL(fileURLWithPath: "/tmp/a.raymol")))
+        XCTAssertTrue(PyMOLEngine.isTrackedDocument(URL(fileURLWithPath: "/tmp/a.pse")))
+        XCTAssertFalse(PyMOLEngine.isTrackedDocument(URL(fileURLWithPath: "/tmp/a.psw")),
+                       "a show file was never the ⌘S target and still is not")
+        XCTAssertFalse(PyMOLEngine.isTrackedDocument(URL(fileURLWithPath: "/tmp/a.pdb")))
+    }
+
+    func testSavePanelOffersTheDocumentsOwnFormatFirst() {
+        XCTAssertEqual(PyMOLEngine.sessionSaveExtensions(currentDocument: nil), ["pse", "raymol"],
+                       "an untitled session still defaults to plain PyMOL")
+        XCTAssertEqual(PyMOLEngine.sessionSaveExtensions(
+                           currentDocument: URL(fileURLWithPath: "/tmp/a.pse")), ["pse", "raymol"])
+        XCTAssertEqual(PyMOLEngine.sessionSaveExtensions(
+                           currentDocument: URL(fileURLWithPath: "/tmp/a.raymol")), ["raymol", "pse"],
+                       "a .raymol document keeps saving as .raymol")
+        XCTAssertEqual(PyMOLEngine.sessionSaveExtensions(currentDocument: nil, forcing: "raymol"),
+                       ["raymol", "pse"], "the sets sheet's 'Save as .raymol' wins")
+    }
+
+    func testSetsSheetShowsOnceAndOnlyWhenItMatters() {
+        let pse = URL(fileURLWithPath: "/tmp/a.pse")
+        let raymol = URL(fileURLWithPath: "/tmp/a.raymol")
+        // The case the sheet exists for: a set, saving to a .pse (or untitled).
+        XCTAssertTrue(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: true, currentDocument: pse,
+                                                           alreadyDecided: false))
+        XCTAssertTrue(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: true, currentDocument: nil,
+                                                           alreadyDecided: false))
+        // Never for a session without sets — a user who never touches a set never
+        // sees .raymol (spec §2.1).
+        XCTAssertFalse(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: false, currentDocument: nil,
+                                                            alreadyDecided: false))
+        // Never when a .raymol is already the document: it simply saves.
+        XCTAssertFalse(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: true, currentDocument: raymol,
+                                                            alreadyDecided: false))
+        // Once per session.
+        XCTAssertFalse(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: true, currentDocument: pse,
+                                                            alreadyDecided: true))
+    }
 }

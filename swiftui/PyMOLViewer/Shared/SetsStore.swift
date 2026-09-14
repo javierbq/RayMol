@@ -227,7 +227,7 @@ final class SetsStore {
             let columns = Self.decodeColumns(row.string("columns") ?? "[]")
             let rankingKey = row.string("ranking_key") ?? ""
             let ranking = columns.first { $0.column == rankingKey && $0.isScalar }
-            let histogram = ranking.map { histogram(setID: id, column: $0) } ?? []
+            let bins = ranking.map { self.histogram(setID: id, column: $0) } ?? []
             return SetEntry(
                 id: id,
                 name: name,
@@ -243,7 +243,7 @@ final class SetsStore {
                 sortDescending: (row.int("sort_desc") ?? 1) != 0,
                 filter: row.string("filter") ?? "",
                 columns: columns,
-                histogram: histogram,
+                histogram: bins,
                 running: running[id])
         }
     }
@@ -442,7 +442,13 @@ extension PyMOLEngine {
         let publish = {
             if self.sets != nextSets { self.sets = nextSets }
             if self.setsRunning != running { self.setsRunning = running }
-            if self.activeSetID != active { self.activeSetID = active }
+            if self.activeSetID != active {
+                self.activeSetID = active
+                // A set opened from Python (an MCP agent's appkit_sets.open_set, or
+                // the console) shows the drawer exactly as the SETS row's click does;
+                // closing is left to the user, so a set_delete does not yank the band.
+                if active != nil { self.dataDrawerVisible = true }
+            }
             if self.setRows != nextRows { self.setRows = nextRows }
             if self.peekedEntryID != peek { self.peekedEntryID = peek }
         }
