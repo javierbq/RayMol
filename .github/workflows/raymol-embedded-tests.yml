@@ -81,4 +81,5 @@ jobs:
               testing/tests/predict \
               testing/tests/msa \
               testing/tests/metrics \
+              testing/tests/sets \
               testing/tests/generate

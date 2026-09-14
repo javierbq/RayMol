@@ -128,6 +128,19 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _mt_e:
         print("raymol metrics registration failed: %s" % _mt_e)
 
+    # RayMol sets (#415): campaign records kept in a .raymol container, NOT in the .pse.
+    # The save task strips the peek object from a session; the restore task drops links
+    # to staged objects the incoming session does not have. The reset for a bare .pse
+    # load lives in importing.load_pse, and the .pse warning in exporting.save.
+    try:
+        from pymol.sets import binding as _sets_binding
+        if _sets_binding.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(_sets_binding.session_restore)
+        if _sets_binding.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(_sets_binding.session_save)
+    except Exception as _st_e:
+        print("raymol sets registration failed: %s" % _st_e)
+
     # take care of some deferred initialization
 
     _pymol._view_dict_sc = Shortcut()

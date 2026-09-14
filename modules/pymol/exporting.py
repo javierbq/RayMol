@@ -856,6 +856,13 @@ SEE ALSO
                     filename.replace("\\", "/"), quiet=1)
             if not quiet:
                 print(" Save: Please wait -- writing session file...")
+            # RayMol sets (#415) live in a .raymol container, not in a .pse: say so
+            # when this save is leaving some behind.
+            try:
+                from pymol.sets import binding as _sets_binding
+                _sets_binding.warn_if_pse_leaves_sets(filename, _self=_self)
+            except Exception:
+                pass
 
         func_type4 = {
             'mmod': io.mmd.toFile,
@@ -1006,6 +1013,7 @@ SEE ALSO
 
         'pse': get_psestr,
         'psw': get_psestr,
+        'raymol': 'pymol.sets.binding:save_raymol',
 
         'fasta': get_fastastr,
         'aln': get_alnstr,
