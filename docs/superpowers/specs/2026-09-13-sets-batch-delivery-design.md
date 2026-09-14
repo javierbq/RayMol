@@ -53,11 +53,12 @@ later `set_stage` on it creates the group then; the delivered object itself is n
 into a group of one.
 
 The one cost of keeping every member in `_PENDING` is that the panel poll calls
-`pending_info` once per pending name every 500 ms, and `job.status()` on a queued host
-job is a file stat. Measured with the stub in `sets_batch.py` and reported in the PR; the
-design has a cheap exit if it matters (a member behind the batch frontier is queued by the
-serial-queue invariant `_batch_frontier` already relies on, so its record can be synthesised
-without touching the job), taken only if the measurement says so.
+`pending_info` once per pending name every 500 ms. MEASURED with the fake in
+`sets_batch.py` on a 1000-design batch: 200 ms per poll, of which 170 ms was
+`_batch_frontier` rescanning the batch's names from index 0 for every member -- a million
+dict lookups per tick. Settling is monotone, so the frontier now resumes from the last
+settled prefix (`entry['frontier']`) and the same poll costs 6 ms. `job.status()` on a
+queued host job is a file stat and was not the problem; no record is synthesised.
 
 ## 2. What lands where
 
@@ -69,6 +70,16 @@ the object `resolve_target` read the target from, one by construction -- and ONE
 invocation. `inputs` is `designing._run_inputs` less the per-design seed, plus
 `n_designs`, `seeds` (all of them, in submission order) and `weights`. The store's
 `generation()` is captured on the batch.
+
+**An identical re-run extends its set.** Today an identical re-run lands back in the
+group its first run made ("adding to it is the whole point"), and the group is now the
+set's footprint, so the set follows: when the batch id names a set the SAME generator
+wrote, `open` adds a second run row to it and the new designs are appended as entries
+(`_2` on a repeated design name, as the object gets), staged only while the set has room.
+A set of another tool -- or one the user imported -- under that name is a collision and
+the batch moves aside to `_2`, as it does for a molecule holding its group's name.
+`n_designs=1` follows the same rule, so two single designs against one target are two
+entries of one set.
 
 **At delivery** (`batch.land`), after the object is complete -- loaded or live-finished,
 dss'd, pinned, and after `record_run` has filed the design's metrics in the metrics store
@@ -211,6 +222,8 @@ designed chains are distinct blobs) and a fake predictor, both delivered by call
   `DESIGN_SPECS`; `save x.raymol` then `load x.raymol` gives the same counts and the same
   staged names.
 - `n_designs=1`: no group, the object as today, a one-entry set whose entry is staged.
+- An identical re-run: one set, two runs, four entries, one group; a set of another tool
+  under the batch's name is left alone and the batch lands in `_2`.
 - `predict` over `set:<name>@top:2` with `n_models=3`: a child set of 6 entries, one run
   with `parent_set_id` and two parent ids, each entry's `parents` is its own parent,
   `model` is 1..3, the child stages within budget.
@@ -231,9 +244,5 @@ placeholders or `_BATCH` for `n_designs=1` still hold because those paths are un
   `generators/rfd3.py`, which this step does not own. Raising it is one line.
 - **Trajectory frames as opt-in blobs** for staged/pinned entries. Frames live only in the
   object today.
-- **A `pending_info` fast path** for queued batch members, if the measurement in §1 says
-  the poll needs it.
-- **An identical re-run extending its set.** A re-run whose batch id is taken as a set
-  name moves aside to `_2` rather than appending a second run to the first set.
 - **The MPNN step** (a sequence generator writing a `sequences` set) does not exist yet;
   `predict set:` already folds sequence-only entries, which is the flow it will need.
