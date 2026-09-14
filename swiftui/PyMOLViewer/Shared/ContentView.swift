@@ -569,7 +569,17 @@ struct ContentView: View {
                 maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight)) + 5
         }
         if macAnyTopPane { used += 23 }
-        if engine.sequenceVisible { used += 24 }
+        // The strip at its IDEAL height (the same formula the VSplitView is given
+        // below), not its 24pt floor: the split only squeezes it when dragged, so
+        // sizing the drawer against the floor overflowed by a row.
+        if engine.sequenceVisible {
+            used += CGFloat(min(max(engine.sequences.count, 1), 5)) * 30 + 30
+        }
+        // Chrome that is not a pane but still takes column height: the two drag
+        // dividers' padding, the MCP "controlling" banner, a docked Predict or
+        // Binder bar. An allowance rather than a measurement — a few points of
+        // under-use beat a footer off the window.
+        used += 48
         return PanelLayout.maxDrawerHeight(windowHeight: max(windowHeight - used, 0))
     }
 
