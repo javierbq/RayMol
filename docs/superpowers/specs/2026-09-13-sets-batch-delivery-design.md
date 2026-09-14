@@ -26,7 +26,10 @@ pending table (`_PENDING`, `_TRACK`, `_BATCH_OF`, `_LAST_INFO`, `_RECENT`), of
 
 **After.** The object name stays the delivery key and every table keeps its shape, but a
 placeholder object is created only for the members that will be staged when they land:
-the first `budget` of them (`binding.budget(set_row)` read once at submit). Members
+the set's FREE STAGE SLOTS at submit (`budget` less what a set being extended already
+has staged -- amended after review: reading the budget alone gave a placeholder to a
+member that could never be staged, so a finished, measured design was deleted in front
+of the user with an empty console). Members
 beyond the budget are registered in the same tables with **no object**
 (`register_pending(name, job_id, placeholder=False)`). This is safe because nothing that
 publishes progress looks for the object: `appkit_inspector._pending_maps` iterates
@@ -79,18 +82,32 @@ wrote, `open` adds a second run row to it and the new designs are appended as en
 A set of another tool -- or one the user imported -- under that name is a collision and
 the batch moves aside to `_2`, as it does for a molecule holding its group's name.
 `n_designs=1` follows the same rule, so two single designs against one target are two
-entries of one set.
+entries of one set -- until the set has no free stage slot, at which point a single
+design takes its own `_2` set instead, because a single design that lands and then loses
+its object is not "indistinguishable from today". A set built against a DIFFERENT
+reference is never extended either (amended after review: same tool, same name, another
+target gave one set with a stale reference, so `predict set:` superposed the new designs
+on the old target).
 
 **At delivery** (`batch.land`), after the object is complete -- loaded or live-finished,
 dss'd, pinned, and after `record_run` has filed the design's metrics in the metrics store
 against the object, exactly as today:
 
-1. Generation check: `store.generation()` must equal the value captured at submit. On a
-   mismatch `land` raises `SetError` naming the batch; `deliver_result` warns once and
-   falls back to today's behaviour -- the object stays, joins the batch group -- so a
-   `load other.raymol` under a running batch loses nothing and never writes into the wrong
-   document. The batch is marked detached: later members skip the write without a second
-   warning and it leaves `running()`.
+1. Document check: the batch's run id must still resolve, in whatever container is open
+   now, to the batch's set (`batch._still_ours`). On a mismatch `land` raises `SetError`
+   naming the batch; `deliver_result` warns once and falls back to today's behaviour --
+   the object stays, joins the batch group -- so a `load other.raymol` under a running
+   batch loses nothing and never writes into the wrong document. The batch is marked
+   detached: later members skip the write without a second warning and it leaves
+   `running()`.
+
+   **Identity, not `store.generation()`** -- amended after review. The counter bumps on
+   every `store.replace`, and Save As from an untitled session (`save x.raymol`, the flow
+   §6 and the docs recommend) is a replace: the SAME document, moved. Measured with the
+   counter: `n_designs=4`, deliver one, `save campaign.raymol`, deliver the rest ->
+   three plain objects, one entry in the file and an empty `running()`. Ids are
+   `token_hex(4)`, so a run id that still resolves to its set IS the document the batch
+   was writing into, whatever the counter says.
 2. `binding.capture_object(set_id, name, name=<entry name>, run_id=<batch run>,
    states=<the delivered state>)` writes the entry: one CIF blob per chain from
    `get_cifstr` (§3), sequences per polymer chain, and every scalar and array the metrics
@@ -127,6 +144,12 @@ an RFD3 batch on real weights and is not taken here (§9).
 ## 4. Staging within the budget
 
 The first `budget` entries to land are staged; later ones are entries only.
+
+Over-budget landings are ANNOUNCED (amended after review: they were silent, so a design
+leaving the scene looked like a lost design): one parrot naming the entry and the
+`set_stage` that shows it. A failure AFTER the entry has committed is reported as
+"written, not staged" rather than "not written", because the two are different facts and
+only one of them costs the user a design.
 
 - **Staged** means: the delivered object is kept under its name, added to the batch group
   (`n_designs > 1`), and linked (`entries.staged_object = name`). It IS the object the
@@ -187,6 +210,12 @@ container and are never written into a `.pse`. Concretely, for a mid-batch sessi
 - `save x.pse`: plain PyMOL. Staged designs that have landed go in as ordinary objects,
   pending members and an all-pending group stay out, and the existing warning names the
   sets left behind. Reopening that `.pse` later gives the staged objects and no sets.
+  The warning names only sets with an UNSTAGED entry (amended after review): since every
+  single design now has a one-entry set behind it, warning whenever a set exists would
+  fire on every save of every session that ever ran a design, and when every entry is
+  staged every structure is in the `.pse` anyway -- only the links and the columns are
+  left behind. The app's §2.1 "this session now includes a set" sheet still appears on
+  the first ⌘S after a design, which is the intended consequence of decision 1.
 - `load x.pse`, `load other.raymol`, `reinitialize` while a batch runs: the store's
   generation changes, so the remaining members' writes are refused (§2.1) and those designs
   land as plain objects in the batch group with one warning. A `.raymol` document is
@@ -244,5 +273,8 @@ placeholders or `_BATCH` for `n_designs=1` still hold because those paths are un
   `generators/rfd3.py`, which this step does not own. Raising it is one line.
 - **Trajectory frames as opt-in blobs** for staged/pinned entries. Frames live only in the
   object today.
+- **`batch.abandon` leaves an orphan run row** on a set it was EXTENDING (`_reap` only
+  deletes a set it emptied). Removing it needs a `delete_run` on the store, which is a
+  write helper, and this step may add query helpers only.
 - **The MPNN step** (a sequence generator writing a `sequences` set) does not exist yet;
   `predict set:` already folds sequence-only entries, which is the flow it will need.

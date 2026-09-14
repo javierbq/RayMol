@@ -347,9 +347,19 @@ entry back. `keep_frames` states therefore survive only on a staged object. A si
 entry linked as staged.
 
 The identity rule gains one axis: a batch id that is already a **set** name is taken --
-unless the same generator wrote that set, in which case an identical re-run **extends** it
-(a second run row, more entries) exactly as it lands back in the existing group. A set of
-another tool, or one the user imported, under that name moves the batch aside to `_2`.
+unless the same generator wrote that set **against the same target** and it still has a
+free stage slot, in which case an identical re-run **extends** it (a second run row, more
+entries) exactly as it lands back in the existing group. A set of another tool, one the
+user imported, one built against a different target, or one whose budget is full moves the
+batch aside to `_2` — the last so that a single design never lands, gets measured and then
+loses its object to a full set.
+
+One visible consequence of "every batch is a set": after a single design, the session has
+a set, so `save x.pse` can no longer carry everything. The console warning and the app's
+"this session now includes a set" sheet therefore appear after one design — intended
+(spec §8 decision 1). The warning names only sets that have an **unstaged** entry: when
+every entry is staged, every structure is in the `.pse` already and only the links and the
+metric columns stay behind.
 `pymol.sets.batch.running()` is what the inspector polls for the "still landing" badge.
 The mechanics are shared with `predict`, which folds a set or view into a child set
 (`predict boltz2, set:rfd3_batch_<key>@top:20`); see

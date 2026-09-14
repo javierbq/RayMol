@@ -13,6 +13,7 @@ import os
 import tempfile
 import time
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from pymol import cmd, testing
 from pymol.metrics import schema as mschema, store as mstore
@@ -432,6 +433,76 @@ class FiftyDesigns(BatchTestCase):
         self.assertEqual(c.count(c.get_set('mine_2')['id']), 2)
         self.assertEqual(self.groups(), ['mine_2'])
 
+    def testASingleDesignNeverLosesItsObjectToAFullSet(self):
+        # Review fix 2 (n=1): with budget 2, the third identical single design used to
+        # get a placeholder, land, be measured and then have its object deleted with an
+        # empty console. It gets its own set instead and stays on screen.
+        cmd.set_budget(2)
+        self.helix()
+        jobs = []
+        out = io.StringIO()
+        with redirect_stdout(out):
+            for _ in range(3):
+                # Delivered before the next is submitted: three CONCURRENT batches
+                # correctly get a set each (a live batch id is taken), so the case
+                # under test is the sequential one a user actually runs.
+                job = cmd.binder_design(GEN, 'tgt', 'tgt and resi 5', length=6, seed=7)
+                deliver_designs(job)
+                jobs.append(job)
+        c = store.active()
+        names = [s['name'] for s in c.sets()]
+        self.assertEqual(len(names), 2)
+        self.assertEqual(names[1], names[0] + '_2')
+        for job in jobs:
+            self.assertIn(job.spec.name, cmd.get_names('objects'))
+            self.assertEqual(sorted(cmd.get_chains(job.spec.name)), ['A', 'B'])
+        self.assertEqual(len(self.staged(c.get_set(names[0]))), 2)
+        self.assertEqual(len(self.staged(c.get_set(names[1]))), 1)
+        self.assertEqual(self.groups(), [])
+        self.assertNotIn('budget full', out.getvalue())
+
+    def testExtendingAFullSetMakesNoPlaceholderAndSaysWhereTheDesignWent(self):
+        # Review fixes 2 (n>1) and 4: a re-run into a set with no free slot creates no
+        # placeholder it would then delete, and every over-budget landing is announced.
+        cmd.set_budget(2)
+        first = self.design(2, seed=7)
+        deliver_designs(first)
+        row = self.only_set()
+        before = sorted(cmd.get_names('objects'))
+        again = cmd.binder_design(GEN, 'tgt', 'tgt and resi 5', length=6, n_designs=2,
+                                  seed=7)
+        self.assertEqual(sorted(cmd.get_names('objects')), before,
+                         'no placeholder for a member that cannot be staged')
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(again)
+        c = store.active()
+        self.assertEqual([s['name'] for s in c.sets()], [row['name']])
+        self.assertEqual(c.count(row['id']), 4)
+        self.assertEqual(len(self.staged(row)), 2)
+        self.assertEqual(sorted(cmd.get_names('objects')), before)
+        self.assertEqual(out.getvalue().count('budget full'), 2)
+        self.assertIn('set_stage %s' % row['name'], out.getvalue())
+
+    def testASetBuiltAgainstAnotherTargetIsNotExtended(self):
+        # Review fix 3: same tool, same name, different reference -> a second set, or
+        # `predict set:` would superpose the new designs on the old target.
+        self.helix('tgt')
+        self.helix('tgt2', length=9)
+        jobs = cmd.binder_design(GEN, 'tgt', 'tgt and resi 5', length=6, n_designs=2,
+                                 name='camp')
+        deliver_designs(jobs)
+        cmd.set_unstage('camp', 'all')
+        jobs2 = cmd.binder_design(GEN, 'tgt2', 'tgt2 and resi 5', length=6, n_designs=2,
+                                  name='camp')
+        deliver_designs(jobs2)
+        c = store.active()
+        self.assertEqual([s['name'] for s in c.sets()], ['camp', 'camp_2'])
+        self.assertEqual(c.get_set('camp')['reference'], 'tgt')
+        self.assertEqual(c.get_set('camp_2')['reference'], 'tgt2')
+        self.assertEqual(c.count(c.get_set('camp')['id']), 2)
+        self.assertEqual(c.count(c.get_set('camp_2')['id']), 2)
+
 
 class SingleDesign(BatchTestCase):
 
@@ -569,6 +640,32 @@ class PredictOverASet(BatchTestCase):
         self.assertEqual(entries[1]['n_chains'], 2)
         self.assertTrue(all(e['staged_object'] for e in entries))
 
+    def testASingleModelOfASingleEntryMakesNoGroup(self):
+        # Review fix 11: as for a single design, a group of one is noise.
+        parent = self.parent(2)
+        jobs = cmd.predict(PRED, 'set:%s@top:1' % parent['name'])
+        deliver_models(jobs)
+        c = store.active()
+        child = c.get_set('%s_1' % PRED)
+        self.assertEqual(len(self.staged(child)), 1)
+        self.assertEqual(self.groups(), [parent['group_name']])
+        self.assertIn(jobs[0].spec.name, cmd.get_names('objects'))
+
+    def testARefusedMemberLeavesNoJobRunningAndNoSet(self):
+        # Review fix 10: expect() runs BEFORE submit, and a failed submit loop cancels
+        # what it started.
+        from pymol import predicting
+        from pymol.sets.errors import SetInputError
+        parent = self.parent(2)
+        submitted = FakePredictJob._counter
+        with patch.object(batch, 'expect', side_effect=SetInputError('refused')):
+            self.assertRaises(SetInputError, cmd.predict, PRED,
+                              'set:%s' % parent['name'])
+        self.assertEqual(FakePredictJob._counter, submitted, 'nothing was submitted')
+        self.assertEqual(predicting._PENDING, {})
+        self.assertEqual([s['name'] for s in store.active().sets()], [parent['name']])
+        self.assertEqual(batch.running(), {})
+
     def testTheLiteralPathIsUntouched(self):
         jobs = cmd.predict(PRED, 'ACDEFGH', n_models=2)
         deliver_models(jobs)
@@ -623,8 +720,9 @@ class GenerationCheck(BatchTestCase):
         self.assertEqual(batch.running(), {})
 
     def testAPseSaveMidBatchCarriesStagedDesignsAndWarnsAboutTheSet(self):
+        cmd.set_budget(1)
         jobs = self.design(3)
-        deliver_designs(jobs[:2])
+        deliver_designs(jobs[:2])                      # one staged, one entry-only
         row = self.only_set()
         path = os.path.join(_RESULTS['dir'], 'mid.pse')
         out = io.StringIO()
@@ -634,8 +732,64 @@ class GenerationCheck(BatchTestCase):
         with redirect_stdout(io.StringIO()):
             cmd.load(path)
         molecules = [n for n in cmd.get_names('objects') if n not in self.groups()]
-        self.assertEqual(sorted(molecules), sorted(['tgt'] + [j.spec.name for j in jobs[:2]]))
+        self.assertEqual(sorted(molecules), sorted(['tgt', jobs[0].spec.name]))
         self.assertEqual(store.active().sets(), [])
+
+    def testAPseSaveIsQuietWhenEverySetEntryIsStaged(self):
+        # Review fix 7: since every single design has a one-entry set behind it, the
+        # ".pse cannot hold sets" warning must not fire when nothing is actually lost.
+        job = self.design(1)
+        deliver_designs(job)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cmd.save(os.path.join(_RESULTS['dir'], 'one.pse'))
+        self.assertNotIn('cannot hold sets', out.getvalue())
+        self.assertFalse(binding.warn_if_pse_leaves_sets())
+        # Unstage it and the set IS left behind: warn.
+        row = self.only_set()
+        cmd.set_unstage(row['name'], 'all')
+        self.assertTrue(binding.warn_if_pse_leaves_sets())
+
+    def testSaveAsMidBatchKeepsTheBatchLandingInTheMovedDocument(self):
+        # Review fix 1: Save As from an untitled session is the same document moved,
+        # not a document change. The counter said otherwise; identity does not.
+        jobs = self.design(4)
+        deliver_designs(jobs[:1])
+        row = self.only_set()
+        path = os.path.join(_RESULTS['dir'], 'campaign.raymol')
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cmd.save(path)
+            deliver_designs(jobs[1:3])
+        self.assertNotIn('was not written', out.getvalue())
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(path))
+        self.assertEqual(batch.running()[row['id']], {'done': 3, 'total': 4, 'tool': GEN})
+        deliver_designs(jobs[3:])
+        self.assertEqual(batch.running(), {})
+        c = store.active()
+        self.assertEqual(c.count(row['id']), 4)
+        self.assertEqual(len(self.staged(row)), 4)
+        self.assertEqual(sorted(self.children(row['name'])),
+                         sorted(j.spec.name for j in jobs))
+
+    def testLandSurvivesAStagingFailureAsWrittenNotStaged(self):
+        # Review fix 5: once add_entry has committed, a failure is "written, not
+        # staged" -- said so, and the object is not put in the group unlinked.
+        jobs = self.design(2)
+        row = self.only_set()
+        out = io.StringIO()
+        with redirect_stdout(out), patch.object(batch, '_stage_or_discard',
+                                                side_effect=RuntimeError('boom')):
+            deliver_designs(jobs[:1])
+        self.assertIn('could not be staged', out.getvalue())
+        self.assertNotIn('was not written', out.getvalue())
+        c = store.active()
+        self.assertEqual(c.count(row['id']), 1)
+        self.assertIn(jobs[0].spec.name, cmd.get_names('objects'))
+        self.assertEqual(self.staged(row), [])
+        self.assertEqual(batch.running()[row['id']]['done'], 1)
+        deliver_designs(jobs[1:])
+        self.assertEqual(len(self.staged(row)), 1)
 
 
 class Running(BatchTestCase):
@@ -666,8 +820,19 @@ class Running(BatchTestCase):
         elapsed = time.perf_counter() - started
         print(' sets_batch: _pending_maps over 1000 pending designs: %.1f ms' % (elapsed * 1e3))
         self.assertEqual(len(records), 1000)
-        # MEASURED before the `_batch_frontier` prefix cache: 200 ms, 170 of them in the
-        # frontier rescan. After: tens of ms. Loose bound so a slow CI does not fail it.
-        self.assertLess(elapsed, 0.5)
+        # MEASURED before the `_batch_frontier` prefix cache: 200-256 ms, 170 of them in
+        # the frontier rescan; after: 6 ms. The bound is informational -- with the cache
+        # reverted this machine measured 47 ms, close enough to it that timing alone
+        # would not catch the regression on a fast box. The assertion below is the guard.
+        self.assertLess(elapsed, 0.05)
         row = self.only_set()
         self.assertEqual(batch.running()[row['id']]['total'], 1000)
+        # And the cache is what does it: the scanned prefix is REMEMBERED across the
+        # poll's 1000 `pending_info` calls instead of being rewalked from index 0 by
+        # each of them. Without the cache the key does not exist at all.
+        batch_id = list(designing._BATCH)[0]
+        self.assertIn('frontier', designing._BATCH[batch_id])
+        self.assertGreaterEqual(designing._BATCH[batch_id]['frontier'], 999)
+        again = time.perf_counter()
+        appkit_inspector._pending_maps('designing')
+        self.assertLess(time.perf_counter() - again, 0.05)
