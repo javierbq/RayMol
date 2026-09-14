@@ -598,6 +598,17 @@ def poll_panel():
         _designing.pump()
     except Exception:
         pass
+    # Sets change marker (#417). One short `SETS:` line, and only when the container's
+    # version, path, active set, peek or running-batch table changed -- set CONTENTS
+    # never travel here (Swift reads the .raymol file itself), so this stays O(1) in
+    # the entry count. After the pumps above, so a design that just landed in a set is
+    # reflected on this tick. Its own try: the sets layer must never cost the panel
+    # its update.
+    try:
+        from pymol import appkit_sets as _sets
+        _sets.poll()
+    except Exception:
+        pass
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])
