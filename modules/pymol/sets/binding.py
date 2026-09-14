@@ -93,6 +93,31 @@ def _split_cif_blocks(text):
     return blocks
 
 
+def canonical_cif(text, label):
+    """`get_cifstr` output with its object-derived header lines replaced by `label`.
+
+    Blobs are content-addressed by the sha256 of this text, and the one thing that
+    differs between the same chain exported from two objects is the object's NAME:
+    measured on two objects holding one chain A, the outputs differed in exactly two
+    lines, `data_<object>` and `_entry.id <object>`, and every `_atom_site` row was
+    byte-identical (`dss` writes nothing into the CIF -- there is no `_struct_conf`).
+    Rewriting those two lines to the chain id is what makes a target held fixed across a
+    1000-design batch ONE blob rather than 1000 (#416), and makes `set_add` of two
+    objects sharing a chain dedupe as the store spec (§2.3) intended. Nothing that reads
+    a blob looks at the label: `_load_chains` ignores it, `write_folder` concatenates
+    blocks, `_split_cif_blocks` splits on `data_` whatever follows.
+    """
+    label = ''.join(ch if ch.isalnum() or ch in '_-' else '_' for ch in str(label)) or '_'
+    out = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith('data_'):
+            line = 'data_%s\n' % label
+        elif line.startswith('_entry.id '):
+            line = '_entry.id %s\n' % label
+        out.append(line)
+    return ''.join(out)
+
+
 def _unique_entry_name(c, set_id, base):
     """`base`, or `base_2`, `base_3`... -- the first not yet in the set. Names from
     objects and files are made unique rather than refused (spec §4): a folder import
@@ -127,6 +152,16 @@ def _load_chains(chains, obj, _self=cmd):
         for temp in temps:
             if _exists(temp, _self=_self):
                 _self.delete(temp)
+
+
+def _reserved_column(key, chain=None):
+    """True when the wide-table column for (key, chain) would clash with an `entries`
+    field. Never raises: an undeclarable key is skipped, not fatal, at capture."""
+    try:
+        from . import schema
+        return schema.column_name(key, chain) in schema.RESERVED_COLUMNS
+    except Exception:
+        return False
 
 
 def _spec_or_none(tool, key):
@@ -179,6 +214,15 @@ def _metric_payload(obj, state):
         for entry in run.values:
             if entry.state is not None and int(entry.state) != int(state):
                 continue
+            if not entry.is_array and _reserved_column(entry.key, entry.chain):
+                # `n_residues` and `n_chains` are metrics every generator and predictor
+                # declares (SHARED_INPUT_SPECS) AND fields of the `entries` row, which
+                # the store computes from the chains it is given. The row's answer is
+                # the one the table shows; refusing the whole entry over a duplicate of
+                # it (which `declare_columns` would, correctly, do) lost every design
+                # of a batch to a fact the entry already carried. Found by #416, latent
+                # since #415 for `set_add` of any predicted object.
+                continue
             spec = _spec_or_none(run.tool, entry.key)
             spec_dict = dict(spec.as_dict()) if spec is not None else \
                 {'key': entry.key, 'scope': entry.scope, 'dtype': 'float'}
@@ -201,21 +245,29 @@ def _metric_payload(obj, state):
 
 
 def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
-                   _self=cmd):
+                   scalars=None, specs=(), _self=cmd):
     # `run_id`: a set run to attach the entries to (provenance). None means "derive one
     # per metrics-store run on the object", which is what a captured prediction wants.
-    """Add `obj` to a set. One entry per state (`states='all'`) or the current state
-    only (`states='current'`). Returns the new entry ids.
+    """Add `obj` to a set. One entry per state (`states='all'`), the current state only
+    (`states='current'`), or ONE named state (`states=<int>`). Returns the new entry ids.
 
-    Chains are stored as one CIF blob each, from `get_cifstr`, so a chain shared by many
-    entries is one blob. Sequences come from the polymer of each chain. Metrics are the
-    metrics store's runs on the object, narrowed to the state.
+    Chains are stored as one CIF blob each, from `get_cifstr` with a canonical header
+    (`canonical_cif`), so a chain shared by many entries is one blob. Sequences come from
+    the polymer of each chain. Metrics are the metrics store's runs on the object,
+    narrowed to the state. `scalars` / `specs` are extra columns written on the same
+    call -- what a delivering tool knows and the metrics store does not, such as the seed
+    a design ran at or which model of an `n_models` run this is (#416).
+
+    An int `states` exists for delivery: a live design with `keep_frames=1` has the
+    finished design in its LAST state, and the global `get_state()` may point anywhere.
     """
     if not _exists(obj, _self=_self):
         raise SetNotFound('no object %r' % obj)
     c = container()
     n_states = max(1, int(_self.count_states(obj) or 1))
-    if states == 'current':
+    if isinstance(states, int) and not isinstance(states, bool):
+        state_list = [min(max(int(states), 1), n_states)]
+    elif states == 'current':
         cur = int(_self.get_state() or 1)
         state_list = [min(max(cur, 1), n_states)]
     else:
@@ -235,20 +287,25 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
                 raise SetInputError('could not export %s chain %r: %s' % (obj, ch, exc))
             if not text or not text.strip():
                 continue
-            cifs.append((ch, text))
+            cifs.append((ch, canonical_cif(text, ch)))
             seq = _sequence(sel, state, _self=_self)
             if seq:
                 seqs[ch] = seq
-        scalars, arrays, specs, runs = _metric_payload(obj, state)
+        m_scalars, arrays, m_specs, runs = _metric_payload(obj, state)
         this_run = run_id
         if this_run is None and runs:
             # One set-level run per metrics run id, so provenance is not duplicated
             # per entry: the tool and its inputs are written once and shared.
             first = runs[0]
             this_run = _run_for(c, set_id, first)
+        # The caller's columns are declared and written beside the metrics ones, on
+        # the same add_entry, so an entry lands whole or not at all.
+        all_specs = list(m_specs) + list(specs or ())
+        all_scalars = dict(m_scalars)
+        all_scalars.update(dict(scalars or {}))
         ids.append(c.add_entry(set_id, entry_name, run_id=this_run, sequences=seqs,
-                               parents=parents, chains=cifs, scalars=scalars,
-                               arrays=arrays, specs=specs))
+                               parents=parents, chains=cifs, scalars=all_scalars,
+                               arrays=arrays, specs=all_specs))
     return ids
 
 
