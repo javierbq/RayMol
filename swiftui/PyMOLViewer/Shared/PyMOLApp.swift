@@ -311,6 +311,13 @@ struct PyMOLApp: App {
                 Button("Save Session As…") {
                     NotificationCenter.default.post(name: .raymolSaveSessionAs, object: nil)
                 }.keyboardShortcut("s", modifiers: [.command, .shift])
+                // Spec §2.1: the escape hatch to plain PyMOL is visible BEFORE it is
+                // needed, whether or not this session has sets — so a user who is
+                // asked to save as .raymol can already see how to produce a .pse.
+                // No shortcut: it is the rare deliberate action, not a save.
+                Button("Export PyMOL Session…") {
+                    NotificationCenter.default.post(name: .raymolExportSession, object: nil)
+                }
                 Button("Export Image…") {
                     NotificationCenter.default.post(name: .raymolExportImage, object: nil)
                 }.keyboardShortcut("e", modifiers: [.command, .shift])
@@ -578,7 +585,7 @@ func loadOpenedFile(_ url: URL, into engine: PyMOLEngine, attempt: Int = 0) {
     // .raymol is a document too (#417); a different one re-arms the one-time
     // sets sheet (spec §2.1).
     let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
-    if next != engine.currentSessionURL { engine.setsSaveChoiceMade = false }
+    if next != engine.currentSessionURL { engine.resetSetsSaveChoice() }
     engine.currentSessionURL = next
 }
 
@@ -625,31 +632,134 @@ func confirmReplaceSessionIfNeeded(opening url: URL, engine: PyMOLEngine) -> Boo
 // document is overwritten silently; an untitled session shows the Save panel.
 // Ordering is safe without waiting — cmd.save and the subsequent `load` both run
 // synchronously through the bridge on the main actor, in issue order. Returns
-// false when the user cancels the panel, which aborts the replace.
+// false when the user cancels, which aborts the replace.
+//
+// It goes through performSessionSave for one reason worth stating: the save this
+// button performs is the LAST thing that happens to the outgoing session. The
+// `load` right behind it resets the sets store and deletes the working container,
+// so a `.pse` written here does not merely omit the sets, it is the moment they
+// stop existing. A button labelled Save must not be the one that loses six hours
+// of GPU time, so it asks spec §2.1's question exactly as ⌘S does.
 @MainActor
 private func saveCurrentSessionForReplace(engine: PyMOLEngine) -> Bool {
-    let notes = AnalysisNotesStore.shared
-    let dest: URL
-    if let current = engine.currentSessionURL {
-        dest = current
-    } else {
-        // An untitled session that holds a set is offered .raymol first (#417):
-        // a .pse would drop the sets on the way out, and this is the one save it
-        // gets before being replaced.
-        let hasSets = engine.sets.contains { $0.count > 0 }
-        let exts = PyMOLEngine.sessionSaveExtensions(currentDocument: nil,
-                                                     forcing: hasSets ? "raymol" : nil)
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
-        panel.nameFieldStringValue = "session.\(exts[0])"
-        panel.canCreateDirectories = true
-        panel.title = "Save Session"
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
-        dest = url
+    performSessionSave(engine: engine, notes: AnalysisNotesStore.shared,
+                       alwaysPanel: false)
+}
+
+/// Spec §2.1's one-time sheet. Shown only when `sessionSaveStep` returns
+/// `.askAboutSets`; records the answer on the engine so it is asked once per
+/// session, and never again once a `.raymol` document is the live one.
+@MainActor
+func presentSetsSaveSheet(engine: PyMOLEngine) -> SetsSaveAnswer {
+    let alert = NSAlert()
+    alert.messageText = "This session now includes a set, which the PyMOL .pse format can’t hold."
+    alert.informativeText = """
+        RayMol will save it as a .raymol file: one file that carries the whole \
+        session, including sets and their structures. It opens only in RayMol. \
+        You can still produce a .pse for PyMOL at any time with \
+        File ▸ Export PyMOL Session…; it will contain the loaded objects but not \
+        the sets.
+        """
+    alert.alertStyle = .informational
+    alert.addButton(withTitle: "Save as .raymol")
+    alert.addButton(withTitle: "Save .pse without sets")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+        engine.recordSetsSaveChoice()
+        return .raymol
+    case .alertSecondButtonReturn:
+        engine.recordSetsSaveChoice()
+        return .pse
+    default:
+        return .cancel
     }
-    notes.sessionDidSave(to: dest)
-    engine.saveSession(to: dest)
-    return true
+}
+
+enum SetsSaveAnswer { case raymol, pse, cancel }
+
+/// Save the session, asking spec §2.1's question first when it applies. THE one
+/// save path: ⌘S (`alwaysPanel: false`), ⇧⌘S (`true`) and the #349 replace guard
+/// all call this, so none of them can develop its own idea of what a session with
+/// a set is allowed to be written as. Returns false only when the user cancelled
+/// (the sheet or the panel), which is what aborts a pending replace.
+@MainActor
+@discardableResult
+func performSessionSave(engine: PyMOLEngine, notes: AnalysisNotesStore,
+                        alwaysPanel: Bool) -> Bool {
+    var forcingRaymol = false
+    let first = PyMOLEngine.sessionSaveStep(
+        hasNonEmptySet: engine.hasNonEmptySet, currentDocument: engine.currentSessionURL,
+        setsChoiceMade: engine.setsSaveChoiceMade, forcingRaymol: false,
+        alwaysPanel: alwaysPanel)
+    if first == .askAboutSets {
+        switch presentSetsSaveSheet(engine: engine) {
+        case .cancel: return false
+        case .raymol: forcingRaymol = true
+        case .pse: break     // the flag the sheet just set answers it from here on
+        }
+    }
+    // The second call cannot return .askAboutSets: either forcingRaymol is set, or
+    // the sheet recorded the choice on the engine.
+    switch PyMOLEngine.sessionSaveStep(
+        hasNonEmptySet: engine.hasNonEmptySet, currentDocument: engine.currentSessionURL,
+        setsChoiceMade: engine.setsSaveChoiceMade, forcingRaymol: forcingRaymol,
+        alwaysPanel: alwaysPanel) {
+    case .askAboutSets:
+        return false
+    case .overwrite(let url):
+        notes.sessionDidSave(to: url)
+        engine.saveSession(to: url)
+        return true
+    case .panel(let extensions):
+        guard let url = runSessionSavePanel(engine: engine, extensions: extensions)
+        else { return false }
+        notes.sessionDidSave(to: url)
+        engine.saveSession(to: url)
+        return true
+    }
+}
+
+/// The Save panel itself, offering `extensions` with the preferred one first.
+/// `allowsOtherFileTypes` keeps the panel from refusing a name the user insists
+/// on; `sessionSaveURL` then makes sure what is written still carries a session
+/// extension, so `load` and Finder can recognise it afterwards.
+@MainActor
+private func runSessionSavePanel(engine: PyMOLEngine, extensions: [String]) -> URL? {
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = extensions.compactMap { UTType(filenameExtension: $0) }
+    panel.allowsOtherFileTypes = true
+    panel.nameFieldStringValue = PyMOLEngine.sessionSaveName(
+        currentDocument: engine.currentSessionURL, preferred: extensions[0])
+    if let current = engine.currentSessionURL {
+        panel.directoryURL = current.deletingLastPathComponent()
+    }
+    panel.canCreateDirectories = true
+    panel.title = "Save Session"
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return PyMOLEngine.sessionSaveURL(url, extensions: extensions)
+}
+
+/// File ▸ Export PyMOL Session… — always writes a plain `.pse`, present whether or
+/// not the session has sets (spec §2.1: "the escape hatch is visible before it is
+/// needed"). Deliberately NOT a save: it does not become the open document, so the
+/// next ⌘S still goes to the `.raymol` the user is working in.
+@MainActor
+func exportPyMOLSession(engine: PyMOLEngine) {
+    let panel = NSSavePanel()
+    if let pse = UTType(filenameExtension: "pse") { panel.allowedContentTypes = [pse] }
+    panel.allowsOtherFileTypes = true
+    panel.nameFieldStringValue = PyMOLEngine.sessionSaveName(
+        currentDocument: engine.currentSessionURL, preferred: "pse")
+    panel.canCreateDirectories = true
+    panel.title = "Export PyMOL Session"
+    panel.message = "Writes a plain PyMOL .pse: the loaded objects, without any sets."
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let dest = PyMOLEngine.sessionSaveURL(url, extensions: ["pse"])
+    // exportSession, not saveSession: `cmd.save` of a .pse prints its own warning
+    // naming the sets left out (binding.warn_if_pse_leaves_sets), and the document
+    // the user has open must not change underneath them.
+    engine.exportSession(to: dest)
 }
 #endif
 

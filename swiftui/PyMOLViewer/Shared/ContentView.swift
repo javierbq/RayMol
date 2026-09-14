@@ -47,6 +47,9 @@ extension Notification.Name {
     static let raymolSaveSession  = Notification.Name("raymol.menu.saveSession")
     static let raymolSaveSessionAs = Notification.Name("raymol.menu.saveSessionAs")
     static let raymolExportImage  = Notification.Name("raymol.menu.exportImage")
+    /// File ▸ Export PyMOL Session… (#417, spec §2.1): always writes a plain .pse
+    /// and never changes the open document.
+    static let raymolExportSession = Notification.Name("raymol.menu.exportSession")
     static let raymolCopyImage    = Notification.Name("raymol.menu.copyImage")
     static let raymolToggleTimeline = Notification.Name("raymol.menu.toggleTimeline")
     static let mcpOpenConnectSheet = Notification.Name("raymol.mcp.openConnectSheet")
@@ -545,42 +548,76 @@ struct ContentView: View {
     // DATA across the bottom, above the console, which on the Mac is a top pane —
     // so here "the strip's slot" means the viewport column, not the strip's
     // pixels.
+    @ViewBuilder
     private func macDrawerBand(windowHeight: CGFloat) -> some View {
-        let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
-                                         maxHeight: macDrawerCeiling(windowHeight: windowHeight))
-        return VStack(spacing: 0) {
-            macDrawerDivider(windowHeight: windowHeight)
-            DataDrawer().frame(height: h)
+        let ceiling = macDrawerCeiling(windowHeight: windowHeight)
+        if PanelLayout.drawerFits(ceiling: ceiling) {
+            let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac),
+                                             windowHeight: windowHeight, maxHeight: ceiling)
+            VStack(spacing: 0) {
+                macDrawerDivider(windowHeight: windowHeight)
+                DataDrawer().frame(height: h)
+            }
+        } else {
+            // Not enough column left for even one row (#417 review). A stub that
+            // shows only its own chrome is worse than saying so, and the drag
+            // divider is clamped to this same ceiling, so dragging could not have
+            // recovered it either — the way out is to close a pane, which is what
+            // this offers.
+            macDrawerNoRoomHint
         }
     }
 
-    // The most the drawer may take: the console's ceiling rule applied to what is
-    // LEFT of the column after the console band, the rail and the strip's minimum.
-    // The viewport has a hard 360pt minimum (macViewport), so without this a
-    // 220pt drawer under a 130pt console in a 771pt window ran its bottom rows off
-    // the window. The drawer yields; the console keeps its own rule.
+    // One line in place of the band, with the two panes that are in its way.
+    private var macDrawerNoRoomHint: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(hairlineColor).frame(height: 1).frame(maxWidth: 12)
+            Text("Data drawer needs more room")
+                .font(.system(size: 10))
+                .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
+            if showCommandPanel {
+                Button("Hide Console") { showCommandPanel = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            if engine.sequenceVisible {
+                Button("Hide Sequence") { engine.sequenceVisible = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            Button("Close") { engine.closeDataDrawer() }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(themeManager.active.accent.color)
+            Rectangle().fill(hairlineColor).frame(height: 1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 22)
+        .background(themeChromeBg)
+        .help("Enlarge the window, or close the console or the sequence strip, to "
+              + "make room for the Data drawer. The set stays open.")
+    }
+
+    // The most the drawer may take: what is LEFT of the column once the console
+    // band, the rail and the sequence strip have taken theirs (the viewport has a
+    // hard 360pt minimum — macViewport). Without it a 220pt drawer under a 130pt
+    // console in a 771pt window ran its bottom rows off the window. The drawer
+    // yields; the console and the strip keep their own rules. The arithmetic lives
+    // in PanelLayout so PanelLayoutTests can pin it.
     private func macDrawerCeiling(windowHeight: CGFloat) -> CGFloat {
-        var used: CGFloat = 0
-        if showCommandPanel {
-            used += PanelLayout.consoleHeight(
+        let console: CGFloat? = showCommandPanel
+            ? PanelLayout.consoleHeight(
                 frac: CGFloat(consoleFrac), windowHeight: windowHeight,
                 defaultHeight: PanelLayout.macDefaultConsoleHeight,
                 minHeight: PanelLayout.macMinConsoleHeight,
-                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight)) + 5
-        }
-        if macAnyTopPane { used += 23 }
-        // The strip at its IDEAL height (the same formula the VSplitView is given
-        // below), not its 24pt floor: the split only squeezes it when dragged, so
-        // sizing the drawer against the floor overflowed by a row.
-        if engine.sequenceVisible {
-            used += CGFloat(min(max(engine.sequences.count, 1), 5)) * 30 + 30
-        }
-        // Chrome that is not a pane but still takes column height: the two drag
-        // dividers' padding, the MCP "controlling" banner, a docked Predict or
-        // Binder bar. An allowance rather than a measurement — a few points of
-        // under-use beat a footer off the window.
-        used += 48
-        return PanelLayout.maxDrawerHeight(windowHeight: max(windowHeight - used, 0))
+                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight))
+            : nil
+        let used = PanelLayout.drawerColumnUsed(
+            consoleHeight: console, topRail: macAnyTopPane,
+            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil)
+        return PanelLayout.drawerCeiling(windowHeight: windowHeight, used: used)
     }
 
     // The drag handle ABOVE the drawer. Dragging up grows the drawer (the sign is
@@ -858,6 +895,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in engine.clearSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSessionAs)) { _ in saveSessionAs() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolExportSession)) { _ in exportPyMOLSession(engine: engine) }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportImage)) { _ in saveImage(size: exportSize(scale: 2)) }
         .onReceive(NotificationCenter.default.publisher(for: .raymolCopyImage)) { _ in copyImageToClipboard() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolToggleTimeline)) { _ in
@@ -1043,9 +1081,10 @@ struct ContentView: View {
     // The ladder, in order (issues #163 + #166, then #235):
     //   (a) a sheet / panel / popover is up (their window is key, not the main
     //       RayMol window) — Esc belongs to it, pass through so it dismisses;
-    //   (b) an exclusive interaction mode (Move / Design / Measure) is active —
+    //   (b) a Data-drawer peek is on screen (#417) — drop the ghost, then consume;
+    //   (c) an exclusive interaction mode (Move / Design / Measure) is active —
     //       leave it, then consume;
-    //   (c) otherwise — two-stage clear selection, then consume.
+    //   (d) otherwise — two-stage clear selection, then consume.
     // Non-Esc keys always pass through untouched.
     // NOTE: iOS external-keyboard Esc is a deliberate follow-up (not wired here);
     // the routing itself lives on PyMOLEngine and is platform-neutral, so wiring
@@ -1062,12 +1101,16 @@ struct ContentView: View {
             // is focused), per product decision. Only true modal/sheet/panel
             // windows above still get Esc for dismissal.
             //
-            // (b) Leaving an interaction mode outranks clearing the selection —
+            // (b) A peek is the most transient thing on screen and the most
+            // recently created, so it is the innermost level to back out of —
+            // ahead of a mode the user set up deliberately (#417).
+            if engine.clearPeekIfShowing() { return nil }
+            // (c) Leaving an interaction mode outranks clearing the selection —
             // #166 anticipated exactly this ("exiting a mode should take priority
             // before the selection stages kick in"). Routed through the engine so
             // Esc reuses each mode's own exit path rather than duplicating it.
             if engine.exitActiveInteractionMode() { return nil }
-            // (c) No mode was active → the selection stages.
+            // (d) No mode was active → the selection stages.
             engine.escapeClearSelection()
             return nil  // consume — don't beep or propagate
         }
@@ -1321,7 +1364,7 @@ struct ContentView: View {
     /// §2.1): the choice was made for the session that was replaced.
     private func trackOpenedDocument(_ url: URL) {
         let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
-        if next != engine.currentSessionURL { engine.setsSaveChoiceMade = false }
+        if next != engine.currentSessionURL { engine.resetSetsSaveChoice() }
         engine.currentSessionURL = next
     }
 
@@ -3096,7 +3139,7 @@ struct ContentView: View {
         // .raymol counts too (#417), though on iOS it was loaded from the copy
         // above, so results do not land in the picked file until #420.
         let next: URL? = PyMOLEngine.isTrackedDocument(url) ? url : nil
-        if next != engine.currentSessionURL { engine.setsSaveChoiceMade = false }
+        if next != engine.currentSessionURL { engine.resetSetsSaveChoice() }
         engine.currentSessionURL = next
     }
 
@@ -3834,90 +3877,13 @@ struct ContentView: View {
     // as .raymol. Falls back to Save As when no document is tracked (never-saved
     // session, or a non-session structure was opened).
     private func saveSession() {
-        switch setsSaveChoice() {
-        case .cancel: return
-        case .raymol: saveSessionAs(forcing: "raymol"); return
-        case .pse, .notNeeded: break
-        }
-        if let url = engine.currentSessionURL {
-            notes.sessionDidSave(to: url)
-            engine.saveSession(to: url)
-        } else {
-            saveSessionAs()
-        }
+        performSessionSave(engine: engine, notes: notes, alwaysPanel: false)
     }
 
-    // ⇧⌘S: always show the Save panel, prefilled from the tracked document when
-    // there is one, then save to the chosen URL and make it the open document. The
-    // document's own format is offered first, the other second; `forcing` is the
-    // sets sheet's "Save as .raymol" answer, which skips the sheet and the .pse.
-    private func saveSessionAs(forcing: String? = nil) {
-        if forcing == nil {
-            switch setsSaveChoice() {
-            case .cancel: return
-            case .raymol: saveSessionAs(forcing: "raymol"); return
-            case .pse, .notNeeded: break
-            }
-        }
-        let exts = PyMOLEngine.sessionSaveExtensions(currentDocument: engine.currentSessionURL,
-                                                     forcing: forcing)
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
-        let preferred = exts[0]
-        if let current = engine.currentSessionURL {
-            panel.directoryURL = current.deletingLastPathComponent()
-            // Same stem, the chosen format: "beside the open .pse, with the same
-            // stem" is what spec §2.1 asks of the .raymol conversion.
-            panel.nameFieldStringValue = current.deletingPathExtension().lastPathComponent
-                + "." + preferred
-        } else {
-            panel.nameFieldStringValue = "session.\(preferred)"
-        }
-        panel.canCreateDirectories = true
-        panel.title = "Save Session"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        notes.sessionDidSave(to: url)
-        engine.saveSession(to: url)
-        // The saved document is the live one now; a later Save needs no sheet.
-        engine.setsSaveChoiceMade = true
-    }
-
-    private enum SetsSaveChoice { case notNeeded, raymol, pse, cancel }
-
-    // Spec §2.1: the first time a session that holds a non-empty set is saved with
-    // no .raymol document open, say so ONCE, before the Save panel. A .pse cannot
-    // hold sets, and silently writing one would lose an hour of GPU time without a
-    // word; silently switching formats would be a surprise in the other direction.
-    // The rule itself is PyMOLEngine.sessionNeedsRaymolPrompt (pure, tested); the
-    // "has a non-empty set" fact is already here — engine.sets comes from the
-    // container via the SETS: marker — so no Python round trip is needed.
-    private func setsSaveChoice() -> SetsSaveChoice {
-        guard PyMOLEngine.sessionNeedsRaymolPrompt(
-            hasNonEmptySet: engine.sets.contains { $0.count > 0 },
-            currentDocument: engine.currentSessionURL,
-            alreadyDecided: engine.setsSaveChoiceMade) else { return .notNeeded }
-        let alert = NSAlert()
-        alert.messageText = "This session now includes a set, which the PyMOL .pse format can’t hold."
-        alert.informativeText = """
-            RayMol will save it as a .raymol file: one file that carries the whole \
-            session, including sets and their structures. It opens only in RayMol. \
-            You can still produce a .pse for PyMOL at any time by saving as .pse; it \
-            will contain the loaded objects but not the sets.
-            """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Save as .raymol")
-        alert.addButton(withTitle: "Save .pse without sets")
-        alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            engine.setsSaveChoiceMade = true
-            return .raymol
-        case .alertSecondButtonReturn:
-            engine.setsSaveChoiceMade = true
-            return .pse
-        default:
-            return .cancel
-        }
+    // ⇧⌘S: always show the Save panel. Same one path as ⌘S (performSessionSave),
+    // which asks spec §2.1's question first when the session holds a set.
+    private func saveSessionAs() {
+        performSessionSave(engine: engine, notes: notes, alwaysPanel: true)
     }
 
     // Save the whole scene to a molecular or 3D file. cmd.save infers the format

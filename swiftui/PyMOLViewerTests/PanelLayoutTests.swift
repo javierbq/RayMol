@@ -327,6 +327,74 @@ final class PanelLayoutTests: XCTestCase {
                        40, accuracy: 1e-9)
     }
 
+    // MARK: - the drawer's ceiling in a real column (#417 review)
+
+    /// The numbers the review measured, with the console at its 130pt default, a
+    /// 5-row sequence strip and the rail showing. Below ~900pt the drawer cannot
+    /// fit even one row — and the drag divider is clamped to this same ceiling, so
+    /// the user cannot drag it back. `drawerFits` is what turns that into a hint
+    /// instead of a band that draws nothing.
+    func testDrawerCeilingInACrowdedColumn() {
+        func ceiling(_ window: CGFloat, console: Bool = true) -> CGFloat {
+            let h = console ? PanelLayout.consoleHeight(
+                frac: 0, windowHeight: window,
+                defaultHeight: PanelLayout.macDefaultConsoleHeight,
+                minHeight: PanelLayout.macMinConsoleHeight,
+                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: window)) : nil
+            let used = PanelLayout.drawerColumnUsed(consoleHeight: h, topRail: true,
+                                                    sequenceRows: 5)
+            return PanelLayout.drawerCeiling(windowHeight: window, used: used)
+        }
+        // A tall window has room for a real table.
+        XCTAssertEqual(ceiling(900), 154, accuracy: 0.5)
+        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(900)))
+        XCTAssertEqual(ceiling(854), 108, accuracy: 0.5)
+        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(854)))
+        // Below that the band would be chrome with no rows: show the hint instead.
+        for window in [CGFloat(800), 771, 600] {
+            XCTAssertFalse(PanelLayout.drawerFits(ceiling: ceiling(window)),
+                           "a \(window)pt window has \(ceiling(window))pt for the drawer,"
+                           + " which cannot hold \(PanelLayout.macDrawerChromeHeight)pt"
+                           + " of chrome plus a row")
+        }
+        // Closing the console is the way out the hint offers, and at 600pt with a
+        // 5-row strip it is still not enough — the hint names the strip too.
+        XCTAssertFalse(PanelLayout.drawerFits(ceiling: ceiling(600, console: false)))
+        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(900, console: false)))
+    }
+
+    func testDrawerMinimumCoversItsOwnChromePlusARow() {
+        // The floor has to mean "one row is visible", or `drawerFits` would pass a
+        // height that shows nothing.
+        XCTAssertGreaterThanOrEqual(
+            PanelLayout.macMinDrawerHeight - PanelLayout.macDrawerChromeHeight, 22,
+            "the drawer's minimum must leave room for at least one 22pt row")
+    }
+
+    func testDrawerColumnUsedChargesEachPaneOnce() {
+        let bare = PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false,
+                                                sequenceRows: nil)
+        XCTAssertEqual(bare, PanelLayout.macColumnChromeAllowance, accuracy: 1e-9)
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: 130, topRail: false, sequenceRows: nil),
+            bare + 130 + PanelLayout.macConsoleDividerHeight, accuracy: 1e-9)
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: true, sequenceRows: nil),
+            bare + PanelLayout.macTopRailHeight, accuracy: 1e-9)
+        // The strip is charged at its IDEAL height (rows × 30 + 30), capped at five
+        // rows, which is the same formula the VSplitView is given.
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false, sequenceRows: 2),
+            bare + 90, accuracy: 1e-9)
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false, sequenceRows: 99),
+            bare + 180, accuracy: 1e-9)
+        // An empty strip still occupies one row's worth while it is showing.
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false, sequenceRows: 0),
+            bare + 60, accuracy: 1e-9)
+    }
+
     // MARK: - key namespace
 
     func testEveryKeyIsNamespaced() {

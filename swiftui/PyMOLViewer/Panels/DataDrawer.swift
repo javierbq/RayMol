@@ -194,6 +194,26 @@ struct SetTableModel: Equatable {
     var isOverBudget: Bool { stagedCount > budget }
     /// True when `n` more objects fit under the budget.
     func canStage(_ n: Int) -> Bool { n > 0 && stagedCount + n <= budget }
+
+    /// Why Stage will not act on `n` rows, or nil when it will.
+    ///
+    /// The footer button is disabled on this and shows it, because the refusal
+    /// otherwise reaches the user only as a `set_stage` warning in a console that
+    /// may well be closed — so the button looked like it did nothing (#417 review).
+    /// The text names the way out, the way `SetBudgetExceeded` does.
+    func stageRefusal(_ n: Int) -> String? {
+        if n < 1 { return "Select rows, or peek one, to stage" }
+        guard !canStage(n) else { return nil }
+        return "Staging \(n) more would put \(stagedCount + n) objects in the scene;"
+            + " the budget is \(budget). Unstage or pin some first, or raise it"
+            + " with set_budget."
+    }
+
+    /// The same refusal, short enough for the footer beside the count.
+    func stageRefusalSummary(_ n: Int) -> String? {
+        guard n >= 1, !canStage(n) else { return nil }
+        return "\(n) selected · \(budgetRemaining) under budget"
+    }
     /// "5 of 1024 staged · budget 6" — what the group row and the footer both say.
     var budgetLabel: String {
         "\(stagedCount) of \(rows.count) staged · budget \(budget)"
@@ -376,20 +396,28 @@ struct DataDrawer: View {
 struct RunningBadge: View {
     let progress: BatchProgress
 
+    /// Nothing known but "it is running": the marker dropped the counts to stay
+    /// under the feedback-line cap (see appkit_sets.marker). Showing the spinner
+    /// alone is honest; "0 / 0" would not be.
+    private var countsKnown: Bool { progress.done > 0 || progress.total > 0 }
+
     var body: some View {
         HStack(spacing: 4) {
             ProgressView().progressViewStyle(.circular).controlSize(.mini)
                 .frame(width: 10, height: 10)
-            Text(progress.total > 0 ? "\(progress.done) / \(progress.total)" : "\(progress.done)")
-                .font(.system(size: 9).monospacedDigit())
-                .foregroundColor(PanelTheme.disabledColor)
+            if countsKnown {
+                Text(progress.total > 0 ? "\(progress.done) / \(progress.total)" : "\(progress.done)")
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundColor(PanelTheme.disabledColor)
+            }
             if !progress.tool.isEmpty {
                 Text(progress.tool)
                     .font(.system(size: 9))
                     .foregroundColor(PanelTheme.disabledColor)
             }
         }
-        .help("A batch is still delivering into this set")
+        .help(countsKnown ? "A batch is still delivering into this set"
+                          : "A batch is still delivering into this set (progress unavailable)")
     }
 }
 
@@ -401,7 +429,9 @@ struct RunningBadge: View {
 /// macOS 14.0 floor. Sorting, formatting and the ramp are `SetTableModel`.
 ///
 /// Keys, while the list has focus: ↑↓ move the peek, space stages/unstages, `s`
-/// stars, `x` rejects. Hover peeks after a short debounce, so a sweep down the
+/// stars, `x` rejects. Esc is NOT here: ContentView's Esc monitor consumes
+/// keyCode 53 ahead of the responder chain, so it clears the peek as a rung of
+/// that ladder (engine.clearPeekIfShowing) and a handler here would be dead. Hover peeks after a short debounce, so a sweep down the
 /// table costs one load at the row the pointer settles on, not one per row.
 struct SetTableView: View {
     let set: SetEntry
@@ -467,13 +497,9 @@ struct SetTableView: View {
                     .focused($listFocused)
                     .onKeyPress(.upArrow) { movePeek(-1, proxy: proxy); return .handled }
                     .onKeyPress(.downArrow) { movePeek(+1, proxy: proxy); return .handled }
-                    .onKeyPress(.space) { stageAction(toggle: true); return .handled }
+                    .onKeyPress(.space) { stageAction(); return .handled }
                     .onKeyPress(KeyEquivalent("s")) { starAction(); return .handled }
                     .onKeyPress(KeyEquivalent("x")) { rejectAction(); return .handled }
-                    .onKeyPress(.escape) {
-                        if engine.peekedEntryID != nil { engine.clearPeek(); return .handled }
-                        return .ignored
-                    }
                 }
                 Rectangle().fill(hairline).frame(height: 1)
                 footer(model: model)
@@ -565,15 +591,21 @@ struct SetTableView: View {
                     .help("More objects are staged than the budget allows; unstage "
                           + "some or raise it with set_budget.")
             }
+            // The budget refusal, where the click is (#417 review). Without it the
+            // only account of why nothing happened went to the console.
+            if let summary = model.stageRefusalSummary(unstaged.count) {
+                Text(summary)
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundColor(PanelTheme.atomTranspColor)
+                    .help(model.stageRefusal(unstaged.count) ?? "")
+            }
             Spacer()
-            footerButton("Stage", help: unstaged.isEmpty
-                         ? "Select rows (or peek one) to stage"
-                         : (model.canStage(unstaged.count)
-                            ? "Load \(unstaged.count) as objects in the set's group (set_stage)"
-                            : "Staging \(unstaged.count) would exceed the budget of \(model.budget)")) {
+            let stageRefusal = model.stageRefusal(unstaged.count)
+            footerButton("Stage", help: stageRefusal
+                         ?? "Load \(unstaged.count) as objects in the set's group (set_stage)") {
                 engine.stage(set, unstaged)
             }
-            .disabled(unstaged.isEmpty)
+            .disabled(stageRefusal != nil)
             footerButton("Unstage", help: "Delete the staged objects, keep the entries (set_unstage)") {
                 engine.unstage(set, staged)
             }
@@ -657,7 +689,10 @@ struct SetTableView: View {
         withAnimation(nil) { proxy.scrollTo(next.id) }
     }
 
-    private func stageAction(toggle: Bool) {
+    /// Space: stage the target rows, or unstage them when every one is staged.
+    /// The toggle itself is Python's (appkit_sets.toggle_stage), so the drawer and
+    /// the console agree on what a mixed selection means.
+    private func stageAction() {
         let targets = actionRows
         guard !targets.isEmpty else { return }
         engine.toggleStage(set, targets)

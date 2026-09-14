@@ -3027,17 +3027,19 @@ private struct SetRowView: View {
             Divider()
             #endif
             Button("Unstage all") {
-                engine.runPython("from pymol import cmd as _c\n_c.set_unstage('\(cleanName)')")
+                engine.runPython("from pymol import cmd as _c\n_c.set_unstage(\(nameLiteral))")
             }
             .disabled(entry.stagedCount == 0)
             Divider()
             Button("Delete set", role: .destructive) {
-                engine.runPython("from pymol import cmd as _c\n_c.set_delete('\(cleanName)')")
+                engine.runPython("from pymol import cmd as _c\n_c.set_delete(\(nameLiteral))")
             }
         }
     }
 
-    private var cleanName: String { entry.name.replacingOccurrences(of: "'", with: "") }
+    /// The set name as a Python literal, escaped rather than stripped — see
+    /// PyMOLEngine.pythonLiteral for why deleting a character is not safe.
+    private var nameLiteral: String { PyMOLEngine.pythonLiteral(entry.name) }
 
     private func runningText(_ p: BatchProgress) -> String {
         let tool = p.tool.isEmpty ? "a batch" : p.tool

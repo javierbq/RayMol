@@ -184,6 +184,38 @@ final class SetTableModelTests: XCTestCase {
         XCTAssertFalse(model.canStage(1))
     }
 
+    // MARK: the Stage button's refusal (#417 review)
+
+    /// `canStage` was computed and tested but only chose a TOOLTIP: the button
+    /// stayed enabled past the budget, so clicking it appeared to do nothing and
+    /// the refusal went to a console that may well be closed.
+    func testStageRefusesPastTheBudgetAndSaysWhy() {
+        let model = SetTableModel(columns: [], rows: rows, budget: 6, stagedCount: 4)
+        XCTAssertNil(model.stageRefusal(2), "two more fit exactly")
+        let refusal = model.stageRefusal(3)
+        XCTAssertNotNil(refusal, "the button must be disabled, not merely tooltipped")
+        // The text has to carry the numbers and the way out — it is the only
+        // account the user gets with the console closed.
+        XCTAssertTrue(refusal!.contains("7"), refusal!)      // 4 staged + 3
+        XCTAssertTrue(refusal!.contains("6"), refusal!)      // the budget
+        XCTAssertTrue(refusal!.contains("set_budget"), refusal!)
+        XCTAssertNotNil(model.stageRefusalSummary(3))
+        XCTAssertNil(model.stageRefusalSummary(2), "no scolding when it will work")
+    }
+
+    func testStageRefusesAnEmptySelection() {
+        let model = SetTableModel(columns: [], rows: rows, budget: 6, stagedCount: 0)
+        XCTAssertNotNil(model.stageRefusal(0))
+        XCTAssertNil(model.stageRefusalSummary(0),
+                     "nothing selected is not a budget problem, so the footer stays quiet")
+    }
+
+    func testStageRefusesEverythingWhenAlreadyOverBudget() {
+        let model = SetTableModel(columns: [], rows: rows, budget: 2, stagedCount: 4)
+        XCTAssertNotNil(model.stageRefusal(1))
+        XCTAssertTrue(model.isOverBudget)
+    }
+
     // MARK: stage glyph
 
     func testStageGlyphs() {
@@ -235,9 +267,13 @@ final class SetTableModelTests: XCTestCase {
     }
 }
 
-/// The read-only reader against a container laid down with format-version-1 DDL —
-/// the same statements `modules/pymol/sets/schema.py` runs, so a column renamed
-/// there and not here fails HERE, in a test, rather than as an empty drawer.
+/// The read-only reader against a container laid down with format-version-1 DDL.
+///
+/// The fixture is a hand-kept copy of `modules/pymol/sets/schema.py`'s statements,
+/// so it cannot by itself catch a rename over there — `test_appkit_sets.py`'s
+/// `TestSchemaContract` is what does that, by asserting the real DDL still declares
+/// every column this reader names. What these pin is the READER: the join, the
+/// NULLs, the JSON, the quoting and the identifier guard.
 final class SetsStoreTests: XCTestCase {
 
     private var path = ""

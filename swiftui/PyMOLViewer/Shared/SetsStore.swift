@@ -423,6 +423,10 @@ extension PyMOLEngine {
             }
         }
         let running = marker.running ?? [:]
+        // The marker drops the COUNTS before it drops the sets (appkit_sets.marker),
+        // so a truncated line still says which sets are busy; `trunc` is what stops
+        // the badge from rendering "0 / 0" as though it knew.
+        let truncated = (marker.trunc ?? 0) != 0
         let versionChanged = marker.v != setsVersion
         let active: String? = marker.active.isEmpty ? nil : marker.active
         let peek: String? = marker.peek.isEmpty ? nil : marker.peek
@@ -442,11 +446,16 @@ extension PyMOLEngine {
         let publish = {
             if self.sets != nextSets { self.sets = nextSets }
             if self.setsRunning != running { self.setsRunning = running }
+            if self.setsRunningTruncated != truncated { self.setsRunningTruncated = truncated }
             if self.activeSetID != active {
                 self.activeSetID = active
                 // A set opened from Python (an MCP agent's appkit_sets.open_set, or
                 // the console) shows the drawer exactly as the SETS row's click does;
                 // closing is left to the user, so a set_delete does not yank the band.
+                // In a window too short for a table this surfaces as the one-line
+                // "needs more room" hint rather than a band that draws nothing
+                // (macDrawerBand), so it never costs the viewport a table's worth of
+                // height for no table.
                 if active != nil { self.dataDrawerVisible = true }
             }
             if self.setRows != nextRows { self.setRows = nextRows }
@@ -469,13 +478,31 @@ extension PyMOLEngine {
     // entry names refuse `+` and `:` — so quoting them is stripping the one
     // character that could close a Python string.
 
-    private func pyQuoted(_ name: String) -> String {
-        "'" + name.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "\\", with: "") + "'"
+    /// `name` as a single-quoted Python string literal, ESCAPED, not stripped.
+    ///
+    /// Stripping was a real bug (#417 review): the store's name rules refuse quotes
+    /// and whitespace but allow a BACKSLASH, so an entry named `a\\b` — which
+    /// `set_import` of `a\\b.cif` produces — had its backslash deleted and every
+    /// verb then ran against `ab`. That is a SetNotFound traceback at best, and if
+    /// the set also holds an entry named `ab`, the wrong entry is starred, rejected
+    /// or unstaged, which deletes the wrong object. Escaping cannot lose a
+    /// character, so the name that leaves here is the name the store has.
+    static func pythonLiteral(_ name: String) -> String {
+        let escaped = name
+            .replacingOccurrences(of: "\\", with: "\\\\")   // first: it would double the others
+            .replacingOccurrences(of: "'", with: "\\'")
+        return "'" + escaped + "'"
     }
+
+    private func pyQuoted(_ name: String) -> String { Self.pythonLiteral(name) }
 
     /// Show `set` in the drawer. Optimistic: the marker confirms within a poll
     /// tick, but the rows are read now so the table does not flash empty first.
     func openSet(_ set: SetEntry) {
+        // The previous set's ghost is not part of this one: leaving it up would
+        // draw an entry that is in no visible row, with peekedEntryID pointing
+        // outside setRows so nothing shows ◐ either.
+        if set.id != activeSetID { clearPeek() }
         activeSetID = set.id
         setRows = setsStore?.rows(setID: set.id, columns: set.columns) ?? []
         dataDrawerVisible = true
@@ -499,6 +526,22 @@ extension PyMOLEngine {
         guard peekedEntryID != nil else { return }
         peekedEntryID = nil
         runPython("from pymol import appkit_sets as _s\n_s.clear_peek()")
+    }
+
+    /// Esc's rung for the Data drawer (#417), returning true when there was a peek
+    /// to clear.
+    ///
+    /// A rung on ContentView's Esc ladder rather than an `.onKeyPress` in the
+    /// drawer: the Esc monitor is an `NSEvent` local monitor that consumes keyCode
+    /// 53 ahead of the responder chain, so a SwiftUI key handler in the table never
+    /// runs (the first version of this shipped as dead code, caught in review).
+    /// Going through the ladder also makes it work wherever the focus is, which is
+    /// the behaviour a ghost on screen deserves.
+    @discardableResult
+    func clearPeekIfShowing() -> Bool {
+        guard peekedEntryID != nil else { return false }
+        clearPeek()
+        return true
     }
 
     /// Space: stage the entries if none is staged, else unstage them. A budget

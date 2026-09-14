@@ -25,6 +25,9 @@ page is about the UI that sits on top of them (#417, tracking #421).
   with a header naming the set, the tabs, and the Table tab. Plot, Sequences and
   Lineage are drawn disabled until #418/#419 land. Drag the divider above it to
   resize; the height is remembered as a fraction of the window, like the console's.
+  In a short window the console and the sequence strip get their space first, and the
+  drawer says so with a one-line hint rather than showing a table too short to hold a
+  row — close either pane (⌘1 / ⌘2) or enlarge the window.
   iPad and iPhone show the SETS section but no drawer yet (#420).
 
 ## The Table tab
@@ -54,14 +57,15 @@ Keys, while the table has focus:
 | space | stage / unstage the selection (or the peeked row) | `set_stage` / `set_unstage` |
 | `s` | star / unstar | `set_star` |
 | `x` | reject / unreject | `set_reject` |
-| esc | clear the peek | `set_peek` |
+| esc | clear the peek (works anywhere, not only in the table) | `set_peek` |
 
 The footer acts on the selection (or, with none, on the peeked row): **Stage**,
 **Unstage**, **Pin** (a pinned object survives "clear staged"), **Export** (CSV, FASTA
 or a folder of CIFs plus `entries.csv`, via `set_export`) and **Save view…**
 (`set_view_save`, the active filter and sort under a name usable as `view:NAME`).
-Staging refuses past the stage budget and the console names what to unstage; raise it
-with `set_budget`. The header's "n of N staged · budget b" is the same arithmetic.
+Stage is disabled when the selection would not fit the stage budget, and the footer
+says by how much; raise it with `set_budget`, or unstage (or pin) what is already
+there. The header's "n of N staged · budget b" is the same arithmetic.
 
 Every drawer action is a `set_*` command. Anything you can click you can also type,
 script, or ask an agent to do over MCP; the drawer is a client of the command surface,
@@ -80,13 +84,21 @@ panel offers the open document's format first and the other second.
 The first time a session that holds a set is saved with no `.raymol` open, RayMol asks
 once whether to save as `.raymol` or as a plain `.pse` without the sets. A `.pse`
 stays plain PyMOL — an upstream PyMOL opens it unchanged, and the console warns which
-sets were left out. Opening a session file over a non-empty scene asks before
+sets were left out. **File ▸ Export PyMOL Session…** always writes one, whether or not
+the session has sets, and does *not* change the document you have open, so the next ⌘S
+still goes to your `.raymol`. Opening a session file over a non-empty scene asks before
 replacing it, for `.raymol` as for `.pse`.
 
 An untitled session's working `.raymol` lives in `~/Library/RayMolState` (the app
-container's Library on the sandboxed build), beside the iOS autosave, so a long batch
-survives a quit. Under command-line PyMOL it falls back to `$TMPDIR` or
-`$RAYMOL_SETS_DIR`.
+container's Library on the sandboxed build), beside the autosaved session, rather than
+in `$TMPDIR`, which the system may purge while a batch is running. Under command-line
+PyMOL it falls back to `$TMPDIR`, or to `$RAYMOL_SETS_DIR` when that is set.
+
+**Save before you quit.** The working file is pid-scoped and is deleted on a clean exit,
+and a file left behind by a crash is swept on the next launch, so an untitled session's
+sets do not survive quitting RayMol — only a `.raymol` you have saved does. Spec §2.1's
+stronger rule, where an untitled session's working file *is* the autosave and is offered
+back on cold launch, is not implemented yet; see the tracking issue.
 
 ## How the app stays fast
 

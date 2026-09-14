@@ -38,6 +38,10 @@ from pymol import cmd, colorprinting
 MARKER_PREFIX = 'SETS:'
 MAX_MARKER_BYTES = 900
 
+#: What a running batch degrades to when the counts will not fit: enough for the
+#: spinner, honest about knowing nothing else.
+EMPTY_PROGRESS = {'done': 0, 'total': 0, 'tool': ''}
+
 _last_marker = None
 _active_set_id = ''
 _peek_set_id = ''
@@ -86,6 +90,35 @@ def _peek_object_present(_self=cmd):
         return False
 
 
+def _peek_stamp(_self=cmd):
+    """The entry id stamped on the peek object, or '' if it carries none.
+
+    `binding.peek` keeps no record of WHICH entry it drew -- the peek object is
+    anonymous by design, so a console `set_peek` needs nothing from the UI -- and
+    without a record the drawer cannot mark the row. So the id is stamped on the
+    object here, as its state title, and read back on every poll.
+
+    What that buys is staleness detection: a console (or MCP) `set_peek s, e`
+    deletes and reloads the object, which drops the stamp, so the next poll sees a
+    peek that is not the one we recorded and stops marking a row that is no longer
+    the one on screen. Without this the drawer kept ◐ on the PREVIOUS row, which is
+    worse than showing no mark at all.
+    """
+    from pymol.sets import binding
+    try:
+        return str(_self.get_title(binding.PEEK, 1, quiet=1) or '')
+    except Exception:
+        return ''
+
+
+def _stamp_peek(entry_id, _self=cmd):
+    from pymol.sets import binding
+    try:
+        _self.set_title(binding.PEEK, 1, str(entry_id))
+    except Exception:
+        pass
+
+
 def _reconcile_ids(store):
     """Drop the active-set / peek ids when the container they belong to is gone.
 
@@ -130,11 +163,13 @@ def state(_self=cmd):
         # `reinitialize`, `load x.pse` and set_delete of the last set reset the store;
         # a stale active id would keep the drawer open on nothing.
         pass
-    # The peek is ours only while its object is still there: a bare `set_peek` from
-    # the console (or a `delete _raymol_peek`) clears it without telling us, and the
-    # drawer must stop marking the row. Checked only when we believe something is
-    # peeked, so the common idle tick costs no get_names call.
-    if _peek_entry_id and not _peek_object_present(_self=_self):
+    # The peek is ours only while the object we stamped is still the one on screen.
+    # A bare `set_peek` (or a `delete _raymol_peek`) removes it; a console
+    # `set_peek s, e` replaces its contents and so drops the stamp. Either way the
+    # drawer must stop marking a row. Checked only when we believe something is
+    # peeked, so the common idle tick costs neither call.
+    if _peek_entry_id and not (_peek_object_present(_self=_self)
+                               and _peek_stamp(_self=_self) == _peek_entry_id):
         _peek_set_id = _peek_entry_id = ''
     return {
         'v': version,
@@ -145,14 +180,30 @@ def state(_self=cmd):
     }
 
 
+def _encode(payload):
+    return MARKER_PREFIX + json.dumps(payload, separators=(',', ':'))
+
+
 def marker(_self=cmd):
+    """The marker line, trimmed in two stages so it can never split.
+
+    The counts go before the SETS THEMSELVES do. A badge that says only "a batch is
+    running" on the right rows is still true and still useful; dropping `running`
+    outright makes the badge vanish, which reads as "the batch finished". Both
+    stages set `trunc` so the far side can say the numbers are missing rather than
+    show a confident zero.
+    """
     payload = state(_self=_self)
-    text = MARKER_PREFIX + json.dumps(payload, separators=(',', ':'))
-    if len(text.encode('utf-8')) > MAX_MARKER_BYTES:
-        payload['running'] = {}
-        payload['trunc'] = 1
-        text = MARKER_PREFIX + json.dumps(payload, separators=(',', ':'))
-    return text
+    text = _encode(payload)
+    if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
+        return text
+    payload['running'] = dict.fromkeys(payload.get('running') or {}, EMPTY_PROGRESS)
+    payload['trunc'] = 1
+    text = _encode(payload)
+    if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
+        return text
+    payload['running'] = {}
+    return _encode(payload)
 
 
 def poll(_self=cmd):
@@ -215,6 +266,7 @@ def peek(name, entry, _self=cmd):
     row = _set_row(name)
     e = _store().active().entry(row['id'], str(entry).strip())
     _self.set_peek(row['name'], e['name'], quiet=1)
+    _stamp_peek(e['id'], _self=_self)
     _peek_set_id, _peek_entry_id = row['id'], e['id']
     return e['id']
 
@@ -231,9 +283,11 @@ def peeked_entry_id():
 
 
 def toggle_stage(name, entries, _self=cmd):
-    """Space in the drawer: stage the named entries if none of them is staged, else
-    unstage them. A budget refusal is a one-line warning here, not a traceback: the
-    footer already shows "n of N staged" and the console names what to unstage."""
+    """Space in the drawer: unstage the named entries when EVERY one of them is
+    already staged, else stage them — so a mixed selection fills in the rest rather
+    than half-clearing it. A budget refusal is a one-line warning here, not a
+    traceback; the drawer's footer states the refusal, and the console names what
+    would have to be unstaged."""
     from pymol.sets import selectors
     from pymol.sets.errors import SetBudgetExceeded, SetError
     row = _set_row(name)

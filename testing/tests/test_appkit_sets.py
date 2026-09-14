@@ -184,13 +184,39 @@ class TestMarker(AppkitSetsTestCase):
         text = appkit_sets.marker()
         self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH)
         payload = json.loads(text[len(appkit_sets.MARKER_PREFIX):])
-        # When `running` would push the line over the cap it is dropped, flagged,
-        # and the fields Swift cannot do without stay intact.
         self.assertEqual(payload['trunc'], 1)
-        self.assertEqual(payload['running'], {})
+        # The COUNTS go first, not the sets: the badge must still appear on the
+        # right rows saying "a batch is running", because a vanished badge reads as
+        # "the batch finished".
+        self.assertEqual(len(payload['running']), 40)
+        self.assertEqual(set(map(tuple, (sorted(v.items()) for v in payload['running'].values()))),
+                         {tuple(sorted(appkit_sets.EMPTY_PROGRESS.items()))})
         self.assertTrue(payload['path'])
         self.assertTrue(payload['active'])
         self.assertTrue(payload['peek'])
+
+    def test_marker_drops_running_entirely_when_even_the_ids_do_not_fit(self):
+        # Second stage: hundreds of concurrent batches. The fields the drawer
+        # cannot work without survive; `running` is what goes.
+        self.populated(1)
+        appkit_sets.open_set('s')
+        self.install_fake_batch({
+            ('%08x' % i): {'done': i, 'total': 1000, 'tool': 'binder_design'}
+            for i in range(400)})
+        text = appkit_sets.marker()
+        self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH)
+        payload = json.loads(text[len(appkit_sets.MARKER_PREFIX):])
+        self.assertEqual(payload['running'], {})
+        self.assertEqual(payload['trunc'], 1)
+        self.assertTrue(payload['path'])
+        self.assertTrue(payload['active'])
+
+    def test_untruncated_marker_carries_no_trunc_flag(self):
+        self.populated(1)
+        self.install_fake_batch({'ab12cd34': {'done': 3, 'total': 10, 'tool': 'rfd3'}})
+        payload = json.loads(appkit_sets.marker()[len(appkit_sets.MARKER_PREFIX):])
+        self.assertNotIn('trunc', payload)
+        self.assertEqual(payload['running']['ab12cd34']['done'], 3)
 
 
 class TestRunning(AppkitSetsTestCase):
@@ -305,6 +331,28 @@ class TestDrawerHelpers(AppkitSetsTestCase):
             appkit_sets.poll()
         self.assertEqual(markers(out.getvalue())[0]['peek'], '')
 
+    def test_a_console_peek_of_another_entry_drops_the_mark(self):
+        # `set_peek s, e` from the console or MCP replaces the peek object behind
+        # the drawer's back. Before the stamp, `state()` only checked that SOME
+        # peek object existed, so the drawer kept ◐ on the PREVIOUSLY peeked row --
+        # a mark pointing at an entry that is not the one on screen.
+        self.populated(3)
+        first = self.entry('s', 'p0')['id']
+        appkit_sets.peek('s', 'p0')
+        self.assertEqual(appkit_sets.state()['peek'], first)
+        cmd.set_peek('s', 'p1')          # the console's own path, not ours
+        self.assertIn(binding.PEEK, cmd.get_names('all'))
+        self.assertEqual(appkit_sets.state()['peek'], '',
+                         'the mark must not stay on the row that is no longer peeked')
+
+    def test_our_own_peek_survives_repeated_polls(self):
+        # The stamp must not be so eager that it clears a peek nothing touched.
+        self.populated(2)
+        wanted = self.entry('s', 'p1')['id']
+        appkit_sets.peek('s', 'p1')
+        for _ in range(3):
+            self.assertEqual(appkit_sets.state()['peek'], wanted)
+
     def test_toggle_stage_round_trip(self):
         self.populated(2)
         names = appkit_sets.toggle_stage('s', 'p0')
@@ -333,6 +381,58 @@ class TestDrawerHelpers(AppkitSetsTestCase):
         appkit_sets.toggle_stage('s', 'p0+p1')
         self.assertIn('p0', cmd.get_names('public_objects'))
         self.assertIn('p1', cmd.get_names('public_objects'))
+
+
+class TestSchemaContract(AppkitSetsTestCase):
+    """The names the Swift reader (SetsStore.swift) selects by.
+
+    That reader opens the same file read-only and names these columns as string
+    literals, so a rename in schema.py that misses it shows up as a silently EMPTY
+    drawer. It cannot run Swift here; asserting the DDL still declares every name is
+    the half of the contract this side can hold.
+    """
+
+    #: table -> columns SetsStore.swift selects. Keep in step with rows()/sets().
+    SWIFT_READS = {
+        'meta': ('key', 'value'),
+        'sets': ('id', 'name', 'kind', 'tool', 'group_name', 'budget', 'ranking_key',
+                 'sort_key', 'sort_desc', 'filter', 'columns', 'reference', 'created'),
+        'entries': ('id', 'set_id', 'ord', 'name', 'starred', 'rejected', 'pinned',
+                    'staged_object', 'n_chains', 'n_residues', 'tags', 'run_id'),
+    }
+
+    def test_ddl_declares_every_column_swift_selects(self):
+        from pymol.sets import schema
+        ddl = '\n'.join(schema.DDL)
+        for table, columns in self.SWIFT_READS.items():
+            self.assertIn('CREATE TABLE %s ' % table, ddl)
+            for column in columns:
+                self.assertIn(column, ddl,
+                              '%s.%s is read by SetsStore.swift but is not in the DDL'
+                              % (table, column))
+
+    def test_metrics_table_and_entry_id_column_are_named_as_swift_expects(self):
+        from pymol.sets import schema
+        # SetsStore.rows() builds the join as m_<set_id> ... ON m.entry_id = e.id.
+        self.assertEqual(schema.metrics_table('ab12cd34'), 'm_ab12cd34')
+        self.populated(1)
+        c = store.active()
+        set_id = c.get_set('s')['id']
+        columns = [r['name'] for r in
+                   c._all('PRAGMA table_info(%s)' % schema.quote(schema.metrics_table(set_id)))]
+        self.assertEqual(columns[0], 'entry_id')
+
+    def test_columns_json_carries_the_metricspec_keys_swift_decodes(self):
+        # MetricColumn decodes these names; `column` and `chain` are the two the
+        # store adds to MetricSpec.as_dict() and Swift depends on both.
+        self.populated(1)
+        c = store.active()
+        columns = c.columns(c.get_set('s')['id'])
+        self.assertTrue(columns)
+        for spec in columns:
+            for key in ('key', 'scope', 'dtype', 'units', 'label', 'lo', 'hi',
+                        'higher_is_better', 'chain', 'tool', 'column'):
+                self.assertIn(key, spec)
 
 
 class TestPollPanelHook(AppkitSetsTestCase):
