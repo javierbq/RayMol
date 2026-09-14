@@ -450,16 +450,22 @@ def pending_detail(name, _self=cmd):
     return None if info is None else info['detail']
 
 
-def register_pending(name, job_id, _self=cmd):
+def register_pending(name, job_id, placeholder=True, _self=cmd):
     """Create the empty placeholder (if new) and remember what it is waiting for.
 
     A LIST of job ids, not one: `n_models` submits several runs that all deliver into the
     same object, and the placeholder has to stay pending until the last of them lands.
     Recording only the newest would clear the pending mark on the first delivery while
     later models were still running.
+
+    `placeholder=False` registers the name WITHOUT an object (#416): a model of a
+    set-driven prediction beyond the stage budget is pending -- tray record, cancel,
+    dismiss, delivery key -- but puts no row in the Objects panel; `deliver_result`
+    creates the object when it loads into the name. See `designing.register_pending`
+    for why nothing that reads the pending tables needs the object to exist.
     """
     name = _legal_object_name(name, _self=_self)
-    if name not in _self.get_names('objects'):
+    if placeholder and name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
     import time
@@ -502,6 +508,7 @@ def discard_pending(name, _self=cmd):
         _RECENT[name] = last
     _PENDING.pop(name, None)
     _TRACK.pop(name, None)
+    _settle_in_set(name)
     try:
         if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
             _self.delete(name)
@@ -992,7 +999,16 @@ def deliver_result(path, name, seed=None, _self=cmd):
         except Exception as exc:
             colorprinting.warning(' predict: could not record metrics for %s (%s)'
                                   % (name, exc))
+        # Into its SET, if this model is one of a set-driven prediction (#416): the
+        # entry is captured from the object and the columns from the metrics run just
+        # filed, then the set keeps the object (staged, in the child set's group,
+        # superposed on the reference) while it has room and deletes it otherwise. A
+        # literal-sequence prediction has no batch and is untouched by this line.
+        _land_in_set(name, _self=_self)
     finally:
+        # Whatever happened above, this model has left the run, as far as its set is
+        # concerned. Idempotent.
+        _settle_in_set(name)
         # Retire only THIS job. With n_models > 1 the object stays pending until the last
         # model has landed, so the panel keeps showing progress for the rest.
         remaining = _PENDING.get(name)
@@ -1009,6 +1025,83 @@ def deliver_result(path, name, seed=None, _self=cmd):
                 # error card in the tray.
                 _LAST_INFO.pop(name, None)
                 _RECENT.pop(name, None)
+
+
+# -- The set a prediction lands in (#416) ------------------------------------------------
+#
+# `predict m, set:<name>@<selector>` folds entries of a set and writes a CHILD set, one
+# entry per model, each pointing at its parent entry. The mechanics are
+# `pymol.sets.batch`, shared with `designing`; this module decides what to tell it. Every
+# call is guarded, because the set is a record OF the prediction and must never be the
+# reason a fold fails to appear.
+
+#: How a set is named as `predict`'s input, and how the selector is attached. `@`
+#: because `/` is the literal sequence's chain separator and `,` is the parser's argument
+#: separator; both `:` and `@` survive parsing.STRICT inside an argument (measured).
+SET_PREFIX = 'set:'
+SET_SELECTOR_SEP = '@'
+
+
+def _sets_batch():
+    """The `pymol.sets.batch` module, or None if the set store cannot be imported.
+    Lazy, as `record_run` imports the metrics binding, and for the same import-order
+    reason `designing._sets_batch` gives."""
+    try:
+        from pymol.sets import batch
+        return batch
+    except Exception:
+        return None
+
+
+def is_set_input(text):
+    """True when `predict`'s sequence argument names a set."""
+    return str(text or '').strip().lower().startswith(SET_PREFIX)
+
+
+def parse_set_input(text):
+    """`set:<name>[@<selector>]` -> (set name, selector). The selector defaults to
+    `filtered`, the set's active filter in its active sort -- the same default
+    `set_export` has, and what "predict everything that passes" means."""
+    from .predictors.errors import PredictionInputError
+    body = str(text).strip()[len(SET_PREFIX):]
+    name, _, selector = body.partition(SET_SELECTOR_SEP)
+    name = name.strip()
+    if not name:
+        raise PredictionInputError(
+            'a set input is set:<name> or set:<name>@<selector>, e.g. set:rfd3_a1@top:20')
+    return name, (selector.strip() or 'filtered')
+
+
+def _entry_sequence(entry):
+    """An entry's chains as the `/`-joined literal `parse_spec` takes, chains in key
+    order (the store writes `sequences` with sorted keys, so A before B)."""
+    seqs = entry.get('sequences') or {}
+    return '/'.join(str(seqs[k]) for k in sorted(seqs) if str(seqs[k]).strip())
+
+
+def _land_in_set(name, _self=cmd):
+    """Write the delivered model as an entry of its child set and stage or discard it.
+    None when the name is not a set-driven model or the write was refused; warned, never
+    raised, for the reason `designing._land_in_set` gives."""
+    sb = _sets_batch()
+    if sb is None or sb.batch_of(name) is None:
+        return None
+    try:
+        return sb.land(name, state=_self.count_states(name), _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' predict: %s was not written to its set (%s); it is kept'
+                              ' as a plain object' % (name, exc))
+        return None
+
+
+def _settle_in_set(name):
+    sb = _sets_batch()
+    if sb is None:
+        return
+    try:
+        sb.settle(name)
+    except Exception:
+        pass
 
 
 def session_save(session, _self=cmd):
@@ -1368,15 +1461,25 @@ ARGUMENTS
     predictor = str: id of a registered predictor, e.g. boltz2
 
     sequence = str: one-letter sequence, or the name of a loaded object, or an
-    atom selection. Anything that selects atoms is read from the session -- one
-    chain per (object, chain id), in the order they appear -- and everything else
-    is taken as a literal sequence.
+    atom selection, or a SET. Anything that selects atoms is read from the session
+    -- one chain per (object, chain id), in the order they appear -- and everything
+    else is taken as a literal sequence.
 
     In a literal sequence, use "/" to separate chains of a multimer -- NOT a
     comma, which the command parser treats as an argument separator. Chains are
     assigned ids A, B, C...
 
-    name = str: object name for the loaded result {default: <predictor>_pred}
+    A set is "set:<name>" or "set:<name>@<selector>", where the selector is any
+    entry selector of the set_* commands (top:20, starred, view:top50, run:<id>,
+    d_0417+d_0088); without one the set's filtered entries are folded. Every
+    selected entry is folded with its own sequences, and the results land in a
+    CHILD SET named <predictor>_<n> (or `name`), one entry per model with a
+    "model" column, each pointing at the entry it was folded from. The first
+    entries within the stage budget appear as objects in the child set's group,
+    superposed on the parent set's reference; the rest are staged from the set.
+
+    name = str: object name for the loaded result {default: <predictor>_pred}; with
+    a set input, the name of the child set instead {default: <predictor>_<n>}
 
     recycling_steps = int: trunk recycling passes {default: 3}
 
@@ -1427,6 +1530,9 @@ EXAMPLES
     predict boltz2, MKTAY/GSHMA, msa=binder_aln/target_aln
     predict boltz2, MKTAY/GSHMA, msa=/target_aln     # chain A single-sequence
 
+    predict boltz2, set:rfd3_a1@top:20, n_models=3   # fold a set's best 20 -> boltz2_1
+    predict boltz2, set:rfd3_a1@starred, name=folds  # the starred ones -> set "folds"
+
 NOTES
 
     Defaults follow upstream Boltz. Options a predictor does not implement are
@@ -1475,6 +1581,16 @@ SEE ALSO
     """
     predictor_obj = registry.get(predictor)
     predictor_obj.check_available()
+
+    # A SET as input (#416): every selected entry is folded and the models land in a
+    # child set. Branched here, before anything below reads the session for a sequence:
+    # `set:` is not a selection and not residues, and `resolve_input` would refuse it.
+    if is_set_input(sequence):
+        return _predict_set(predictor_obj, sequence, name=name,
+                            recycling_steps=recycling_steps,
+                            diffusion_steps=diffusion_steps, seed=seed,
+                            n_models=n_models, diffusion_samples=diffusion_samples,
+                            msa=msa, msa_depth=msa_depth, quiet=quiet, _self=_self)
 
     # Resolved once, up front: everything downstream -- validation, the digest the
     # object name is built from, the spec the predictor gets -- must see the same
@@ -1612,6 +1728,194 @@ SEE ALSO
     # A single job for the default, a list when several were asked for. Keeping the
     # scalar for n_models=1 means existing callers and `job.job_id` keep working.
     return jobs[0] if count == 1 else jobs
+
+
+def _requested_options(predictor_obj, recycling_steps, diffusion_steps, seed,
+                       diffusion_samples, msa_depth):
+    """The `requested` dict `predict` builds, and the validated options for the FIRST
+    run. Factored so the set path and the literal path validate one way; see the
+    comments in `predict` for why each key is conditional."""
+    requested = dict(recycling_steps=int(recycling_steps),
+                     diffusion_steps=int(diffusion_steps), seed=int(seed))
+    if diffusion_samples is not None:
+        requested['diffusion_samples'] = diffusion_samples
+    if msa_depth is not None:
+        requested['msa_depth'] = int(msa_depth)
+    return requested, predictor_obj.validate_options(requested)
+
+
+def _predict_set(predictor_obj, sequence, name='', recycling_steps=3,
+                 diffusion_steps=200, seed=None, n_models=1, diffusion_samples=None,
+                 msa='', msa_depth=None, quiet=1, _self=cmd):
+    """`predict m, set:<name>@<selector>`: fold every selected entry into a child set.
+
+    One entry PER MODEL (store spec §1), each its own object at delivery, so that an
+    entry is one set of coordinates and staging, unstaging and the budget mean for a
+    fold what they mean for a design. The child set, its reference (the parent's) and
+    ONE run row -- carrying the parent set id, the selector as typed and every parent
+    entry id -- exist before the first job is submitted, so the inspector's badge has a
+    set to hang off and a crash mid-run leaves a set that says what was attempted.
+
+    Every model of every entry is a full run, as `predict` documents for `n_models`;
+    twenty entries at five models is a hundred runs on the serial queue.
+    """
+    from .predictors.errors import PredictionInputError
+    from pymol.sets import selectors, store as set_store
+    sb = _sets_batch()
+    if sb is None:
+        raise PredictionInputError('the set store is not available in this build')
+    set_name, selector = parse_set_input(sequence)
+    c = set_store.active()
+    parent = c.get_set(set_name)                              # SetNotFound if absent
+    entries = selectors.resolve(c, parent, selector)         # SetNotFound / SetInputError
+    if not entries:
+        raise PredictionInputError('%s selects no entries of %s' % (selector, set_name))
+    for entry in entries:
+        if not _entry_sequence(entry):
+            raise PredictionInputError(
+                'entry %s of %s has no sequence to fold' % (entry['name'], set_name))
+
+    count = int(n_models)
+    if not 1 <= count <= MAX_MODELS:
+        raise PredictionOptionError('n_models must be between 1 and %d' % MAX_MODELS)
+    if seed is None:
+        import random
+        seed = random.randrange(RANDOM_SEED_BOUND)
+    requested, options = _requested_options(predictor_obj, recycling_steps,
+                                            diffusion_steps, seed, diffusion_samples,
+                                            msa_depth)
+
+    # Specs first, so every refusal -- a chain the predictor cannot fold, an alignment
+    # that does not match -- costs nothing: no set, no job, no download.
+    specs = []
+    for entry in entries:
+        spec = predictor_obj.parse_spec(_entry_sequence(entry), name=entry['name'])
+        alignments = alignments_from_argument(msa, spec.chains) if msa else {}
+        predictor_obj.bind_alignments(spec, alignments)
+        specs.append(spec)
+    report_alignments(specs[0], options)
+
+    # The child set's name: `name` if given and free, else <predictor>_<n>.
+    if name:
+        child_name = _self.get_legal_name(str(name))
+        if (sb.name_taken(child_name) or child_name in (_self.get_names('all') or [])
+                or sb.is_running(child_name)):
+            raise PredictionInputError(
+                'name=%s is already taken by a set, an object or a running batch;'
+                ' pick a free name or leave name= off' % name)
+    else:
+        child_name = sb.free_numbered_name(predictor_obj.id, _self=_self)
+
+    # Every seed up front, so the run row lists them before the first job starts.
+    per_model = [options]
+    for _ in range(1, count):
+        import random
+        per_model.append(predictor_obj.validate_options(
+            dict(requested, seed=random.randrange(RANDOM_SEED_BOUND))))
+
+    weights_path, fetch, bundle = _start_weights(predictor_obj, quiet, _self=_self)
+
+    knobs = options.as_dict()
+    knobs.pop('seed', None)
+    inputs = {'predictor': predictor_obj.id, 'options': knobs, 'n_models': count,
+              'seeds': [o.seed for o in per_model], 'parent_set': parent['id'],
+              'selector': selector, 'parents': [e['id'] for e in entries],
+              'weights': _weight_version(predictor_obj.id)}
+    if msa:
+        inputs['msa'] = str(msa)
+    total = len(entries) * count
+    batch = sb.open(child_name, predictor_obj.id,
+                    tool_version=_weight_version(predictor_obj.id), inputs=inputs,
+                    total=total, reference=parent.get('reference') or '',
+                    parent_set_id=parent['id'],
+                    # A group of one is noise here as it is for a single design.
+                    group=total > 1, superpose=True, kind='structures', _self=_self)
+
+    jobs = []
+    try:
+        for entry, spec in zip(entries, specs):
+            for index in range(count):
+                model_options = per_model[index]
+                # Named after the entry it becomes, as `set_stage` would name it, and
+                # moved aside if the session already has one -- two child sets of one
+                # parent both fold d_0417.
+                entry_name = (entry['name'] if count == 1
+                              else '%s_m%d' % (entry['name'], index + 1))
+                object_name = _free_object_name(entry_name, _self=_self)
+                model_spec = type(spec)(spec.chains, name=object_name,
+                                        alignments=spec.alignments)
+                # BEFORE submit: a name the set refuses must not leave a job running.
+                placeholder = sb.expect(
+                    batch, object_name, entry_name=entry_name, parents=[entry['id']],
+                    scalars={'model': index + 1, 'seed': model_options.seed},
+                    specs=[sb.MODEL_SPEC, sb.SEED_SPEC])
+                if fetch is not None:
+                    job = _DeferredJob(model_spec, model_options, predictor_obj, bundle,
+                                       object_name)
+                else:
+                    job = predictor_obj.submit(model_spec, model_options, weights_path)
+                try:
+                    job.predictor_id = predictor_obj.id
+                except AttributeError:
+                    pass
+                _JOBS[job.job_id] = job
+                register_pending(object_name, job.job_id, placeholder=placeholder,
+                                 _self=_self)
+                jobs.append(job)
+                if not int(quiet):
+                    colorprinting.parrot(
+                        ' predict: job %s %s, %s model %d -> %s in set %s (seed %d)'
+                        % (job.job_id,
+                           'waiting on weights' if fetch is not None else 'submitted',
+                           entry['name'], index + 1, object_name, child_name,
+                           model_options.seed))
+    except Exception:
+        # Nothing of a half-submitted set-run survives: the jobs already started are
+        # cancelled and their placeholders taken down, and the set goes if it is empty.
+        for job in jobs:
+            try:
+                job.cancel()
+            except Exception:
+                pass
+            discard_pending(job.spec.name, _self=_self)
+        sb.abandon(batch)
+        raise
+    if not int(quiet):
+        colorprinting.parrot(' predict: %d entr%s of %s x %d model%s -> set %s'
+                             % (len(entries), 'y' if len(entries) == 1 else 'ies',
+                                set_name, count, '' if count == 1 else 's', child_name))
+    return jobs
+
+
+def _free_object_name(name, _self=cmd):
+    """`name` legalised and moved aside (`_2`, `_3`...) while an object or a pending
+    name answers to it. For names derived from entries, where a suffix costs nothing."""
+    base = _legal_object_name(name, _self=_self)
+    candidate, n = base, 1
+    while candidate in (_self.get_names('all') or []) or candidate in _PENDING:
+        n += 1
+        candidate = _legal_object_name('%s_%d' % (base, n), _self=_self)
+    return candidate
+
+
+def _start_weights(predictor_obj, quiet, _self=cmd):
+    """(weights_path, fetch, bundle): the weights half of `predict`, factored so the set
+    path warns and defers exactly as the literal path does."""
+    weights_path = None
+    fetch = None
+    bundle = predictor_obj.weight_bundle
+    if bundle is not None:
+        started = fetching.start(bundle, weight_cache())
+        if started.state == 'done':
+            weights_path = started.path
+        else:
+            fetch = started
+            colorprinting.warning(
+                ' predict: fetching %s weights (%.0f MB) in the background; the'
+                ' prediction starts on its own when they land. Cancel with'
+                ' "predict_weights_cancel %s".'
+                % (predictor_obj.id, (bundle.size or 0) / 1e6, predictor_obj.id))
+    return weights_path, fetch, bundle
 
 
 def predict_status(job_id='', quiet=1, _self=cmd):

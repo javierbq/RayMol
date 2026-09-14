@@ -75,6 +75,33 @@ class CreateAndAdd(SetCommandTestCase):
         self.assertEqual([s['name'] for s in cmd.set_list()], ['b'])
         self.assertRaises(SetNotFound, cmd.set_info, 'c')
 
+    def testAddFromAnObjectWhoseToolDeclaresEntriesFieldsAsMetrics(self):
+        # n_residues and n_chains are metrics of every predictor and generator AND
+        # fields of the entries row; the row's answer wins and the reserved keys are
+        # skipped rather than refusing the whole entry (found by #416, latent since #415).
+        mschema.register('foldtool', [
+            mschema.MetricSpec('n_residues', mschema.OBJECT, dtype='int'),
+            mschema.MetricSpec('n_chains', mschema.OBJECT, dtype='int'),
+            mschema.MetricSpec('mean_plddt', mschema.STATE, lo=0, hi=100),
+        ], replace=True)
+        cmd.fab('ACDEF', 'fold', chain='A')
+        mbinding.record('fold', 'foldtool', [
+            mstore.value('foldtool', 'n_residues', value=5),
+            mstore.value('foldtool', 'n_chains', value=1),
+            mstore.value('foldtool', 'mean_plddt', value=88.0, state=1),
+        ])
+        cmd.set_create('s')
+        names = cmd.set_add('s', 'fold')
+        self.assertEqual(names, ['fold'])
+        columns = {c['column'] for c in cmd.set_schema('s') if c.get('column')}
+        self.assertIn('mean_plddt', columns)
+        self.assertNotIn('n_residues', columns)
+        self.assertNotIn('n_chains', columns)
+        got = cmd.set_get('s', 'fold')['fold']
+        self.assertEqual(got['mean_plddt'], 88.0)
+        self.assertEqual(store.active().entry(store.active().get_set('s')['id'],
+                                              'fold')['n_residues'], 5)
+
     def testAddFromObjectCapturesChainsSequenceAndMetrics(self):
         cmd.set_create('s')
         self.peptide('pep', score=42.0, rmsd=1.5)
