@@ -662,11 +662,20 @@ def session_save(session, _self=cmd, **_kwargs):
 def warn_if_pse_leaves_sets(filename='', _self=cmd):
     """Called by `save` on the .pse/.psw path (not from the session task: `get_session`
     is also used for reads like the group-membership check, and a warning on every read
-    would be noise). Names the sets a plain .pse leaves behind."""
+    would be noise). Names the sets a plain .pse leaves behind.
+
+    A set whose EVERY entry is staged is not named: each of its structures is an object
+    in the .pse, so nothing is lost -- and since #416 every single design has a
+    one-entry set behind it, a warning there would fire on every save of every session
+    that ever ran a design. Only the links and the columns stay behind, which is what the
+    words say.
+    """
     if _SAVING_RAYMOL or not store.is_open():
         return False
     try:
-        names = [s['name'] for s in container().sets()]
+        c = container()
+        names = [s['name'] for s in c.sets()
+                 if c.count(s['id']) > c.count(s['id'], 'e.staged_object IS NOT NULL')]
     except Exception:
         return False
     if not names:
