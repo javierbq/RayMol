@@ -1823,11 +1823,13 @@ def _predict_set(predictor_obj, sequence, name='', recycling_steps=3,
               'weights': _weight_version(predictor_obj.id)}
     if msa:
         inputs['msa'] = str(msa)
+    total = len(entries) * count
     batch = sb.open(child_name, predictor_obj.id,
                     tool_version=_weight_version(predictor_obj.id), inputs=inputs,
-                    total=len(entries) * count, reference=parent.get('reference') or '',
-                    parent_set_id=parent['id'], group=True, superpose=True,
-                    kind='structures', _self=_self)
+                    total=total, reference=parent.get('reference') or '',
+                    parent_set_id=parent['id'],
+                    # A group of one is noise here as it is for a single design.
+                    group=total > 1, superpose=True, kind='structures', _self=_self)
 
     jobs = []
     try:
@@ -1842,6 +1844,11 @@ def _predict_set(predictor_obj, sequence, name='', recycling_steps=3,
                 object_name = _free_object_name(entry_name, _self=_self)
                 model_spec = type(spec)(spec.chains, name=object_name,
                                         alignments=spec.alignments)
+                # BEFORE submit: a name the set refuses must not leave a job running.
+                placeholder = sb.expect(
+                    batch, object_name, entry_name=entry_name, parents=[entry['id']],
+                    scalars={'model': index + 1, 'seed': model_options.seed},
+                    specs=[sb.MODEL_SPEC, sb.SEED_SPEC])
                 if fetch is not None:
                     job = _DeferredJob(model_spec, model_options, predictor_obj, bundle,
                                        object_name)
@@ -1852,10 +1859,6 @@ def _predict_set(predictor_obj, sequence, name='', recycling_steps=3,
                 except AttributeError:
                     pass
                 _JOBS[job.job_id] = job
-                placeholder = sb.expect(
-                    batch, object_name, entry_name=entry_name, parents=[entry['id']],
-                    scalars={'model': index + 1, 'seed': model_options.seed},
-                    specs=[sb.MODEL_SPEC, sb.SEED_SPEC])
                 register_pending(object_name, job.job_id, placeholder=placeholder,
                                  _self=_self)
                 jobs.append(job)
@@ -1867,6 +1870,14 @@ def _predict_set(predictor_obj, sequence, name='', recycling_steps=3,
                            entry['name'], index + 1, object_name, child_name,
                            model_options.seed))
     except Exception:
+        # Nothing of a half-submitted set-run survives: the jobs already started are
+        # cancelled and their placeholders taken down, and the set goes if it is empty.
+        for job in jobs:
+            try:
+                job.cancel()
+            except Exception:
+                pass
+            discard_pending(job.spec.name, _self=_self)
         sb.abandon(batch)
         raise
     if not int(quiet):
