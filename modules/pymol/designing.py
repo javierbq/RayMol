@@ -241,7 +241,7 @@ def _legal_object_name(name, _self=cmd):
 
 
 
-def _free_group_name(name, _self=cmd):
+def _free_group_name(name, tool='', _self=cmd):
     """`name` legalised, and moved aside if something else already answers to it.
 
     `cmd.group` on a name that is already a MOLECULE raises -- measured, not assumed -- so
@@ -255,13 +255,13 @@ def _free_group_name(name, _self=cmd):
     """
     base = _legal_object_name(name, _self=_self)
     candidate, suffix = base, 1
-    while not _group_name_is_available(candidate, _self=_self):
+    while not _group_name_is_available(candidate, tool=tool, _self=_self):
         suffix += 1
         candidate = _legal_object_name('%s_%d' % (base, suffix), _self=_self)
     return candidate
 
 
-def _group_name_is_available(name, _self=cmd):
+def _group_name_is_available(name, tool='', _self=cmd):
     """True when a batch may put its designs in a group called `name`.
 
     The GROUP rules, which are not the object rules (`_name_is_available`): an existing
@@ -275,6 +275,12 @@ def _group_name_is_available(name, _self=cmd):
     """
     name = _legal_object_name(name, _self=_self)
     if name in _PENDING or name in _BATCH:
+        return False
+    # A SET of that name is taken too (#416) -- unless `tool` made it, in which case the
+    # batch id is that set's name and the re-run EXTENDS it, exactly as it lands back in
+    # the existing group. A set another tool wrote, or one a user imported, is left alone.
+    sb = _sets_batch()
+    if sb is not None and sb.name_taken(name, tool):
         return False
     try:
         groups = set(_self.get_names('public_group_objects') or [])
@@ -480,6 +486,130 @@ def _reap_batches():
         for member in batch['names']:
             _BATCH_OF.pop(member, None)
         _BATCH.pop(batch_id, None)
+
+
+# -- The batch's set (#416) ----------------------------------------------------
+#
+# Every batch -- `n_designs=1` included -- is a SET, and the group is only its footprint:
+# it holds the staged objects and nothing else. The mechanics (set and run at submit,
+# entry write then staging decision at delivery, the `running()` badge) are
+# `pymol.sets.batch`, shared with `predicting`. What this module owns is when to call it
+# and what to tell it: the batch identity, the target object as the set's reference, the
+# run inputs, and the per-design seed as a column. Every call is guarded, because a set is
+# a record OF a design and must never be the reason a design fails to appear.
+
+
+def _sets_batch():
+    """The `pymol.sets.batch` module, or None if the set store cannot be imported.
+
+    Imported lazily, as `record_run` imports the metrics binding: `pymol.sets.binding`
+    does `from pymol import cmd`, and this module is imported while `cmd` is still being
+    built. A missing store is not an error here -- the design still lands as an object.
+    """
+    try:
+        from pymol.sets import batch
+        return batch
+    except Exception:
+        return None
+
+
+def _target_object(target, _self=cmd):
+    """The object the target selection reads from, for the set's `reference`.
+
+    One by construction -- `resolve_target` refuses a selection spanning objects -- so
+    the first is the only one; '' when that cannot be determined, which leaves the set
+    with no reference exactly as `set_create` would.
+    """
+    try:
+        objects = _self.get_object_list('(%s)' % target) or []
+    except Exception:
+        return ''
+    return str(objects[0]) if len(objects) == 1 else ''
+
+
+def _batch_inputs(spec, options, generator_id, seeds):
+    """The run row's `inputs`: `_run_inputs` for the whole invocation rather than one
+    design. The per-design seed is a COLUMN on each entry (`SEED_SPEC`); here the seeds
+    are listed once, in submission order, so the run says what it asked for."""
+    inputs = {'generator': generator_id, 'n_designs': len(seeds), 'seeds': list(seeds),
+              'weights': _weight_version(generator_id)}
+    if options is not None:
+        knobs = options.as_dict()
+        knobs.pop('seed', None)
+        inputs['options'] = knobs
+    if spec is not None:
+        inputs['target'] = spec.target.source
+        inputs['target_state'] = spec.target.state
+        inputs['target_residues'] = spec.target.n_residues
+        inputs['design_length'] = spec.length
+        inputs['design_chain'] = spec.design_chain
+        inputs['hotspots'] = ['%s/%s' % (entry['chain'], entry['resi'])
+                              for entry in spec.hotspot_ids()]
+    return inputs
+
+
+def _open_set_batch(set_name, generator_obj, spec, options, seeds, target, count,
+                    _self=cmd):
+    """Create the batch's set and run. Never raises: a design that cannot be recorded in
+    a set still runs, and the warning says why the SETS section will not show it."""
+    sb = _sets_batch()
+    if sb is None:
+        return None
+    try:
+        return sb.open(set_name, generator_obj.id,
+                       tool_version=_weight_version(generator_obj.id),
+                       inputs=_batch_inputs(spec, options, generator_obj.id, seeds),
+                       total=count, reference=_target_object(target, _self=_self),
+                       group=count > 1, superpose=False, _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' design: no set for this run (%s); the designs land as'
+                              ' plain objects' % exc)
+        return None
+
+
+def _expect_in_set(set_batch, object_name, seed):
+    """Register one member with its batch's set. True when it should get a placeholder
+    object now; a design with no set always does, which is today's behaviour."""
+    sb = _sets_batch()
+    if set_batch is None or sb is None:
+        return True
+    try:
+        return sb.expect(set_batch, object_name, scalars={'seed': int(seed)},
+                         specs=[sb.SEED_SPEC])
+    except Exception as exc:
+        colorprinting.warning(' design: %s is not recorded in its set (%s)'
+                              % (object_name, exc))
+        return True
+
+
+def _land_in_set(name, _self=cmd):
+    """Write the delivered object as an entry and stage it or discard it (spec §2, §4).
+
+    None when the name belongs to no batch, or when the write was refused -- the store
+    changed under the batch, or anything else -- in which case the caller keeps the
+    object exactly as a run without sets would have. Warned, never raised: the design
+    took minutes and is in the session; the set is the part that can be redone.
+    """
+    sb = _sets_batch()
+    if sb is None or sb.batch_of(name) is None:
+        return None
+    try:
+        return sb.land(name, state=_self.count_states(name), _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' design: %s was not written to its set (%s); it is kept'
+                              ' as a plain object' % (name, exc))
+        return None
+
+
+def _settle_in_set(name):
+    """Tell the set batch a member left the run without landing. Idempotent."""
+    sb = _sets_batch()
+    if sb is None:
+        return
+    try:
+        sb.settle(name)
+    except Exception:
+        pass
 
 
 # -- Reading the target out of the session ------------------------------------
@@ -870,15 +1000,23 @@ def pump(_self=cmd):
 # -- Placeholders and progress -------------------------------------------------
 
 
-def register_pending(name, job_id, _self=cmd):
+def register_pending(name, job_id, placeholder=True, _self=cmd):
     """Create the empty placeholder (if new) and remember what it is waiting for.
 
     The placeholder is a real, zero-atom object, so the design appears in the object
     panel the moment the command returns rather than seventeen minutes later, and
     loading into it lands at state 1.
+
+    `placeholder=False` registers the name WITHOUT an object (#416): a batch member
+    beyond the stage budget is pending -- it has a tray record, it can be cancelled and
+    dismissed, its name is the delivery key -- but it puts no row in the Objects panel.
+    `deliver_result` creates the object when it loads into the name. Nothing that reads
+    the pending tables needs the object to exist: `pending_info` reads dicts and the
+    job handle, `discard_pending` deletes an object only if there is one, and the
+    session-save filter drops names that are pending AND in the session.
     """
     name = _legal_object_name(name, _self=_self)
-    if name not in _self.get_names('objects'):
+    if placeholder and name not in _self.get_names('objects'):
         _self.create(name, 'none')
     _PENDING.setdefault(name, []).append(job_id)
     import time
@@ -917,6 +1055,7 @@ def discard_pending(name, _self=cmd):
         _RECENT[name] = last
     _PENDING.pop(name, None)
     _TRACK.pop(name, None)
+    _settle_in_set(name)
     try:
         if name in _self.get_names('objects') and (
                 recording is not None or _self.count_atoms(name) == 0):
@@ -953,6 +1092,9 @@ def clear_pending(_self=cmd):
     _LAST_INFO.clear()
     _BATCH.clear()
     _BATCH_OF.clear()
+    sb = _sets_batch()
+    if sb is not None:
+        sb.clear()
 
 
 def _batch_frontier(batch_id):
@@ -970,17 +1112,30 @@ def _batch_frontier(batch_id):
     N" from its answer and this estimate from ours.
 
     `(None, len(names))` when nothing is left, which is the terminal row -- no estimate.
+
+    Resumes from the last answer rather than rescanning from index 0. Settling is
+    monotone -- a member that has left `_PENDING`, or whose last record is terminal,
+    does not come back -- so the settled prefix only grows, and remembering its length
+    (`entry['frontier']`) makes this O(1) amortised where it was O(N). That matters
+    because `pending_info` calls it once per member per 500 ms poll: MEASURED on a
+    1000-design batch (#416, where members beyond the budget are pending by name),
+    the rescan was 170 of the poll's 200 ms, a million dict lookups per tick.
     """
     entry = _BATCH.get(batch_id)
     if entry is None:
         return None, 0
-    for settled, member in enumerate(entry['names']):
+    names = entry['names']
+    start = min(int(entry.get('frontier', 0)), len(names))
+    for settled in range(start, len(names)):
+        member = names[settled]
         if member not in _PENDING:
             continue
         if (_LAST_INFO.get(member) or {}).get('state') in TERMINAL_STATES:
             continue
+        entry['frontier'] = settled
         return member, settled
-    return None, len(entry['names'])
+    entry['frontier'] = len(names)
+    return None, len(names)
 
 
 def _smoothed_run_eta(store, raw, now):
@@ -2504,10 +2659,6 @@ def deliver_result(path, name, seed=None, _self=cmd):
                     % (name, _self.count_states(name), name))
             except Exception:
                 pass
-        # Into the invocation's group, if this design came from a `n_designs > 1` command.
-        # AFTER the object is complete and pinned, so a failure in any of that leaves the
-        # design at the top level rather than inside a group that promises a finished one.
-        _join_batch_group(name, _self=_self)
         try:
             # `count_states` IS the state the design landed in, and it is the last one for
             # a live run as well as the only one for a plain one -- the metrics describe
@@ -2518,7 +2669,21 @@ def deliver_result(path, name, seed=None, _self=cmd):
         except Exception as exc:
             colorprinting.warning(' design: could not record metrics for %s (%s)'
                                   % (name, exc))
+        # Into the batch's SET (#416), after the object is complete, pinned and measured:
+        # the entry is captured from the object and its columns from the metrics run just
+        # filed. The set stages it -- keeps the object, in the group -- while the set has
+        # room, and deletes it otherwise; the entry is written before either. A design
+        # that could not be written (no store, or the document changed under the batch)
+        # takes the path it always took: into the invocation's group, if any, at the top
+        # level otherwise -- AFTER the object is complete, so a failure in any of the
+        # above leaves the design at the top level rather than inside a group that
+        # promises a finished one.
+        if _land_in_set(name, _self=_self) is None:
+            _join_batch_group(name, _self=_self)
     finally:
+        # Whatever happened above, this member has left the run. Idempotent, so a name
+        # that `_land_in_set` already settled costs a lookup.
+        _settle_in_set(name)
         remaining = _PENDING.get(name)
         if remaining:
             remaining.pop(0)
@@ -2607,12 +2772,18 @@ ARGUMENTS
     run deletes the name first, which for a group takes its members with it.
 
     n_designs = int: how many independent designs to generate. Each is a FULL run --
-    see NOTES. More than one, and they are ONE BATCH: they go into a group named
-    <generator>_batch_<key> (or `name`, if you gave one) from the moment this command
-    returns, they occupy a single progress row rather than one each, and cancelling that
-    row cancels all of them. A batch that never finishes anything leaves no group behind,
-    and a session saved mid-run carries neither the group nor its placeholders. A batch of
-    one is not a batch -- n_designs=1 makes no group and changes nothing. {default: 1}
+    see NOTES. Every invocation is ONE SET, named <generator>_batch_<key> (or `name`,
+    if you gave one): every design lands in it as an entry, written as it finishes,
+    with its metrics as columns and the target chain stored once. More than one, and
+    they are ONE BATCH: the set's group holds the designs that are STAGED -- the first
+    `raymol_stage_budget` of them (set_budget), which appear as objects from the moment
+    this command returns -- while the rest are entries you stage from the set
+    (set_stage, set_list). They occupy a single progress row rather than one each, and
+    cancelling that row cancels all of them. A batch that never finishes anything leaves
+    neither group nor set behind, and a session saved as .pse mid-run carries neither
+    the group nor its placeholders (save it as .raymol to keep the set). n_designs=1
+    makes no group and leaves the object as it always was; its one-entry set is
+    behind it. {default: 1}
 
     diffusion_steps = int: reverse-diffusion steps {default: 200}
 
@@ -2861,6 +3032,7 @@ SEE ALSO
     # `n_designs=1` gets NONE of it. A group of one is noise, and a batch of one is the row
     # that already exists -- so a single design is untouched by every line below.
     batch_id = ''
+    first_key = spec.design_key(options, weights_version=_weight_version(generator_obj.id))
     if count > 1:
         if name:
             # The members are `<name>_01`, `<name>_02`, ... so the group is `<name>`
@@ -2870,24 +3042,38 @@ SEE ALSO
             # The FIRST design's key. Same computation the loop makes for index 0 -- pure
             # in (target, options, weights version) -- so the group is named for the same
             # identity its first member is, and an identical re-run names the same group.
-            candidate = default_group_name(
-                spec.design_key(options,
-                                weights_version=_weight_version(generator_obj.id)),
-                generator_obj.id)
-        batch_id = _free_group_name(candidate, _self=_self)
+            candidate = default_group_name(first_key, generator_obj.id)
+        batch_id = _free_group_name(candidate, tool=generator_obj.id, _self=_self)
         _BATCH[batch_id] = {'names': [], 'total': count}
+
+    # A distinct seed per design, or every one would be the same molecule. The first uses
+    # the seed resolved above, so `seed=N` still reproduces exactly and `n_designs`
+    # extends that run rather than replacing it. Drawn up front rather than in the loop
+    # so the set's run row can list every seed before the first job is submitted.
+    per_design = [options]
+    for index in range(1, count):
+        import random
+        per_design.append(generator_obj.validate_options(
+            dict(requested, seed=random.randrange(RANDOM_SEED_BOUND))))
+
+    # THE SET (#416). Every batch is one, `n_designs=1` included: the batch id names it
+    # for `n_designs > 1`, and a single design's set is named as its batch would have
+    # been -- it makes no group, so the object stays at the top level as today, but the
+    # set's `group_name` is ready for a later `set_stage`. Created BEFORE the loop so the
+    # first placeholder decision (`_expect_in_set`) can read the budget.
+    sb = _sets_batch()
+    if count > 1 or sb is None:
+        set_name = batch_id
+    else:
+        set_name = sb.free_name(default_group_name(first_key, generator_obj.id),
+                                tool=generator_obj.id, _self=_self)
+    set_batch = _open_set_batch(set_name, generator_obj, spec, options,
+                                [o.seed for o in per_design], target, count,
+                                _self=_self)
 
     jobs = []
     for index in range(count):
-        # A distinct seed per design, or every one would be the same molecule. The first
-        # uses the seed resolved above, so `seed=N` still reproduces exactly and
-        # `n_designs` extends that run rather than replacing it.
-        if index == 0:
-            design_options = options
-        else:
-            import random
-            design_options = generator_obj.validate_options(
-                dict(requested, seed=random.randrange(RANDOM_SEED_BOUND)))
+        design_options = per_design[index]
         # Named per design, from that design's own key, so two seeds are two objects. See
         # `default_object_name` for what an identical re-run does with that name.
         key = spec.design_key(design_options,
@@ -2942,11 +3128,17 @@ SEE ALSO
             _BATCH[batch_id]['names'].append(object_name)
             _BATCH_OF[object_name] = {'batch': batch_id, 'index': index + 1,
                                       'total': count}
-        register_pending(object_name, job.job_id, _self=_self)
+        # A placeholder object only for the members the set will STAGE when they land --
+        # the first `budget` of them (#416). The rest are pending by name alone: the
+        # Objects panel must never show a thousand rows for a thousand-design batch, and
+        # the tray, cancel and dismiss all key on the name, not on an object.
+        placeholder = _expect_in_set(set_batch, object_name, design_options.seed)
+        register_pending(object_name, job.job_id, placeholder=placeholder, _self=_self)
         # AT SUBMIT, on the placeholder: the object-panel clutter this removes is MID-RUN
         # clutter, and a group that only formed at delivery would leave it there for the
         # hours the batch takes.
-        _join_batch_group(object_name, _self=_self)
+        if placeholder:
+            _join_batch_group(object_name, _self=_self)
         jobs.append(job)
         if not int(quiet):
             colorprinting.parrot(

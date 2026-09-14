@@ -325,6 +325,36 @@ land back where the first one did.
 **`n_designs=1` gets none of this.** A group of one is noise and a batch of one is the row
 that already exists, so a single design publishes no batch fields at all and makes no group.
 
+### Every batch is a set (#416)
+
+Since Sets 2/6, one `binder_design` invocation -- `n_designs=1` included -- is also one
+**set** (`pymol.sets`), named like its group: `rfd3_batch_<key>`, or `name`. The set and one
+run row (target, hotspots, length, options, every seed, the weights version) exist from the
+moment the command returns; each design is written as an entry the moment it lands -- chains
+as CIF blobs with the target chain stored once, sequences, and every metric of the design as
+a column declared from `DESIGN_SPECS`, plus `seed`. Written **before** anything is deleted,
+so a crash mid-batch loses at most the design in flight.
+
+**The group is only the set's footprint.** It holds the designs that are **staged** -- the
+first `raymol_stage_budget` to land (`set_budget`, default 6) -- and nothing else. Those are
+the members that get a placeholder object at submit; the rest are pending **by name alone**:
+they have a tray record, `design_cancel` and `design_dismiss` reach them, the runtime
+delivers them by the same name, but they put no row in the Objects panel. At delivery the
+object is loaded, written to the set, and then either kept (staged, in the group) or deleted
+again when the set is already at its budget. `set_stage rfd3_batch_<key>, top:3` brings any
+entry back. `keep_frames` states therefore survive only on a staged object. A single design
+(`n_designs=1`) keeps its object exactly as before and has a one-entry set behind it, its
+entry linked as staged.
+
+The identity rule gains one axis: a batch id that is already a **set** name is taken --
+unless the same generator wrote that set, in which case an identical re-run **extends** it
+(a second run row, more entries) exactly as it lands back in the existing group. A set of
+another tool, or one the user imported, under that name moves the batch aside to `_2`.
+`pymol.sets.batch.running()` is what the inspector polls for the "still landing" badge.
+The mechanics are shared with `predict`, which folds a set or view into a child set
+(`predict boltz2, set:rfd3_batch_<key>@top:20`); see
+`docs/superpowers/specs/2026-09-13-sets-batch-delivery-design.md`.
+
 ### The group exists from the moment the command returns
 
 Grouping happens at **submit**, on the placeholders, and again at delivery. The clutter this
