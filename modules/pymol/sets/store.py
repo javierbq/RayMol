@@ -1354,7 +1354,7 @@ def is_preserved(path):
     return os.path.realpath(os.path.dirname(path)) == os.path.realpath(working_dir())
 
 
-def recovered_files(include_open=False):
+def recovered_files():
     """Every preserved container in the working directory, newest first.
 
     Files this process has OPEN are left out: one of them is the document the user
@@ -1370,9 +1370,8 @@ def recovered_files(include_open=False):
     except OSError:
         return []
     paths = [os.path.join(folder, name) for name in names
-             if name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)]
-    if not include_open:
-        paths = [p for p in paths if not is_container_open(p)]
+             if name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)
+             and not is_container_open(os.path.join(folder, name))]
     paths.sort(key=lambda p: (_mtime(p) or 0.0, p), reverse=True)
     return paths
 
