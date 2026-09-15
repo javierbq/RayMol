@@ -443,3 +443,92 @@ class SqliteTest(SetFilterTestCase):
         self.assertRaises(SetFilterError, self.names, 'plddt > 1; DROP TABLE entries')
         self.assertRaises(SetFilterError, self.names, '"m"."plddt" > 1')
         self.assertRaises(SetFilterError, self.names, 'entries.name = "d1"')
+
+
+class BrushShapeTest(SetFilterTestCase):
+    """The expressions the drawer's UI composes (#418).
+
+    A range brush on a column-header histogram, and the same brush on a Plot axis,
+    write `col >= lo and col <= hi` and send it here like anything typed. Swift builds
+    that STRING and nothing else -- it never decides what it means -- so these tests
+    are the contract for the string's shape: if one of them stops compiling, the brush
+    is broken, and it is broken in a way no Swift test can see.
+
+    BETWEEN, arithmetic and function calls are absent from the grammar on purpose
+    (spec §5: "no function calls, no arithmetic and no subqueries"), so the composer
+    must not reach for them; the rejections below are what keeps that honest.
+    """
+
+    def testRangeBrush(self):
+        sql, params = self.compile('plddt >= 80 and plddt <= 92')
+        self.assertEqual(sql, '(m."plddt" >= ? AND m."plddt" <= ?)')
+        self.assertEqual(params, (80, 92))
+
+    def testRangeBrushWithDecimals(self):
+        sql, params = self.compile('rmsd >= 0.5 and rmsd <= 1.75')
+        self.assertEqual(sql, '(m."rmsd" >= ? AND m."rmsd" <= ?)')
+        self.assertEqual(params, (0.5, 1.75))
+
+    def testRangeBrushOnAChainScalar(self):
+        # `plddt__b` is what schema.column_name(key, chain) produces, and the axis menu
+        # offers those columns like any other -- so a brush on one has to compile.
+        sql, params = self.compile('plddt__b >= 70 and plddt__b <= 90')
+        self.assertEqual(sql, '(m."plddt__b" >= ? AND m."plddt__b" <= ?)')
+        self.assertEqual(params, (70, 90))
+
+    def testRangeBrushOnAnIntColumn(self):
+        self.assertEqual(self.compile('n_contacts >= 3 and n_contacts <= 12'),
+                         ('(m."n_contacts" >= ? AND m."n_contacts" <= ?)', (3, 12)))
+
+    def testTwoBrushesCompose(self):
+        # Two brushed columns are joined with `and`, each clause parenthesised, which
+        # is how the composer keeps a typed `a or b` from swallowing a brush.
+        sql, params = self.compile('(plddt >= 80 and plddt <= 92) and'
+                                   ' (rmsd >= 0 and rmsd <= 2)')
+        self.assertEqual(sql, '((m."plddt" >= ? AND m."plddt" <= ?)'
+                              ' AND (m."rmsd" >= ? AND m."rmsd" <= ?))')
+        self.assertEqual(params, (80, 92, 0, 2))
+
+    def testATypedOrSurvivesABrush(self):
+        sql, _ = self.compile('(plddt > 90 or starred) and (rmsd >= 0 and rmsd <= 2)')
+        self.assertEqual(sql, '((m."plddt" > ? OR e."starred" = 1)'
+                              ' AND (m."rmsd" >= ? AND m."rmsd" <= ?))')
+
+    def testNegativeBoundsBrush(self):
+        # An energy-like column brushed below zero: the composer prints `-12.5`, which
+        # the tokenizer has to read as one signed number and not as an operator.
+        self.assertEqual(self.compile('rmsd >= -12.5 and rmsd <= -1'),
+                         ('(m."rmsd" >= ? AND m."rmsd" <= ?)', (-12.5, -1)))
+
+    def testWholeRangeBrushIsStillJustAFilter(self):
+        # The composer drops a clause that covers the whole domain rather than writing
+        # one; if it ever does write one, it still has to mean something.
+        sql, params = self.compile('plddt >= 0 and plddt <= 100')
+        self.assertEqual(params, (0, 100))
+        self.assertTrue(sql)
+
+    def testTheComposerCannotReachForSQL(self):
+        # Every one of these is a shape a "just write SQL" composer would emit. None of
+        # them is a column, a literal or a boolean operator, so none of them parses.
+        for expr in ('plddt between 80 and 92',
+                     'abs(plddt) > 80',
+                     'plddt > 80 && rmsd < 1',
+                     'plddt > 80 || rmsd < 1',
+                     'plddt + 1 > 80',
+                     'plddt > rmsd',
+                     'plddt > 80 limit 10',
+                     'select * from entries',
+                     'plddt > (select max(plddt) from m_x)',
+                     'm.plddt > 80',
+                     'e.starred = 1',
+                     'plddt >= 80 AND plddt <= 92 ORDER BY plddt'):
+            self.assertRaises(SetFilterError, compile, expr, COLUMNS)
+
+    def testBooleanWordsAreTheOnlyConnectives(self):
+        # Case-insensitive, because a user types what they like and the brush prints
+        # lower case; nothing else joins two clauses.
+        self.assertEqual(self.compile('plddt >= 80 AND plddt <= 92')[0],
+                         '(m."plddt" >= ? AND m."plddt" <= ?)')
+        self.assertEqual(self.compile('plddt > 90 Or starred')[0],
+                         '(m."plddt" > ? OR e."starred" = 1)')
+        self.assertEqual(self.compile('NOT rejected')[0], 'NOT e."rejected" = 1')

@@ -1,13 +1,20 @@
-// DataDrawer.swift — the Data drawer and its Table tab (#417, spec §4.2, wireframe
-// frame 1).
+// DataDrawer.swift — the Data drawer, its Table tab and its filter bar (#417 and
+// #418, spec §4.2, wireframe frames 1 and 2).
 //
 // The inspector is the SCENE column; tables want width, so the set browser is a
 // drawer across the bottom of the viewport. This step ships the Table tab and the
 // three verbs — peek, stage, pin — that make the triage loop work end to end for a
-// design batch: sort, arrow through the top twenty, star, stage, save. Filters, the
-// Plot tab and linked selection are #418; the Sequences and Lineage tabs are #419;
-// iPad and iPhone layouts are #420, so the views here are macOS-only and the drawer
-// is simply absent on iOS.
+// design batch: sort, arrow through the top twenty, star, stage, save. #418 adds the
+// filter bar, the header histograms as range brushes, the Plot tab (SetPlot.swift),
+// linked selection and Send to ▾. The Sequences and Lineage tabs are #419; iPad and
+// iPhone layouts are #420, so the views here are macOS-only and the drawer is simply
+// absent on iOS.
+//
+// The filter is the one thing in here with a rule attached: Swift composes an
+// expression STRING (`SetFilterComposer`) and sends it to Python, which compiles it
+// with `pymol.sets.filter` and sends back the parameterised fragment. There is exactly
+// one grammar and it is Python's; nothing below parses an expression, and a brush is
+// nothing more than a range that knows how to print itself.
 //
 // `SetTableModel` is the part that is pure — sort, number format, budget arithmetic,
 // the default sort direction and the colour ramp all fall out of `MetricSpec`, and
@@ -244,20 +251,32 @@ struct SetTableModel: Equatable {
 
     // MARK: histogram
 
-    /// Bin `values` over `[lo, hi]` when the spec has a domain (so two runs of one
-    /// tool draw on the same axis) and over the observed range otherwise. Values
-    /// outside the domain land in the edge bins. Empty input → empty output.
+    /// The range the histogram bins over: the spec's domain when it has one (so two
+    /// runs of one tool draw on the same axis) and the observed range otherwise.
+    ///
+    /// Public and separate from `histogram` because a BRUSH has to invert it (#418): a
+    /// drag across the bars is a range of pixels, and turning that back into
+    /// `plddt >= 80 and plddt <= 92` needs the same two numbers the bars were binned
+    /// over. Two copies of this arithmetic would be two copies that drift, and the
+    /// symptom would be a brush that filters a range next to the one under the pointer.
+    /// nil when there is nothing to bin.
+    static func histogramDomain(values: [Double], lo: Double?, hi: Double?)
+        -> ClosedRange<Double>? {
+        let finite = values.filter { $0.isFinite }
+        guard let observedLow = finite.min(), let observedHigh = finite.max() else { return nil }
+        if let lo, let hi, hi > lo { return lo...hi }
+        guard observedHigh > observedLow else { return observedLow...observedLow }
+        return observedLow...observedHigh
+    }
+
+    /// Bin `values` over `histogramDomain`. Values outside it land in the edge bins.
+    /// Empty input → empty output.
     static func histogram(values: [Double], bins: Int, lo: Double?, hi: Double?) -> [Int] {
         guard bins > 0, !values.isEmpty else { return [] }
         let finite = values.filter { $0.isFinite }
-        guard !finite.isEmpty else { return [] }
-        var low = lo ?? finite.min()!
-        var high = hi ?? finite.max()!
-        if !(high > low) {
-            low = finite.min()!
-            high = finite.max()!
-        }
+        guard let domain = histogramDomain(values: finite, lo: lo, hi: hi) else { return [] }
         var counts = [Int](repeating: 0, count: bins)
+        let low = domain.lowerBound, high = domain.upperBound
         if !(high > low) {
             // Every value is the same: one full bin in the middle.
             counts[bins / 2] = finite.count
@@ -270,6 +289,113 @@ struct SetTableModel: Equatable {
             counts[i] += 1
         }
         return counts
+    }
+}
+
+/// One column's distribution over the WHOLE set, with the range it was binned over so
+/// a brush can map pixels back to values (#418). Computed when the rows are re-read,
+/// never per render — #417 measured the scan at ~0.5 ms for a thousand entries, and
+/// paying it per frame is exactly the per-tick cost #421 forbids.
+struct SetColumnHistogram: Equatable {
+    let bins: [Int]
+    let lo: Double
+    let hi: Double
+
+    var domain: ClosedRange<Double> { lo <= hi ? lo...hi : hi...lo }
+    var isEmpty: Bool { bins.isEmpty || !(hi > lo) }
+}
+
+// MARK: - Brushes and the composed expression (pure)
+
+/// A range dragged on one column's histogram — in the table header, or on a Plot axis
+/// (#418, spec §4.2: "click the header histogram to brush a range").
+///
+/// It is a RANGE, not a predicate: the only thing it knows how to do is print itself as
+/// `col >= lo and col <= hi`, which then goes to Python like anything typed. That is the
+/// whole of Swift's part in the filter language — build a string — and it is deliberate.
+/// The grammar has no BETWEEN and no arithmetic (spec §5), so this shape is not a
+/// simplification of something richer; it is the language.
+struct SetBrush: Equatable, Identifiable, Hashable {
+    /// The wide-table column name (`plddt`, or `plddt__b` for a chain scalar).
+    let column: String
+    let lo: Double
+    let hi: Double
+
+    var id: String { column }
+
+    init(column: String, lo: Double, hi: Double) {
+        self.column = column
+        self.lo = min(lo, hi)
+        self.hi = max(lo, hi)
+    }
+
+    /// `plddt >= 80 and plddt <= 92`, or nil when the range is not something the
+    /// grammar could read (a non-finite bound, or a column name that is not a column).
+    var clause: String? {
+        guard lo.isFinite, hi.isFinite, SetsStore.isSafeIdentifier(column) else { return nil }
+        return "\(column) >= \(Self.literal(lo)) and \(column) <= \(Self.literal(hi))"
+    }
+
+    /// A number the filter tokenizer reads back as the same number. Integral values
+    /// print without a decimal point (the grammar binds those as INTEGER, which is
+    /// what an `int` column wants); everything else at six significant figures, which
+    /// keeps `1.2345e-05` a legal literal rather than a rounded-to-zero one.
+    static func literal(_ v: Double) -> String {
+        if v == v.rounded(), abs(v) < 1e15 { return String(Int64(v)) }
+        return String(format: "%.6g", v)
+    }
+
+    /// "80 – 92", for the chip that shows what is brushed.
+    var rangeLabel: String { "\(Self.literal(lo)) – \(Self.literal(hi))" }
+}
+
+/// The one expression the drawer sends: what the user typed, ANDed with every brush.
+///
+/// Composition only — no parsing. The typed text is passed through verbatim (wrapped in
+/// parentheses when it has to share with a brush, so a typed `a or b` is not swallowed
+/// by the `and`), and `textOffset` says where it ended up, so a `SetFilterError` offset
+/// coming back from Python can be mapped onto the characters the user actually typed.
+/// Getting that wrong would underline the wrong token, which is worse than none.
+struct ComposedFilter: Equatable {
+    let expression: String
+    /// Where the typed text starts inside `expression`, or -1 when it contributed none.
+    let textOffset: Int
+
+    /// The offset within the typed text that a Python error at `offset` points at, or
+    /// nil when the error is in a brush clause rather than in anything typed.
+    func textOffset(forExpressionOffset offset: Int, textLength: Int) -> Int? {
+        guard textOffset >= 0, offset >= textOffset else { return nil }
+        let local = offset - textOffset
+        return local <= textLength ? local : nil
+    }
+}
+
+enum SetFilterComposer {
+    /// Join the typed expression and the brushes with `and`, each part parenthesised
+    /// when there is more than one. An empty result means "no filter", which is what
+    /// `filter.compile` maps an empty string to.
+    static func compose(text: String, brushes: [SetBrush]) -> ComposedFilter {
+        let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clauses = brushes.sorted { $0.column < $1.column }.compactMap(\.clause)
+        if clauses.isEmpty {
+            // No brush: the typed text IS the expression, so every error offset that
+            // comes back is already an offset into what the user sees.
+            return ComposedFilter(expression: typed,
+                                  textOffset: typed.isEmpty ? -1 : 0)
+        }
+        if typed.isEmpty {
+            return ComposedFilter(expression: clauses.map { "(\($0))" }
+                                    .joined(separator: " and "),
+                                  textOffset: -1)
+        }
+        let parts = ["(\(typed))"] + clauses.map { "(\($0))" }
+        return ComposedFilter(expression: parts.joined(separator: " and "), textOffset: 1)
+    }
+
+    /// The composed expression as a single typed string — what "Edit as text" does, so
+    /// the user can see and change literally what went to `set_filter`.
+    static func flattened(text: String, brushes: [SetBrush]) -> String {
+        compose(text: text, brushes: brushes).expression
     }
 }
 
@@ -293,8 +419,16 @@ struct DataDrawer: View {
             header
             Rectangle().fill(hairline).frame(height: 1)
             if let set = engine.activeSet {
-                SetTableView(set: set, rows: engine.setRows)
-                    .id(set.id)      // a new set starts with a fresh selection
+                SetFilterBar(set: set)
+                Rectangle().fill(hairline).frame(height: 1)
+                switch engine.dataDrawerTab {
+                case .plot:
+                    SetPlotView(set: set, rows: engine.filteredSetRows)
+                        .id(set.id)
+                default:
+                    SetTableView(set: set, rows: engine.filteredSetRows)
+                        .id(set.id)      // a new set starts with a fresh selection
+                }
             } else {
                 emptyState
             }
@@ -352,26 +486,29 @@ struct DataDrawer: View {
         .frame(height: 26)
     }
 
-    /// Table is the one tab this step ships. The other three are drawn disabled,
-    /// not hidden: the drawer's shape is decided (spec §4), and a user who sees
-    /// where Plot and Sequences will go learns the layout once.
+    /// Table and Plot ship; Sequences and Lineage are drawn DISABLED rather than
+    /// hidden: the drawer's shape is decided (spec §4), and a user who sees where they
+    /// will go learns the layout once.
     private var tabStrip: some View {
         HStack(spacing: 2) {
-            tab("Table", active: true, help: "Entries as rows; columns come from the set's metrics")
-            tab("Plot", active: false, help: "Coming with filters and linked selection (#418)")
-            tab("Sequences", active: false, help: "Coming when the sequence strip moves here (#419)")
-            tab("Lineage", active: false, help: "Coming with the Sequences tab (#419)")
+            ForEach(DataDrawerTab.allCases) { item in
+                tab(item)
+            }
         }
     }
 
-    private func tab(_ title: String, active: Bool, help: String) -> some View {
-        Text(title)
+    private func tab(_ item: DataDrawerTab) -> some View {
+        let active = engine.dataDrawerTab == item
+        return Text(item.rawValue)
             .font(.system(size: 10, weight: active ? .semibold : .regular))
-            .foregroundColor(active ? PanelTheme.textColor : PanelTheme.disabledColor)
+            .foregroundColor(!item.isAvailable ? PanelTheme.disabledColor
+                             : (active ? PanelTheme.textColor : PanelTheme.headerColor))
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 4)
                             .fill(active ? PanelTheme.buttonBackground : Color.clear))
-            .help(help)
+            .contentShape(Rectangle())
+            .onTapGesture { if item.isAvailable { engine.dataDrawerTab = item } }
+            .help(item.help)
     }
 
     private var emptyState: some View {
@@ -439,7 +576,12 @@ struct SetTableView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
 
-    @State private var selection = Set<String>()
+    /// The selection lives on the ENGINE, not here: the plot brushes into the same
+    /// set and the viewport writes into it too (#418). One selection, three places to
+    /// change it, which is what "linked" means.
+    private var selection: Binding<Set<String>> {
+        Binding(get: { engine.setSelection }, set: { engine.setSelection = $0 })
+    }
     /// Local sort override, applied the instant a header is clicked; the marker
     /// brings the store's copy of the same choice a tick later and it matches.
     @State private var sortKey: String? = nil
@@ -458,16 +600,32 @@ struct SetTableView: View {
     private static let metricMax: CGFloat = 110
 
     private var model: SetTableModel {
-        SetTableModel(set: set, rows: rows, sortKey: sortKey, sortDescending: sortDescending)
+        // Hidden columns are dropped HERE rather than in the store: which columns show
+        // is a property of this view on the data (and of a saved view), not of the set.
+        SetTableModel(columns: set.columns.filter { !engine.setHiddenColumns.contains($0.column ?? "") },
+                      rows: rows,
+                      sortKey: sortKey ?? set.sortKey,
+                      sortDescending: sortDescending ?? set.sortDescending,
+                      budget: set.budget, stagedCount: set.stagedCount)
     }
 
     /// What the footer's verbs act on: the selection, else the peeked row.
     private var actionRows: [SetRow] {
-        if !selection.isEmpty { return rows.filter { selection.contains($0.id) } }
+        if !engine.setSelection.isEmpty {
+            return rows.filter { engine.setSelection.contains($0.id) }
+        }
         if let peeked = engine.peekedEntryID, let row = rows.first(where: { $0.id == peeked }) {
             return [row]
         }
         return []
+    }
+
+    /// Every scalar column, hidden or not — what the Columns ▾ menu offers and what a
+    /// saved view records as "visible".
+    private var allScalarColumns: [MetricColumn] { self.set.columns.filter(\.isScalar) }
+    private var visibleColumnNames: [String] {
+        allScalarColumns.compactMap(\.column)
+            .filter { !engine.setHiddenColumns.contains($0) }
     }
 
     var body: some View {
@@ -476,9 +634,13 @@ struct SetTableView: View {
             let metricWidth = Self.metricWidth(total: geo.size.width, columns: model.columns.count)
             VStack(spacing: 0) {
                 headerRow(model: model, metricWidth: metricWidth)
+                // Spec §4.2: "column headers are the filter UI". One strip per column,
+                // draggable, writing `col >= lo and col <= hi` into the same filter
+                // every other route goes through.
+                histogramRow(model: model, metricWidth: metricWidth)
                 Rectangle().fill(hairline).frame(height: 1)
                 ScrollViewReader { proxy in
-                    List(model.sorted, id: \.id, selection: $selection) { row in
+                    List(model.sorted, id: \.id, selection: selection) { row in
                         SetTableRowView(row: row, columns: model.columns,
                                         metricWidth: metricWidth,
                                         isPeeked: row.id == engine.peekedEntryID,
@@ -500,6 +662,24 @@ struct SetTableView: View {
                     .onKeyPress(.space) { stageAction(); return .handled }
                     .onKeyPress(KeyEquivalent("s")) { starAction(); return .handled }
                     .onKeyPress(KeyEquivalent("x")) { rejectAction(); return .handled }
+                    // Viewport -> row (#418). The marker already tells us which of the
+                    // set's STAGED objects hold atoms of `sele`; clicking one in the
+                    // viewport therefore lands here, with no poll of our own and with
+                    // no second object -> entry mapping: the link is
+                    // `entries.staged_object`, read by SetsStore with the row.
+                    .onChange(of: engine.setViewportSelection) { ids in
+                        guard let first = ids.first,
+                              rows.contains(where: { $0.id == first }) else { return }
+                        engine.setSelection = Set(ids)
+                        withAnimation(nil) { proxy.scrollTo(first) }
+                    }
+                    // A brush in the Plot tab selects rows; coming back to the table
+                    // should show them rather than leave the user to hunt.
+                    .onChange(of: engine.setSelection) { ids in
+                        guard ids.count == 1, let only = ids.first,
+                              rows.contains(where: { $0.id == only }) else { return }
+                        withAnimation(nil) { proxy.scrollTo(only) }
+                    }
                 }
                 Rectangle().fill(hairline).frame(height: 1)
                 footer(model: model)
@@ -508,11 +688,15 @@ struct SetTableView: View {
         .onDisappear { hoverWork?.cancel() }
         .alert("Save view", isPresented: $showSaveView) {
             TextField("View name", text: $viewName)
-            Button("Save") { engine.saveSetView(set, named: viewName); viewName = "" }
+            Button("Save") {
+                engine.saveSetView(set, named: viewName, columns: visibleColumnNames)
+                viewName = ""
+            }
             Button("Cancel", role: .cancel) { viewName = "" }
         } message: {
-            Text("Saves the set's active filter and sort as a named view "
-                 + "(set_view_save), usable as view:NAME in every set_* command.")
+            Text("Saves the set's active filter, sort and visible columns as a named "
+                 + "view (set_view_save), usable as view:NAME in every set_* command "
+                 + "and as predict set:\(set.name)@view:NAME.")
         }
     }
 
@@ -548,6 +732,27 @@ struct SetTableView: View {
         .frame(height: 20)
     }
 
+    private func histogramRow(model: SetTableModel, metricWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Spacer().frame(width: Self.starWidth + Self.stateWidth + Self.nameWidth)
+            ForEach(model.columns) { column in
+                SetHistogramBrushView(
+                    column: column,
+                    bins: engine.setHistograms[column.column ?? ""]?.bins ?? [],
+                    domain: engine.setHistograms[column.column ?? ""]?.domain,
+                    brush: engine.setBrushes.first { $0.column == column.column },
+                    onBrush: { brush, commit in
+                        engine.updateBrush(set, brush, column: column.column ?? "",
+                                           commit: commit)
+                    })
+                    .frame(width: metricWidth, height: 14)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 16)
+    }
+
     private func headerCell(_ key: String, title: String, model: SetTableModel,
                             alignment: Alignment) -> some View {
         let active = model.sortKey == key
@@ -579,9 +784,9 @@ struct SetTableView: View {
         let unstaged = targets.filter { !$0.isStaged }
         let staged = targets.filter { $0.isStaged }
         return HStack(spacing: 8) {
-            Text(selection.isEmpty
+            Text(engine.setSelection.isEmpty
                  ? "\(rows.count) entries"
-                 : "\(selection.count) of \(rows.count) selected")
+                 : "\(engine.setSelection.count) of \(rows.count) selected")
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundColor(PanelTheme.disabledColor)
             if model.isOverBudget {
@@ -616,22 +821,54 @@ struct SetTableView: View {
                 engine.setPin(set, staged, on: on)
             }
             .disabled(staged.isEmpty)
-            Menu {
-                Button("CSV…") { exportPanel(ext: "csv") }
-                Button("FASTA…") { exportPanel(ext: "fasta") }
-                Button("Folder of CIFs…") { exportFolder() }
-            } label: {
-                Text("Export").font(.system(size: 10))
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Write the selection (or every entry) out with set_export")
-            footerButton("Save view…", help: "Save the active filter and sort as a view (set_view_save)") {
+            columnsMenu
+            SetSendMenu(set: set, target: sendTarget,
+                        exportCSV: { exportPanel(ext: "csv") },
+                        exportFASTA: { exportPanel(ext: "fasta") },
+                        exportFolder: { exportFolder() })
+            footerButton("Save view…",
+                         help: "Save the active filter, sort and visible columns as a "
+                             + "view (set_view_save)") {
                 showSaveView = true
             }
         }
         .padding(.horizontal, 8)
         .frame(height: 24)
+    }
+
+    /// What Send to ▾ acts on: the rows the user picked, else the active filter — the
+    /// same fallback every `set_*` command has, so an empty selection means "everything
+    /// that passes" rather than nothing.
+    private var sendTarget: SetSendTarget {
+        let names = actionRows.map(\.name)
+        return names.isEmpty ? .filtered : .selection(names)
+    }
+
+    /// Which columns show. A property of this view on the data, saved into a view
+    /// rather than into the set, so two people can look at one set differently.
+    private var columnsMenu: some View {
+        Menu {
+            ForEach(allScalarColumns) { column in
+                let name = column.column ?? ""
+                Button {
+                    if engine.setHiddenColumns.contains(name) {
+                        engine.setHiddenColumns.remove(name)
+                    } else {
+                        engine.setHiddenColumns.insert(name)
+                    }
+                } label: {
+                    Label(SetTableModel.header(column),
+                          systemImage: engine.setHiddenColumns.contains(name) ? "" : "checkmark")
+                }
+            }
+            Divider()
+            Button("Show all") { engine.setHiddenColumns = [] }
+        } label: {
+            Text("Columns").font(.system(size: 10))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Hide columns you are not triaging on. Saved with a view (set_view_save).")
     }
 
     private func footerButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
@@ -682,10 +919,10 @@ struct SetTableView: View {
         hoverWork?.cancel()
         // From the selection when there is one and nothing is peeked yet, so
         // "click a row, press ↓" starts from where the user is looking.
-        let anchor = engine.peekedEntryID ?? selection.first
+        let anchor = engine.peekedEntryID ?? engine.setSelection.first
         guard let next = model.neighbor(of: anchor, step: step) else { return }
         engine.peekEntry(set, next)
-        selection = [next.id]
+        engine.setSelection = [next.id]
         withAnimation(nil) { proxy.scrollTo(next.id) }
     }
 
@@ -729,6 +966,347 @@ struct SetTableView: View {
         panel.prompt = "Export"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         engine.exportSet(set, to: url.path, rows: actionRows)
+    }
+}
+
+// MARK: - Filter bar (#418)
+
+/// The expression field, the live count and the brush chips (spec §4.2).
+///
+/// Two debounces, and the difference between them is the whole design:
+///
+///   * PREVIEW, at 120 ms — `appkit_sets.preview_filter`. Compiles the expression and
+///     reports the count and any error. It does NOT write, so typing does not bump the
+///     container's version, and a thousand rows are not re-read per keystroke.
+///   * APPLY, at 600 ms of quiet (or on Return) — `set_filter`. The expression becomes
+///     the SET's, which is what `filtered`, `top:N`, `set_export` and
+///     `predict set:x@filtered` all read. Without this the drawer would show one
+///     population and Send to ▾ would act on another.
+///
+/// Nothing here parses. The field's text goes to `SetFilterComposer`, which joins it
+/// with the brushes, and Python decides what the result means; what comes back is a
+/// count, a message and an offset, and the offset is mapped back onto the typed text by
+/// the composer so the token quoted in the error is the token the user can see.
+struct SetFilterBar: View {
+    let set: SetEntry
+    @EnvironmentObject var engine: PyMOLEngine
+    @EnvironmentObject private var themeManager: ThemeManager
+
+    @State private var previewWork: DispatchWorkItem? = nil
+    @State private var applyWork: DispatchWorkItem? = nil
+    @FocusState private var fieldFocused: Bool
+
+    private var composed: ComposedFilter {
+        SetFilterComposer.compose(text: engine.setFilterText, brushes: engine.setBrushes)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.headerColor)
+            TextField("filter: plddt > 80 and rmsd < 1.5 and not rejected",
+                      text: Binding(get: { engine.setFilterText },
+                                    set: { engine.setFilterText = $0; schedule() }))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11).monospaced())
+                .foregroundColor(PanelTheme.textColor)
+                .focused($fieldFocused)
+                .onSubmit { applyNow() }
+                .frame(minWidth: 160)
+                .help("An expression over this set's columns, the flags (starred, "
+                      + "rejected, staged, pinned), name and tags. The same language "
+                      + "set_filter takes, because it IS set_filter.")
+            chips
+            if !engine.setFilterText.isEmpty || !engine.setBrushes.isEmpty {
+                Button {
+                    engine.setFilterText = ""
+                    engine.setBrushes = []
+                    applyNow()
+                } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(PanelTheme.disabledColor)
+                .help("Clear the filter; every entry comes back (set_filter with no expression)")
+            }
+            Spacer(minLength: 6)
+            status
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 24)
+        .onDisappear {
+            previewWork?.cancel()
+            applyWork?.cancel()
+        }
+    }
+
+    /// One chip per brushed column: what is brushed, and the way to drop just that one
+    /// (spec §4.2, "allow clearing per column").
+    private var chips: some View {
+        ForEach(engine.setBrushes) { brush in
+            HStack(spacing: 3) {
+                Text("\(columnTitle(brush.column)) \(brush.rangeLabel)")
+                    .font(.system(size: 9).monospacedDigit())
+                Button {
+                    engine.updateBrush(set, nil, column: brush.column, commit: true)
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 7, weight: .bold))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(PanelTheme.accentColor.opacity(0.18)))
+            .foregroundColor(PanelTheme.textColor)
+            .help("Brushed on the \(columnTitle(brush.column)) histogram. As an "
+                  + "expression: \(brush.clause ?? "") — click × to drop it.")
+        }
+    }
+
+    /// The count, or the grammar's complaint. Spec §4.2 asks for "212 of 1024 match";
+    /// an error replaces it, because a count next to a rejected expression would be a
+    /// count of the PREVIOUS filter and would read as if the new one had worked.
+    @ViewBuilder private var status: some View {
+        if !engine.setFilter.error.isEmpty {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+                Text(errorText)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundColor(PanelTheme.atomTranspColor)
+            .help(engine.setFilter.error)
+        } else {
+            Text(engine.setFilter.countLabel(total: engine.setRows.count))
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundColor(engine.setFilter.isActive ? PanelTheme.textColor
+                                                           : PanelTheme.disabledColor)
+                .help(engine.setFilter.isActive
+                      ? "Entries matching the active filter, out of the whole set"
+                      : "No filter; every entry is shown")
+        }
+    }
+
+    /// The message with the offending token quoted, when the failure is in something
+    /// the user typed. An offset inside a BRUSH clause is not quoted back: the user did
+    /// not type it, and pointing at a character they cannot see is worse than not
+    /// pointing at all.
+    private var errorText: String {
+        let state = engine.setFilter
+        guard let local = composed.textOffset(forExpressionOffset: state.offset,
+                                              textLength: engine.setFilterText.count),
+              let token = SetFilterState.token(in: engine.setFilterText, at: local) else {
+            return state.error
+        }
+        return "\(state.error) — at ‘\(token)’"
+    }
+
+    private func columnTitle(_ name: String) -> String {
+        set.columns.first { $0.column == name }?.title ?? name
+    }
+
+    private func schedule() {
+        previewWork?.cancel()
+        applyWork?.cancel()
+        let expression = composed.expression
+        let preview = DispatchWorkItem { engine.previewSetFilter(set, expression) }
+        let apply = DispatchWorkItem { engine.applySetFilter(set, expression) }
+        previewWork = preview
+        applyWork = apply
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: preview)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: apply)
+    }
+
+    private func applyNow() {
+        previewWork?.cancel()
+        applyWork?.cancel()
+        engine.applySetFilter(set, composed.expression)
+    }
+}
+
+// MARK: - The header / axis histogram, as a range brush (#418)
+
+/// A column's distribution, with a drag that turns into `col >= lo and col <= hi`.
+///
+/// One component, used by the table header and by the Plot tab's x axis, so "brush a
+/// range" is one behaviour with one implementation and one expression shape. The view
+/// maps pixels to values through `domain` — the SAME range the bars were binned over
+/// (`SetTableModel.histogramDomain`), which is why that function is public: two copies
+/// of the arithmetic would drift, and the symptom would be a brush that filters the
+/// range next to the one under the pointer.
+///
+/// A drag PREVIEWS as it moves and APPLIES when it ends, so a sweep across the bars
+/// does not write to the container once per pixel. A click without a drag clears the
+/// column's brush, which is the cheapest possible "undo this one".
+struct SetHistogramBrushView: View {
+    let column: MetricColumn?
+    let bins: [Int]
+    let domain: ClosedRange<Double>?
+    let brush: SetBrush?
+    /// (brush or nil to clear, commit) — commit is false while the drag is live.
+    let onBrush: (SetBrush?, Bool) -> Void
+
+    @State private var dragFrom: CGFloat? = nil
+    @State private var dragTo: CGFloat? = nil
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(geo.size.width, 1)
+            let height = max(geo.size.height, 1)
+            ZStack(alignment: .bottomLeading) {
+                Rectangle().fill(Color.clear)
+                if !bins.isEmpty {
+                    bars(width: width, height: height)
+                }
+                if let region = selectionRegion(width: width) {
+                    Rectangle()
+                        .fill(PanelTheme.accentColor.opacity(0.22))
+                        .frame(width: max(region.width, 1), height: height)
+                        .offset(x: region.minX)
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        dragFrom = dragFrom ?? value.startLocation.x
+                        dragTo = value.location.x
+                        if let brush = brush(from: dragFrom!, to: value.location.x, width: width) {
+                            onBrush(brush, false)
+                        }
+                    }
+                    .onEnded { value in
+                        let from = dragFrom ?? value.startLocation.x
+                        dragFrom = nil
+                        dragTo = nil
+                        if abs(value.location.x - from) < 2 {
+                            // A click, not a drag: drop this column's brush.
+                            onBrush(nil, true)
+                        } else {
+                            onBrush(brush(from: from, to: value.location.x, width: width), true)
+                        }
+                    })
+            .help(helpText)
+        }
+    }
+
+    private func bars(width: CGFloat, height: CGFloat) -> some View {
+        let peak = max(bins.max() ?? 1, 1)
+        let barWidth = width / CGFloat(bins.count)
+        return HStack(alignment: .bottom, spacing: 0) {
+            ForEach(Array(bins.enumerated()), id: \.offset) { _, count in
+                Rectangle()
+                    .fill(PanelTheme.headerColor.opacity(0.45))
+                    .frame(width: max(barWidth - 0.5, 0.5),
+                           height: max(height * CGFloat(count) / CGFloat(peak), count > 0 ? 1 : 0))
+                    .frame(width: barWidth, alignment: .center)
+            }
+        }
+        .frame(width: width, height: height, alignment: .bottom)
+    }
+
+    /// Where the current brush sits, in points. The live drag wins over the committed
+    /// brush so the highlight tracks the pointer rather than the last preview to land.
+    private func selectionRegion(width: CGFloat) -> CGRect? {
+        if let from = dragFrom, let to = dragTo {
+            return CGRect(x: min(from, to), y: 0, width: abs(to - from), height: 1)
+        }
+        guard let brush, let domain, domain.upperBound > domain.lowerBound else { return nil }
+        let span = domain.upperBound - domain.lowerBound
+        let x0 = CGFloat((brush.lo - domain.lowerBound) / span) * width
+        let x1 = CGFloat((brush.hi - domain.lowerBound) / span) * width
+        return CGRect(x: max(min(x0, x1), 0), y: 0,
+                      width: min(abs(x1 - x0), width), height: 1)
+    }
+
+    private func brush(from: CGFloat, to: CGFloat, width: CGFloat) -> SetBrush? {
+        guard let name = column?.column, let domain,
+              domain.upperBound > domain.lowerBound else { return nil }
+        let lo = SetPlotModel.value(at: min(from, to), in: domain, length: width, flipped: false)
+        let hi = SetPlotModel.value(at: max(from, to), in: domain, length: width, flipped: false)
+        return SetBrush(column: name, lo: lo, hi: hi)
+    }
+
+    private var helpText: String {
+        guard let column else { return "" }
+        var text = "Drag to filter \(column.title) to a range; click to clear it"
+        if let brush, let clause = brush.clause { text += " — now: \(clause)" }
+        return text
+    }
+}
+
+// MARK: - Send to ▾ (#418)
+
+/// The footer menu that hands the selection (or the filter, or a view) to the next
+/// tool. Every item builds a CONSOLE COMMAND and runs it through the ordinary command
+/// path, so an agent over MCP can do exactly what the menu does and the session log
+/// records what happened.
+///
+/// A tool that cannot yet take a set is DISABLED and says why, rather than hidden: the
+/// user's question is "can I send this to MPNN", and an absent menu item answers it
+/// with silence. #416 built the `predict` side; design and binder design still read a
+/// target object, not a set.
+struct SetSendMenu: View {
+    let set: SetEntry
+    let target: SetSendTarget
+    let exportCSV: () -> Void
+    let exportFASTA: () -> Void
+    let exportFolder: () -> Void
+    @EnvironmentObject var engine: PyMOLEngine
+
+    private var predictors: [PredictorInfo] { engine.predictController.availablePredictors }
+
+    var body: some View {
+        Menu {
+            Section("Acting on \(target.label)") {
+                if predictors.isEmpty {
+                    Button("Predict…") {}
+                        .disabled(true)
+                        .help("No predictor is registered in this build yet; open the "
+                              + "Predict bar once so the list loads.")
+                } else {
+                    Menu("Predict") {
+                        ForEach(predictors) { predictor in
+                            Button(predictor.id) {
+                                engine.sendSetToPredict(set, selector: target.selector,
+                                                        predictor: predictor.id)
+                            }
+                        }
+                    }
+                }
+                Button("Design / MPNN…") {}
+                    .disabled(true)
+                    .help("MPNN does not take a set as its input yet — it designs on an "
+                          + "object. Stage the candidates, or Export a folder, and run "
+                          + "design on those. Tracked on #421.")
+                Button("Binder Design…") {}
+                    .disabled(true)
+                    .help("binder_design starts from a TARGET object and hotspots, not "
+                          + "from a set of candidates. Tracked on #421.")
+            }
+            Divider()
+            Menu("Export") {
+                Button("CSV…", action: exportCSV)
+                Button("FASTA…", action: exportFASTA)
+                Button("Folder of CIFs…", action: exportFolder)
+            }
+            if !set.views.isEmpty {
+                Divider()
+                Menu("Apply a view") {
+                    ForEach(set.views) { view in
+                        Button(view.name) { engine.applySetView(set, view) }
+                    }
+                }
+            }
+        } label: {
+            Text("Send to").font(.system(size: 10))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Hand \(target.label) to the next tool as the selector "
+              + "set:\(set.name)@\(target.selector)")
     }
 }
 

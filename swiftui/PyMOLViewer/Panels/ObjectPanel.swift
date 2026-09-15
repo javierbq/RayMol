@@ -1277,6 +1277,10 @@ struct SetEntry: Identifiable, Equatable {
     /// The ranking column binned into `SetsStore.histogramBins`; empty when the set
     /// has no ranking key or nothing measured yet.
     let histogram: [Int]
+    /// Saved views over this set (#418), oldest first. Listed under the set row here
+    /// and offered by the drawer's Send to ▾, because `view:<name>` is an entry
+    /// selector that every `set_*` command — and `predict set:<s>@view:<v>` — takes.
+    var views: [SetView] = []
     /// A batch still landing in this set (#416), or nil.
     var running: BatchProgress? = nil
 
@@ -1497,6 +1501,13 @@ struct ObjectPanel: View {
                             ForEach(Array(engine.sets.enumerated()), id: \.element.id) { index, set in
                                 SetRowView(entry: set, isAlt: index % 2 == 1,
                                            isActive: engine.activeSetID == set.id)
+                                // Views live UNDER their set row (#418, spec §4.2):
+                                // a view is a saved filter + sort over that set and
+                                // nothing else, so it has no meaning anywhere else in
+                                // the panel. One click applies it.
+                                ForEach(set.views) { view in
+                                    SetViewRowView(set: set, view: view, isAlt: index % 2 == 1)
+                                }
                             }
                         }
                     }
@@ -3064,6 +3075,61 @@ private struct SetRowView: View {
         text += " — the Data drawer arrives on iPad and iPhone with #420"
         #endif
         return text
+    }
+}
+
+/// One saved view under its set row (#418): the name, what it selects, and the two
+/// things you can do to it.
+///
+/// Indented past the set's own name and drawn in the disabled colour, because a view
+/// is not a second set — it is a lens on the one above it. Clicking applies its filter
+/// and sort through `set_filter` / `set_sort`, so the console and an MCP agent end up
+/// in exactly the state the drawer shows.
+private struct SetViewRowView: View {
+    let set: SetEntry
+    let view: SetView
+    let isAlt: Bool
+    @EnvironmentObject var engine: PyMOLEngine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Spacer().frame(width: 13 + kGutterW + 10)
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 8))
+                .foregroundColor(PanelTheme.disabledColor)
+            Text(view.name)
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            // The selector, shown rather than explained: it is what you type to feed
+            // this view to predict, design or set_export.
+            Text("view:\(view.name)")
+                .font(.system(size: 8).monospaced())
+                .foregroundColor(PanelTheme.disabledColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1)
+        .frame(height: kRowH - 4)
+        .background(isAlt ? PanelTheme.rowAltBackground : PanelTheme.rowBackground)
+        .contentShape(Rectangle())
+        .help("\(view.name): \(view.summary) — click to apply it to \(set.name)"
+              + " (set_filter + set_sort). As a selector: view:\(view.name)")
+        .onTapGesture { engine.applySetView(set, view) }
+        .contextMenu {
+            Button("Apply to \(set.name)") { engine.applySetView(set, view) }
+            Button("Copy selector") {
+                #if os(macOS)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("set:\(set.name)@view:\(view.name)",
+                                               forType: .string)
+                #endif
+            }
+            Divider()
+            Button("Delete view", role: .destructive) { engine.deleteSetView(set, view) }
+        }
     }
 }
 

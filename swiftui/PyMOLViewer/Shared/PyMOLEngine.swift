@@ -134,6 +134,37 @@ final class PyMOLEngine: ObservableObject {
     /// feedback-line cap. The badge then shows a spinner with no numbers rather
     /// than a confident "0 / 0" (#417 review).
     @Published var setsRunningTruncated = false
+
+    // Filters, linked selection and the Plot tab (#418). All of it belongs to the
+    // ACTIVE set and is cleared when that changes (see `resetSetUIState`), so nothing
+    // here survives into a set it was never about.
+    //
+    // `setFilterText` is what the user TYPED and `setBrushes` are the ranges dragged
+    // on column histograms; `SetFilterComposer` joins them into the one expression
+    // that goes to Python, and `setFilter` is what Python said it means. Swift holds
+    // no parser: `setFilter.fragment` is `pymol.sets.filter.compile`'s output, run
+    // against the read-only connection to give `setFilterMatches`.
+    @Published var setFilter = SetFilterState()
+    @Published var setFilterText = ""
+    @Published var setBrushes: [SetBrush] = []
+    /// nil = no filter, every row shows. A prepare failure also lands here as nil,
+    /// with the reason in `setFilter.error`: an empty table would claim the filter
+    /// had excluded everything.
+    @Published var setFilterMatches: Set<String>? = nil
+    /// Rows the user selected, in the table or by brushing the plot — the two are one
+    /// selection, which is what "linked" means.
+    @Published var setSelection: Set<String> = []
+    /// Entry ids the viewport selection points at, from the marker's `sel`. The table
+    /// follows it (selects and scrolls); it is not a second selection.
+    @Published var setViewportSelection: [String] = []
+    /// Per-column bin counts over the WHOLE set, recomputed when the rows are re-read
+    /// and never per render: the header brushes and the plot's axis strips draw from
+    /// this. #417 measured the scan at ~0.5 ms for a thousand entries.
+    @Published var setHistograms: [String: SetColumnHistogram] = [:]
+    /// Columns hidden in the drawer. A property of the view on the data, not of the
+    /// set, so it lives here and is saved INTO a view rather than into the store.
+    @Published var setHiddenColumns: Set<String> = []
+    @Published var dataDrawerTab: DataDrawerTab = .table
     /// The Data drawer's visibility, persisted like the other panes (#332). Hidden
     /// until a set is opened; macOS only draws it (#420 does mobile).
     @Published var dataDrawerVisible = UserDefaults.standard
@@ -3806,6 +3837,11 @@ final class PyMOLEngine: ObservableObject {
                     // contents are read from the .raymol file by SetsStore, so this
                     // is the ONLY thing about sets that rides the feedback line.
                     parseSetsFeedback(line)
+                } else if line.hasPrefix("SETSFILTER:") {
+                    // The compiled filter fragment (#418). One grammar, Python's:
+                    // this carries what `sets.filter.compile` made of the expression
+                    // the drawer sent, for Swift to bind and run — never to parse.
+                    parseSetsFilterFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
                     parseObjectDetailFeedback(line)
                 } else if line.hasPrefix("SESSIONVP:") {

@@ -28,6 +28,10 @@ enum TempChannel {
         static let objectDetail = "pymol_objdetail"
         static let predictForm = "pymol_predict"
         static let designForm = "pymol_design"
+        /// The compiled filter fragment for the Data drawer (#418). A file, not the
+        /// feedback line, because a long expression compiles to a fragment longer
+        /// than PyMOL's 1024-byte cap. Must match appkit_sets.FILTER_STEM.
+        static let setsFilter = "pymol_sets_filter"
 
         /// Every channel, for `removeAll()`. `.png` channels are listed with
         /// their extension; the rest are JSON.
@@ -35,7 +39,7 @@ enum TempChannel {
             (sequence, "json"), (sequenceSelection, "json"), (gizmo, "json"),
             (hoverInfo, "json"), (settings, "json"), (rayOverlay, "png"),
             (objectPanel, "json"), (objectDetail, "json"),
-            (predictForm, "json"), (designForm, "json"),
+            (predictForm, "json"), (designForm, "json"), (setsFilter, "json"),
         ]
     }
 
