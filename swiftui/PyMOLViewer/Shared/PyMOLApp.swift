@@ -137,6 +137,11 @@ enum AppShortcuts {
 
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
+    /// The View menu's "Show/Hide Sequences" state (#419): the Data drawer standing
+    /// on its Sequences tab, which is where the sequence strip went.
+    private var sequencesShowing: Bool {
+        engine.dataDrawerVisible && engine.dataDrawerTab == .sequences
+    }
     @StateObject private var notes = AnalysisNotesStore.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @StateObject private var mcp = MCPServerManager.shared
@@ -432,8 +437,13 @@ struct PyMOLApp: App {
                     showCommandPanel.toggle()
                 }
                 .keyboardShortcut(AppShortcuts.consolePane)
-                Button(engine.sequenceVisible ? "Hide Sequence" : "Show Sequence") {
-                    engine.sequenceVisible.toggle()
+                // #419: the strip is the Data drawer's Sequences tab now, so this
+                // opens the drawer there. With no set open that tab is exactly the
+                // strip (spec §8 decision 2), which is why the shortcut and the
+                // wording are unchanged.
+                Button(sequencesShowing ? "Hide Sequences" : "Show Sequences") {
+                    if sequencesShowing { engine.closeDataDrawer() }
+                    else { engine.showSequencesTab() }
                 }
                 .keyboardShortcut(AppShortcuts.sequencePane)
                 Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {

@@ -457,10 +457,26 @@ struct DataDrawer: View {
                 case .plot:
                     SetPlotView(set: set, rows: engine.filteredSetRows)
                         .id(set.id)
+                case .sequences:
+                    SequencesTabView(set: set, rows: engine.filteredSetRows)
+                        .id(set.id)
+                case .lineage:
+                    // NOT keyed by the set: the lineage is the whole FILE's, which is
+                    // the point of it — a fold's parent is in another set — so
+                    // re-creating it when the active set changes would throw away a
+                    // graph that did not change.
+                    LineageView()
                 default:
                     SetTableView(set: set, rows: engine.filteredSetRows)
                         .id(set.id)      // a new set starts with a fresh selection
                 }
+            } else if engine.dataDrawerTab.worksWithoutASet {
+                // Spec §8 decision 2: "the drawer's Sequences tab with no set open
+                // shows exactly what the strip shows today". So it draws, and the
+                // "no set open" copy below is for the tabs that genuinely have
+                // nothing — a table of nothing, a scatter of nothing.
+                Rectangle().fill(hairline).frame(height: 1)
+                SequencesTabView(set: nil, rows: [])
             } else {
                 emptyState
             }
@@ -518,9 +534,10 @@ struct DataDrawer: View {
         .frame(height: 26)
     }
 
-    /// Table and Plot ship; Sequences and Lineage are drawn DISABLED rather than
-    /// hidden: the drawer's shape is decided (spec §4), and a user who sees where they
-    /// will go learns the layout once.
+    /// All four tabs, live as of #419. A tab that is not `isAvailable` is still drawn
+    /// disabled rather than hidden — the drawer's shape is decided (spec §4) and a user
+    /// who sees where a thing will go learns the layout once — but nothing is in that
+    /// state today.
     private var tabStrip: some View {
         HStack(spacing: 2) {
             ForEach(DataDrawerTab.allCases) { item in

@@ -10,7 +10,7 @@ instead of a thousand objects in the panel.
 Sets live in a `.raymol` file together with the session. The store, the `set_*`
 commands and the file format are described in
 `docs/superpowers/specs/2026-09-07-sets-store-and-raymol-container-design.md`; this
-page is about the UI that sits on top of them (#417, #418, tracking #421).
+page is about the UI that sits on top of them (#417, #418, #419, tracking #421).
 
 ## Where things appear
 
@@ -24,14 +24,17 @@ page is about the UI that sits on top of them (#417, #418, tracking #421).
   the set's staged objects and reads "5 of 1024 staged" — the rest of the set is in
   the drawer, not in the scene.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
-  with a header naming the set, the tabs, the filter bar and the active tab. Table
-  and Plot are live; Sequences and Lineage are drawn disabled until #419 lands. Drag
-  the divider above it to resize; the height is remembered as a fraction of the
-  window, like the console's.
-  In a short window the console and the sequence strip get their space first, and the
-  drawer says so with a one-line hint rather than showing a table too short to hold a
-  row — close either pane (⌘1 / ⌘2) or enlarge the window.
-  iPad and iPhone show the SETS section but no drawer yet (#420).
+  with a header naming the set, the tabs, the filter bar and the active tab. All four
+  tabs — Table, Plot, Sequences, Lineage — are live since #419. Drag the divider above
+  it to resize; the height is remembered as a fraction of the window, like the
+  console's.
+  In a short window the console gets its space first, and the drawer says so with a
+  one-line hint rather than showing a table too short to hold a row — close the
+  console (⌘1) or enlarge the window. The sequence strip used to compete for that
+  space too; since it became a tab it does not, so the drawer fits in windows where it
+  did not before.
+  iPad and iPhone show the SETS section but no drawer yet (#420), so the sequence
+  strip is still a separate pane there.
 
 ## The Table tab
 
@@ -127,6 +130,64 @@ distribution and brushes like a header histogram.
 An entry with no value on one of the axes is left out rather than drawn at zero — an
 unmeasured entry is not a bad one — and the footer says how many.
 
+## The Sequences tab
+
+The sequence viewer lives here now. **With no set open it is exactly the old sequence
+strip** — one row per enabled scene object, coloured by each residue's real guide-atom
+colour, gap-aligned when an alignment object is enabled, click and drag to select
+atoms. `View ▸ Show Sequences` (⌘2) and the rail's **Seq** pill open the drawer on this
+tab, which is what those two used to open the strip.
+
+With a set open, entry rows follow underneath the scene rows: the rows you have
+selected, or everything the filter admits when nothing is selected.
+
+- **Rows that share a parent share a column space.** Eight MPNN sequences off one
+  backbone are padded, per chain, to the longest of them, so position 31 is position 31
+  on every row of that group and you can read down a column. A chain one row does not
+  have is a run of gaps rather than a shift. Entries with no parent fall back to their
+  run — the entries one tool invocation produced are siblings too. This is a layout,
+  not an alignment: nothing scores a substitution. A real alignment is what an
+  alignment OBJECT is for, and the scene rows above carry its gaps as they always have.
+- **Per-residue heat strips** draw under each row for pLDDT, MPNN native fit and
+  certainty — whichever of them the set has residue arrays for — over the same domains
+  Design mode colours with, oriented so green is good. Click a strip's name in the
+  header to turn it off. A residue with no value draws nothing rather than a zero.
+- **Above 200 rows the tab collapses** to a consensus band with the selected rows kept
+  above it. The band shows the most common residue at each position with a bar for its
+  share, drawn solid where the population never varies. 200 is about six drawer-heights
+  of scrolling; past that you are looking for a pattern, which is what the band is.
+- **Arrays load per visible row.** A thousand-entry set costs the blobs of the rows a
+  scroll actually passed — the rows on screen plus ten either side — not a thousand
+  reads to draw a tab, and at most 400 entries' arrays stay resident. The *sequences*
+  are different: above the threshold the band is a claim about the whole set, so all of
+  them are read once, as text, with no blob touched. The caption names the number the
+  band was actually computed over, never the set's size.
+
+## The Lineage tab
+
+A left-to-right DAG of the whole file: target → backbones → sequences → folds. One dot
+per entry, a line to each parent, sized and tinted by the active set's ranking column
+where that is known, and **hollow** for an entry that is rejected or that has the column
+and no value — a run that failed.
+
+The columns come from two edges, because the store has two: `entries.parents` (the real
+link, and it may point into another set) and `runs.parent_set_id` (which set a run
+consumed). A node sits to the right of whichever answer is longer, so nothing is ever
+drawn left of something it descends from.
+
+**Clicking a node selects it and its descendants in the Table** and switches there.
+The spec asked for a filter. The grammar cannot name entry *ids* — there is no `id`
+column and `in` is refused on `name` — but entry names are unique within a set, so
+`name = 'a' or name = 'b' or …` would compile. We decline to synthesise it: a
+212-term expression written by the UI is not something you could read, edit or save as
+a view, and it would put a second producer of filter text beside the one that builds it
+today. A selection is what "these specific rows" is for, and the plot and the viewport
+already write into the same one.
+
+Descendants in another set are not selected, because the Table is showing one set.
+Those nodes are drawn faint so you can see it before you click, and a click that
+selects nothing says which set to open rather than appearing to do nothing.
+
 ## Linked selection
 
 Rows, points and the scene are one selection:
@@ -210,6 +271,14 @@ of entries. So set contents never cross that channel: Python prints one short `S
 line carrying the file's path and version, only when something changed, and the app
 reads the `.raymol` file itself with a read-only SQLite connection, re-reading only
 when the version moves. A hover storm costs at most one peek load per 120 ms.
+
+The Sequences tab's residue arrays go the same way and one step further: the app
+decodes the blobs itself — little-endian float32, NaN for absent, and only structures
+are gzipped — so a strip costs one SQLite read and no round trip to Python at all. A
+committed fixture written by the Python encoder and read back by the Swift decoder
+keeps the two honest (`testing/tests/test_appkit_sets.py`, `SequenceArrayTests.swift`).
+The Lineage graph is read when its tab is on screen and rebuilt when the file's version
+moves under it; it is never part of a tick.
 
 Filtering follows the same rule. What comes back from Python is not a list of rows but
 the compiled `WHERE` fragment with its bound parameters, which the app runs against the

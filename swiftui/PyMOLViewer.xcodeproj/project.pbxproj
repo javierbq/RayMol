@@ -12,8 +12,12 @@
 		F84E7EEEA0EF173518ACDD0F /* SetTableModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */; };
 		6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
 		A41800010000000000000002 /* SetPlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000001 /* SetPlot.swift */; };
+		A41900010000000000000002 /* LineageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900010000000000000001 /* LineageView.swift */; };
 		A41800010000000000000003 /* SetPlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000001 /* SetPlot.swift */; };
+		A41900010000000000000003 /* LineageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900010000000000000001 /* LineageView.swift */; };
 		A41800010000000000000005 /* SetPlotModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000004 /* SetPlotModelTests.swift */; };
+		A41900030000000000000002 /* LineageModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900030000000000000001 /* LineageModelTests.swift */; };
+		A41900020000000000000002 /* SequenceRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900020000000000000001 /* SequenceRowModelTests.swift */; };
 		5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
 		63F74F260E91A9424EED005C /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
 		263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
@@ -322,7 +326,10 @@
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataDrawer.swift; sourceTree = "<group>"; };
 		A41800010000000000000001 /* SetPlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlot.swift; sourceTree = "<group>"; };
+		A41900010000000000000001 /* LineageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageView.swift; sourceTree = "<group>"; };
 		A41800010000000000000004 /* SetPlotModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlotModelTests.swift; sourceTree = "<group>"; };
+		A41900030000000000000001 /* LineageModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageModelTests.swift; sourceTree = "<group>"; };
+		A41900020000000000000001 /* SequenceRowModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequenceRowModelTests.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
 		4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenFilesTests.swift; sourceTree = "<group>"; };
@@ -489,6 +496,7 @@
 				474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */,
 				DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */,
 				A41800010000000000000001 /* SetPlot.swift */,
+				A41900010000000000000001 /* LineageView.swift */,
 				85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */,
 				B820FE9080BF73526A54CD66 /* TimelinePanel.swift */,
 				C562306A5AD1EEDDBA931B98 /* TransportBar.swift */,
@@ -650,6 +658,8 @@
 				A3960002396A396A396A0002 /* RenderGateTests.swift */,
 				A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */,
 				A41800010000000000000004 /* SetPlotModelTests.swift */,
+				A41900030000000000000001 /* LineageModelTests.swift */,
+				A41900020000000000000001 /* SequenceRowModelTests.swift */,
 				A3990005399A399A399A0005 /* TempChannelTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
 				F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */,
@@ -1372,6 +1382,8 @@
 			files = (
 				F84E7EEEA0EF173518ACDD0F /* SetTableModelTests.swift in Sources */,
 				A41800010000000000000005 /* SetPlotModelTests.swift in Sources */,
+				A41900030000000000000002 /* LineageModelTests.swift in Sources */,
+				A41900020000000000000002 /* SequenceRowModelTests.swift in Sources */,
 				EF5E8D2D6A7BA6B77D164707 /* AnalysisNotesStoreTests.swift in Sources */,
 				057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */,
 				238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */,
@@ -1427,6 +1439,7 @@
 			files = (
 				6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */,
 				A41800010000000000000002 /* SetPlot.swift in Sources */,
+				A41900010000000000000002 /* LineageView.swift in Sources */,
 				63F74F260E91A9424EED005C /* SetsStore.swift in Sources */,
 				B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */,
 				124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */,
@@ -1505,6 +1518,7 @@
 			files = (
 				5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */,
 				A41800010000000000000003 /* SetPlot.swift in Sources */,
+				A41900010000000000000003 /* LineageView.swift in Sources */,
 				263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */,
 				AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */,
 				45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */,

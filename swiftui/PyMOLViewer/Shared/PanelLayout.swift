@@ -42,14 +42,25 @@ enum PanelLayout {
     static let inspectorFracKey = ns + "inspectorFrac"
     /// iPad bottom-panel share of the screen.
     static let panelFracKey = ns + "panelFrac"
-    /// Sequence strip visible. Written by PyMOLEngine, which owns the flag.
+    /// Sequence strip visible. LEGACY on macOS since #419: the strip moved into the
+    /// Data drawer's Sequences tab and the macOS layout has no strip slot any more,
+    /// so nothing on the Mac reads or writes this. It is still iOS's flag — the
+    /// drawer is macOS-only until #420 — which is why it stays in `allKeys` and why
+    /// `migrateSequenceStrip` only CONSUMES it rather than deleting it.
     static let sequenceVisibleKey = ns + "sequenceVisible"
+    /// Set once `migrateSequenceStrip` has run, so a user who later turns the strip
+    /// off on an iPad does not get the drawer re-opened on the next Mac launch.
+    static let sequenceMigratedKey = ns + "sequenceStripMigrated"
     /// Data drawer (#417) visible. Written by PyMOLEngine, which owns the flag,
     /// like the sequence strip's. macOS only until #420.
     static let dataDrawerVisibleKey = ns + "dataDrawerVisible"
     /// The user's Data drawer height, as a fraction of the window height. Absent
     /// until they drag its divider, which selects the absolute default.
     static let dataDrawerFracKey = ns + "dataDrawerFrac"
+    /// Which drawer tab was showing (#419). Persisted because the sequence strip it
+    /// replaced was a remembered pane: without this the strip's migration lands a user
+    /// on Sequences exactly once and puts them on Table every launch after.
+    static let dataDrawerTabKey = ns + "dataDrawerTab"
 
     /// Every key this type defines — the namespace/uniqueness check in the tests
     /// runs off this list, so a new key must be added here too.
@@ -57,8 +68,134 @@ enum PanelLayout {
         consoleVisibleKey, objectsVisibleKey,
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
         consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
-        dataDrawerVisibleKey, dataDrawerFracKey,
+        dataDrawerVisibleKey, dataDrawerFracKey, sequenceMigratedKey, dataDrawerTabKey,
     ]
+
+    // MARK: - The sequence strip's one-time move into the drawer (#419)
+
+    /// What the first launch after #419 should do with a stored `sequenceVisible`.
+    ///
+    /// The strip is gone from the macOS layout; leaving it at that would silently take
+    /// a visible pane away from everyone who had it on, with no hint that it moved.
+    /// So the flag is CONSUMED once: a strip that was showing becomes an open drawer on
+    /// the Sequences tab, which is the same content in its new home (spec §8 decision
+    /// 2 — with no set open the tab shows exactly what the strip showed).
+    ///
+    /// A strip that was OFF changes nothing: the drawer keeps whatever visibility it
+    /// had, on whatever tab it would have opened on. "Off" is a choice too, and turning
+    /// a pane ON for someone who closed it is the same discourtesy in the other
+    /// direction.
+    ///
+    /// Pure, so the policy can be walked without a window or a UserDefaults domain.
+    struct SequenceStripMigration: Equatable {
+        /// True when the drawer should be visible (either it already was, or the strip
+        /// was and this is where it went).
+        let drawerVisible: Bool
+        /// The tab to open on. `nil` means "leave the default alone".
+        let openSequencesTab: Bool
+        /// False when the migration had already run, so nothing should be written.
+        let didMigrate: Bool
+
+        static let alreadyDone = SequenceStripMigration(drawerVisible: false,
+                                                        openSequencesTab: false,
+                                                        didMigrate: false)
+        /// iOS: the strip is still the sequence view there until #420, so there is
+        /// nothing to migrate and — importantly — nothing to WRITE. `drawerVisible`
+        /// is not read on that platform (see `restoredDrawerVisible`).
+        static let notOnThisPlatform = alreadyDone
+    }
+
+    /// `legacyStripVisible` is nil when the key was never written (a fresh install, or
+    /// a user who never touched the strip), which is not the same as `false` only in
+    /// that neither does anything — both leave the drawer where it was.
+    static func sequenceStripMigration(legacyStripVisible: Bool?,
+                                       drawerVisible: Bool,
+                                       alreadyMigrated: Bool) -> SequenceStripMigration {
+        guard !alreadyMigrated else {
+            return SequenceStripMigration(drawerVisible: drawerVisible,
+                                          openSequencesTab: false, didMigrate: false)
+        }
+        if legacyStripVisible == true {
+            return SequenceStripMigration(drawerVisible: true, openSequencesTab: true,
+                                          didMigrate: true)
+        }
+        return SequenceStripMigration(drawerVisible: drawerVisible,
+                                      openSequencesTab: false, didMigrate: true)
+    }
+
+    /// Run the migration against a defaults domain and return its answer. Idempotent:
+    /// the second call sees `sequenceMigratedKey` and reports "nothing to do".
+    ///
+    /// The legacy key is READ and then left alone rather than removed: iOS still draws
+    /// the strip from it until #420 gives the drawer an iPad and iPhone layout, and a
+    /// Mac launch must not reach across and close an iPad's strip. What stops on the
+    /// Mac is the WRITING — `PyMOLEngine.sequenceVisible` is an iOS-only property now.
+    @discardableResult
+    static func migrateSequenceStrip(defaults: UserDefaults = .standard)
+        -> SequenceStripMigration {
+        let legacy: Bool? = defaults.object(forKey: sequenceVisibleKey) as? Bool
+        let answer = sequenceStripMigration(
+            legacyStripVisible: legacy,
+            drawerVisible: defaults.bool(forKey: dataDrawerVisibleKey),
+            alreadyMigrated: defaults.bool(forKey: sequenceMigratedKey))
+        guard answer.didMigrate else { return answer }
+        defaults.set(true, forKey: sequenceMigratedKey)
+        if answer.drawerVisible != defaults.bool(forKey: dataDrawerVisibleKey) {
+            defaults.set(answer.drawerVisible, forKey: dataDrawerVisibleKey)
+        }
+        return answer
+    }
+
+    /// The migration, run exactly once per process against the standard defaults —
+    /// and ONLY on macOS.
+    ///
+    /// A `static let` rather than a call at each use site: `PyMOLEngine` reads the
+    /// answer from two property initialisers (the drawer's visibility and its tab),
+    /// and those run in declaration order, which is not a thing a behaviour should
+    /// depend on. Swift initialises this lazily and exactly once, so both see the
+    /// same answer whichever runs first.
+    ///
+    /// The platform gate matters even though iOS has no drawer to migrate INTO: an
+    /// ungated call writes `sequenceStripMigrated = true` (and `dataDrawerVisible`)
+    /// into iOS defaults at engine init, where `sequenceVisible` defaults TRUE on
+    /// iPad. Harmless while #420 is unwritten, and then, the day the drawer gets an
+    /// iPad layout, every existing iPad user has the drawer popped open at launch with
+    /// the migration already spent and no way to have declined it.
+    #if os(macOS)
+    static let sequenceStripMigrationResult: SequenceStripMigration =
+        migrateSequenceStrip()
+    #else
+    static let sequenceStripMigrationResult = SequenceStripMigration.notOnThisPlatform
+    #endif
+
+    /// The drawer's visibility at launch: on macOS whatever the migration decided
+    /// (which is the stored value when there was nothing to migrate), on iOS the
+    /// stored value, untouched.
+    static func restoredDrawerVisible(defaults: UserDefaults = .standard) -> Bool {
+        #if os(macOS)
+        return sequenceStripMigrationResult.drawerVisible
+        #else
+        return defaults.bool(forKey: dataDrawerVisibleKey)
+        #endif
+    }
+
+    /// The drawer's tab at launch. The migration wins when it fired — that is the
+    /// whole of what it does — and otherwise the persisted choice, validated, because
+    /// a tab name from a newer build (or a hand-edited plist) must not leave the
+    /// drawer on a tab this build cannot draw.
+    static func restoredDrawerTab(migration: SequenceStripMigration,
+                                  stored: String?) -> DataDrawerTab {
+        if migration.openSequencesTab { return .sequences }
+        guard let stored, let tab = DataDrawerTab(rawValue: stored), tab.isAvailable else {
+            return .table
+        }
+        return tab
+    }
+
+    static func restoredDrawerTab(defaults: UserDefaults = .standard) -> DataDrawerTab {
+        restoredDrawerTab(migration: sequenceStripMigrationResult,
+                          stored: defaults.string(forKey: dataDrawerTabKey))
+    }
 
     // MARK: - Bounds
 
@@ -109,18 +246,15 @@ enum PanelLayout {
     /// Height the panes ABOVE the drawer have already claimed in the viewport
     /// column, so the drawer can size itself against what is actually left.
     ///
-    /// `sequenceRows` is the strip's row count when it is showing (nil = hidden),
-    /// charged at its IDEAL height — the same formula the VSplitView is given — not
-    /// at its 24pt floor: the split only squeezes the strip when the user drags it,
-    /// so sizing against the floor overflowed the column by a row.
-    static func drawerColumnUsed(consoleHeight: CGFloat?, topRail: Bool,
-                                 sequenceRows: Int?) -> CGFloat {
+    /// The sequence strip used to be charged here too, at its ideal height. #419
+    /// removed the macOS strip slot — the sequences are a drawer TAB now, so they
+    /// take the drawer's own height and cannot compete with it for the column —
+    /// which is why a crowded column is now only the console and the rail, and why
+    /// the drawer fits in windows where it did not before.
+    static func drawerColumnUsed(consoleHeight: CGFloat?, topRail: Bool) -> CGFloat {
         var used: CGFloat = 0
         if let consoleHeight { used += consoleHeight + macConsoleDividerHeight }
         if topRail { used += macTopRailHeight }
-        if let sequenceRows {
-            used += CGFloat(min(max(sequenceRows, 1), 5)) * 30 + 30
-        }
         // Chrome that is not a pane but still takes column height: the two drag
         // dividers' padding, the MCP "controlling" banner, a docked Predict or
         // Binder bar. An allowance rather than a measurement — a few points of
