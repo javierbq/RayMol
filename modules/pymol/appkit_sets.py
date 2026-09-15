@@ -24,6 +24,10 @@ in it changed since the last poll:
              independently and the badge must simply appear the day both are in.
              With `trunc` set it is instead a LIST of set ids, the counts having been
              dropped to keep the line under the cap -- see `marker`.
+    sel      entry ids of the ACTIVE set whose STAGED OBJECT holds atoms of the
+             `sele` selection, so a click in the viewport can select and scroll to
+             the row (#418). Omitted entirely when empty, which is the usual case,
+             so an idle marker is what it always was.
     trunc    present and 1 only when something was dropped to fit the line.
 
 The helpers below are what the drawer calls so that Swift sends one short line per
@@ -171,13 +175,19 @@ def state(_self=cmd):
     if _peek_entry_id and not (_peek_object_present(_self=_self)
                                and _peek_stamp(_self=_self) == _peek_entry_id):
         _peek_set_id = _peek_entry_id = ''
-    return {
+    payload = {
         'v': version,
         'path': path,
         'active': _active_set_id if store.is_open() else '',
         'peek': _peek_entry_id,
         'running': _running(),
     }
+    # Only when there IS one: an empty list would put four bytes on every idle tick
+    # and change the marker a no-set session has always printed (#418).
+    selected = _selected_entry_ids(_self=_self)
+    if selected:
+        payload['sel'] = selected
+    return payload
 
 
 def _encode(payload):
@@ -204,6 +214,13 @@ def marker(_self=cmd):
     if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
         return text
     payload['trunc'] = 1
+    # `sel` goes first of all: it is a convenience (the table scrolls itself to the
+    # object you clicked) and the user is looking at the object either way, where a
+    # missing batch badge reads as "the batch finished" -- a wrong statement.
+    payload.pop('sel', None)
+    text = _encode(payload)
+    if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
+        return text
     payload['running'] = sorted(payload.get('running') or {})
     text = _encode(payload)
     if len(text.encode('utf-8')) <= MAX_MARKER_BYTES:
@@ -226,13 +243,21 @@ def poll(_self=cmd):
     if text != _last_marker:
         _last_marker = text
         print(text)
+    # The compiled filter (#418) rides its own channel, on the same tick and under the
+    # same "only when it changed" rule. Its own try for the reason poll() has one: a
+    # failure in the filter layer must not cost the drawer its marker.
+    try:
+        _poll_filter()
+    except Exception:
+        pass
 
 
 def reset_marker():
     """Forget the last marker so the next poll re-emits. Used after `load` paths that
     replace the Swift side's state wholesale, and by tests."""
-    global _last_marker
+    global _last_marker, _last_filter_key
     _last_marker = None
+    _last_filter_key = None
 
 
 # -- Cold-launch recovery (#447) ----------------------------------------------------------
@@ -312,10 +337,28 @@ def _set_row(name):
 
 def open_set(name, _self=cmd):
     """Make `name` the drawer's set. Also the MCP way to point a user at a set."""
-    global _active_set_id
+    global _active_set_id, _last_filter_key
     row = _set_row(name)
     _active_set_id = row['id']
+    # Arm the filter channel rather than emitting here. ORDER is the reason: the far
+    # side clears the drawer's filter when the SETS: marker moves the active set, so a
+    # SETSFILTER line printed BEFORE that marker would be wiped by it. Clearing the key
+    # makes `_poll_filter` emit on the next tick -- which poll() runs immediately AFTER
+    # printing the marker, so the two arrive in the order the drawer can use. The UI's
+    # own open calls `emit_filter` and does not wait (#418).
+    _last_filter_key = None
     return row['id']
+
+
+def emit_filter(name, _self=cmd):
+    """Report a set's SAVED filter on the channel now, without changing it.
+
+    What the drawer calls the moment it opens a set: it reads its rows straight from
+    the file, and half a second of showing rows the active filter excludes is half a
+    second of the wrong table.
+    """
+    row = _set_row(name)
+    return _emit_filter(filter_payload(row, row.get('filter') or '', applied=1))
 
 
 def close_set(_self=cmd):
@@ -375,3 +418,240 @@ def toggle_stage(name, entries, _self=cmd):
     except SetError as exc:
         colorprinting.warning(' sets: %s' % exc)
         return []
+
+
+# -- The filter channel (#418) ------------------------------------------------------------
+#
+# There is exactly ONE filter grammar and it is `pymol.sets.filter`. The drawer's filter
+# bar, the header-histogram brushes and the Plot tab's axis brushes all produce the same
+# kind of string (`plddt >= 80 and plddt <= 92`), and every one of them comes HERE to
+# find out what it means. Swift never parses an expression.
+#
+# What goes back is not a row list and not a count: it is the COMPILED FRAGMENT -- the
+# `WHERE` text with `?` placeholders that `filter.compile` produced, plus its bound
+# params. Swift already holds a read-only connection to the same container (SetsStore),
+# and its row query is `FROM entries e LEFT JOIN m_<set> m`, which is the pair of aliases
+# the fragment is written against; so it binds the params and runs the predicate the
+# grammar decided on. Three things fall out of that choice:
+#
+#   * the drawer re-filters LOCALLY when entries land, with no round trip per delivery,
+#     which is what keeps #421's "never poll a set" true while a batch is still running;
+#   * the Plot tab and the Table tab cannot disagree about what matches, because they run
+#     the same fragment over the same rows;
+#   * nothing the user typed is ever interpolated into SQL on either side -- values are
+#     `?` here and bound there, exactly as `filter.py`'s docstring promises.
+#
+# The payload rides a TEMP FILE, not the feedback line, for the reason appkit_inspector's
+# object list does (#231): a long expression compiles to a long fragment, and PyMOL's
+# feedback line is capped at 1024 bytes. A cap would have meant a "your filter is too
+# long to show" state that is impossible to explain; a file has no cap.
+
+FILTER_STEM = 'pymol_sets_filter'
+FILTER_PREFIX = 'SETSFILTER:'
+
+#: (set id, expression) last written to the channel, so the 500 ms poll re-emits when a
+#: console `set_filter`, an MCP agent or an applied view moved the active set's filter --
+#: and stays silent, as every other part of this module does, when nothing changed.
+_last_filter_key = None
+
+
+def _columns_map(set_id):
+    from pymol.sets import filter as _f  # noqa: F401  (import order: errors first)
+    return {col['column']: col.get('dtype', 'float')
+            for col in _store().active().columns(set_id) if col.get('column')}
+
+
+def filter_payload(set_row, expr, applied=0):
+    """Compile `expr` against `set_row`'s declared columns and describe the result.
+
+    Never raises for a bad expression: a filter bar that the user is still typing into
+    is wrong most of the time, and a traceback per keystroke is not an error message.
+    `error` carries `SetFilterError.message` (not `str(exc)`, which prefixes " Error: ")
+    and `offset` the character the parser stopped at, so the field can underline it.
+    """
+    from pymol.sets import filter as setfilter
+    from pymol.sets.errors import SetFilterError
+    c = _store().active()
+    set_id = set_row['id']
+    payload = {
+        'set': set_id,
+        'expr': str(expr or ''),
+        'applied': 1 if applied else 0,
+        'sql': '',
+        'params': [],
+        'n': 0,
+        'total': c.count(set_id),
+        'error': '',
+        'offset': -1,
+    }
+    try:
+        sql, params = setfilter.compile(payload['expr'], _columns_map(set_id))
+    except SetFilterError as exc:
+        payload['error'] = exc.message or 'the filter expression is not valid'
+        payload['offset'] = -1 if exc.offset is None else int(exc.offset)
+        return payload
+    payload['sql'] = sql
+    payload['params'] = list(params)
+    payload['n'] = c.count(set_id, where=sql, params=params)
+    return payload
+
+
+def _emit_filter(payload, key=None):
+    """Write the payload to this process's channel file and print the short marker.
+
+    `key` is what `_poll_filter` compares against; it is the payload's own (set, expr)
+    for an APPLIED filter, and the set's STORED expression for a preview. Getting that
+    distinction wrong is visible: a preview that recorded itself as the key would leave
+    the poll thinking the stored filter had drifted, and the next tick would push the
+    stored one back over the preview -- the field would flicker back mid-drag.
+    """
+    global _last_filter_key
+    from pymol import raymol_tmp
+    try:
+        with open(raymol_tmp.channel_path(FILTER_STEM), 'w') as handle:
+            json.dump(payload, handle)
+    except OSError as exc:
+        colorprinting.warning(' sets: could not write the filter channel (%s)' % exc)
+        return payload
+    _last_filter_key = (payload['set'], payload['expr']) if key is None else key
+    print(FILTER_PREFIX + 'ready')
+    return payload
+
+
+def _drawer_set_row(name):
+    """`_set_row`, but None when the set is gone rather than SetNotFound.
+
+    Only for the two debounced calls below. The filter bar's preview and apply fire up
+    to 600 ms after the keystroke, and a `set_delete` (or a `load`) in between leaves
+    them naming a set that no longer exists -- which surfaced as a traceback in the
+    console for something the user did not do. The drawer has already moved on by then;
+    there is nothing to report and nothing to emit. `cmd.set_filter` still raises, so
+    the MCP surface an agent scripts against is unchanged."""
+    from pymol.sets.errors import SetNotFound
+    try:
+        return _set_row(name)
+    except SetNotFound:
+        return None
+
+
+def preview_filter(name, expr='', _self=cmd):
+    """Compile an expression WITHOUT applying it: what the filter bar asks on every
+    keystroke and what a histogram brush asks on every drag step. The set keeps
+    whatever filter it had, so a half-typed expression never becomes the one
+    `set_export` or `predict set:x@filtered` would use, and a drag does not write to
+    the container (and bump its version, and re-read every row) once per pixel."""
+    row = _drawer_set_row(name)
+    if row is None:
+        return None
+    return _emit_filter(filter_payload(row, expr, applied=0),
+                        key=(row['id'], row.get('filter') or ''))
+
+
+def apply_filter(name, expr='', _self=cmd):
+    """`set_filter name, expr`, then report the compiled result on the channel.
+
+    A rejected expression is reported, not raised: the drawer shows the message beside
+    the field, and the set's previous filter is left in place -- `set_filter` validates
+    before it writes, so a bad expression has already changed nothing.
+    """
+    from pymol.sets.errors import SetFilterError
+    row = _drawer_set_row(name)
+    if row is None:
+        return None
+    expr = str(expr or '')
+    try:
+        _self.set_filter(row['name'], expr, quiet=1)
+    except SetFilterError:
+        # Nothing was written, so the poll's key must stay the STORED filter -- the
+        # same key a preview records. Recording the rejected expression instead made
+        # the next tick see a mismatch, re-emit the stored filter as applied, and the
+        # drawer adopt it: half a second after a typo the field silently reset itself
+        # and any brushes went with it.
+        return _emit_filter(filter_payload(row, expr, applied=0),
+                            key=(row['id'], row.get('filter') or ''))
+    return _emit_filter(filter_payload(row, expr, applied=1))
+
+
+def apply_view(name, view, _self=cmd):
+    """Make a saved view the set's active filter and sort (spec §4.2, "Save as View").
+
+    The view's COLUMNS are not applied here: which columns are visible is a property of
+    the drawer, not of the store, and Swift reads the same `views` row from the file.
+    """
+    row = _set_row(name)
+    saved = _store().active().view(row['id'], str(view).strip())
+    expr = saved.get('filter') or ''
+    _self.set_filter(row['name'], expr, quiet=1)
+    if saved.get('sort_key'):
+        _self.set_sort(row['name'], saved['sort_key'],
+                       1 if int(saved.get('sort_desc') or 0) else 0, quiet=1)
+    _emit_filter(filter_payload(row, expr, applied=1))
+    return str(view).strip()
+
+
+def _poll_filter():
+    """Re-emit the compiled filter when the ACTIVE set's expression moved under us.
+
+    The drawer's own edits already emitted; this is for the other writers -- a console
+    or MCP `set_filter`, `apply_view`, opening a different set, or a `load` that brought
+    a set whose filter was saved with it. One indexed row read per tick, and only while
+    a set is open, so requirement 7 ("nothing changes when no set is open") holds.
+    """
+    global _last_filter_key
+    store = _store()
+    if not (_active_set_id and store.is_open()):
+        if _last_filter_key is not None:
+            _last_filter_key = None
+        return
+    try:
+        row = store.active().get_set(_active_set_id)
+    except Exception:
+        return
+    expr = row.get('filter') or ''
+    if _last_filter_key == (row['id'], expr):
+        return
+    _emit_filter(filter_payload(row, expr, applied=1))
+
+
+# -- Viewport -> row (#418) ---------------------------------------------------------------
+#
+# "Clicking a staged object in the viewport selects and scrolls to its row" needs the
+# object -> entry link, and that link already exists: `entries.staged_object`, written by
+# sets.binding when the entry was staged. Nothing here invents a second mapping.
+#
+# It rides the SETS: marker rather than a poll of its own, and it is computed only while
+# a set is open and something is selected. The cost is one `get_object_list` over the
+# active selection plus one read of the staged entries. That read RETURNS at most
+# `budget` rows -- a single digit by default -- but it is a partial-index scan over the
+# set, so it is not free in the entry count: measured 0.021 / 0.084 / 0.527 ms at 100 /
+# 1000 / 8000 entries, against a 500 ms tick. Well inside the budget #421 sets, and
+# bounded by the partial index on `staged_object`; it is not O(1), and an earlier
+# version of this comment claimed it was. The field is omitted entirely when nothing is
+# selected, so an idle marker is byte-for-byte what it was before this ticket.
+
+#: At most this many entry ids ride the marker. The stage budget is a single digit by
+#: default, so this is already generous; a scene someone raised the budget on reports
+#: the first few and the drawer selects those, which is better than a split line.
+MAX_SELECTED_IDS = 8
+
+
+def _selected_entry_ids(_self=cmd):
+    """Entry ids of the active set whose staged object holds atoms of `sele`."""
+    store = _store()
+    if not (_active_set_id and store.is_open()):
+        return []
+    try:
+        if 'sele' not in (_self.get_names('selections') or []):
+            return []
+        objects = set(_self.get_object_list('sele') or [])
+    except Exception:
+        return []
+    if not objects:
+        return []
+    try:
+        staged = store.active().entries(
+            _active_set_id, where='e.staged_object IS NOT NULL')
+    except Exception:
+        return []
+    out = [e['id'] for e in staged if e.get('staged_object') in objects]
+    return out[:MAX_SELECTED_IDS]

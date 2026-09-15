@@ -123,12 +123,71 @@ struct SetRow: Identifiable, Equatable, Hashable {
     let nResidues: Int
     let tags: String
     let runID: String?
+    /// Entry ids this came from (`entries.parents`). Cheap text, read with the row
+    /// because the Plot tab colours by parent (#418) and the Lineage tab (#419) will
+    /// want it; the STRUCTURES and arrays those parents point at stay lazy.
+    let parents: [String]
     let values: [String: MetricValue]
 
+    init(id: String, name: String, ord: Int, starred: Bool, rejected: Bool,
+         pinned: Bool, stagedObject: String?, nChains: Int, nResidues: Int,
+         tags: String, runID: String?, values: [String: MetricValue],
+         parents: [String] = []) {
+        self.id = id
+        self.name = name
+        self.ord = ord
+        self.starred = starred
+        self.rejected = rejected
+        self.pinned = pinned
+        self.stagedObject = stagedObject
+        self.nChains = nChains
+        self.nResidues = nResidues
+        self.tags = tags
+        self.runID = runID
+        self.parents = parents
+        self.values = values
+    }
+
     var isStaged: Bool { stagedObject != nil }
+    /// The first tag, which is what a categorical colour uses; "" when untagged.
+    var firstTag: String { tags.split(separator: " ").first.map(String.init) ?? "" }
     func value(_ column: MetricColumn) -> MetricValue {
         guard let name = column.column else { return .null }
         return values[name] ?? .null
+    }
+}
+
+/// One saved view: a named filter + sort + visible-column list over a set (#418,
+/// spec §4.2 "Save as View"). A view is also an ENTRY SELECTOR — `view:<name>` — so
+/// the same name that applies it in the drawer feeds `predict set:<set>@view:<name>`
+/// and every other `set_*` command.
+struct SetView: Identifiable, Equatable, Hashable {
+    let name: String
+    let filter: String
+    let sortKey: String
+    let sortDescending: Bool
+    /// The columns the drawer should show. Empty means "whatever is showing": a view
+    /// saved before this list existed must not blank the table.
+    let columns: [String]
+
+    var id: String { name }
+
+    init(name: String, filter: String = "", sortKey: String = "",
+         sortDescending: Bool = true, columns: [String] = []) {
+        self.name = name
+        self.filter = filter
+        self.sortKey = sortKey
+        self.sortDescending = sortDescending
+        self.columns = columns
+    }
+
+    /// What the row's tooltip says it will do.
+    var summary: String {
+        var parts: [String] = []
+        parts.append(filter.isEmpty ? "no filter" : filter)
+        if !sortKey.isEmpty { parts.append("sorted by \(sortKey) \(sortDescending ? "↓" : "↑")") }
+        if !columns.isEmpty { parts.append("\(columns.count) columns") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -169,11 +228,17 @@ struct SetsMarker: Decodable, Equatable {
     let active: String
     let peek: String
     let running: [String: BatchProgress]
+    /// Entry ids of the active set whose STAGED OBJECT holds atoms of `sele`, so a
+    /// click in the viewport can select and scroll to its row (#418). Absent — the
+    /// normal case — when nothing staged is selected.
+    let sel: [String]
     let trunc: Int?
 
     var truncated: Bool { (trunc ?? 0) != 0 }
 
-    private enum CodingKeys: String, CodingKey { case v, path, active, peek, running, trunc }
+    private enum CodingKeys: String, CodingKey {
+        case v, path, active, peek, running, sel, trunc
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +247,7 @@ struct SetsMarker: Decodable, Equatable {
         active = try c.decode(String.self, forKey: .active)
         peek = try c.decode(String.self, forKey: .peek)
         trunc = try? c.decodeIfPresent(Int.self, forKey: .trunc)
+        sel = (try? c.decodeIfPresent([String].self, forKey: .sel)) ?? []
         if let detailed = try? c.decodeIfPresent([String: BatchProgress].self, forKey: .running) {
             running = detailed
         } else if let ids = try? c.decodeIfPresent([String].self, forKey: .running) {
@@ -194,13 +260,133 @@ struct SetsMarker: Decodable, Equatable {
 
     /// For tests and previews.
     init(v: Int, path: String, active: String = "", peek: String = "",
-         running: [String: BatchProgress] = [:], trunc: Int? = nil) {
+         running: [String: BatchProgress] = [:], sel: [String] = [],
+         trunc: Int? = nil) {
         self.v = v
         self.path = path
         self.active = active
         self.peek = peek
         self.running = running
+        self.sel = sel
         self.trunc = trunc
+    }
+}
+
+// MARK: - The compiled filter (#418)
+
+/// What `pymol.sets.filter.compile` made of an expression, as `appkit_sets` writes it
+/// to the filter channel.
+///
+/// The whole point is the `sql` field. There is ONE filter grammar and it is Python's;
+/// the drawer sends the string it composed and gets back the parameterised fragment the
+/// grammar produced, which this side binds and runs. That is why a brush, a typed
+/// expression, a saved view and an MCP `set_filter` cannot mean four different things.
+///
+/// `params` arrive as a JSON array of numbers and strings — the values `filter.py`
+/// bound — and are decoded into `MetricValue` so they can be bound back in the same
+/// order. Nothing is ever spliced into SQL text on either side.
+struct SetFilterPayload: Decodable, Equatable {
+    let set: String
+    let expr: String
+    let sql: String
+    let params: [MetricValue]
+    let n: Int
+    let total: Int
+    let error: String
+    let offset: Int
+    let applied: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case set, expr, sql, params, n, total, error, offset, applied
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        set = try c.decode(String.self, forKey: .set)
+        expr = (try? c.decodeIfPresent(String.self, forKey: .expr)) ?? ""
+        sql = (try? c.decodeIfPresent(String.self, forKey: .sql)) ?? ""
+        n = (try? c.decodeIfPresent(Int.self, forKey: .n)) ?? 0
+        total = (try? c.decodeIfPresent(Int.self, forKey: .total)) ?? 0
+        error = (try? c.decodeIfPresent(String.self, forKey: .error)) ?? ""
+        offset = (try? c.decodeIfPresent(Int.self, forKey: .offset)) ?? -1
+        applied = (try? c.decodeIfPresent(Int.self, forKey: .applied)) ?? 0
+        var values: [MetricValue] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .params) {
+            while !list.isAtEnd {
+                if let d = try? list.decode(Double.self) {
+                    values.append(.number(d))
+                } else if let t = try? list.decode(String.self) {
+                    values.append(.text(t))
+                } else if let b = try? list.decode(Bool.self) {
+                    values.append(.number(b ? 1 : 0))
+                } else {
+                    _ = try? list.decode(AnyNull.self)
+                    values.append(.null)
+                }
+            }
+        }
+        params = values
+    }
+
+    private struct AnyNull: Decodable {}
+}
+
+/// The drawer's filter, as the drawer holds it: the expression it sent, what Python
+/// said about it, and enough to draw the count and the error.
+struct SetFilterState: Equatable {
+    var setID = ""
+    var expression = ""
+    var fragment = ""
+    var params: [MetricValue] = []
+    /// How many entries match, from Python — the authority, and what the count reads.
+    var matched = 0
+    var total = 0
+    /// `SetFilterError.message`, already stripped of CmdException's " Error: " prefix.
+    var error = ""
+    /// Where in `expression` the parser stopped, or -1.
+    var offset = -1
+    /// True when this is the set's PERSISTED filter (a `set_filter`), false for a
+    /// preview of something being typed or dragged.
+    var applied = false
+
+    var isActive: Bool { !fragment.isEmpty && error.isEmpty }
+
+    /// "212 of 1024 match" — spec §4.2.
+    ///
+    /// Both numbers come from the ROWS THE DRAWER IS SHOWING, not from `matched` /
+    /// `total`, which are Python's answer at the moment the expression was compiled.
+    /// During a landing batch the expression does not change, so nothing re-compiles
+    /// and that answer goes stale while the table keeps re-filtering locally — the
+    /// label said "307 of 1000 match" over a table showing 507 of 1200. The payload's
+    /// numbers stay as the cross-check the tests make; the label is what the user
+    /// reads, and it has to agree with what is under it.
+    func countLabel(matched matchedRows: Int, total totalRows: Int) -> String {
+        guard isActive else { return "\(totalRows) entries" }
+        return "\(matchedRows) of \(totalRows) match"
+    }
+
+    /// The token at `offset`, so an error can quote back the thing it tripped on.
+    /// nil when the offset is past the end — an "end of input" failure has no token,
+    /// and inventing one would point at the wrong character.
+    static func token(in text: String, at offset: Int) -> String? {
+        guard offset >= 0, offset < text.count else { return nil }
+        let start = text.index(text.startIndex, offsetBy: offset)
+        let token = text[start...].prefix { !$0.isWhitespace }
+        return token.isEmpty ? nil : String(token)
+    }
+
+    init() {}
+
+    init(payload: SetFilterPayload) {
+        setID = payload.set
+        expression = payload.expr
+        fragment = payload.sql
+        params = payload.params
+        matched = payload.n
+        total = payload.total
+        error = payload.error
+        offset = payload.offset
+        applied = payload.applied != 0
     }
 }
 
@@ -355,6 +541,7 @@ final class SetsStore {
     /// `running` is merged in so a row can carry its badge without a second lookup.
     func sets(running: [String: BatchProgress] = [:]) -> [SetEntry] {
         let budgetDefault = defaultStageBudget()
+        let views = viewsBySet()
         let rows = query("""
             SELECT s.id, s.name, s.kind, s.tool, s.group_name, s.budget, s.ranking_key,
                    s.sort_key, s.sort_desc, s.filter, s.columns, s.reference,
@@ -385,6 +572,7 @@ final class SetsStore {
                 filter: row.string("filter") ?? "",
                 columns: columns,
                 histogram: bins,
+                views: views[id] ?? [],
                 running: running[id])
         }
     }
@@ -402,7 +590,7 @@ final class SetsStore {
             .joined()
         let sql = """
             SELECT e.id, e.name, e.ord, e.starred, e.rejected, e.pinned, e.staged_object,
-                   e.n_chains, e.n_residues, e.tags, e.run_id\(metricSelect)
+                   e.n_chains, e.n_residues, e.tags, e.run_id, e.parents\(metricSelect)
             FROM entries e LEFT JOIN \(Self.quote("m_" + setID)) m ON m.entry_id = e.id
             WHERE e.set_id = ? ORDER BY e.ord
             """
@@ -422,8 +610,56 @@ final class SetsStore {
                 nResidues: row.int("n_residues") ?? 0,
                 tags: row.string("tags") ?? "",
                 runID: row.string("run_id"),
-                values: values)
+                values: values,
+                parents: Self.decodeParents(row.string("parents") ?? "[]"))
         }
+    }
+
+    /// The entry ids a compiled filter fragment matches, or nil when the fragment
+    /// could not even be prepared (#418).
+    ///
+    /// The fragment and its params come from `pymol.sets.filter.compile`, over the
+    /// channel `appkit_sets` writes — Swift never decides what an expression means, it
+    /// binds what the grammar produced. The FROM and the two aliases are the ones
+    /// `rows()` uses above and the ones `filter.py` documents (`e` = entries, `m` = the
+    /// set's wide table), so the predicate lands on exactly the rows the table holds.
+    ///
+    /// nil, not an empty set, on a prepare failure: "nothing matches" and "I could not
+    /// ask" are different answers, and showing an empty table for the second one would
+    /// claim a thousand candidates had been filtered away.
+    func matchingIDs(setID: String, fragment: String, params: [MetricValue]) -> Set<String>? {
+        guard Self.isSafeIdentifier(setID) else { return nil }
+        let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let sql = """
+            SELECT e.id FROM entries e
+            LEFT JOIN \(Self.quote("m_" + setID)) m ON m.entry_id = e.id
+            WHERE e.set_id = ? AND (\(trimmed))
+            """
+        guard let rows = queryBound(sql, bind: [.text(setID)] + params) else { return nil }
+        return Set(rows.compactMap { record -> String? in
+            if case .text(let id)? = record["id"] { return id }
+            return nil
+        })
+    }
+
+    /// Every saved view, by set id. One query for the whole file: a set has a handful
+    /// of views and this runs only when the container's version moved.
+    func viewsBySet() -> [String: [SetView]] {
+        var out: [String: [SetView]] = [:]
+        for row in query("""
+            SELECT set_id, name, filter, sort_key, sort_desc, columns
+            FROM views ORDER BY set_id, created, rowid
+            """) {
+            guard let setID = row.string("set_id"), let name = row.string("name") else { continue }
+            out[setID, default: []].append(SetView(
+                name: name,
+                filter: row.string("filter") ?? "",
+                sortKey: row.string("sort_key") ?? "",
+                sortDescending: (row.int("sort_desc") ?? 1) != 0,
+                columns: Self.decodeParents(row.string("columns") ?? "[]")))
+        }
+        return out
     }
 
     /// The ranking column's distribution, binned over the spec's `lo`/`hi` when it
@@ -440,6 +676,15 @@ final class SetsStore {
     }
 
     // MARK: Plumbing
+
+    /// A JSON list of strings (`entries.parents`, `views.columns`) — [] on anything
+    /// this build does not recognise, for the reason MetricColumn decodes leniently:
+    /// one strict field must not cost the whole row.
+    static func decodeParents(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let list = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return list
+    }
 
     static func decodeColumns(_ json: String) -> [MetricColumn] {
         guard let data = json.data(using: .utf8),
@@ -464,6 +709,66 @@ final class SetsStore {
     }
 
     typealias Record = [String: MetricValue]
+
+    /// `query`, but binding typed values (a filter fragment's params are numbers as
+    /// often as text) and reporting a prepare failure as nil rather than as no rows.
+    private func queryBound(_ sql: String, bind: [MetricValue]) -> [Record]? {
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+        // The fragment and its params are one unit. `SetFilterPayload` decodes
+        // leniently — anything it does not recognise becomes `.null` — so a truncated
+        // or corrupt channel could otherwise arrive as the right SHAPE with the wrong
+        // values and run as a quietly different predicate. This function is careful to
+        // return nil rather than an empty result everywhere else; here is the one
+        // place that was taking the payload's word for it.
+        guard sqlite3_bind_parameter_count(stmt) == Int32(bind.count) else { return nil }
+        for (i, value) in bind.enumerated() {
+            let index = Int32(i + 1)
+            switch value {
+            case .text(let s):
+                sqlite3_bind_text(stmt, index, s, -1, sqliteTransient)
+            case .number(let v):
+                // An integral literal binds as INTEGER so a comparison against an int
+                // column keeps its type; SQLite compares the two numerically either
+                // way, but a REAL bound against a TEXT-affinity column would not.
+                if v == v.rounded(), abs(v) < 9.2e18 {
+                    sqlite3_bind_int64(stmt, index, Int64(v))
+                } else {
+                    sqlite3_bind_double(stmt, index, v)
+                }
+            case .null:
+                sqlite3_bind_null(stmt, index)
+            }
+        }
+        var out: [Record] = []
+        let n = sqlite3_column_count(stmt)
+        var names: [String] = []
+        for i in 0..<n {
+            names.append(sqlite3_column_name(stmt, i).map { String(cString: $0) } ?? "c\(i)")
+        }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            var record: Record = [:]
+            for i in 0..<n {
+                switch sqlite3_column_type(stmt, i) {
+                case SQLITE_INTEGER:
+                    record[names[Int(i)]] = .number(Double(sqlite3_column_int64(stmt, i)))
+                case SQLITE_FLOAT:
+                    record[names[Int(i)]] = .number(sqlite3_column_double(stmt, i))
+                case SQLITE_TEXT:
+                    record[names[Int(i)]] = sqlite3_column_text(stmt, i)
+                        .map { .text(String(cString: $0)) } ?? .null
+                default:
+                    record[names[Int(i)]] = .null
+                }
+            }
+            out.append(record)
+        }
+        return out
+    }
 
     /// Run one statement and return its rows keyed by result-column name. Errors
     /// (a table that is not there yet, a file mid-migration) are an empty result:
@@ -574,6 +879,7 @@ extension PyMOLEngine {
         let peek: String? = marker.peek.isEmpty ? nil : marker.peek
         var nextSets = sets
         var nextRows = setRows
+        var rowsChanged = false
         if versionChanged || running != setsRunning {
             nextSets = setsStore?.sets(running: running) ?? []
         }
@@ -583,7 +889,16 @@ extension PyMOLEngine {
             } else {
                 nextRows = []
             }
+            rowsChanged = true
         }
+        // The histograms the header brushes and the plot's axis strips draw from are
+        // recomputed HERE — once per change — rather than per render (#418).
+        let nextHistograms: [String: SetColumnHistogram]? = rowsChanged
+            ? Self.histograms(rows: nextRows,
+                              columns: active.flatMap { id in
+                                  nextSets.first { $0.id == id }?.columns } ?? [])
+            : nil
+        let viewportSelection = marker.sel
         setsVersion = marker.v
         let publish = {
             if self.sets != nextSets { self.sets = nextSets }
@@ -591,6 +906,15 @@ extension PyMOLEngine {
             if self.setsRunningTruncated != truncated { self.setsRunningTruncated = truncated }
             if self.activeSetID != active {
                 self.activeSetID = active
+                // A set opened from Python (or closed under us) starts with a fresh
+                // selection and column choice, for the reason the peek is cleared
+                // below: none of it is about the set now showing. The FILTER is the
+                // one thing it inherits — the set's own, saved in the file — and the
+                // compiled form of it arrives on the SETSFILTER line that `poll()`
+                // prints right after this marker.
+                self.resetSetUIState(
+                    filterText: active.flatMap { id in
+                        nextSets.first { $0.id == id }?.filter } ?? "")
                 // A set opened from Python (an MCP agent's appkit_sets.open_set, or
                 // the console) shows the drawer exactly as the SETS row's click does;
                 // closing is left to the user, so a set_delete does not yank the band.
@@ -601,7 +925,17 @@ extension PyMOLEngine {
                 if active != nil { self.dataDrawerVisible = true }
             }
             if self.setRows != nextRows { self.setRows = nextRows }
+            if let nextHistograms, self.setHistograms != nextHistograms {
+                self.setHistograms = nextHistograms
+            }
             if self.peekedEntryID != peek { self.peekedEntryID = peek }
+            if self.setViewportSelection != viewportSelection {
+                self.setViewportSelection = viewportSelection
+            }
+            // Entries that landed while a batch runs have to fall on the right side of
+            // the active filter without another round trip to Python — which is the
+            // reason the fragment, not a row list, is what comes over the channel.
+            if rowsChanged { self.refreshFilterMatches() }
         }
         if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
     }
@@ -697,11 +1031,20 @@ extension PyMOLEngine {
         // The previous set's ghost is not part of this one: leaving it up would
         // draw an entry that is in no visible row, with peekedEntryID pointing
         // outside setRows so nothing shows ◐ either.
-        if set.id != activeSetID { clearPeek() }
+        if set.id != activeSetID {
+            clearPeek()
+            resetSetUIState(filterText: set.filter)
+        }
         activeSetID = set.id
         setRows = setsStore?.rows(setID: set.id, columns: set.columns) ?? []
+        setHistograms = Self.histograms(rows: setRows, columns: set.columns)
         dataDrawerVisible = true
-        runPythonQuiet("from pymol import appkit_sets as _s\n_s.open_set(\(pyQuoted(set.name)))")
+        // `emit_filter` alongside the open, not inside it: the set's saved filter has
+        // to be compiled before the first frame, or the drawer shows rows the filter
+        // excludes for as long as it takes the next poll to come round.
+        runPythonQuiet("from pymol import appkit_sets as _s\n"
+                       + "_s.open_set(\(pyQuoted(set.name)))\n"
+                       + "_s.emit_filter(\(pyQuoted(set.name)))")
     }
 
     func closeDataDrawer() {
@@ -787,16 +1130,331 @@ extension PyMOLEngine {
         runPython("from pymol import cmd as _c\n_c.set_export(\(pyQuoted(set.name)), r'''\(safePath)''', \(pyQuoted(selector)))")
     }
 
-    func saveSetView(_ set: SetEntry, named view: String) {
-        let clean = view.trimmingCharacters(in: .whitespaces)
-        guard !clean.isEmpty else { return }
-        runPythonQuiet("from pymol import cmd as _c\n_c.set_view_save(\(pyQuoted(set.name)), \(pyQuoted(clean)))")
-    }
-
     /// `a+b+c` — the selector language's several-by-name form (spec §4.1). Entry
     /// names cannot contain `+`, by the store's own rule.
     static func entrySelector(_ rows: [SetRow]) -> String? {
         let names = rows.map(\.name).filter { !$0.isEmpty && !$0.contains("+") }
         return names.isEmpty ? nil : names.joined(separator: "+")
+    }
+
+    // MARK: - Filters (#418)
+
+    /// Consume one `SETSFILTER:` line: the compiled fragment for an expression the
+    /// drawer sent, or for one a console/MCP `set_filter` applied under it.
+    ///
+    /// File-backed for the reason the object list is (#231): a long expression compiles
+    /// to a fragment longer than PyMOL's 1024-byte feedback line, and a filter that
+    /// stops working past some length is not a behaviour anyone could explain.
+    func parseSetsFilterFeedback(_ line: String) {
+        guard line.hasPrefix("SETSFILTER:") else { return }
+        let path = TempChannel.path(TempChannel.Stem.setsFilter)
+        guard let data = FileManager.default.contents(atPath: path),
+              let payload = try? JSONDecoder().decode(SetFilterPayload.self, from: data)
+        else { return }
+        applySetsFilter(payload)
+    }
+
+    func applySetsFilter(_ payload: SetFilterPayload) {
+        let publish = {
+            // A payload for a set the drawer has since left is not ours: applying it
+            // would filter the NEW set's rows by the OLD set's expression.
+            guard payload.set == self.activeSetID else { return }
+            let state = SetFilterState(payload: payload)
+            if self.setFilter != state { self.setFilter = state }
+            // An APPLIED filter that is not one we sent came from the console, from
+            // MCP, or from a view: adopt its text so the field shows what is actually
+            // in force. Two guards, and both are needed. `lastSentFilterExpression`
+            // keeps our OWN debounced apply from echoing back and overwriting the
+            // characters typed since we sent it — the user types `plddt > 8`, we
+            // apply, they type `0`, and without this the echo would put `plddt > 8`
+            // back. The composed compare keeps a payload that already agrees from
+            // clearing brushes for no reason.
+            let composed = SetFilterComposer.compose(text: self.setFilterText,
+                                                     brushes: self.setBrushes).expression
+            if payload.applied != 0, payload.expr != self.lastSentFilterExpression,
+               payload.expr != composed {
+                self.setFilterText = payload.expr
+                self.setBrushes = []
+            }
+            self.refreshFilterMatches()
+        }
+        if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
+    }
+
+    /// What the drawer should do with its match set, given the filter's state.
+    ///
+    /// Pure, and separate from the query, because the interesting case is the one with
+    /// no query in it: a REJECTED expression must leave the last good match set alone.
+    /// Falling back to "every row" there was a lie the drawer told and then kept —
+    /// `_poll_filter` has nothing to re-emit for an expression that was never applied,
+    /// so the table sat at 1000 rows while the set admitted 307, and Send to ▾ on an
+    /// empty selection acted on the 307 the user could not see.
+    enum FilterMatchDecision: Equatable {
+        /// No filter: every row shows.
+        case all
+        /// Keep whatever is on screen — the set's filter has not moved.
+        case keep
+        /// Run the fragment.
+        case run
+    }
+
+    static func filterMatchDecision(_ state: SetFilterState, activeSetID: String?)
+        -> FilterMatchDecision {
+        guard let activeSetID, state.setID == activeSetID else { return .all }
+        if !state.error.isEmpty { return .keep }
+        return state.fragment.isEmpty ? .all : .run
+    }
+
+    /// Run the compiled fragment over this set's rows. Cheap and local — one indexed
+    /// query over a file already open — which is what lets the table re-filter when
+    /// entries land rather than asking Python again per delivery.
+    func refreshFilterMatches() {
+        switch Self.filterMatchDecision(setFilter, activeSetID: activeSetID) {
+        case .all:
+            if setFilterMatches != nil { setFilterMatches = nil }
+        case .keep:
+            break
+        case .run:
+            guard let setID = activeSetID else { return }
+            let matches = setsStore?.matchingIDs(setID: setID, fragment: setFilter.fragment,
+                                                 params: setFilter.params)
+            guard let matches else {
+                // Could not even prepare it. Keep what is on screen and say so; an
+                // empty table would read as "your filter excluded everything".
+                setFilter.error = "This build could not apply the compiled filter, so"
+                    + " the table is unchanged. The set_* commands still use it."
+                return
+            }
+            if setFilterMatches != matches { setFilterMatches = matches }
+        }
+    }
+
+    /// The expression the drawer would send RIGHT NOW: what is typed, joined with the
+    /// brushes that exist at this instant.
+    ///
+    /// A seam, and the reason it exists is a bug. The filter bar's debounced work items
+    /// used to capture the expression at keystroke time, and a brush changed between
+    /// the keystroke and the fire — a header drag, "Filter to selection", or a chip's ×
+    /// — went through the engine, where the bar's `@State` work items could not see it
+    /// and could not be cancelled. Either the brush was dropped while its chip was
+    /// still on screen (so `set_export` and Send to ▾ acted on a weaker filter than the
+    /// UI claimed) or a dropped clause was resurrected (so rows were hidden by a
+    /// predicate nothing on screen mentioned). Reading the state at FIRE time cannot
+    /// go stale, which is why nothing else may compose it.
+    var currentFilterExpression: String {
+        SetFilterComposer.compose(text: setFilterText, brushes: setBrushes).expression
+    }
+
+    func previewCurrentFilter(_ set: SetEntry) {
+        previewSetFilter(set, currentFilterExpression)
+    }
+
+    func applyCurrentFilter(_ set: SetEntry) {
+        applySetFilter(set, currentFilterExpression)
+    }
+
+    /// Entries the viewport selection points at that the active filter is hiding.
+    ///
+    /// Clicking a staged object whose row is filtered out did nothing at all, with no
+    /// account of why (#418 review R3). Named here so the filter bar can say it, and
+    /// offer the way out.
+    var viewportSelectionHidden: [SetRow] {
+        guard !setViewportSelection.isEmpty, setFilterMatches != nil else { return [] }
+        let shown = Set(filteredSetRows.map(\.id))
+        return setViewportSelection.compactMap { id in
+            guard !shown.contains(id) else { return nil }
+            return setRows.first { $0.id == id }
+        }
+    }
+
+    /// The rows the drawer shows: the active set's entries under the active filter.
+    /// The Table tab and the Plot tab read THIS, so they cannot disagree (spec §4.3).
+    var filteredSetRows: [SetRow] {
+        guard let matches = setFilterMatches else { return setRows }
+        return setRows.filter { matches.contains($0.id) }
+    }
+
+    /// Everything about the drawer that belongs to one set and must not follow the
+    /// user into the next one.
+    func resetSetUIState(filterText: String = "") {
+        setFilterText = filterText
+        lastSentFilterExpression = filterText
+        setBrushes = []
+        setFilter = SetFilterState()
+        setFilterMatches = nil
+        setSelection = []
+        setViewportSelection = []
+        setHiddenColumns = []
+        dataDrawerTab = .table
+    }
+
+    /// Set or clear one column's brush and push the composed expression.
+    ///
+    /// `commit` is the difference between a drag in progress and a drag that ended: a
+    /// live drag only PREVIEWS (no write, so no version bump and no re-read of a
+    /// thousand rows per pixel), and letting go applies it with `set_filter`, which is
+    /// what makes it the filter every `set_*` command and every MCP call then sees.
+    func updateBrush(_ set: SetEntry, _ brush: SetBrush?, column: String, commit: Bool) {
+        var next = setBrushes.filter { $0.column != column }
+        if let brush { next.append(brush) }
+        pushBrushes(set, next, commit: commit)
+    }
+
+    /// Replace every brush at once — "Filter to selection" in the Plot tab.
+    func updateBrushes(_ set: SetEntry, _ brushes: [SetBrush]) {
+        pushBrushes(set, brushes, commit: true)
+    }
+
+    private func pushBrushes(_ set: SetEntry, _ brushes: [SetBrush], commit: Bool) {
+        setBrushes = brushes
+        let composed = SetFilterComposer.compose(text: setFilterText, brushes: brushes)
+        if commit {
+            applySetFilter(set, composed.expression)
+        } else {
+            previewSetFilter(set, composed.expression)
+        }
+    }
+
+    /// Ask Python what an expression means WITHOUT applying it: every keystroke and
+    /// every step of a histogram drag. No write, so no version bump and no re-read of
+    /// a thousand rows per pixel.
+    func previewSetFilter(_ set: SetEntry, _ expression: String) {
+        lastSentFilterExpression = expression
+        runPythonQuiet("from pymol import appkit_sets as _s\n"
+                       + "_s.preview_filter(\(pyQuoted(set.name)), \(Self.pythonLiteral(expression)))")
+    }
+
+    /// `set_filter` — the expression becomes the set's, which is what `filtered`,
+    /// `top:N`, `set_export` and `predict set:x@filtered` all read.
+    func applySetFilter(_ set: SetEntry, _ expression: String) {
+        lastSentFilterExpression = expression
+        runPythonQuiet("from pymol import appkit_sets as _s\n"
+                       + "_s.apply_filter(\(pyQuoted(set.name)), \(Self.pythonLiteral(expression)))")
+    }
+
+    // MARK: - Saved views (#418)
+
+    /// Save the active filter, the active sort and the visible columns as a view.
+    /// Columns go as a `+`-joined list, the separator the selector language already
+    /// uses, so nothing has to be quoted inside the literal.
+    func saveSetView(_ set: SetEntry, named view: String, columns: [String]) {
+        let clean = view.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        let list = columns.filter { SetsStore.isSafeIdentifier($0) }.joined(separator: "+")
+        runPythonQuiet("from pymol import cmd as _c\n"
+                       + "_c.set_view_save(\(pyQuoted(set.name)), \(pyQuoted(clean)),"
+                       + " columns=\(Self.pythonLiteral(list)))")
+    }
+
+    /// Apply a view: its filter and sort become the set's, through `set_filter` and
+    /// `set_sort`, so the console and an MCP agent see the same state the drawer does.
+    /// The COLUMN list is applied here, because which columns are on screen is the
+    /// drawer's business and the store has no opinion about it.
+    func applySetView(_ set: SetEntry, _ view: SetView) {
+        setFilterText = view.filter
+        setBrushes = []
+        if !view.columns.isEmpty {
+            let visible = Set(view.columns)
+            setHiddenColumns = Set(set.columns.compactMap(\.column)
+                                    .filter { !visible.contains($0) })
+        }
+        runPythonQuiet("from pymol import appkit_sets as _s\n"
+                       + "_s.apply_view(\(pyQuoted(set.name)), \(pyQuoted(view.name)))")
+    }
+
+    func deleteSetView(_ set: SetEntry, _ view: SetView) {
+        runPythonQuiet("from pymol import cmd as _c\n"
+                       + "_c.set_view_delete(\(pyQuoted(set.name)), \(pyQuoted(view.name)))")
+    }
+
+    // MARK: - Send to ▾ (#418)
+
+    /// `predict <predictor>, set:<name>@<selector>` — #416's set input. The child set
+    /// with its parent links is `predict`'s own job; this only names the input.
+    func sendSetToPredict(_ set: SetEntry, selector: String, predictor: String) {
+        let input = "\(SetSendTarget.setPrefix)\(set.name)@\(selector)"
+        runCommand("predict \(predictor), \(input)")
+    }
+}
+
+/// What a Send to ▾ item acts on: the rows the user picked, the active filter, or a
+/// saved view. All three are ENTRY SELECTORS (spec §4.1), which is the whole reason
+/// the menu can hand any of them to any tool that takes a set.
+enum SetSendTarget: Equatable {
+    case selection([String])      // entry names
+    case filtered
+    case view(String)
+
+    static let setPrefix = "set:"
+
+    /// The selector string. `filtered` is the default every `set_*` command already
+    /// takes, so an empty selection falls back to it rather than to nothing.
+    var selector: String {
+        switch self {
+        case .selection(let names):
+            // `+` joins names and `@` is what `predicting.parse_set_input` partitions
+            // `set:<name>@<selector>` on, so a name carrying either cannot be written
+            // as a selector. The store's own rules refuse both in an entry name today;
+            // this is the composer refusing to build a selector it cannot mean.
+            let usable = names.filter { !$0.isEmpty && !$0.contains("+") && !$0.contains("@") }
+            return usable.isEmpty ? "filtered" : usable.joined(separator: "+")
+        case .filtered:
+            return "filtered"
+        case .view(let name):
+            return "view:\(name)"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .selection(let names): return "\(names.count) selected"
+        case .filtered: return "the filter"
+        case .view(let name): return "view \(name)"
+        }
+    }
+}
+
+/// Which tab of the Data drawer is showing. Table and Plot ship in #418; Sequences
+/// and Lineage are #419 and are drawn disabled rather than hidden, so the drawer's
+/// shape is learned once (spec §4).
+enum DataDrawerTab: String, CaseIterable, Identifiable, Equatable {
+    case table = "Table"
+    case plot = "Plot"
+    case sequences = "Sequences"
+    case lineage = "Lineage"
+
+    var id: String { rawValue }
+    var isAvailable: Bool { self == .table || self == .plot }
+
+    var help: String {
+        switch self {
+        case .table: return "Entries as rows; columns come from the set's metrics"
+        case .plot: return "One scatter over the same filtered rows; brush to select"
+        case .sequences: return "Coming when the sequence strip moves here (#419)"
+        case .lineage: return "Coming with the Sequences tab (#419)"
+        }
+    }
+}
+
+extension PyMOLEngine {
+    /// One histogram per scalar numeric column, over every row of the set — not the
+    /// filtered ones, so brushing a column does not collapse the shape you are
+    /// brushing on. Binned over the spec's domain when it has one, which is what makes
+    /// two runs of the same tool comparable.
+    static func histograms(rows: [SetRow],
+                           columns: [MetricColumn]) -> [String: SetColumnHistogram] {
+        var out: [String: SetColumnHistogram] = [:]
+        for column in columns where column.isScalar && column.dtype != "str" {
+            guard let name = column.column else { continue }
+            let values = rows.compactMap { $0.values[name]?.number }
+            guard let domain = SetTableModel.histogramDomain(values: values,
+                                                             lo: column.lo, hi: column.hi)
+            else { continue }
+            out[name] = SetColumnHistogram(
+                bins: SetTableModel.histogram(values: values, bins: SetsStore.histogramBins,
+                                              lo: column.lo, hi: column.hi),
+                lo: domain.lowerBound, hi: domain.upperBound)
+        }
+        return out
     }
 }

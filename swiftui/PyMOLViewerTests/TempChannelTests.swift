@@ -37,6 +37,7 @@ final class TempChannelTests: XCTestCase {
             TempChannel.Stem.settings, TempChannel.Stem.rayOverlay,
             TempChannel.Stem.objectPanel, TempChannel.Stem.objectDetail,
             TempChannel.Stem.predictForm, TempChannel.Stem.designForm,
+            TempChannel.Stem.setsFilter,
         ]
         XCTAssertEqual(listed, declared,
                        "a channel absent from Stem.all is never cleaned up on quit")

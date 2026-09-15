@@ -595,3 +595,393 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertFalse(os.path.exists(path))
         self.assertEqual(appkit_sets.recoverable(), [])
 
+
+def filter_markers(text):
+    """How many `SETSFILTER:ready` lines the captured output holds."""
+    return [line for line in text.splitlines()
+            if line.startswith(appkit_sets.FILTER_PREFIX)]
+
+
+def filter_channel():
+    """The payload the filter channel currently holds, or None when it was never
+    written. Read the way Swift reads it: a file in this process's TMPDIR."""
+    from pymol import raymol_tmp
+    path = raymol_tmp.channel_path(appkit_sets.FILTER_STEM)
+    if not os.path.exists(path):
+        return None
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def clear_filter_channel():
+    from pymol import raymol_tmp
+    try:
+        os.unlink(raymol_tmp.channel_path(appkit_sets.FILTER_STEM))
+    except OSError:
+        pass
+
+
+class FilterChannelTestCase(AppkitSetsTestCase):
+    """The compiled-filter channel (#418).
+
+    There is one filter grammar -- `pymol.sets.filter` -- and the drawer does not have a
+    copy of it. It sends the expression here and gets back the COMPILED FRAGMENT, which
+    it binds and runs against its own read-only connection. These tests pin both halves
+    of that contract: that what comes back is what `filter.compile` produced, and that
+    running it the way SetsStore.swift runs it selects exactly the rows `set_filter`
+    counts.
+    """
+
+    def setUp(self):
+        AppkitSetsTestCase.setUp(self)
+        clear_filter_channel()
+
+    def tearDown(self):
+        clear_filter_channel()
+        AppkitSetsTestCase.tearDown(self)
+
+    def swift_names(self, set_name, payload):
+        """The entry names Swift's row query returns for this payload.
+
+        Reproduces SetsStore.rows() exactly: the same FROM, the same two aliases the
+        fragment is written against, the fragment ANDed on and its params bound after
+        the set id. If this ever disagrees with `n`, the drawer would be showing a
+        different table from the one every set_* command acts on.
+        """
+        from pymol.sets import schema
+        c = store.active()
+        set_id = c.get_set(set_name)['id']
+        sql = ('SELECT e.name FROM entries e LEFT JOIN %s m ON m.entry_id = e.id'
+               ' WHERE e.set_id = ?' % schema.quote(schema.metrics_table(set_id)))
+        if payload['sql']:
+            sql += ' AND (%s)' % payload['sql']
+        sql += ' ORDER BY e.ord'
+        return [r[0] for r in c._conn.execute(sql, (set_id,) + tuple(payload['params']))]
+
+
+class TestFilterChannel(FilterChannelTestCase):
+
+    def test_preview_compiles_without_applying(self):
+        self.populated(3)                          # scores 10, 20, 30
+        appkit_sets.open_set('s')
+        with captured() as out:
+            payload = appkit_sets.preview_filter('s', 'score > 15')
+        self.assertEqual(filter_markers(out.getvalue()),
+                         [appkit_sets.FILTER_PREFIX + 'ready'])
+        self.assertEqual(payload, filter_channel(), 'the file carries what we returned')
+        self.assertEqual(payload['sql'], 'm."score" > ?')
+        self.assertEqual(payload['params'], [15])
+        self.assertEqual(payload['n'], 2)
+        self.assertEqual(payload['total'], 3)
+        self.assertEqual(payload['error'], '')
+        self.assertEqual(payload['applied'], 0)
+        self.assertEqual(store.active().get_set('s')['filter'], '',
+                         'a preview must not become the set\'s filter')
+
+    def test_the_fragment_selects_what_the_count_promises(self):
+        self.populated(3)
+        payload = appkit_sets.preview_filter('s', 'score >= 20 and score <= 30')
+        self.assertEqual(self.swift_names('s', payload), ['p1', 'p2'])
+        self.assertEqual(payload['n'], len(self.swift_names('s', payload)))
+
+    def test_a_brush_expression_matches_set_filter(self):
+        # The shape a header-histogram (or plot-axis) brush emits. It goes through the
+        # same compiler as anything typed, so the drawer's count and `set_filter`'s
+        # cannot drift.
+        self.populated(4)                          # 10, 20, 30, 40
+        expr = 'score >= 15 and score <= 35'
+        payload = appkit_sets.preview_filter('s', expr)
+        self.assertEqual(payload['n'], cmd.set_filter('s', expr))
+        self.assertEqual(self.swift_names('s', payload), ['p1', 'p2'])
+
+    def test_empty_expression_is_no_filter(self):
+        self.populated(3)
+        payload = appkit_sets.preview_filter('s', '')
+        self.assertEqual(payload['sql'], '')
+        self.assertEqual(payload['params'], [])
+        self.assertEqual(payload['n'], 3)
+        self.assertEqual(self.swift_names('s', payload), ['p0', 'p1', 'p2'])
+
+    def test_a_rejected_expression_is_a_message_not_a_traceback(self):
+        self.populated(2)
+        payload = appkit_sets.preview_filter('s', 'score > "x"')
+        self.assertIn('float', payload['error'])
+        self.assertEqual(payload['offset'], 8)
+        self.assertFalse(payload['error'].startswith(' Error:'),
+                         'the field shows the message, not CmdException.__str__')
+        self.assertEqual(payload['sql'], '')
+        self.assertEqual(payload['n'], 0)
+
+    def test_an_unknown_column_names_itself(self):
+        self.populated(2)
+        payload = appkit_sets.preview_filter('s', 'nosuch > 1')
+        self.assertIn("unknown column 'nosuch'", payload['error'])
+        self.assertEqual(payload['offset'], 0)
+
+    def test_apply_filter_persists_and_reports(self):
+        self.populated(3)
+        appkit_sets.open_set('s')
+        payload = appkit_sets.apply_filter('s', 'score > 15')
+        self.assertEqual(payload['applied'], 1)
+        self.assertEqual(payload['n'], 2)
+        self.assertEqual(store.active().get_set('s')['filter'], 'score > 15')
+        self.assertEqual(len(cmd.set_list('s')), 2)
+
+    def test_apply_filter_reports_a_bad_expression_and_keeps_the_old_one(self):
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        payload = appkit_sets.apply_filter('s', 'score > ')
+        self.assertIn('end of input', payload['error'])
+        self.assertEqual(store.active().get_set('s')['filter'], 'score > 15',
+                         'set_filter validates before it writes')
+
+    def test_a_rejected_apply_does_not_arm_the_poll_to_undo_the_typing(self):
+        # A rejected expression writes nothing, so the poll's key must stay the STORED
+        # filter. Recording the rejected one instead made the next tick see a mismatch
+        # and re-emit the stored filter as APPLIED, which the drawer adopts -- half a
+        # second after a typo the field reset itself and the brushes went with it.
+        self.populated(3)
+        appkit_sets.open_set('s')
+        cmd.set_filter('s', 'score > 15')
+        with captured():
+            appkit_sets.poll()
+        payload = appkit_sets.apply_filter('s', 'score > ')
+        self.assertEqual(payload['applied'], 0, 'nothing was applied')
+        self.assertIn('end of input', payload['error'])
+        with captured() as out:
+            appkit_sets.poll()
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'the stored filter has not moved, so there is nothing to say')
+
+    def test_clearing_restores_everything(self):
+        self.populated(3)
+        appkit_sets.apply_filter('s', 'score > 25')
+        payload = appkit_sets.apply_filter('s', '')
+        self.assertEqual(payload['n'], 3)
+        self.assertEqual(store.active().get_set('s')['filter'], '')
+
+    def test_emit_filter_reports_the_saved_filter_without_changing_it(self):
+        # What the drawer calls as it opens a set: it reads rows from the file at
+        # once, and half a second of showing rows the filter excludes is half a
+        # second of the wrong table.
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        clear_filter_channel()
+        with captured() as out:
+            payload = appkit_sets.emit_filter('s')
+        self.assertEqual(len(filter_markers(out.getvalue())), 1)
+        self.assertEqual(payload['expr'], 'score > 15')
+        self.assertEqual(payload['n'], 2)
+        self.assertEqual(payload['applied'], 1)
+        self.assertEqual(store.active().get_set('s')['filter'], 'score > 15')
+
+    def test_open_set_arms_the_channel_and_the_poll_emits_after_the_marker(self):
+        # ORDER, and it is load-bearing: the drawer clears its filter when the SETS:
+        # marker moves the active set, so a SETSFILTER line printed BEFORE that marker
+        # would be wiped by it. open_set therefore arms the channel and poll() emits
+        # right after printing the marker.
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        with captured():
+            appkit_sets.poll()
+        clear_filter_channel()
+        with captured() as out:
+            appkit_sets.open_set('s')
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'open_set itself prints nothing on the filter channel')
+        with captured() as out:
+            appkit_sets.poll()
+        lines = [line for line in out.getvalue().splitlines()
+                 if line.startswith((appkit_sets.MARKER_PREFIX, appkit_sets.FILTER_PREFIX))]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith(appkit_sets.MARKER_PREFIX), lines)
+        self.assertTrue(lines[1].startswith(appkit_sets.FILTER_PREFIX), lines)
+        self.assertEqual(filter_channel()['expr'], 'score > 15')
+
+    def test_poll_reemits_when_a_console_filter_moves_it(self):
+        self.populated(3)
+        appkit_sets.open_set('s')
+        with captured():
+            appkit_sets.poll()
+        with captured() as out:
+            appkit_sets.poll()
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'an unchanged filter must not be re-sent every tick')
+        cmd.set_filter('s', 'score > 25')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(len(filter_markers(out.getvalue())), 1)
+        self.assertEqual(filter_channel()['n'], 1)
+
+    def test_a_preview_is_not_pushed_back_by_the_next_poll(self):
+        # A preview records the set's STORED expression as the poll's key, so the poll
+        # has nothing to say and the half-typed expression survives the next tick.
+        self.populated(3)
+        appkit_sets.open_set('s')
+        with captured():
+            appkit_sets.poll()
+        appkit_sets.preview_filter('s', 'score > 25')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [])
+        self.assertEqual(filter_channel()['expr'], 'score > 25')
+
+    def test_nothing_is_emitted_when_no_set_is_open(self):
+        # Requirement 7: with no set open, nothing about the poll changes.
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        with captured() as out:
+            appkit_sets.poll()
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [])
+        self.assertIsNone(filter_channel())
+
+    def test_the_filter_follows_a_set_delete(self):
+        self.populated(2)
+        appkit_sets.open_set('s')
+        with captured():
+            appkit_sets.poll()
+        cmd.set_delete('s')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'a set that is gone has no filter to report')
+
+
+class TestFilterEdges(FilterChannelTestCase):
+    """The two ends of the channel the #418 review probed with real containers."""
+
+    def test_an_exact_bound_keeps_the_entry_that_defined_it(self):
+        # Blocker 3, end to end: the drawer composes "Filter to selection" from the
+        # selected points' own min and max. Printed exactly, the bound keeps the row;
+        # printed to six significant figures, it loses it -- and the rows it loses are
+        # the extremes, which is what a triage user is hunting.
+        cmd.set_create('s')
+        c = store.active()
+        sid = c.get_set('s')['id']
+        specs = mschema.specs(TOOL)
+        values = [40.10274153313269, 40.13901288888891, 40.17,
+                  40.20419283746519, 40.24152259971877]
+        for i, v in enumerate(values):
+            c.add_entry(sid, 'd_%d' % i, scalars={'score': v}, specs=specs)
+        exact = 'score >= %r and score <= %r' % (min(values), max(values))
+        self.assertEqual(appkit_sets.preview_filter('s', exact)['n'], len(values),
+                         'an exactly printed bound includes the row that set it')
+        lossy = 'score >= %.6g and score <= %.6g' % (min(values), max(values))
+        self.assertLess(appkit_sets.preview_filter('s', lossy)['n'], len(values),
+                        'six significant figures is what the bug was')
+
+    def test_a_debounced_call_after_a_set_delete_is_not_a_traceback(self):
+        # The filter bar's preview and apply fire up to 600 ms after the keystroke; a
+        # set_delete in between left them naming a set that no longer exists, and the
+        # user saw a SetNotFound traceback in the console for something they did not do.
+        self.populated(2)
+        appkit_sets.open_set('s')
+        cmd.set_delete('s')
+        with captured() as out:
+            self.assertIsNone(appkit_sets.preview_filter('s', 'score > 1'))
+            self.assertIsNone(appkit_sets.apply_filter('s', 'score > 1'))
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'a set that is gone has nothing to report')
+        # The command surface an agent scripts against is unchanged.
+        from pymol.sets.errors import SetNotFound
+        with self.assertRaises(SetNotFound):
+            cmd.set_filter('s', 'score > 1')
+
+
+class TestViewportSelection(FilterChannelTestCase):
+    """`sel`: the staged objects of the active set that are in `sele` (#418).
+
+    The object -> entry link is `entries.staged_object`, written when the entry was
+    staged. Nothing here keeps a second mapping, and nothing polls for a selection: the
+    marker that already fires on change carries it.
+    """
+
+    def test_a_selected_staged_object_names_its_entry(self):
+        self.populated(2)
+        appkit_sets.open_set('s')
+        cmd.set_stage('s', 'p1')
+        entry = self.entry('s', 'p1')
+        cmd.select('sele', 'p1')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(markers(out.getvalue())[0]['sel'], [entry['id']])
+
+    def test_no_selection_means_no_field(self):
+        self.populated(2)
+        appkit_sets.open_set('s')
+        cmd.set_stage('s', 'p1')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertNotIn('sel', markers(out.getvalue())[0])
+
+    def test_an_unstaged_entry_is_never_reported(self):
+        self.populated(2)
+        appkit_sets.open_set('s')
+        cmd.fab('AAA', 'unrelated')
+        cmd.select('sele', 'unrelated')
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertNotIn('sel', markers(out.getvalue())[0])
+
+    def test_the_idle_marker_is_unchanged(self):
+        # An empty `sel` is omitted, so a session with no set prints byte-for-byte
+        # what it printed before this ticket.
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(markers(out.getvalue())[0],
+                         {'v': 0, 'path': '', 'active': '', 'peek': '', 'running': {}})
+
+
+class TestSavedViews(FilterChannelTestCase):
+
+    def test_a_view_round_trips_through_the_container(self):
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        cmd.set_sort('s', 'score', 0)
+        cmd.set_view_save('s', 'good', columns='score+name')
+        path = os.path.join(self._sets_dir, 'v.raymol')
+        cmd.save(path)
+        cmd.reinitialize()
+        cmd.load(path)
+        view = store.active().view(store.active().get_set('s')['id'], 'good')
+        self.assertEqual(view['filter'], 'score > 15')
+        self.assertEqual(view['sort_key'], 'score')
+        self.assertEqual(view['sort_desc'], 0)
+        self.assertEqual(view['columns'], ['score', 'name'])
+        self.assertEqual(sorted(cmd.set_get('s', 'view:good')), ['p1', 'p2'],
+                         'the view still selects the entries it named')
+
+    def test_apply_view_sets_the_filter_and_the_sort(self):
+        self.populated(3)
+        cmd.set_filter('s', 'score > 25')
+        cmd.set_sort('s', 'score', 1)
+        cmd.set_view_save('s', 'tight')
+        cmd.set_filter('s', '')
+        cmd.set_sort('s', 'name', 0)
+        appkit_sets.open_set('s')
+        with captured() as out:
+            appkit_sets.apply_view('s', 'tight')
+        row = store.active().get_set('s')
+        self.assertEqual(row['filter'], 'score > 25')
+        self.assertEqual(row['sort_key'], 'score')
+        self.assertEqual(row['sort_desc'], 1)
+        self.assertEqual(len(filter_markers(out.getvalue())), 1)
+        self.assertEqual(filter_channel()['n'], 1)
+
+    def test_apply_view_of_an_unknown_name_raises(self):
+        self.populated(1)
+        from pymol.sets.errors import SetNotFound
+        with self.assertRaises(SetNotFound):
+            appkit_sets.apply_view('s', 'nope')
+
+    def test_columns_accept_a_list_or_a_separated_string(self):
+        self.populated(1)
+        for given, expected in [('a,b', ['a', 'b']), ('a+b', ['a', 'b']),
+                                (['a', 'b'], ['a', 'b']), ('', []),
+                                ('  a , , b ', ['a', 'b'])]:
+            cmd.set_view_save('s', 'v', columns=given)
+            got = store.active().view(store.active().get_set('s')['id'], 'v')
+            self.assertEqual(got['columns'], expected, repr(given))

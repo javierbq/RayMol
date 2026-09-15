@@ -10,21 +10,24 @@ instead of a thousand objects in the panel.
 Sets live in a `.raymol` file together with the session. The store, the `set_*`
 commands and the file format are described in
 `docs/superpowers/specs/2026-09-07-sets-store-and-raymol-container-design.md`; this
-page is about the UI that sits on top of them (#417, tracking #421).
+page is about the UI that sits on top of them (#417, #418, tracking #421).
 
 ## Where things appear
 
 - **Inspector → SETS.** One row per set: name, entry count, a small histogram of the
   ranking column, a spinner with `done / total` while a batch is still landing, and an
-  "open in drawer" button. The section collapses when there is no set, so a session
-  that never touches one looks exactly as before.
+  "open in drawer" button. Saved **views** are listed under their set, one click to
+  apply; the row shows the selector (`view:top50`) you would type. The section
+  collapses when there is no set, so a session that never touches one looks exactly
+  as before.
 - **Inspector → OBJECTS.** A set's group is an ordinary group row. It holds exactly
   the set's staged objects and reads "5 of 1024 staged" — the rest of the set is in
   the drawer, not in the scene.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
-  with a header naming the set, the tabs, and the Table tab. Plot, Sequences and
-  Lineage are drawn disabled until #418/#419 land. Drag the divider above it to
-  resize; the height is remembered as a fraction of the window, like the console's.
+  with a header naming the set, the tabs, the filter bar and the active tab. Table
+  and Plot are live; Sequences and Lineage are drawn disabled until #419 lands. Drag
+  the divider above it to resize; the height is remembered as a fraction of the
+  window, like the console's.
   In a short window the console and the sequence strip get their space first, and the
   drawer says so with a one-line hint rather than showing a table too short to hold a
   row — close either pane (⌘1 / ⌘2) or enlarge the window.
@@ -60,10 +63,10 @@ Keys, while the table has focus:
 | esc | clear the peek (works anywhere, not only in the table) | `set_peek` |
 
 The footer acts on the selection (or, with none, on the peeked row): **Stage**,
-**Unstage**, **Pin** (a pinned object survives "clear staged"), **Export** (CSV, FASTA
-or a folder of CIFs plus `entries.csv`, via `set_export`) and **Save view…**
-(`set_view_save`, the active filter and sort under a name usable as `view:NAME`).
-Stage is disabled when the selection would not fit the stage budget, and the footer
+**Unstage**, **Pin** (a pinned object survives "clear staged"), **Columns ▾** (what
+shows), **Send to ▾** (the next tool, or an export — see below) and **Save view…**
+(`set_view_save`, the active filter, sort and visible columns under a name usable as
+`view:NAME`). Stage is disabled when the selection would not fit the stage budget, and the footer
 says by how much; raise it with `set_budget`, or unstage (or pin) what is already
 there. The header's "n of N staged · budget b" is the same arithmetic.
 
@@ -71,6 +74,80 @@ Every drawer action is a `set_*` command. Anything you can click you can also ty
 script, or ask an agent to do over MCP; the drawer is a client of the command surface,
 not a second one. `appkit_sets.open_set('name')` from Python opens a set in the drawer
 the way a click does.
+
+## Filtering
+
+The drawer's filter bar takes an **expression** over the set's columns:
+
+    plddt > 80 and rmsd < 1.5 and not rejected
+    tags contains "patch-A" or starred
+    iptm is null
+
+It is the same language `set_filter` takes, because it *is* `set_filter`: the field
+sends the string to Python, which compiles it with `pymol.sets.filter` and reports
+what matched. There is exactly one grammar, and it is documented in §5 of the store
+spec — columns, the flags `starred` / `rejected` / `staged` / `pinned`, `name` with
+`like`, `tags contains`, `in (…)`, `is null`, and `and` / `or` / `not`. There is no
+arithmetic, no `between` and no function calls; anything that needs them belongs in
+Python over `set_get`.
+
+The count beside the field is live ("212 of 1024 match"). An expression the grammar
+rejects shows its own message with the offending token quoted, and leaves the set's
+filter alone. Clearing the field brings every entry back.
+
+**Header histograms are brushes.** Each numeric column has a small distribution under
+its header; drag across it to filter to that range, click it to clear. A brush is
+written as an ordinary expression (`plddt >= 80 and plddt <= 92`) and joined to
+whatever you typed with `and`, so the two never disagree; a chip in the filter bar
+shows each brushed range with an × to drop that one column, and **Edit as text** writes
+the brushes into the field so you can edit the string that went to `set_filter`.
+
+While you drag, the filter is only previewed — nothing is written to the file. It is
+applied with `set_filter` when you let go, when you press Return, or after a moment's
+pause in typing; that is the point at which `filtered`, `top:N`, `set_export` and
+`predict set:<name>@filtered` see it too.
+
+A **view** is a filter, a sort and a visible-column list under a name
+(`set_view_save`). Views appear under their set in the inspector, apply with a click,
+and are entry selectors everywhere: `set_export s, out.csv, view:top50`,
+`predict boltz2, set:s@view:top50`.
+
+## The Plot tab
+
+One scatter over the same filtered rows the table shows — filter in one and the other
+follows. Choose the x, y and colour columns from the menus, or colour by tag, parent,
+run or staged state. Staged points are ringed, the peeked point is drawn large, and
+hovering a point peeks it and raises a card with **Stage**, **★** and **✕**.
+
+Drag a rubber band to select points; the table selects and scrolls to the same rows.
+**Filter to selection** turns that band into range filters on both axes, through the
+same expression path as a header brush. The strip under the x axis is that column's
+distribution and brushes like a header histogram.
+
+An entry with no value on one of the axes is left out rather than drawn at zero — an
+unmeasured entry is not a bad one — and the footer says how many.
+
+## Linked selection
+
+Rows, points and the scene are one selection:
+
+- selecting rows highlights their points, and vice versa;
+- clicking a **staged object in the viewport** selects its row and scrolls to it. The
+  link is the entry's `staged_object`, so it works for anything staged, however it was
+  staged, and it costs no extra poll.
+
+## Send to ▾
+
+The footer's **Send to ▾** hands entries to the next tool as an entry selector, and
+its menu header says which: the selected rows, or — with nothing selected — the row
+currently peeked, and only with neither the active filter. Hovering a row peeks it, so
+after browsing the target is usually that one row; the header is the thing to read
+before clicking.
+**Predict** lists the registered predictors and runs
+`predict <predictor>, set:<name>@<selector>`, which writes a child set whose entries
+point back at the ones they were folded from. **Export** writes CSV, FASTA or a folder
+of CIFs. **Design / MPNN** and **Binder Design** are disabled with a note saying why:
+they still take a target *object*, not a set.
 
 ## The `.raymol` document
 
@@ -131,3 +208,10 @@ of entries. So set contents never cross that channel: Python prints one short `S
 line carrying the file's path and version, only when something changed, and the app
 reads the `.raymol` file itself with a read-only SQLite connection, re-reading only
 when the version moves. A hover storm costs at most one peek load per 120 ms.
+
+Filtering follows the same rule. What comes back from Python is not a list of rows but
+the compiled `WHERE` fragment with its bound parameters, which the app runs against the
+connection it already has. So entries that land while a batch is running fall on the
+right side of the active filter with no round trip per delivery, and the table and the
+plot cannot disagree about what matches. Column histograms are computed once per change
+rather than per frame.
