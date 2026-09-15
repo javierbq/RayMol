@@ -235,6 +235,69 @@ def reset_marker():
     _last_marker = None
 
 
+# -- Cold-launch recovery (#447) ----------------------------------------------------------
+#
+# Spec §2.1: the working file for an untitled session IS the autosave, and is offered
+# back on cold launch. `store.recoverable()` answers "is there anything to recover",
+# and this marker carries the answer to Swift ONCE, at launch -- never from the 500 ms
+# poll. It stats and opens files, and the answer cannot change while the app runs:
+# a container is preserved by the process that is exiting, not by this one.
+
+RECOVER_PREFIX = 'SETSRECOVER:'
+
+#: How many preserved containers the marker names. The alert offers the newest one;
+#: the rest stay on disk under the retention policy and are offered on a later launch,
+#: so carrying more than a handful would only risk the feedback line's length cap.
+MAX_RECOVERABLE = 4
+
+
+def recoverable():
+    """The preserved containers worth offering, newest first, as plain dicts. Never
+    opens or creates the working container, so asking is free in a session with no
+    sets."""
+    return _store().recoverable()
+
+
+def recovery_payload():
+    """The recovery marker's payload: the newest few containers, plus how many there
+    are in total so the far side can say "and N more" without being sent them."""
+    found = recoverable()
+    return {
+        'n': len(found),
+        'files': [{'path': info['path'],
+                   'sets': info['sets'],
+                   'entries': info['entries'],
+                   'session': 1 if info['session'] else 0,
+                   'modified': round(float(info['modified']), 3)}
+                  for info in found[:MAX_RECOVERABLE]],
+    }
+
+
+def recovery_marker():
+    """The marker line, trimmed by DROPPING FILES from the end until it fits. `n` is
+    never trimmed: "there is something to recover" is the part the user acts on, and
+    a line that split would deliver neither."""
+    payload = recovery_payload()
+    while True:
+        text = RECOVER_PREFIX + json.dumps(payload, separators=(',', ':'))
+        if len(text.encode('utf-8')) <= MAX_MARKER_BYTES or not payload['files']:
+            return text
+        payload['files'] = payload['files'][:-1]
+
+
+def poll_recovery():
+    """Print the recovery marker, once, at launch. Prints even when there is nothing
+    to recover -- `{"n":0,"files":[]}` is the answer that lets Swift stop waiting and
+    fall through to whatever else a cold launch would do."""
+    print(recovery_marker())
+
+
+def discard_recovered(path):
+    """Delete a preserved container the user declined. Goes through the store, which
+    refuses any path that is not one of its own."""
+    return _store().discard_recoverable(path)
+
+
 # -- Drawer helpers -----------------------------------------------------------------------
 #
 # Each takes what the drawer has -- a set NAME (what set_* commands accept) and an entry

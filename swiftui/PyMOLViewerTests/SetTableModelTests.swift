@@ -496,3 +496,107 @@ final class SetsStoreTests: XCTestCase {
         }
     }
 }
+
+
+/// The cold-launch decision for a container a previous RayMol left behind (#447).
+///
+/// `PyMOLEngine.launchRestore` is the whole policy, kept OUT of the alert handler so
+/// it can be walked here: what to do given a recoverable `.raymol`, an `autosave.pse`,
+/// both, neither, and a launch that was already asked to open a document.
+final class SetsRecoveryDecisionTests: XCTestCase {
+
+    private func file(_ path: String, entries: Int = 12, sets: Int = 1,
+                      session: Int = 1, modified: Double = 1_000) -> RecoverableContainer {
+        RecoverableContainer(path: path, sets: sets, entries: entries,
+                             session: session, modified: modified)
+    }
+
+    func testNeitherLeavesAnEmptySession() {
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [], autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+
+    func testAutosaveAloneIsRestored() {
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [], autosavePresent: true,
+                                                 openRequested: false), .autosave)
+    }
+
+    func testARecoverableContainerIsOffered() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: false,
+                                                 openRequested: false),
+                       .offerRecovery(one))
+    }
+
+    func testTheContainerBeatsTheAutosave() {
+        // Both exist: the .raymol carries a session blob TOO, so it restores the scene
+        // and the sets, where autosave.pse restores the scene and drops the sets --
+        // which is the data loss #447 is about.
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: false),
+                       .offerRecovery(one))
+    }
+
+    func testDecliningFallsBackToTheAutosave() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: false, recoveryDeclined: true),
+                       .autosave)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: false,
+                                                 openRequested: false, recoveryDeclined: true),
+                       .nothing)
+    }
+
+    func testOpeningADocumentSuppressesEverything() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: true), .nothing)
+    }
+
+    func testTheNewestContainerWithEntriesWins() {
+        let old = file("/s/recovered_old.raymol", entries: 900, modified: 10)
+        let new = file("/s/recovered_new.raymol", entries: 1, modified: 20)
+        let empty = file("/s/recovered_empty.raymol", entries: 0, modified: 99)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [old, new, empty],
+                                                 autosavePresent: false,
+                                                 openRequested: false),
+                       .offerRecovery(new), "newest, not biggest")
+    }
+
+    func testAnEmptyContainerIsNeverOffered() {
+        let empty = file("/s/recovered_empty.raymol", entries: 0)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [empty], autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+
+    // MARK: the marker
+
+    func testMarkerDecodesWhatPythonPrints() {
+        let line = #"SETSRECOVER:{"n":3,"files":[{"path":"/s/recovered_20260914-101500_412.raymol","sets":2,"entries":184,"session":1,"modified":1789000000.5}]}"#
+        let data = line.dropFirst("SETSRECOVER:".count).data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertEqual(marker.n, 3, "the count survives even when files are dropped")
+        XCTAssertEqual(marker.files.count, 1)
+        XCTAssertEqual(marker.files[0].entries, 184)
+        XCTAssertEqual(marker.files[0].sets, 2)
+        XCTAssertTrue(marker.files[0].carriesSession)
+        XCTAssertEqual(marker.files[0].date.timeIntervalSince1970, 1789000000.5, accuracy: 0.01)
+    }
+
+    func testACrashedContainerReportsNoSession() {
+        let line = #"SETSRECOVER:{"n":1,"files":[{"path":"/s/r.raymol","sets":1,"entries":4,"session":0,"modified":1.0}]}"#
+        let data = line.dropFirst("SETSRECOVER:".count).data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertFalse(marker.files[0].carriesSession)
+    }
+
+    func testNothingToRecoverDecodesAsNothingToRecover() {
+        let data = #"{"n":0,"files":[]}"#.data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: marker.files,
+                                                 autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+}
+

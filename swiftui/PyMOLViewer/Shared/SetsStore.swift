@@ -204,6 +204,95 @@ struct SetsMarker: Decodable, Equatable {
     }
 }
 
+// MARK: - Cold-launch recovery (#447)
+
+/// One container a previous RayMol left behind, from the `SETSRECOVER:` marker
+/// (`pymol.appkit_sets.recovery_payload`). Spec §2.1: the working file for an
+/// untitled session IS the autosave, so this is the app's "you have unsaved work"
+/// record — a whole session's sets, and usually the scene with them.
+struct RecoverableContainer: Decodable, Equatable, Identifiable, Hashable {
+    /// Absolute path of the preserved `.raymol`. Also the identity: there is one
+    /// row per file, and the file names carry a timestamp and the dead pid.
+    let path: String
+    let sets: Int
+    let entries: Int
+    /// 1 when the container carries a session blob — a quit checkpointed the scene
+    /// into it. 0 after a crash, where the entries survived and the camera did not.
+    let session: Int
+    /// Unix time of the file's last write.
+    let modified: Double
+
+    var id: String { path }
+    var carriesSession: Bool { session != 0 }
+    var date: Date { Date(timeIntervalSince1970: modified) }
+
+    init(path: String, sets: Int, entries: Int, session: Int = 0, modified: Double = 0) {
+        self.path = path
+        self.sets = sets
+        self.entries = entries
+        self.session = session
+        self.modified = modified
+    }
+}
+
+/// The `SETSRECOVER:` payload: the newest few containers, plus how many there are.
+/// `n` can exceed `files.count` — the marker drops files, never the count, to stay
+/// under PyMOL's feedback-line cap (appkit_sets.recovery_marker).
+struct SetsRecoveryMarker: Decodable, Equatable {
+    let n: Int
+    let files: [RecoverableContainer]
+
+    init(n: Int, files: [RecoverableContainer]) {
+        self.n = n
+        self.files = files
+    }
+}
+
+/// What a cold launch should do about work the last run left behind.
+enum LaunchRestore: Equatable {
+    /// Start empty: nothing was left, or the launch is opening a specific document.
+    case nothing
+    /// Reload the rolling `autosave.pse` (iOS today; macOS has no autosave).
+    case autosave
+    /// Ask the user about a preserved `.raymol` before the window is used.
+    case offerRecovery(RecoverableContainer)
+}
+
+extension PyMOLEngine {
+    /// The launch decision, as a pure function so the policy can be tested without a
+    /// window, an alert or a running core (#447).
+    ///
+    /// The rules, in order, and why:
+    ///
+    /// 1. **A document being opened wins.** Double-clicking a file, or `open x.pdb`,
+    ///    says what this launch is for; putting a recovery alert in front of it would
+    ///    be answering a question the user did not ask. What was preserved is still
+    ///    preserved, and is offered on the next plain launch.
+    /// 2. **A recoverable `.raymol` beats `autosave.pse`.** The container carries the
+    ///    session blob too (`checkpoint_session` writes it on the way out), so
+    ///    recovering it restores the scene AND the sets, where the `.pse` restores the
+    ///    scene and silently drops hours of design results — which is issue #447
+    ///    itself. When the container carries no session (a crash before the
+    ///    checkpoint), recovering it still costs only the camera.
+    /// 3. **Declining falls back to the autosave**, so Discard/Keep on macOS (where
+    ///    there is no autosave) leaves an empty session, and on iOS resumes the scene.
+    /// 4. Only a container that actually holds entries is offered: an empty one is
+    ///    deleted at exit and never reaches here, and if one ever did, "recover 0
+    ///    designs" is not a question worth a modal.
+    static func launchRestore(recoverable: [RecoverableContainer],
+                              autosavePresent: Bool,
+                              openRequested: Bool,
+                              recoveryDeclined: Bool = false) -> LaunchRestore {
+        if openRequested { return .nothing }
+        if !recoveryDeclined,
+           let best = recoverable.filter({ $0.entries > 0 })
+               .max(by: { $0.modified < $1.modified }) {
+            return .offerRecovery(best)
+        }
+        return autosavePresent ? .autosave : .nothing
+    }
+}
+
 // MARK: - Read-only connection
 
 /// A read-only connection to one `.raymol` file. Every method is a plain query; the
@@ -515,6 +604,59 @@ extension PyMOLEngine {
             if self.peekedEntryID != peek { self.peekedEntryID = peek }
         }
         if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
+    }
+
+    // MARK: recovery (#447)
+
+    /// Consume the one `SETSRECOVER:` line printed at launch.
+    func parseSetsRecoveryFeedback(_ line: String) {
+        let prefix = "SETSRECOVER:"
+        guard line.hasPrefix(prefix),
+              let data = line.dropFirst(prefix.count).data(using: .utf8),
+              let marker = try? JSONDecoder().decode(SetsRecoveryMarker.self, from: data) else {
+            return
+        }
+        applyRecoveryMarker(marker)
+    }
+
+    /// Turn the marker into the launch decision and publish it. The POLICY is
+    /// `launchRestore`, which is pure and tested; this only applies its answer, so
+    /// the rule cannot quietly diverge between the alert and the test.
+    func applyRecoveryMarker(_ marker: SetsRecoveryMarker) {
+        let decision = Self.launchRestore(recoverable: marker.files,
+                                          autosavePresent: Self.autosavePresentAtLaunch,
+                                          openRequested: launchOpenRequested,
+                                          recoveryDeclined: recoveryAnswered)
+        let publish = {
+            switch decision {
+            case .offerRecovery(let file):
+                self.recoveryCount = max(marker.n, marker.files.count)
+                self.recoveryOffer = file
+            case .autosave, .nothing:
+                // On macOS `.autosave` cannot happen (there is no autosave.pse) and
+                // `.nothing` means the launch already has a job; either way the
+                // container stays on disk under the retention policy and is offered
+                // on a later launch. Nothing is deleted by NOT answering.
+                self.recoveryOffer = nil
+            }
+        }
+        if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
+    }
+
+    /// The user answered. Called by all three buttons, so no answer can leave the
+    /// offer armed for a second alert later in the process.
+    func clearRecoveryOffer() {
+        recoveryAnswered = true
+        recoveryOffer = nil
+        recoveryCount = 0
+    }
+
+    /// Discard: the container is deleted, through the store, which refuses any path
+    /// that is not one of its own preserved files.
+    func discardRecovery(_ file: RecoverableContainer) {
+        runPython("from pymol import appkit_sets as _as\n"
+                  + "_as.discard_recovered(\(Self.pythonLiteral(file.path)))")
+        clearRecoveryOffer()
     }
 
     /// The set the drawer is showing, resolved against the current list.

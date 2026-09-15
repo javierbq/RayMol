@@ -152,6 +152,67 @@ private extension View {
     }
 }
 
+#if os(macOS)
+/// The cold-launch recovery alert (#447, spec §2.1): a previous RayMol left an
+/// untitled session's sets behind, and this is where they are offered back, before
+/// the window has been used for anything.
+///
+/// A ViewModifier rather than four more lines on the macOS body, for two reasons:
+/// that body is already at the Swift type-checker's limit, and the alert needs its
+/// own @State — SwiftUI dismisses an alert before running the button's action, so the
+/// record has to be held somewhere that outlives `engine.recoveryOffer` being cleared.
+///
+/// No policy here. WHAT to do at launch is `PyMOLEngine.launchRestore`, decided when
+/// the marker arrives; this only presents the answer and reports the user's back.
+private struct SetsRecoveryAlert: ViewModifier {
+    @EnvironmentObject private var engine: PyMOLEngine
+    @State private var offer: RecoverableContainer?
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(engine.$recoveryOffer.compactMap { $0 }) { offer = $0 }
+            .alert("Recover your unsaved sets?", isPresented: presented,
+                   presenting: offer) { file in
+                Button("Open") {
+                    engine.clearRecoveryOffer()
+                    // The ordinary document path: a .raymol opens IN PLACE, so
+                    // results that land after this go back into the same file.
+                    loadOpenedFile(URL(fileURLWithPath: file.path), into: engine)
+                }
+                Button("Discard", role: .destructive) { engine.discardRecovery(file) }
+                Button("Keep for Later", role: .cancel) { engine.clearRecoveryOffer() }
+            } message: { file in
+                Text(Self.message(file, total: engine.recoveryCount))
+            }
+    }
+
+    private var presented: Binding<Bool> {
+        Binding(get: { offer != nil }, set: { if !$0 { offer = nil } })
+    }
+
+    /// What the alert says. Names the counts, because "some sets" is not enough to
+    /// decide with, and says what Keep for Later really does — the container is kept
+    /// under a retention policy, not forever.
+    static func message(_ file: RecoverableContainer, total: Int) -> String {
+        let when = RelativeDateTimeFormatter().localizedString(for: file.date,
+                                                              relativeTo: Date())
+        let sets = file.sets == 1 ? "1 set" : "\(file.sets) sets"
+        let entries = file.entries == 1 ? "1 entry" : "\(file.entries) entries"
+        var body = "A session that ended \(when) left \(sets) with \(entries) "
+        body += "that were never saved to a file."
+        body += file.carriesSession
+            ? " Opening it restores the scene along with the sets."
+            : " It ended unexpectedly, so the sets come back but the scene does not."
+        if total > 1 {
+            body += " (\(total) recovered sessions are waiting; this is the most recent.)"
+        }
+        body += " Keep for Later leaves it where it is; RayMol keeps the ten most"
+        body += " recent for 30 days."
+        return body
+    }
+}
+#endif
+
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
@@ -873,6 +934,11 @@ struct ContentView: View {
         } message: {
             raymolrcMigrationAlertText
         }
+        // Cold-launch recovery (#447, spec §2.1). An untitled session's sets live in
+        // a working container that used to be deleted on quit; it is now kept, and
+        // this is where it comes back. Its own modifier, not another few lines on
+        // this chain: the macOS body is already at the type-checker's limit.
+        .modifier(SetsRecoveryAlert())
         .toolbar {
             // Leading — Open only.
             macOpenToolbar
@@ -4223,6 +4289,7 @@ struct ContentView: View {
     private var raymolrcMigrationAlertText: Text {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
+
     #endif
 }
 

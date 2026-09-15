@@ -37,6 +37,10 @@ final class OrientationLockDelegate: NSObject, UIApplicationDelegate {
 // receive every file; macOS therefore routes OS opens here instead of .onOpenURL.
 final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
+        // A launch that opens a document is not a launch that should be interrupted
+        // by the #447 recovery alert: this says what the user asked for. Set before
+        // the hop, because the SETSRECOVER: marker is parsed on the feedback tick.
+        PyMOLEngine.shared.launchOpenRequested = true
         // Called on the main thread; hop to the main actor to reach loadOpenedFile
         // (@MainActor), mirroring ContentView's drag-drop handler.
         Task { @MainActor in handleOpenedURLs(urls, into: PyMOLEngine.shared) }
@@ -53,6 +57,14 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         PyMOLEngine.shared.runPython(
             "from pymol import predicting as _p; _p.clear_pending()")
+        // Spec §2.1: for an untitled session the sets container IS the autosave, so
+        // the scene goes into it on the way out and comes back with the sets on the
+        // next launch (#447). A no-op unless there is an untitled container holding
+        // entries -- a saved document is left to its own ⌘S, and a session that never
+        // touched a set writes nothing. The entries themselves are already on disk;
+        // this is only the camera and the objects.
+        PyMOLEngine.shared.runPython(
+            "from pymol.sets import binding as _sb; _sb.checkpoint_session()")
         // The tempfile channels are named after this pid (#399), so nothing will
         // ever reuse them — without this they'd accumulate one set per run.
         TempChannel.removeAll()
