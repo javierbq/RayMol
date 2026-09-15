@@ -164,7 +164,44 @@ final class PyMOLEngine: ObservableObject {
     /// Columns hidden in the drawer. A property of the view on the data, not of the
     /// set, so it lives here and is saved INTO a view rather than into the store.
     @Published var setHiddenColumns: Set<String> = []
-    @Published var dataDrawerTab: DataDrawerTab = .table
+    /// The tab the drawer shows. Its INITIAL value is the sequence strip's one-time
+    /// migration (#419, decision 3): a user who had the strip open lands on the
+    /// Sequences tab, where the strip now lives. Everyone else lands on Table.
+    /// `PanelLayout.migrateSequenceStrip` is idempotent, so the two property
+    /// initialisers that call it — this one and `dataDrawerVisible` below — perform
+    /// exactly one migration between them whichever order Swift runs them in.
+    /// The tab the drawer shows, PERSISTED (#419 review): the sequence strip was a
+    /// remembered pane, so the thing that replaced it has to be one too — otherwise
+    /// the strip's migration is a one-launch courtesy and everyone who had it open
+    /// every day gets Sequences once and Table from the second launch on.
+    @Published var dataDrawerTab: DataDrawerTab = PanelLayout.restoredDrawerTab() {
+        didSet {
+            UserDefaults.standard.set(dataDrawerTab.rawValue,
+                                      forKey: PanelLayout.dataDrawerTabKey)
+        }
+    }
+    /// Per-entry sequences and residue arrays for the Sequences tab, loaded lazily
+    /// (#419, #421). Keyed by entry id; an id that is absent has never been on
+    /// screen. Cleared with the rest of the set's UI state.
+    @Published var sequenceDetails: [String: SetEntryDetail] = [:]
+    /// Ids a visible row has asked for and that have not come back yet. Requests are
+    /// coalesced into one pair of queries per runloop turn: a scroll fires `onAppear`
+    /// for a dozen rows in the same frame, and a dozen round trips to SQLite for
+    /// twelve rows is the shape of cost this design exists to avoid.
+    var pendingSequenceDetails: Set<String> = []
+    /// Entry ids whose ARRAYS are resident, least-recently-read first. The bound on
+    /// `sequenceDetails`' blob half (`evictSequenceArrays`); the sequence half is text
+    /// and stays, because the consensus band is over the whole set.
+    var sequenceArrayOrder: [String] = []
+    /// The set whose sequences have been bulk-read for the consensus band, so the
+    /// read happens once per set rather than once per render.
+    var sequenceBandSetID: String? = nil
+    /// The lineage graph (#419). Built when the Lineage tab is on screen and rebuilt
+    /// when the container's version moves under it — never on a tick.
+    @Published var lineageModel = LineageModel(entries: [])
+    /// Bumped when `applySetsMarker` sees a new version, so a tab that holds derived
+    /// state (Lineage) can re-read without watching every published property.
+    @Published var setsVersionTick = 0
     /// The last expression this side sent to Python. Not published: it exists so an
     /// applied filter coming BACK can be told apart from one applied elsewhere (the
     /// console, MCP, a view), which is the difference between adopting it into the
@@ -172,8 +209,7 @@ final class PyMOLEngine: ObservableObject {
     var lastSentFilterExpression = ""
     /// The Data drawer's visibility, persisted like the other panes (#332). Hidden
     /// until a set is opened; macOS only draws it (#420 does mobile).
-    @Published var dataDrawerVisible = UserDefaults.standard
-        .bool(forKey: PanelLayout.dataDrawerVisibleKey) {
+    @Published var dataDrawerVisible = PanelLayout.restoredDrawerVisible() {
         didSet {
             UserDefaults.standard.set(dataDrawerVisible, forKey: PanelLayout.dataDrawerVisibleKey)
         }
@@ -232,8 +268,15 @@ final class PyMOLEngine: ObservableObject {
     /// leak that has broken the iOS slice three times (#174, #226/#238).
     @Published var binderDesignMode = false
     #endif
-    // Restored from the last launch (#332). A session (.pse) that turns seq_view
-    // on still wins — it assigns this property after launch, like any other setter.
+    /// The sequence STRIP's visibility. iOS only since #419: the Mac has no strip
+    /// slot any more — the rows are the drawer's Sequences tab — and #420 is what
+    /// gives the drawer an iPad and iPhone layout, so until then the strip is how
+    /// those two show a sequence and this is still their flag. Nothing in the macOS
+    /// layout reads or writes it; `PanelLayout.migrateSequenceStrip` consumed it once
+    /// to decide where a Mac user who had the strip open should land.
+    ///
+    /// Restored from the last launch (#332). A session (.pse) that turns seq_view
+    /// on still wins — it assigns this property after launch, like any other setter.
     @Published var sequenceVisible = UserDefaults.standard
         .bool(forKey: PanelLayout.sequenceVisibleKey) {
         // Showing the strip must (re)fetch the sequence data — toggling the
@@ -255,6 +298,22 @@ final class PyMOLEngine: ObservableObject {
     // against this and re-fetches on a mismatch, which is also immune to the
     // optimistic-UI flip racing the enable/disable command.
     var lastSequenceEnabled: Set<String> = []
+
+    /// True when something on screen is drawing sequence rows, and so when the
+    /// SEQPANEL payload has to be kept fresh.
+    ///
+    /// One property rather than the `sequenceVisible` test that used to be written out
+    /// at each of the six call sites: #419 moved the rows into a drawer TAB, so "is the
+    /// strip up" became "is the drawer up on Sequences", and six copies of a changed
+    /// condition is six chances to leave one behind — which shows up as a tab that
+    /// draws whatever the sequences were the last time something else refreshed them.
+    var wantsSequences: Bool {
+        #if os(macOS)
+        return dataDrawerVisible && dataDrawerTab == .sequences
+        #else
+        return sequenceVisible
+        #endif
+    }
 
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
@@ -645,11 +704,17 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        // Test affordance: open the sequence viewer panel at launch so its layout
-        // (incl. alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1.
+        // Test affordance: open the sequence viewer at launch so its layout (incl.
+        // alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1. Since #419
+        // that means the drawer's Sequences tab on macOS and the strip on iOS —
+        // whichever is the sequence viewer on this platform.
         if ProcessInfo.processInfo.environment["PYMOL_AUTOSEQ"] != nil {
             DispatchQueue.main.async { [weak self] in
+                #if os(macOS)
+                self?.showSequencesTab()
+                #else
                 self?.sequenceVisible = true
+                #endif
                 self?.fetchSequences()
             }
         }
@@ -1072,7 +1137,7 @@ final class PyMOLEngine: ObservableObject {
         // above and with no guarantee it lands after the enable/disable reaches
         // the core. Republish here, right after the command, so the strip is
         // built from the new visibility instead of racing it.
-        if sequenceVisible { fetchSequences() }
+        if wantsSequences { fetchSequences() }
     }
 
     /// Flip `name` and, when it is a group, its whole subtree.
@@ -1774,7 +1839,7 @@ final class PyMOLEngine: ObservableObject {
             ?? Bundle.main.path(forResource: "pept", ofType: "pdb") ?? ""
         themePreviewActive = true
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.begin(r'''\(path)''')")
-        if sequenceVisible { fetchSequences() }
+        if wantsSequences { fetchSequences() }
     }
 
     /// Re-apply the themed cartoon+sticks rep to the example after a live edit.
@@ -1783,7 +1848,7 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.style()")
         // Re-publish the example's sequence so chain/element color edits recolor
         // the sequence strip live, keeping it in sync with the previewed structure.
-        if sequenceVisible { fetchSequences() }
+        if wantsSequences { fetchSequences() }
     }
 
     /// Delete the example and restore the captured session, then refresh panels.
@@ -1807,7 +1872,7 @@ final class PyMOLEngine: ObservableObject {
         guard isReady else { return }
         runPython("from pymol import appkit_inspector as _ai\n_ai.poll_panel()")
         refreshExpandedDetail()
-        if sequenceVisible { fetchSequences() }
+        if wantsSequences { fetchSequences() }
     }
 
     // MARK: - Timeline / playback controls
@@ -3975,7 +4040,7 @@ final class PyMOLEngine: ObservableObject {
 
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
-        if sequenceVisible {
+        if wantsSequences {
             fetchSequenceSelection()
         }
 

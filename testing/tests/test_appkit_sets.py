@@ -14,6 +14,7 @@ import contextlib
 import io
 import json
 import os
+import struct
 import sys
 import types
 
@@ -985,3 +986,262 @@ class TestSavedViews(FilterChannelTestCase):
             cmd.set_view_save('s', 'v', columns=given)
             got = store.active().view(store.active().get_set('s')['id'], 'v')
             self.assertEqual(got['columns'], expected, repr(given))
+
+
+# --------------------------------------------------------------------------- #419
+# The cross-language contract for residue arrays.
+#
+# The Sequences tab draws a per-residue heat strip under every row, and Swift decodes
+# those arrays ITSELF, from the blob, with no round trip to Python (#419 decision 1).
+# It can, because the format is fixed: little-endian float32, one value per
+# `index_json` entry, NaN for absent, and only `cif` blobs are gzipped. But "it can"
+# is a claim, and a claim about bytes crossing a language boundary is exactly the kind
+# that holds until someone changes an encoder.
+#
+# So the two halves are pinned against each other through ONE FILE. The Python side
+# below writes known values through `pymol.sets.blobs` into
+# `swiftui/PyMOLViewerTests/Fixtures/residue_arrays.raymol`, which is committed;
+# `SequenceArrayTests` in Swift opens that same file and asserts the same floats come
+# back. Either side changing its mind is a red test on the other.
+#
+# Regenerate with RAYMOL_WRITE_SWIFT_FIXTURE=1, which is also how it was first made.
+# Without it, this test REBUILDS the container into a temp file and compares the array
+# blobs byte for byte against the committed one -- so the committed fixture cannot
+# quietly fall behind the encoder that is supposed to have produced it.
+
+#: (chain, resi) pairs and values written into the fixture. Every value is exactly
+#: representable as a float32, so "the same floats come back" is an equality and not
+#: an epsilon: a tolerance here would hide precisely the bug this test is for.
+FIXTURE_SET = 'seqfix'
+FIXTURE_PLDDT_INDEX = [('A', '1'), ('A', '2'), ('A', '3'), ('B', '10'), ('B', '11')]
+#: Note the None: `blobs.encode_f32` writes it as NaN, and `decode_f32` (and Swift)
+#: must read it back as absent rather than as 0.0. An unmeasured residue is not a
+#: residue that scored zero -- the metrics store's rule, all the way down to the bytes.
+FIXTURE_PLDDT = [91.5, 88.25, None, 70.0, 42.125]
+FIXTURE_NF_INDEX = [('A', '1'), ('A', '2'), ('A', '3')]
+FIXTURE_NF = [-1.5, -0.25, -6.0]
+FIXTURE_CERTAINTY = [0.0, 0.5, 1.0, None, 0.25]
+FIXTURE_SEQUENCES = {'A': 'MKV', 'B': 'GG'}
+FIXTURE_CHILD_SEQUENCES = {'A': 'MRV', 'B': 'GG'}
+
+
+def swift_fixture_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    return os.path.join(root, 'swiftui', 'PyMOLViewerTests', 'Fixtures',
+                        'residue_arrays.raymol')
+
+
+def build_swift_fixture(path):
+    """Lay down the cross-language fixture at `path`. Returns the Container."""
+    specs = [
+        mschema.MetricSpec('plddt', mschema.RESIDUE, lo=0, hi=100,
+                           higher_is_better=True, label='pLDDT'),
+        mschema.MetricSpec('native_fit', mschema.RESIDUE, lo=-6, hi=0,
+                           higher_is_better=True, label='Native fit'),
+        mschema.MetricSpec('certainty', mschema.RESIDUE, lo=0, hi=1,
+                           higher_is_better=True, label='Certainty'),
+        mschema.MetricSpec('score', mschema.OBJECT, lo=0, hi=100,
+                           higher_is_better=True),
+    ]
+    container = store.Container(path)
+    set_id = container.create_set(FIXTURE_SET, tool='seqfixtool',
+                                  ranking_key='score')['id']
+    container.declare_columns(set_id, specs)
+    run_id = container.add_run(set_id, 'seqfixtool')
+    parent = container.add_entry(
+        set_id, 'p_0001', run_id=run_id, sequences=FIXTURE_SEQUENCES,
+        scalars={'score': 80.0},
+        arrays=[
+            # Whole-entry, MULTI-CHAIN index: the case that decides whether the strip
+            # under a two-chain row lines up. A per-chain array follows it, so the
+            # reader has to key by chain name rather than by the order it met them.
+            dict(key='plddt', scope='residue', chain=None,
+                 index=FIXTURE_PLDDT_INDEX, values=FIXTURE_PLDDT, spec=specs[0]),
+            dict(key='native_fit', scope='residue', chain='A',
+                 index=FIXTURE_NF_INDEX, values=FIXTURE_NF, spec=specs[1]),
+            dict(key='certainty', scope='residue', chain=None,
+                 index=FIXTURE_PLDDT_INDEX, values=FIXTURE_CERTAINTY, spec=specs[2]),
+        ])
+    container.add_entry(set_id, 'c_0001', run_id=run_id, parents=[parent],
+                        sequences=FIXTURE_CHILD_SEQUENCES, scalars={'score': 91.0},
+                        arrays=[dict(key='plddt', scope='residue', chain=None,
+                                     index=FIXTURE_PLDDT_INDEX,
+                                     values=FIXTURE_PLDDT, spec=specs[0])])
+    container.close()
+    settle_fixture(path)
+
+
+def settle_fixture(path):
+    """Take the fixture out of WAL mode and vacuum it.
+
+    A `.raymol` runs in WAL (store spec §2.1) and a WAL database needs a `-shm` beside
+    it even to be READ, so every run of these tests -- and every run of the Swift ones,
+    which open the same file -- would drop two untracked sidecars next to a committed
+    file and, on a read-only checkout, might not be able to open it at all. Journal
+    mode is a header byte and not part of any blob, so a rollback-journal fixture is
+    byte-identical where it matters and openable by anything, anywhere.
+    """
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(path, isolation_level=None)
+    try:
+        conn.execute('PRAGMA journal_mode=DELETE')
+        conn.execute('VACUUM')
+    finally:
+        conn.close()
+    for suffix in ('-wal', '-shm'):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+
+
+def array_blobs(path):
+    """{(entry name, key, chain): (encoding, index_json, bytes)} for one container."""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect('file:%s?mode=ro' % path, uri=True)
+    try:
+        rows = conn.execute(
+            'SELECT e.name, a.key, a.chain, a.encoding, a.index_json, b.bytes'
+            ' FROM arrays a JOIN blobs b ON b.hash = a.blob'
+            ' JOIN entries e ON e.id = a.entry_id ORDER BY e.name, a.key').fetchall()
+    finally:
+        conn.close()
+    return {(r[0], r[1], r[2]): (r[3], r[4], bytes(r[5])) for r in rows}
+
+
+class TestSwiftResidueArrayFixture(AppkitSetsTestCase):
+
+    def test_the_committed_fixture_is_what_this_encoder_writes(self):
+        fixture = swift_fixture_path()
+        if os.environ.get('RAYMOL_WRITE_SWIFT_FIXTURE'):
+            if os.path.exists(fixture):
+                store.remove_db_files(fixture)
+            build_swift_fixture(fixture)
+        self.assertTrue(os.path.exists(fixture),
+                        'the committed fixture is missing; regenerate it with'
+                        ' RAYMOL_WRITE_SWIFT_FIXTURE=1 and commit it')
+        fresh = os.path.join(self._sets_dir, 'fresh.raymol')
+        build_swift_fixture(fresh)
+        # Byte for byte. The blobs are content-addressed by the sha256 of exactly
+        # these bytes, so a difference here is a different encoder, which is the one
+        # thing that could make Swift's decode wrong without any Swift changing.
+        self.assertEqual(array_blobs(fixture), array_blobs(fresh),
+                         'the committed fixture no longer matches what'
+                         ' pymol.sets.blobs writes; regenerate it with'
+                         ' RAYMOL_WRITE_SWIFT_FIXTURE=1')
+
+    def test_python_reads_back_exactly_what_swift_asserts(self):
+        """The expected values, read through the Python decoder.
+
+        The same numbers are written out in `SequenceArrayTests.swift`. Two copies on
+        purpose: a shared constant would let both sides drift together, and the point
+        is that two independent decoders agree about one file.
+        """
+        import shutil
+        copied = os.path.join(self._sets_dir, 'read.raymol')
+        shutil.copyfile(swift_fixture_path(), copied)
+        container = store.Container(copied)
+        try:
+            set_id = container.get_set(FIXTURE_SET)['id']
+            entries = {e['name']: e for e in container.entries(set_id)}
+            parent = entries['p_0001']
+            index, values = container.array(parent['id'], 'plddt')
+            self.assertEqual([tuple(p) for p in index], FIXTURE_PLDDT_INDEX)
+            self.assertEqual(values, FIXTURE_PLDDT)
+            index, values = container.array(parent['id'], 'native_fit', chain='A')
+            self.assertEqual([tuple(p) for p in index], FIXTURE_NF_INDEX)
+            self.assertEqual(values, FIXTURE_NF)
+            _, values = container.array(parent['id'], 'certainty')
+            self.assertEqual(values, FIXTURE_CERTAINTY)
+            self.assertEqual(parent['sequences'], FIXTURE_SEQUENCES)
+            child = entries['c_0001']
+            self.assertEqual(child['parents'], [parent['id']],
+                             'the child carries the parent link the Lineage tab reads')
+            self.assertEqual(child['sequences'], FIXTURE_CHILD_SEQUENCES)
+        finally:
+            container.close()
+
+    def test_residue_arrays_are_f32_and_ungzipped(self):
+        """The two facts Swift's decoder is built on (#419 decision 1).
+
+        `blobs.choose_encoding` gives u8q to PAIR scope only, and only `cif` blobs are
+        gzipped -- so a residue array is raw little-endian float32 and needs no
+        decompression on the Swift side. If either ever changes, the strip would draw
+        noise, so the assertion is here rather than in a comment.
+        """
+        for (name, key, chain), (encoding, _, raw) in \
+                array_blobs(swift_fixture_path()).items():
+            self.assertEqual(encoding, 'f32',
+                             'residue array %s/%s is %s' % (name, key, encoding))
+            self.assertNotEqual(raw[:2], b'\x1f\x8b',
+                                '%s/%s is gzipped; Swift does not decompress' % (name, key))
+        blob = array_blobs(swift_fixture_path())[('p_0001', 'plddt', None)][2]
+        self.assertEqual(len(blob), 4 * len(FIXTURE_PLDDT))
+        self.assertEqual(blob[:4], struct.pack('<f', 91.5),
+                         'little-endian float32, first value first')
+
+
+class TestLineageFilterGrammarLimits(AppkitSetsTestCase):
+    """What the grammar can and cannot say about "these descendants" (#419).
+
+    Spec §4.5 says clicking a Lineage node "filters the table to its descendants". The
+    drawer SELECTS instead, and this pins the two halves of why -- being careful about
+    which half is a limit and which is a choice, because the first version of this
+    claimed more than it could show.
+
+    The limit is real: there is no `id` column to name, and `in` is refused on the two
+    entry columns that do exist. If the grammar ever grows an id column the first two
+    tests go red and the decision can be revisited on purpose.
+
+    The rest is a choice. Entry names are unique within a set and an or-chain of them
+    compiles perfectly well -- `test_an_or_chain_of_names_compiles_fine` builds one and
+    checks the SQL and the bound parameters -- so "these 212 descendants" IS
+    expressible. We decline to synthesise it: a 212-term expression written by the UI
+    is not something a user could read, edit or save as a view, it would be regenerated
+    on every click, and it would put a second producer of filter text beside
+    `SetFilterComposer`. A selection is what "these specific rows" is for.
+    """
+
+    def test_id_is_not_a_column_the_grammar_knows(self):
+        from pymol.sets import filter as setfilter
+        from pymol.sets.errors import SetFilterError
+        columns = {'score': 'float'}
+        with self.assertRaises(SetFilterError) as caught:
+            setfilter.compile("id in ('e1', 'e2')", columns)
+        self.assertIn('id', str(caught.exception))
+
+    def test_in_is_refused_on_name(self):
+        from pymol.sets import filter as setfilter
+        from pymol.sets.errors import SetFilterError
+        with self.assertRaises(SetFilterError) as caught:
+            setfilter.compile("name in ('d_0001', 'd_0002')", {'score': 'float'})
+        self.assertIn("'in' is not valid on name", str(caught.exception))
+
+    def test_a_single_name_compiles(self):
+        from pymol.sets import filter as setfilter
+        sql, params = setfilter.compile("name = 'd_0001'", {'score': 'float'})
+        self.assertIn('e."name"', sql)
+        self.assertEqual(list(params), ['d_0001'])
+
+    def test_an_or_chain_of_names_compiles_fine(self):
+        """So the click's justification is a CHOICE, not an impossibility.
+
+        Asserted rather than asserted-about: the comment in LineageView.swift used to
+        say no or-chain could be built, which was untested opinion and wrong.
+        """
+        from pymol.sets import filter as setfilter
+        names = ['d_%04d' % i for i in range(212)]
+        expr = ' or '.join("name = '%s'" % n for n in names)
+        sql, params = setfilter.compile(expr, {'score': 'float'})
+        self.assertEqual(list(params), names,
+                         'all 212 are bound parameters; nothing is spliced into SQL')
+        self.assertEqual(sql.count('e."name"'), 212)
+
+    def test_an_or_chain_of_names_really_selects_those_entries(self):
+        """Not just valid SQL -- it does the job. Which is why the reason the drawer
+        does not build one has to be about the EXPRESSION being unreadable, not about
+        the grammar being unable."""
+        self.populated(3)
+        cmd.set_filter('s', "name = 'p0' or name = 'p2'")
+        self.assertEqual(sorted(cmd.set_get('s', 'filtered')), ['p0', 'p2'])

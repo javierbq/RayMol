@@ -157,6 +157,121 @@ struct SetRow: Identifiable, Equatable, Hashable {
     }
 }
 
+// MARK: - Residue arrays (#419)
+
+/// One residue-scope metric of one entry, decoded from its blob.
+///
+/// Swift decodes this itself, from the bytes, with no round trip to Python. The
+/// drawer already reads the container directly (#417) and #421's rule is "never poll
+/// a set": a per-row `set_array` call would put one Python round trip on the screen
+/// for every row a scroll passes, which is the cost the whole design exists to avoid.
+/// The format is `pymol.sets.blobs.encode_f32` — little-endian float32, one value per
+/// `index_json` entry, NaN for absent — and only `cif` blobs are gzipped, so there is
+/// nothing to decompress here. `TestSwiftResidueArrayFixture` in
+/// `testing/tests/test_appkit_sets.py` writes known values through the Python encoder
+/// into a committed container and `SequenceArrayTests` reads the same file back, so
+/// the two halves of that sentence are pinned against each other rather than asserted.
+///
+/// `u8q` is pair scope only (`blobs.choose_encoding`: a residue array is one row, not
+/// a matrix, so the 4× does not pay for the rounding), so a `u8q` row here is a file
+/// this build does not understand and is skipped rather than guessed at.
+struct ResidueArray: Equatable {
+    /// The MetricSpec key: `plddt`, `native_fit`, `certainty`.
+    let key: String
+    /// The chain this array covers, or nil for the whole entry.
+    let chain: String?
+    /// `[[chain, resi], …]` from `arrays.index_json`, in value order.
+    let index: [ResidueKey]
+    /// One per `index` entry; nil where the blob held NaN ("not measured", which is
+    /// not zero — the metrics store's rule, all the way down to the bytes).
+    let values: [Double?]
+
+    struct ResidueKey: Equatable, Hashable {
+        let chain: String
+        let resi: String
+    }
+
+    /// The value at a (chain, resi), or nil when the array does not cover it. Built
+    /// once per array rather than searched per cell: a 400-residue strip against a
+    /// 400-entry index is 160k comparisons otherwise, per render.
+    func lookup() -> [ResidueKey: Double] {
+        var out: [ResidueKey: Double] = [:]
+        out.reserveCapacity(index.count)
+        for (i, key) in index.enumerated() where i < values.count {
+            if let v = values[i] { out[key] = v }
+        }
+        return out
+    }
+}
+
+/// Everything the Sequences tab needs about one entry that is NOT in `SetRow`: its
+/// per-chain sequences and its residue arrays.
+///
+/// The two halves load SEPARATELY, and the flag is why. Sequences are text in the
+/// `entries` table and the consensus band needs all of them at once; arrays are blobs
+/// and load per visible row (#421). So a detail can be here with its sequences and
+/// without its arrays, and `arraysLoaded` is what tells the per-row loader that this
+/// id still has a blob read owing — without it the bulk read for the band would look
+/// like "already loaded" and no strip would ever appear again.
+struct SetEntryDetail: Equatable {
+    let id: String
+    /// `entries.sequences` — `{chain: one-letter}`.
+    let sequences: [String: String]
+    let arrays: [ResidueArray]
+    /// True once the array query has run for this entry — which is not the same as
+    /// `!arrays.isEmpty`, because most entries have no residue arrays at all and
+    /// re-reading them every time a row scrolls past would be the cost this is for.
+    let arraysLoaded: Bool
+
+    init(id: String, sequences: [String: String] = [:], arrays: [ResidueArray] = [],
+         arraysLoaded: Bool = true) {
+        self.id = id
+        self.sequences = sequences
+        self.arrays = arrays
+        self.arraysLoaded = arraysLoaded
+    }
+
+    /// EVERY array under `key`, not the first.
+    ///
+    /// `arrays`' primary key is `(entry_id, key, chain)`, so one metric legitimately
+    /// arrives as several rows — a whole-entry array plus a chain-scoped refinement,
+    /// or one array per chain, which is what `set_add` writes for a per-chain
+    /// predictor. Taking `.first` meant every chain but one drew as "not measured",
+    /// so a chain that scored badly read as a chain that was never scored. They are
+    /// merged per chain in `SequenceRowModel.heatValues`.
+    func arrays(_ key: String) -> [ResidueArray] {
+        arrays.filter { $0.key == key }
+    }
+
+    /// The same detail with its arrays filled in, keeping the sequences already read.
+    func withArrays(_ arrays: [ResidueArray]) -> SetEntryDetail {
+        SetEntryDetail(id: id, sequences: sequences, arrays: arrays, arraysLoaded: true)
+    }
+}
+
+/// One entry as the Lineage tab sees it: identity, its set, its parents and the two
+/// flags that draw a node hollow. No metrics and no structures — those are the Table's
+/// and the viewport's business, and a lineage over 8000 sequences has to stay text.
+struct LineageEntryRecord: Equatable, Hashable {
+    let id: String
+    let setID: String
+    let name: String
+    let ord: Int
+    let parents: [String]
+    let rejected: Bool
+    let runID: String?
+}
+
+/// A `runs` row, for the SET-level part of the DAG: an MPNN set whose entries have no
+/// `parents` still knows which set it came from, and that is what puts "sequences" to
+/// the right of "backbones" when the per-entry links are absent (spec §4.5).
+struct LineageRunRecord: Equatable, Hashable {
+    let id: String
+    let setID: String
+    let parentSetID: String?
+    let tool: String
+}
+
 /// One saved view: a named filter + sort + visible-column list over a set (#418,
 /// spec §4.2 "Save as View"). A view is also an ENTRY SELECTOR — `view:<name>` — so
 /// the same name that applies it in the drawer feeds `predict set:<set>@view:<name>`
@@ -615,6 +730,190 @@ final class SetsStore {
         }
     }
 
+    // MARK: Lazy per-entry reads (#419)
+
+    /// How many rows either side of the one that just appeared are loaded with it.
+    ///
+    /// Small on purpose. The look-ahead exists so a steady scroll does not show a
+    /// "loading…" row at the leading edge; it is not a prefetch of the set. Ten rows
+    /// either side is about one drawer's height in each direction, which covers a flick
+    /// without turning a glance into a read of forty entries.
+    static let sequenceLookAhead = 10
+
+    /// The ids to load when `id` comes on screen: itself and the look-ahead window
+    /// around it, in the row order the tab is showing.
+    ///
+    /// Pure and separate from the load, so the window can be walked at the ends of the
+    /// list (where a naive `index ± 10` traps) without a store, a view or a run loop.
+    static func sequenceWindow(around id: String, in order: [String],
+                               lookAhead: Int = sequenceLookAhead) -> [String] {
+        guard let index = order.firstIndex(of: id) else { return [id] }
+        let lo = max(index - lookAhead, 0)
+        let hi = min(index + lookAhead, order.count - 1)
+        guard lo <= hi else { return [id] }
+        return Array(order[lo...hi])
+    }
+
+
+    /// How many array BLOBS this connection has read. The Sequences tab's contract is
+    /// that a thousand-entry set costs the blobs of the rows on screen and no more
+    /// (#421: "structures and arrays load lazily"), and the only way to hold a lazy
+    /// loader to that is to count. `SequenceLazyLoadTests` asserts on this number.
+    private(set) var arrayBlobReads = 0
+
+    /// Sequences and residue arrays for a HANDFUL of entries — the rows a scroll has
+    /// on screen, plus the look-ahead. Two queries for the batch, not two per row.
+    ///
+    /// The `IN (…)` list is built from bound `?` placeholders, never from the ids, so
+    /// nothing about an entry id reaches SQL text. An empty request is an empty answer
+    /// with no query at all, which is what a tab with nothing visible should cost.
+    func entryDetails(entryIDs: [String]) -> [String: SetEntryDetail] {
+        let ids = Array(Set(entryIDs)).filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return [:] }
+        var sequences: [String: [String: String]] = [:]
+        let holes = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+        for row in queryBound("SELECT id, sequences FROM entries WHERE id IN (\(holes))",
+                              bind: ids.map { .text($0) }) ?? [] {
+            guard let id = row.string("id") else { continue }
+            sequences[id] = Self.decodeSequences(row.string("sequences") ?? "{}")
+        }
+        var arrays: [String: [ResidueArray]] = [:]
+        let sql = """
+            SELECT a.entry_id, a.key, a.chain, a.encoding, a.index_json, b.bytes
+            FROM arrays a JOIN blobs b ON b.hash = a.blob
+            WHERE a.scope = 'residue' AND a.entry_id IN (\(holes))
+            ORDER BY a.entry_id, a.rowid
+            """
+        for row in queryBlobs(sql, bind: ids.map { .text($0) }) {
+            guard let entryID = row.entryID, let key = row.key else { continue }
+            arrayBlobReads += 1
+            // An ALLOWLIST, not a `!= "u8q"` denylist. `u8q` is a PAIR encoding
+            // (blobs.choose_encoding) and a residue array in it came from a build this
+            // one does not know — but so would any future encoding, and a denylist
+            // would decode the next same-width one AS f32 and draw a plausible wrong
+            // strip. Refusing everything unrecognised leaves the row with no strip,
+            // which reads as "no data" — the honest answer, and the only one that
+            // stays honest as the format grows.
+            guard row.encoding == "f32" else { continue }
+            let index = Self.decodeResidueIndex(row.indexJSON)
+            guard let values = Self.decodeF32(row.bytes, count: index.count) else { continue }
+            arrays[entryID, default: []].append(
+                ResidueArray(key: key, chain: row.chain, index: index, values: values))
+        }
+        var out: [String: SetEntryDetail] = [:]
+        for id in ids {
+            out[id] = SetEntryDetail(id: id, sequences: sequences[id] ?? [:],
+                                     arrays: arrays[id] ?? [], arraysLoaded: true)
+        }
+        return out
+    }
+
+    /// Every entry's SEQUENCES for one set, in one query, with no blob read at all.
+    ///
+    /// The consensus band is a statement about the whole population — "these 8000
+    /// sequences never vary at position 31" — so it cannot be computed from the rows
+    /// that happen to be on screen. It does not need their ARRAYS, though, and that is
+    /// the distinction this method exists to draw: sequences are short text in the
+    /// `entries` table (a 9000-entry campaign is a few MB and reads in ~1 ms), where
+    /// arrays are blobs and stay per-row-lazy (#421).
+    ///
+    /// Without this the tab was silently empty above the threshold: nothing was
+    /// displayed, so no row's `onAppear` fired, so no sequences loaded, so every row
+    /// had zero cells and the band had zero columns — under a caption that said
+    /// "1000 in the consensus band".
+    func sequencesOfSet(setID: String) -> [String: [String: String]] {
+        guard Self.isSafeIdentifier(setID) else { return [:] }
+        var out: [String: [String: String]] = [:]
+        for row in query("SELECT id, sequences FROM entries WHERE set_id = ? ORDER BY ord",
+                         bind: [setID]) {
+            guard let id = row.string("id") else { continue }
+            out[id] = Self.decodeSequences(row.string("sequences") ?? "{}")
+        }
+        return out
+    }
+
+    /// `entries.sequences` — a JSON object of `{chain: one-letter}`.
+    static func decodeSequences(_ json: String) -> [String: String] {
+        guard let data = json.data(using: .utf8),
+              let map = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return map
+    }
+
+    /// `arrays.index_json` — `[[chain, resi], …]`. A malformed index is an empty one,
+    /// which drops the strip rather than mis-aligning it against the sequence.
+    static func decodeResidueIndex(_ json: String) -> [ResidueArray.ResidueKey] {
+        guard let data = json.data(using: .utf8),
+              let pairs = try? JSONDecoder().decode([[String]].self, from: data)
+        else { return [] }
+        return pairs.compactMap { pair in
+            guard pair.count >= 2 else { return nil }
+            return ResidueArray.ResidueKey(chain: pair[0], resi: pair[1])
+        }
+    }
+
+    /// `blobs.encode_f32` read back: `count` little-endian float32s, NaN → nil.
+    ///
+    /// nil — not a short array — when the byte count disagrees with the index, because
+    /// the two are one unit: a strip drawn from a truncated array would line the wrong
+    /// confidence up under the wrong residue, and every value after the break would be
+    /// off by however many the file lost. `blobs.decode_f32` raises on the same
+    /// mismatch, on purpose; this is the same refusal in Swift.
+    static func decodeF32(_ bytes: [UInt8], count: Int) -> [Double?]? {
+        guard count >= 0, bytes.count == count * 4 else { return nil }
+        var out: [Double?] = []
+        out.reserveCapacity(count)
+        for i in 0..<count {
+            let base = i * 4
+            let bits = UInt32(bytes[base])
+                | (UInt32(bytes[base + 1]) << 8)
+                | (UInt32(bytes[base + 2]) << 16)
+                | (UInt32(bytes[base + 3]) << 24)
+            let value = Float(bitPattern: bits)
+            out.append(value.isNaN ? nil : Double(value))
+        }
+        return out
+    }
+
+    // MARK: Lineage (#419)
+
+    /// Every entry in the FILE, as lineage records. Cross-set by nature — a fold's
+    /// parent is a sequence in another set, which is the whole point of the tab — so
+    /// this is the one read here that is not scoped to the active set.
+    ///
+    /// Called when the Lineage tab is selected and when the version moves UNDER it,
+    /// never on a tick: it is text, but it is text for every entry in the container.
+    func lineageEntries() -> [LineageEntryRecord] {
+        query("""
+            SELECT id, set_id, name, ord, parents, rejected, run_id
+            FROM entries ORDER BY set_id, ord, rowid
+            """).compactMap { row in
+            guard let id = row.string("id"), let setID = row.string("set_id") else {
+                return nil
+            }
+            return LineageEntryRecord(
+                id: id, setID: setID, name: row.string("name") ?? id,
+                ord: row.int("ord") ?? 0,
+                parents: Self.decodeParents(row.string("parents") ?? "[]"),
+                rejected: (row.int("rejected") ?? 0) != 0,
+                runID: row.string("run_id"))
+        }
+    }
+
+    /// Every `runs` row: `parent_set_id` is the set-level edge (spec §1, "lineage is
+    /// the parent link"), which is what orders sets when per-entry parents are absent.
+    func lineageRuns() -> [LineageRunRecord] {
+        query("SELECT id, set_id, parent_set_id, tool FROM runs ORDER BY created, rowid")
+            .compactMap { row in
+                guard let id = row.string("id"), let setID = row.string("set_id") else {
+                    return nil
+                }
+                return LineageRunRecord(id: id, setID: setID,
+                                        parentSetID: row.string("parent_set_id"),
+                                        tool: row.string("tool") ?? "")
+            }
+    }
+
     /// The entry ids a compiled filter fragment matches, or nil when the fragment
     /// could not even be prepared (#418).
     ///
@@ -766,6 +1065,55 @@ final class SetsStore {
                 }
             }
             out.append(record)
+        }
+        return out
+    }
+
+    /// One row of the residue-array query. A BLOB column, which `query` deliberately
+    /// never returns (it maps one to `.null`, because the tables it reads hold none),
+    /// so this is its own small path rather than a widening of `MetricValue` — the
+    /// alternative would put an `Data` case on the type every table cell is.
+    struct ArrayBlobRow {
+        let entryID: String?
+        let key: String?
+        let chain: String?
+        let encoding: String
+        let indexJSON: String
+        let bytes: [UInt8]
+    }
+
+    /// The arrays + blobs join, with text bound and the blob read as bytes. Empty on
+    /// any prepare failure, like `query`: the marker fires again on the next write.
+    private func queryBlobs(_ sql: String, bind: [MetricValue]) -> [ArrayBlobRow] {
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_bind_parameter_count(stmt) == Int32(bind.count) else { return [] }
+        for (i, value) in bind.enumerated() {
+            if case .text(let s) = value {
+                sqlite3_bind_text(stmt, Int32(i + 1), s, -1, sqliteTransient)
+            } else {
+                sqlite3_bind_null(stmt, Int32(i + 1))
+            }
+        }
+        func text(_ index: Int32) -> String? {
+            sqlite3_column_text(stmt, index).map { String(cString: $0) }
+        }
+        var out: [ArrayBlobRow] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            var bytes: [UInt8] = []
+            if let raw = sqlite3_column_blob(stmt, 5) {
+                let n = Int(sqlite3_column_bytes(stmt, 5))
+                if n > 0 {
+                    bytes = [UInt8](UnsafeRawBufferPointer(start: raw, count: n))
+                }
+            }
+            out.append(ArrayBlobRow(entryID: text(0), key: text(1), chain: text(2),
+                                    encoding: text(3) ?? "f32",
+                                    indexJSON: text(4) ?? "[]", bytes: bytes))
         }
         return out
     }
@@ -935,7 +1283,35 @@ extension PyMOLEngine {
             // Entries that landed while a batch runs have to fall on the right side of
             // the active filter without another round trip to Python — which is the
             // reason the fragment, not a row list, is what comes over the channel.
-            if rowsChanged { self.refreshFilterMatches() }
+            if rowsChanged {
+                self.refreshFilterMatches()
+                // The lazily-loaded sequences and arrays are keyed by entry id and
+                // entries are immutable once delivered, so the ones already read stay
+                // valid; what has to go is anything for an entry that is no longer in
+                // the set (a `set_delete_entries`), or the tab would draw a row the
+                // table does not have.
+                let live = Set(nextRows.map(\.id))
+                if !self.sequenceDetails.isEmpty {
+                    let kept = self.sequenceDetails.filter { live.contains($0.key) }
+                    if kept.count != self.sequenceDetails.count {
+                        self.sequenceDetails = kept
+                        self.sequenceArrayOrder.removeAll { !live.contains($0) }
+                    }
+                }
+                // Entries arrived or left, so the band's bulk read is stale.
+                self.sequenceBandSetID = nil
+            }
+            if versionChanged {
+                // One counter the Lineage tab can watch: it holds a graph built over
+                // the WHOLE file, which no single published property describes.
+                //
+                // The tick is ALL that happens here. Rebuilding the graph from this
+                // side too meant ~45 ms of main thread (measured on 9000 entries)
+                // twice per delivery — once here and once in the view's own
+                // `onChange` of this very counter. The view owns the rebuild; this
+                // owns telling it to.
+                self.setsVersionTick &+= 1
+            }
         }
         if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
     }
@@ -1274,6 +1650,150 @@ extension PyMOLEngine {
         return setRows.filter { matches.contains($0.id) }
     }
 
+    // MARK: - The Sequences tab's lazy loader (#419)
+
+    /// What the Sequences tab has for an entry, or nil while it is still coming.
+    func sequenceDetail(_ id: String) -> SetEntryDetail? { sequenceDetails[id] }
+
+    /// A visible row asking for its sequence and arrays. Coalesced: every row that
+    /// appears in one frame adds to `pendingSequenceDetails`, and the first of them
+    /// schedules the single read that satisfies them all.
+    ///
+    /// The filter is on `arraysLoaded`, not on presence: the band's bulk read puts a
+    /// sequences-only detail here for every entry in the set, and testing presence
+    /// would make every one of them look satisfied and no strip would ever load.
+    func requestSequenceDetails(around id: String, in order: [String]) {
+        let wanted = SetsStore.sequenceWindow(around: id, in: order)
+            .filter { sequenceDetails[$0]?.arraysLoaded != true
+                      && !pendingSequenceDetails.contains($0) }
+        guard !wanted.isEmpty else { return }
+        let wasIdle = pendingSequenceDetails.isEmpty
+        pendingSequenceDetails.formUnion(wanted)
+        guard wasIdle else { return }
+        DispatchQueue.main.async { [weak self] in self?.flushSequenceDetails() }
+    }
+
+    /// Read everything asked for since the last turn, in one pair of queries.
+    func flushSequenceDetails() {
+        let ids = Array(pendingSequenceDetails)
+        pendingSequenceDetails.removeAll()
+        guard !ids.isEmpty, let store = setsStore else { return }
+        let loaded = store.entryDetails(entryIDs: ids)
+        guard !loaded.isEmpty else { return }
+        var next = sequenceDetails
+        for (id, detail) in loaded {
+            // Keep the sequences already read for this id (the band's bulk read may
+            // have got there first); take the arrays and the loaded flag.
+            if let existing = next[id], !existing.sequences.isEmpty {
+                next[id] = existing.withArrays(detail.arrays)
+            } else {
+                next[id] = detail
+            }
+            sequenceArrayOrder.removeAll { $0 == id }
+            sequenceArrayOrder.append(id)
+        }
+        sequenceDetails = Self.evictSequenceArrays(next, order: &sequenceArrayOrder)
+    }
+
+    /// Arrays kept in memory at once. Sequences are text and stay — the band needs all
+    /// of them — but a fully scrolled 8000-entry set would otherwise hold 8000 float32
+    /// tracks resident, which is not a cache, it is the file.
+    ///
+    /// 400 is ten drawer-heights of rows either side of wherever the user stopped, so
+    /// scrolling back over what you just read is free and scrolling the whole set is
+    /// bounded.
+    static let sequenceArrayCacheLimit = 400
+
+    /// Drop the ARRAYS (never the sequences) of the least-recently-read entries until
+    /// at most `sequenceArrayCacheLimit` of them are resident. Pure, so the eviction
+    /// policy can be walked without a store.
+    static func evictSequenceArrays(_ details: [String: SetEntryDetail],
+                                    order: inout [String],
+                                    limit: Int = sequenceArrayCacheLimit)
+        -> [String: SetEntryDetail] {
+        guard order.count > limit else { return details }
+        var out = details
+        let evict = order.prefix(order.count - limit)
+        for id in evict {
+            guard let detail = out[id] else { continue }
+            out[id] = SetEntryDetail(id: id, sequences: detail.sequences,
+                                     arrays: [], arraysLoaded: false)
+        }
+        order.removeFirst(order.count - limit)
+        return out
+    }
+
+    /// Load EVERY entry's sequences for the set the band is about to be computed over.
+    ///
+    /// Called once per set, when the tab collapses. Text only — no blob touches this
+    /// path, which `SequenceBandTests` asserts on `arrayBlobReads` — and idempotent
+    /// through `sequenceBandSetID`, because it is called from a view body's `onAppear`
+    /// and a re-render must not re-read the set.
+    func loadSequencesForBand(setID: String) {
+        guard sequenceBandSetID != setID, let store = setsStore else { return }
+        sequenceBandSetID = setID
+        let sequences = store.sequencesOfSet(setID: setID)
+        guard !sequences.isEmpty else { return }
+        var next = sequenceDetails
+        for (id, chains) in sequences where next[id] == nil {
+            // arraysLoaded: false — this read deliberately fetched no blobs, and the
+            // per-row loader has to still see these ids as owing one.
+            next[id] = SetEntryDetail(id: id, sequences: chains, arrays: [],
+                                      arraysLoaded: false)
+        }
+        sequenceDetails = next
+    }
+
+    /// Open the drawer on the Sequences tab — the View menu, the rail's Seq pill, and
+    /// `PYMOL_AUTOSEQ`. With no set open the tab is the strip (spec §8 decision 2), so
+    /// this is the Mac's "show me the sequence" in every state.
+    func showSequencesTab() {
+        dataDrawerTab = .sequences
+        dataDrawerVisible = true
+        fetchSequences()
+    }
+
+    // MARK: - The Lineage tab (#419)
+
+    /// Rebuild the graph from the container. Called when the tab appears and when the
+    /// version moves under it; never on a tick.
+    func refreshLineage() {
+        guard dataDrawerTab == .lineage, let store = setsStore else { return }
+        // The metric is the ACTIVE set's ranking column, and its values are the rows
+        // already in memory — nodes in other sets are left `metricUnknown` rather than
+        // read, because sizing a 9000-node graph by a column most of it does not have
+        // would mean a scalar read per set for a decoration.
+        let column = activeSet.flatMap { set in
+            set.columns.first { $0.column == set.rankingKey && $0.isScalar }
+        }
+        var metric: [String: Double?] = [:]
+        if let name = column?.column {
+            for row in setRows { metric[row.id] = row.values[name]?.number }
+        }
+        let next = LineageModel(entries: store.lineageEntries(), runs: store.lineageRuns(),
+                                metric: metric, metricColumn: column)
+        if lineageModel != next { lineageModel = next }
+    }
+
+    /// A node click: select the node and its descendants in the Table, and go there.
+    ///
+    /// SELECTION, not a filter — see the note at the top of LineageView.swift. Scoped
+    /// to the active set because that is the only set the Table is showing.
+    ///
+    /// Returns how many rows it selected, and 0 is a real answer the caller must not
+    /// swallow: a subtree entirely inside a CHILD set (click a backbone while the fold
+    /// set is open, which is exactly what the tab invites) selects nothing here, and a
+    /// click that silently does nothing is the worst of the three outcomes. The view
+    /// says so, and draws those nodes dimmed so it is visible before the click.
+    @discardableResult
+    func selectLineageSubtree(_ ids: Set<String>) -> Int {
+        let here = Set(setRows.map(\.id)).intersection(ids)
+        guard !here.isEmpty else { return 0 }
+        setSelection = here
+        dataDrawerTab = .table
+        return here.count
+    }
+
     /// Everything about the drawer that belongs to one set and must not follow the
     /// user into the next one.
     func resetSetUIState(filterText: String = "") {
@@ -1285,7 +1805,24 @@ extension PyMOLEngine {
         setSelection = []
         setViewportSelection = []
         setHiddenColumns = []
-        dataDrawerTab = .table
+        dataDrawerTab = Self.tabAfterSetChange(dataDrawerTab)
+        // The TAB is deliberately NOT reset. This runs on every `activeSetID` change,
+        // and a campaign makes a new set active repeatedly — `binder_design` then
+        // `predict … @top:3` then the next round — so resetting it here yanked the
+        // user off the Sequences tab once per child set, which is the same "a visible
+        // pane must not vanish" rule the strip's migration exists to honour, broken at
+        // the other end. Every tab has something to show for any set (and Sequences
+        // has something to show for none), so there is no state to rescue them from.
+        // If a future tab ever does not, the test is `!tab.worksWithoutASet &&
+        // !tab.isAvailable`, which is nothing today.
+        //
+        // The lazily-loaded sequences and arrays belong to the entries of the set
+        // being left. Keeping them would grow without bound over a session and, worse,
+        // a new set whose entry ids happened to collide would draw the old strips.
+        sequenceDetails = [:]
+        pendingSequenceDetails = []
+        sequenceArrayOrder = []
+        sequenceBandSetID = nil
     }
 
     /// Set or clear one column's brush and push the composed expression.
@@ -1414,9 +1951,10 @@ enum SetSendTarget: Equatable {
     }
 }
 
-/// Which tab of the Data drawer is showing. Table and Plot ship in #418; Sequences
-/// and Lineage are #419 and are drawn disabled rather than hidden, so the drawer's
-/// shape is learned once (spec §4).
+/// Which tab of the Data drawer is showing. All four ship as of #419; `isAvailable`
+/// is kept because the drawer's shape is the spec's (§4) and a fifth tab landing
+/// half-built should be drawn disabled rather than hidden, exactly as Sequences and
+/// Lineage were between #418 and #419.
 enum DataDrawerTab: String, CaseIterable, Identifiable, Equatable {
     case table = "Table"
     case plot = "Plot"
@@ -1424,19 +1962,45 @@ enum DataDrawerTab: String, CaseIterable, Identifiable, Equatable {
     case lineage = "Lineage"
 
     var id: String { rawValue }
-    var isAvailable: Bool { self == .table || self == .plot }
+    var isAvailable: Bool { true }
+
+    /// True for the one tab that means something with NO set open: the Sequences tab
+    /// with nothing loaded is the old sequence strip, which is where it now lives
+    /// (spec §8 decision 2). The others have nothing to draw and say so.
+    var worksWithoutASet: Bool { self == .sequences }
 
     var help: String {
         switch self {
         case .table: return "Entries as rows; columns come from the set's metrics"
         case .plot: return "One scatter over the same filtered rows; brush to select"
-        case .sequences: return "Coming when the sequence strip moves here (#419)"
-        case .lineage: return "Coming with the Sequences tab (#419)"
+        case .sequences:
+            return "Scene objects and the selected or filtered entries, with"
+                + " per-residue confidence under each. With no set open this is the"
+                + " sequence viewer."
+        case .lineage:
+            return "Which backbone each sequence and fold came from; click a node to"
+                + " select it and its descendants in the Table"
         }
     }
 }
 
 extension PyMOLEngine {
+    /// The tab the drawer should be on after the ACTIVE SET changes.
+    ///
+    /// Which is: the one it is already on. This used to be an unconditional `.table`,
+    /// and it ran on every `activeSetID` change — so a campaign (`binder_design`, then
+    /// `predict … @top:3`, then the next round) yanked the user off the Sequences tab
+    /// once per child set, silently replacing the sequence view with a table. That is
+    /// the same "a visible pane must not vanish" rule the strip's migration exists to
+    /// honour, broken at the other end.
+    ///
+    /// The only tab that would have to be rescued is one that can draw neither with a
+    /// set nor without one, which is nothing today — but the condition is written out
+    /// rather than assumed, so a half-built tab added later cannot strand the drawer.
+    static func tabAfterSetChange(_ current: DataDrawerTab) -> DataDrawerTab {
+        (current.isAvailable || current.worksWithoutASet) ? current : .table
+    }
+
     /// One histogram per scalar numeric column, over every row of the set — not the
     /// filtered ones, so brushing a column does not collapse the shape you are
     /// brushing on. Binned over the spec's domain when it has one, which is what makes
