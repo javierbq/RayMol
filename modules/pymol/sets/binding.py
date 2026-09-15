@@ -752,11 +752,18 @@ def save_raymol(filename, quiet=1, _self=cmd):
                         app_version=_app_version(_self=_self))
     except Exception as exc:
         raise SetInputError('could not write the session into %s: %s' % (filename, exc))
-    if not same and os.path.abspath(old_path) == os.path.abspath(store.working_path()):
+    if not same and (os.path.abspath(old_path) == os.path.abspath(store.working_path())
+                     or store.is_preserved(old_path)):
         # force: the ONE place a non-empty working file may still be deleted (#447).
         # Everything in it was just copied into the document the user named, so
         # preserving it would offer them, on the next launch, a recovery of work they
         # explicitly saved -- and a second copy of every structure blob on disk.
+        #
+        # A PRESERVED container counts as a working file here (#447 review): Save As
+        # from a recovered session is exactly the "now put it somewhere I chose" the
+        # alert sends the user to, and leaving the recovered_ copy behind would offer
+        # it back on the next launch, duplicate every structure blob, and make the
+        # docs' "the next Save moves it where you want it" a lie.
         store.retire_working_file(old_path, force=True)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
     if not int(quiet):

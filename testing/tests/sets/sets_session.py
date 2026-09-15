@@ -349,3 +349,47 @@ class Durability(SetSessionTestCase):
         cmd.load(doc)
         self.assertFalse(os.path.exists(working))
         self.assertEqual([r['entries'] for r in store.recoverable()], [3])
+
+    # -- what the review found, through the real commands ----------------------------
+
+    def preserved(self, days=0):
+        """A preserved container with 3 entries, `days` old, as a quit would leave."""
+        self.campaign()
+        self.quit()
+        path = store.recoverable()[0]['path']
+        if days:
+            when = store._now() - days * 86400
+            os.utime(path, (when, when))
+        return path
+
+    def testLoadingARecoveredContainerDoesNotSweepItAway(self):
+        # `load` opens the container and only then reaches active() -> the retention
+        # sweep, which saw a 31-day-old preserved file it was free to drop -- and
+        # unlinked the document under its own open connection. Everything written
+        # afterwards went to an unlinked inode: no error, no file, no data.
+        path = self.preserved(days=31)
+        cmd.reinitialize()
+        store._SWEPT = store._OWN_RETIRED = False     # a cold launch
+        cmd.load(path)
+        self.assertTrue(os.path.exists(path), 'the document is still on disk')
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(path))
+        cmd.fab('ACDEF', 'late', chain='A')
+        cmd.set_add('s', 'late')
+        cmd.delete('late')
+        store.reset()
+        self.assertEqual(store.inspect_container(path)['entries'], 4,
+                         'and a result that lands afterwards is really in it')
+
+    def testSaveAsRetiresTheRecoveredContainerItCopied(self):
+        # Otherwise the next launch offers to recover work the user explicitly saved,
+        # with a second copy of every structure blob behind it.
+        path = self.preserved()
+        cmd.reinitialize()
+        cmd.load(path)
+        doc = self.path('mywork.raymol')
+        cmd.save(doc)
+        self.assertFalse(os.path.exists(path), 'the recovered copy is gone')
+        self.assertEqual(store.recoverable(), [])
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(doc))
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3)
+

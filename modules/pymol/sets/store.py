@@ -234,6 +234,10 @@ class Container:
             conn.close()
             raise SetFormatError('%s is not a .raymol file: %s' % (path, exc))
         self._conn = conn
+        # From here on this path is OPEN IN THIS PROCESS, and no sweep may unlink it
+        # (#447 review): `close()` is what takes it out again, including the `close()`
+        # in the failure path below.
+        _register_open(path)
         try:
             if fresh:
                 schema.create(conn)
@@ -283,24 +287,33 @@ class Container:
             pass
         self._conn.close()
         self._conn = None
+        _unregister_open(self._path)
 
     def holds_entries(self):
-        """True when any set in this container has at least one entry (#447).
+        """True / False / None: does any set in this container hold an entry (#447)?
 
         The question "is there anything in here worth keeping" is asked on the way
         out -- in `reset`, which every quit reaches through atexit -- and it is asked
         HERE, of the live connection, rather than by reopening the file afterwards:
         the connection is already warm, `EXISTS` stops at the first row, and a reopen
-        would have to cope with the WAL we are about to checkpoint away. A closed
-        container answers False, because it can no longer answer at all; callers that
-        have only a path use `inspect_container`.
+        would have to cope with the WAL we are about to checkpoint away.
+
+        NONE MEANS "I CANNOT ANSWER", and is not False, because the caller's False
+        branch DELETES THE FILE. A closed container (a failed `save_raymol` can leave
+        one installed) and an IO error on the EXISTS are both "ask the disk instead",
+        which `retire_working_file` does; only a clean `entries = 0` may delete.
+
+        An entry is the unit, so a set with columns and a run but no landed result --
+        a quit between launching a batch and its first design -- counts as empty and
+        its container goes. That is spec §2.1's rule ("a non-empty set"), and the
+        thing being protected is results, of which there are none yet.
         """
         if self._conn is None:
-            return False
+            return None
         try:
             row = self._one('SELECT EXISTS(SELECT 1 FROM entries) AS held')
         except sqlite3.Error:
-            return False
+            return None
         return bool(row and row['held'])
 
     def version(self):
@@ -1033,6 +1046,55 @@ def is_open():
 _GENERATION = 0
 _SWEPT = False
 
+#: Set the first time `active()` deals with a file already under our own pid. Its OWN
+#: flag, not `_SWEPT`'s return value: the app asks `recoverable()` at launch, before
+#: anything touches the store, so the sweep is already spent by the time `active()`
+#: runs and the pid guard would never fire (#447 review). The two questions are
+#: independent and now have independent one-shots.
+_OWN_RETIRED = False
+
+#: Paths this process has open, as realpaths, with a count (the same file may be
+#: opened twice -- a test, a `save_into` to a path that is reopened). NOTHING may
+#: unlink a file in here: `sweep_recovered` would otherwise delete a preserved
+#: container out from under the connection that is writing to it, and the writes
+#: would go to an unlinked inode with no error (#447 review).
+_OPEN_PATHS = {}
+_OPEN_PATHS_LOCK = threading.RLock()
+
+
+def _register_open(path):
+    key = os.path.realpath(path)
+    with _OPEN_PATHS_LOCK:
+        _OPEN_PATHS[key] = _OPEN_PATHS.get(key, 0) + 1
+
+
+def _unregister_open(path):
+    key = os.path.realpath(path)
+    with _OPEN_PATHS_LOCK:
+        count = _OPEN_PATHS.get(key, 0) - 1
+        if count > 0:
+            _OPEN_PATHS[key] = count
+        else:
+            _OPEN_PATHS.pop(key, None)
+
+
+def is_container_open(path):
+    """True when this process has `path` open as a Container."""
+    with _OPEN_PATHS_LOCK:
+        return os.path.realpath(os.fspath(path)) in _OPEN_PATHS
+
+
+def _has_sidecar(path):
+    """True when a `-wal` or `-shm` still sits beside `path`.
+
+    The cross-process half of the same guard. SQLite removes both when the LAST
+    connection closes, and `inspect_container` opens and closes the file just before
+    this is asked -- so a sidecar that is still there means somebody else (another
+    RayMol holding this container as its document) has it open right now. A registry
+    cannot see that; the filesystem can.
+    """
+    return any(os.path.exists(path + extra) for extra in ('-wal', '-shm'))
+
 
 def generation():
     return _GENERATION
@@ -1044,19 +1106,49 @@ def active():
     The first open in a process sweeps working files of dead RayMols (spec §2.1) and
     treats a file already under THIS pid as one of them: a pid is reused after a wrap,
     and inheriting a dead session's sets is worse than starting empty. "Treats as
-    stale" now means `retire_working_file`, not delete: since #447 a container that
-    holds entries is preserved for recovery instead of destroyed, here as everywhere.
+    stale" means `retire_working_file`, not delete: since #447 a container that holds
+    entries is preserved for recovery instead of destroyed, here as everywhere.
+
+    The pid guard is `retire_own_leftover`, with its own one-shot: it runs whether the
+    sweep was spent by an earlier `recoverable()` (which is the app's actual launch
+    order) or by this call, and never again -- the later opens are this process
+    reopening the working file `replace()` left behind, which must come back with its
+    sets.
     """
     global _ACTIVE, _GENERATION
     if _ACTIVE is None or _ACTIVE.closed:
-        path = working_path()
-        # Only on the FIRST open: later ones reopen the working file `replace()` left
-        # behind, which is this process's own and must come back with its sets.
-        if sweep_once() and os.path.exists(path):
-            retire_working_file(path)
-        _ACTIVE = Container(path)
+        sweep_once()
+        retire_own_leftover()
+        _ACTIVE = Container(working_path())
         _GENERATION += 1
     return _ACTIVE
+
+
+def retire_own_leftover():
+    """Deal with a file already sitting under THIS process's working name, once.
+
+    A pid is reused after a wrap, so a file under our own name at startup belongs to a
+    RayMol that is gone: inheriting its sets -- a drawer full of sets whose staged
+    objects are not in the scene, and a `set_delete` away from destroying them -- is
+    worse than starting empty. It is retired, not deleted, so it comes back through
+    the recovery alert instead.
+
+    Called from `sweep_once` as well as `active`, because the app asks `recoverable()`
+    at launch before anything opens a container (#447 review): doing it only in
+    `active` left the leftover under its pid name, where `recoverable` cannot see it,
+    so the user was not offered it until the launch after. Guarded by `is_container_open`
+    so a mid-session `recoverable()` can never retire the live working file.
+    """
+    global _OWN_RETIRED
+    if _OWN_RETIRED:
+        return None
+    path = working_path()
+    if is_container_open(path):
+        return None
+    _OWN_RETIRED = True
+    if not os.path.exists(path):
+        return None
+    return retire_working_file(path)
 
 
 def sweep_once():
@@ -1066,13 +1158,15 @@ def sweep_once():
     Separate from `active()` because `recoverable()` asks the same question at launch
     and must not have to open a container -- and must not report a stale working file
     under its old name, since the answer it gives is the one the user is offered.
-    True when this call is the one that swept.
+    True when this call is the one that swept; nothing may make a DECISION out of
+    that answer (see `active`), it is for tests and callers that want to know.
     """
     global _SWEPT
     if _SWEPT:
         return False
     _SWEPT = True
     sweep_stale_working_files()
+    retire_own_leftover()
     sweep_recovered()
     return True
 
@@ -1121,28 +1215,62 @@ def retire_working_file(path, held=None, force=False):
     down, so every caller that used to `remove_db_files` a working file obeys it by
     construction. Returns the preserved path, or None when the file was removed.
 
-    `held` is the answer a caller already has from the live container (the cheap way);
-    without it the file is inspected on disk (the only way, for a sweep of a dead pid's
-    leftovers). `force` deletes regardless, and is for the one caller that knows the
-    data is already somewhere better: `save x.raymol` has just copied this container
-    into the user's document, and offering the copy back on next launch would ask them
-    to recover work they explicitly saved.
+    `held` is the answer a caller already has from the live container (the cheap way),
+    and None means it could not answer -- a closed connection, an IO error -- in which
+    case the file is inspected on disk instead. `force` deletes regardless, and is for
+    the callers that know the data is already somewhere better: `save x.raymol` has
+    just copied this container into the user's document, and offering the copy back on
+    next launch would ask them to recover work they explicitly saved.
     """
     if not force:
         if held is None:
-            info = inspect_container(path)
-            held = bool(info and info['entries'])
+            held = _file_holds_entries(path)
         if held:
             return preserve_working_file(path)
     remove_db_files(path)
     return None
 
 
+def _file_holds_entries(path):
+    """Does the closed container at `path` hold entries -- and, when that cannot be
+    answered, does it look like a database at all?
+
+    Only a clean `entries = 0` answers False, because False is the branch that
+    DELETES. A file we could not read today (locked, out of file descriptors, a format
+    version from a future build) is not an empty one, and six hours of results must
+    not turn on a transient sqlite error (#447 review).
+    """
+    info = inspect_container(path)
+    if info is not None:
+        return info['entries'] > 0
+    return looks_like_container(path)
+
+
+def looks_like_container(path):
+    """True when `path` starts with SQLite's 16-byte magic.
+
+    The cheap half of "is this ours": it needs no connection and cannot fail for a
+    reason other than the file itself, which is exactly what tells a junk file apart
+    from a database we merely could not open just now.
+    """
+    try:
+        with open(path, 'rb') as fh:
+            return fh.read(16) == b'SQLite format 3\x00'
+    except OSError:
+        return False
+
+
 def preserve_working_file(path):
     """Rename a working file out of the pid-scoped namespace so it survives, and so no
-    later process can mistake it for its own. Returns the new path, or None if the
-    rename failed (in which case the file is left exactly where it was, un-deleted:
-    losing the name is survivable, losing the file is the bug)."""
+    later process can mistake it for its own.
+
+    Returns WHERE THE CONTAINER ENDED UP: the new name, or `path` itself when the
+    rename failed and the file was left exactly where it was. Never None, so a caller
+    cannot read "kept under its old name" as "removed" -- `sweep_stale_working_files`
+    would have reported it swept and `load x.raymol` would have printed no line at all
+    (#447 review). Losing the name is survivable; losing the file is the bug, and a
+    file still under `raymol_sets_<pid>` is retired again on the next launch.
+    """
     name = os.path.basename(path)
     pid = os.getpid()
     if name.startswith(_WORKING_PREFIX) and name.endswith(_WORKING_SUFFIX):
@@ -1158,11 +1286,11 @@ def preserve_working_file(path):
         if not os.path.exists(target):
             break
     else:
-        return None
+        return path
     try:
         os.rename(path, target)
     except OSError:
-        return None
+        return path
     # A crash leaves -wal/-shm beside the file; they carry committed transactions that
     # are not in the main database yet, so they move WITH it or the entries they hold
     # are lost. (`inspect_container` will have checkpointed them away in the usual
@@ -1211,20 +1339,40 @@ def inspect_container(path):
             'session': bool(session), 'modified': modified}
 
 
-def recovered_files():
-    """Every preserved container in the working directory, newest first, EXCEPT one
-    that is currently open: the user opened it, so it is this session's document, not
-    something to offer back or sweep out from under itself. Paths only; the file may
-    be empty or unreadable, which is `recoverable`'s problem."""
+def is_preserved(path):
+    """True when `path` names a preserved container of ours: the `recovered_` name,
+    in the working directory. One place, because three callers ask -- the retention
+    sweep, `discard_recoverable`'s refusal, and `save x.raymol` deciding whether the
+    file it just copied was a recovery (#447 review)."""
+    path = os.path.abspath(os.fspath(path))
+    name = os.path.basename(path)
+    if not (name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)):
+        return False
+    # realpath on both sides: on macOS $TMPDIR is /var/folders/... which is a symlink
+    # to /private/var/..., and a mismatch there would be a Discard button that
+    # silently does nothing.
+    return os.path.realpath(os.path.dirname(path)) == os.path.realpath(working_dir())
+
+
+def recovered_files(include_open=False):
+    """Every preserved container in the working directory, newest first.
+
+    Files this process has OPEN are left out: one of them is the document the user
+    opened from the recovery alert, and it is neither something to offer back again
+    nor something a retention sweep may unlink -- the writes would go to an unlinked
+    inode, silently, which is the failure this whole ticket exists to prevent (#447
+    review). Paths only; the file may be empty or unreadable, which is
+    `recoverable`'s and `sweep_recovered`'s problem.
+    """
     folder = working_dir()
     try:
         names = os.listdir(folder)
     except OSError:
         return []
-    open_path = os.path.realpath(_ACTIVE.path) if is_open() else None
     paths = [os.path.join(folder, name) for name in names
-             if name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)
-             and os.path.realpath(os.path.join(folder, name)) != open_path]
+             if name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)]
+    if not include_open:
+        paths = [p for p in paths if not is_container_open(p)]
     paths.sort(key=lambda p: (_mtime(p) or 0.0, p), reverse=True)
     return paths
 
@@ -1234,10 +1382,12 @@ def recoverable():
     first, as `{'path', 'sets', 'entries', 'session', 'modified'}` dicts (#447).
 
     This is a LAUNCH-TIME question, asked once by the app so it can offer the work
-    back; it is deliberately not in the 500 ms poll, since it stats and opens files.
-    It sweeps first, so a container preserved from a crash a moment ago is reported
-    under the name it will keep. It never opens or creates the working container, so
-    asking costs nothing in a session that has no sets.
+    back, and deliberately not in the 500 ms poll: it opens every preserved container
+    read-write, which replays and checkpoints a crashed session's WAL, on whichever
+    thread asks. Cheap in the sense that matters -- it counts rows rather than reading
+    them, so a ten-thousand-entry container costs what an empty one does, and it never
+    opens or CREATES the working container, so a session with no sets pays one
+    `listdir` -- but not free, and not something to put on a timer.
     """
     sweep_once()
     out = []
@@ -1254,12 +1404,7 @@ def discard_recoverable(path):
     back out of `recoverable()`, and "delete the file named in this string" is not a
     verb this module should offer anyone."""
     path = os.path.abspath(os.fspath(path))
-    name = os.path.basename(path)
-    # realpath on both sides: on macOS the state directory reached through $TMPDIR is
-    # /var/folders/... which is a symlink to /private/var/..., and a refusal there
-    # would be a Discard button that silently does nothing.
-    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(working_dir()) \
-            or not (name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)):
+    if not is_preserved(path):
         raise SetInputError('%s is not a recoverable container' % path)
     remove_db_files(path)
     return path
@@ -1268,18 +1413,37 @@ def discard_recoverable(path):
 def sweep_recovered(keep=RECOVERED_KEEP, max_age=RECOVERED_MAX_AGE):
     """Apply the retention policy to preserved containers. Returns the paths removed.
 
-    Age first, then count, so "older than thirty days" is not saved by being one of
-    the ten newest. An empty or unreadable preserved file is dropped whatever its age:
-    it can never be offered, so keeping it only fills the folder.
+    Age before count, so "older than thirty days" is not saved by being one of the ten
+    newest, and an empty container goes whatever its age -- it can never be offered.
+
+    Three things are never unlinked, and each is a way this sweep could have destroyed
+    a live document (#447 review):
+
+    * a file this process has open (`recovered_files` has already dropped those);
+    * a file another process has open, which is what a `-wal`/`-shm` still sitting
+      beside it means once `inspect_container` has opened and closed it;
+    * a file we could not READ. "I got a sqlite error" is not "it is empty". Only a
+      file that is not a database at all -- no SQLite header -- is junk, and junk is
+      the one unreadable thing that is safe to drop.
+
+    A file kept for any of those reasons still counts towards `keep`, so the directory
+    stays bounded even when something in it is unreadable every time we look.
     """
     removed = []
     now = _now()
     kept = 0
     for path in recovered_files():
+        if not looks_like_container(path):
+            remove_db_files(path)
+            removed.append(path)
+            continue
         mtime = _mtime(path)
         info = inspect_container(path)
+        if info is None or is_container_open(path) or _has_sidecar(path):
+            kept += 1
+            continue
         stale = (max_age and mtime is not None and (now - mtime) > max_age)
-        if stale or not (info and info['entries']):
+        if stale or not info['entries']:
             remove_db_files(path)
             removed.append(path)
             continue
