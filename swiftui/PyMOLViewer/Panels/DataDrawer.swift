@@ -1371,15 +1371,17 @@ struct SetSendMenu: View {
                         }
                     }
                 }
+                // Binder Design is deliberately absent, not disabled: a generator
+                // PRODUCES a set, it does not consume one, and "run a 1000-design
+                // campaign per selected entry" is not a flow anyone wants. It starts
+                // from a target object and hotspots and always will (decided
+                // 2026-09-15, spec §4.2). MPNN is the design step that does belong
+                // here; it is disabled only until it has a command to call (#453).
                 Button("Design / MPNN…") {}
                     .disabled(true)
                     .help("MPNN does not take a set as its input yet — it designs on an "
                           + "object. Stage the candidates, or Export a folder, and run "
-                          + "design on those. Tracked on #421.")
-                Button("Binder Design…") {}
-                    .disabled(true)
-                    .help("binder_design starts from a TARGET object and hotspots, not "
-                          + "from a set of candidates. Tracked on #421.")
+                          + "design on those. Tracked on #453.")
             }
             Divider()
             Menu("Export") {

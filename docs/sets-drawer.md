@@ -146,8 +146,10 @@ before clicking.
 **Predict** lists the registered predictors and runs
 `predict <predictor>, set:<name>@<selector>`, which writes a child set whose entries
 point back at the ones they were folded from. **Export** writes CSV, FASTA or a folder
-of CIFs. **Design / MPNN** and **Binder Design** are disabled with a note saying why:
-they still take a target *object*, not a set.
+of CIFs. **Design / MPNN** is disabled with a note saying why: sequence design still
+runs on an *object*, and has no command a set could be handed to (#453). Binder Design is
+not in the menu at all — it starts from a target and produces candidates, so a set of
+candidates is not an input it has any use for.
 
 ## The `.raymol` document
 

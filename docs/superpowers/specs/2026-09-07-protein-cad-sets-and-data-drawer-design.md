@@ -129,7 +129,9 @@ affordance. Its group appears under OBJECTS as normal, holding only staged objec
   Row count updates live: "212 of 1024 match".
 - Row hover peeks. Space stages/unstages. `s` stars. `x` rejects. Arrow keys move the peek.
 - Selection actions in the footer: Stage, Pin, Export (FASTA, CSV, PDB folder), Send to ▾
-  (Predict, Design/MPNN, Binder Design), Save as View.
+  (Predict, Design/MPNN), Save as View. **Not Binder Design**: a generator produces a set
+  rather than consuming one, and running a campaign per selected entry is a combinatorial
+  flow nobody wants. It keeps taking a target object and hotspots (decided 2026-09-15).
 - Optional thumbnail column, rendered lazily by the peek object off-screen.
 
 ### 4.3 Drawer: Plot tab
