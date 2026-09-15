@@ -220,9 +220,11 @@ container and are never written into a `.pse`. Concretely, for a mid-batch sessi
   generation changes, so the remaining members' writes are refused (§2.1) and those designs
   land as plain objects in the batch group with one warning. A `.raymol` document is
   closed, not deleted, so what had landed is on disk; the pid-scoped working file of an
-  untitled session is removed by those commands today (#415), which is the one path where
-  landed entries are lost -- refusing the load while a batch runs is a one-line guard in
-  `binding.load_raymol` that this step does not add (§9).
+  untitled session was removed by those commands (#415), which was the one path where
+  landed entries were lost. Since #447 it is preserved instead -- renamed out of the
+  pid-scoped namespace and offered back on the next launch -- and `load x.raymol` says
+  where it went. Refusing the load outright while a batch runs is still a one-line guard
+  in `binding.load_raymol` that neither step adds (§9, #448).
 
 There is no `session_restore` in either module today and none is added: a pending job
 does not survive the process, and the set's entries need nothing restored.

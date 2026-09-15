@@ -94,11 +94,24 @@ container's Library on the sandboxed build), beside the autosaved session, rathe
 in `$TMPDIR`, which the system may purge while a batch is running. Under command-line
 PyMOL it falls back to `$TMPDIR`, or to `$RAYMOL_SETS_DIR` when that is set.
 
-**Save before you quit.** The working file is pid-scoped and is deleted on a clean exit,
-and a file left behind by a crash is swept on the next launch, so an untitled session's
-sets do not survive quitting RayMol — only a `.raymol` you have saved does. Spec §2.1's
-stronger rule, where an untitled session's working file *is* the autosave and is offered
-back on cold launch, is not implemented yet; see the tracking issue.
+**An untitled session's sets survive a quit** (#447). The working file is pid-scoped,
+but it is deleted on the way out only when every set in it is empty; one that holds
+entries is renamed `recovered_<date>_<pid>.raymol` and kept, and the same is true of a
+file a crash left behind (which the next launch used to sweep). On quit RayMol also
+writes the session into it, so what comes back is the scene as well as the sets.
+
+On the next cold launch, if such a container exists, RayMol says so before you use the
+window and offers **Open**, **Discard** or **Keep for Later**. Open reuses the ordinary
+`.raymol` document path — the file opens in place, and results that land afterwards go
+straight back into it — so the recovered session continues where it stopped. Discard
+deletes it. Keep for Later leaves it alone and offers it again next time. If more than
+one is waiting, the most recent is offered and the alert says how many there are.
+
+Kept is not kept forever: RayMol keeps the **ten most recent** preserved containers and
+drops anything **older than 30 days**, sweeping once on the first launch that touches
+the store. Saving your session with `⌘S` (or `save x.raymol`) is still the way to put
+it somewhere you chose — a recovered container lives in `~/Library/RayMolState` under a
+machine-generated name, and the next Save As moves it where you want it.
 
 ## How the app stays fast
 

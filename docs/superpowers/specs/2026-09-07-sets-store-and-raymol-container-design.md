@@ -55,8 +55,30 @@ readable by `sqlite3` anywhere.
   lives where `PyMOLEngine` keeps `autosave.pse` today and is offered back on cold
   launch, so an untitled session with a six-hour batch survives a crash and a quit. Under
   command-line PyMOL with no app, the fallback is a pid-scoped `raymol_sets_<pid>.raymol`
-  in `TMPDIR` (or `RAYMOL_SETS_DIR`), deleted on clean exit and swept on next launch, for
-  the reason #399 pid-scoped the panel channels.
+  in `TMPDIR` (or `RAYMOL_SETS_DIR`), for the reason #399 pid-scoped the panel channels.
+- **Deleted on clean exit only when it holds nothing** (amended by #447; as first
+  written this said "deleted on clean exit and swept on next launch", which lost an
+  untitled session's sets on every ⌘Q). The rule is one sentence: *a working container
+  that holds a non-empty set is never deleted* -- not by `atexit -> reset()`, not by
+  `load`/`reinitialize`, not by the next launch's sweep of dead pids. An empty one is
+  still deleted exactly as before, so a session that never touched a set leaves nothing
+  behind. "Holds a non-empty set" is `EXISTS(SELECT 1 FROM entries)`, asked of the LIVE
+  connection just before it closes; a sweep, which has only a path, opens the file
+  read-write (so a crash's `-wal` is replayed rather than counted as empty) and counts.
+  The one exception is `save x.raymol`, which deletes the working file it has just
+  copied into the user's document -- the data is somewhere better.
+- **Preserved, not immortal.** A container that is kept is renamed out of the pid-scoped
+  namespace to `recovered_<YYYYmmdd-HHMMSS>_<pid>.raymol` in the same directory: pids are
+  reused, and a file still called `raymol_sets_<pid>` would be adopted as its own by the
+  next process that drew that pid. Retention, swept once on the first open of a process:
+  **the ten most recent are kept, anything older than thirty days is dropped**, and a
+  preserved file that turns out to hold nothing is dropped whatever its age.
+  `store.recoverable()` reports what is left as `{path, sets, entries, session, modified}`,
+  newest first; `appkit_sets.poll_recovery()` prints it as a one-shot `SETSRECOVER:`
+  marker at launch (never from the 500 ms poll), and the app offers Open / Discard /
+  Keep for Later before the window is used. A recoverable `.raymol` beats an
+  `autosave.pse`: the container carries a session blob too, so it restores the scene AND
+  the sets, where the `.pse` restores the scene and drops them.
 - **Results are written when they land**, not on Save. Opening a document opens it in
   place, so a batch that runs for six hours is on disk in the user's file after the first
   design. Only the session blob waits for an explicit Save. This is a deliberate trade:
