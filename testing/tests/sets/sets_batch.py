@@ -209,6 +209,13 @@ class BatchTestCase(testing.PyMOLTestCase):
         self._schemas = dict(mschema._SCHEMAS)
         _RESULTS['dir'] = tempfile.mkdtemp()
         store.reset()
+        # Every test gets its own $RAYMOL_SETS_DIR (#447 review): the working
+        # container -- and anything preserved from it -- otherwise lands in the real
+        # $TMPDIR, where it accumulates a few MB per run and where the retention sweep
+        # would take a CLI user's own recovered sessions with it.
+        self._sets_dir = tempfile.mkdtemp(prefix='raymol_sets_dir_')
+        self._had_sets_dir = os.environ.get('RAYMOL_SETS_DIR')
+        os.environ['RAYMOL_SETS_DIR'] = self._sets_dir
         batch.clear()
         _install_fakes()
 
@@ -236,6 +243,13 @@ class BatchTestCase(testing.PyMOLTestCase):
         mschema._SCHEMAS.update(self._schemas)
         __import__('shutil').rmtree(_RESULTS['dir'], ignore_errors=True)
         testing.PyMOLTestCase.tearDown(self)
+        # Last, so PyMOLTestCase's own reinitialize still resets the store with the
+        # private $RAYMOL_SETS_DIR in place.
+        if self._had_sets_dir is None:
+            os.environ.pop('RAYMOL_SETS_DIR', None)
+        else:
+            os.environ['RAYMOL_SETS_DIR'] = self._had_sets_dir
+        __import__('shutil').rmtree(self._sets_dir, ignore_errors=True)
 
     # -- helpers --------------------------------------------------------------------
 

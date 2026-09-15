@@ -9,6 +9,7 @@ printed, that polling never creates a working file, that it stays under PyMOL's
 
     pymol -ckqy testing/testing.py --run testing/tests/test_appkit_sets.py
 """
+import tempfile
 import contextlib
 import io
 import json
@@ -49,6 +50,13 @@ class AppkitSetsTestCase(testing.PyMOLTestCase):
     def setUp(self):
         testing.PyMOLTestCase.setUp(self)
         self._saved_schemas = dict(mschema._SCHEMAS)
+        # Every test gets its own $RAYMOL_SETS_DIR (#447 review): the working
+        # container -- and anything preserved from it -- otherwise lands in the real
+        # $TMPDIR, where it accumulates a few MB per run and where the retention sweep
+        # would take a CLI user's own recovered sessions with it.
+        self._sets_dir = tempfile.mkdtemp(prefix='raymol_sets_dir_')
+        self._had_sets_dir = os.environ.get('RAYMOL_SETS_DIR')
+        os.environ['RAYMOL_SETS_DIR'] = self._sets_dir
         mschema.register(TOOL, [
             mschema.MetricSpec('score', mschema.OBJECT, lo=0, hi=100, higher_is_better=True),
             mschema.MetricSpec('rmsd', mschema.STATE, lo=0, hi=10, units='A'),
@@ -90,6 +98,13 @@ class AppkitSetsTestCase(testing.PyMOLTestCase):
         elif getattr(_sets_pkg, 'batch', None) is not None:
             delattr(_sets_pkg, 'batch')
         testing.PyMOLTestCase.tearDown(self)
+        # Last, so PyMOLTestCase's own reinitialize still resets the store with the
+        # private $RAYMOL_SETS_DIR in place.
+        if self._had_sets_dir is None:
+            os.environ.pop('RAYMOL_SETS_DIR', None)
+        else:
+            os.environ['RAYMOL_SETS_DIR'] = self._had_sets_dir
+        __import__('shutil').rmtree(self._sets_dir, ignore_errors=True)
 
     # -- fixtures --------------------------------------------------------------------
 
@@ -504,20 +519,14 @@ class TestRecovery(AppkitSetsTestCase):
     """
 
     def setUp(self):
-        AppkitSetsTestCase.setUp(self)
-        self._dir = __import__('tempfile').mkdtemp(prefix='raymol_recover_')
-        self._had_dir = os.environ.get('RAYMOL_SETS_DIR')
-        os.environ['RAYMOL_SETS_DIR'] = self._dir
+        AppkitSetsTestCase.setUp(self)    # $RAYMOL_SETS_DIR is this test's own
         self._had_swept = store._SWEPT
-        store._SWEPT = True
+        self._had_own = store._OWN_RETIRED
+        store._SWEPT = store._OWN_RETIRED = True
 
     def tearDown(self):
         store._SWEPT = self._had_swept
-        if self._had_dir is None:
-            os.environ.pop('RAYMOL_SETS_DIR', None)
-        else:
-            os.environ['RAYMOL_SETS_DIR'] = self._had_dir
-        __import__('shutil').rmtree(self._dir, ignore_errors=True)
+        store._OWN_RETIRED = self._had_own
         AppkitSetsTestCase.tearDown(self)
 
     def left_behind(self, entries=1, pid=999999):
@@ -561,7 +570,7 @@ class TestRecovery(AppkitSetsTestCase):
 
     def test_marker_stays_under_the_feedback_cap(self):
         # A pathological path: RayMolState is short, but RAYMOL_SETS_DIR is not ours.
-        deep = os.path.join(self._dir, 'd' * 120, 'e' * 120, 'f' * 120)
+        deep = os.path.join(self._sets_dir, 'd' * 120, 'e' * 120, 'f' * 120)
         os.makedirs(deep)
         os.environ['RAYMOL_SETS_DIR'] = deep
         for i in range(appkit_sets.MAX_RECOVERABLE):
