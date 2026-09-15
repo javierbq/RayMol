@@ -511,7 +511,20 @@ final class PyMOLEngine: ObservableObject {
     // over the autosaved scene (don't merge the old session underneath the opened
     // document) and over the #447 recovery alert (don't put a modal in front of the
     // file the user double-clicked).
-    var launchOpenRequested = false
+    //
+    // @Published, and it WITHDRAWS an offer already made: the recovery marker is read
+    // once on the first feedback tick, and `application(_:open:)` can land after it
+    // (#447 review). An alert left up over the just-opened document offers an Open
+    // that replaces it and a Discard that deletes the recovered container -- both
+    // answers to a question the user did not ask.
+    @Published var launchOpenRequested = false {
+        didSet {
+            guard launchOpenRequested else { return }
+            recoveryAnswered = true
+            recoveryOffer = nil
+            recoveryCount = 0
+        }
+    }
 
     // Cold-launch recovery (#447). The offer is made at most once per process: the
     // marker is printed once, and a user who answered must not be asked again if a

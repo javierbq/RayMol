@@ -600,3 +600,98 @@ final class SetsRecoveryDecisionTests: XCTestCase {
     }
 }
 
+
+/// The wiring from the `SETSRECOVER:` line to the offer the alert shows (#447 review).
+/// `launchRestore` above is the policy; this is that the policy is actually reached,
+/// that a late file-open withdraws the offer, and that Discard goes through the store.
+final class SetsRecoveryWiringTests: XCTestCase {
+
+    private let line = #"SETSRECOVER:{"n":2,"files":[{"path":"/s/recovered_20260914-101500_412.raymol","sets":1,"entries":7,"session":1,"modified":1789000000.0}]}"#
+
+    override func setUp() {
+        super.setUp()
+        reset()
+    }
+
+    override func tearDown() {
+        reset()
+        super.tearDown()
+    }
+
+    /// PyMOLEngine.shared is one object for the whole test target, so every test
+    /// both starts and ends from "nothing offered, nothing answered, plain launch".
+    private func reset() {
+        let e = PyMOLEngine.shared
+        e.pythonTap = nil
+        e.launchOpenRequested = false
+        e.recoveryAnswered = false
+        e.recoveryOffer = nil
+        e.recoveryCount = 0
+    }
+
+    func testAMarkerLineBecomesAnOffer() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertEqual(e.recoveryOffer?.entries, 7)
+        XCTAssertEqual(e.recoveryOffer?.path, "/s/recovered_20260914-101500_412.raymol")
+        XCTAssertEqual(e.recoveryCount, 2, "the alert says how many are waiting")
+    }
+
+    func testAnEmptyAnswerOffersNothing() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(#"SETSRECOVER:{"n":0,"files":[]}"#)
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testAMalformedOrForeignLineIsIgnored() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback("SETSRECOVER:{not json")
+        e.parseSetsRecoveryFeedback("SETS:{\"v\":1,\"path\":\"\",\"active\":\"\",\"peek\":\"\",\"running\":{}}")
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testADocumentOpenAtLaunchSuppressesTheOffer() {
+        let e = PyMOLEngine.shared
+        e.launchOpenRequested = true
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testADocumentOpenTHATARRIVESLATEWithdrawsTheOffer() {
+        // The race the review found: the marker is read on the first feedback tick
+        // and application(_:open:) can land after it. An alert left up over the
+        // just-opened document offers an Open that replaces it and a Discard that
+        // deletes the recovered container.
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNotNil(e.recoveryOffer)
+        e.launchOpenRequested = true
+        XCTAssertNil(e.recoveryOffer)
+        XCTAssertTrue(e.recoveryAnswered, "and it is not asked again later")
+    }
+
+    func testAnsweringOnceIsAnsweringForGood() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        e.clearRecoveryOffer()
+        XCTAssertNil(e.recoveryOffer)
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNil(e.recoveryOffer, "a second marker must not re-ask")
+    }
+
+    func testDiscardGoesThroughTheStoreAndClearsTheOffer() {
+        let e = PyMOLEngine.shared
+        var emitted: [String] = []
+        e.pythonTap = { emitted.append($0) }
+        e.parseSetsRecoveryFeedback(line)
+        guard let file = e.recoveryOffer else { return XCTFail("no offer") }
+        e.discardRecovery(file)
+        XCTAssertTrue(emitted.contains { $0.contains("appkit_sets") &&
+                                         $0.contains("discard_recovered") &&
+                                         $0.contains("'/s/recovered_20260914-101500_412.raymol'") },
+                      "the path goes back as a Python literal: \(emitted)")
+        XCTAssertNil(e.recoveryOffer)
+        XCTAssertTrue(e.recoveryAnswered)
+    }
+}
+

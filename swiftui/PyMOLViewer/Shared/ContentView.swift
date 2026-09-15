@@ -171,6 +171,9 @@ private struct SetsRecoveryAlert: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onReceive(engine.$recoveryOffer.compactMap { $0 }) { offer = $0 }
+            // A file-open that lands after the marker withdraws the offer; the alert
+            // holds its own copy, so it has to hear about that too (#447 review).
+            .onReceive(engine.$launchOpenRequested.filter { $0 }) { _ in offer = nil }
             .alert("Recover your unsaved sets?", isPresented: presented,
                    presenting: offer) { file in
                 Button("Open") {
