@@ -743,16 +743,43 @@ class TestFilterChannel(FilterChannelTestCase):
         self.assertEqual(payload['n'], 3)
         self.assertEqual(store.active().get_set('s')['filter'], '')
 
-    def test_open_set_emits_the_saved_filter_at_once(self):
+    def test_emit_filter_reports_the_saved_filter_without_changing_it(self):
+        # What the drawer calls as it opens a set: it reads rows from the file at
+        # once, and half a second of showing rows the filter excludes is half a
+        # second of the wrong table.
         self.populated(3)
         cmd.set_filter('s', 'score > 15')
         clear_filter_channel()
         with captured() as out:
-            appkit_sets.open_set('s')
+            payload = appkit_sets.emit_filter('s')
         self.assertEqual(len(filter_markers(out.getvalue())), 1)
-        payload = filter_channel()
         self.assertEqual(payload['expr'], 'score > 15')
         self.assertEqual(payload['n'], 2)
+        self.assertEqual(payload['applied'], 1)
+        self.assertEqual(store.active().get_set('s')['filter'], 'score > 15')
+
+    def test_open_set_arms_the_channel_and_the_poll_emits_after_the_marker(self):
+        # ORDER, and it is load-bearing: the drawer clears its filter when the SETS:
+        # marker moves the active set, so a SETSFILTER line printed BEFORE that marker
+        # would be wiped by it. open_set therefore arms the channel and poll() emits
+        # right after printing the marker.
+        self.populated(3)
+        cmd.set_filter('s', 'score > 15')
+        with captured():
+            appkit_sets.poll()
+        clear_filter_channel()
+        with captured() as out:
+            appkit_sets.open_set('s')
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'open_set itself prints nothing on the filter channel')
+        with captured() as out:
+            appkit_sets.poll()
+        lines = [line for line in out.getvalue().splitlines()
+                 if line.startswith((appkit_sets.MARKER_PREFIX, appkit_sets.FILTER_PREFIX))]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith(appkit_sets.MARKER_PREFIX), lines)
+        self.assertTrue(lines[1].startswith(appkit_sets.FILTER_PREFIX), lines)
+        self.assertEqual(filter_channel()['expr'], 'score > 15')
 
     def test_poll_reemits_when_a_console_filter_moves_it(self):
         self.populated(3)

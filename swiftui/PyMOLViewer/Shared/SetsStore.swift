@@ -892,9 +892,14 @@ extension PyMOLEngine {
             if self.activeSetID != active {
                 self.activeSetID = active
                 // A set opened from Python (or closed under us) starts with a fresh
-                // filter, selection and column choice, for the reason the peek is
-                // cleared below: none of it is about the set now showing.
-                self.resetSetUIState()
+                // selection and column choice, for the reason the peek is cleared
+                // below: none of it is about the set now showing. The FILTER is the
+                // one thing it inherits — the set's own, saved in the file — and the
+                // compiled form of it arrives on the SETSFILTER line that `poll()`
+                // prints right after this marker.
+                self.resetSetUIState(
+                    filterText: active.flatMap { id in
+                        nextSets.first { $0.id == id }?.filter } ?? "")
                 // A set opened from Python (an MCP agent's appkit_sets.open_set, or
                 // the console) shows the drawer exactly as the SETS row's click does;
                 // closing is left to the user, so a set_delete does not yank the band.
@@ -1013,12 +1018,18 @@ extension PyMOLEngine {
         // outside setRows so nothing shows ◐ either.
         if set.id != activeSetID {
             clearPeek()
-            resetSetUIState()
+            resetSetUIState(filterText: set.filter)
         }
         activeSetID = set.id
         setRows = setsStore?.rows(setID: set.id, columns: set.columns) ?? []
+        setHistograms = Self.histograms(rows: setRows, columns: set.columns)
         dataDrawerVisible = true
-        runPythonQuiet("from pymol import appkit_sets as _s\n_s.open_set(\(pyQuoted(set.name)))")
+        // `emit_filter` alongside the open, not inside it: the set's saved filter has
+        // to be compiled before the first frame, or the drawer shows rows the filter
+        // excludes for as long as it takes the next poll to come round.
+        runPythonQuiet("from pymol import appkit_sets as _s\n"
+                       + "_s.open_set(\(pyQuoted(set.name)))\n"
+                       + "_s.emit_filter(\(pyQuoted(set.name)))")
     }
 
     func closeDataDrawer() {
@@ -1135,6 +1146,21 @@ extension PyMOLEngine {
             guard payload.set == self.activeSetID else { return }
             let state = SetFilterState(payload: payload)
             if self.setFilter != state { self.setFilter = state }
+            // An APPLIED filter that is not one we sent came from the console, from
+            // MCP, or from a view: adopt its text so the field shows what is actually
+            // in force. Two guards, and both are needed. `lastSentFilterExpression`
+            // keeps our OWN debounced apply from echoing back and overwriting the
+            // characters typed since we sent it — the user types `plddt > 8`, we
+            // apply, they type `0`, and without this the echo would put `plddt > 8`
+            // back. The composed compare keeps a payload that already agrees from
+            // clearing brushes for no reason.
+            let composed = SetFilterComposer.compose(text: self.setFilterText,
+                                                     brushes: self.setBrushes).expression
+            if payload.applied != 0, payload.expr != self.lastSentFilterExpression,
+               payload.expr != composed {
+                self.setFilterText = payload.expr
+                self.setBrushes = []
+            }
             self.refreshFilterMatches()
         }
         if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
@@ -1169,8 +1195,9 @@ extension PyMOLEngine {
 
     /// Everything about the drawer that belongs to one set and must not follow the
     /// user into the next one.
-    func resetSetUIState() {
-        setFilterText = ""
+    func resetSetUIState(filterText: String = "") {
+        setFilterText = filterText
+        lastSentFilterExpression = filterText
         setBrushes = []
         setFilter = SetFilterState()
         setFilterMatches = nil
@@ -1211,6 +1238,7 @@ extension PyMOLEngine {
     /// every step of a histogram drag. No write, so no version bump and no re-read of
     /// a thousand rows per pixel.
     func previewSetFilter(_ set: SetEntry, _ expression: String) {
+        lastSentFilterExpression = expression
         runPythonQuiet("from pymol import appkit_sets as _s\n"
                        + "_s.preview_filter(\(pyQuoted(set.name)), \(Self.pythonLiteral(expression)))")
     }
@@ -1218,6 +1246,7 @@ extension PyMOLEngine {
     /// `set_filter` — the expression becomes the set's, which is what `filtered`,
     /// `top:N`, `set_export` and `predict set:x@filtered` all read.
     func applySetFilter(_ set: SetEntry, _ expression: String) {
+        lastSentFilterExpression = expression
         runPythonQuiet("from pymol import appkit_sets as _s\n"
                        + "_s.apply_filter(\(pyQuoted(set.name)), \(Self.pythonLiteral(expression)))")
     }

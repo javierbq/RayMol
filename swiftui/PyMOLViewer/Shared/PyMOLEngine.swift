@@ -165,6 +165,11 @@ final class PyMOLEngine: ObservableObject {
     /// set, so it lives here and is saved INTO a view rather than into the store.
     @Published var setHiddenColumns: Set<String> = []
     @Published var dataDrawerTab: DataDrawerTab = .table
+    /// The last expression this side sent to Python. Not published: it exists so an
+    /// applied filter coming BACK can be told apart from one applied elsewhere (the
+    /// console, MCP, a view), which is the difference between adopting it into the
+    /// field and overwriting whatever the user has typed since.
+    var lastSentFilterExpression = ""
     /// The Data drawer's visibility, persisted like the other panes (#332). Hidden
     /// until a set is opened; macOS only draws it (#420 does mobile).
     @Published var dataDrawerVisible = UserDefaults.standard

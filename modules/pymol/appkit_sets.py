@@ -337,17 +337,28 @@ def _set_row(name):
 
 def open_set(name, _self=cmd):
     """Make `name` the drawer's set. Also the MCP way to point a user at a set."""
-    global _active_set_id
+    global _active_set_id, _last_filter_key
     row = _set_row(name)
     _active_set_id = row['id']
-    # The set's saved filter, compiled, on this call rather than on the next poll:
-    # the drawer reads its rows the moment it opens, and half a second of showing
-    # rows the active filter excludes is half a second of the wrong table (#418).
-    try:
-        _emit_filter(filter_payload(row, row.get('filter') or '', applied=1))
-    except Exception:
-        pass
+    # Arm the filter channel rather than emitting here. ORDER is the reason: the far
+    # side clears the drawer's filter when the SETS: marker moves the active set, so a
+    # SETSFILTER line printed BEFORE that marker would be wiped by it. Clearing the key
+    # makes `_poll_filter` emit on the next tick -- which poll() runs immediately AFTER
+    # printing the marker, so the two arrive in the order the drawer can use. The UI's
+    # own open calls `emit_filter` and does not wait (#418).
+    _last_filter_key = None
     return row['id']
+
+
+def emit_filter(name, _self=cmd):
+    """Report a set's SAVED filter on the channel now, without changing it.
+
+    What the drawer calls the moment it opens a set: it reads its rows straight from
+    the file, and half a second of showing rows the active filter excludes is half a
+    second of the wrong table.
+    """
+    return _emit_filter(filter_payload(_set_row(name), _set_row(name).get('filter') or '',
+                                       applied=1))
 
 
 def close_set(_self=cmd):
