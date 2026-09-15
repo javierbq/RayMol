@@ -272,6 +272,12 @@ final class SetTableModelTests: XCTestCase {
         XCTAssertNil(SetTableModel.histogramDomain(values: [.nan], lo: 0, hi: 1))
         XCTAssertEqual(SetTableModel.histogramDomain(values: [2, 4], lo: 9, hi: 1), 2...4,
                        "a spec whose hi is below its lo is not a domain")
+        // One bound is a domain too: a drift metric declares lo=0 and no ceiling, and
+        // the whole point of the spec is that zero is where the axis starts.
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [0.4, 0.6], lo: 0, hi: nil),
+                       0...0.6)
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [0.4, 0.6], lo: nil, hi: 1),
+                       0.4...1)
         XCTAssertEqual(SetTableModel.histogram(values: [7, 7, 7], bins: 5, lo: nil, hi: nil),
                        [0, 0, 3, 0, 0], "all equal → one full middle bin, not a crash")
     }

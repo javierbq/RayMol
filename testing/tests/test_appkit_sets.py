@@ -736,6 +736,25 @@ class TestFilterChannel(FilterChannelTestCase):
         self.assertEqual(store.active().get_set('s')['filter'], 'score > 15',
                          'set_filter validates before it writes')
 
+    def test_a_rejected_apply_does_not_arm_the_poll_to_undo_the_typing(self):
+        # A rejected expression writes nothing, so the poll's key must stay the STORED
+        # filter. Recording the rejected one instead made the next tick see a mismatch
+        # and re-emit the stored filter as APPLIED, which the drawer adopts -- half a
+        # second after a typo the field reset itself and the brushes went with it.
+        self.populated(3)
+        appkit_sets.open_set('s')
+        cmd.set_filter('s', 'score > 15')
+        with captured():
+            appkit_sets.poll()
+        payload = appkit_sets.apply_filter('s', 'score > ')
+        self.assertEqual(payload['applied'], 0, 'nothing was applied')
+        self.assertIn('end of input', payload['error'])
+        with captured() as out:
+            appkit_sets.poll()
+            appkit_sets.poll()
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'the stored filter has not moved, so there is nothing to say')
+
     def test_clearing_restores_everything(self):
         self.populated(3)
         appkit_sets.apply_filter('s', 'score > 25')

@@ -542,7 +542,13 @@ def apply_filter(name, expr='', _self=cmd):
     try:
         _self.set_filter(row['name'], expr, quiet=1)
     except SetFilterError:
-        pass          # filter_payload below reports the same failure, with its offset
+        # Nothing was written, so the poll's key must stay the STORED filter -- the
+        # same key a preview records. Recording the rejected expression instead made
+        # the next tick see a mismatch, re-emit the stored filter as applied, and the
+        # drawer adopt it: half a second after a typo the field silently reset itself
+        # and any brushes went with it.
+        return _emit_filter(filter_payload(row, expr, applied=0),
+                            key=(row['id'], row.get('filter') or ''))
     return _emit_filter(filter_payload(row, expr, applied=1))
 
 

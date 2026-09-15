@@ -85,6 +85,17 @@ final class SetPlotModelTests: XCTestCase {
                        2 - 0.1, accuracy: 1e-9)
     }
 
+    func testOneDeclaredBoundIsStillADomain() {
+        // A metric with lo=0 and no ceiling: the axis starts at zero, and the open end
+        // is padded like an observed one.
+        let low = SetPlotModel.domain(values: [0.4, 0.6], lo: 0, hi: nil)
+        XCTAssertEqual(low.lowerBound, 0)
+        XCTAssertEqual(low.upperBound, 0.6 + 0.01, accuracy: 1e-9)
+        let high = SetPlotModel.domain(values: [0.4, 0.6], lo: nil, hi: 1)
+        XCTAssertEqual(high.lowerBound, 0.4 - 0.01, accuracy: 1e-9)
+        XCTAssertEqual(high.upperBound, 1)
+    }
+
     func testNonFiniteValuesAreIgnoredByTheDomain() {
         let domain = SetPlotModel.domain(values: [1, .nan, 3, .infinity], lo: nil, hi: nil)
         XCTAssertEqual(domain.lowerBound, 1 - 0.1, accuracy: 1e-9)

@@ -118,12 +118,23 @@ struct SetPlotModel: Equatable {
     /// frame. A degenerate range (one value, or none) opens to ±0.5 so the point lands
     /// in the middle instead of dividing by zero.
     static func domain(values: [Double], lo: Double?, hi: Double?) -> ClosedRange<Double> {
-        if let lo, let hi, hi > lo { return lo...hi }
         let finite = values.filter { $0.isFinite }
-        guard let low = finite.min(), let high = finite.max() else { return -0.5...0.5 }
-        guard high > low else { return (low - 0.5)...(low + 0.5) }
-        let pad = (high - low) * 0.05
-        return (low - pad)...(high + pad)
+        guard let observedLow = finite.min(), let observedHigh = finite.max() else {
+            if let lo, let hi, hi > lo { return lo...hi }
+            return -0.5...0.5
+        }
+        // Padding goes on the OPEN ends only. A metric that declares `lo=0` and no
+        // ceiling means the axis starts at zero; padding that end would say the
+        // opposite, and a plot whose origin drifts with the data is the thing the
+        // declared domain exists to prevent.
+        let pad = observedHigh > observedLow ? (observedHigh - observedLow) * 0.05 : 0.5
+        var low = lo ?? (observedLow - pad)
+        var high = hi ?? (observedHigh + pad)
+        if !(high > low) {
+            low = observedLow - pad
+            high = observedHigh + pad
+        }
+        return high > low ? low...high : (observedLow - 0.5)...(observedLow + 0.5)
     }
 
     var xDomain: ClosedRange<Double> {
@@ -371,11 +382,15 @@ struct SetPlotView: View {
                 // The distribution along x, which doubles as the range filter
                 // (spec §4.3). The SAME component as the table header's histogram, so
                 // the two brushes produce the same expression through the same grammar.
-                let strip = model(size: CGSize(width: 1, height: 1))
+                // The WHOLE set's distribution, the same one the table header brushes
+                // on — not the filtered rows'. Binning the filtered rows made the
+                // strip's domain shrink mid-drag on a column with no declared lo/hi,
+                // so the same pointer position meant a different value from one event
+                // to the next and the brush could never widen again.
                 SetHistogramBrushView(
                     column: column(xKey),
-                    bins: strip.axisHistogram(column(xKey)),
-                    domain: strip.xDomain,
+                    bins: engine.setHistograms[xKey]?.bins ?? [],
+                    domain: engine.setHistograms[xKey]?.domain,
                     brush: engine.setBrushes.first { $0.column == xKey },
                     onBrush: { brush, commit in
                         engine.updateBrush(set, brush, column: xKey, commit: commit)
@@ -401,7 +416,10 @@ struct SetPlotView: View {
     private func chooseDefaults() {
         guard xKey.isEmpty, yKey.isEmpty else { return }
         let names = numericColumns.compactMap(\.column)
-        let ranking = set.rankingColumn?.column
+        // Through `numericColumns`, not `set.rankingColumn`: a set ranked on a STRING
+        // column would otherwise name an axis the menu never offers, and the plot
+        // would open empty with no way to tell why.
+        let ranking = names.first { $0 == self.set.rankingKey }
         yKey = ranking ?? names.first ?? ""
         xKey = names.first { $0 != yKey } ?? yKey
     }

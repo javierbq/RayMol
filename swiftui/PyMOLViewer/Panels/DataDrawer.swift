@@ -264,9 +264,17 @@ struct SetTableModel: Equatable {
         -> ClosedRange<Double>? {
         let finite = values.filter { $0.isFinite }
         guard let observedLow = finite.min(), let observedHigh = finite.max() else { return nil }
-        if let lo, let hi, hi > lo { return lo...hi }
-        guard observedHigh > observedLow else { return observedLow...observedLow }
-        return observedLow...observedHigh
+        // Each bound independently: a MetricSpec may declare only one (a drift with
+        // `lo=0` and no ceiling), and the declared end is the point — a histogram of
+        // 0.4…0.6 that does not start at zero says the opposite of what the spec does,
+        // and a brush on its leftmost bar writes `>= 0.4` rather than `>= 0`.
+        var low = lo ?? observedLow
+        var high = hi ?? observedHigh
+        if !(high > low) {
+            low = observedLow
+            high = observedHigh
+        }
+        return high > low ? low...high : observedLow...observedLow
     }
 
     /// Bin `values` over `histogramDomain`. Values outside it land in the edge bins.
@@ -419,7 +427,13 @@ struct DataDrawer: View {
             header
             Rectangle().fill(hairline).frame(height: 1)
             if let set = engine.activeSet {
+                // Keyed by the set, like the tabs below: the bar's debounced apply
+                // captures the set it was typed into, and without this a click on
+                // another set 600 ms later persisted a half-typed expression as the
+                // FIRST set's filter — which is what `filtered` and Send to ▾ read.
+                // Re-keying destroys the view, and its onDisappear cancels both.
                 SetFilterBar(set: set)
+                    .id(set.id)
                 Rectangle().fill(hairline).frame(height: 1)
                 switch engine.dataDrawerTab {
                 case .plot:
@@ -1167,6 +1181,7 @@ struct SetHistogramBrushView: View {
 
     @State private var dragFrom: CGFloat? = nil
     @State private var dragTo: CGFloat? = nil
+    @State private var previewWork: DispatchWorkItem? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -1190,11 +1205,20 @@ struct SetHistogramBrushView: View {
                     .onChanged { value in
                         dragFrom = dragFrom ?? value.startLocation.x
                         dragTo = value.location.x
+                        // Debounced for the reason the filter field's preview is: a
+                        // sweep across the bars is dozens of drag events, and each
+                        // preview compiles the expression and counts twice on the
+                        // PyMOL thread. The highlight follows the pointer regardless —
+                        // it is drawn from `dragFrom`/`dragTo`, not from the preview.
                         if let brush = brush(from: dragFrom!, to: value.location.x, width: width) {
-                            onBrush(brush, false)
+                            previewWork?.cancel()
+                            let work = DispatchWorkItem { onBrush(brush, false) }
+                            previewWork = work
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
                         }
                     }
                     .onEnded { value in
+                        previewWork?.cancel()
                         let from = dragFrom ?? value.startLocation.x
                         dragFrom = nil
                         dragTo = nil
