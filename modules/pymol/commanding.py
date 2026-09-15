@@ -404,7 +404,10 @@ USAGE
             except Exception:
                 pass
             # And the set store (#415): a fresh session gets a fresh working file, so a
-            # document's sets do not outlive the objects they were staged as.
+            # document's sets do not outlive the objects they were staged as. What the
+            # previous working file HELD is not thrown away with it -- since #447 a
+            # container with entries in it is preserved and offered back on the next
+            # launch, because `reinitialize` is not a request to discard results.
             try:
                 from pymol.sets import store as _set_store
                 _set_store.reset()

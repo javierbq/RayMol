@@ -753,12 +753,49 @@ def save_raymol(filename, quiet=1, _self=cmd):
     except Exception as exc:
         raise SetInputError('could not write the session into %s: %s' % (filename, exc))
     if not same and os.path.abspath(old_path) == os.path.abspath(store.working_path()):
-        store.remove_db_files(old_path)
+        # force: the ONE place a non-empty working file may still be deleted (#447).
+        # Everything in it was just copied into the document the user named, so
+        # preserving it would offer them, on the next launch, a recovery of work they
+        # explicitly saved -- and a second copy of every structure blob on disk.
+        store.retire_working_file(old_path, force=True)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
     if not int(quiet):
         colorprinting.parrot(' Save: wrote session and %d set(s) to %s'
                              % (len(c.sets()), filename))
     return _self.DEFAULT_SUCCESS
+
+
+def checkpoint_session(_self=cmd):
+    """Write the current session into the working container, so that what survives a
+    quit carries the SCENE as well as the sets (#447, spec §2.1: "the working file for
+    an untitled session IS the autosave").
+
+    Called by the app on the way out, not on a timer: it pickles the whole session,
+    which is the expensive half of a Save, and the cheap half (the entries) is already
+    on disk the moment each result lands. A crash therefore still recovers the sets and
+    loses the camera, which is the trade #415 already made everywhere else.
+
+    A no-op unless there is something to protect: no container open (a session that
+    never touched a set writes nothing anywhere), a real document open (⌘S is that
+    session's answer, and writing behind the user's back is not), or a working file
+    with no entries (it is deleted at exit, so a session blob in it is pure cost).
+    Returns True when a blob was written.
+    """
+    if not store.is_open():
+        return False
+    c = store.active()
+    if os.path.abspath(c.path) != os.path.abspath(store.working_path()):
+        return False
+    if not c.holds_entries():
+        return False
+    try:
+        c.write_session(_pse_bytes(_self=_self),
+                        pse_version=_self.get_setting_float('pse_export_version'),
+                        app_version=_app_version(_self=_self))
+    except Exception as exc:
+        colorprinting.warning(' sets: could not checkpoint the session: %s' % exc)
+        return False
+    return True
 
 
 def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
@@ -800,6 +837,13 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     reconcile(_self=_self)
     if os.path.abspath(old_path) == os.path.abspath(store.working_path()) \
             and os.path.abspath(old_path) != os.path.abspath(filename):
-        store.remove_db_files(old_path)
+        # Not force: opening another document is not permission to discard what the
+        # previous, untitled one holds. A batch that landed entries into the working
+        # file keeps them, under a recovered_ name, and is offered back on the next
+        # launch (#447; the floor of #448, which is about saying so at the time).
+        kept = store.retire_working_file(old_path)
+        if kept:
+            colorprinting.warning(' sets: the previous session had sets that were never'
+                                  ' saved; they were kept in %s' % kept)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
     return r

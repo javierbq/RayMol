@@ -284,6 +284,25 @@ class Container:
         self._conn.close()
         self._conn = None
 
+    def holds_entries(self):
+        """True when any set in this container has at least one entry (#447).
+
+        The question "is there anything in here worth keeping" is asked on the way
+        out -- in `reset`, which every quit reaches through atexit -- and it is asked
+        HERE, of the live connection, rather than by reopening the file afterwards:
+        the connection is already warm, `EXISTS` stops at the first row, and a reopen
+        would have to cope with the WAL we are about to checkpoint away. A closed
+        container answers False, because it can no longer answer at all; callers that
+        have only a path use `inspect_container`.
+        """
+        if self._conn is None:
+            return False
+        try:
+            row = self._one('SELECT EXISTS(SELECT 1 FROM entries) AS held')
+        except sqlite3.Error:
+            return False
+        return bool(row and row['held'])
+
     def version(self):
         return int(self.meta_get('version', '0'))
 
@@ -973,6 +992,24 @@ _ACTIVE = None
 _WORKING_PREFIX = 'raymol_sets_'
 _WORKING_SUFFIX = '.raymol'
 
+#: A working file that held entries when its process let go of it is renamed to
+#: `recovered_<stamp>_<pid>.raymol` and offered back on the next cold launch (#447).
+#: OUT of the pid-scoped namespace on purpose: `working_path()` is pid-scoped and pids
+#: are reused, so a file left under `raymol_sets_<pid>` would be adopted as its own by
+#: the next process that happens to get that pid -- which is exactly what `active()`
+#: refuses to let happen. The rename also makes "preserved" a fact about the NAME, so
+#: a sweep never has to guess.
+_RECOVERED_PREFIX = 'recovered_'
+
+#: Retention for preserved containers, swept on the first open of a process. Kept
+#: forever is a leak -- these are whole structure databases -- and dropped on the next
+#: launch is the bug this file is fixing, so: the ten most recent survive, and anything
+#: older than thirty days goes even if there are fewer than ten. Ten is more crashes
+#: than a user will work through in a sitting, and thirty days is longer than anyone
+#: leaves an unsaved campaign unclaimed.
+RECOVERED_KEEP = 10
+RECOVERED_MAX_AGE = 30 * 86400
+
 
 def working_dir():
     return os.environ.get('RAYMOL_SETS_DIR') or tempfile.gettempdir()
@@ -1006,19 +1043,38 @@ def active():
 
     The first open in a process sweeps working files of dead RayMols (spec §2.1) and
     treats a file already under THIS pid as one of them: a pid is reused after a wrap,
-    and inheriting a dead session's sets is worse than starting empty.
+    and inheriting a dead session's sets is worse than starting empty. "Treats as
+    stale" now means `retire_working_file`, not delete: since #447 a container that
+    holds entries is preserved for recovery instead of destroyed, here as everywhere.
     """
-    global _ACTIVE, _GENERATION, _SWEPT
+    global _ACTIVE, _GENERATION
     if _ACTIVE is None or _ACTIVE.closed:
         path = working_path()
-        if not _SWEPT:
-            _SWEPT = True
-            sweep_stale_working_files()
-            if os.path.exists(path):
-                remove_db_files(path)
+        # Only on the FIRST open: later ones reopen the working file `replace()` left
+        # behind, which is this process's own and must come back with its sets.
+        if sweep_once() and os.path.exists(path):
+            retire_working_file(path)
         _ACTIVE = Container(path)
         _GENERATION += 1
     return _ACTIVE
+
+
+def sweep_once():
+    """Run the launch-time sweeps, once per process: stale working files of dead
+    RayMols, then the retention policy over what earlier sweeps (and quits) preserved.
+
+    Separate from `active()` because `recoverable()` asks the same question at launch
+    and must not have to open a container -- and must not report a stale working file
+    under its old name, since the answer it gives is the one the user is offered.
+    True when this call is the one that swept.
+    """
+    global _SWEPT
+    if _SWEPT:
+        return False
+    _SWEPT = True
+    sweep_stale_working_files()
+    sweep_recovered()
+    return True
 
 
 def replace(container):
@@ -1034,10 +1090,17 @@ def replace(container):
 
 
 def reset():
-    """Close the active container; delete it only if it is the pid-scoped working file.
+    """Close the active container; retire it only if it is the pid-scoped working file.
 
-    `load x.pse` and tests call this so a session that never had sets does not
-    inherit the previous document's. A user's document is closed, never deleted.
+    `load x.pse`, `reinitialize`, the tests and (through atexit) every quit call this so
+    a session that never had sets does not inherit the previous document's. A user's
+    document is closed, never touched. The working file is closed and then either
+    deleted (it holds nothing) or preserved for recovery (it holds entries, #447): ⌘Q
+    used to delete it either way, which is how an untitled session's six-hour batch
+    disappeared without a word.
+
+    "Holds entries" is asked of the LIVE container, before the close, because that is
+    the one moment when the answer is free; see `Container.holds_entries`.
     """
     global _ACTIVE, _GENERATION
     previous = _ACTIVE
@@ -1045,16 +1108,194 @@ def reset():
     _GENERATION += 1
     if previous is None:
         return
+    held = previous.holds_entries()
     previous.close()
     if os.path.abspath(previous.path) == os.path.abspath(working_path()):
-        remove_db_files(previous.path)
+        retire_working_file(previous.path, held=held)
+
+
+def retire_working_file(path, held=None, force=False):
+    """Finish with the working file at `path`: delete it, or preserve it for recovery.
+
+    The one place the "never destroy a non-empty container" rule of #447 is written
+    down, so every caller that used to `remove_db_files` a working file obeys it by
+    construction. Returns the preserved path, or None when the file was removed.
+
+    `held` is the answer a caller already has from the live container (the cheap way);
+    without it the file is inspected on disk (the only way, for a sweep of a dead pid's
+    leftovers). `force` deletes regardless, and is for the one caller that knows the
+    data is already somewhere better: `save x.raymol` has just copied this container
+    into the user's document, and offering the copy back on next launch would ask them
+    to recover work they explicitly saved.
+    """
+    if not force:
+        if held is None:
+            info = inspect_container(path)
+            held = bool(info and info['entries'])
+        if held:
+            return preserve_working_file(path)
+    remove_db_files(path)
+    return None
+
+
+def preserve_working_file(path):
+    """Rename a working file out of the pid-scoped namespace so it survives, and so no
+    later process can mistake it for its own. Returns the new path, or None if the
+    rename failed (in which case the file is left exactly where it was, un-deleted:
+    losing the name is survivable, losing the file is the bug)."""
+    name = os.path.basename(path)
+    pid = os.getpid()
+    if name.startswith(_WORKING_PREFIX) and name.endswith(_WORKING_SUFFIX):
+        digits = name[len(_WORKING_PREFIX):-len(_WORKING_SUFFIX)]
+        if digits.isdigit():
+            pid = int(digits)
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(_mtime(path) or _now()))
+    folder = os.path.dirname(path) or working_dir()
+    for n in range(0, 100):
+        suffix = '' if n == 0 else '-%d' % n
+        target = os.path.join(folder, '%s%s_%d%s%s'
+                              % (_RECOVERED_PREFIX, stamp, pid, suffix, _WORKING_SUFFIX))
+        if not os.path.exists(target):
+            break
+    else:
+        return None
+    try:
+        os.rename(path, target)
+    except OSError:
+        return None
+    # A crash leaves -wal/-shm beside the file; they carry committed transactions that
+    # are not in the main database yet, so they move WITH it or the entries they hold
+    # are lost. (`inspect_container` will have checkpointed them away in the usual
+    # case; this is the path where it never ran.)
+    for extra in ('-wal', '-shm'):
+        try:
+            os.rename(path + extra, target + extra)
+        except OSError:
+            pass
+    return target
+
+
+def inspect_container(path):
+    """What is in the closed .raymol file at `path`, or None if it is not ours.
+
+    `{'path', 'sets', 'entries', 'session', 'modified'}`. Opened read-WRITE on purpose,
+    unlike Swift's reader: the files this is asked about are leftovers of processes
+    that are gone, and a read-only connection cannot replay the -wal a crash left
+    behind -- so the entries the user is about to be offered would be invisible, and
+    the file would look empty and be deleted. Opening normally recovers the WAL and
+    closing checkpoints it away. No schema migration is run: this is a look, not an
+    open, and a file from a future format version must still be countable.
+    """
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return None
+        modified = os.path.getmtime(path)
+    except OSError:
+        return None
+    try:
+        conn = sqlite3.connect(path)
+    except sqlite3.Error:
+        return None
+    try:
+        sets = conn.execute('SELECT COUNT(*) FROM sets').fetchone()[0]
+        entries = conn.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
+        session = conn.execute('SELECT EXISTS(SELECT 1 FROM session)').fetchone()[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return {'path': path, 'sets': int(sets), 'entries': int(entries),
+            'session': bool(session), 'modified': modified}
+
+
+def recovered_files():
+    """Every preserved container in the working directory, newest first, EXCEPT one
+    that is currently open: the user opened it, so it is this session's document, not
+    something to offer back or sweep out from under itself. Paths only; the file may
+    be empty or unreadable, which is `recoverable`'s problem."""
+    folder = working_dir()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    open_path = os.path.realpath(_ACTIVE.path) if is_open() else None
+    paths = [os.path.join(folder, name) for name in names
+             if name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)
+             and os.path.realpath(os.path.join(folder, name)) != open_path]
+    paths.sort(key=lambda p: (_mtime(p) or 0.0, p), reverse=True)
+    return paths
+
+
+def recoverable():
+    """The containers a previous RayMol left behind that still hold entries, newest
+    first, as `{'path', 'sets', 'entries', 'session', 'modified'}` dicts (#447).
+
+    This is a LAUNCH-TIME question, asked once by the app so it can offer the work
+    back; it is deliberately not in the 500 ms poll, since it stats and opens files.
+    It sweeps first, so a container preserved from a crash a moment ago is reported
+    under the name it will keep. It never opens or creates the working container, so
+    asking costs nothing in a session that has no sets.
+    """
+    sweep_once()
+    out = []
+    for path in recovered_files():
+        info = inspect_container(path)
+        if info and info['entries']:
+            out.append(info)
+    return out
+
+
+def discard_recoverable(path):
+    """Delete a preserved container the user said they do not want. Refuses anything
+    that is not one of ours -- this is reached from a UI button with a path that came
+    back out of `recoverable()`, and "delete the file named in this string" is not a
+    verb this module should offer anyone."""
+    path = os.path.abspath(os.fspath(path))
+    name = os.path.basename(path)
+    # realpath on both sides: on macOS the state directory reached through $TMPDIR is
+    # /var/folders/... which is a symlink to /private/var/..., and a refusal there
+    # would be a Discard button that silently does nothing.
+    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(working_dir()) \
+            or not (name.startswith(_RECOVERED_PREFIX) and name.endswith(_WORKING_SUFFIX)):
+        raise SetInputError('%s is not a recoverable container' % path)
+    remove_db_files(path)
+    return path
+
+
+def sweep_recovered(keep=RECOVERED_KEEP, max_age=RECOVERED_MAX_AGE):
+    """Apply the retention policy to preserved containers. Returns the paths removed.
+
+    Age first, then count, so "older than thirty days" is not saved by being one of
+    the ten newest. An empty or unreadable preserved file is dropped whatever its age:
+    it can never be offered, so keeping it only fills the folder.
+    """
+    removed = []
+    now = _now()
+    kept = 0
+    for path in recovered_files():
+        mtime = _mtime(path)
+        info = inspect_container(path)
+        stale = (max_age and mtime is not None and (now - mtime) > max_age)
+        if stale or not (info and info['entries']):
+            remove_db_files(path)
+            removed.append(path)
+            continue
+        kept += 1
+        if keep and kept > keep:
+            remove_db_files(path)
+            removed.append(path)
+    return removed
 
 
 def sweep_stale_working_files():
-    """Delete working files left by RayMols that are no longer running.
+    """Retire working files left by RayMols that are no longer running.
 
-    Returns the paths removed. A pid that cannot be signalled is dead; one that
-    refuses the signal is alive and belongs to someone else.
+    Returns the paths REMOVED; one that held entries is preserved instead (#447) and
+    is not in the list -- `recoverable()` is where those surface. A pid that cannot be
+    signalled is dead; one that refuses the signal is alive and belongs to someone else.
     """
     removed = []
     try:
@@ -1070,9 +1311,16 @@ def sweep_stale_working_files():
         if _alive(int(pid_text)):
             continue
         path = os.path.join(working_dir(), name)
-        remove_db_files(path)
-        removed.append(path)
+        if retire_working_file(path) is None:
+            removed.append(path)
     return removed
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
 
 
 def _alive(pid):
@@ -1088,7 +1336,8 @@ def _alive(pid):
 
 
 def _at_exit():
-    """Clean exit deletes the pid-scoped working file. A document is only closed."""
+    """Clean exit retires the pid-scoped working file: deleted when it holds nothing,
+    kept for recovery when it holds entries (#447). A document is only closed."""
     try:
         reset()
     except Exception:
