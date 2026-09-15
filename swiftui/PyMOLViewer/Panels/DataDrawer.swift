@@ -1018,6 +1018,23 @@ struct SetFilterBar: View {
                       + "rejected, staged, pinned), name and tags. The same language "
                       + "set_filter takes, because it IS set_filter.")
             chips
+            if !engine.setBrushes.isEmpty {
+                // The brushes, flattened into the field. Spec §4.2 says a brush
+                // "writes the expression into the filter bar"; keeping them as chips
+                // until asked is what makes "clear this one column" possible, and
+                // this is the way to the other half — the literal string that went to
+                // set_filter, editable.
+                Button("Edit as text") {
+                    engine.setFilterText = SetFilterComposer.flattened(
+                        text: engine.setFilterText, brushes: engine.setBrushes)
+                    engine.setBrushes = []
+                    applyNow()
+                }
+                .controlSize(.mini)
+                .font(.system(size: 9))
+                .help("Write the brushes into the field as the expression they are, so "
+                      + "you can edit it. The filter does not change.")
+            }
             if !engine.setFilterText.isEmpty || !engine.setBrushes.isEmpty {
                 Button {
                     engine.setFilterText = ""

@@ -262,6 +262,16 @@ final class SetTableModelTests: XCTestCase {
     func testHistogramDegenerateInputs() {
         XCTAssertEqual(SetTableModel.histogram(values: [], bins: 12, lo: 0, hi: 1), [])
         XCTAssertEqual(SetTableModel.histogram(values: [.nan], bins: 12, lo: 0, hi: 1), [])
+        // The range the bars were binned over, which a brush has to invert (#418).
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [5, 50, 95], lo: 0, hi: 100),
+                       0...100, "a declared domain wins, so two runs share an axis")
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [5, 50, 95], lo: nil, hi: nil),
+                       5...95, "with none, the observed range — unpadded, like the bins")
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [7, 7], lo: nil, hi: nil), 7...7)
+        XCTAssertNil(SetTableModel.histogramDomain(values: [], lo: 0, hi: 1))
+        XCTAssertNil(SetTableModel.histogramDomain(values: [.nan], lo: 0, hi: 1))
+        XCTAssertEqual(SetTableModel.histogramDomain(values: [2, 4], lo: 9, hi: 1), 2...4,
+                       "a spec whose hi is below its lo is not a domain")
         XCTAssertEqual(SetTableModel.histogram(values: [7, 7, 7], bins: 5, lo: nil, hi: nil),
                        [0, 0, 3, 0, 0], "all equal → one full middle bin, not a crash")
     }
@@ -412,6 +422,132 @@ final class SetsStoreTests: XCTestCase {
         XCTAssertEqual(store?.rows(setID: "x\"y", columns: []) ?? [], [])
     }
 
+    // MARK: - the compiled filter (#418)
+    //
+    // The fragments below are VERBATIM what `pymol.sets.filter.compile` emits for the
+    // expressions named in the comments — that is the contract this side has to hold.
+    // The Python half (`testing/tests/sets/sets_filter.py`,
+    // `testing/tests/test_appkit_sets.py`) asserts the same strings come out of the
+    // compiler and select the same rows; neither half can catch a drift alone.
+
+    func testACompiledRangeSelectsTheRowsItPromises() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        // `plddt >= 80 and plddt <= 92` — what a header brush writes.
+        let matches = store.matchingIDs(setID: "ab12cd34",
+                                        fragment: "(m.\"plddt\" >= ? AND m.\"plddt\" <= ?)",
+                                        params: [.number(80), .number(92)])
+        XCTAssertEqual(matches, ["e1", "e2"],
+                       "the NULL pLDDT never matches a comparison (\"absent is not zero\")")
+    }
+
+    func testACompiledFragmentBindsTextParamsToo() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        // `tags contains "hydrophobic-patch"`
+        let matches = store.matchingIDs(
+            setID: "ab12cd34",
+            fragment: "(' ' || e.\"tags\" || ' ') LIKE ? ESCAPE '\\'",
+            params: [.text("% hydrophobic-patch %")])
+        XCTAssertEqual(matches, ["e1"])
+    }
+
+    func testAnIntegralParamBindsAsAnInteger() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        // `n_residues` is not a metric column, but `e."ord" = 2` exercises the same
+        // binding path against an INTEGER column.
+        XCTAssertEqual(store.matchingIDs(setID: "ab12cd34", fragment: "e.\"ord\" = ?",
+                                         params: [.number(2)]), ["e2"])
+    }
+
+    func testAFragmentThatCannotBePreparedIsNilNotEmpty() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        // "nothing matches" and "I could not ask" are different answers; an empty
+        // table for the second would claim the filter had excluded everything.
+        XCTAssertNil(store.matchingIDs(setID: "ab12cd34", fragment: "not sql at all",
+                                       params: []))
+        XCTAssertNil(store.matchingIDs(setID: "ab12cd34", fragment: "", params: []),
+                     "an empty fragment is no filter, not a filter that matches nothing")
+        XCTAssertNil(store.matchingIDs(setID: "x\"y", fragment: "1 = 1", params: []))
+    }
+
+    func testTheFilterPayloadDecodesWhatAppkitSetsWrites() throws {
+        let json = """
+            {"set":"ab12cd34","expr":"plddt > 80","sql":"m.\\"plddt\\" > ?","params":[80],
+             "n":2,"total":3,"error":"","offset":-1,"applied":1}
+            """
+        let payload = try JSONDecoder().decode(SetFilterPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.params, [.number(80)])
+        let state = SetFilterState(payload: payload)
+        XCTAssertTrue(state.isActive)
+        XCTAssertTrue(state.applied)
+        XCTAssertEqual(state.countLabel(total: 3), "2 of 3 match")
+    }
+
+    func testAFilterPayloadCarriesTheGrammarsComplaint() throws {
+        // `plddt > 80abc` — filter.py's "malformed number" at offset 8.
+        let json = #"{"set":"s","expr":"plddt > 80abc","sql":"","params":[],"n":0,"total":3,"error":"malformed number '80abc' at offset 8","offset":8,"applied":0}"#
+        let payload = try JSONDecoder().decode(SetFilterPayload.self, from: Data(json.utf8))
+        let state = SetFilterState(payload: payload)
+        XCTAssertFalse(state.isActive, "a rejected expression filters nothing")
+        XCTAssertEqual(state.offset, 8)
+        XCTAssertEqual(SetFilterState.token(in: payload.expr, at: 8), "80abc",
+                       "the field quotes back the token the parser stopped on")
+        XCTAssertNil(SetFilterState.token(in: "plddt >", at: 7),
+                     "an end-of-input failure has no token to quote")
+        XCTAssertEqual(state.countLabel(total: 3), "3 entries")
+    }
+
+    func testMixedParamTypesDecodeInOrder() throws {
+        let json = #"{"set":"s","expr":"x","sql":"?","params":[1,2.5,"a",true,null],"n":0,"total":0,"error":"","offset":-1,"applied":0}"#
+        let payload = try JSONDecoder().decode(SetFilterPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.params,
+                       [.number(1), .number(2.5), .text("a"), .number(1), .null])
+    }
+
+    // MARK: - saved views (#418)
+
+    func testViewsAreReadWithTheirSet() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        let set = try XCTUnwrap(store.sets().first)
+        XCTAssertEqual(set.views.map(\.name), ["tight", "all"], "creation order")
+        XCTAssertEqual(set.views[0].filter, "plddt > 90")
+        XCTAssertEqual(set.views[0].sortKey, "rmsd__b")
+        XCTAssertFalse(set.views[0].sortDescending,
+                       "an ascending sort must survive: it is what an RMSD column wants")
+        XCTAssertEqual(set.views[0].columns, ["plddt"])
+        XCTAssertTrue(set.views[1].columns.isEmpty,
+                      "a view saved before the column list existed must not blank the table")
+    }
+
+    func testTheMarkerCarriesTheViewportSelection() throws {
+        let m = try marker("""
+            {"v":3,"path":"/tmp/x.raymol","active":"ab12cd34","peek":"","running":{},\
+            "sel":["e2"]}
+            """)
+        XCTAssertEqual(m.sel, ["e2"])
+        // Absent is the usual case and must not fail the decode.
+        let quiet = try marker(#"{"v":3,"path":"","active":"","peek":"","running":{}}"#)
+        XCTAssertTrue(quiet.sel.isEmpty)
+    }
+
+    // MARK: - what the drawer sends to Python (#446, #418)
+
+    func testNamesAndExpressionsAreEscapedNotStripped() {
+        // #446: stripping deleted a character, and every verb then ran against the
+        // WRONG entry — which unstages or rejects someone else's candidate.
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("d_0417"), "'d_0417'")
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("a\\b"), "'a\\\\b'")
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("it's"), "'it\\'s'")
+        // A filter expression is the hostile case: it is USER TEXT, quotes and all,
+        // and it travels the same runPython path a name does.
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("tool = 'boltz'"),
+                       "'tool = \\'boltz\\''")
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("name like \"d%\""),
+                       "'name like \"d%\"'")
+        XCTAssertEqual(PyMOLEngine.pythonLiteral("x'); import os; os.system('rm -rf /"),
+                       "'x\\'); import os; os.system(\\'rm -rf /'",
+                       "the injection closes nothing: both quotes are escaped")
+    }
+
     func testMetricColumnDecodeTolerantOfMissingFields() throws {
         let json = #"[{"key":"plddt"},{"key":"x","column":"x","higher_is_better":null,"lo":null}]"#
         let columns = SetsStore.decodeColumns(json)
@@ -459,6 +595,14 @@ final class SetsStoreTests: XCTestCase {
               entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
               "plddt" REAL, "rmsd__b" REAL)
             """,
+            """
+            CREATE TABLE views (
+              id TEXT PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
+              name TEXT NOT NULL, filter TEXT NOT NULL DEFAULT '',
+              sort_key TEXT NOT NULL DEFAULT '', sort_desc INTEGER NOT NULL DEFAULT 1,
+              columns TEXT NOT NULL DEFAULT '[]', created REAL NOT NULL,
+              UNIQUE (set_id, name))
+            """,
             "INSERT INTO meta VALUES ('format_version','1'),('version','7'),('stage_budget','4')",
             """
             INSERT INTO sets (id, name, kind, created, tool, group_name, ranking_key, sort_key,
@@ -483,6 +627,11 @@ final class SetsStoreTests: XCTestCase {
             """,
             """
             INSERT INTO "m_ab12cd34" VALUES ('e1', 91.5, 1.25), ('e2', 89.7, 0.9), ('e3', NULL, 1.4)
+            """,
+            """
+            INSERT INTO views (id, set_id, name, filter, sort_key, sort_desc, columns, created)
+            VALUES ('v1', 'ab12cd34', 'tight', 'plddt > 90', 'rmsd__b', 0, '["plddt"]', 2.0),
+                   ('v2', 'ab12cd34', 'all', '', '', 1, '[]', 3.0)
             """,
         ]
         for sql in statements {
