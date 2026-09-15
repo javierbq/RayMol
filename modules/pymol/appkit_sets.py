@@ -623,7 +623,7 @@ def _poll_filter():
 # a set is open and something is selected. The cost is one `get_object_list` over the
 # active selection plus one read of the staged entries. That read RETURNS at most
 # `budget` rows -- a single digit by default -- but it is a partial-index scan over the
-# set, so it is not free in the entry count: measured 0.117 / 0.097 / 0.551 ms at 100 /
+# set, so it is not free in the entry count: measured 0.021 / 0.084 / 0.527 ms at 100 /
 # 1000 / 8000 entries, against a 500 ms tick. Well inside the budget #421 sets, and
 # bounded by the partial index on `staged_object`; it is not O(1), and an earlier
 # version of this comment claimed it was. The field is omitted entirely when nothing is
