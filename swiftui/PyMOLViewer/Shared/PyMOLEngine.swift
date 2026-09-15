@@ -120,6 +120,14 @@ final class PyMOLEngine: ObservableObject {
     @Published var setRows: [SetRow] = []
     @Published var activeSetID: String? = nil
     @Published var peekedEntryID: String? = nil
+    /// A container a previous RayMol left behind that still holds entries, offered
+    /// back before the window is used (#447, spec §2.1). Set once, at launch, from
+    /// the `SETSRECOVER:` marker; nil means there is nothing to offer or the user
+    /// has answered. The policy behind it is `PyMOLEngine.launchRestore`, kept pure
+    /// and out of the alert handler.
+    @Published var recoveryOffer: RecoverableContainer? = nil
+    /// How many were preserved in total, when the marker had to name only some.
+    @Published var recoveryCount = 0
     /// Batches still landing, by set id (#416's table, forwarded by the marker).
     @Published var setsRunning: [String: BatchProgress] = [:]
     /// True when the marker had to drop the progress COUNTS to stay under PyMOL's
@@ -491,16 +499,37 @@ final class PyMOLEngine: ObservableObject {
     // snapshot a full .pse on background and silently reload it on cold launch.
     // One-shot per process so a warm foreground (memory intact) never re-restores.
     private var didRestoreAutosave = false
-    // Set by .onOpenURL: the app was launched to open a specific file, which
-    // takes precedence over the autosaved scene (don't merge the old session
-    // underneath the opened document).
-    var launchOpenRequested = false
     // A snapshot of the viewport captured alongside the autosave, shown over the
     // viewport while the session reloads on cold launch so the user sees their
     // last scene instead of the empty "open a file" state flashing. Cleared once
     // the restored scene has had time to render.
     @Published var restoreSnapshot: UIImage?
     #endif
+
+    // Set by .onOpenURL (iOS) and by NSApplicationDelegate.application(_:open:)
+    // (macOS): the app was launched to open a specific file, which takes precedence
+    // over the autosaved scene (don't merge the old session underneath the opened
+    // document) and over the #447 recovery alert (don't put a modal in front of the
+    // file the user double-clicked).
+    //
+    // @Published, and it WITHDRAWS an offer already made: the recovery marker is read
+    // once on the first feedback tick, and `application(_:open:)` can land after it
+    // (#447 review). An alert left up over the just-opened document offers an Open
+    // that replaces it and a Discard that deletes the recovered container -- both
+    // answers to a question the user did not ask.
+    @Published var launchOpenRequested = false {
+        didSet {
+            guard launchOpenRequested else { return }
+            recoveryAnswered = true
+            recoveryOffer = nil
+            recoveryCount = 0
+        }
+    }
+
+    // Cold-launch recovery (#447). The offer is made at most once per process: the
+    // marker is printed once, and a user who answered must not be asked again if a
+    // later `load` happens to reprint it.
+    var recoveryAnswered = false
 
     private init() {}
 
@@ -805,6 +834,20 @@ final class PyMOLEngine: ObservableObject {
         }
         #endif
 
+        #if os(macOS)
+        // Cold-launch recovery (#447, spec §2.1): ask ONCE whether a previous RayMol
+        // left an untitled session's sets behind. macOS has no autosave.pse path, so
+        // this is the whole of its "your work is still here" story; the answer
+        // arrives as a SETSRECOVER: line on the first feedback tick, and
+        // `applyRecoveryMarker` decides what to do with it. Skipped under the
+        // screenshot affordances, like the iOS restore above, so a scripted launch
+        // stays deterministic.
+        let macEnv = ProcessInfo.processInfo.environment
+        if macEnv["PYMOL_AUTOLOAD"] == nil && macEnv["PYMOL_AUTOCMD"] == nil {
+            runPythonQuiet("from pymol import appkit_sets as _as\n_as.poll_recovery()")
+        }
+        #endif
+
         // Poll feedback every 100ms
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -832,6 +875,17 @@ final class PyMOLEngine: ObservableObject {
         }
         instance = nil
         isReady = false
+    }
+
+    /// True when a rolling `autosave.pse` is waiting for a cold launch. iOS only:
+    /// macOS has no autosave path, and #447 deliberately does not add one -- what it
+    /// restores on macOS is the sets container, which is a different promise.
+    static var autosavePresentAtLaunch: Bool {
+        #if os(iOS)
+        return UserDefaults.standard.bool(forKey: autosaveDefaultsKey)
+        #else
+        return false
+        #endif
     }
 
     #if os(iOS)
@@ -3741,6 +3795,11 @@ final class PyMOLEngine: ObservableObject {
             for line in text.components(separatedBy: "\n") {
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
+                } else if line.hasPrefix("SETSRECOVER:") {
+                    // Cold-launch recovery (#447): printed ONCE, at launch, never by
+                    // the 500 ms poll — the question costs file opens and its answer
+                    // cannot change while this process runs.
+                    parseSetsRecoveryFeedback(line)
                 } else if line.hasPrefix("SETS:") {
                     // Sets change notice (#417): version + path + active/peek ids,
                     // printed by appkit_sets.poll only when one of them changed. The

@@ -9,6 +9,7 @@ printed, that polling never creates a working file, that it stays under PyMOL's
 
     pymol -ckqy testing/testing.py --run testing/tests/test_appkit_sets.py
 """
+import tempfile
 import contextlib
 import io
 import json
@@ -49,6 +50,13 @@ class AppkitSetsTestCase(testing.PyMOLTestCase):
     def setUp(self):
         testing.PyMOLTestCase.setUp(self)
         self._saved_schemas = dict(mschema._SCHEMAS)
+        # Every test gets its own $RAYMOL_SETS_DIR (#447 review): the working
+        # container -- and anything preserved from it -- otherwise lands in the real
+        # $TMPDIR, where it accumulates a few MB per run and where the retention sweep
+        # would take a CLI user's own recovered sessions with it.
+        self._sets_dir = tempfile.mkdtemp(prefix='raymol_sets_dir_')
+        self._had_sets_dir = os.environ.get('RAYMOL_SETS_DIR')
+        os.environ['RAYMOL_SETS_DIR'] = self._sets_dir
         mschema.register(TOOL, [
             mschema.MetricSpec('score', mschema.OBJECT, lo=0, hi=100, higher_is_better=True),
             mschema.MetricSpec('rmsd', mschema.STATE, lo=0, hi=10, units='A'),
@@ -57,6 +65,15 @@ class AppkitSetsTestCase(testing.PyMOLTestCase):
         # "nothing printed yet, nothing open, nothing peeked".
         self._had_batch = sys.modules.get(BATCH_MODULE)
         sys.modules.pop(BATCH_MODULE, None)
+        # ... and the PACKAGE ATTRIBUTE, which `from pymol.sets import batch` prefers
+        # over sys.modules. Without this, the first test in the process to call the
+        # real module leaves `pymol.sets.batch` bound, and every install_fake_batch
+        # after it is silently ignored -- the tests below then assert against an empty
+        # progress table and fail in file order rather than on their own merits.
+        import pymol.sets as _sets_pkg
+        self._had_batch_attr = getattr(_sets_pkg, 'batch', None)
+        if self._had_batch_attr is not None:
+            delattr(_sets_pkg, 'batch')
         store.reset()
         appkit_sets.close_set()
         appkit_sets.reset_marker()
@@ -75,7 +92,19 @@ class AppkitSetsTestCase(testing.PyMOLTestCase):
             sys.modules[BATCH_MODULE] = self._had_batch
         else:
             sys.modules.pop(BATCH_MODULE, None)
+        import pymol.sets as _sets_pkg
+        if self._had_batch_attr is not None:
+            _sets_pkg.batch = self._had_batch_attr
+        elif getattr(_sets_pkg, 'batch', None) is not None:
+            delattr(_sets_pkg, 'batch')
         testing.PyMOLTestCase.tearDown(self)
+        # Last, so PyMOLTestCase's own reinitialize still resets the store with the
+        # private $RAYMOL_SETS_DIR in place.
+        if self._had_sets_dir is None:
+            os.environ.pop('RAYMOL_SETS_DIR', None)
+        else:
+            os.environ['RAYMOL_SETS_DIR'] = self._had_sets_dir
+        __import__('shutil').rmtree(self._sets_dir, ignore_errors=True)
 
     # -- fixtures --------------------------------------------------------------------
 
@@ -479,3 +508,90 @@ class TestPollPanelHook(AppkitSetsTestCase):
         found = markers(text)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]['path'], store.active().path)
+
+
+class TestRecovery(AppkitSetsTestCase):
+    """The cold-launch recovery marker (#447).
+
+    `SETSRECOVER:` is printed ONCE, at launch, not from the 500 ms poll: the question
+    "did a previous RayMol leave sets behind" stats and opens files, and its answer
+    cannot change while this process runs.
+    """
+
+    def setUp(self):
+        AppkitSetsTestCase.setUp(self)    # $RAYMOL_SETS_DIR is this test's own
+        self._had_swept = store._SWEPT
+        self._had_own = store._OWN_RETIRED
+        store._SWEPT = store._OWN_RETIRED = True
+
+    def tearDown(self):
+        store._SWEPT = self._had_swept
+        store._OWN_RETIRED = self._had_own
+        AppkitSetsTestCase.tearDown(self)
+
+    def left_behind(self, entries=1, pid=999999):
+        """A container a dead RayMol left with `entries` in it, already preserved."""
+        path = os.path.join(store.working_dir(), 'raymol_sets_%d.raymol' % pid)
+        c = store.Container(path)
+        sid = c.create_set('left')['id']
+        for i in range(entries):
+            c.add_entry(sid, 'd%d' % i)
+        c.close()
+        return store.preserve_working_file(path)
+
+    def payload(self, text):
+        self.assertTrue(text.startswith(appkit_sets.RECOVER_PREFIX), text)
+        return json.loads(text[len(appkit_sets.RECOVER_PREFIX):])
+
+    def test_nothing_to_recover_is_still_an_answer(self):
+        with captured() as out:
+            appkit_sets.poll_recovery()
+        payload = self.payload(out.getvalue().strip())
+        self.assertEqual(payload, {'n': 0, 'files': []})
+        self.assertFalse(store.is_open(), 'asking must not create a working file')
+
+    def test_marker_reports_the_sets_and_entries_newest_first(self):
+        older = self.left_behind(entries=2, pid=999999)
+        newer = self.left_behind(entries=5, pid=999998)
+        os.utime(older, (store._now() - 900, store._now() - 900))
+        payload = self.payload(appkit_sets.recovery_marker())
+        self.assertEqual(payload['n'], 2)
+        self.assertEqual([f['path'] for f in payload['files']], [newer, older])
+        self.assertEqual([f['entries'] for f in payload['files']], [5, 2])
+        self.assertEqual([f['sets'] for f in payload['files']], [1, 1])
+        self.assertEqual([f['session'] for f in payload['files']], [0, 0])
+
+    def test_marker_names_a_few_files_but_always_counts_them_all(self):
+        for i in range(appkit_sets.MAX_RECOVERABLE + 3):
+            self.left_behind(pid=999000 + i)
+        payload = self.payload(appkit_sets.recovery_marker())
+        self.assertEqual(payload['n'], appkit_sets.MAX_RECOVERABLE + 3)
+        self.assertEqual(len(payload['files']), appkit_sets.MAX_RECOVERABLE)
+
+    def test_marker_stays_under_the_feedback_cap(self):
+        # A pathological path: RayMolState is short, but RAYMOL_SETS_DIR is not ours.
+        deep = os.path.join(self._sets_dir, 'd' * 120, 'e' * 120, 'f' * 120)
+        os.makedirs(deep)
+        os.environ['RAYMOL_SETS_DIR'] = deep
+        for i in range(appkit_sets.MAX_RECOVERABLE):
+            self.left_behind(pid=999000 + i)
+        text = appkit_sets.recovery_marker()
+        self.assertLess(len(text.encode('utf-8')), ORTHO_LINE_LENGTH)
+        payload = self.payload(text)
+        self.assertEqual(payload['n'], appkit_sets.MAX_RECOVERABLE,
+                         'the count survives even when the files do not fit')
+        self.assertLess(len(payload['files']), appkit_sets.MAX_RECOVERABLE,
+                        'files are what gets dropped to fit')
+
+    def test_the_500ms_poll_carries_no_recovery(self):
+        self.left_behind()
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertNotIn(appkit_sets.RECOVER_PREFIX, out.getvalue())
+
+    def test_discard_removes_the_container(self):
+        path = self.left_behind()
+        appkit_sets.discard_recovered(path)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(appkit_sets.recoverable(), [])
+

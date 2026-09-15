@@ -25,10 +25,19 @@ class SetSessionTestCase(testing.PyMOLTestCase):
                          replace=True)
         store.reset()
         self._dir = tempfile.mkdtemp()
+        # The working file (and anything preserved from it, #447) belongs to this
+        # test's directory, not to TMPDIR: these tests quit and relaunch the store,
+        # and what they leave behind has to be visible here and gone afterwards.
+        self._had_sets_dir = os.environ.get('RAYMOL_SETS_DIR')
+        os.environ['RAYMOL_SETS_DIR'] = self._dir
 
     def tearDown(self):
         binding.clear_peek()
         store.reset()
+        if self._had_sets_dir is None:
+            os.environ.pop('RAYMOL_SETS_DIR', None)
+        else:
+            os.environ['RAYMOL_SETS_DIR'] = self._had_sets_dir
         mstore.clear()
         mschema._SCHEMAS.clear()
         mschema._SCHEMAS.update(self._saved)
@@ -254,4 +263,133 @@ class PlainPse(SetSessionTestCase):
         cmd.reinitialize()
         self.assertEqual(cmd.set_list(), [])
         self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(p),
-                         'the working file is reused, emptied')
+                         'the working NAME is reused; what it held was kept (#447)')
+        self.assertEqual([r['entries'] for r in store.recoverable()], [3])
+
+    def testReinitializeStillRemovesAnEmptyWorkingFile(self):
+        cmd.set_create('empty')
+        p = store.active().path
+        cmd.reinitialize()
+        self.assertEqual(cmd.set_list(), [])
+        self.assertEqual(store.recoverable(), [], 'nothing to recover, nothing kept')
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(p))
+
+
+class Durability(SetSessionTestCase):
+    """An untitled session's container survives a quit, and comes back (#447).
+
+    Spec §2.1: "the working file for an untitled session IS the autosave... so an
+    untitled session with a six-hour batch survives a crash and a quit."
+    """
+
+    def quit(self):
+        """What ⌘Q does: the app checkpoints the session into the working container,
+        then the interpreter's atexit reaches store.reset()."""
+        wrote = binding.checkpoint_session()
+        store._at_exit()
+        return wrote
+
+    def testAQuitKeepsTheSetsAndTheSceneAndTheyReopen(self):
+        self.campaign()
+        self.assertTrue(self.quit())
+        found = store.recoverable()
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0]['sets'], found[0]['entries']), (1, 3))
+        self.assertTrue(found[0]['session'], 'the scene rides along with the sets')
+        cmd.reinitialize()
+        cmd.load(found[0]['path'])
+        self.assertEqual([s['name'] for s in cmd.set_list()], ['s'])
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3)
+        self.assertIn('other', cmd.get_names('all'), 'and the objects come back')
+        self.assertIn('p2', cmd.get_names('all'), 'including the staged one')
+
+    def testAQuitWithNoEntriesLeavesNothingBehind(self):
+        cmd.set_create('s')
+        cmd.fab('GGG', 'lonely')
+        self.assertFalse(self.quit(), 'no entries, no session blob, no file')
+        self.assertEqual(store.recoverable(), [])
+
+    def testCheckpointLeavesADocumentToItsOwnSave(self):
+        # A named document is saved by ⌘S; writing a session into it behind the
+        # user's back would make every quit a silent Save.
+        self.campaign()
+        doc = self.path('doc.raymol')
+        cmd.save(doc)
+        before = os.path.getmtime(doc)
+        self.assertFalse(binding.checkpoint_session())
+        self.assertEqual(os.path.getmtime(doc), before)
+
+    def testSaveAsStillRemovesTheWorkingFileItJustCopied(self):
+        # The one place a non-empty working file may still go: its contents are now
+        # in the document the user named, so preserving it would offer back work
+        # that was explicitly saved.
+        self.campaign()
+        working = store.active().path
+        cmd.save(self.path('doc.raymol'))
+        self.assertFalse(os.path.exists(working))
+        self.assertEqual(store.recoverable(), [])
+
+    def testLoadingAPseKeepsWhatTheWorkingFileHeld(self):
+        # The floor of #448: opening another session is not permission to discard a
+        # running campaign's results.
+        self.campaign()
+        pse = self.path('x.pse')
+        cmd.save(pse)                            # the .pse leaves the sets behind
+        cmd.load(pse)
+        self.assertEqual(cmd.set_list(), [])
+        self.assertEqual([r['entries'] for r in store.recoverable()], [3])
+
+    def testLoadingARaymolKeepsTheUntitledSessionsEntries(self):
+        self.campaign()
+        doc = self.path('doc.raymol')
+        cmd.save(doc)
+        store.reset()
+        self.campaign()                          # a new untitled session with results
+        working = store.active().path
+        cmd.load(doc)
+        self.assertFalse(os.path.exists(working))
+        self.assertEqual([r['entries'] for r in store.recoverable()], [3])
+
+    # -- what the review found, through the real commands ----------------------------
+
+    def preserved(self, days=0):
+        """A preserved container with 3 entries, `days` old, as a quit would leave."""
+        self.campaign()
+        self.quit()
+        path = store.recoverable()[0]['path']
+        if days:
+            when = store._now() - days * 86400
+            os.utime(path, (when, when))
+        return path
+
+    def testLoadingARecoveredContainerDoesNotSweepItAway(self):
+        # `load` opens the container and only then reaches active() -> the retention
+        # sweep, which saw a 31-day-old preserved file it was free to drop -- and
+        # unlinked the document under its own open connection. Everything written
+        # afterwards went to an unlinked inode: no error, no file, no data.
+        path = self.preserved(days=31)
+        cmd.reinitialize()
+        store._SWEPT = store._OWN_RETIRED = False     # a cold launch
+        cmd.load(path)
+        self.assertTrue(os.path.exists(path), 'the document is still on disk')
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(path))
+        cmd.fab('ACDEF', 'late', chain='A')
+        cmd.set_add('s', 'late')
+        cmd.delete('late')
+        store.reset()
+        self.assertEqual(store.inspect_container(path)['entries'], 4,
+                         'and a result that lands afterwards is really in it')
+
+    def testSaveAsRetiresTheRecoveredContainerItCopied(self):
+        # Otherwise the next launch offers to recover work the user explicitly saved,
+        # with a second copy of every structure blob behind it.
+        path = self.preserved()
+        cmd.reinitialize()
+        cmd.load(path)
+        doc = self.path('mywork.raymol')
+        cmd.save(doc)
+        self.assertFalse(os.path.exists(path), 'the recovered copy is gone')
+        self.assertEqual(store.recoverable(), [])
+        self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(doc))
+        self.assertEqual(cmd.set_info('s')['counts']['all'], 3)
+

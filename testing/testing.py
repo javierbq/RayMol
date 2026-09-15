@@ -77,6 +77,16 @@ else:
     from pymol import cmd
     from pymol.invocation import options
 
+    # The sets store's working container -- and anything #447 preserves from it when
+    # a test resets the store with entries in it -- must never land in the real
+    # $TMPDIR. A test run would otherwise leave a few MB of recovered_*.raymol per
+    # run in the developer's temp directory, and the retention sweep at the start of
+    # the next run would take that developer's OWN recovered sessions with it. One
+    # directory per test process, removed on the way out; individual fixtures still
+    # point it at their own directory for isolation.
+    _SETS_DIR = tempfile.mkdtemp(prefix='raymol_test_sets_')
+    os.environ['RAYMOL_SETS_DIR'] = _SETS_DIR
+
     get_capabilities = getattr(pymol, 'get_capabilities', lambda: ())
 
     try:
@@ -750,6 +760,10 @@ USAGE
             # silently do nothing
             return
         nfail = run_testfiles(**vars(cliargs))
+        # `cmd.quit` does not come back and does not run atexit handlers, so the
+        # process's private $RAYMOL_SETS_DIR is removed here or not at all.
+        import shutil
+        shutil.rmtree(_SETS_DIR, ignore_errors=True)
         cmd.quit(nfail)
 
     cmd.extend('run_testfiles', run_testfiles)

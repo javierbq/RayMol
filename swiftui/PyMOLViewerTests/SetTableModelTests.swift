@@ -496,3 +496,202 @@ final class SetsStoreTests: XCTestCase {
         }
     }
 }
+
+
+/// The cold-launch decision for a container a previous RayMol left behind (#447).
+///
+/// `PyMOLEngine.launchRestore` is the whole policy, kept OUT of the alert handler so
+/// it can be walked here: what to do given a recoverable `.raymol`, an `autosave.pse`,
+/// both, neither, and a launch that was already asked to open a document.
+final class SetsRecoveryDecisionTests: XCTestCase {
+
+    private func file(_ path: String, entries: Int = 12, sets: Int = 1,
+                      session: Int = 1, modified: Double = 1_000) -> RecoverableContainer {
+        RecoverableContainer(path: path, sets: sets, entries: entries,
+                             session: session, modified: modified)
+    }
+
+    func testNeitherLeavesAnEmptySession() {
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [], autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+
+    func testAutosaveAloneIsRestored() {
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [], autosavePresent: true,
+                                                 openRequested: false), .autosave)
+    }
+
+    func testARecoverableContainerIsOffered() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: false,
+                                                 openRequested: false),
+                       .offerRecovery(one))
+    }
+
+    func testTheContainerBeatsTheAutosave() {
+        // Both exist: the .raymol carries a session blob TOO, so it restores the scene
+        // and the sets, where autosave.pse restores the scene and drops the sets --
+        // which is the data loss #447 is about.
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: false),
+                       .offerRecovery(one))
+    }
+
+    func testDecliningFallsBackToTheAutosave() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: false, recoveryDeclined: true),
+                       .autosave)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: false,
+                                                 openRequested: false, recoveryDeclined: true),
+                       .nothing)
+    }
+
+    func testOpeningADocumentSuppressesEverything() {
+        let one = file("/s/recovered_1.raymol")
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [one], autosavePresent: true,
+                                                 openRequested: true), .nothing)
+    }
+
+    func testTheNewestContainerWithEntriesWins() {
+        let old = file("/s/recovered_old.raymol", entries: 900, modified: 10)
+        let new = file("/s/recovered_new.raymol", entries: 1, modified: 20)
+        let empty = file("/s/recovered_empty.raymol", entries: 0, modified: 99)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [old, new, empty],
+                                                 autosavePresent: false,
+                                                 openRequested: false),
+                       .offerRecovery(new), "newest, not biggest")
+    }
+
+    func testAnEmptyContainerIsNeverOffered() {
+        let empty = file("/s/recovered_empty.raymol", entries: 0)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: [empty], autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+
+    // MARK: the marker
+
+    func testMarkerDecodesWhatPythonPrints() {
+        let line = #"SETSRECOVER:{"n":3,"files":[{"path":"/s/recovered_20260914-101500_412.raymol","sets":2,"entries":184,"session":1,"modified":1789000000.5}]}"#
+        let data = line.dropFirst("SETSRECOVER:".count).data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertEqual(marker.n, 3, "the count survives even when files are dropped")
+        XCTAssertEqual(marker.files.count, 1)
+        XCTAssertEqual(marker.files[0].entries, 184)
+        XCTAssertEqual(marker.files[0].sets, 2)
+        XCTAssertTrue(marker.files[0].carriesSession)
+        XCTAssertEqual(marker.files[0].date.timeIntervalSince1970, 1789000000.5, accuracy: 0.01)
+    }
+
+    func testACrashedContainerReportsNoSession() {
+        let line = #"SETSRECOVER:{"n":1,"files":[{"path":"/s/r.raymol","sets":1,"entries":4,"session":0,"modified":1.0}]}"#
+        let data = line.dropFirst("SETSRECOVER:".count).data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertFalse(marker.files[0].carriesSession)
+    }
+
+    func testNothingToRecoverDecodesAsNothingToRecover() {
+        let data = #"{"n":0,"files":[]}"#.data(using: .utf8)!
+        let marker = try! JSONDecoder().decode(SetsRecoveryMarker.self, from: data)
+        XCTAssertEqual(PyMOLEngine.launchRestore(recoverable: marker.files,
+                                                 autosavePresent: false,
+                                                 openRequested: false), .nothing)
+    }
+}
+
+
+/// The wiring from the `SETSRECOVER:` line to the offer the alert shows (#447 review).
+/// `launchRestore` above is the policy; this is that the policy is actually reached,
+/// that a late file-open withdraws the offer, and that Discard goes through the store.
+final class SetsRecoveryWiringTests: XCTestCase {
+
+    private let line = #"SETSRECOVER:{"n":2,"files":[{"path":"/s/recovered_20260914-101500_412.raymol","sets":1,"entries":7,"session":1,"modified":1789000000.0}]}"#
+
+    override func setUp() {
+        super.setUp()
+        reset()
+    }
+
+    override func tearDown() {
+        reset()
+        super.tearDown()
+    }
+
+    /// PyMOLEngine.shared is one object for the whole test target, so every test
+    /// both starts and ends from "nothing offered, nothing answered, plain launch".
+    private func reset() {
+        let e = PyMOLEngine.shared
+        e.pythonTap = nil
+        e.launchOpenRequested = false
+        e.recoveryAnswered = false
+        e.recoveryOffer = nil
+        e.recoveryCount = 0
+    }
+
+    func testAMarkerLineBecomesAnOffer() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertEqual(e.recoveryOffer?.entries, 7)
+        XCTAssertEqual(e.recoveryOffer?.path, "/s/recovered_20260914-101500_412.raymol")
+        XCTAssertEqual(e.recoveryCount, 2, "the alert says how many are waiting")
+    }
+
+    func testAnEmptyAnswerOffersNothing() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(#"SETSRECOVER:{"n":0,"files":[]}"#)
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testAMalformedOrForeignLineIsIgnored() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback("SETSRECOVER:{not json")
+        e.parseSetsRecoveryFeedback("SETS:{\"v\":1,\"path\":\"\",\"active\":\"\",\"peek\":\"\",\"running\":{}}")
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testADocumentOpenAtLaunchSuppressesTheOffer() {
+        let e = PyMOLEngine.shared
+        e.launchOpenRequested = true
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNil(e.recoveryOffer)
+    }
+
+    func testADocumentOpenTHATARRIVESLATEWithdrawsTheOffer() {
+        // The race the review found: the marker is read on the first feedback tick
+        // and application(_:open:) can land after it. An alert left up over the
+        // just-opened document offers an Open that replaces it and a Discard that
+        // deletes the recovered container.
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNotNil(e.recoveryOffer)
+        e.launchOpenRequested = true
+        XCTAssertNil(e.recoveryOffer)
+        XCTAssertTrue(e.recoveryAnswered, "and it is not asked again later")
+    }
+
+    func testAnsweringOnceIsAnsweringForGood() {
+        let e = PyMOLEngine.shared
+        e.parseSetsRecoveryFeedback(line)
+        e.clearRecoveryOffer()
+        XCTAssertNil(e.recoveryOffer)
+        e.parseSetsRecoveryFeedback(line)
+        XCTAssertNil(e.recoveryOffer, "a second marker must not re-ask")
+    }
+
+    func testDiscardGoesThroughTheStoreAndClearsTheOffer() {
+        let e = PyMOLEngine.shared
+        var emitted: [String] = []
+        e.pythonTap = { emitted.append($0) }
+        e.parseSetsRecoveryFeedback(line)
+        guard let file = e.recoveryOffer else { return XCTFail("no offer") }
+        e.discardRecovery(file)
+        XCTAssertTrue(emitted.contains { $0.contains("appkit_sets") &&
+                                         $0.contains("discard_recovered") &&
+                                         $0.contains("'/s/recovered_20260914-101500_412.raymol'") },
+                      "the path goes back as a Python literal: \(emitted)")
+        XCTAssertNil(e.recoveryOffer)
+        XCTAssertTrue(e.recoveryAnswered)
+    }
+}
+

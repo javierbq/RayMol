@@ -94,11 +94,35 @@ container's Library on the sandboxed build), beside the autosaved session, rathe
 in `$TMPDIR`, which the system may purge while a batch is running. Under command-line
 PyMOL it falls back to `$TMPDIR`, or to `$RAYMOL_SETS_DIR` when that is set.
 
-**Save before you quit.** The working file is pid-scoped and is deleted on a clean exit,
-and a file left behind by a crash is swept on the next launch, so an untitled session's
-sets do not survive quitting RayMol — only a `.raymol` you have saved does. Spec §2.1's
-stronger rule, where an untitled session's working file *is* the autosave and is offered
-back on cold launch, is not implemented yet; see the tracking issue.
+**An untitled session's sets survive a quit** (#447). The working file is pid-scoped,
+but it is deleted on the way out only when every set in it is empty; one that holds
+entries is renamed `recovered_<date>_<pid>.raymol` and kept, and the same is true of a
+file a crash left behind (which the next launch used to sweep). On quit RayMol also
+writes the session into it, so what comes back is the scene as well as the sets.
+
+On the next cold launch, if such a container exists, RayMol says so before you use the
+window and offers **Open**, **Discard** or **Keep for Later**. Open reuses the ordinary
+`.raymol` document path — the file opens in place, and results that land afterwards go
+straight back into it — so the recovered session continues where it stopped. Discard
+deletes it. Keep for Later leaves it alone and offers it again next time. If more than
+one is waiting, the most recent is offered and the alert says how many there are.
+
+Kept is not kept forever: RayMol keeps the **ten most recent** preserved containers and
+drops anything **older than 30 days**, sweeping once on the first launch that touches
+the store. Nothing is swept while it is open — not by this RayMol and not by a second
+one — so the sweep can never pull a document out from under a running session.
+
+Saving with `⌘S` (or `save x.raymol`) is still how you put the session somewhere you
+chose: a recovered container lives in `~/Library/RayMolState` under a machine-generated
+name, and Save As *copies* it to the path you pick, makes the copy the live document,
+and then removes the recovered original — so the next launch does not offer to recover
+work you just saved.
+
+The offer is **macOS only** for now, and so is writing the session into the container on
+quit. Under command-line PyMOL and on iOS the container is still preserved with its
+entries — nothing is lost — but there is no alert, and a container preserved without
+that final write carries the sets and not the scene. iOS keeps its own `autosave.pse`
+path unchanged; wiring the offer there is #420's work.
 
 ## How the app stays fast
 
