@@ -446,6 +446,19 @@ USAGE
 # -- Filter / sort / views --------------------------------------------------------------
 
 
+def _view_columns(columns):
+    """A view's visible-column list from what a caller passed: a list, or a string of
+    names separated by '+' or ',' (the two separators the selector language already
+    uses, so a drawer can build one the way it builds an entry selector)."""
+    if not columns:
+        return []
+    if isinstance(columns, (list, tuple)):
+        names = [str(c).strip() for c in columns]
+    else:
+        names = [c.strip() for c in str(columns).replace('+', ',').split(',')]
+    return [n for n in names if n]
+
+
 def set_filter(name, expr='', quiet=1, _self=cmd):
     """
 DESCRIPTION
@@ -505,18 +518,26 @@ USAGE
     return key
 
 
-def set_view_save(name, view, filter=None, sort='', quiet=1, _self=cmd):
+def set_view_save(name, view, filter=None, sort='', columns='', quiet=1, _self=cmd):
     """
 DESCRIPTION
 
-    "set_view_save" saves the active filter and sort as a named view, usable as the
-    selector view:NAME. A filter expression given as the third argument replaces the
-    active one; on the command line everything after the view name is that expression
-    (the sort is always the active sort there; pass sort= from Python).
+    "set_view_save" saves the active filter, sort and (optionally) the visible columns
+    as a named view, usable as the selector view:NAME. A filter expression given as the
+    third argument replaces the active one; on the command line everything after the
+    view name is that expression (the sort is always the active sort there; pass sort=
+    and columns= from Python).
 
 USAGE
 
     set_view_save name, view [, filter ]
+
+ARGUMENTS
+
+    columns = str or list: the columns a UI should SHOW for this view, '+' or
+    comma-separated when given as a string. Stored, never applied here: which columns
+    are on screen is a property of the drawer (#418), not of the set, and every
+    set_* command reads all of them regardless.
 
 EXAMPLES
 
@@ -528,8 +549,13 @@ EXAMPLES
     expr = (row.get('filter') or '') if filter is None else str(filter).strip()
     selectors.count_filtered(c, row, expr=expr)    # validate
     sort = str(sort).strip() or (row.get('sort_key') or '')
+    # `or 1` here was wrong and cost the view its direction: an ASCENDING sort
+    # (sort_desc == 0, which is what a `rmsd` column takes by default) saved as
+    # DESCENDING, so applying the view put the worst candidates on top (#418).
+    desc = row.get('sort_desc')
     c.save_view(row['id'], str(view).strip(), filter=expr, sort_key=sort,
-                sort_desc=int(row.get('sort_desc') or 1))
+                sort_desc=1 if desc is None else int(desc),
+                columns=_view_columns(columns))
     return str(view).strip()
 
 
