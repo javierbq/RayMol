@@ -501,8 +501,9 @@ class BrushShapeTest(SetFilterTestCase):
                          ('(m."rmsd" >= ? AND m."rmsd" <= ?)', (-12.5, -1)))
 
     def testWholeRangeBrushIsStillJustAFilter(self):
-        # The composer drops a clause that covers the whole domain rather than writing
-        # one; if it ever does write one, it still has to mean something.
+        # A brush dragged across the whole strip writes its bounds like any other; the
+        # composer does not special-case it away, so it still has to compile and still
+        # has to mean "everything in the domain".
         sql, params = self.compile('plddt >= 0 and plddt <= 100')
         self.assertEqual(params, (0, 100))
         self.assertTrue(sql)
@@ -523,6 +524,26 @@ class BrushShapeTest(SetFilterTestCase):
                      'e.starred = 1',
                      'plddt >= 80 AND plddt <= 92 ORDER BY plddt'):
             self.assertRaises(SetFilterError, compile, expr, COLUMNS)
+
+    def testAnExactlyPrintedBoundIsReadBackExactly(self):
+        # #418 review, blocker 3. "Filter to selection" composes from the SELECTED
+        # points' own min and max, so the bound is a measured value, and a bound
+        # printed to six significant figures excludes the row that defined it. Swift
+        # prints `Double.description`, the shortest round-tripping form; Python's
+        # repr is the same algorithm, so these are the literals the drawer emits.
+        for value in (40.10274153313269, 40.24152259971877, 1.0 / 3.0,
+                      1e-05, 1e+16, 3.141592653589793):
+            text = repr(value)
+            sql, params = self.compile('plddt >= %s' % text)
+            self.assertEqual(sql, 'm."plddt" >= ?')
+            self.assertEqual(params, (value,),
+                             '%s must bind as itself, not as a rounded neighbour' % text)
+
+    def testExponentSpellingsTheDrawerEmitsAreLegal(self):
+        # Swift's description prints these; the tokenizer has to read them.
+        for text, expected in (('1e-05', 1e-05), ('1e+16', 1e+16),
+                               ('-1.2345e-06', -1.2345e-06), ('5e-324', 5e-324)):
+            self.assertEqual(self.compile('plddt >= %s' % text)[1], (expected,), text)
 
     def testBooleanWordsAreTheOnlyConnectives(self):
         # Case-insensitive, because a user types what they like and the brush prints

@@ -485,7 +485,7 @@ final class SetsStoreTests: XCTestCase {
         let state = SetFilterState(payload: payload)
         XCTAssertTrue(state.isActive)
         XCTAssertTrue(state.applied)
-        XCTAssertEqual(state.countLabel(total: 3), "2 of 3 match")
+        XCTAssertEqual(state.countLabel(matched: 2, total: 3), "2 of 3 match")
     }
 
     func testAFilterPayloadCarriesTheGrammarsComplaint() throws {
@@ -499,7 +499,8 @@ final class SetsStoreTests: XCTestCase {
                        "the field quotes back the token the parser stopped on")
         XCTAssertNil(SetFilterState.token(in: "plddt >", at: 7),
                      "an end-of-input failure has no token to quote")
-        XCTAssertEqual(state.countLabel(total: 3), "3 entries")
+        XCTAssertEqual(state.countLabel(matched: 3, total: 3), "3 entries",
+                       "a rejected expression is not active, so it is a plain count")
     }
 
     func testMixedParamTypesDecodeInOrder() throws {
@@ -507,6 +508,65 @@ final class SetsStoreTests: XCTestCase {
         let payload = try JSONDecoder().decode(SetFilterPayload.self, from: Data(json.utf8))
         XCTAssertEqual(payload.params,
                        [.number(1), .number(2.5), .text("a"), .number(1), .null])
+    }
+
+    // MARK: - the review's blockers and recommendations (#418)
+
+    /// BLOCKER 1. The label reads the rows on screen, never the payload's numbers.
+    /// During a landing batch the expression does not change, so Python does not
+    /// re-compile and `matched`/`total` go stale while the table keeps re-filtering
+    /// locally — measured as "307 of 1000 match" over a table showing 507 of 1200.
+    func testTheCountLabelFollowsTheRowsNotTheStaleCompile() throws {
+        // The fragment is not run here, so it needs no quoting; the NUMBERS are the
+        // point.
+        let json = #"{"set":"s","expr":"plddt > 80","sql":"m.plddt > ?","params":[80],"n":307,"total":1000,"error":"","offset":-1,"applied":1}"#
+        let payload = try JSONDecoder().decode(SetFilterPayload.self, from: Data(json.utf8))
+        let state = SetFilterState(payload: payload)
+        XCTAssertEqual(state.matched, 307, "the payload keeps its numbers as a cross-check")
+        XCTAssertEqual(state.total, 1000)
+        XCTAssertEqual(state.countLabel(matched: 507, total: 1200), "507 of 1200 match",
+                       "the label is what the user reads and must agree with the table")
+        XCTAssertEqual(SetFilterState().countLabel(matched: 0, total: 1200),
+                       "1200 entries", "no filter: a plain count, not \"0 of 1200\"")
+    }
+
+    /// R1. A rejected expression was never applied, so the set is still filtered and
+    /// the table must not fall back to every row. It did, and it stayed there — there
+    /// is nothing for `_poll_filter` to re-emit for an expression that never landed.
+    func testARejectedExpressionKeepsTheRowsOnScreen() {
+        var state = SetFilterState()
+        state.setID = "ab12cd34"
+        state.fragment = "m.\"plddt\" > ?"
+        state.params = [.number(80)]
+        XCTAssertEqual(PyMOLEngine.filterMatchDecision(state, activeSetID: "ab12cd34"), .run)
+
+        state.error = "malformed number '80abc' at offset 8"
+        XCTAssertEqual(PyMOLEngine.filterMatchDecision(state, activeSetID: "ab12cd34"), .keep,
+                       "a typo must not un-filter a table the set is still filtering")
+
+        var cleared = SetFilterState()
+        cleared.setID = "ab12cd34"
+        XCTAssertEqual(PyMOLEngine.filterMatchDecision(cleared, activeSetID: "ab12cd34"), .all,
+                       "an empty fragment with no error IS no filter")
+        XCTAssertEqual(PyMOLEngine.filterMatchDecision(state, activeSetID: "other"), .all,
+                       "a filter belonging to another set filters nothing here")
+        XCTAssertEqual(PyMOLEngine.filterMatchDecision(state, activeSetID: nil), .all)
+    }
+
+    /// R4. The fragment and its params are one unit. `SetFilterPayload` decodes
+    /// leniently, so a corrupt channel could arrive with the right shape and the wrong
+    /// values; without this check it ran as a quietly different predicate.
+    func testAParamCountThatDoesNotFitTheFragmentIsRefused() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        let fragment = "(m.\"plddt\" >= ? AND m.\"plddt\" <= ?)"
+        XCTAssertEqual(store.matchingIDs(setID: "ab12cd34", fragment: fragment,
+                                         params: [.number(80), .number(92)]), ["e1", "e2"])
+        XCTAssertNil(store.matchingIDs(setID: "ab12cd34", fragment: fragment,
+                                       params: [.number(80)]),
+                     "too few params is a corrupt payload, not a filter")
+        XCTAssertNil(store.matchingIDs(setID: "ab12cd34", fragment: fragment,
+                                       params: [.number(80), .number(92), .number(1)]),
+                     "too many, likewise")
     }
 
     // MARK: - saved views (#418)

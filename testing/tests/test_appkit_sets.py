@@ -596,7 +596,6 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertEqual(appkit_sets.recoverable(), [])
 
 
-
 def filter_markers(text):
     """How many `SETSFILTER:ready` lines the captured output holds."""
     return [line for line in text.splitlines()
@@ -849,6 +848,47 @@ class TestFilterChannel(FilterChannelTestCase):
             appkit_sets.poll()
         self.assertEqual(filter_markers(out.getvalue()), [],
                          'a set that is gone has no filter to report')
+
+
+class TestFilterEdges(FilterChannelTestCase):
+    """The two ends of the channel the #418 review probed with real containers."""
+
+    def test_an_exact_bound_keeps_the_entry_that_defined_it(self):
+        # Blocker 3, end to end: the drawer composes "Filter to selection" from the
+        # selected points' own min and max. Printed exactly, the bound keeps the row;
+        # printed to six significant figures, it loses it -- and the rows it loses are
+        # the extremes, which is what a triage user is hunting.
+        cmd.set_create('s')
+        c = store.active()
+        sid = c.get_set('s')['id']
+        specs = mschema.specs(TOOL)
+        values = [40.10274153313269, 40.13901288888891, 40.17,
+                  40.20419283746519, 40.24152259971877]
+        for i, v in enumerate(values):
+            c.add_entry(sid, 'd_%d' % i, scalars={'score': v}, specs=specs)
+        exact = 'score >= %r and score <= %r' % (min(values), max(values))
+        self.assertEqual(appkit_sets.preview_filter('s', exact)['n'], len(values),
+                         'an exactly printed bound includes the row that set it')
+        lossy = 'score >= %.6g and score <= %.6g' % (min(values), max(values))
+        self.assertLess(appkit_sets.preview_filter('s', lossy)['n'], len(values),
+                        'six significant figures is what the bug was')
+
+    def test_a_debounced_call_after_a_set_delete_is_not_a_traceback(self):
+        # The filter bar's preview and apply fire up to 600 ms after the keystroke; a
+        # set_delete in between left them naming a set that no longer exists, and the
+        # user saw a SetNotFound traceback in the console for something they did not do.
+        self.populated(2)
+        appkit_sets.open_set('s')
+        cmd.set_delete('s')
+        with captured() as out:
+            self.assertIsNone(appkit_sets.preview_filter('s', 'score > 1'))
+            self.assertIsNone(appkit_sets.apply_filter('s', 'score > 1'))
+        self.assertEqual(filter_markers(out.getvalue()), [],
+                         'a set that is gone has nothing to report')
+        # The command surface an agent scripts against is unchanged.
+        from pymol.sets.errors import SetNotFound
+        with self.assertRaises(SetNotFound):
+            cmd.set_filter('s', 'score > 1')
 
 
 class TestViewportSelection(FilterChannelTestCase):

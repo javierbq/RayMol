@@ -94,6 +94,20 @@ struct SetPlotModel: Equatable {
     let selection: Set<String>
     /// The entry in the peek object, drawn large (spec §4.3).
     let peekedID: String?
+    /// Axis ranges imposed by the view, overriding the computed ones (#418 review R2).
+    ///
+    /// The Plot tab passes the WHOLE SET's histogram domain, which is the range the
+    /// strip under the x axis was binned over. Without it the two disagreed in the
+    /// same pixel span — the scatter over the filtered rows with 5% padding, the strip
+    /// over every row unpadded — so for any column with no declared `lo`/`hi` (which
+    /// is most of a binder campaign's: `interface_min_distance`,
+    /// `hotspot_min_distance`, `contacts_under_8a`) dragging under a cluster brushed a
+    /// different range than the cluster. Taking the strip's domain rather than giving
+    /// it the scatter's also keeps the axis STILL while a drag previews: a domain
+    /// computed from the filtered rows shrinks as the preview narrows them, and the
+    /// same pointer position then means a different value from one event to the next.
+    var xDomainOverride: ClosedRange<Double>? = nil
+    var yDomainOverride: ClosedRange<Double>? = nil
 
     init(rows: [SetRow], xColumn: MetricColumn?, yColumn: MetricColumn?,
          color: SetPlotColor = .none, size: CGSize = CGSize(width: 100, height: 100),
@@ -138,11 +152,13 @@ struct SetPlotModel: Equatable {
     }
 
     var xDomain: ClosedRange<Double> {
-        Self.domain(values: values(of: xColumn), lo: xColumn?.lo, hi: xColumn?.hi)
+        xDomainOverride ?? Self.domain(values: values(of: xColumn),
+                                       lo: xColumn?.lo, hi: xColumn?.hi)
     }
 
     var yDomain: ClosedRange<Double> {
-        Self.domain(values: values(of: yColumn), lo: yColumn?.lo, hi: yColumn?.hi)
+        yDomainOverride ?? Self.domain(values: values(of: yColumn),
+                                       lo: yColumn?.lo, hi: yColumn?.hi)
     }
 
     private func values(of column: MetricColumn?) -> [Double] {
@@ -355,6 +371,10 @@ struct SetPlotView: View {
                                  selection: engine.setSelection,
                                  peekedID: engine.peekedEntryID)
         if case .metric(let name) = colorChoice { model.colorColumn = column(name) }
+        // The same range the axis strip is binned over, so the strip and the points
+        // above it cannot disagree about where a value sits (#418 review R2).
+        model.xDomainOverride = engine.setHistograms[xKey]?.domain
+        model.yDomainOverride = engine.setHistograms[yKey]?.domain
         return model
     }
 

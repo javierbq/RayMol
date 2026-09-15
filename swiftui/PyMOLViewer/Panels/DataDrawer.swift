@@ -344,17 +344,35 @@ struct SetBrush: Equatable, Identifiable, Hashable {
         return "\(column) >= \(Self.literal(lo)) and \(column) <= \(Self.literal(hi))"
     }
 
-    /// A number the filter tokenizer reads back as the same number. Integral values
-    /// print without a decimal point (the grammar binds those as INTEGER, which is
-    /// what an `int` column wants); everything else at six significant figures, which
-    /// keeps `1.2345e-05` a legal literal rather than a rounded-to-zero one.
+    /// A number the filter tokenizer reads back as EXACTLY the same number.
+    ///
+    /// This used to print `%.6g`, and six significant figures is lossy for essentially
+    /// every measured float. A pixel-derived drag does not care — its bounds are
+    /// arbitrary — but "Filter to selection" composes from the selected points' own
+    /// min and max, and rounding `lo` up or `hi` down excludes the very row that
+    /// defined it: five points spanning 40.10274153313269…40.24152259971877 filtered
+    /// to four, and the one that set the maximum was the one that vanished. With two
+    /// axes there are four such boundaries, and the extremes are exactly what a triage
+    /// user is hunting.
+    ///
+    /// Integral values print as integers — exact, and the grammar binds them as
+    /// INTEGER, which is what an `int` column wants. Everything else uses Swift's
+    /// `description`, the shortest form that round-trips, whose exponent spellings
+    /// (`1e-05`, `1e+16`) the grammar's number reader accepts.
     static func literal(_ v: Double) -> String {
+        if v == v.rounded(), abs(v) < 1e15 { return String(Int64(v)) }
+        return "\(v)"
+    }
+
+    /// "80 – 92", for the chip that shows what is brushed. SIX significant figures, on
+    /// purpose: this is read by a human, where `40.10274153313269` is noise. The
+    /// clause it stands for is exact.
+    static func displayLiteral(_ v: Double) -> String {
         if v == v.rounded(), abs(v) < 1e15 { return String(Int64(v)) }
         return String(format: "%.6g", v)
     }
 
-    /// "80 – 92", for the chip that shows what is brushed.
-    var rangeLabel: String { "\(Self.literal(lo)) – \(Self.literal(hi))" }
+    var rangeLabel: String { "\(Self.displayLiteral(lo)) – \(Self.displayLiteral(hi))" }
 }
 
 /// The one expression the drawer sends: what the user typed, ANDed with every brush.
@@ -1099,24 +1117,48 @@ struct SetFilterBar: View {
     /// an error replaces it, because a count next to a rejected expression would be a
     /// count of the PREVIOUS filter and would read as if the new one had worked.
     @ViewBuilder private var status: some View {
-        if !engine.setFilter.error.isEmpty {
-            HStack(spacing: 4) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
-                Text(errorText)
-                    .font(.system(size: 10))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+        HStack(spacing: 6) {
+            // The viewport pointed at a row the filter is hiding (#418 review R3).
+            // Doing nothing and saying nothing was the previous behaviour.
+            if let hidden = engine.viewportSelectionHidden.first {
+                Button("Show \(hidden.name)") {
+                    engine.setFilterText = ""
+                    engine.setBrushes = []
+                    applyNow()
+                }
+                .controlSize(.mini)
+                .font(.system(size: 9))
+                .help("\(hidden.name) is the entry of the object you clicked, and the "
+                      + "active filter excludes it. This clears the filter.")
             }
-            .foregroundColor(PanelTheme.atomTranspColor)
-            .help(engine.setFilter.error)
-        } else {
-            Text(engine.setFilter.countLabel(total: engine.setRows.count))
-                .font(.system(size: 10).monospacedDigit())
-                .foregroundColor(engine.setFilter.isActive ? PanelTheme.textColor
-                                                           : PanelTheme.disabledColor)
-                .help(engine.setFilter.isActive
-                      ? "Entries matching the active filter, out of the whole set"
-                      : "No filter; every entry is shown")
+            if !engine.setFilter.error.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+                    Text(errorText)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundColor(PanelTheme.atomTranspColor)
+                // The table has NOT changed — a rejected expression was never applied,
+                // so what is on screen is still the set's filter. Saying so is the
+                // other half of keeping the rows (see filterMatchDecision).
+                .help(engine.setFilter.error + "\n\nThe table still shows the set's "
+                      + "filter; nothing was applied.")
+            } else {
+                // Both numbers from the rows on screen, never from the payload: during
+                // a landing batch the expression does not change, so Python does not
+                // re-compile and its count goes stale while the table keeps
+                // re-filtering locally.
+                Text(engine.setFilter.countLabel(matched: engine.filteredSetRows.count,
+                                                 total: engine.setRows.count))
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundColor(engine.setFilter.isActive ? PanelTheme.textColor
+                                                               : PanelTheme.disabledColor)
+                    .help(engine.setFilter.isActive
+                          ? "Entries matching the active filter, out of the whole set"
+                          : "No filter; every entry is shown")
+            }
         }
     }
 
@@ -1138,12 +1180,17 @@ struct SetFilterBar: View {
         set.columns.first { $0.column == name }?.title ?? name
     }
 
+    /// Both work items read the engine at FIRE time rather than capturing what was
+    /// composed at this keystroke. A brush that changes in between — a header drag,
+    /// "Filter to selection", a chip's × — goes through the engine, where these
+    /// `@State` items cannot see it and cannot be cancelled by it; a captured
+    /// expression therefore either dropped the brush while its chip was still on
+    /// screen or resurrected one the user had just removed.
     private func schedule() {
         previewWork?.cancel()
         applyWork?.cancel()
-        let expression = composed.expression
-        let preview = DispatchWorkItem { engine.previewSetFilter(set, expression) }
-        let apply = DispatchWorkItem { engine.applySetFilter(set, expression) }
+        let preview = DispatchWorkItem { engine.previewCurrentFilter(set) }
+        let apply = DispatchWorkItem { engine.applyCurrentFilter(set) }
         previewWork = preview
         applyWork = apply
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: preview)
@@ -1153,7 +1200,7 @@ struct SetFilterBar: View {
     private func applyNow() {
         previewWork?.cancel()
         applyWork?.cancel()
-        engine.applySetFilter(set, composed.expression)
+        engine.applyCurrentFilter(set)
     }
 }
 
@@ -1272,6 +1319,13 @@ struct SetHistogramBrushView: View {
 
     private var helpText: String {
         guard let column else { return "" }
+        // A column whose values are all the same has a zero-width domain, so a drag
+        // has no range to mean and does nothing. Saying that is better than a strip
+        // that looks draggable and is not.
+        guard let domain, domain.upperBound > domain.lowerBound else {
+            return "\(column.title) has one value across this set, so there is no range"
+                + " to brush"
+        }
         var text = "Drag to filter \(column.title) to a range; click to clear it"
         if let brush, let clause = brush.clause { text += " — now: \(clause)" }
         return text

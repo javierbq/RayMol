@@ -357,8 +357,8 @@ def emit_filter(name, _self=cmd):
     the file, and half a second of showing rows the active filter excludes is half a
     second of the wrong table.
     """
-    return _emit_filter(filter_payload(_set_row(name), _set_row(name).get('filter') or '',
-                                       applied=1))
+    row = _set_row(name)
+    return _emit_filter(filter_payload(row, row.get('filter') or '', applied=1))
 
 
 def close_set(_self=cmd):
@@ -518,13 +518,31 @@ def _emit_filter(payload, key=None):
     return payload
 
 
+def _drawer_set_row(name):
+    """`_set_row`, but None when the set is gone rather than SetNotFound.
+
+    Only for the two debounced calls below. The filter bar's preview and apply fire up
+    to 600 ms after the keystroke, and a `set_delete` (or a `load`) in between leaves
+    them naming a set that no longer exists -- which surfaced as a traceback in the
+    console for something the user did not do. The drawer has already moved on by then;
+    there is nothing to report and nothing to emit. `cmd.set_filter` still raises, so
+    the MCP surface an agent scripts against is unchanged."""
+    from pymol.sets.errors import SetNotFound
+    try:
+        return _set_row(name)
+    except SetNotFound:
+        return None
+
+
 def preview_filter(name, expr='', _self=cmd):
     """Compile an expression WITHOUT applying it: what the filter bar asks on every
     keystroke and what a histogram brush asks on every drag step. The set keeps
     whatever filter it had, so a half-typed expression never becomes the one
     `set_export` or `predict set:x@filtered` would use, and a drag does not write to
     the container (and bump its version, and re-read every row) once per pixel."""
-    row = _set_row(name)
+    row = _drawer_set_row(name)
+    if row is None:
+        return None
     return _emit_filter(filter_payload(row, expr, applied=0),
                         key=(row['id'], row.get('filter') or ''))
 
@@ -537,7 +555,9 @@ def apply_filter(name, expr='', _self=cmd):
     before it writes, so a bad expression has already changed nothing.
     """
     from pymol.sets.errors import SetFilterError
-    row = _set_row(name)
+    row = _drawer_set_row(name)
+    if row is None:
+        return None
     expr = str(expr or '')
     try:
         _self.set_filter(row['name'], expr, quiet=1)
@@ -600,11 +620,14 @@ def _poll_filter():
 # sets.binding when the entry was staged. Nothing here invents a second mapping.
 #
 # It rides the SETS: marker rather than a poll of its own, and it is computed only while
-# a set is open AND that set has staged entries -- which the budget keeps in the single
-# digits. The cost is one `get_object_list` over the active selection plus one indexed
-# read of at most `budget` rows; both are O(staged), not O(entries), which is the rule
-# #421 states. The field is omitted entirely when nothing is selected, so an idle marker
-# is byte-for-byte what it was before this ticket.
+# a set is open and something is selected. The cost is one `get_object_list` over the
+# active selection plus one read of the staged entries. That read RETURNS at most
+# `budget` rows -- a single digit by default -- but it is a partial-index scan over the
+# set, so it is not free in the entry count: measured 0.117 / 0.097 / 0.551 ms at 100 /
+# 1000 / 8000 entries, against a 500 ms tick. Well inside the budget #421 sets, and
+# bounded by the partial index on `staged_object`; it is not O(1), and an earlier
+# version of this comment claimed it was. The field is omitted entirely when nothing is
+# selected, so an idle marker is byte-for-byte what it was before this ticket.
 
 #: At most this many entry ids ride the marker. The stage budget is a single digit by
 #: default, so this is already generous; a scene someone raised the budget on reports

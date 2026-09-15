@@ -352,9 +352,17 @@ struct SetFilterState: Equatable {
     var isActive: Bool { !fragment.isEmpty && error.isEmpty }
 
     /// "212 of 1024 match" — spec §4.2.
-    func countLabel(total totalRows: Int) -> String {
+    ///
+    /// Both numbers come from the ROWS THE DRAWER IS SHOWING, not from `matched` /
+    /// `total`, which are Python's answer at the moment the expression was compiled.
+    /// During a landing batch the expression does not change, so nothing re-compiles
+    /// and that answer goes stale while the table keeps re-filtering locally — the
+    /// label said "307 of 1000 match" over a table showing 507 of 1200. The payload's
+    /// numbers stay as the cross-check the tests make; the label is what the user
+    /// reads, and it has to agree with what is under it.
+    func countLabel(matched matchedRows: Int, total totalRows: Int) -> String {
         guard isActive else { return "\(totalRows) entries" }
-        return "\(matched) of \(total) match"
+        return "\(matchedRows) of \(totalRows) match"
     }
 
     /// The token at `offset`, so an error can quote back the thing it tripped on.
@@ -711,6 +719,13 @@ final class SetsStore {
             return nil
         }
         defer { sqlite3_finalize(stmt) }
+        // The fragment and its params are one unit. `SetFilterPayload` decodes
+        // leniently — anything it does not recognise becomes `.null` — so a truncated
+        // or corrupt channel could otherwise arrive as the right SHAPE with the wrong
+        // values and run as a quietly different predicate. This function is careful to
+        // return nil rather than an empty result everywhere else; here is the one
+        // place that was taking the payload's word for it.
+        guard sqlite3_bind_parameter_count(stmt) == Int32(bind.count) else { return nil }
         for (i, value) in bind.enumerated() {
             let index = Int32(i + 1)
             switch value {
@@ -1166,24 +1181,90 @@ extension PyMOLEngine {
         if Thread.isMainThread { publish() } else { DispatchQueue.main.async(execute: publish) }
     }
 
+    /// What the drawer should do with its match set, given the filter's state.
+    ///
+    /// Pure, and separate from the query, because the interesting case is the one with
+    /// no query in it: a REJECTED expression must leave the last good match set alone.
+    /// Falling back to "every row" there was a lie the drawer told and then kept —
+    /// `_poll_filter` has nothing to re-emit for an expression that was never applied,
+    /// so the table sat at 1000 rows while the set admitted 307, and Send to ▾ on an
+    /// empty selection acted on the 307 the user could not see.
+    enum FilterMatchDecision: Equatable {
+        /// No filter: every row shows.
+        case all
+        /// Keep whatever is on screen — the set's filter has not moved.
+        case keep
+        /// Run the fragment.
+        case run
+    }
+
+    static func filterMatchDecision(_ state: SetFilterState, activeSetID: String?)
+        -> FilterMatchDecision {
+        guard let activeSetID, state.setID == activeSetID else { return .all }
+        if !state.error.isEmpty { return .keep }
+        return state.fragment.isEmpty ? .all : .run
+    }
+
     /// Run the compiled fragment over this set's rows. Cheap and local — one indexed
     /// query over a file already open — which is what lets the table re-filter when
     /// entries land rather than asking Python again per delivery.
     func refreshFilterMatches() {
-        guard let setID = activeSetID, setFilter.setID == setID,
-              setFilter.error.isEmpty, !setFilter.fragment.isEmpty else {
+        switch Self.filterMatchDecision(setFilter, activeSetID: activeSetID) {
+        case .all:
             if setFilterMatches != nil { setFilterMatches = nil }
-            return
+        case .keep:
+            break
+        case .run:
+            guard let setID = activeSetID else { return }
+            let matches = setsStore?.matchingIDs(setID: setID, fragment: setFilter.fragment,
+                                                 params: setFilter.params)
+            guard let matches else {
+                // Could not even prepare it. Keep what is on screen and say so; an
+                // empty table would read as "your filter excluded everything".
+                setFilter.error = "This build could not apply the compiled filter, so"
+                    + " the table is unchanged. The set_* commands still use it."
+                return
+            }
+            if setFilterMatches != matches { setFilterMatches = matches }
         }
-        let matches = setsStore?.matchingIDs(setID: setID, fragment: setFilter.fragment,
-                                             params: setFilter.params)
-        if matches == nil {
-            // Could not even prepare it. Show every row and say so, rather than an
-            // empty table that reads as "your filter excluded everything".
-            setFilter.error = "This build could not apply the compiled filter; every"
-                + " entry is shown. The set_* commands still use it."
+    }
+
+    /// The expression the drawer would send RIGHT NOW: what is typed, joined with the
+    /// brushes that exist at this instant.
+    ///
+    /// A seam, and the reason it exists is a bug. The filter bar's debounced work items
+    /// used to capture the expression at keystroke time, and a brush changed between
+    /// the keystroke and the fire — a header drag, "Filter to selection", or a chip's ×
+    /// — went through the engine, where the bar's `@State` work items could not see it
+    /// and could not be cancelled. Either the brush was dropped while its chip was
+    /// still on screen (so `set_export` and Send to ▾ acted on a weaker filter than the
+    /// UI claimed) or a dropped clause was resurrected (so rows were hidden by a
+    /// predicate nothing on screen mentioned). Reading the state at FIRE time cannot
+    /// go stale, which is why nothing else may compose it.
+    var currentFilterExpression: String {
+        SetFilterComposer.compose(text: setFilterText, brushes: setBrushes).expression
+    }
+
+    func previewCurrentFilter(_ set: SetEntry) {
+        previewSetFilter(set, currentFilterExpression)
+    }
+
+    func applyCurrentFilter(_ set: SetEntry) {
+        applySetFilter(set, currentFilterExpression)
+    }
+
+    /// Entries the viewport selection points at that the active filter is hiding.
+    ///
+    /// Clicking a staged object whose row is filtered out did nothing at all, with no
+    /// account of why (#418 review R3). Named here so the filter bar can say it, and
+    /// offer the way out.
+    var viewportSelectionHidden: [SetRow] {
+        guard !setViewportSelection.isEmpty, setFilterMatches != nil else { return [] }
+        let shown = Set(filteredSetRows.map(\.id))
+        return setViewportSelection.compactMap { id in
+            guard !shown.contains(id) else { return nil }
+            return setRows.first { $0.id == id }
         }
-        if setFilterMatches != matches { setFilterMatches = matches }
     }
 
     /// The rows the drawer shows: the active set's entries under the active filter.
@@ -1311,7 +1392,11 @@ enum SetSendTarget: Equatable {
     var selector: String {
         switch self {
         case .selection(let names):
-            let usable = names.filter { !$0.isEmpty && !$0.contains("+") }
+            // `+` joins names and `@` is what `predicting.parse_set_input` partitions
+            // `set:<name>@<selector>` on, so a name carrying either cannot be written
+            // as a selector. The store's own rules refuse both in an entry name today;
+            // this is the composer refusing to build a selector it cannot mean.
+            let usable = names.filter { !$0.isEmpty && !$0.contains("+") && !$0.contains("@") }
             return usable.isEmpty ? "filtered" : usable.joined(separator: "+")
         case .filtered:
             return "filtered"

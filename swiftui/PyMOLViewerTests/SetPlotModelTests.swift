@@ -268,13 +268,49 @@ final class SetPlotModelTests: XCTestCase {
         XCTAssertNil(SetBrush(column: "", lo: 0, hi: 1).clause)
     }
 
-    func testNumbersPrintAsLiteralsTheGrammarReadsBack() {
-        XCTAssertEqual(SetBrush.literal(80), "80")
+    func testNumbersPrintAsLiteralsTheGrammarReadsBackEXACTLY() {
+        XCTAssertEqual(SetBrush.literal(80), "80", "integral: exact, and binds as INTEGER")
         XCTAssertEqual(SetBrush.literal(-12), "-12")
         XCTAssertEqual(SetBrush.literal(0.5), "0.5")
-        XCTAssertEqual(SetBrush.literal(1.0 / 3.0), "0.333333")
-        // Not "0" — a tiny bound rounded to zero is a different filter.
-        XCTAssertEqual(SetBrush.literal(0.0000012345), "1.2345e-06")
+        // The bug this replaced: `%.6g` printed 40.10274153313269 as "40.1027", and a
+        // `>=` on the rounded-UP end excluded the very row that defined it. Every
+        // bound "Filter to selection" composes is a measured value, so this was the
+        // common case, and the rows it lost were the extremes a triage user is after.
+        for value in [40.10274153313269, 40.24152259971877, 1.0 / 3.0, -0.0000012345,
+                      1e-5, 1e16, 9.87654321098765e-4, Double.pi] {
+            let text = SetBrush.literal(value)
+            XCTAssertEqual(Double(text), value,
+                           "\(value) must read back as itself, printed as \(text)")
+        }
+    }
+
+    func testTheClauseCarriesTheExactBoundAndTheChipRoundsIt() {
+        let brush = SetBrush(column: "plddt", lo: 40.10274153313269, hi: 40.24152259971877)
+        XCTAssertEqual(brush.clause,
+                       "plddt >= 40.10274153313269 and plddt <= 40.24152259971877")
+        // The human-facing label may round; the predicate may not.
+        XCTAssertEqual(brush.rangeLabel, "40.1027 – 40.2415")
+    }
+
+    func testFilterToSelectionKeepsThePointsThatDefinedItsEdges() {
+        // Five points whose plddt carries more than six significant figures — which is
+        // to say, five measured points. The brushes composed from their own min and
+        // max have to include all five.
+        let values = [40.10274153313269, 40.13901288888891, 40.17,
+                      40.20419283746519, 40.24152259971877]
+        let rows = values.enumerated().map { i, v in
+            row("p\(i)", ord: i, plddt: v, rmsd: Double(i) / 10)
+        }
+        let lo = values.min()!, hi = values.max()!
+        let brush = SetBrush(column: "plddt", lo: lo, hi: hi)
+        let bound = brush.clause!.split(separator: " ")
+        let low = Double(bound[2])!, high = Double(bound[6])!
+        let kept = rows.filter { row in
+            guard let v = row.values["plddt"]?.number else { return false }
+            return v >= low && v <= high
+        }
+        XCTAssertEqual(kept.count, 5,
+                       "a bound printed lossily drops the row that defined it")
     }
 
     // MARK: composing the one expression
@@ -337,6 +373,30 @@ final class SetPlotModelTests: XCTestCase {
 
     // MARK: the axis strip
 
+    func testAnImposedDomainWinsOverTheComputedOne() {
+        // R2: the Plot tab hands the model the range its x strip was BINNED over, so
+        // the bars and the points above them cannot disagree — and so the axis holds
+        // still while a drag previews, instead of shrinking with the filtered rows.
+        var m = model()
+        XCTAssertEqual(m.xDomain, 0...100, "the declared domain, with no override")
+        m.xDomainOverride = 20...60
+        m.yDomainOverride = 1...3
+        XCTAssertEqual(m.xDomain, 20...60)
+        XCTAssertEqual(m.yDomain, 1...3)
+        // And the points move with it: plddt 50 is now dead centre of 20…60.
+        let centre = m.points.first { $0.name == "c" }
+        XCTAssertEqual(centre?.position.x ?? -1, 75, accuracy: 1e-9)
+    }
+
+    func testAnOverriddenDomainStillClampsTheOutliers() {
+        var m = model()
+        m.xDomainOverride = 20...60
+        // plddt 0 and 100 are outside it; they belong on the frame, not off-screen.
+        let xs = m.points.map(\.position.x).sorted()
+        XCTAssertEqual(xs.first, 0)
+        XCTAssertEqual(xs.last, 100)
+    }
+
     func testTicksSpanTheDomain() {
         let ticks = SetPlotModel.ticks(0...100, count: 5)
         XCTAssertEqual(ticks, [0, 25, 50, 75, 100])
@@ -358,5 +418,140 @@ final class SetPlotModelTests: XCTestCase {
         XCTAssertEqual(SetSendTarget.selection([]).selector, "filtered")
         XCTAssertEqual(SetSendTarget.selection(["a+b"]).selector, "filtered",
                        "a name the selector language cannot express is not sent as one")
+    }
+}
+
+/// The two drawer behaviours that are about TIMING and about what the UI claims, not
+/// about geometry (#418 review, blockers 1-2 and R3). Driven through
+/// `PyMOLEngine.shared` and its `pythonTap`, the way DesignModeStateTests drives the
+/// engine: nothing here needs a running core, only the published state and the
+/// expression the verbs would send.
+final class SetFilterTimingTests: XCTestCase {
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+
+    private let plddt = MetricColumn(key: "plddt", dtype: "float", label: "pLDDT",
+                                     lo: 0, hi: 100, higherIsBetter: true, column: "plddt")
+    private let rmsd = MetricColumn(key: "rmsd", dtype: "float", lo: 0, hi: 10,
+                                    higherIsBetter: false, column: "rmsd")
+
+    private var set: SetEntry {
+        SetEntry(id: "ab12cd34", name: "rfd3_a1", kind: "structures", tool: "rfd3",
+                 count: 3, stagedCount: 1, budget: 6, groupName: "rfd3_a1",
+                 reference: "", rankingKey: "plddt", sortKey: "plddt",
+                 sortDescending: true, filter: "", columns: [plddt, rmsd],
+                 histogram: [])
+    }
+
+    private func row(_ name: String, ord: Int, staged: Bool = false) -> SetRow {
+        SetRow(id: "id_\(name)", name: name, ord: ord, starred: false, rejected: false,
+               pinned: false, stagedObject: staged ? name : nil, nChains: 1,
+               nResidues: 70, tags: "", runID: nil,
+               values: ["plddt": .number(90), "rmsd": .number(1)])
+    }
+
+    override func setUp() {
+        super.setUp()
+        engine.pythonTap = nil      // first: the reset below emits Python
+        engine.resetSetUIState()
+        engine.setRows = []
+        engine.activeSetID = nil
+    }
+
+    override func tearDown() {
+        engine.pythonTap = nil
+        engine.resetSetUIState()
+        engine.setRows = []
+        engine.activeSetID = nil
+        super.tearDown()
+    }
+
+    /// BLOCKER 2. The filter bar's debounced work items must read the engine at FIRE
+    /// time. They used to capture the expression composed at the keystroke, and a
+    /// brush landing in between — a header drag, "Filter to selection", a chip's ×,
+    /// all of which go through the engine where the bar's `@State` items cannot see
+    /// them — was silently dropped from what `set_filter` received while its chip was
+    /// still on screen. `set_export` and Send to ▾ then acted on a weaker filter than
+    /// the UI claimed.
+    func testADebouncedApplySeesABrushThatLandedAfterTheKeystroke() {
+        var sent: [String] = []
+        engine.setFilterText = "plddt > 80"
+        // Exactly what SetFilterBar.schedule() builds.
+        let work = DispatchWorkItem { [engine] in engine.applyCurrentFilter(self.set) }
+        engine.pythonTap = { sent.append($0) }
+
+        // ... and the brush arrives before the 600 ms is up.
+        engine.setBrushes = [SetBrush(column: "rmsd", lo: 0, hi: 2)]
+        work.perform()
+
+        let last = sent.last ?? ""
+        XCTAssertTrue(last.contains("(plddt > 80) and (rmsd >= 0 and rmsd <= 2)"),
+                      "the apply must carry the brush that was on screen when it fired, "
+                      + "not the expression composed one keystroke earlier: \(last)")
+    }
+
+    /// The same in the other direction: a chip's × before the fire must not be undone
+    /// by an apply that still remembers the clause.
+    func testADebouncedApplyDoesNotResurrectADroppedBrush() {
+        var sent: [String] = []
+        engine.setFilterText = "plddt > 80"
+        engine.setBrushes = [SetBrush(column: "rmsd", lo: 0, hi: 2)]
+        let work = DispatchWorkItem { [engine] in engine.applyCurrentFilter(self.set) }
+        engine.pythonTap = { sent.append($0) }
+
+        engine.setBrushes = []          // the × is clicked
+        work.perform()
+
+        let last = sent.last ?? ""
+        XCTAssertFalse(last.contains("rmsd"),
+                       "rows must not be hidden by a predicate nothing on screen "
+                       + "mentions: \(last)")
+        XCTAssertTrue(last.contains("plddt > 80"), last)
+    }
+
+    func testTheComposedExpressionIsWhatTheVerbsSend() {
+        engine.setFilterText = "not rejected"
+        engine.setBrushes = [SetBrush(column: "plddt", lo: 80, hi: 92)]
+        XCTAssertEqual(engine.currentFilterExpression,
+                       "(not rejected) and (plddt >= 80 and plddt <= 92)")
+        engine.setFilterText = ""
+        engine.setBrushes = []
+        XCTAssertEqual(engine.currentFilterExpression, "")
+    }
+
+    /// R3. Clicking a staged object whose row the filter hides did nothing and said
+    /// nothing. The drawer now names the entry and offers to clear the filter.
+    func testAViewportClickOnAFilteredOutRowIsNamed() {
+        engine.activeSetID = "ab12cd34"
+        engine.setRows = [row("d_0001", ord: 1), row("d_0002", ord: 2, staged: true)]
+        engine.setFilterMatches = ["id_d_0001"]          // d_0002 is filtered out
+        engine.setViewportSelection = ["id_d_0002"]
+        XCTAssertEqual(engine.viewportSelectionHidden.map(\.name), ["d_0002"])
+
+        // Visible again: nothing to say.
+        engine.setFilterMatches = ["id_d_0001", "id_d_0002"]
+        XCTAssertTrue(engine.viewportSelectionHidden.isEmpty)
+        // No filter at all: likewise, and without walking the rows.
+        engine.setFilterMatches = nil
+        XCTAssertTrue(engine.viewportSelectionHidden.isEmpty)
+    }
+
+    /// BLOCKER 1, end to end over the published state: the label counts the rows the
+    /// drawer is showing.
+    func testTheLabelCountsTheRowsTheDrawerShows() {
+        engine.activeSetID = "ab12cd34"
+        engine.setRows = (1...5).map { row("d_000\($0)", ord: $0) }
+        engine.setFilterMatches = ["id_d_0001", "id_d_0002"]
+        var state = SetFilterState()
+        state.setID = "ab12cd34"
+        state.fragment = "m.plddt > ?"
+        state.params = [.number(80)]
+        state.matched = 99                    // a stale compile, from before the batch
+        state.total = 99
+        engine.setFilter = state
+        XCTAssertEqual(engine.filteredSetRows.count, 2)
+        XCTAssertEqual(engine.setFilter.countLabel(matched: engine.filteredSetRows.count,
+                                                   total: engine.setRows.count),
+                       "2 of 5 match")
     }
 }

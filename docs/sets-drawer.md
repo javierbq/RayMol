@@ -138,8 +138,11 @@ Rows, points and the scene are one selection:
 
 ## Send to ▾
 
-The footer's **Send to ▾** hands the current selection — or, with nothing selected, the
-active filter — to the next tool as an entry selector, and says which in the menu.
+The footer's **Send to ▾** hands entries to the next tool as an entry selector, and
+its menu header says which: the selected rows, or — with nothing selected — the row
+currently peeked, and only with neither the active filter. Hovering a row peeks it, so
+after browsing the target is usually that one row; the header is the thing to read
+before clicking.
 **Predict** lists the registered predictors and runs
 `predict <predictor>, set:<name>@<selector>`, which writes a child set whose entries
 point back at the ones they were folded from. **Export** writes CSV, FASTA or a folder
