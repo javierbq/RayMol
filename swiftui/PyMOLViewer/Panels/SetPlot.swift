@@ -295,19 +295,6 @@ struct SetPlotModel: Equatable {
         return best
     }
 
-    /// The bin counts for one axis, so the strip along it can double as a range filter
-    /// (spec §4.3). Over the rows the model was given, which are the filtered ones —
-    /// the strip shows what is on screen; the header histogram in the table shows the
-    /// whole set. Both are true statements about different things, and both are drawn
-    /// where the thing they describe is.
-    func axisHistogram(_ column: MetricColumn?, bins: Int = SetsStore.histogramBins) -> [Int] {
-        guard let name = column?.column else { return [] }
-        let values = rows.compactMap { $0.values[name]?.number }
-        let domain = Self.domain(values: values, lo: column?.lo, hi: column?.hi)
-        return SetTableModel.histogram(values: values, bins: bins,
-                                       lo: domain.lowerBound, hi: domain.upperBound)
-    }
-
     /// Five ticks across an axis, at round-ish numbers of the domain's own scale.
     static func ticks(_ domain: ClosedRange<Double>, count: Int = 5) -> [Double] {
         guard count > 1, domain.upperBound > domain.lowerBound else { return [] }
@@ -478,6 +465,12 @@ struct SetPlotView: View {
                 if point.isStaged {
                     context.stroke(Path(ellipseIn: box.insetBy(dx: -2.5, dy: -2.5)),
                                    with: .color(PanelTheme.accentColor), lineWidth: 1.5)
+                }
+                if point.isStarred {
+                    // The four the user picked out of a thousand have to be findable
+                    // in the cloud, not only in the table.
+                    context.stroke(Path(ellipseIn: box.insetBy(dx: -1.5, dy: -1.5)),
+                                   with: .color(PanelTheme.atomTranspColor), lineWidth: 1.5)
                 }
                 if selected {
                     context.stroke(Path(ellipseIn: box.insetBy(dx: -4, dy: -4)),

@@ -337,12 +337,6 @@ final class SetPlotModelTests: XCTestCase {
 
     // MARK: the axis strip
 
-    func testTheAxisHistogramBinsOverTheAxisItSitsUnder() {
-        let bins = model().axisHistogram(plddt, bins: 4)
-        XCTAssertEqual(bins.reduce(0, +), 3, "three placed values")
-        XCTAssertEqual(bins, [1, 0, 1, 1], "0, 50 and 100 over 0…100 in four bins")
-    }
-
     func testTicksSpanTheDomain() {
         let ticks = SetPlotModel.ticks(0...100, count: 5)
         XCTAssertEqual(ticks, [0, 25, 50, 75, 100])
