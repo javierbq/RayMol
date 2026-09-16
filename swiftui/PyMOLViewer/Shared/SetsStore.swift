@@ -1299,7 +1299,7 @@ extension PyMOLEngine {
                     }
                 }
                 // Entries arrived or left, so the band's bulk read is stale.
-                self.sequenceBandSetID = nil
+                self.consensusBandSetID = nil
             }
             if versionChanged {
                 // One counter the Lineage tab can watch: it holds a graph built over
@@ -1726,12 +1726,12 @@ extension PyMOLEngine {
     /// Load EVERY entry's sequences for the set the band is about to be computed over.
     ///
     /// Called once per set, when the tab collapses. Text only — no blob touches this
-    /// path, which `SequenceBandTests` asserts on `arrayBlobReads` — and idempotent
-    /// through `sequenceBandSetID`, because it is called from a view body's `onAppear`
+    /// path, which `ConsensusBandTests` asserts on `arrayBlobReads` — and idempotent
+    /// through `consensusBandSetID`, because it is called from a view body's `onAppear`
     /// and a re-render must not re-read the set.
-    func loadSequencesForBand(setID: String) {
-        guard sequenceBandSetID != setID, let store = setsStore else { return }
-        sequenceBandSetID = setID
+    func loadSequencesForConsensusBand(setID: String) {
+        guard consensusBandSetID != setID, let store = setsStore else { return }
+        consensusBandSetID = setID
         let sequences = store.sequencesOfSet(setID: setID)
         guard !sequences.isEmpty else { return }
         var next = sequenceDetails
@@ -1744,13 +1744,48 @@ extension PyMOLEngine {
         sequenceDetails = next
     }
 
-    /// Open the drawer on the Sequences tab — the View menu, the rail's Seq pill, and
-    /// `PYMOL_AUTOSEQ`. With no set open the tab is the strip (spec §8 decision 2), so
-    /// this is the Mac's "show me the sequence" in every state.
-    func showSequencesTab() {
-        dataDrawerTab = .sequences
+    /// Open the drawer with the scene band up — the View menu, the rail's Seq pill, and
+    /// `PYMOL_AUTOSEQ`. The Mac's "show me the sequence" in every state.
+    ///
+    /// It deliberately does NOT touch `dataDrawerTab` (#456). The band is above the tab
+    /// bar and draws whatever tab is selected, so asking for the scene sequences is no
+    /// longer a reason to take away the Table someone was triaging in — which is the
+    /// whole objection to #419's arrangement.
+    func showSequenceBand() {
+        // Whether ⌘2 is what opened the drawer, so that ⌘2 again can put it back the
+        // way it found it — and, crucially, can NOT close a drawer the user opened
+        // with ⌘4 (#456 review). Recorded before the flags move, or the answer is
+        // always "yes".
+        drawerOpenedByBand = !dataDrawerVisible
+        sequenceBandVisible = true
         dataDrawerVisible = true
         fetchSequences()
+    }
+
+    /// ⌘2 / the Seq pill / `View ▸ Hide Sequences`: stop showing the scene sequences.
+    ///
+    /// With a set open the drawer stays and the tab content takes the band's height.
+    /// With no set there is no tab content to give it back to, so what is left is the
+    /// "No set open" placeholder — which is the right thing to leave behind if the user
+    /// asked for the DRAWER (⌘4) and only turned the band off, and the wrong thing if
+    /// ⌘2 is what put the drawer there in the first place. `drawerOpenedByBand` is the
+    /// difference.
+    func hideSequenceBand() {
+        sequenceBandVisible = false
+        if PyMOLEngine.drawerClosesWithBand(hasSet: activeSet != nil,
+                                            openedByBand: drawerOpenedByBand) {
+            closeDataDrawer()
+        }
+        drawerOpenedByBand = false
+    }
+
+    /// True when the scene sequences are actually on screen: the band's flag AND a
+    /// drawer to draw it in. The state the ⌘2 menu item, the rail pill and #456's
+    /// migration all mean by "the sequence view is up".
+    var sequenceBandShowing: Bool { dataDrawerVisible && sequenceBandVisible }
+
+    func toggleSequenceBand() {
+        if sequenceBandShowing { hideSequenceBand() } else { showSequenceBand() }
     }
 
     // MARK: - The Lineage tab (#419)
@@ -1811,10 +1846,9 @@ extension PyMOLEngine {
         // `predict … @top:3` then the next round — so resetting it here yanked the
         // user off the Sequences tab once per child set, which is the same "a visible
         // pane must not vanish" rule the strip's migration exists to honour, broken at
-        // the other end. Every tab has something to show for any set (and Sequences
-        // has something to show for none), so there is no state to rescue them from.
-        // If a future tab ever does not, the test is `!tab.worksWithoutASet &&
-        // !tab.isAvailable`, which is nothing today.
+        // the other end. Every tab has something to show for any set, so there is no
+        // state to rescue them from. If a future tab ever does not, the test is
+        // `!tab.isAvailable`, which is nothing today.
         //
         // The lazily-loaded sequences and arrays belong to the entries of the set
         // being left. Keeping them would grow without bound over a session and, worse,
@@ -1822,7 +1856,7 @@ extension PyMOLEngine {
         sequenceDetails = [:]
         pendingSequenceDetails = []
         sequenceArrayOrder = []
-        sequenceBandSetID = nil
+        consensusBandSetID = nil
     }
 
     /// Set or clear one column's brush and push the composed expression.
@@ -1964,19 +1998,22 @@ enum DataDrawerTab: String, CaseIterable, Identifiable, Equatable {
     var id: String { rawValue }
     var isAvailable: Bool { true }
 
-    /// True for the one tab that means something with NO set open: the Sequences tab
-    /// with nothing loaded is the old sequence strip, which is where it now lives
-    /// (spec §8 decision 2). The others have nothing to draw and say so.
-    var worksWithoutASet: Bool { self == .sequences }
+    // There is deliberately no `worksWithoutASet` here any more (#456). It was true for
+    // Sequences, because the scene rows were the top half of that tab and those draw
+    // for any session. They are the drawer's BAND now — its own pane, above the tab
+    // bar, drawn on whatever tab — so the property moved with them and is
+    // `SequenceBandView.worksWithoutASet`. Every TAB is a view of a set, and what is
+    // left of Sequences (the set's entry rows) has exactly as much to show without one
+    // as the Table does: nothing.
 
     var help: String {
         switch self {
         case .table: return "Entries as rows; columns come from the set's metrics"
         case .plot: return "One scatter over the same filtered rows; brush to select"
         case .sequences:
-            return "Scene objects and the selected or filtered entries, with"
-                + " per-residue confidence under each. With no set open this is the"
-                + " sequence viewer."
+            return "The selected or filtered entries as sequences, with per-residue"
+                + " confidence under each. The SCENE sequences are the band above,"
+                + " which is on whatever tab you pick (⌘2)."
         case .lineage:
             return "Which backbone each sequence and fold came from; click a node to"
                 + " select it and its descendants in the Table"
@@ -1994,11 +2031,23 @@ extension PyMOLEngine {
     /// the same "a visible pane must not vanish" rule the strip's migration exists to
     /// honour, broken at the other end.
     ///
-    /// The only tab that would have to be rescued is one that can draw neither with a
-    /// set nor without one, which is nothing today — but the condition is written out
-    /// rather than assumed, so a half-built tab added later cannot strand the drawer.
+    /// The only tab that would have to be rescued is one this build cannot draw, which
+    /// is nothing today — but the condition is written out rather than assumed, so a
+    /// half-built tab added later cannot strand the drawer. (Before #456 the test also
+    /// admitted `worksWithoutASet`; the scene rows that made Sequences qualify are the
+    /// band now, and the band is not a tab.)
     static func tabAfterSetChange(_ current: DataDrawerTab) -> DataDrawerTab {
-        (current.isAvailable || current.worksWithoutASet) ? current : .table
+        current.isAvailable ? current : .table
+    }
+
+    /// Whether turning the band OFF should also close the drawer (#456 review).
+    ///
+    /// Only when the drawer has nothing else in it AND ⌘2 is what opened it. A drawer
+    /// the user opened with ⌘4 is theirs; ⌘2 turning a band off inside it must leave it
+    /// where they put it, even if what is left is the "No set open" copy. And with a
+    /// set open the drawer always stays — the band's height goes back to the tab.
+    static func drawerClosesWithBand(hasSet: Bool, openedByBand: Bool) -> Bool {
+        !hasSet && openedByBand
     }
 
     /// One histogram per scalar numeric column, over every row of the set — not the

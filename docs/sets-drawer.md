@@ -24,17 +24,46 @@ page is about the UI that sits on top of them (#417, #418, #419, tracking #421).
   the set's staged objects and reads "5 of 1024 staged" — the rest of the set is in
   the drawer, not in the scene.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
-  with a header naming the set, the tabs, the filter bar and the active tab. All four
-  tabs — Table, Plot, Sequences, Lineage — are live since #419. Drag the divider above
-  it to resize; the height is remembered as a fraction of the window, like the
-  console's.
+  with a header naming the set, the **scene sequence band**, the tab bar with the
+  filter beside it, and the active tab. All four tabs — Table, Plot, Sequences,
+  Lineage — are live since #419. Drag the divider above it to resize; the height is
+  remembered as a fraction of the window, like the console's.
   In a short window the console gets its space first, and the drawer says so with a
   one-line hint rather than showing a table too short to hold a row — close the
-  console (⌘1) or enlarge the window. The sequence strip used to compete for that
-  space too; since it became a tab it does not, so the drawer fits in windows where it
-  did not before.
+  console (⌘1), hide the scene sequences (⌘2) or enlarge the window. The sequence
+  strip used to compete for that space as a separate pane; since it moved inside the
+  drawer it does not, so the drawer fits in windows where it did not before.
   iPad and iPhone show the SETS section but no drawer yet (#420), so the sequence
   strip is still a separate pane there.
+
+## The scene sequence band
+
+Across the top of the drawer, under its header, is the **sequence viewer** — one row
+per enabled scene object, coloured by each residue's real guide-atom colour, gap-aligned
+when an alignment object is enabled, click and drag to select atoms. This is the old
+sequence strip, unchanged.
+
+It is a band rather than a tab because it is a different *noun* from anything in the
+tabs. The band is an **Object** view: the sequences of what is in the scene. The tabs
+are **Entry** views: what is in a set. Making them alternatives — which is what a shared
+tab did — meant you could not watch the scene sequence while triaging in the Table, and
+those are the two questions a design session asks at the same time. So the band draws
+whichever tab is selected, and:
+
+- **⌘2**, the **⌘2** switch in the drawer's header, and the rail's **Seq** pill all
+  toggle the band and nothing else. They do not change the tab.
+- **With no set open the drawer is the band alone** — no tab bar, no tab content. That
+  is the sequence viewer, in its new home, and it is what ⌘2 gives you in a session that
+  has never touched a set.
+- **Turning the band off gives its height back** to the tab below it. The band is
+  draggable (the hairline under it is a split divider) and starts at the strip's own
+  size — one row per object up to five — yielding when the drawer is too short to give
+  it that without pushing the tab below one row. The tab half always keeps at least
+  one table row and its footer; the band is what gives way, never the table.
+- **An untouched drawer is taller with the band on**, by the band's own height, so
+  turning the sequences on out of the box does not cost you the table. A drawer you
+  have dragged to a size keeps that size — the band takes its room from the tab
+  content, which is what "turning it off gives the height back" means.
 
 ## The Table tab
 
@@ -132,14 +161,9 @@ unmeasured entry is not a bad one — and the footer says how many.
 
 ## The Sequences tab
 
-The sequence viewer lives here now. **With no set open it is exactly the old sequence
-strip** — one row per enabled scene object, coloured by each residue's real guide-atom
-colour, gap-aligned when an alignment object is enabled, click and drag to select
-atoms. `View ▸ Show Sequences` (⌘2) and the rail's **Seq** pill open the drawer on this
-tab, which is what those two used to open the strip.
-
-With a set open, entry rows follow underneath the scene rows: the rows you have
-selected, or everything the filter admits when nothing is selected.
+The set's entries as sequences: the rows you have selected, or everything the filter
+admits when nothing is selected. The **scene** sequences are not here — they are the
+band above the tabs, on whatever tab you pick.
 
 - **Rows that share a parent share a column space.** Eight MPNN sequences off one
   backbone are padded, per chain, to the longest of them, so position 31 is position 31

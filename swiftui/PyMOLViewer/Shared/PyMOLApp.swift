@@ -137,11 +137,10 @@ enum AppShortcuts {
 
 struct PyMOLApp: App {
     @StateObject private var engine = PyMOLEngine.shared
-    /// The View menu's "Show/Hide Sequences" state (#419): the Data drawer standing
-    /// on its Sequences tab, which is where the sequence strip went.
-    private var sequencesShowing: Bool {
-        engine.dataDrawerVisible && engine.dataDrawerTab == .sequences
-    }
+    /// The View menu's "Show/Hide Sequences" state (#456): the Data drawer standing
+    /// open with its SCENE BAND up, which is where the sequence strip went. Not a tab —
+    /// the band draws on whatever tab is selected, which is the point of it.
+    private var sequencesShowing: Bool { engine.sequenceBandShowing }
     @StateObject private var notes = AnalysisNotesStore.shared
     #if os(macOS) && !RAYMOL_MAS_RESTRICTED
     @StateObject private var mcp = MCPServerManager.shared
@@ -437,13 +436,14 @@ struct PyMOLApp: App {
                     showCommandPanel.toggle()
                 }
                 .keyboardShortcut(AppShortcuts.consolePane)
-                // #419: the strip is the Data drawer's Sequences tab now, so this
-                // opens the drawer there. With no set open that tab is exactly the
-                // strip (spec §8 decision 2), which is why the shortcut and the
-                // wording are unchanged.
+                // #456: the strip is the Data drawer's scene BAND now, so ⌘2 toggles
+                // the band and nothing else — it does not choose a tab, and it does
+                // not take the Table away from someone triaging in it. With no set
+                // open the drawer is the band alone, which is exactly the strip (spec
+                // §8 decision 2), which is why the shortcut and the wording are
+                // unchanged through both moves.
                 Button(sequencesShowing ? "Hide Sequences" : "Show Sequences") {
-                    if sequencesShowing { engine.closeDataDrawer() }
-                    else { engine.showSequencesTab() }
+                    engine.toggleSequenceBand()
                 }
                 .keyboardShortcut(AppShortcuts.sequencePane)
                 Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {

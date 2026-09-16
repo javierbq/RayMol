@@ -613,12 +613,17 @@ struct ContentView: View {
     @ViewBuilder
     private func macDrawerBand(windowHeight: CGFloat) -> some View {
         let ceiling = macDrawerCeiling(windowHeight: windowHeight)
-        if PanelLayout.drawerFits(ceiling: ceiling) {
+        // The scene band (#456) takes its height from the DRAWER, not from the column,
+        // so what it changes here is the drawer's own minimum: a drawer that cannot
+        // hold the band's floor AND one row of the tab under it is the hint's case.
+        let band = engine.sequenceBandVisible
+        if PanelLayout.drawerFits(ceiling: ceiling, bandVisible: band) {
             let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac),
-                                             windowHeight: windowHeight, maxHeight: ceiling)
+                                             windowHeight: windowHeight, maxHeight: ceiling,
+                                             bandVisible: band)
             VStack(spacing: 0) {
                 macDrawerDivider(windowHeight: windowHeight)
-                DataDrawer().frame(height: h)
+                DataDrawer(height: h).frame(height: h)
             }
         } else {
             // Not enough column left for even one row (#417 review). A stub that
@@ -630,7 +635,7 @@ struct ContentView: View {
         }
     }
 
-    // One line in place of the band, with the two panes that are in its way.
+    // One line in place of the band, with the panes that are in its way.
     private var macDrawerNoRoomHint: some View {
         HStack(spacing: 8) {
             Rectangle().fill(hairlineColor).frame(height: 1).frame(maxWidth: 12)
@@ -639,6 +644,16 @@ struct ContentView: View {
                 .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
             if showCommandPanel {
                 Button("Hide Console") { showCommandPanel = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(themeManager.active.accent.color)
+            }
+            // The scene band is the other thing that can tip a drawer under its
+            // minimum (#456), and unlike the console it is INSIDE the drawer — so
+            // without this offer the band could make the drawer it lives in
+            // unreachable, with no way back but a window resize.
+            if engine.sequenceBandVisible {
+                Button("Hide Sequences") { engine.hideSequenceBand() }
                     .buttonStyle(.plain)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(themeManager.active.accent.color)
@@ -652,8 +667,8 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .frame(height: 22)
         .background(themeChromeBg)
-        .help("Enlarge the window, or close the console, to make room for the Data "
-              + "drawer. The set stays open.")
+        .help("Enlarge the window, close the console, or hide the scene sequences to "
+              + "make room for the Data drawer. The set stays open.")
     }
 
     // The most the drawer may take: what is LEFT of the column once the console
@@ -693,12 +708,15 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { v in
+                        // Same floor the band's `drawerFits` uses, so the drag and the
+                        // hint cannot disagree about whether a height is usable (#456).
+                        let minH = PanelLayout.minDrawerHeight(
+                            bandVisible: engine.sequenceBandVisible)
                         let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
                             frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
-                            maxHeight: maxH)
+                            maxHeight: maxH, bandVisible: engine.sequenceBandVisible)
                         macDrawerDragAnchor = start
-                        let h = min(max(start - v.translation.height,
-                                        PanelLayout.macMinDrawerHeight), maxH)
+                        let h = min(max(start - v.translation.height, minH), maxH)
                         if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
                             dataDrawerFrac = Double(f)
                         }
@@ -1601,19 +1619,19 @@ struct ContentView: View {
         #endif
     }
     /// The rail's Seq pill. On iOS it is the strip's flag; on macOS, where #419
-    /// removed the strip slot, it is the Data drawer standing on its Sequences tab —
-    /// the same control over the same rows, in the place they moved to. One binding
-    /// rather than a platform branch at the pill: the pill's job is "show me the
-    /// sequence", and which pane that means is this property's business.
+    /// removed the strip slot and #456 made the scene rows the drawer's BAND, it is the
+    /// band's flag — the same control over the same rows, in the place they moved to.
+    /// One binding rather than a platform branch at the pill: the pill's job is "show
+    /// me the sequence", and which pane that means is this property's business.
+    ///
+    /// Turning it off no longer has to ask which TAB is showing. That test existed
+    /// because the rows lived in one, and it is exactly the coupling #456 removed.
     private var sequenceBinding: Binding<Bool> {
         #if os(macOS)
         return Binding(
-            get: { engine.dataDrawerVisible && engine.dataDrawerTab == .sequences },
+            get: { engine.sequenceBandShowing },
             set: { on in
-                if on { engine.showSequencesTab() }
-                // Off closes the drawer only when Sequences is what it is showing;
-                // otherwise the pill is already off and there is nothing to do.
-                else if engine.dataDrawerTab == .sequences { engine.closeDataDrawer() }
+                if on { engine.showSequenceBand() } else { engine.hideSequenceBand() }
             })
         #else
         return $engine.sequenceVisible

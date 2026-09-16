@@ -1,5 +1,6 @@
-// SequencePanel.swift — the sequence viewer, and since #419 the Data drawer's
-// Sequences tab (spec §4.4, §8 decision 2, wireframe frame 3).
+// SequencePanel.swift — the sequence viewer: since #419 inside the Data drawer, and
+// since #456 as the drawer's scene BAND plus a Sequences tab of entry rows (spec §4,
+// §4.4, §8 decision 2, wireframe frame 3).
 //
 // SwiftUI reimplementation of PyMOL's seq_view (layer3/Seeker.cpp + layer1/Seq.cpp).
 //
@@ -11,13 +12,18 @@
 //    Ctrl selects-and-centers; click on empty space deselects.
 //  - Residue-number ruler above each sequence (every N residues).
 //
-// #419 moved this into the drawer and added ENTRY rows under the scene rows. The
-// split is deliberate and is the compatibility contract: `SequencePanel` — the scene
-// rows, their ruler, their colors, their click and drag selection — is UNCHANGED, so
-// with no set open the tab is the strip, character for character (spec §8 decision 2,
-// and the #380 enabled-only rule that `appkit_sequence._visible_objects` enforces).
-// Everything new is below it: `SequenceRowModel` lays entry rows out, and
-// `SequencesTabView` stacks the two.
+// #419 moved this into the drawer and added ENTRY rows under the scene rows; #456 took
+// the two apart again, because they are different nouns — the scene rows are an OBJECT
+// view, the entry rows an ENTRY view — and a tab made them alternatives. The scene rows
+// are `SequenceBandView`, a band in the drawer's chrome above the tab bar, on whatever
+// tab; the entry rows are what is left of `SequencesTabView`.
+//
+// Through both moves the compatibility contract is the same and is the reason the split
+// is drawn here rather than inside the panel: `SequencePanel` — the scene rows, their
+// ruler, their colors, their click and drag selection — is UNCHANGED, so the band is
+// the strip, character for character (spec §8 decision 2, and the #380 enabled-only
+// rule that `appkit_sequence._visible_objects` enforces). Everything else is beside it:
+// `SequenceRowModel` lays entry rows out and `SequenceEntryRowsView` draws them.
 //
 // `SequenceRowModel` is pure — no SwiftUI, no engine — for the reason `SetTableModel`
 // and `SetPlotModel` are: alignment by shared parent, the collapse threshold, the
@@ -985,55 +991,65 @@ struct SequenceHeatTrack: Equatable, Identifiable {
     }
 }
 
-// MARK: - The Sequences tab (#419, macOS)
+// MARK: - The scene band and the Sequences tab (#419, #456, macOS)
 
 #if os(macOS)
 
-/// The drawer's Sequences tab: the scene rows on top, the set's entry rows below.
+/// The drawer's SCENE BAND: `SequencePanel()`, in the drawer's chrome above the tab
+/// bar, drawn whatever tab is selected (#456, spec §4, §8 decision 2).
 ///
-/// With no set open this is `SequencePanel()` and nothing else — the strip, in its new
-/// home, which is spec §8 decision 2's compatibility contract. With a set open, entry
-/// rows follow underneath: the SELECTED entries when there is a selection, and the
-/// filtered rows otherwise, which is the same "what am I looking at" rule the Plot tab
-/// follows (`engine.filteredSetRows`).
+/// It is `SequencePanel()` and nothing else, which is the point and the contract. The
+/// strip's behaviour — the #380 enabled-only rule, the ruler, the real guide-atom
+/// colours, click and drag selection, both feedback parsers — is unchanged in its new
+/// home, exactly as #419 was careful to leave it when it moved the first time.
 ///
-/// The two halves keep their own scrollers on purpose. Their column spaces are
-/// different things — a scene row is numbered by the structure's own `resi` and is
-/// gap-aligned by an alignment OBJECT, an entry row is padded against its parent group
-/// — so one shared horizontal scroll would imply a correspondence that is not there.
+/// Why it is not a tab any more: the band and the Sequences tab are different NOUNS.
+/// The band is the sequences of the enabled SCENE OBJECTS; the tab is the contents of a
+/// SET. That is the Entry/Object split the whole epic is built on, and making the two
+/// alternatives meant you could not watch the scene sequence while triaging in the
+/// Table — "what residues am I looking at" and "which candidates pass" are the ordinary
+/// case of two questions asked at once. Spec §8 decision 2's "two sequence views would
+/// compete" is still honoured: there is exactly ONE scene view, and it is here.
+struct SequenceBandView: View {
+    var body: some View { SequencePanel() }
+
+    /// The band is the one part of the drawer that means something with NO set open —
+    /// with nothing loaded it is the sequence viewer, and with a session loaded it is
+    /// the strip. This used to be `DataDrawerTab.worksWithoutASet`; it moved here with
+    /// the rows it describes, because it was never a fact about a tab.
+    static let worksWithoutASet = true
+
+    /// The strip's own height formula, and the ceiling the split honours. Both live in
+    /// `PanelLayout` with the rest of the drawer's arithmetic, so `PanelLayoutTests`
+    /// can pin what a short window does to the band without a window.
+    static func sceneHeight(_ objects: Int) -> CGFloat {
+        PanelLayout.sequenceBandIdealHeight(objects: objects)
+    }
+    static let maxHeight: CGFloat = 400
+
+    /// `.id()` so the split re-adopts the ideal height when an object is loaded or
+    /// removed. Without it a divider the layout has once pinned keeps its first-seen
+    /// height and later rows are simply not visible.
+    static func heightIdentity(_ objects: Int) -> Int { min(max(objects, 1), 5) }
+}
+
+/// The drawer's Sequences tab: the SET's entry rows, their heat strips and the
+/// consensus band.
+///
+/// The scene rows used to be the top half of this (#419); they are `SequenceBandView`
+/// now. What is left is one noun — entries — which is why the tab no longer has a
+/// split in it and no longer draws for a session with no set open.
+///
+/// The rows are the SELECTED entries when there is a selection, and the filtered rows
+/// otherwise, which is the same "what am I looking at" rule the Plot tab follows
+/// (`engine.filteredSetRows`).
 struct SequencesTabView: View {
-    let set: SetEntry?
+    let set: SetEntry
     let rows: [SetRow]
     @EnvironmentObject var engine: PyMOLEngine
-    @EnvironmentObject private var themeManager: ThemeManager
-
-    private var hairline: Color { themeManager.active.panelText.color.opacity(0.18) }
 
     var body: some View {
-        if let set {
-            // A VSplitView, not a fixed cap. The strip this replaced sized itself to
-            // its row count (up to five rows) and the user could drag it taller still;
-            // pinning the scene rows at 130pt was a real reduction for the same
-            // content. Same formula, same 400pt ceiling, same `.id(rows)` so the split
-            // re-adopts the ideal height when an object is loaded or removed (without
-            // it a pinned divider keeps the first-seen height and hides later rows).
-            VSplitView {
-                SequencePanel()
-                    .frame(minHeight: 40, idealHeight: Self.sceneHeight(engine.sequences.count),
-                           maxHeight: 400)
-                    .id(min(max(engine.sequences.count, 1), 5))
-                SequenceEntryRowsView(set: set, rows: entryRows)
-                    .frame(minHeight: 60)
-            }
-        } else {
-            SequencePanel()
-        }
-    }
-
-    /// The strip's own height formula: one block per object (ruler + residues ≈ 28pt,
-    /// charged at 30) up to five, plus 30 for the horizontal scrollbar and padding.
-    static func sceneHeight(_ objects: Int) -> CGFloat {
-        CGFloat(min(max(objects, 1), 5)) * 30 + 30
+        SequenceEntryRowsView(set: set, rows: entryRows)
     }
 
     /// Selected rows when there are any, else everything the filter admits. Spec §4.4
@@ -1112,10 +1128,10 @@ struct SequenceEntryRowsView: View {
         // The band is a statement about the WHOLE set, so it needs every sequence —
         // and above the threshold no row is displayed, so no row's `onAppear` fires
         // and the per-row loader would never run at all. Text only; the arrays stay
-        // per-row-lazy, and `loadSequencesForBand` is idempotent per set.
-        .onAppear { if model.isCollapsed { engine.loadSequencesForBand(setID: set.id) } }
+        // per-row-lazy, and `loadSequencesForConsensusBand` is idempotent per set.
+        .onAppear { if model.isCollapsed { engine.loadSequencesForConsensusBand(setID: set.id) } }
         .onChange(of: model.isCollapsed) { collapsed in
-            if collapsed { engine.loadSequencesForBand(setID: set.id) }
+            if collapsed { engine.loadSequencesForConsensusBand(setID: set.id) }
         }
     }
 

@@ -5142,8 +5142,8 @@ extension PyMOLEngine {
             // core's own view of what is enabled, so it catches every path that
             // can change it and cannot race the optimistic checkbox flip. Track
             // the set even while the sequence view is hidden — showing it does its
-            // own fetch (`wantsSequences`, which since #419 means the drawer's
-            // Sequences tab on macOS), and a stale tracker would otherwise suppress
+            // own fetch (`wantsSequences`, which since #456 means the drawer's scene
+            // BAND on macOS), and a stale tracker would otherwise suppress
             // the next real change.
             if self.lastSequenceEnabled != enabledObjects {
                 self.lastSequenceEnabled = enabledObjects

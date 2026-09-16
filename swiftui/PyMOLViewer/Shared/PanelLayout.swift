@@ -61,6 +61,14 @@ enum PanelLayout {
     /// replaced was a remembered pane: without this the strip's migration lands a user
     /// on Sequences exactly once and puts them on Table every launch after.
     static let dataDrawerTabKey = ns + "dataDrawerTab"
+    /// The scene-sequence BAND in the drawer's chrome (#456). Its own key, not the
+    /// tab's and not the drawer's, because it is its own pane: ⌘2 toggles it whatever
+    /// tab is showing, and it is what the sequence strip actually became.
+    static let sequenceBandVisibleKey = ns + "sequenceBandVisible"
+    /// Set once `migrateSequenceBand` has run. Separate from `sequenceMigratedKey`
+    /// because the two migrations answer different questions and a user can arrive
+    /// having had one run and not the other — see `sequenceBandMigration`.
+    static let sequenceBandMigratedKey = ns + "sequenceBandMigrated"
 
     /// Every key this type defines — the namespace/uniqueness check in the tests
     /// runs off this list, so a new key must be added here too.
@@ -69,6 +77,7 @@ enum PanelLayout {
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
         consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
         dataDrawerVisibleKey, dataDrawerFracKey, sequenceMigratedKey, dataDrawerTabKey,
+        sequenceBandVisibleKey, sequenceBandMigratedKey,
     ]
 
     // MARK: - The sequence strip's one-time move into the drawer (#419)
@@ -143,6 +152,16 @@ enum PanelLayout {
         if answer.drawerVisible != defaults.bool(forKey: dataDrawerVisibleKey) {
             defaults.set(answer.drawerVisible, forKey: dataDrawerVisibleKey)
         }
+        // The chosen TAB has to be written too (#456 review). `restoredDrawerTab`
+        // returns `.sequences` from the answer, but the only thing that ever wrote
+        // `dataDrawerTabKey` was `PyMOLEngine.dataDrawerTab`'s `didSet` — and `didSet`
+        // does not fire on initialisation, so a migrated user who never touched a tab
+        // afterwards had NO stored tab at all. #456 then reads that key to decide
+        // whether the sequence view was up, and answered "no" for exactly the people
+        // the question is about: the ones #419 had put on Sequences.
+        if answer.openSequencesTab {
+            defaults.set(DataDrawerTab.sequences.rawValue, forKey: dataDrawerTabKey)
+        }
         return answer
     }
 
@@ -197,6 +216,114 @@ enum PanelLayout {
                           stored: defaults.string(forKey: dataDrawerTabKey))
     }
 
+    // MARK: - The scene rows become a drawer BAND (#456)
+
+    /// Where a user lands the first time they launch a build in which the scene rows
+    /// are a band in the drawer's chrome rather than the top half of the Sequences tab.
+    ///
+    /// Two views, two nouns: the band shows the sequences of the ENABLED SCENE OBJECTS,
+    /// the Sequences tab shows the CONTENTS OF A SET. #419 made them alternatives —
+    /// `wantsSequences` was "drawer up AND tab == Sequences" — so you could not watch
+    /// the scene sequence while triaging in the Table. They are not alternatives any
+    /// more, which means the thing that has to be carried forward is no longer "which
+    /// tab" but "was the sequence view up".
+    ///
+    /// The answer has to be right for a user who has already been migrated ONCE, by
+    /// #419, and whose `sequenceVisible` flag is therefore spent. For them the honest
+    /// reading of "the sequence view is up" is the drawer standing open on Sequences —
+    /// that is the state #419 put them in, and that is where the scene rows were. A
+    /// drawer that is CLOSED is not showing anything, whatever tab it remembers.
+    ///
+    /// Pure, so the policy can be walked without a window or a UserDefaults domain.
+    struct SequenceBandMigration: Equatable {
+        /// True when the band should be on after this launch.
+        let bandVisible: Bool
+        /// False when the migration had already run, so nothing should be written.
+        let didMigrate: Bool
+
+        static let alreadyDone = SequenceBandMigration(bandVisible: false,
+                                                       didMigrate: false)
+        /// iOS: the strip is still its own pane there until #420, so there is no band
+        /// to migrate into and — importantly — nothing to WRITE.
+        static let notOnThisPlatform = alreadyDone
+    }
+
+    /// `stripMigration` is #419's answer for this same launch, which is what tells the
+    /// two arrival routes apart:
+    ///
+    ///  * `didMigrate == true` — #419 is firing NOW, so this user comes straight from a
+    ///    build with a strip. `openSequencesTab` is exactly "the strip was visible",
+    ///    which is exactly what the band should be.
+    ///  * `didMigrate == false` — #419's flag is spent (or there was nothing to spend
+    ///    it on). The drawer standing OPEN on Sequences is the sequence view being up;
+    ///    anything else, including a closed drawer that remembers the tab, is not.
+    static func sequenceBandMigration(stripMigration: SequenceStripMigration,
+                                      drawerVisible: Bool,
+                                      drawerTab: DataDrawerTab,
+                                      storedBandVisible: Bool,
+                                      alreadyMigrated: Bool) -> SequenceBandMigration {
+        guard !alreadyMigrated else {
+            return SequenceBandMigration(bandVisible: storedBandVisible, didMigrate: false)
+        }
+        if stripMigration.didMigrate {
+            return SequenceBandMigration(bandVisible: stripMigration.openSequencesTab,
+                                         didMigrate: true)
+        }
+        return SequenceBandMigration(bandVisible: drawerVisible && drawerTab == .sequences,
+                                     didMigrate: true)
+    }
+
+    /// Run it against a defaults domain and return its answer. Idempotent, like
+    /// `migrateSequenceStrip`: the second call sees `sequenceBandMigratedKey`.
+    ///
+    /// It reads the drawer's visibility and tab AFTER #419's migration has had its
+    /// turn — the `stripMigration` argument is that turn — because for a never-migrated
+    /// user #419 writes `dataDrawerVisible` and this must not read the pre-write value
+    /// and reach the opposite conclusion.
+    @discardableResult
+    static func migrateSequenceBand(stripMigration: SequenceStripMigration,
+                                    defaults: UserDefaults = .standard)
+        -> SequenceBandMigration {
+        let answer = sequenceBandMigration(
+            stripMigration: stripMigration,
+            drawerVisible: defaults.bool(forKey: dataDrawerVisibleKey),
+            drawerTab: restoredDrawerTab(migration: .alreadyDone,
+                                         stored: defaults.string(forKey: dataDrawerTabKey)),
+            storedBandVisible: defaults.bool(forKey: sequenceBandVisibleKey),
+            alreadyMigrated: defaults.bool(forKey: sequenceBandMigratedKey))
+        guard answer.didMigrate else { return answer }
+        defaults.set(true, forKey: sequenceBandMigratedKey)
+        defaults.set(answer.bandVisible, forKey: sequenceBandVisibleKey)
+        return answer
+    }
+
+    /// The band migration, run exactly once per process and ONLY on macOS — a
+    /// `static let` for `sequenceStripMigrationResult`'s reason, and gated for its
+    /// reason too: iOS has no drawer to put a band in until #420, and writing
+    /// `sequenceBandMigrated` into an iPad's defaults now would spend a migration that
+    /// day's layout still needs.
+    #if os(macOS)
+    static let sequenceBandMigrationResult: SequenceBandMigration =
+        migrateSequenceBand(stripMigration: sequenceStripMigrationResult)
+    #else
+    static let sequenceBandMigrationResult = SequenceBandMigration.notOnThisPlatform
+    #endif
+
+    /// The band's visibility at launch: on macOS whatever the migration decided (which
+    /// is the stored value once it has run), on iOS false — there is no band there.
+    ///
+    /// No `defaults:` parameter, unlike `restoredDrawerVisible`: neither branch would
+    /// read it, and a parameter a function ignores is a caller passing a test suite and
+    /// silently getting the standard domain's answer (#456 review). The pure function
+    /// `sequenceBandMigration` is what tests drive.
+    static func restoredSequenceBandVisible() -> Bool {
+        #if os(macOS)
+        return sequenceBandMigrationResult.bandVisible
+        #else
+        return false
+        #endif
+    }
+
     // MARK: - Bounds
 
     /// #331: the console's height on a launch with nothing stored. ABSOLUTE
@@ -232,16 +359,131 @@ enum PanelLayout {
 
     /// The drawer's height on a launch with nothing stored. ABSOLUTE points, for
     /// the console's reason: an untouched drawer looks the same on a laptop and a
-    /// 6K display. 220 fits the header, eight rows at 22pt and the footer.
+    /// 6K display. 220 is the header, its tab row, the table's chrome and four rows.
     static let macDefaultDrawerHeight: CGFloat = 220
-    /// What the drawer spends before it can show a single row: the set header (26),
-    /// the column header (20), the footer (24) and three hairlines. A drawer given
-    /// less than this draws no data at all, which is why `macMinDrawerHeight` is
-    /// this plus one 22pt row and why a column that cannot afford it shows the hint
-    /// instead of a band (#417 review).
-    static let macDrawerChromeHeight: CGFloat = 73
-    /// Header + one row + footer; below this the table is chrome and no data.
-    static let macMinDrawerHeight: CGFloat = 96
+
+    // MARK: - what the drawer is made of
+
+    // These are MEASURED against the views, not guessed, because everything below is
+    // subtraction from them and a constant that is short by one row is a drawer that
+    // draws no rows at all (#456 review). Each names its view.
+
+    /// The drawer's own header row ("DATA · <set>  ⌘2 ✕"), and the hairline under it.
+    /// Above the band; not part of the tab half.
+    static let macDrawerHeaderHeight: CGFloat = 26
+    /// `DataDrawer.tabRow` — the tab strip with the filter bar beside it — and the
+    /// hairline under it. The first thing in the tab half.
+    static let macDrawerTabRowHeight: CGFloat = 24
+    /// `SetTableView`'s own chrome: the column header (20), the histogram/brush strip
+    /// (16), the footer (24) and their two hairlines.
+    static let macDrawerTableChrome: CGFloat = 62
+    /// One table row.
+    static let macDrawerRowHeight: CGFloat = 22
+    /// A hairline, wherever one separates two of the above.
+    static let macDrawerHairline: CGFloat = 1
+
+    /// What the drawer spends before it can show a single row: its header, the tab
+    /// row, the table's chrome and the hairlines between them. A drawer given less
+    /// than this draws no data at all, which is why `macMinDrawerHeight` is this plus
+    /// one row and why a column that cannot afford it shows the hint instead of a
+    /// band (#417 review).
+    ///
+    /// This was 73 until #456's review, which is what it cost BEFORE the tab strip
+    /// moved onto its own row — and it was already short of the histogram strip. The
+    /// undercount did not show while the whole drawer was one pane; the band divides
+    /// that pane, so it is what made it bite.
+    static var macDrawerChromeHeight: CGFloat {
+        macDrawerHeaderHeight + macDrawerHairline + macDrawerTabRowHeight
+            + macDrawerHairline + macDrawerTableChrome
+    }
+    /// Header + tab row + table chrome + one row; below this the drawer is chrome
+    /// and no data.
+    static var macMinDrawerHeight: CGFloat { macDrawerChromeHeight + macDrawerRowHeight }
+
+    // MARK: - the scene band inside the drawer (#456)
+
+    /// The hairline (and split divider) between the band and the tab half.
+    static let macBandDividerHeight: CGFloat = 1
+    /// The band's floor. One block of residues with its ruler; below this the band is
+    /// a sliver you cannot read a sequence in, which is the only thing it is for.
+    static let macMinBandHeight: CGFloat = 40
+    /// What the TAB half needs under the band: its tab row, the table's chrome and
+    /// ONE row. The drawer's header is not in it — the band does not take that.
+    ///
+    /// The name is the contract, and the #456 review caught it not meaning it: as
+    /// `macMinDrawerHeight - macDrawerHeaderHeight` it was 70, which is 17pt below the
+    /// table's chrome alone, so the band took its ideal, the tab half was left unable
+    /// to draw even its footer, and the Table showed its column header and nothing
+    /// else — at every window size, with `drawerFits` true throughout so the hint
+    /// never fired. A floor that does not fit one row is not a floor.
+    static var macMinTabContentHeight: CGFloat {
+        macDrawerTabRowHeight + macDrawerHairline + macDrawerTableChrome + macDrawerRowHeight
+    }
+
+    /// The band's allowance in an UNTOUCHED drawer: a two-object scene (a target and a
+    /// design, which is the ordinary case) at the strip's own ideal height.
+    ///
+    /// A constant rather than the live object count, because this is the DEFAULT — it
+    /// must not move under the user as objects load, for the reason the default is
+    /// absolute points rather than a share of the window.
+    static var macDefaultBandHeight: CGFloat { sequenceBandIdealHeight(objects: 2) }
+
+    /// The drawer's height on a launch with nothing stored, with the band on: the
+    /// plain default PLUS the band's allowance.
+    ///
+    /// The band takes its height from the tab content in a drawer the USER has sized —
+    /// that is the rule, and a stored fraction still wins here. But an untouched
+    /// drawer has no such choice to respect, and charging the band against a default
+    /// chosen when there was no band is how "turn the sequences on" came to mean "lose
+    /// your table" (#456 review). Out of the box the band is free.
+    static func defaultDrawerHeight(bandVisible: Bool) -> CGFloat {
+        macDefaultDrawerHeight
+            + (bandVisible ? macDefaultBandHeight + macBandDividerHeight : 0)
+    }
+
+    /// How many table rows the tab half can actually draw in a drawer this tall. The
+    /// number the review's regression is stated in — "rows with the band on = 0
+    /// everywhere" — so it is the number the tests assert on.
+    static func drawerTableRows(drawerHeight: CGFloat, bandObjects: Int?) -> Int {
+        var left = drawerHeight - macDrawerHeaderHeight
+        if let bandObjects {
+            left -= sequenceBandHeight(objects: bandObjects, drawerHeight: drawerHeight)
+            left -= macBandDividerHeight
+        }
+        left -= macDrawerTabRowHeight + macDrawerHairline + macDrawerTableChrome
+        guard left > 0 else { return 0 }
+        return Int(left / macDrawerRowHeight)
+    }
+
+    /// The band's IDEAL height — the sequence strip's own formula, unchanged since
+    /// #419 and before that since the strip itself: one block per enabled object
+    /// (ruler + residues ≈ 28pt, charged at 30) up to five, plus 30 for the horizontal
+    /// scrollbar and padding. The compatibility contract is that a user who had the
+    /// strip open sees the same number of rows at the same size in its new home.
+    static func sequenceBandIdealHeight(objects: Int) -> CGFloat {
+        CGFloat(min(max(objects, 1), 5)) * 30 + 30
+    }
+
+    /// The band's height inside a drawer of `drawerHeight`, with a set open under it.
+    ///
+    /// Its ideal, but never so much that the tab content drops below one row: the BAND
+    /// yields, for the reason the drawer yields to the console — the band exists so
+    /// that the scene sequence and the candidate table can be read TOGETHER (#456), and
+    /// a band that squeezed the table out would be the same "two views compete" failure
+    /// in the other direction. Never below `macMinBandHeight` either, because a band
+    /// too short to read is worse than the hint that says there is no room.
+    static func sequenceBandHeight(objects: Int, drawerHeight: CGFloat) -> CGFloat {
+        let room = drawerHeight - macDrawerHeaderHeight - macMinTabContentHeight
+                 - macBandDividerHeight
+        return max(min(sequenceBandIdealHeight(objects: objects), room), macMinBandHeight)
+    }
+
+    /// The drawer's minimum with the band on: its own minimum, plus the band's floor
+    /// and the divider. This is what `drawerFits` tests and what the drag divider
+    /// clamps to, so the two cannot disagree about whether a window has the room.
+    static func minDrawerHeight(bandVisible: Bool) -> CGFloat {
+        macMinDrawerHeight + (bandVisible ? macMinBandHeight + macBandDividerHeight : 0)
+    }
 
     /// Height the panes ABOVE the drawer have already claimed in the viewport
     /// column, so the drawer can size itself against what is actually left.
@@ -250,7 +492,10 @@ enum PanelLayout {
     /// removed the macOS strip slot — the sequences are a drawer TAB now, so they
     /// take the drawer's own height and cannot compete with it for the column —
     /// which is why a crowded column is now only the console and the rail, and why
-    /// the drawer fits in windows where it did not before.
+    /// the drawer fits in windows where it did not before. #456 moved the scene rows
+    /// again — out of the tab, into the drawer's chrome — and that changes nothing
+    /// here for the same reason: the band is INSIDE the drawer, so it spends the
+    /// drawer's height (`sequenceBandHeight`), not the column's.
     static func drawerColumnUsed(consoleHeight: CGFloat?, topRail: Bool) -> CGFloat {
         var used: CGFloat = 0
         if let consoleHeight { used += consoleHeight + macConsoleDividerHeight }
@@ -278,8 +523,13 @@ enum PanelLayout {
     /// then shows a one-line hint instead of a table: a stub too short to draw a
     /// row is worse than no band at all, and the drag divider is clamped to this
     /// same ceiling so the user could not have recovered it by dragging either.
-    static func drawerFits(ceiling: CGFloat) -> Bool {
-        ceiling >= macMinDrawerHeight
+    ///
+    /// `bandVisible` raises the bar by the scene band's floor (#456). The hint offers
+    /// "Hide Sequences" when it is the band that tipped it over, so the band can never
+    /// make the drawer unreachable — there is always a way back that is one click, not
+    /// a window resize.
+    static func drawerFits(ceiling: CGFloat, bandVisible: Bool = false) -> Bool {
+        ceiling >= minDrawerHeight(bandVisible: bandVisible)
     }
     /// The drawer shares the viewport's column with the console and may grow until
     /// the viewport is at its minimum — the same bracket `maxConsoleHeight` uses,
@@ -300,10 +550,11 @@ enum PanelLayout {
     /// in a short one. The stored fraction is still of the whole window, so what
     /// the user dragged to means the same thing whether or not the console is up.
     static func drawerHeight(frac: CGFloat, windowHeight: CGFloat,
-                             maxHeight: CGFloat? = nil) -> CGFloat {
+                             maxHeight: CGFloat? = nil,
+                             bandVisible: Bool = false) -> CGFloat {
         consoleHeight(frac: frac, windowHeight: windowHeight,
-                      defaultHeight: macDefaultDrawerHeight,
-                      minHeight: macMinDrawerHeight,
+                      defaultHeight: defaultDrawerHeight(bandVisible: bandVisible),
+                      minHeight: minDrawerHeight(bandVisible: bandVisible),
                       maxHeight: maxHeight ?? maxDrawerHeight(windowHeight: windowHeight))
     }
 

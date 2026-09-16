@@ -82,7 +82,10 @@ Three verbs connect the levels:
 
 The right inspector stays what it is: the *scene* column. Tables want width, so the set
 browser is a **Data drawer** across the bottom, above the console, where the sequence
-strip lives today. The sequence strip becomes one tab of the drawer.
+strip lives today. The sequence strip moves into the drawer — as a **band in its
+chrome, above the tab bar**, not as a tab (amended 2026-09-15, #456; see §8 decision 2).
+⌘2 toggles the band whatever tab is showing, and with no set open the drawer is the band
+alone, which is the strip in its new home.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -100,7 +103,11 @@ strip lives today. The sequence strip becomes one tab of the drawer.
 │                                                        │   boltz_a1    212 ▮▯▯│
 │                                                        │ ▾ SELECTIONS       │
 ├────────────────────────────────────────────────────────┴────────────────────┤
-│ DATA · rfd3_a1   [Table] [Plot] [Sequences] [Lineage]   filter: plddt>80… ⌕ │
+│ DATA · rfd3_a1                          3 of 1024 staged · budget 6  ⌘2  ✕ │
+│ 4HHB_target  A  MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLST…       │ ← band
+│ d_0417       A  GSHMNAFDENNIPKGPYEWYFKSRNFIPADDFEYEQMMPFRGCVQKRHEVKG       │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│ [Table] [Plot] [Sequences] [Lineage]     filter: plddt>80… ⌕   212 of 1024 │
 │ ☆ 👁 id      plddt ▾  iptm   rmsd   len  tool   parent    tags              │
 │ ★ ● d_0417   91.2    0.84   1.1    72   rfd3   4HHB      hydrophobic-patch │
 │ ☆ ● d_0088   89.7    0.81   0.9    68   rfd3   4HHB                        │
@@ -110,6 +117,14 @@ strip lives today. The sequence strip becomes one tab of the drawer.
 │ console                                                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+The band is the **scene** sequences — one row per enabled object — and it is above the
+tab bar because it is the drawer's chrome, not one tab's content. It stays up whichever
+tab is selected, which is the point: "what residues am I looking at" and "which
+candidates pass" are two questions a user asks at the same time. Turning it off (⌘2, the
+header switch, the rail's **Seq** pill) gives its height back to the tab below; with no
+set open the drawer is the band and nothing else, with no tab bar at all. The tab strip
+therefore shares the filter row rather than the header row.
 
 ### 4.1 Inspector: a SETS section
 
@@ -143,12 +158,15 @@ filtered rows as the table; no separate state.
 
 ### 4.4 Drawer: Sequences tab
 
-The current sequence strip, generalized. Rows are the *selected or filtered entries*
-(cap at a few hundred, then show a logo/consensus band instead), aligned by parent
-backbone position when they share a parent, gap-aware when an alignment object is
-enabled. Per-residue metrics (pLDDT, MPNN native fit, certainty) draw as a heat strip
-under each row using the same domains Design mode uses. Scene objects are rows too, so
-today's behavior is a subset.
+Rows are the *selected or filtered entries* (cap at a few hundred, then show a
+logo/consensus band instead), aligned by parent backbone position when they share a
+parent, gap-aware when an alignment object is enabled. Per-residue metrics (pLDDT, MPNN
+native fit, certainty) draw as a heat strip under each row using the same domains Design
+mode uses.
+
+Scene objects are **not** rows here (amended 2026-09-15, #456). They are the drawer's
+band, above the tab bar — see §4 and §8 decision 2. This tab is one noun, entries; the
+band is the other, objects.
 
 ### 4.5 Drawer: Lineage tab
 
@@ -250,7 +268,22 @@ Recommendations first.
 1. **Does every batch become a set, even `n_designs=1`?** Yes. One model. A one-entry set
    auto-stages its entry, so the user experience for `n=1` is unchanged.
 2. **Does the sequence strip move into the drawer?** Yes. Two sequence views would compete.
-   The drawer's Sequences tab with no set open shows exactly what the strip shows today.
+
+   **As a band, not as a tab** (amended 2026-09-15, #456). #419 shipped it as the top
+   half of the Sequences tab, which made the scene rows and the tab's entry rows
+   *alternatives*: you could not watch the scene sequence while triaging in the Table.
+   That is wrong, because the two are different nouns. The strip shows the sequences of
+   the **enabled scene objects** — an Object view. The tab's rows show the **contents of
+   a set** — an Entry view. That is the Entry/Object split this whole design is built on
+   (§2, §3), and two different nouns may not be alternatives; "what residues am I looking
+   at" and "which candidates pass" are the ordinary case of two questions at once.
+
+   "Two sequence views would compete" is satisfied by there being exactly **one** scene
+   view, and it is in the drawer's chrome: a band above the tab bar, drawn whatever tab
+   is selected, toggled by ⌘2 independently of the tab. With no set open the drawer is
+   that band alone — no tab bar, no tab content — which is the old rule ("the Sequences
+   tab with no set open shows exactly what the strip shows today") restated where it
+   belongs: *working without a set* is a property of the band, not of a tab.
 3. **Sidecar bundle vs. embed in `.pse` vs. a new container?** New single-file container,
    `.raymol`, a SQLite database carrying the `.pse` as a blob. Decided 2026-09-07: one file
    for portability, incremental writes for crash safety and cheap saves, random access for
