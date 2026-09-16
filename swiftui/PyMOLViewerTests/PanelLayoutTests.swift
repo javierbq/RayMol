@@ -315,8 +315,9 @@ final class PanelLayoutTests: XCTestCase {
 
     func testDrawerYieldsToAnExplicitCeiling() {
         // The layout hands the drawer the height LEFT after the console band, the
-        // rail and the strip (the viewport has a hard 360pt minimum); the ceiling
-        // it passes wins over the default AND over a stored fraction.
+        // rail and the Object sequence viewer (the viewport has a hard 360pt
+        // minimum); the ceiling it passes wins over the default AND over a stored
+        // fraction.
         XCTAssertEqual(PanelLayout.drawerHeight(frac: 0, windowHeight: 771, maxHeight: 180),
                        180, accuracy: 1e-9)
         XCTAssertEqual(PanelLayout.drawerHeight(frac: 0.5, windowHeight: 771, maxHeight: 180),
@@ -329,51 +330,63 @@ final class PanelLayoutTests: XCTestCase {
 
     // MARK: - the drawer's ceiling in a real column (#417 review)
 
-    /// The drawer's ceiling with the console at its 130pt default and the rail up.
+    /// The drawer's ceiling with the console at its 130pt default, the rail up and the
+    /// OBJECT sequence viewer showing — the four-band column #457 creates.
     ///
-    /// The numbers moved with #419: the sequence strip used to be charged into this
-    /// column at up to 180pt, and removing its slot is exactly that much more room
-    /// for the drawer. The shape of the rule is unchanged — below some window height
-    /// the band would be chrome with no rows, and `drawerFits` turns that into the
-    /// one-line hint, because the drag divider is clamped to this same ceiling and
-    /// the user could not have recovered it by dragging either.
+    /// The viewer is charged here again, at up to 180pt, because it is a pane of the
+    /// column once more. Below some window height the drawer would be chrome with no
+    /// rows, and `drawerFits` turns that into the one-line hint, because the drag
+    /// divider is clamped to this same ceiling and the user could not have recovered it
+    /// by dragging either. The hint offers to close EITHER pane above the drawer, and
+    /// the last block here is why both offers have to be there.
     func testDrawerCeilingInACrowdedColumn() {
-        func ceiling(_ window: CGFloat, console: Bool = true) -> CGFloat {
-            let h = console ? PanelLayout.consoleHeight(
-                frac: 0, windowHeight: window,
-                defaultHeight: PanelLayout.macDefaultConsoleHeight,
-                minHeight: PanelLayout.macMinConsoleHeight,
-                maxHeight: PanelLayout.maxConsoleHeight(windowHeight: window)) : nil
-            let used = PanelLayout.drawerColumnUsed(consoleHeight: h, topRail: true)
-            return PanelLayout.drawerCeiling(windowHeight: window, used: used)
+        // The numbers the #417 review measured, with a five-object viewer.
+        XCTAssertEqual(Self.ceiling(window: 900), 154, accuracy: 0.5)
+        XCTAssertTrue(PanelLayout.drawerFits(ceiling: Self.ceiling(window: 900)))
+        // 854pt gives the drawer 108pt, which is 28pt short of the one-row minimum.
+        // It USED to pass, against #417's undercounted 96pt floor; #456's review
+        // measured the drawer's real chrome and that constant survives #457 (the
+        // undercount had nothing to do with where the sequences live).
+        XCTAssertEqual(Self.ceiling(window: 854), 108, accuracy: 0.5)
+        XCTAssertFalse(PanelLayout.drawerFits(ceiling: Self.ceiling(window: 854)))
+        // The app's own persisted height with everything up: not enough, which is the
+        // hint's case and the vertical budget #457 has to answer for.
+        for window in [CGFloat(800), 771, 600] {
+            XCTAssertFalse(PanelLayout.drawerFits(ceiling: Self.ceiling(window: window)),
+                           "a \(window)pt window has"
+                           + " \(Self.ceiling(window: window))pt for the drawer, which"
+                           + " cannot hold \(PanelLayout.macDrawerChromeHeight)pt of"
+                           + " chrome plus a row")
         }
-        // The strip was worth 180pt of this column at five rows; every ceiling below
-        // is the pre-#419 number plus exactly that.
-        XCTAssertEqual(ceiling(900), 154 + 180, accuracy: 0.5)
-        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(900)))
-        XCTAssertEqual(ceiling(854), 108 + 180, accuracy: 0.5)
-        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(854)))
-        // Windows that could not show a row WITH the strip can now: 771pt was the
-        // review's worst case and it fits.
-        for window in [CGFloat(800), 771] {
-            XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(window)),
-                          "a \(window)pt window has \(ceiling(window))pt for the"
-                          + " drawer now that the strip has left the column")
+        // Both of the hint's offers are live, and either one ALONE is enough at the two
+        // sizes a user actually has — which is why the hint gives the choice rather
+        // than naming one pane.
+        for window in [CGFloat(771), 854] {
+            XCTAssertTrue(PanelLayout.drawerFits(
+                ceiling: Self.ceiling(window: window, console: false)),
+                          "\(window)pt, Hide Console")
+            XCTAssertTrue(PanelLayout.drawerFits(
+                ceiling: Self.ceiling(window: window, objects: nil)),
+                          "\(window)pt, Hide Sequences")
         }
-        // Short enough and it is still chrome with no rows; the hint is not dead code.
-        XCTAssertFalse(PanelLayout.drawerFits(ceiling: ceiling(600)))
-        // Closing the console is the way out the hint offers, and it is now enough
-        // at 600pt — the strip is no longer the other thing in the way.
-        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(600, console: false)))
-        XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling(900, console: false)))
+        // At 600pt neither is enough on its own and BOTH are needed, which the hint
+        // also allows — the two buttons are independent, and Close is the third way
+        // out. A window that short has 600 - 360 of viewport - 48 of chrome to spend.
+        XCTAssertFalse(PanelLayout.drawerFits(
+            ceiling: Self.ceiling(window: 600, console: false)))
+        XCTAssertFalse(PanelLayout.drawerFits(
+            ceiling: Self.ceiling(window: 600, objects: nil)))
+        XCTAssertTrue(PanelLayout.drawerFits(
+            ceiling: Self.ceiling(window: 600, console: false, objects: nil)))
     }
 
-    // MARK: - the scene band inside the drawer (#456)
+    // MARK: - the drawer's measured minimums (#456 review, kept by #457)
 
     /// The constants are MEASURED against the views, and this is where they are held to
     /// it. `macMinTabContentHeight` was `macMinDrawerHeight - macDrawerHeaderHeight` =
-    /// 70, which is 17pt below the table's chrome ALONE — so the floor the band yields
-    /// to could not draw a footer, let alone a row.
+    /// 70, which is 17pt below the table's chrome ALONE — so the floor could not draw a
+    /// footer, let alone a row. That undercount is independent of where the scene
+    /// sequences live, which is why it outlives the band that exposed it.
     func testTheDrawersMinimumsAreItsActualPartsAddedUp() {
         XCTAssertEqual(PanelLayout.macMinTabContentHeight,
                        PanelLayout.macDrawerTabRowHeight + PanelLayout.macDrawerHairline
@@ -385,139 +398,140 @@ final class PanelLayoutTests: XCTestCase {
         XCTAssertEqual(PanelLayout.macMinDrawerHeight,
                        PanelLayout.macDrawerHeaderHeight + PanelLayout.macDrawerHairline
                        + PanelLayout.macMinTabContentHeight, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.minDrawerHeight(bandVisible: false),
+        // The same number by the other route: chrome + one row. Two definitions that
+        // have to agree, so a constant edited on one side cannot drift from the other.
+        XCTAssertEqual(PanelLayout.macMinDrawerHeight,
+                       PanelLayout.macDrawerChromeHeight + PanelLayout.macDrawerRowHeight,
+                       accuracy: 1e-9)
+        XCTAssertEqual(PanelLayout.minDrawerHeight(),
                        PanelLayout.macMinDrawerHeight, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.minDrawerHeight(bandVisible: true),
-                       PanelLayout.macMinDrawerHeight + PanelLayout.macMinBandHeight
-                       + PanelLayout.macBandDividerHeight, accuracy: 1e-9)
     }
 
-    /// THE regression. The review's finding was one number: "rows with the band on = 0
-    /// everywhere". So this asserts on rows, across every window the review measured,
-    /// console open and closed, one to five objects — any drawer the layout agrees to
-    /// draw (`drawerFits`) must be able to draw a row of the table under the band.
+    /// #456's review stated its regression in one number — "rows = 0 everywhere" — and
+    /// this is that number, now that the band is gone and the drawer is one pane again:
+    /// any drawer the layout agrees to draw (`drawerFits`) must draw a row of the table.
+    ///
+    /// The Object viewer is in the column for every case here (one to five objects), so
+    /// what this really asserts is that #457 did not re-break the guarantee by putting
+    /// a pane back above the drawer.
     func testADrawerThatFitsAlwaysDrawsAtLeastOneTableRow() {
         for window in [CGFloat(600), 700, 771, 800, 854, 900, 1200] {
             for console in [true, false] {
-                let ceiling = Self.ceiling(window: window, console: console)
-                for band in [true, false] {
-                    guard PanelLayout.drawerFits(ceiling: ceiling, bandVisible: band) else {
-                        continue
-                    }
+                for objects in [nil, 1, 2, 3, 4, 5] as [Int?] {
+                    let ceiling = Self.ceiling(window: window, console: console,
+                                               objects: objects)
+                    guard PanelLayout.drawerFits(ceiling: ceiling) else { continue }
                     let h = PanelLayout.drawerHeight(frac: 0, windowHeight: window,
-                                                     maxHeight: ceiling, bandVisible: band)
-                    for objects in 1...5 {
-                        let rows = PanelLayout.drawerTableRows(
-                            drawerHeight: h, bandObjects: band ? objects : nil)
-                        XCTAssertGreaterThanOrEqual(
-                            rows, 1,
-                            "\(window)pt window, console \(console ? "open" : "closed"),"
-                            + " band \(band ? "on with \(objects) objects" : "off"):"
-                            + " drawer \(h)pt draws \(rows) rows")
-                    }
+                                                     maxHeight: ceiling)
+                    let rows = PanelLayout.drawerTableRows(drawerHeight: h)
+                    XCTAssertGreaterThanOrEqual(
+                        rows, 1,
+                        "\(window)pt window, console \(console ? "open" : "closed"),"
+                        + " viewer \(objects.map { "on with \($0) objects" } ?? "off"):"
+                        + " drawer \(h)pt draws \(rows) rows")
                 }
             }
         }
     }
 
     /// And the same for the height the user is actually given out of the box, which is
-    /// the state the migration lands cases 1 and 4 in.
-    func testTheUntouchedDrawerDrawsRowsWithTheBandOn() {
-        let h = PanelLayout.defaultDrawerHeight(bandVisible: true)
-        XCTAssertEqual(h, PanelLayout.macDefaultDrawerHeight
-                       + PanelLayout.macDefaultBandHeight + PanelLayout.macBandDividerHeight,
-                       accuracy: 1e-9)
-        // A two-object scene — the ordinary case — loses nothing to the band: it gets
-        // the same rows it would have got with the band off.
-        XCTAssertEqual(PanelLayout.drawerTableRows(drawerHeight: h, bandObjects: 2),
-                       PanelLayout.drawerTableRows(
-                        drawerHeight: PanelLayout.defaultDrawerHeight(bandVisible: false),
-                        bandObjects: nil),
-                       "turning the sequences on must not cost the user their table")
-        // And no scene, however many objects it has, empties the table.
-        for objects in 1...5 {
-            XCTAssertGreaterThanOrEqual(
-                PanelLayout.drawerTableRows(drawerHeight: h, bandObjects: objects), 1,
-                "\(objects) objects")
+    /// what "untouched drawer height" in the screenshots means.
+    func testTheUntouchedDrawerDrawsFourRows() {
+        XCTAssertEqual(PanelLayout.defaultDrawerHeight,
+                       PanelLayout.macDefaultDrawerHeight, accuracy: 1e-9)
+        // 220 - 114 of chrome = 106, which is four 22pt rows and change. The default's
+        // own doc-comment says "four rows"; this is what holds it to that.
+        XCTAssertEqual(PanelLayout.drawerTableRows(
+            drawerHeight: PanelLayout.defaultDrawerHeight), 4)
+        // `defaultDrawerHeight` takes no arguments any more: the Object viewer is not
+        // IN the drawer, so turning it on cannot change what the drawer defaults to.
+        // Under #456 it could — the band's allowance was added here — which is the
+        // whole difference between that arrangement and this one.
+        XCTAssertEqual(PanelLayout.drawerTableRows(drawerHeight: PanelLayout.macMinDrawerHeight), 1)
+        XCTAssertEqual(PanelLayout.drawerTableRows(
+            drawerHeight: PanelLayout.macMinDrawerHeight - 1), 0,
+            "a drawer below its floor draws nothing, which is `drawerFits`' case")
+    }
+
+    /// THE vertical-budget question #457 has to answer: 1332×771 is the app's own
+    /// persisted window, and the default state has the console up.
+    ///
+    /// With the Object viewer showing more than one object there is not room for all
+    /// four bands, and the drawer — the pane that yields — shows the "needs more room"
+    /// hint. That is a sensible answer rather than a regression only because BOTH ways
+    /// out are one click and both are offered on the hint itself; `drawerFits` is
+    /// asserted true for each of them.
+    func testTheDefaultWindowCannotHoldAllFourBandsAndSaysSo() {
+        let window: CGFloat = 771
+        // One object: it fits, at exactly one row of the table.
+        let one = Self.ceiling(window: window, objects: 1)
+        XCTAssertTrue(PanelLayout.drawerFits(ceiling: one))
+        XCTAssertEqual(PanelLayout.drawerTableRows(
+            drawerHeight: PanelLayout.drawerHeight(frac: 0, windowHeight: window,
+                                                   maxHeight: one)), 1)
+        // Two or more — a target plus a design, which is the ordinary case — and it
+        // does not. The hint fires.
+        for objects in 2...5 {
+            XCTAssertFalse(
+                PanelLayout.drawerFits(ceiling: Self.ceiling(window: window,
+                                                             objects: objects)),
+                "\(objects) objects at 771pt with the console up")
+        }
+        // Both of the hint's buttons lead somewhere the drawer fits, at every one of
+        // those object counts. A hint that could not be acted on would be the real bug.
+        for objects in 2...5 {
+            XCTAssertTrue(
+                PanelLayout.drawerFits(ceiling: Self.ceiling(window: window,
+                                                             console: false,
+                                                             objects: objects)),
+                "Hide Console with \(objects) objects")
+            XCTAssertTrue(
+                PanelLayout.drawerFits(ceiling: Self.ceiling(window: window,
+                                                             objects: nil)),
+                "Hide Sequences with \(objects) objects")
         }
     }
 
-    /// The 800pt window the design was argued on, and the 771pt one the app's own
-    /// persisted size uses — with the console OPEN, which is what a user has.
-    func testTheReviewedWindowsDivideIntoABandAndATable() {
-        for window in [CGFloat(771), 800, 854] {
-            let ceiling = Self.ceiling(window: window, console: true)
-            XCTAssertTrue(PanelLayout.drawerFits(ceiling: ceiling, bandVisible: true),
-                          "\(window)pt: \(ceiling)pt of column against a"
-                          + " \(PanelLayout.minDrawerHeight(bandVisible: true))pt minimum")
-            let h = PanelLayout.drawerHeight(frac: 0, windowHeight: window,
-                                             maxHeight: ceiling, bandVisible: true)
-            let band = PanelLayout.sequenceBandHeight(objects: 3, drawerHeight: h)
-            XCTAssertGreaterThanOrEqual(band, PanelLayout.macMinBandHeight)
-            XCTAssertGreaterThanOrEqual(
-                h - PanelLayout.macDrawerHeaderHeight - band - PanelLayout.macBandDividerHeight,
-                PanelLayout.macMinTabContentHeight,
-                "\(window)pt: the tab half keeps its one-row minimum")
-            XCTAssertGreaterThanOrEqual(
-                PanelLayout.drawerTableRows(drawerHeight: h, bandObjects: 3), 1)
+    /// The Object viewer's height formula, which is the strip's own and has never
+    /// changed — not when #419 moved the rows into a tab, not when #456 made them a
+    /// band, not when #457 brought the pane back.
+    func testTheObjectViewerKeepsTheStripsHeightFormula() {
+        XCTAssertEqual(PanelLayout.sequenceStripIdealHeight(objects: 1), 60)
+        XCTAssertEqual(PanelLayout.sequenceStripIdealHeight(objects: 2), 90)
+        XCTAssertEqual(PanelLayout.sequenceStripIdealHeight(objects: 5), 180)
+        XCTAssertEqual(PanelLayout.sequenceStripIdealHeight(objects: 99), 180,
+                       "capped at five rows")
+        XCTAssertEqual(PanelLayout.sequenceStripIdealHeight(objects: 0), 60,
+                       "an empty viewer still occupies one row's worth")
+        XCTAssertGreaterThan(PanelLayout.sequenceStripIdealHeight(objects: 5), 130,
+                             "the flat 130pt cap #419 briefly used was below what five"
+                             + " rows need")
+    }
+
+    /// The `.id()` that makes the VSplitView re-adopt the pane's ideal height when an
+    /// object loads. It has to change exactly when the ideal height does, and not on
+    /// every count, or the divider is reset on every unrelated load.
+    func testTheViewersIdentityTracksTheRowsItCharges() {
+        XCTAssertEqual(PanelLayout.sequenceStripRows(objects: 0), 1)
+        XCTAssertEqual(PanelLayout.sequenceStripRows(objects: 1), 1)
+        XCTAssertEqual(PanelLayout.sequenceStripRows(objects: 3), 3)
+        XCTAssertEqual(PanelLayout.sequenceStripRows(objects: 5), 5)
+        XCTAssertEqual(PanelLayout.sequenceStripRows(objects: 40), 5,
+                       "past the five-row cap the ideal height stops moving, so the"
+                       + " identity has to stop moving with it")
+        for objects in [0, 1, 2, 5, 99] {
+            XCTAssertEqual(
+                PanelLayout.sequenceStripIdealHeight(objects: objects),
+                CGFloat(PanelLayout.sequenceStripRows(objects: objects)) * 30 + 30,
+                "the layout's height and its identity are the same formula")
         }
     }
 
-    /// The band yields rather than squeezing the table out, and what it gives up is
-    /// exactly what the tab half needs — never more, never less.
-    func testTheBandYieldsBeforeTheTabContentDoes() {
-        // A drawer sized for the band-off default: five objects want 180pt and cannot
-        // have it, because the tab half's one row comes first.
-        let tight = PanelLayout.macDefaultDrawerHeight
-        let band = PanelLayout.sequenceBandHeight(objects: 5, drawerHeight: tight)
-        XCTAssertLessThan(band, PanelLayout.sequenceBandIdealHeight(objects: 5))
-        XCTAssertEqual(tight - PanelLayout.macDrawerHeaderHeight - band
-                       - PanelLayout.macBandDividerHeight,
-                       PanelLayout.macMinTabContentHeight, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.drawerTableRows(drawerHeight: tight, bandObjects: 5), 1)
-        // In a drawer with room it takes its ideal and no more.
-        XCTAssertEqual(PanelLayout.sequenceBandHeight(objects: 5, drawerHeight: 500),
-                       PanelLayout.sequenceBandIdealHeight(objects: 5), accuracy: 1e-9)
-    }
-
-    /// And it never goes below the floor: a two-point band is not a sequence view, and
-    /// a drawer that short is `drawerFits`' case, not the band's.
-    func testTheBandNeverShrinksBelowItsFloor() {
-        XCTAssertEqual(PanelLayout.sequenceBandHeight(objects: 5, drawerHeight: 100),
-                       PanelLayout.macMinBandHeight, accuracy: 1e-9)
-        XCTAssertEqual(PanelLayout.sequenceBandHeight(objects: 1, drawerHeight: 0),
-                       PanelLayout.macMinBandHeight, accuracy: 1e-9)
-    }
-
-    /// The band must not be able to make the drawer it lives in unreachable. Below its
-    /// threshold the hint shows — and the hint offers "Hide Sequences", which is a
-    /// height the same window DOES fit.
-    func testAWindowTooShortForTheBandStillFitsTheDrawerWithoutIt() {
-        // ~720-740pt with the console open: room for the drawer, not for the drawer
-        // plus the band, now that both minimums mean what they say. That gap is the
-        // hint's, and the hint offers Hide Sequences.
-        for window in [CGFloat(720), 740] {
-            XCTAssertTrue(PanelLayout.drawerFits(ceiling: Self.ceiling(window: window),
-                                                 bandVisible: false), "\(window)pt")
-            XCTAssertFalse(PanelLayout.drawerFits(ceiling: Self.ceiling(window: window),
-                                                  bandVisible: true), "\(window)pt")
-        }
-        // Shorter still and neither fits; closing the console is the way out.
-        XCTAssertFalse(PanelLayout.drawerFits(ceiling: Self.ceiling(window: 700),
-                                              bandVisible: false))
-        XCTAssertTrue(PanelLayout.drawerFits(ceiling: Self.ceiling(window: 700,
-                                                                   console: false),
-                                             bandVisible: true))
-        // #446's worst cases keep the answer #419 gave them with the band off.
-        for window in [CGFloat(800), 771, 854, 900] {
-            XCTAssertTrue(PanelLayout.drawerFits(ceiling: Self.ceiling(window: window),
-                                                 bandVisible: false),
-                          "\(window)pt regressed with the band off")
-        }
-    }
-
-    /// The drawer's ceiling in a real column, the way the layout computes it.
-    private static func ceiling(window: CGFloat, console: Bool = true) -> CGFloat {
+    /// The drawer's ceiling in a real column, the way the layout computes it: console
+    /// at its default, rail up, and the Object viewer showing `objects` objects (nil =
+    /// ⌘2 off).
+    private static func ceiling(window: CGFloat, console: Bool = true,
+                                objects: Int? = 5) -> CGFloat {
         let h = console ? PanelLayout.consoleHeight(
             frac: 0, windowHeight: window,
             defaultHeight: PanelLayout.macDefaultConsoleHeight,
@@ -525,7 +539,8 @@ final class PanelLayoutTests: XCTestCase {
             maxHeight: PanelLayout.maxConsoleHeight(windowHeight: window)) : nil
         return PanelLayout.drawerCeiling(
             windowHeight: window,
-            used: PanelLayout.drawerColumnUsed(consoleHeight: h, topRail: true))
+            used: PanelLayout.drawerColumnUsed(consoleHeight: h, topRail: true,
+                                               sequenceRows: objects))
     }
 
     func testDrawerMinimumCoversItsOwnChromePlusARow() {
@@ -537,26 +552,41 @@ final class PanelLayoutTests: XCTestCase {
     }
 
     func testDrawerColumnUsedChargesEachPaneOnce() {
-        let bare = PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false)
+        let bare = PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false,
+                                                sequenceRows: nil)
         XCTAssertEqual(bare, PanelLayout.macColumnChromeAllowance, accuracy: 1e-9)
         XCTAssertEqual(
-            PanelLayout.drawerColumnUsed(consoleHeight: 130, topRail: false),
+            PanelLayout.drawerColumnUsed(consoleHeight: 130, topRail: false,
+                                         sequenceRows: nil),
             bare + 130 + PanelLayout.macConsoleDividerHeight, accuracy: 1e-9)
         XCTAssertEqual(
-            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: true),
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: true,
+                                         sequenceRows: nil),
             bare + PanelLayout.macTopRailHeight, accuracy: 1e-9)
-        // Both at once, charged once each — the arithmetic this guards is a pane
+        // The Object viewer is charged at its IDEAL height (rows × 30 + 30), capped at
+        // five rows, which is the same formula the VSplitView is given (#457). Charging
+        // its 24pt floor instead overflowed the column by a row, because the split only
+        // squeezes the pane when the USER drags it.
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false,
+                                         sequenceRows: 2),
+            bare + 90, accuracy: 1e-9)
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false,
+                                         sequenceRows: 99),
+            bare + 180, accuracy: 1e-9)
+        // An empty viewer still occupies one row's worth while it is showing.
+        XCTAssertEqual(
+            PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false,
+                                         sequenceRows: 0),
+            bare + 60, accuracy: 1e-9)
+        // All three at once, charged once each — the arithmetic this guards is a pane
         // counted twice, which is what put the drawer's footer off the window.
         XCTAssertEqual(
-            PanelLayout.drawerColumnUsed(consoleHeight: 130, topRail: true),
-            bare + 130 + PanelLayout.macConsoleDividerHeight + PanelLayout.macTopRailHeight,
-            accuracy: 1e-9)
-        // #419: there is no sequence-strip term any more. The strip is a tab INSIDE
-        // the drawer, so it takes the drawer's own height and cannot also be charged
-        // against it — a column with the Sequences tab showing costs the same as one
-        // with the Table tab showing.
-        XCTAssertEqual(PanelLayout.drawerColumnUsed(consoleHeight: nil, topRail: false),
-                       bare, accuracy: 1e-9)
+            PanelLayout.drawerColumnUsed(consoleHeight: 130, topRail: true,
+                                         sequenceRows: 3),
+            bare + 130 + PanelLayout.macConsoleDividerHeight + PanelLayout.macTopRailHeight
+            + 120, accuracy: 1e-9)
     }
 
     // MARK: - key namespace

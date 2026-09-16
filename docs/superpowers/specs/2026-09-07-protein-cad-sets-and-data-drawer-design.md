@@ -81,32 +81,31 @@ Three verbs connect the levels:
 ## 4. Layout
 
 The right inspector stays what it is: the *scene* column. Tables want width, so the set
-browser is a **Data drawer** across the bottom, above the console, where the sequence
-strip lives today. The sequence strip moves into the drawer — as a **band in its
-chrome, above the tab bar**, not as a tab (amended 2026-09-15, #456; see §8 decision 2).
-⌘2 toggles the band whatever tab is showing, and with no set open the drawer is the band
-alone, which is the strip in its new home.
+browser is a **Data drawer** across the bottom, above the console.
+
+There are **two independent sequence viewers** (amended 2026-09-16, #457; see §8
+decision 2). The **Object viewer** — today's sequence strip, `SequencePanel` — stays in
+its own pane at the TOP, above the viewport, with its own divider and ⌘2. The **Entry
+viewer** is the drawer's Sequences tab. They are two different nouns, so they are two
+different viewers: neither one's placement or visibility depends on the other's.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ toolbar ▸ mode strip (View · Move · Measure · Design · Binder)   Predict ▾   │
 ├────────────────────────────────────────────────────────┬────────────────────┤
-│                                                        │ Objects Scenes …   │
-│                                                        │ ▾ OBJECTS          │
-│                  3D viewport                           │   ☑ 4HHB_target    │
+│ 4HHB_target A MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWT… │ Objects Scenes …   │ ← OBJECT viewer (⌘2)
+│ d_0417      A GSHMNAFDENNIPKGPYEWYFKSRNFIPADDFEYEQMMP… │ ▾ OBJECTS          │   its own pane, own divider
+│ ═══════════════ (drag divider) ════════════════════════│   ☑ 4HHB_target    │
 │                                                        │   ▾ rfd3_a1  5/1024│
-│   focus entry solid · pinned entries colored           │     ☑ d_0417 ★     │
-│   peeked entry outlined · ensemble ghost (opt.)        │     ☑ d_0088       │
-│                                                        │ ▾ SETS             │
-│                                                        │   rfd3_a1    1024 ▮▮▯│
+│                  3D viewport                           │     ☑ d_0417 ★     │
+│                                                        │     ☑ d_0088       │
+│   focus entry solid · pinned entries colored           │ ▾ SETS             │
+│   peeked entry outlined · ensemble ghost (opt.)        │   rfd3_a1    1024 ▮▮▯│
 │                                                        │   mpnn_a1    8192 ▮▮▮│
 │                                                        │   boltz_a1    212 ▮▯▯│
 │                                                        │ ▾ SELECTIONS       │
 ├────────────────────────────────────────────────────────┴────────────────────┤
-│ DATA · rfd3_a1                          3 of 1024 staged · budget 6  ⌘2  ✕ │
-│ 4HHB_target  A  MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLST…       │ ← band
-│ d_0417       A  GSHMNAFDENNIPKGPYEWYFKSRNFIPADDFEYEQMMPFRGCVQKRHEVKG       │
-│ ─────────────────────────────────────────────────────────────────────────── │
+│ DATA · rfd3_a1                             3 of 1024 staged · budget 6   ✕ │
 │ [Table] [Plot] [Sequences] [Lineage]     filter: plddt>80… ⌕   212 of 1024 │
 │ ☆ 👁 id      plddt ▾  iptm   rmsd   len  tool   parent    tags              │
 │ ★ ● d_0417   91.2    0.84   1.1    72   rfd3   4HHB      hydrophobic-patch │
@@ -118,13 +117,24 @@ alone, which is the strip in its new home.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The band is the **scene** sequences — one row per enabled object — and it is above the
-tab bar because it is the drawer's chrome, not one tab's content. It stays up whichever
-tab is selected, which is the point: "what residues am I looking at" and "which
-candidates pass" are two questions a user asks at the same time. Turning it off (⌘2, the
-header switch, the rail's **Seq** pill) gives its height back to the tab below; with no
-set open the drawer is the band and nothing else, with no tab bar at all. The tab strip
-therefore shares the filter row rather than the header row.
+On the **Sequences** tab the drawer's body is the ENTRY viewer instead — one row per
+selected or filtered entry, with its heat strip — while the Object viewer at the top is
+untouched. That is the picture the decision is for: both viewers on screen, showing two
+different things, neither able to take the other's place.
+
+The **Object viewer** is one row per enabled scene object (#380). Its ideal height is
+`min(max(objects, 1), 5) × 30 + 30`, capped at 400, and it is drag-resizable. ⌘2, the
+View menu and the rail's **Seq** pill toggle it and nothing else.
+
+The **Entry viewer** is the drawer's Sequences tab, toggled by the drawer's own
+visibility (⌘4) and tab selection. With no set open the drawer shows "No set open" —
+every tab here is a view of a set.
+
+Both panes compete for the same column, and the drawer is the one that yields: in a
+window that cannot hold the console, the Object viewer, a viewport and a drawer with one
+table row, the drawer draws a one-line "needs more room" hint offering **Hide Console**
+and **Hide Sequences**. At the app's 771pt default height with the console up, that is
+the state from two enabled objects on.
 
 ### 4.1 Inspector: a SETS section
 
@@ -164,9 +174,9 @@ parent, gap-aware when an alignment object is enabled. Per-residue metrics (pLDD
 native fit, certainty) draw as a heat strip under each row using the same domains Design
 mode uses.
 
-Scene objects are **not** rows here (amended 2026-09-15, #456). They are the drawer's
-band, above the tab bar — see §4 and §8 decision 2. This tab is one noun, entries; the
-band is the other, objects.
+Scene objects are **not** rows here (amended 2026-09-15 #456, 2026-09-16 #457). They are
+the Object viewer's, in its own pane above the viewport — see §4 and §8 decision 2. This
+tab is one noun, entries; the Object viewer is the other, objects.
 
 ### 4.5 Drawer: Lineage tab
 
@@ -267,23 +277,40 @@ Recommendations first.
 
 1. **Does every batch become a set, even `n_designs=1`?** Yes. One model. A one-entry set
    auto-stages its entry, so the user experience for `n=1` is unchanged.
-2. **Does the sequence strip move into the drawer?** Yes. Two sequence views would compete.
+2. **Does the sequence strip move into the drawer?** ~~Yes. Two sequence views would
+   compete.~~ **No — there are TWO sequence viewers, and they are independent**
+   (reversed 2026-09-16, #457; supersedes #419's tab and #456's band).
 
-   **As a band, not as a tab** (amended 2026-09-15, #456). #419 shipped it as the top
-   half of the Sequences tab, which made the scene rows and the tab's entry rows
-   *alternatives*: you could not watch the scene sequence while triaging in the Table.
-   That is wrong, because the two are different nouns. The strip shows the sequences of
-   the **enabled scene objects** — an Object view. The tab's rows show the **contents of
-   a set** — an Entry view. That is the Entry/Object split this whole design is built on
-   (§2, §3), and two different nouns may not be alternatives; "what residues am I looking
-   at" and "which candidates pass" are the ordinary case of two questions at once.
+   Javier: *"there should be two sequence viewers operating independently. One for the
+   sequences of the enabled objects in the session and a separate one to examine the
+   sequences of a set. The first one should be the current one in its top position, the
+   latter should be displayed on the drawer."*
 
-   "Two sequence views would compete" is satisfied by there being exactly **one** scene
-   view, and it is in the drawer's chrome: a band above the tab bar, drawn whatever tab
-   is selected, toggled by ⌘2 independently of the tab. With no set open the drawer is
-   that band alone — no tab bar, no tab content — which is the old rule ("the Sequences
-   tab with no set open shows exactly what the strip shows today") restated where it
-   belongs: *working without a set* is a property of the band, not of a tab.
+   The reasoning, which is the reasoning this whole design rests on: the strip is an
+   **Object** view — the sequences of the enabled scene objects — and a set's entry rows
+   are an **Entry** view — the contents of a set. That is the Entry/Object split of §2
+   and §3. Two nouns are two viewers. They are therefore **independently placed** (the
+   Object viewer in its own pane at the top, above the viewport, where it has always
+   been; the Entry viewer in the drawer's Sequences tab) and **independently toggled**
+   (⌘2 for the first, the drawer's own visibility and tab for the second). Not one view,
+   not alternatives, not stacked in one container.
+
+   "Two sequence views would compete" was the original argument for the move, and it was
+   wrong twice over. It read *competition for pixels* as a reason to merge two things
+   that are not the same thing — and merging them cost more than it saved: #419 made
+   them alternatives, so you could not watch the scene sequence while triaging in the
+   Table, and #456's band fixed that by putting an Object view inside an Entry
+   container, where its height came out of the set's table. What the panes actually
+   compete for is **column height**, which is a layout question with a layout answer:
+   each viewer is independently closable, the drawer is the pane that yields, and when
+   there is not room for all of them the drawer says so and offers to close either pane
+   above it (§4).
+
+   No migration carries anyone across the reversal, and none is needed: the drawer has
+   never shipped, so #419's and #456's one-time migrations only ever ran against dev
+   builds. Both are deleted along with their keys, and `raymol.panels.sequenceVisible`
+   is the Object viewer's single source of truth again, on every platform — iPad and
+   iPhone never stopped drawing the pane in its own slot.
 3. **Sidecar bundle vs. embed in `.pse` vs. a new container?** New single-file container,
    `.raymol`, a SQLite database carrying the `.pse` as a blob. Decided 2026-09-07: one file
    for portability, incremental writes for crash safety and cheap saves, random access for

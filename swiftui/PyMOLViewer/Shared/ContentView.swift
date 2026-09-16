@@ -605,25 +605,20 @@ struct ContentView: View {
     // macOS: the Data drawer (#417) as a definite-height band BELOW the viewport,
     // with its own drag divider above it — the console's recipe (macConsoleBand),
     // for the console's reason: a VSplitView pane converges on its content height
-    // and cannot report a size to persist. It is a BOTTOM band. #419 folded the
-    // sequence strip into it as a tab, so the split above holds the viewport alone
-    // and the two no longer compete for the column — which is why `drawerColumnUsed`
-    // stopped charging a strip, and why the drawer now fits in windows where the
-    // "needs more room" hint used to show.
+    // and cannot report a size to persist. It is a BOTTOM band, and the Object
+    // sequence viewer is a TOP pane (#457): two viewers, two slots, each with its own
+    // divider and its own toggle, which is why `drawerColumnUsed` charges the viewer
+    // against this column again. The drawer is the one that yields when they do not
+    // both fit — see macDrawerNoRoomHint, which offers to close either pane above it.
     @ViewBuilder
     private func macDrawerBand(windowHeight: CGFloat) -> some View {
         let ceiling = macDrawerCeiling(windowHeight: windowHeight)
-        // The scene band (#456) takes its height from the DRAWER, not from the column,
-        // so what it changes here is the drawer's own minimum: a drawer that cannot
-        // hold the band's floor AND one row of the tab under it is the hint's case.
-        let band = engine.sequenceBandVisible
-        if PanelLayout.drawerFits(ceiling: ceiling, bandVisible: band) {
+        if PanelLayout.drawerFits(ceiling: ceiling) {
             let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac),
-                                             windowHeight: windowHeight, maxHeight: ceiling,
-                                             bandVisible: band)
+                                             windowHeight: windowHeight, maxHeight: ceiling)
             VStack(spacing: 0) {
                 macDrawerDivider(windowHeight: windowHeight)
-                DataDrawer(height: h).frame(height: h)
+                DataDrawer().frame(height: h)
             }
         } else {
             // Not enough column left for even one row (#417 review). A stub that
@@ -648,12 +643,15 @@ struct ContentView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(themeManager.active.accent.color)
             }
-            // The scene band is the other thing that can tip a drawer under its
-            // minimum (#456), and unlike the console it is INSIDE the drawer — so
-            // without this offer the band could make the drawer it lives in
-            // unreachable, with no way back but a window resize.
-            if engine.sequenceBandVisible {
-                Button("Hide Sequences") { engine.hideSequenceBand() }
+            // The Object sequence viewer is the OTHER pane charged against this column
+            // (#457), and at five objects it is worth 180pt of it — more than the
+            // console. The offer is here for the console's reason: the user chooses
+            // which of the two panes above the drawer to give up, in one click rather
+            // than a window resize. It was here before #419 too, wording and all; #456
+            // had a button of the same name that hid a band INSIDE the drawer, which
+            // is a different thing that no longer exists.
+            if engine.sequenceVisible {
+                Button("Hide Sequences") { engine.sequenceVisible = false }
                     .buttonStyle(.plain)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(themeManager.active.accent.color)
@@ -667,7 +665,7 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .frame(height: 22)
         .background(themeChromeBg)
-        .help("Enlarge the window, close the console, or hide the scene sequences to "
+        .help("Enlarge the window, or close the console or the sequence viewer, to "
               + "make room for the Data drawer. The set stays open.")
     }
 
@@ -685,8 +683,9 @@ struct ContentView: View {
                 minHeight: PanelLayout.macMinConsoleHeight,
                 maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight))
             : nil
-        let used = PanelLayout.drawerColumnUsed(consoleHeight: console,
-                                                topRail: macAnyTopPane)
+        let used = PanelLayout.drawerColumnUsed(
+            consoleHeight: console, topRail: macAnyTopPane,
+            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil)
         return PanelLayout.drawerCeiling(windowHeight: windowHeight, used: used)
     }
 
@@ -708,13 +707,12 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { v in
-                        // Same floor the band's `drawerFits` uses, so the drag and the
-                        // hint cannot disagree about whether a height is usable (#456).
-                        let minH = PanelLayout.minDrawerHeight(
-                            bandVisible: engine.sequenceBandVisible)
+                        // The same floor `drawerFits` uses, so the drag and the hint
+                        // cannot disagree about whether a height is usable (#456).
+                        let minH = PanelLayout.minDrawerHeight()
                         let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
                             frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
-                            maxHeight: maxH, bandVisible: engine.sequenceBandVisible)
+                            maxHeight: maxH)
                         macDrawerDragAnchor = start
                         let h = min(max(start - v.translation.height, minH), maxH)
                         if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
@@ -796,6 +794,17 @@ struct ContentView: View {
     }
 
     private var macOSLayoutBase: some View {
+        // The OBJECT sequence viewer's height: 1–5 sequence rows (~26pt each + 8pt
+        // padding) so it can't grow into the viewport, with a minHeight a few pt below
+        // the cap so the VSplitView still hands the user a draggable splitter (a strict
+        // min == max would freeze it). Beyond five rows the pane scrolls, or the user
+        // drags the splitter open. The formula is `PanelLayout`'s because
+        // `drawerColumnUsed` charges the pane against the same column with the same
+        // number (#457) — two copies of it is one edit away from a drawer sized against
+        // a viewer a row taller than the layout thinks.
+        let seqRows = PanelLayout.sequenceStripRows(objects: engine.sequences.count)
+        let seqH = PanelLayout.sequenceStripIdealHeight(objects: engine.sequences.count)
+
         // The window's content height, used for the console's 1/5 default and its
         // persisted share (#331/#332). A GeometryReader is the only reliable source
         // here: measuring the column with a preference key reported an inflated
@@ -842,9 +851,26 @@ struct ContentView: View {
                     macConsoleBand(windowHeight: winGeo.size.height)
                 }
             VSplitView {
-                // #419: the sequence strip's slot is gone. The rows are the Data
-                // drawer's Sequences tab now (spec §8 decision 2), so there is one
-                // sequence view rather than two competing for the column.
+                // The OBJECT viewer, back in its own slot above the viewport (#457).
+                // It shows the sequences of the ENABLED SCENE OBJECTS (#380); the
+                // drawer's Sequences tab shows the entries of a SET. Two nouns, two
+                // viewers: this one is ⌘2's and the drawer's is the drawer's, and
+                // neither one's placement depends on the other. #419 deleted this slot
+                // and #456 put the rows in the drawer's chrome; both are reverted, and
+                // iPad/iPhone never stopped drawing `SequencePanel()` here.
+                if engine.sequenceVisible {
+                    SequencePanel()
+                        // idealHeight grows with the sequence count (up to 5 rows);
+                        // maxHeight stays large so the user can drag the splitter
+                        // open further. .id(seqRows) forces the VSplitView to
+                        // re-adopt idealHeight when the row count changes (otherwise
+                        // a pinned divider keeps the panel at its first-seen height,
+                        // hiding sequences loaded later).
+                        .frame(minHeight: PanelLayout.macMinSequenceStripHeight,
+                               idealHeight: seqH,
+                               maxHeight: PanelLayout.macMaxSequenceStripHeight)
+                        .id(seqRows)
+                }
 
                 // The viewport takes the remaining (majority of) space, with the
                 // Timeline transport docked beneath it whenever there's more than
@@ -1055,7 +1081,7 @@ struct ContentView: View {
     // rail floating too they would land on the same spot. Predict is NOT: PredictBar
     // docks inside macViewportStack, ABOVE the rail's overlay.
     private var macAnyTopPane: Bool {
-        showCommandPanel
+        showCommandPanel || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode || engine.binderDesignMode
     }
@@ -1616,25 +1642,6 @@ struct ContentView: View {
         return isPhoneLandscape ? $landConsole : $showCommandPanel
         #else
         return $showCommandPanel
-        #endif
-    }
-    /// The rail's Seq pill. On iOS it is the strip's flag; on macOS, where #419
-    /// removed the strip slot and #456 made the scene rows the drawer's BAND, it is the
-    /// band's flag — the same control over the same rows, in the place they moved to.
-    /// One binding rather than a platform branch at the pill: the pill's job is "show
-    /// me the sequence", and which pane that means is this property's business.
-    ///
-    /// Turning it off no longer has to ask which TAB is showing. That test existed
-    /// because the rows lived in one, and it is exactly the coupling #456 removed.
-    private var sequenceBinding: Binding<Bool> {
-        #if os(macOS)
-        return Binding(
-            get: { engine.sequenceBandShowing },
-            set: { on in
-                if on { engine.showSequenceBand() } else { engine.hideSequenceBand() }
-            })
-        #else
-        return $engine.sequenceVisible
         #endif
     }
     private var objectsBinding: Binding<Bool> {
@@ -2764,7 +2771,10 @@ struct ContentView: View {
                        shortcut: AppShortcuts.consolePane)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
             // rendered as a literal "Abc", so the pill read "Abc Seq".
-            railTongue(icon: nil, label: "Seq", shown: sequenceBinding,
+            // #457: the Object viewer's own flag on both platforms again. The pill had
+            // a macOS branch while the rows lived in the drawer (#419's tab, #456's
+            // band); there is one pane and one flag now, so there is nothing to branch.
+            railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible,
                        shortcut: AppShortcuts.sequencePane)
             // Move / Measure / Design are mutually-exclusive interaction modes, so
             // they share ONE Tools pill that opens a menu (#304) instead of three
