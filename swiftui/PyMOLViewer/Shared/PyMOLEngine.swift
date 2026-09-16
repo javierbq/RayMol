@@ -212,6 +212,30 @@ final class PyMOLEngine: ObservableObject {
     @Published var dataDrawerVisible = PanelLayout.restoredDrawerVisible() {
         didSet {
             UserDefaults.standard.set(dataDrawerVisible, forKey: PanelLayout.dataDrawerVisibleKey)
+            // The drawer coming up is the band coming with it (`sequenceBandShowing`),
+            // so the SEQPANEL payload has to be fresh — the same false→true edge
+            // `sequenceVisible` has always fetched on, at the pane that owns it now.
+            if dataDrawerVisible && !oldValue && sequenceBandVisible { fetchSequences() }
+        }
+    }
+    /// The scene-sequence BAND in the drawer's chrome (#456): the sequences of the
+    /// ENABLED SCENE OBJECTS, above the tab bar, drawn on whatever tab is selected.
+    ///
+    /// Its own flag, its own ⌘2, its own persisted key — because it is its own view of
+    /// its own noun. #419 made it "the drawer, on the Sequences tab", which meant the
+    /// scene sequence and the candidate table were alternatives; they are different
+    /// questions ("what residues am I looking at" and "which candidates pass") and a
+    /// user asks both at once. macOS only until #420 gives the drawer a mobile layout;
+    /// iOS still has the strip as its own pane and `sequenceVisible` as its flag.
+    ///
+    /// Its INITIAL value is #456's one-time migration, which carries forward "was the
+    /// sequence view up" from both of the states a user can arrive in — see
+    /// `PanelLayout.sequenceBandMigration`.
+    @Published var sequenceBandVisible = PanelLayout.restoredSequenceBandVisible() {
+        didSet {
+            UserDefaults.standard.set(sequenceBandVisible,
+                                      forKey: PanelLayout.sequenceBandVisibleKey)
+            if sequenceBandVisible && !oldValue { fetchSequences() }
         }
     }
     /// Spec §2.1: the "this session now includes a set" sheet is shown once per
@@ -307,9 +331,12 @@ final class PyMOLEngine: ObservableObject {
     /// strip up" became "is the drawer up on Sequences", and six copies of a changed
     /// condition is six chances to leave one behind — which shows up as a tab that
     /// draws whatever the sequences were the last time something else refreshed them.
+    /// #456 changed it a second time, which is the argument for the property: the scene
+    /// rows are the drawer's BAND now, so the condition no longer mentions a tab at all
+    /// and the six call sites did not have to be found again.
     var wantsSequences: Bool {
         #if os(macOS)
-        return dataDrawerVisible && dataDrawerTab == .sequences
+        return sequenceBandShowing
         #else
         return sequenceVisible
         #endif
@@ -705,13 +732,13 @@ final class PyMOLEngine: ObservableObject {
         }
 
         // Test affordance: open the sequence viewer at launch so its layout (incl.
-        // alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1. Since #419
-        // that means the drawer's Sequences tab on macOS and the strip on iOS —
+        // alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1. Since #456
+        // that means the drawer's scene band on macOS and the strip on iOS —
         // whichever is the sequence viewer on this platform.
         if ProcessInfo.processInfo.environment["PYMOL_AUTOSEQ"] != nil {
             DispatchQueue.main.async { [weak self] in
                 #if os(macOS)
-                self?.showSequencesTab()
+                self?.showSequenceBand()
                 #else
                 self?.sequenceVisible = true
                 #endif
