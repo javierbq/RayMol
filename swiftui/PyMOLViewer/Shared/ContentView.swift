@@ -685,8 +685,34 @@ struct ContentView: View {
             : nil
         let used = PanelLayout.drawerColumnUsed(
             consoleHeight: console, topRail: macAnyTopPane,
-            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil)
+            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil,
+            mcpBanner: macMCPBannerShowing, dockedModeBar: macModeBarDocked)
         return PanelLayout.drawerCeiling(windowHeight: windowHeight, used: used)
+    }
+
+    // The two pieces of column chrome that come and go (#458). Both read the SAME
+    // state as the views that draw them, because a flag that can disagree with the
+    // view is the 48pt allowance's bug in a new shape.
+    //
+    // The banner is transient — it is up only while an MCP tool runs — so the drawer
+    // can lose a row for a few seconds and get it back. That is honest: the column
+    // really is 32pt shorter while it is there, and it is the same yield the drawer
+    // already does when the rail appears.
+    private var macMCPBannerShowing: Bool {
+        #if RAYMOL_MAS_RESTRICTED
+        // MCPDrivingBanner is compiled out of the restricted build, so nothing to charge.
+        return false
+        #else
+        // Exactly MCPDrivingBanner's own condition.
+        return mcpManager.activeTool
+        #endif
+    }
+
+    // `macViewportStack` docks PredictBar under `engine.predictMode` and
+    // BinderDesignBar under `engine.binderDesignMode`; the engine keeps the two
+    // mutually exclusive, which is why PanelLayout charges one bar, not two.
+    private var macModeBarDocked: Bool {
+        engine.predictMode || engine.binderDesignMode
     }
 
     // The drag handle ABOVE the drawer. Dragging up grows the drawer (the sign is
