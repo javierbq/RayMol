@@ -57,7 +57,7 @@ jobs:
           { head -n1 current.csv; tail -n +2 current.csv | grep -v "^\"${DATE}\"," || true; } > merged.csv
           cat today.csv >> merged.csv
           # PATCH the gist with the merged content.
-          jq -n --arg c "$(cat merged.csv)" \
+          jq -n --rawfile c merged.csv \
             "{files: {\"${FILE}\": {content: \$c}}}" \
             | gh api -X PATCH "/gists/${GIST_ID}" --input - --jq '.html_url'
           echo "Updated gist with $(($(wc -l < merged.csv) - 1)) total rows."

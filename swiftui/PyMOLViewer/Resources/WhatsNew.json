@@ -1,5 +1,30 @@
 [
   {
+    "version": "1.11.0",
+    "pages": [
+      {
+        "title": "Ray-traced by default",
+        "body": "Smoother spline cartoons meet real-time ray tracing — traced shadows and ambient occlusion in every frame, on by default on supported Macs.",
+        "videoName": "whatsnew-1110-raytrace"
+      },
+      {
+        "title": "Box select",
+        "body": "Drag a rectangle to select what's inside (⌃S), while a live chip names whatever you hover — object, chain, residue or atom.",
+        "imageName": "whatsnew-1110-boxselect"
+      },
+      {
+        "title": "The color menu returns",
+        "body": "PyMOL's tiered color menu is back — a row per hue, opened for its named variants. Plus center-all, a resizable sidebar, and one unified Tools menu.",
+        "imageName": "whatsnew-1110-colormenu"
+      },
+      {
+        "title": "Open sessions safely",
+        "body": "Opening a .pse over unsaved work now asks first — Save and Replace, Replace, or Cancel — so you never silently lose your session.",
+        "imageName": "whatsnew-1110-sessions"
+      }
+    ]
+  },
+  {
     "version": "1.10.0",
     "pages": [
       {

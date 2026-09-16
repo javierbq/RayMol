@@ -267,6 +267,14 @@ final class PyMOLEngine: ObservableObject {
     /// and this file compiles on both platforms. An ungated reference here is exactly the
     /// leak that has broken the iOS slice three times (#174, #226/#238).
     @Published var binderDesignMode = false
+    /// Experimental gate for Binder Design (#342). The RFD3 de-novo backbone path is not
+    /// ready to be a shipped, advertised feature yet, so the Tools-menu item and the
+    /// tool-picker row that ENTER the mode are hidden unless this is set. Off by default;
+    /// enable for a dev/experimental session with RAYMOL_EXPERIMENTAL_BINDER_DESIGN=1
+    /// (matches the debugPickEnabled / bullseyeEnabled env-flag pattern). The mode and its
+    /// controller still compile and run — this only controls whether the UI OFFERS it.
+    static let binderDesignExperimentalEnabled =
+        ProcessInfo.processInfo.environment["RAYMOL_EXPERIMENTAL_BINDER_DESIGN"] != nil
     #endif
     /// The OBJECT sequence viewer's visibility, on EVERY platform: the pane above the
     /// viewport that shows the sequences of the enabled scene objects (#380), with its

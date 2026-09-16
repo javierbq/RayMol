@@ -338,7 +338,7 @@ enum SceneCatalog {
         SceneParam(setting: "metal_shadows", label: "Shadows", kind: .toggle, group: "Shadows & AO",
                    help: "Real-time screen-space directional shadows."),
         SceneParam(setting: "metal_ssao",    label: "Ambient occlusion", kind: .toggle, group: "Shadows & AO",
-                   help: "Screen-space ambient occlusion — darkens crevices and contact points for depth."),
+                   help: "Screen-space ambient occlusion — darkens crevices and contact points for depth. Stays on with ray tracing, where it adds the crisp contact creases the traced occlusion alone leaves soft."),
 
         // --- Metal optimization: hardware ray tracing + GPU quality/perf knobs ---
         SceneParam(setting: "metal_raytrace", label: "Ray tracing (AO + shadows)", kind: .toggle, group: "Metal optimization",

@@ -208,7 +208,19 @@ public:
   // NEXT lit-VBO draw (cartoon/surface). Lets one rep clip tighter than the
   // global slab. front<0 disables per-rep clip (use the global slab only). The
   // member persists, so callers must set it before every draw. Default: no-op.
-  virtual void setRepClip(float front, float back) {}
+  // front/back are the eye-space clip depths for the lit fragment discard;
+  // fracFront/fracBack are the view-independent clip fractions (0..1, COM-
+  // referenced) the real-time RT rebuild signature folds so a camera move does
+  // not rebuild the acceleration structure. Default: no-op.
+  virtual void setRepClip(
+      float front, float back, float fracFront = 0.0f, float fracBack = 0.0f) {}
+
+  // Record the frame's BASE (camera-only) modelview, before any per-object
+  // Move-mode TTT is folded in. Real-time ray tracing uses it to express each
+  // caster in a single shared world space regardless of per-object pose, so
+  // shadows/AO follow a moved object (#427). Set once per frame by the scene,
+  // right after the camera modelview is loaded. Default: no-op.
+  virtual void setBaseModelView(const float* m) {}
 
   // Arm the surface outer-contour outline for the NEXT surface draw: enabled=true
   // stashes that draw to be outlined (coverage-boundary) after the scene; rgba is
@@ -350,10 +362,14 @@ public:
     int color2Off = -1;   // a_Color2
     int radiusOff = -1;   // attr_radius (Float)
     int flagsOff = -1;    // attr_flags (UByte: out/up/right corner code)
+    int capOff = -1;      // a_cap (UByte), when the CGO baked the cap/interp
+                          // bits PER CYLINDER; -1 => it emitted one constant
+                          // for the whole CGO, so use capConst instead
     int colorIsFloat = 0; // a_Color/a_Color2 format: 1=Float4, 0=UByte4Norm
     int flagsIsFloat = 0; // attr_flags format: 1=Float, 0=UByte
     float uniRadius = 0.0f;  // uni_radius (0 => use attr_radius directly)
-    float capConst = 15.0f;  // a_cap bits (default cCylShaderBothCapsRound)
+    float capConst = 15.0f;  // a_cap bits (default cCylShaderBothCapsRound);
+                             // only consulted when capOff < 0
     int ortho = 0;
     int noFlatCaps = 1;      // 1 => round caps (matches GL shader default)
     int interiorCap = 0;     // 1 = fill the slab cross-section with interior color
@@ -396,6 +412,13 @@ public:
       float specular, float shininess, float sssWrap = 0.0f)
   {
   }
+
+  // PyMOL key-light direction (cSetting_light). The direction toward the light
+  // used for shading and shadow casting is -normalize(light). Default: no-op
+  // (the GL renderer reads cSetting_light itself). The Metal renderer stores
+  // it and feeds it into its lit/shadow/RT shaders so shading and shadows
+  // follow the light setting. lightv is a 3-vector (eye space, PyMOL's light).
+  virtual void setKeyLightDir(const float* /*lightv*/) {}
 
   // MSAA sample count for the scene (opaque) pass. SceneRenderMetal calls this
   // each frame from the metal_msaa setting (4 = on, 1 = off). The renderer

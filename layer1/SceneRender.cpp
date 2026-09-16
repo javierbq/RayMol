@@ -411,6 +411,10 @@ void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo)
       G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
       G->Renderer->matrixMode(0); // modelview
       G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
+      // Real-time RT: remember the camera-only modelview so each object's
+      // Move-mode TTT can be separated out and its casters placed in the shared
+      // world space the shadow/AO rays trace against (#427, #425).
+      G->Renderer->setBaseModelView(SceneGetModelViewMatrixPtr(G));
     }
 
     /* get the Z axis vector for sorting transparent objects */
@@ -1968,7 +1972,15 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   }
   if (radius < 1.0f)
     radius = 1.0f;
-  glm::vec3 Ldir = glm::normalize(glm::vec3(0.4f, 0.4f, 1.0f)); // toward light
+  // Direction TOWARD the key light in eye space = -normalize(cSetting_light).
+  // PyMOL's default `light` reproduces the historical normalize(0.4,0.4,1.0), so
+  // the shadow-map camera (and thus where cast shadows fall) now follows `light`
+  // and stays consistent with the shaders' key-light direction.
+  const float* lightv = SettingGetGlobal_3fv(G, cSetting_light);
+  glm::vec3 Ldir(-lightv[0], -lightv[1], -lightv[2]);
+  if (glm::length(Ldir) < 1e-6f)
+    Ldir = glm::vec3(0.4f, 0.4f, 1.0f); // degenerate light: historical fallback
+  Ldir = glm::normalize(Ldir);          // toward light
   glm::vec3 up = (Ldir.z * Ldir.z < 0.81f) ? glm::vec3(0, 1, 0)
                                            : glm::vec3(1, 0, 0);
   glm::vec3 lightPos = centerEye + Ldir * (radius * 2.0f);
@@ -2107,6 +2119,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->loadMatrixf(proj);
     G->Renderer->matrixMode(0x1700); // GL_MODELVIEW = 0x1700
     G->Renderer->loadMatrixf(mv);
+    // Real-time RT (#427/#425): record the camera-only modelview on THIS path
+    // too — the Metal app renders through SceneRenderMetal, not SceneRender, so
+    // without it the pose delta degenerates to the full camera matrix and every
+    // caster is baked into eye space while the rays trace model space (#436).
+    G->Renderer->setBaseModelView(mv);
 
     // Push per-frame post-process params (depth-cue/fog + SSAO). Fog matches
     // SceneSetFog: FogStart/FogEnd are eye-space distances; proj[10]/[14] let
@@ -2232,6 +2249,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
         specReflect,
         specPower,
         SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
+    // Key-light direction: feed cSetting_light so shading AND shadows follow it
+    // (and become user-adjustable via `set light`). The renderer stores
+    // -normalize(light) as the direction toward the light; PyMOL's default light
+    // reproduces the historical hard-coded normalize(0.4,0.4,1.0).
+    G->Renderer->setKeyLightDir(SettingGetGlobal_3fv(G, cSetting_light));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next beginLiveFrame (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.

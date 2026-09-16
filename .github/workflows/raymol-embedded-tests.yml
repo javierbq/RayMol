@@ -51,6 +51,7 @@ jobs:
               testing/tests/test_appkit_object_panel.py \
               testing/tests/test_appkit_objpanel_poll.py \
               testing/tests/test_appkit_settings.py \
+              testing/tests/test_setting_redisplay.py \
               testing/tests/test_appkit_theme_preview.py \
               testing/tests/test_appkit_command_panel.py \
               testing/tests/test_appkit_menus.py \
@@ -77,6 +78,7 @@ jobs:
               testing/tests/raymol/design_region.py \
               testing/tests/raymol/design_saverestore.py \
               testing/tests/raymol/metal_pick.py \
+              testing/tests/raymol/metal_shader_sources.py \
               testing/tests/raymol/scene_ttt.py \
               testing/tests/raymol/shadow_extent.py \
               testing/tests/predict \

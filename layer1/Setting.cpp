@@ -2981,6 +2981,13 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
     break;
 #endif
   default:
+    // A setting with no dedicated side effect above still changes what the next
+    // frame looks like (e.g. the metal_* renderer knobs, surface_clip_front /
+    // _back): mark the scene dirty and ask for a redisplay so an on-demand
+    // draw loop repaints without waiting for a pointer event. Reps are not
+    // rebuilt and the ray-traced copy is kept — only a repaint is requested.
+    SceneDirty(G);
+    PyMOL_NeedRedisplay(G->PyMOL);
     break;
   }
 }

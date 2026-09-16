@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#include <simd/simd.h>
 
 #include <array>
 #include <atomic>
@@ -11,7 +12,9 @@
 #include <memory>
 #include <stack>
 #include <string>
+#include <map>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace pymol {
@@ -165,7 +168,9 @@ public:
       int posOffset, int normalOffset, int colorOffset, int colorType,
       const void* indexData, size_t indexDataSize, int interiorCap = 0) override;
   void setInteriorCapColor(float r, float g, float b, bool overrideColor) override;
-  void setRepClip(float front, float back) override;
+  void setRepClip(float front, float back, float fracFront = 0.0f,
+      float fracBack = 0.0f) override;
+  void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
@@ -186,6 +191,7 @@ public:
       int ortho = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
+  void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
   void setDofQuality(int level) override;
@@ -237,6 +243,7 @@ private:
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
   // and rebuilt only if a later call has a different stride.
+  void releaseCylinderPipelines();
   void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
@@ -330,8 +337,21 @@ private:
   id<MTLFunction> _vboVertexUnlitFlatFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
   id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
-  id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil;
-  NSUInteger _cylinderPipelineStride = 0; // stride the cyl pipeline was built for
+  // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
+  // offset) — not in a single slot. a_cap's offset is part of the vertex
+  // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
+  // a_cap) need different pipelines even at the same stride; a single slot would
+  // recompile the MSL library on every draw in a scene that has both, which is
+  // exactly Move mode (issue #441). Values are +1-owned (MRC): release each
+  // before erasing, like _vboCache. The three ivars below are NON-OWNING aliases
+  // of the entry selected by the last buildCylinderImpostorPipeline().
+  struct CylinderPipelines {
+    id<MTLRenderPipelineState> opaque = nil;
+    id<MTLRenderPipelineState> oit = nil;
+    id<MTLRenderPipelineState> shadow = nil;
+  };
+  std::map<std::pair<NSUInteger, int>, CylinderPipelines> _cylinderPipelines;
+  id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
   // fullscreen passes (SSAO, fog/depth-cue, FXAA) composite to the drawable.
@@ -413,7 +433,7 @@ private:
       size_t stride, int posOffset, int normalOffset, int colorOffset,
       int colorType, MTLVertexDescriptor* vd);
   id<MTLRenderPipelineState> _sphereOitPipeline = nil;
-  id<MTLRenderPipelineState> _cylinderOitPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;
   bool _oitActive = false;      // true while the transparent pass is rendering
@@ -446,6 +466,14 @@ private:
   // _repClipFront < 0 => disabled (use the global slab). Set via setRepClip.
   float _repClipFront = -1.0f;
   float _repClipBack = 1e6f;
+  // The clip's VIEW-INDEPENDENT fractions (surface_clip_front/back, 0..1,
+  // referenced to the surface COM). Unlike the eye-space {front,back} depths
+  // above (which drift with the camera), these change only when the user drags
+  // the clip, so the RT rebuild signature folds THESE — a plain zoom/orbit then
+  // triggers no acceleration-structure rebuild (no shadow/AO pop). Set via
+  // setRepClip alongside the eye-space depths.
+  float _repClipFracFront = 0.0f;
+  float _repClipFracBack = 0.0f;
   // Surface outer-contour outline (per-surface, coverage-boundary). When armed
   // (setRepContour), the next surface draw is stashed; after the scene the
   // stashed geometry is rendered to a coverage mask and a post pass outlines the
@@ -489,8 +517,7 @@ private:
   id<MTLRenderPipelineState> _vboShadowPipelineUByte = nil; // stride 28
   id<MTLRenderPipelineState> _vboShadowPipelineFloat = nil; // stride 40
   id<MTLRenderPipelineState> _sphereShadowPipeline = nil;   // Stage 3
-  id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3
-  NSUInteger _cylinderShadowStride = 0;
+  id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3, alias
   bool _shadowMode = false;       // true between begin/endShadowPass
   float _lightViewProjEye[16];    // eye-space light VP, column-major (PostU)
   float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box
@@ -572,6 +599,10 @@ private:
   // Defaults match the values the shaders previously hard-coded.
   float _lightAmbient = 0.14f, _lightDirect = 0.45f, _lightReflect = 0.481f;
   float _lightSpecular = 0.5f, _lightShininess = 55.0f;
+  // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
+  // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
+  // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
+  float _keyLightEye[3] = {0.34815531f, 0.34815531f, 0.87038828f};
   float _sssWrap = 0.0f;  // cSetting_metal_sss_wrap: 0 = pure Lambert (identity)
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
@@ -614,6 +645,20 @@ private:
   uint64_t _rtSphereHash = 0;     // signature of the built set (rebuild on change)
   size_t _rtBuiltCount = 0;
 
+  // Per-occurrence pose + clip captured alongside every _rtFrameKeys entry so
+  // the built AS reflects the CURRENTLY VISIBLE geometry, not the cached
+  // model-space geometry alone:
+  //  * _rtFrameXform: the object's Move-mode pose delta, base^-1 · M_obj. The
+  //    shared camera is divided out, so it is identity for an unmoved object and
+  //    equals its TTT for a moved one — a pure orbit leaves it unchanged (#427).
+  //  * _rtFrameClip: the per-rep clip slab {front,back} in eye depth active for
+  //    that draw (front<0 = none). Casters fully outside the slab are dropped so
+  //    surface-clipped-open cavities stop occluding (#425).
+  std::vector<Mat4> _rtFrameXform;
+  std::vector<std::array<float, 2>> _rtFrameClip;
+  Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
+  Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
+
   // Record this frame's use of the RT geometry derived from the CPU buffer
   // `key`, calling `extract(RTGeom&)` only when it has not been extracted yet
   // or when `params` (the draw-call scalars it depends on) changed. `alias`, if
@@ -639,10 +684,48 @@ private:
     if (g.spheres.empty() && g.tris.empty())
       return;
     _rtFrameKeys.push_back(key);
+
+    // Pose delta = base^-1 · M_obj: divides the shared camera out of this draw's
+    // modelview, leaving identity for an unmoved object and its Move-mode TTT for
+    // a moved one. Baked into the caster geometry at build so shadows/AO follow
+    // the object (#427); being camera-independent, an orbit does not perturb it.
+    simd_float4x4 baseInv, mObj;
+    std::memcpy(&baseInv, _rtBaseModelViewInv.data(), 64);
+    std::memcpy(&mObj, _modelviewMatrix.data(), 64);
+    simd_float4x4 d = simd_mul(baseInv, mObj);
+    Mat4 delta;
+    std::memcpy(delta.data(), &d, 64);
+    _rtFrameXform.push_back(delta);
+    _rtFrameClip.push_back({_repClipFront, _repClipBack});
+
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
     _rtFrameSig ^= g.gen;
     _rtFrameSig *= 1099511628211ULL;
+    // Fold the pose delta so a Move rebuilds the AS (camera-removed, so a pure
+    // orbit does not) ...
+    for (float f : delta) {
+      uint32_t b;
+      std::memcpy(&b, &f, 4);
+      _rtFrameSig = (_rtFrameSig ^ b) * 1099511628211ULL;
+    }
+    // ... and the CLIP FRACTIONS so dragging the clip re-syncs the caster set.
+    // surface_clip_front/back are referenced to the surface's center of mass — a
+    // VIEW-INDEPENDENT 0..1 fraction of the molecule depth — so the set of
+    // casters the clip drops depends only on the geometry, the pose delta (both
+    // folded above) and these fractions, NOT on the camera. Folding the
+    // fractions (rather than the camera-dependent eye-space slab / modelview)
+    // rebuilds the AS when the user drags the clip, while a plain zoom/orbit
+    // leaves the fractions unchanged and triggers NO rebuild — so RT shadows/AO
+    // no longer pop/flicker during camera moves while a surface clip is active
+    // (#425 stays fixed; regression from the earlier camera-folded signature).
+    {
+      uint32_t bf, bb;
+      std::memcpy(&bf, &_repClipFracFront, 4);
+      std::memcpy(&bb, &_repClipFracBack, 4);
+      _rtFrameSig = (_rtFrameSig ^ bf) * 1099511628211ULL;
+      _rtFrameSig = (_rtFrameSig ^ bb) * 1099511628211ULL;
+    }
   }
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.
