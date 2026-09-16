@@ -253,22 +253,73 @@ enum PanelLayout {
     /// The term was here before #419, went away while the scene rows lived inside the
     /// drawer (#419's tab, #456's band), and is back with the pane (#457). Two viewers
     /// means two claims on the column again, and the drawer is the one that yields.
+    ///
+    /// `mcpBanner` and `dockedModeBar` say what CHROME is on screen — see
+    /// `macColumnChrome`, which is where the conditional part of this sum lives (#458).
     static func drawerColumnUsed(consoleHeight: CGFloat?, topRail: Bool,
-                                 sequenceRows: Int?) -> CGFloat {
+                                 sequenceRows: Int?,
+                                 mcpBanner: Bool, dockedModeBar: Bool) -> CGFloat {
         var used: CGFloat = 0
         if let consoleHeight { used += consoleHeight + macConsoleDividerHeight }
         if topRail { used += macTopRailHeight }
         if let sequenceRows { used += sequenceStripIdealHeight(objects: sequenceRows) }
-        // Chrome that is not a pane but still takes column height: the two drag
-        // dividers' padding, the MCP "controlling" banner, a docked Predict or
-        // Binder bar. An allowance rather than a measurement — a few points of
-        // under-use beat a footer off the window.
-        return used + macColumnChromeAllowance
+        return used + macColumnChrome(mcpBanner: mcpBanner, dockedModeBar: dockedModeBar)
     }
 
     static let macConsoleDividerHeight: CGFloat = 5
     static let macTopRailHeight: CGFloat = 23
-    static let macColumnChromeAllowance: CGFloat = 48
+
+    // MARK: - column chrome that is not a pane (#458)
+
+    // Measured in the running app at its persisted 1332×771 (content height 719pt),
+    // the way #456's review measured the drawer's own parts: the constants name a view
+    // and the number is what that view actually occupies, not what it might.
+
+    /// `macDrawerDivider` — a 1pt hairline with 2pt of padding above and below. The
+    /// only part of the column chrome that is ALWAYS there, because it is drawn by the
+    /// very band whose ceiling is being computed. (The console's own divider is not
+    /// here; `drawerColumnUsed` charges it with the console.)
+    static let macDrawerDividerHeight: CGFloat = 5
+    /// `MCPDrivingBanner` while a tool call is running: one caption row and a small
+    /// Stop button inside 6pt of vertical padding, plus the green hairline it overlays
+    /// on its own bottom edge. Measured on screen with the banner up.
+    static let macMCPBannerHeight: CGFloat = 32
+    /// A docked `PredictBar` or `BinderDesignBar` plus the `Divider()` under it
+    /// (`macViewportStack`), in the two-row form both bars open in: a status row
+    /// (~29) and the input row (~36).
+    ///
+    /// An ALLOWANCE, unlike the two above, and deliberately the generous end of one:
+    /// both bars grow optional rows (a size warning, the MSA row, Advanced) and the
+    /// status label may wrap to two lines, so there is no single height to measure.
+    /// Rounding UP is the safe direction — an over-charged bar costs the drawer some
+    /// height it could have had, while an under-charged one over-commits a column
+    /// whose viewport has a HARD 360pt minimum (`macViewport`'s own frame), and that
+    /// is the footer-off-the-window case.
+    static let macDockedModeBarHeight: CGFloat = 72
+
+    /// What the column spends on chrome that is not a pane, given what is on screen.
+    ///
+    /// Flat 48pt until #458, defended there as "a few points of under-use beat a
+    /// footer off the window". The defence was sound and the number was not: two of
+    /// the three things it covered are CONDITIONAL, so with no banner and nothing
+    /// docked — the ordinary session — the real cost is the drawer's divider, 5pt, and
+    /// 43 of the 48 were reserved for chrome that is not on screen. That is two table
+    /// rows at `macDrawerRowHeight`, and at the app's own 1332×771 it was the
+    /// difference between a table and the "needs more room" hint.
+    ///
+    /// The flat number was wrong in the other direction too: 48 does not cover a
+    /// docked Predict bar (72) at all, so the one case it was meant to protect was the
+    /// one it under-charged. Charging for what is there is both more room in the
+    /// common case and more honest in the rare one.
+    ///
+    /// One flag for both bars: `setPredictMode` and `setBinderDesignMode` clear each
+    /// other, so only one can be docked at a time.
+    static func macColumnChrome(mcpBanner: Bool, dockedModeBar: Bool) -> CGFloat {
+        var chrome = macDrawerDividerHeight
+        if mcpBanner { chrome += macMCPBannerHeight }
+        if dockedModeBar { chrome += macDockedModeBarHeight }
+        return chrome
+    }
 
     /// The most the Data drawer may take, given `used` by the panes above it. The
     /// viewport keeps its own minimum out of what remains, exactly as the console's
