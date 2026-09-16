@@ -1128,10 +1128,10 @@ struct SequenceEntryRowsView: View {
         // The band is a statement about the WHOLE set, so it needs every sequence —
         // and above the threshold no row is displayed, so no row's `onAppear` fires
         // and the per-row loader would never run at all. Text only; the arrays stay
-        // per-row-lazy, and `loadSequencesForBand` is idempotent per set.
-        .onAppear { if model.isCollapsed { engine.loadSequencesForBand(setID: set.id) } }
+        // per-row-lazy, and `loadSequencesForConsensusBand` is idempotent per set.
+        .onAppear { if model.isCollapsed { engine.loadSequencesForConsensusBand(setID: set.id) } }
         .onChange(of: model.isCollapsed) { collapsed in
-            if collapsed { engine.loadSequencesForBand(setID: set.id) }
+            if collapsed { engine.loadSequencesForConsensusBand(setID: set.id) }
         }
     }
 

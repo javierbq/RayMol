@@ -195,7 +195,7 @@ final class PyMOLEngine: ObservableObject {
     var sequenceArrayOrder: [String] = []
     /// The set whose sequences have been bulk-read for the consensus band, so the
     /// read happens once per set rather than once per render.
-    var sequenceBandSetID: String? = nil
+    var consensusBandSetID: String? = nil
     /// The lineage graph (#419). Built when the Lineage tab is on screen and rebuilt
     /// when the container's version moves under it — never on a tick.
     @Published var lineageModel = LineageModel(entries: [])
@@ -231,6 +231,9 @@ final class PyMOLEngine: ObservableObject {
     /// Its INITIAL value is #456's one-time migration, which carries forward "was the
     /// sequence view up" from both of the states a user can arrive in — see
     /// `PanelLayout.sequenceBandMigration`.
+    /// Set when ⌘2 is what opened the drawer, so ⌘2 again can close it without ever
+    /// closing a drawer ⌘4 opened. Not published — nothing draws it.
+    var drawerOpenedByBand = false
     @Published var sequenceBandVisible = PanelLayout.restoredSequenceBandVisible() {
         didSet {
             UserDefaults.standard.set(sequenceBandVisible,

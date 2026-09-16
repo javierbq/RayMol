@@ -866,9 +866,73 @@ final class SequenceBandMigrationTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceBandVisibleKey))
     }
 
+    /// Case 4 for the user it actually exists to rescue (#456 review): #419 migrated
+    /// them and they never opened a set afterwards, so `dataDrawerTabKey` was never
+    /// written — `PyMOLEngine.dataDrawerTab`'s `didSet` does not fire on init, and
+    /// nothing else wrote it. The key is ABSENT here, which is the state #419 really
+    /// leaves; setting it by hand (as the test below this one does) was assuming away
+    /// the bug.
+    func testAMigratedUserWhoNeverTouchedATabStillGetsTheBand() throws {
+        let name = "raymol456.notab.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(true, forKey: PanelLayout.sequenceVisibleKey)
+
+        // #419, for real, against this domain — including the tab it chooses.
+        let strip = PanelLayout.migrateSequenceStrip(defaults: defaults)
+        XCTAssertTrue(strip.openSequencesTab)
+        XCTAssertEqual(defaults.string(forKey: PanelLayout.dataDrawerTabKey),
+                       DataDrawerTab.sequences.rawValue,
+                       "#419 chose Sequences; if it does not WRITE it, the choice is"
+                       + " gone by the next launch and #456 cannot see it")
+
+        // Now a launch of THIS build, with #419's flag spent and nothing else touched.
+        let later = try XCTUnwrap(UserDefaults(suiteName: name))
+        let answer = PanelLayout.migrateSequenceBand(
+            stripMigration: PanelLayout.migrateSequenceStrip(defaults: later),
+            defaults: later)
+        XCTAssertTrue(answer.bandVisible)
+    }
+
     func testTheBandKeysArePartOfTheNamespace() {
         XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceBandVisibleKey))
         XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceBandMigratedKey))
+    }
+}
+
+// MARK: - What the drawer draws, and what ⌘2 closes (#456)
+
+final class DataDrawerContentTests: XCTestCase {
+
+    func testTheFourShapesOfTheDrawer() {
+        XCTAssertEqual(DataDrawer.content(hasSet: true, bandVisible: true), .bandOverTabs,
+                       "the point of #456: the scene sequences and the set together")
+        XCTAssertEqual(DataDrawer.content(hasSet: true, bandVisible: false), .tabsAlone)
+        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: true), .bandAlone,
+                       "no set open: the strip, in its new home, with no tab bar")
+        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: false), .empty)
+    }
+
+    /// `worksWithoutASet` is a claim about the BAND now, not about a tab — and it is
+    /// load-bearing rather than decorative: it is what makes the no-set drawer draw the
+    /// band instead of the "No set open" copy.
+    func testTheNoSetDrawerIsTheBandBecauseTheBandWorksWithoutASet() {
+        XCTAssertTrue(SequenceBandView.worksWithoutASet)
+        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: true),
+                       SequenceBandView.worksWithoutASet ? .bandAlone : .empty)
+    }
+
+    /// ⌘2 must never close a drawer ⌘4 opened (#456 review).
+    func testHidingTheBandOnlyClosesTheDrawerItOpened() {
+        XCTAssertTrue(PyMOLEngine.drawerClosesWithBand(hasSet: false, openedByBand: true),
+                      "⌘2 opened it and there is nothing else in it")
+        XCTAssertFalse(PyMOLEngine.drawerClosesWithBand(hasSet: false, openedByBand: false),
+                       "the user opened this drawer with ⌘4; leave it where they put it")
+        for opened in [true, false] {
+            XCTAssertFalse(
+                PyMOLEngine.drawerClosesWithBand(hasSet: true, openedByBand: opened),
+                "with a set open the height goes back to the tab, it does not close")
+        }
     }
 }
 
@@ -880,7 +944,7 @@ final class SequenceBandMigrationTests: XCTestCase {
 /// `SequenceRowModelTests.testCollapsedKeepsTheSelectedRowsOnTop` passes literal
 /// sequences to the model and so could never have caught this: the model was right,
 /// and nothing was loading the sequences it needed. These tests go at the loader.
-final class SequenceBandTests: XCTestCase {
+final class ConsensusBandTests: XCTestCase {
 
     private var dir: URL!
     private var path: String!

@@ -58,7 +58,12 @@ whichever tab is selected, and:
 - **Turning the band off gives its height back** to the tab below it. The band is
   draggable (the hairline under it is a split divider) and starts at the strip's own
   size — one row per object up to five — yielding when the drawer is too short to give
-  it that without pushing the tab below one row.
+  it that without pushing the tab below one row. The tab half always keeps at least
+  one table row and its footer; the band is what gives way, never the table.
+- **An untouched drawer is taller with the band on**, by the band's own height, so
+  turning the sequences on out of the box does not cost you the table. A drawer you
+  have dragged to a size keeps that size — the band takes its room from the tab
+  content, which is what "turning it off gives the height back" means.
 
 ## The Table tab
 

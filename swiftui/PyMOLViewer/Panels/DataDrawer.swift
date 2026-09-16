@@ -448,8 +448,9 @@ import UniformTypeIdentifiers
 struct DataDrawer: View {
     /// The height the layout has given this drawer. It is what decides how much of it
     /// the band may take (`PanelLayout.sequenceBandHeight`), so the band cannot squeeze
-    /// the tab content below one row in a short window.
-    var height: CGFloat = PanelLayout.macDefaultDrawerHeight
+    /// the tab content below one row in a short window. REQUIRED — a default would be
+    /// a second source of truth for a number the layout already knows (#456 review).
+    let height: CGFloat
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
 
@@ -462,13 +463,36 @@ struct DataDrawer: View {
         .background(PanelTheme.background)
     }
 
-    /// Four shapes, and each is one of the rules: band over tabs (the point of #456),
-    /// tabs alone (band off — its height goes back to the tab content), band alone (no
-    /// set: today's strip), and the "No set open" copy when there is neither.
+    /// What shape the drawer is in, as a decision rather than a nest of `if`s — so the
+    /// rules can be asserted without a window (`DataDrawerContentTests`).
+    ///
+    /// `bandAlone` is the one that reads `SequenceBandView.worksWithoutASet`, and that
+    /// is the whole point of the property existing: every TAB is a view of a set, so
+    /// with no set open the only thing the drawer can draw is the band. If the band
+    /// ever stopped standing on its own, this would fall through to the empty state
+    /// rather than drawing a pane with nothing in it.
+    enum Content: Equatable {
+        case bandOverTabs   // the point of #456: scene sequences AND the set, together
+        case tabsAlone      // band off — its height goes back to the tab content
+        case bandAlone      // no set: today's strip, in its new home
+        case empty          // no set and no band: the "No set open" copy
+    }
+
+    static func content(hasSet: Bool, bandVisible: Bool) -> Content {
+        switch (hasSet, bandVisible) {
+        case (true, true): return .bandOverTabs
+        case (true, false): return .tabsAlone
+        case (false, true): return SequenceBandView.worksWithoutASet ? .bandAlone : .empty
+        case (false, false): return .empty
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
-        switch (engine.activeSet, engine.sequenceBandVisible) {
-        case (.some(let set), true):
+        switch (engine.activeSet,
+                Self.content(hasSet: engine.activeSet != nil,
+                             bandVisible: engine.sequenceBandVisible)) {
+        case (.some(let set), .bandOverTabs):
             // A VSplitView so the band stays draggable, as the strip always was and as
             // #419 restored. The split's divider IS the hairline in the sketch. The
             // ideal height is clamped against the drawer's actual height so the band
@@ -484,14 +508,14 @@ struct DataDrawer: View {
                 tabHalf(set: set)
                     .frame(minHeight: PanelLayout.macMinTabContentHeight)
             }
-        case (.some(let set), false):
+        case (.some(let set), _):
             tabHalf(set: set)
-        case (.none, true):
+        case (.none, .bandAlone):
             // The strip, in its new home: no tab bar and no tab content, because every
             // tab is a view of a set and there is no set (spec §8 decision 2, as #456
             // restates it — the band is what "works without a set", not a tab).
             SequenceBandView()
-        case (.none, false):
+        case (.none, _):
             emptyState
         }
     }
@@ -531,11 +555,16 @@ struct DataDrawer: View {
     private func tabRow(set: SetEntry) -> some View {
         HStack(spacing: 6) {
             tabStrip
+                .fixedSize()
+            // Higher priority than the tabs, whose width is fixed text: in a narrow
+            // window it is the EXPRESSION that has to stay readable, since the tabs
+            // are four words the user already knows (#456 review).
             SetFilterBar(set: set)
                 .id(set.id)
+                .layoutPriority(1)
         }
         .padding(.leading, 10)
-        .frame(height: 24)
+        .frame(height: PanelLayout.macDrawerTabRowHeight)
     }
 
     private var hairline: Color { themeManager.active.panelText.color.opacity(0.18) }

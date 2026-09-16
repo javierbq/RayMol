@@ -103,7 +103,7 @@ alone, which is the strip in its new home.
 │                                                        │   boltz_a1    212 ▮▯▯│
 │                                                        │ ▾ SELECTIONS       │
 ├────────────────────────────────────────────────────────┴────────────────────┤
-│ DATA · rfd3_a1                                                    ⌘2   ✕    │
+│ DATA · rfd3_a1                          3 of 1024 staged · budget 6  ⌘2  ✕ │
 │ 4HHB_target  A  MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLST…       │ ← band
 │ d_0417       A  GSHMNAFDENNIPKGPYEWYFKSRNFIPADDFEYEQMMPFRGCVQKRHEVKG       │
 │ ─────────────────────────────────────────────────────────────────────────── │

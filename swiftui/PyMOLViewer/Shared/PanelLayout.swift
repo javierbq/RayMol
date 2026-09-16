@@ -152,6 +152,16 @@ enum PanelLayout {
         if answer.drawerVisible != defaults.bool(forKey: dataDrawerVisibleKey) {
             defaults.set(answer.drawerVisible, forKey: dataDrawerVisibleKey)
         }
+        // The chosen TAB has to be written too (#456 review). `restoredDrawerTab`
+        // returns `.sequences` from the answer, but the only thing that ever wrote
+        // `dataDrawerTabKey` was `PyMOLEngine.dataDrawerTab`'s `didSet` — and `didSet`
+        // does not fire on initialisation, so a migrated user who never touched a tab
+        // afterwards had NO stored tab at all. #456 then reads that key to decide
+        // whether the sequence view was up, and answered "no" for exactly the people
+        // the question is about: the ones #419 had put on Sequences.
+        if answer.openSequencesTab {
+            defaults.set(DataDrawerTab.sequences.rawValue, forKey: dataDrawerTabKey)
+        }
         return answer
     }
 
@@ -301,7 +311,12 @@ enum PanelLayout {
 
     /// The band's visibility at launch: on macOS whatever the migration decided (which
     /// is the stored value once it has run), on iOS false — there is no band there.
-    static func restoredSequenceBandVisible(defaults: UserDefaults = .standard) -> Bool {
+    ///
+    /// No `defaults:` parameter, unlike `restoredDrawerVisible`: neither branch would
+    /// read it, and a parameter a function ignores is a caller passing a test suite and
+    /// silently getting the standard domain's answer (#456 review). The pure function
+    /// `sequenceBandMigration` is what tests drive.
+    static func restoredSequenceBandVisible() -> Bool {
         #if os(macOS)
         return sequenceBandMigrationResult.bandVisible
         #else
@@ -344,29 +359,101 @@ enum PanelLayout {
 
     /// The drawer's height on a launch with nothing stored. ABSOLUTE points, for
     /// the console's reason: an untouched drawer looks the same on a laptop and a
-    /// 6K display. 220 fits the header, eight rows at 22pt and the footer.
+    /// 6K display. 220 is the header, its tab row, the table's chrome and four rows.
     static let macDefaultDrawerHeight: CGFloat = 220
-    /// What the drawer spends before it can show a single row: the set header (26),
-    /// the column header (20), the footer (24) and three hairlines. A drawer given
-    /// less than this draws no data at all, which is why `macMinDrawerHeight` is
-    /// this plus one 22pt row and why a column that cannot afford it shows the hint
-    /// instead of a band (#417 review).
-    static let macDrawerChromeHeight: CGFloat = 73
-    /// Header + one row + footer; below this the table is chrome and no data.
-    static let macMinDrawerHeight: CGFloat = 96
+
+    // MARK: - what the drawer is made of
+
+    // These are MEASURED against the views, not guessed, because everything below is
+    // subtraction from them and a constant that is short by one row is a drawer that
+    // draws no rows at all (#456 review). Each names its view.
+
+    /// The drawer's own header row ("DATA · <set>  ⌘2 ✕"), and the hairline under it.
+    /// Above the band; not part of the tab half.
+    static let macDrawerHeaderHeight: CGFloat = 26
+    /// `DataDrawer.tabRow` — the tab strip with the filter bar beside it — and the
+    /// hairline under it. The first thing in the tab half.
+    static let macDrawerTabRowHeight: CGFloat = 24
+    /// `SetTableView`'s own chrome: the column header (20), the histogram/brush strip
+    /// (16), the footer (24) and their two hairlines.
+    static let macDrawerTableChrome: CGFloat = 62
+    /// One table row.
+    static let macDrawerRowHeight: CGFloat = 22
+    /// A hairline, wherever one separates two of the above.
+    static let macDrawerHairline: CGFloat = 1
+
+    /// What the drawer spends before it can show a single row: its header, the tab
+    /// row, the table's chrome and the hairlines between them. A drawer given less
+    /// than this draws no data at all, which is why `macMinDrawerHeight` is this plus
+    /// one row and why a column that cannot afford it shows the hint instead of a
+    /// band (#417 review).
+    ///
+    /// This was 73 until #456's review, which is what it cost BEFORE the tab strip
+    /// moved onto its own row — and it was already short of the histogram strip. The
+    /// undercount did not show while the whole drawer was one pane; the band divides
+    /// that pane, so it is what made it bite.
+    static var macDrawerChromeHeight: CGFloat {
+        macDrawerHeaderHeight + macDrawerHairline + macDrawerTabRowHeight
+            + macDrawerHairline + macDrawerTableChrome
+    }
+    /// Header + tab row + table chrome + one row; below this the drawer is chrome
+    /// and no data.
+    static var macMinDrawerHeight: CGFloat { macDrawerChromeHeight + macDrawerRowHeight }
 
     // MARK: - the scene band inside the drawer (#456)
 
-    /// The drawer's own header row ("DATA · <set>  ⌘2 ✕"), which sits ABOVE the band.
-    static let macDrawerHeaderHeight: CGFloat = 26
     /// The hairline (and split divider) between the band and the tab half.
     static let macBandDividerHeight: CGFloat = 1
     /// The band's floor. One block of residues with its ruler; below this the band is
     /// a sliver you cannot read a sequence in, which is the only thing it is for.
     static let macMinBandHeight: CGFloat = 40
-    /// What the TAB half needs under the band: the drawer's own minimum less the
-    /// header, which the band does not take from it.
-    static var macMinTabContentHeight: CGFloat { macMinDrawerHeight - macDrawerHeaderHeight }
+    /// What the TAB half needs under the band: its tab row, the table's chrome and
+    /// ONE row. The drawer's header is not in it — the band does not take that.
+    ///
+    /// The name is the contract, and the #456 review caught it not meaning it: as
+    /// `macMinDrawerHeight - macDrawerHeaderHeight` it was 70, which is 17pt below the
+    /// table's chrome alone, so the band took its ideal, the tab half was left unable
+    /// to draw even its footer, and the Table showed its column header and nothing
+    /// else — at every window size, with `drawerFits` true throughout so the hint
+    /// never fired. A floor that does not fit one row is not a floor.
+    static var macMinTabContentHeight: CGFloat {
+        macDrawerTabRowHeight + macDrawerHairline + macDrawerTableChrome + macDrawerRowHeight
+    }
+
+    /// The band's allowance in an UNTOUCHED drawer: a two-object scene (a target and a
+    /// design, which is the ordinary case) at the strip's own ideal height.
+    ///
+    /// A constant rather than the live object count, because this is the DEFAULT — it
+    /// must not move under the user as objects load, for the reason the default is
+    /// absolute points rather than a share of the window.
+    static var macDefaultBandHeight: CGFloat { sequenceBandIdealHeight(objects: 2) }
+
+    /// The drawer's height on a launch with nothing stored, with the band on: the
+    /// plain default PLUS the band's allowance.
+    ///
+    /// The band takes its height from the tab content in a drawer the USER has sized —
+    /// that is the rule, and a stored fraction still wins here. But an untouched
+    /// drawer has no such choice to respect, and charging the band against a default
+    /// chosen when there was no band is how "turn the sequences on" came to mean "lose
+    /// your table" (#456 review). Out of the box the band is free.
+    static func defaultDrawerHeight(bandVisible: Bool) -> CGFloat {
+        macDefaultDrawerHeight
+            + (bandVisible ? macDefaultBandHeight + macBandDividerHeight : 0)
+    }
+
+    /// How many table rows the tab half can actually draw in a drawer this tall. The
+    /// number the review's regression is stated in — "rows with the band on = 0
+    /// everywhere" — so it is the number the tests assert on.
+    static func drawerTableRows(drawerHeight: CGFloat, bandObjects: Int?) -> Int {
+        var left = drawerHeight - macDrawerHeaderHeight
+        if let bandObjects {
+            left -= sequenceBandHeight(objects: bandObjects, drawerHeight: drawerHeight)
+            left -= macBandDividerHeight
+        }
+        left -= macDrawerTabRowHeight + macDrawerHairline + macDrawerTableChrome
+        guard left > 0 else { return 0 }
+        return Int(left / macDrawerRowHeight)
+    }
 
     /// The band's IDEAL height — the sequence strip's own formula, unchanged since
     /// #419 and before that since the strip itself: one block per enabled object
@@ -466,7 +553,7 @@ enum PanelLayout {
                              maxHeight: CGFloat? = nil,
                              bandVisible: Bool = false) -> CGFloat {
         consoleHeight(frac: frac, windowHeight: windowHeight,
-                      defaultHeight: macDefaultDrawerHeight,
+                      defaultHeight: defaultDrawerHeight(bandVisible: bandVisible),
                       minHeight: minDrawerHeight(bandVisible: bandVisible),
                       maxHeight: maxHeight ?? maxDrawerHeight(windowHeight: windowHeight))
     }

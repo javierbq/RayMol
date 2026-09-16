@@ -1299,7 +1299,7 @@ extension PyMOLEngine {
                     }
                 }
                 // Entries arrived or left, so the band's bulk read is stale.
-                self.sequenceBandSetID = nil
+                self.consensusBandSetID = nil
             }
             if versionChanged {
                 // One counter the Lineage tab can watch: it holds a graph built over
@@ -1726,12 +1726,12 @@ extension PyMOLEngine {
     /// Load EVERY entry's sequences for the set the band is about to be computed over.
     ///
     /// Called once per set, when the tab collapses. Text only — no blob touches this
-    /// path, which `SequenceBandTests` asserts on `arrayBlobReads` — and idempotent
-    /// through `sequenceBandSetID`, because it is called from a view body's `onAppear`
+    /// path, which `ConsensusBandTests` asserts on `arrayBlobReads` — and idempotent
+    /// through `consensusBandSetID`, because it is called from a view body's `onAppear`
     /// and a re-render must not re-read the set.
-    func loadSequencesForBand(setID: String) {
-        guard sequenceBandSetID != setID, let store = setsStore else { return }
-        sequenceBandSetID = setID
+    func loadSequencesForConsensusBand(setID: String) {
+        guard consensusBandSetID != setID, let store = setsStore else { return }
+        consensusBandSetID = setID
         let sequences = store.sequencesOfSet(setID: setID)
         guard !sequences.isEmpty else { return }
         var next = sequenceDetails
@@ -1752,6 +1752,11 @@ extension PyMOLEngine {
     /// longer a reason to take away the Table someone was triaging in — which is the
     /// whole objection to #419's arrangement.
     func showSequenceBand() {
+        // Whether ⌘2 is what opened the drawer, so that ⌘2 again can put it back the
+        // way it found it — and, crucially, can NOT close a drawer the user opened
+        // with ⌘4 (#456 review). Recorded before the flags move, or the answer is
+        // always "yes".
+        drawerOpenedByBand = !dataDrawerVisible
         sequenceBandVisible = true
         dataDrawerVisible = true
         fetchSequences()
@@ -1759,13 +1764,19 @@ extension PyMOLEngine {
 
     /// ⌘2 / the Seq pill / `View ▸ Hide Sequences`: stop showing the scene sequences.
     ///
-    /// The drawer closes with the band only when the band WAS the drawer — no set open,
-    /// so there is no tab content to give the height back to and what is left would be
-    /// the "No set open" placeholder nobody asked for. With a set open the drawer stays
-    /// and the tab content takes the band's height.
+    /// With a set open the drawer stays and the tab content takes the band's height.
+    /// With no set there is no tab content to give it back to, so what is left is the
+    /// "No set open" placeholder — which is the right thing to leave behind if the user
+    /// asked for the DRAWER (⌘4) and only turned the band off, and the wrong thing if
+    /// ⌘2 is what put the drawer there in the first place. `drawerOpenedByBand` is the
+    /// difference.
     func hideSequenceBand() {
         sequenceBandVisible = false
-        if activeSet == nil { closeDataDrawer() }
+        if PyMOLEngine.drawerClosesWithBand(hasSet: activeSet != nil,
+                                            openedByBand: drawerOpenedByBand) {
+            closeDataDrawer()
+        }
+        drawerOpenedByBand = false
     }
 
     /// True when the scene sequences are actually on screen: the band's flag AND a
@@ -1845,7 +1856,7 @@ extension PyMOLEngine {
         sequenceDetails = [:]
         pendingSequenceDetails = []
         sequenceArrayOrder = []
-        sequenceBandSetID = nil
+        consensusBandSetID = nil
     }
 
     /// Set or clear one column's brush and push the composed expression.
@@ -2027,6 +2038,16 @@ extension PyMOLEngine {
     /// band now, and the band is not a tab.)
     static func tabAfterSetChange(_ current: DataDrawerTab) -> DataDrawerTab {
         current.isAvailable ? current : .table
+    }
+
+    /// Whether turning the band OFF should also close the drawer (#456 review).
+    ///
+    /// Only when the drawer has nothing else in it AND ⌘2 is what opened it. A drawer
+    /// the user opened with ⌘4 is theirs; ⌘2 turning a band off inside it must leave it
+    /// where they put it, even if what is left is the "No set open" copy. And with a
+    /// set open the drawer always stays — the band's height goes back to the tab.
+    static func drawerClosesWithBand(hasSet: Bool, openedByBand: Bool) -> Bool {
+        !hasSet && openedByBand
     }
 
     /// One histogram per scalar numeric column, over every row of the set — not the
