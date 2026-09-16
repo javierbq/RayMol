@@ -12,9 +12,10 @@
 //     thousand blobs (#421). Asserted on a counter, not on a stopwatch.
 //   * `SequenceRowModelTests` — alignment by shared parent, the collapse threshold,
 //     the consensus band, and the mapping of an array onto a row's cells.
-//   * `SequenceStripMigrationTests` — what a user who had the strip open sees on the
-//     first launch after it moved (#419 decision 3), and what one who had it closed
-//     sees, which is nothing.
+//   * `DataDrawerTabTests` — every tab here is a view of a SET (#457). The two
+//     migration suites that used to sit in this spot are gone with the migrations:
+//     the scene sequences are the Object viewer, their own pane above the viewport,
+//     so nothing in the drawer decides where they live.
 
 import XCTest
 import SQLite3
@@ -636,79 +637,27 @@ final class SequenceRowModelTests: XCTestCase {
     }
 }
 
-// MARK: - The strip's one-time move (#419 decision 3)
+// MARK: - Every tab is a view of a set (#457)
 
-final class SequenceStripMigrationTests: XCTestCase {
+final class DataDrawerTabTests: XCTestCase {
 
-    func testAStripThatWasOpenBecomesTheDrawerOnSequences() {
-        let answer = PanelLayout.sequenceStripMigration(
-            legacyStripVisible: true, drawerVisible: false, alreadyMigrated: false)
-        XCTAssertTrue(answer.drawerVisible,
-                      "a visible pane must not vanish because it moved")
-        XCTAssertTrue(answer.openSequencesTab)
-        XCTAssertTrue(answer.didMigrate)
-    }
-
-    func testAStripThatWasClosedChangesNothing() {
-        // The honest answer in both directions: turning a pane ON for someone who
-        // closed it is the same discourtesy as taking one away.
-        for drawer in [true, false] {
-            let answer = PanelLayout.sequenceStripMigration(
-                legacyStripVisible: false, drawerVisible: drawer, alreadyMigrated: false)
-            XCTAssertEqual(answer.drawerVisible, drawer)
-            XCTAssertFalse(answer.openSequencesTab)
-            XCTAssertTrue(answer.didMigrate, "it still only asks once")
+    /// The two migrations that used to be tested here are gone with the code (#457).
+    /// #419's moved a stored `sequenceVisible` into the drawer's Sequences tab and
+    /// #456's moved it again into the drawer's chrome band; the scene rows are their
+    /// own pane above the viewport again, so there is nothing to carry anywhere — and
+    /// nothing to carry it FROM, since the drawer has never shipped and both only ever
+    /// ran against dev builds.
+    func testTheViewersKeyIsStillTheOneSourceOfTruth() {
+        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceVisibleKey))
+        // The migration flags are not merely unused, they are GONE: a key left in the
+        // namespace is a key a later migration would read and believe.
+        for dead in ["sequenceStripMigrated", "sequenceBandVisible", "sequenceBandMigrated"] {
+            XCTAssertFalse(PanelLayout.allKeys.contains { $0.hasSuffix(dead) },
+                           "\(dead) is deleted, not deprecated")
         }
     }
 
-    func testAFreshInstallHasNothingToMigrate() {
-        let answer = PanelLayout.sequenceStripMigration(
-            legacyStripVisible: nil, drawerVisible: false, alreadyMigrated: false)
-        XCTAssertFalse(answer.drawerVisible)
-        XCTAssertFalse(answer.openSequencesTab)
-    }
-
-    func testTheSecondLaunchDoesNotReopenTheDrawer() {
-        // The whole reason there is a flag: an iPad user who turns the strip back on
-        // must not find the Mac's drawer open again on the next launch.
-        let answer = PanelLayout.sequenceStripMigration(
-            legacyStripVisible: true, drawerVisible: false, alreadyMigrated: true)
-        XCTAssertFalse(answer.drawerVisible)
-        XCTAssertFalse(answer.openSequencesTab)
-        XCTAssertFalse(answer.didMigrate)
-    }
-
-    func testAgainstARealDefaultsDomainItRunsExactlyOnce() throws {
-        let name = "raymol419.migration.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set(true, forKey: PanelLayout.sequenceVisibleKey)
-
-        let first = PanelLayout.migrateSequenceStrip(defaults: defaults)
-        XCTAssertTrue(first.didMigrate)
-        XCTAssertTrue(first.openSequencesTab)
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.dataDrawerVisibleKey),
-                      "the drawer is what the strip became")
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceMigratedKey))
-        // The legacy key is READ and left alone: iOS still draws its strip from it
-        // until #420, and a Mac launch must not close an iPad's pane.
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceVisibleKey))
-
-        // Close the drawer, relaunch: it stays closed.
-        defaults.set(false, forKey: PanelLayout.dataDrawerVisibleKey)
-        let second = PanelLayout.migrateSequenceStrip(defaults: defaults)
-        XCTAssertFalse(second.didMigrate)
-        XCTAssertFalse(second.drawerVisible)
-        XCTAssertFalse(second.openSequencesTab)
-    }
-
-    func testTheLegacyKeyIsStillPartOfTheNamespace() {
-        // iOS reads it, so it stays in `allKeys` and keeps its namespace test.
-        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceVisibleKey))
-        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceMigratedKey))
-    }
-
-    func testEveryTabIsAvailableNowAndOnlySequencesWorksWithoutASet() {
+    func testEveryTabIsAvailableAndDescribesItself() {
         for tab in DataDrawerTab.allCases {
             XCTAssertTrue(tab.isAvailable, "\(tab.rawValue) shipped in #419")
             // The tooltip has to describe the tab rather than promise it. Asserting
@@ -721,218 +670,10 @@ final class SequenceStripMigrationTests: XCTestCase {
                                + " \(tab.help)")
             }
         }
-        // #456: "works without a set" is no longer a fact about any TAB. The scene
-        // rows that made Sequences qualify are the drawer's band now, so the property
-        // moved to the thing it describes — and every tab is a view of a set again.
-        XCTAssertTrue(SequenceBandView.worksWithoutASet)
-    }
-}
-
-// MARK: - The scene rows become a drawer BAND (#456)
-
-/// One test per state a user can arrive in. There are two migrations now and they can
-/// have run in either combination, which is the whole reason this is a pure function:
-/// the way to annoy someone twice is to take their sequence view away, give it back on
-/// a tab, and then take it away again when the tab stops holding it.
-final class SequenceBandMigrationTests: XCTestCase {
-
-    /// #419 firing on this same launch: the strip's own flag is the answer.
-    private func stripFired(visible: Bool) -> PanelLayout.SequenceStripMigration {
-        PanelLayout.sequenceStripMigration(legacyStripVisible: visible,
-                                           drawerVisible: false, alreadyMigrated: false)
-    }
-    private var stripAbsent: PanelLayout.SequenceStripMigration {
-        PanelLayout.sequenceStripMigration(legacyStripVisible: nil,
-                                           drawerVisible: false, alreadyMigrated: false)
-    }
-    private var stripSpent: PanelLayout.SequenceStripMigration {
-        PanelLayout.sequenceStripMigration(legacyStripVisible: true,
-                                           drawerVisible: false, alreadyMigrated: true)
-    }
-
-    private func band(_ strip: PanelLayout.SequenceStripMigration,
-                      drawer: Bool = false, tab: DataDrawerTab = .table,
-                      stored: Bool = false, already: Bool = false)
-        -> PanelLayout.SequenceBandMigration {
-        PanelLayout.sequenceBandMigration(stripMigration: strip, drawerVisible: drawer,
-                                          drawerTab: tab, storedBandVisible: stored,
-                                          alreadyMigrated: already)
-    }
-
-    // Case 1: never migrated, `sequenceVisible` true. They came straight from a build
-    // with a strip and it was up; the band is what it became.
-    func testAStripThatWasUpBecomesTheBand() {
-        let answer = band(stripFired(visible: true))
-        XCTAssertTrue(answer.bandVisible, "a visible pane must not vanish because it moved")
-        XCTAssertTrue(answer.didMigrate)
-    }
-
-    // Case 2: never migrated, `sequenceVisible` false. Off is a choice too.
-    func testAStripThatWasDownDoesNotBecomeABand() {
-        let answer = band(stripFired(visible: false))
-        XCTAssertFalse(answer.bandVisible)
-        XCTAssertTrue(answer.didMigrate, "it still only asks once")
-    }
-
-    // Case 3: never migrated, the key was never written — a fresh install, or a user
-    // who never touched the strip. Same answer as "off", for the same reason.
-    func testAFreshInstallStartsWithoutTheBand() {
-        let answer = band(stripAbsent)
-        XCTAssertFalse(answer.bandVisible)
-        XCTAssertTrue(answer.didMigrate)
-    }
-
-    // Case 4: #419 already spent, and it left them on the Sequences tab with the drawer
-    // open. That IS the sequence view being up — and the scene rows are about to leave
-    // that tab, so without this they would lose the same pane a second time.
-    func testAnAlreadyMigratedUserOnTheSequencesTabGetsTheBand() {
-        let answer = band(stripSpent, drawer: true, tab: .sequences)
-        XCTAssertTrue(answer.bandVisible)
-        XCTAssertTrue(answer.didMigrate)
-    }
-
-    // Case 5: #419 spent, the tab is remembered as Sequences, but the drawer is CLOSED.
-    // Nothing is on screen, so nothing is being taken away; turning the band on would
-    // be opening a pane for someone who closed it.
-    func testAClosedDrawerIsNotASequenceViewWhateverTabItRemembers() {
-        let answer = band(stripSpent, drawer: false, tab: .sequences)
-        XCTAssertFalse(answer.bandVisible)
-        XCTAssertTrue(answer.didMigrate)
-    }
-
-    // Case 6: #419 spent, drawer open on some other tab. They are triaging, not reading
-    // sequences; the band arrives off and ⌘2 is how they ask for it.
-    func testAnAlreadyMigratedUserOnAnotherTabDoesNotGetTheBand() {
-        for tab in [DataDrawerTab.table, .plot, .lineage] {
-            XCTAssertFalse(band(stripSpent, drawer: true, tab: tab).bandVisible, tab.rawValue)
-        }
-    }
-
-    // Case 7: this migration has already run. The stored flag is the answer and nothing
-    // is written — otherwise turning the band off would be undone on the next launch.
-    func testTheSecondLaunchLeavesTheBandWhereTheUserPutIt() {
-        for stored in [true, false] {
-            let answer = band(stripSpent, drawer: true, tab: .sequences,
-                              stored: stored, already: true)
-            XCTAssertEqual(answer.bandVisible, stored)
-            XCTAssertFalse(answer.didMigrate)
-        }
-    }
-
-    /// Against a real domain, in the order a launch runs them: #419 first (it writes
-    /// `dataDrawerVisible`), then #456 reading what #419 left. A user with the strip up
-    /// and no drawer ends with BOTH the drawer and the band on.
-    func testBothMigrationsRunInOrderAgainstRealDefaults() throws {
-        let name = "raymol456.band.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set(true, forKey: PanelLayout.sequenceVisibleKey)
-
-        let strip = PanelLayout.migrateSequenceStrip(defaults: defaults)
-        let first = PanelLayout.migrateSequenceBand(stripMigration: strip, defaults: defaults)
-        XCTAssertTrue(strip.didMigrate)
-        XCTAssertTrue(first.didMigrate)
-        XCTAssertTrue(first.bandVisible)
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.dataDrawerVisibleKey))
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceBandVisibleKey))
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceBandMigratedKey))
-
-        // Turn the band off and relaunch: it stays off.
-        defaults.set(false, forKey: PanelLayout.sequenceBandVisibleKey)
-        let second = PanelLayout.migrateSequenceBand(
-            stripMigration: PanelLayout.migrateSequenceStrip(defaults: defaults),
-            defaults: defaults)
-        XCTAssertFalse(second.didMigrate)
-        XCTAssertFalse(second.bandVisible)
-    }
-
-    /// The #419-migrated user, against a real domain: their defaults already carry the
-    /// spent strip flag, an open drawer and the Sequences tab, and no #456 flag.
-    func testTheAlreadyMigratedUserIsCarriedForwardAgainstRealDefaults() throws {
-        let name = "raymol456.carry.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set(true, forKey: PanelLayout.sequenceVisibleKey)
-        defaults.set(true, forKey: PanelLayout.sequenceMigratedKey)
-        defaults.set(true, forKey: PanelLayout.dataDrawerVisibleKey)
-        defaults.set(DataDrawerTab.sequences.rawValue, forKey: PanelLayout.dataDrawerTabKey)
-
-        let strip = PanelLayout.migrateSequenceStrip(defaults: defaults)
-        XCTAssertFalse(strip.didMigrate, "#419's flag is spent")
-        let answer = PanelLayout.migrateSequenceBand(stripMigration: strip, defaults: defaults)
-        XCTAssertTrue(answer.bandVisible,
-                      "they are looking at the scene rows right now; the band is where"
-                      + " those rows went")
-        XCTAssertTrue(defaults.bool(forKey: PanelLayout.sequenceBandVisibleKey))
-    }
-
-    /// Case 4 for the user it actually exists to rescue (#456 review): #419 migrated
-    /// them and they never opened a set afterwards, so `dataDrawerTabKey` was never
-    /// written — `PyMOLEngine.dataDrawerTab`'s `didSet` does not fire on init, and
-    /// nothing else wrote it. The key is ABSENT here, which is the state #419 really
-    /// leaves; setting it by hand (as the test below this one does) was assuming away
-    /// the bug.
-    func testAMigratedUserWhoNeverTouchedATabStillGetsTheBand() throws {
-        let name = "raymol456.notab.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        defaults.set(true, forKey: PanelLayout.sequenceVisibleKey)
-
-        // #419, for real, against this domain — including the tab it chooses.
-        let strip = PanelLayout.migrateSequenceStrip(defaults: defaults)
-        XCTAssertTrue(strip.openSequencesTab)
-        XCTAssertEqual(defaults.string(forKey: PanelLayout.dataDrawerTabKey),
-                       DataDrawerTab.sequences.rawValue,
-                       "#419 chose Sequences; if it does not WRITE it, the choice is"
-                       + " gone by the next launch and #456 cannot see it")
-
-        // Now a launch of THIS build, with #419's flag spent and nothing else touched.
-        let later = try XCTUnwrap(UserDefaults(suiteName: name))
-        let answer = PanelLayout.migrateSequenceBand(
-            stripMigration: PanelLayout.migrateSequenceStrip(defaults: later),
-            defaults: later)
-        XCTAssertTrue(answer.bandVisible)
-    }
-
-    func testTheBandKeysArePartOfTheNamespace() {
-        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceBandVisibleKey))
-        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.sequenceBandMigratedKey))
-    }
-}
-
-// MARK: - What the drawer draws, and what ⌘2 closes (#456)
-
-final class DataDrawerContentTests: XCTestCase {
-
-    func testTheFourShapesOfTheDrawer() {
-        XCTAssertEqual(DataDrawer.content(hasSet: true, bandVisible: true), .bandOverTabs,
-                       "the point of #456: the scene sequences and the set together")
-        XCTAssertEqual(DataDrawer.content(hasSet: true, bandVisible: false), .tabsAlone)
-        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: true), .bandAlone,
-                       "no set open: the strip, in its new home, with no tab bar")
-        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: false), .empty)
-    }
-
-    /// `worksWithoutASet` is a claim about the BAND now, not about a tab — and it is
-    /// load-bearing rather than decorative: it is what makes the no-set drawer draw the
-    /// band instead of the "No set open" copy.
-    func testTheNoSetDrawerIsTheBandBecauseTheBandWorksWithoutASet() {
-        XCTAssertTrue(SequenceBandView.worksWithoutASet)
-        XCTAssertEqual(DataDrawer.content(hasSet: false, bandVisible: true),
-                       SequenceBandView.worksWithoutASet ? .bandAlone : .empty)
-    }
-
-    /// ⌘2 must never close a drawer ⌘4 opened (#456 review).
-    func testHidingTheBandOnlyClosesTheDrawerItOpened() {
-        XCTAssertTrue(PyMOLEngine.drawerClosesWithBand(hasSet: false, openedByBand: true),
-                      "⌘2 opened it and there is nothing else in it")
-        XCTAssertFalse(PyMOLEngine.drawerClosesWithBand(hasSet: false, openedByBand: false),
-                       "the user opened this drawer with ⌘4; leave it where they put it")
-        for opened in [true, false] {
-            XCTAssertFalse(
-                PyMOLEngine.drawerClosesWithBand(hasSet: true, openedByBand: opened),
-                "with a set open the height goes back to the tab, it does not close")
-        }
+        // The Sequences tab is the SET's entry rows, so it says where the OTHER viewer
+        // is rather than pretending to be both (#457).
+        XCTAssertTrue(DataDrawerTab.sequences.help.contains("⌘2"),
+                      "the tab has to point at the Object viewer it is not")
     }
 }
 
@@ -1248,29 +989,18 @@ final class SequenceEncodingAndTabTests: XCTestCase {
         }
     }
 
-    /// Item 4. The drawer's tab has to survive a relaunch, or the strip's migration is
-    /// a one-launch courtesy: Sequences once, Table every launch after.
-    func testTheTabIsRestoredAndTheMigrationStillWins() {
-        let migrated = PanelLayout.SequenceStripMigration(
-            drawerVisible: true, openSequencesTab: true, didMigrate: true)
-        let quiet = PanelLayout.SequenceStripMigration(
-            drawerVisible: false, openSequencesTab: false, didMigrate: false)
-        // The migration is the one thing that overrides a stored tab.
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: migrated, stored: "Table"),
-                       .sequences)
-        // Otherwise the stored choice comes back — this is the assertion that was
-        // false before, when there was no key at all and every launch got .table.
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: quiet, stored: "Sequences"),
-                       .sequences)
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: quiet, stored: "Lineage"),
-                       .lineage)
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: quiet, stored: "Plot"),
-                       .plot)
+    /// Item 4. The drawer's tab has to survive a relaunch, like every other pane in
+    /// the window. Nothing overrides it any more (#457): #419's migration was the one
+    /// thing that could, and it is gone with the arrangement that needed it.
+    func testTheStoredTabIsRestoredAndValidated() {
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: "Sequences"), .sequences)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: "Lineage"), .lineage)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: "Plot"), .plot)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: "Table"), .table)
         // Nothing stored, or a name from a build that had a tab this one does not:
         // Table, rather than a drawer parked on something it cannot draw.
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: quiet, stored: nil), .table)
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: quiet, stored: "Wobble"),
-                       .table)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: nil), .table)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(stored: "Wobble"), .table)
     }
 
     func testTheTabKeyIsPartOfTheNamespace() {
@@ -1282,15 +1012,13 @@ final class SequenceEncodingAndTabTests: XCTestCase {
         let name = "raymol419.tab.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: .alreadyDone,
-                                                     stored: defaults.string(
-                                                        forKey: PanelLayout.dataDrawerTabKey)),
-                       .table)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(defaults: defaults), .table)
         defaults.set(DataDrawerTab.sequences.rawValue, forKey: PanelLayout.dataDrawerTabKey)
-        XCTAssertEqual(PanelLayout.restoredDrawerTab(migration: .alreadyDone,
-                                                     stored: defaults.string(
-                                                        forKey: PanelLayout.dataDrawerTabKey)),
-                       .sequences)
+        XCTAssertEqual(PanelLayout.restoredDrawerTab(defaults: defaults), .sequences)
+        // And the drawer's own visibility, which #419's migration could also write.
+        XCTAssertFalse(PanelLayout.restoredDrawerVisible(defaults: defaults))
+        defaults.set(true, forKey: PanelLayout.dataDrawerVisibleKey)
+        XCTAssertTrue(PanelLayout.restoredDrawerVisible(defaults: defaults))
     }
 }
 
@@ -1311,41 +1039,8 @@ final class SequenceTabSurvivalTests: XCTestCase {
     /// The rule is written out rather than assumed, so a tab this build cannot draw
     /// would still be rescued. Nothing is in that state today, which is what this
     /// asserts. (Before #456 the test also admitted `worksWithoutASet`; the scene rows
-    /// that made Sequences qualify are the band now, and the band is not a tab.)
+    /// that made Sequences qualify are the Object viewer now, and that is not a tab.)
     func testNoTabNeedsRescuing() {
         XCTAssertTrue(DataDrawerTab.allCases.allSatisfy(\.isAvailable))
-    }
-
-    /// Item 8. The strip sized itself to its row count and could be dragged taller;
-    /// pinning the scene rows at a flat 130pt was a reduction for the same content.
-    /// This is the strip's own formula, unchanged — through #419, which put it in a
-    /// tab, and through #456, which made it the drawer's band.
-    func testTheSceneRowsKeepTheStripsHeightFormula() {
-        XCTAssertEqual(SequenceBandView.sceneHeight(1), 60)
-        XCTAssertEqual(SequenceBandView.sceneHeight(2), 90)
-        XCTAssertEqual(SequenceBandView.sceneHeight(5), 180)
-        XCTAssertEqual(SequenceBandView.sceneHeight(99), 180, "capped at five rows")
-        XCTAssertEqual(SequenceBandView.sceneHeight(0), 60,
-                       "an empty strip still occupies one row's worth")
-        XCTAssertGreaterThan(SequenceBandView.sceneHeight(5), 130,
-                             "the flat 130pt cap was below what five rows need")
-        // The view's formula and the layout's are the same one, or the split would
-        // start at a height the drawer's arithmetic never accounted for.
-        for objects in [0, 1, 2, 5, 99] {
-            XCTAssertEqual(SequenceBandView.sceneHeight(objects),
-                           PanelLayout.sequenceBandIdealHeight(objects: objects))
-        }
-    }
-
-    /// The `.id()` that makes the split re-adopt its ideal height when objects load.
-    /// It has to change exactly when the ideal height does and not on every count.
-    func testTheBandsHeightIdentityTracksTheRowsItCharges() {
-        XCTAssertEqual(SequenceBandView.heightIdentity(0), 1)
-        XCTAssertEqual(SequenceBandView.heightIdentity(1), 1)
-        XCTAssertEqual(SequenceBandView.heightIdentity(3), 3)
-        XCTAssertEqual(SequenceBandView.heightIdentity(5), 5)
-        XCTAssertEqual(SequenceBandView.heightIdentity(40), 5,
-                       "past the five-row cap the ideal height stops moving, so the"
-                       + " identity has to stop moving with it")
     }
 }

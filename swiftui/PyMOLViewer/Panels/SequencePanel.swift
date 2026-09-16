@@ -1,6 +1,10 @@
-// SequencePanel.swift — the sequence viewer: since #419 inside the Data drawer, and
-// since #456 as the drawer's scene BAND plus a Sequences tab of entry rows (spec §4,
-// §4.4, §8 decision 2, wireframe frame 3).
+// SequencePanel.swift — TWO sequence viewers (spec §4, §4.4, §8 decision 2, wireframe
+// frame 3), which since #457 is what this file holds:
+//
+//   * the OBJECT viewer — `SequencePanel`, its own pane above the viewport, ⌘2 — the
+//     sequences of the enabled scene objects;
+//   * the ENTRY viewer — `SequencesTabView`, the Data drawer's Sequences tab — the
+//     entries of a set, their per-residue heat strips and the consensus band.
 //
 // SwiftUI reimplementation of PyMOL's seq_view (layer3/Seeker.cpp + layer1/Seq.cpp).
 //
@@ -12,18 +16,18 @@
 //    Ctrl selects-and-centers; click on empty space deselects.
 //  - Residue-number ruler above each sequence (every N residues).
 //
-// #419 moved this into the drawer and added ENTRY rows under the scene rows; #456 took
-// the two apart again, because they are different nouns — the scene rows are an OBJECT
-// view, the entry rows an ENTRY view — and a tab made them alternatives. The scene rows
-// are `SequenceBandView`, a band in the drawer's chrome above the tab bar, on whatever
-// tab; the entry rows are what is left of `SequencesTabView`.
+// Two nouns, so two viewers: the scene objects are an OBJECT view and a set's entries
+// are an ENTRY view, which is the split the whole epic rests on. #419 folded the scene
+// rows into the drawer as the Sequences TAB and #456 moved them again to a band in the
+// drawer's chrome; both made one pane's placement depend on the other's, and #457
+// reverts them — the viewers are independently placed and independently toggled.
 //
-// Through both moves the compatibility contract is the same and is the reason the split
-// is drawn here rather than inside the panel: `SequencePanel` — the scene rows, their
-// ruler, their colors, their click and drag selection — is UNCHANGED, so the band is
-// the strip, character for character (spec §8 decision 2, and the #380 enabled-only
-// rule that `appkit_sequence._visible_objects` enforces). Everything else is beside it:
-// `SequenceRowModel` lays entry rows out and `SequenceEntryRowsView` draws them.
+// Through all three arrangements the compatibility contract is the same, and it is the
+// reason the entry half is drawn BESIDE the panel rather than inside it: `SequencePanel`
+// — the scene rows, their ruler, their colors, their click and drag selection — has
+// never been edited (spec §8 decision 2, and the #380 enabled-only rule that
+// `appkit_sequence._visible_objects` enforces). `SequenceRowModel` lays entry rows out
+// and `SequenceEntryRowsView` draws them.
 //
 // `SequenceRowModel` is pure — no SwiftUI, no engine — for the reason `SetTableModel`
 // and `SetPlotModel` are: alignment by shared parent, the collapse threshold, the
@@ -991,54 +995,17 @@ struct SequenceHeatTrack: Equatable, Identifiable {
     }
 }
 
-// MARK: - The scene band and the Sequences tab (#419, #456, macOS)
+// MARK: - The Sequences tab: a set's ENTRY rows (#419, #456, #457, macOS)
 
 #if os(macOS)
-
-/// The drawer's SCENE BAND: `SequencePanel()`, in the drawer's chrome above the tab
-/// bar, drawn whatever tab is selected (#456, spec §4, §8 decision 2).
-///
-/// It is `SequencePanel()` and nothing else, which is the point and the contract. The
-/// strip's behaviour — the #380 enabled-only rule, the ruler, the real guide-atom
-/// colours, click and drag selection, both feedback parsers — is unchanged in its new
-/// home, exactly as #419 was careful to leave it when it moved the first time.
-///
-/// Why it is not a tab any more: the band and the Sequences tab are different NOUNS.
-/// The band is the sequences of the enabled SCENE OBJECTS; the tab is the contents of a
-/// SET. That is the Entry/Object split the whole epic is built on, and making the two
-/// alternatives meant you could not watch the scene sequence while triaging in the
-/// Table — "what residues am I looking at" and "which candidates pass" are the ordinary
-/// case of two questions asked at once. Spec §8 decision 2's "two sequence views would
-/// compete" is still honoured: there is exactly ONE scene view, and it is here.
-struct SequenceBandView: View {
-    var body: some View { SequencePanel() }
-
-    /// The band is the one part of the drawer that means something with NO set open —
-    /// with nothing loaded it is the sequence viewer, and with a session loaded it is
-    /// the strip. This used to be `DataDrawerTab.worksWithoutASet`; it moved here with
-    /// the rows it describes, because it was never a fact about a tab.
-    static let worksWithoutASet = true
-
-    /// The strip's own height formula, and the ceiling the split honours. Both live in
-    /// `PanelLayout` with the rest of the drawer's arithmetic, so `PanelLayoutTests`
-    /// can pin what a short window does to the band without a window.
-    static func sceneHeight(_ objects: Int) -> CGFloat {
-        PanelLayout.sequenceBandIdealHeight(objects: objects)
-    }
-    static let maxHeight: CGFloat = 400
-
-    /// `.id()` so the split re-adopts the ideal height when an object is loaded or
-    /// removed. Without it a divider the layout has once pinned keeps its first-seen
-    /// height and later rows are simply not visible.
-    static func heightIdentity(_ objects: Int) -> Int { min(max(objects, 1), 5) }
-}
 
 /// The drawer's Sequences tab: the SET's entry rows, their heat strips and the
 /// consensus band.
 ///
-/// The scene rows used to be the top half of this (#419); they are `SequenceBandView`
-/// now. What is left is one noun — entries — which is why the tab no longer has a
-/// split in it and no longer draws for a session with no set open.
+/// The scene rows were the top half of this between #419 and #456; since #457 they are
+/// the Object viewer, `SequencePanel()` in its own pane above the viewport. What is
+/// left here is one noun — entries — which is why the tab has no split in it and
+/// nothing to draw for a session with no set open.
 ///
 /// The rows are the SELECTED entries when there is a selection, and the filtered rows
 /// otherwise, which is the same "what am I looking at" rule the Plot tab follows

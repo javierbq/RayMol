@@ -164,16 +164,13 @@ final class PyMOLEngine: ObservableObject {
     /// Columns hidden in the drawer. A property of the view on the data, not of the
     /// set, so it lives here and is saved INTO a view rather than into the store.
     @Published var setHiddenColumns: Set<String> = []
-    /// The tab the drawer shows. Its INITIAL value is the sequence strip's one-time
-    /// migration (#419, decision 3): a user who had the strip open lands on the
-    /// Sequences tab, where the strip now lives. Everyone else lands on Table.
-    /// `PanelLayout.migrateSequenceStrip` is idempotent, so the two property
-    /// initialisers that call it — this one and `dataDrawerVisible` below — perform
-    /// exactly one migration between them whichever order Swift runs them in.
-    /// The tab the drawer shows, PERSISTED (#419 review): the sequence strip was a
-    /// remembered pane, so the thing that replaced it has to be one too — otherwise
-    /// the strip's migration is a one-launch courtesy and everyone who had it open
-    /// every day gets Sequences once and Table from the second launch on.
+    /// The tab the drawer shows, PERSISTED (#419 review). Every other pane in the
+    /// window remembers what it was doing; a user who triages in Plot all day should
+    /// not be handed the Table on every launch.
+    ///
+    /// It no longer decides, or is decided by, anything about the sequence viewers
+    /// (#457): the Object viewer is its own pane above the viewport and the Sequences
+    /// tab is the SET's entry rows, so the tab is just a tab again.
     @Published var dataDrawerTab: DataDrawerTab = PanelLayout.restoredDrawerTab() {
         didSet {
             UserDefaults.standard.set(dataDrawerTab.rawValue,
@@ -212,33 +209,9 @@ final class PyMOLEngine: ObservableObject {
     @Published var dataDrawerVisible = PanelLayout.restoredDrawerVisible() {
         didSet {
             UserDefaults.standard.set(dataDrawerVisible, forKey: PanelLayout.dataDrawerVisibleKey)
-            // The drawer coming up is the band coming with it (`sequenceBandShowing`),
-            // so the SEQPANEL payload has to be fresh — the same false→true edge
-            // `sequenceVisible` has always fetched on, at the pane that owns it now.
-            if dataDrawerVisible && !oldValue && sequenceBandVisible { fetchSequences() }
-        }
-    }
-    /// The scene-sequence BAND in the drawer's chrome (#456): the sequences of the
-    /// ENABLED SCENE OBJECTS, above the tab bar, drawn on whatever tab is selected.
-    ///
-    /// Its own flag, its own ⌘2, its own persisted key — because it is its own view of
-    /// its own noun. #419 made it "the drawer, on the Sequences tab", which meant the
-    /// scene sequence and the candidate table were alternatives; they are different
-    /// questions ("what residues am I looking at" and "which candidates pass") and a
-    /// user asks both at once. macOS only until #420 gives the drawer a mobile layout;
-    /// iOS still has the strip as its own pane and `sequenceVisible` as its flag.
-    ///
-    /// Its INITIAL value is #456's one-time migration, which carries forward "was the
-    /// sequence view up" from both of the states a user can arrive in — see
-    /// `PanelLayout.sequenceBandMigration`.
-    /// Set when ⌘2 is what opened the drawer, so ⌘2 again can close it without ever
-    /// closing a drawer ⌘4 opened. Not published — nothing draws it.
-    var drawerOpenedByBand = false
-    @Published var sequenceBandVisible = PanelLayout.restoredSequenceBandVisible() {
-        didSet {
-            UserDefaults.standard.set(sequenceBandVisible,
-                                      forKey: PanelLayout.sequenceBandVisibleKey)
-            if sequenceBandVisible && !oldValue { fetchSequences() }
+            // No sequence fetch here since #457: the drawer draws no SCENE sequences
+            // any more. The Object viewer owns that payload and fetches on its own
+            // false→true edge (`sequenceVisible`), whether or not the drawer moves.
         }
     }
     /// Spec §2.1: the "this session now includes a set" sheet is shown once per
@@ -295,12 +268,16 @@ final class PyMOLEngine: ObservableObject {
     /// leak that has broken the iOS slice three times (#174, #226/#238).
     @Published var binderDesignMode = false
     #endif
-    /// The sequence STRIP's visibility. iOS only since #419: the Mac has no strip
-    /// slot any more — the rows are the drawer's Sequences tab — and #420 is what
-    /// gives the drawer an iPad and iPhone layout, so until then the strip is how
-    /// those two show a sequence and this is still their flag. Nothing in the macOS
-    /// layout reads or writes it; `PanelLayout.migrateSequenceStrip` consumed it once
-    /// to decide where a Mac user who had the strip open should land.
+    /// The OBJECT sequence viewer's visibility, on EVERY platform: the pane above the
+    /// viewport that shows the sequences of the enabled scene objects (#380), with its
+    /// ruler, its alignment gaps and its click/drag selection. ⌘2's flag.
+    ///
+    /// One flag and one behaviour again (#457). #419 made this iOS-only and put the
+    /// Mac's rows in a drawer TAB; #456 moved them to a band in the drawer's chrome.
+    /// Both are reverted: the scene rows are an OBJECT view and the drawer's Sequences
+    /// tab is an ENTRY view, so they are two viewers in two places, each toggled by its
+    /// own control. That also re-unifies the platforms — iPad and iPhone never stopped
+    /// drawing `SequencePanel()` in its own slot.
     ///
     /// Restored from the last launch (#332). A session (.pse) that turns seq_view
     /// on still wins — it assigns this property after launch, like any other setter.
@@ -326,24 +303,16 @@ final class PyMOLEngine: ObservableObject {
     // optimistic-UI flip racing the enable/disable command.
     var lastSequenceEnabled: Set<String> = []
 
-    /// True when something on screen is drawing sequence rows, and so when the
+    /// True when something on screen is drawing SCENE sequence rows, and so when the
     /// SEQPANEL payload has to be kept fresh.
     ///
-    /// One property rather than the `sequenceVisible` test that used to be written out
-    /// at each of the six call sites: #419 moved the rows into a drawer TAB, so "is the
-    /// strip up" became "is the drawer up on Sequences", and six copies of a changed
-    /// condition is six chances to leave one behind — which shows up as a tab that
-    /// draws whatever the sequences were the last time something else refreshed them.
-    /// #456 changed it a second time, which is the argument for the property: the scene
-    /// rows are the drawer's BAND now, so the condition no longer mentions a tab at all
-    /// and the six call sites did not have to be found again.
-    var wantsSequences: Bool {
-        #if os(macOS)
-        return sequenceBandShowing
-        #else
-        return sequenceVisible
-        #endif
-    }
+    /// One property rather than the test written out at each of the six call sites.
+    /// It has been three different conditions in three PRs — the strip's flag, then
+    /// "the drawer up on Sequences" (#419), then the band's flag (#456) — and the point
+    /// of the property is that none of those edits had to find the six sites again. It
+    /// is `sequenceVisible` on both platforms now (#457), and the indirection stays for
+    /// the next time it is not.
+    var wantsSequences: Bool { sequenceVisible }
 
     // True while the Theme studio preview is active: the viewport shows the
     // reserved __theme_preview example, so the sequence panel must read THAT
@@ -734,17 +703,12 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        // Test affordance: open the sequence viewer at launch so its layout (incl.
-        // alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1. Since #456
-        // that means the drawer's scene band on macOS and the strip on iOS —
-        // whichever is the sequence viewer on this platform.
+        // Test affordance: open the Object sequence viewer at launch so its layout
+        // (incl. alignment gap columns) can be screenshotted. PYMOL_AUTOSEQ=1. One
+        // branch again since #457 — the viewer is the same pane on both platforms.
         if ProcessInfo.processInfo.environment["PYMOL_AUTOSEQ"] != nil {
             DispatchQueue.main.async { [weak self] in
-                #if os(macOS)
-                self?.showSequenceBand()
-                #else
                 self?.sequenceVisible = true
-                #endif
                 self?.fetchSequences()
             }
         }

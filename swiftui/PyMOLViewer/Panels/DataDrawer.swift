@@ -432,25 +432,19 @@ import UniformTypeIdentifiers
 
 // MARK: - Drawer
 
-/// The band below the viewport: a header naming the set, the SCENE SEQUENCE BAND, the
-/// tab bar with the filter, the active tab, and the footer with the selection actions.
-/// Hidden by default and absent on iOS (#420). The set it shows is
-/// `engine.activeSetID`, which PYTHON owns (the marker carries it), so an MCP agent's
-/// `appkit_sets.open_set` lands here too.
+/// The band below the viewport: a header naming the set, the tab bar with the filter,
+/// the active tab, and the footer with the selection actions. Hidden by default and
+/// absent on iOS (#420). The set it shows is `engine.activeSetID`, which PYTHON owns
+/// (the marker carries it), so an MCP agent's `appkit_sets.open_set` lands here too.
 ///
-/// The band is the #456 change and the shape of the chrome follows from it. The scene
-/// sequences are an OBJECT view and the tabs are views of a SET, so the band goes ABOVE
-/// the tab bar rather than inside one tab: ⌘2 turns it on and off independently of
-/// which tab is showing, and with no set open the drawer is the band ALONE — no tab
-/// bar, no tab content, which is the sequence strip in its new home. That is why the
-/// tab strip left the header row for the filter row, where the sketch in spec §4 has
-/// it: the header is the drawer's, the tab row is the set's.
+/// EVERY tab here is a view of a SET (#457). The sequences of the enabled SCENE OBJECTS
+/// are a different noun and a different viewer — the Object viewer, its own pane above
+/// the viewport, toggled by ⌘2 — which is the Entry/Object split the epic is built on.
+/// #419 made the scene rows this drawer's Sequences tab and #456 made them a band in
+/// this drawer's chrome; both are reverted, so with no set open there is nothing here
+/// but the "No set open" copy, and the tab row carries the set's tabs and its filter
+/// (where spec §4's sketch has them).
 struct DataDrawer: View {
-    /// The height the layout has given this drawer. It is what decides how much of it
-    /// the band may take (`PanelLayout.sequenceBandHeight`), so the band cannot squeeze
-    /// the tab content below one row in a short window. REQUIRED — a default would be
-    /// a second source of truth for a number the layout already knows (#456 review).
-    let height: CGFloat
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
 
@@ -463,59 +457,14 @@ struct DataDrawer: View {
         .background(PanelTheme.background)
     }
 
-    /// What shape the drawer is in, as a decision rather than a nest of `if`s — so the
-    /// rules can be asserted without a window (`DataDrawerContentTests`).
-    ///
-    /// `bandAlone` is the one that reads `SequenceBandView.worksWithoutASet`, and that
-    /// is the whole point of the property existing: every TAB is a view of a set, so
-    /// with no set open the only thing the drawer can draw is the band. If the band
-    /// ever stopped standing on its own, this would fall through to the empty state
-    /// rather than drawing a pane with nothing in it.
-    enum Content: Equatable {
-        case bandOverTabs   // the point of #456: scene sequences AND the set, together
-        case tabsAlone      // band off — its height goes back to the tab content
-        case bandAlone      // no set: today's strip, in its new home
-        case empty          // no set and no band: the "No set open" copy
-    }
-
-    static func content(hasSet: Bool, bandVisible: Bool) -> Content {
-        switch (hasSet, bandVisible) {
-        case (true, true): return .bandOverTabs
-        case (true, false): return .tabsAlone
-        case (false, true): return SequenceBandView.worksWithoutASet ? .bandAlone : .empty
-        case (false, false): return .empty
-        }
-    }
-
+    /// One decision, and it is the whole of it: a drawer with no set open has nothing
+    /// to draw, because every tab here is a view of a set (#457). The band case that
+    /// used to stand in for "no set" is gone with the band.
     @ViewBuilder
     private var content: some View {
-        switch (engine.activeSet,
-                Self.content(hasSet: engine.activeSet != nil,
-                             bandVisible: engine.sequenceBandVisible)) {
-        case (.some(let set), .bandOverTabs):
-            // A VSplitView so the band stays draggable, as the strip always was and as
-            // #419 restored. The split's divider IS the hairline in the sketch. The
-            // ideal height is clamped against the drawer's actual height so the band
-            // starts at the strip's own size when there is room and yields when there
-            // is not — the tab half keeps its minimum either way.
-            VSplitView {
-                SequenceBandView()
-                    .frame(minHeight: PanelLayout.macMinBandHeight,
-                           idealHeight: PanelLayout.sequenceBandHeight(
-                               objects: engine.sequences.count, drawerHeight: height),
-                           maxHeight: SequenceBandView.maxHeight)
-                    .id(SequenceBandView.heightIdentity(engine.sequences.count))
-                tabHalf(set: set)
-                    .frame(minHeight: PanelLayout.macMinTabContentHeight)
-            }
-        case (.some(let set), _):
+        if let set = engine.activeSet {
             tabHalf(set: set)
-        case (.none, .bandAlone):
-            // The strip, in its new home: no tab bar and no tab content, because every
-            // tab is a view of a set and there is no set (spec §8 decision 2, as #456
-            // restates it — the band is what "works without a set", not a tab).
-            SequenceBandView()
-        case (.none, _):
+        } else {
             emptyState
         }
     }
@@ -604,7 +553,6 @@ struct DataDrawer: View {
                     .help("Remove the ghost cartoon (set_peek with no arguments)")
                 }
             }
-            bandToggle
             Button { engine.closeDataDrawer() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
@@ -617,32 +565,11 @@ struct DataDrawer: View {
         .frame(height: PanelLayout.macDrawerHeaderHeight)
     }
 
-    /// The band's own switch, in the drawer's own header, because the band is the
-    /// drawer's chrome and not one tab's content (#456). Same verb as ⌘2 and the rail's
-    /// Seq pill; the glyph is lit when the scene rows are showing.
-    private var bandToggle: some View {
-        Button { engine.toggleSequenceBand() } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "text.alignleft")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(AppShortcuts.hint(AppShortcuts.sequencePane))
-                    .font(.system(size: 9).monospacedDigit())
-            }
-            .foregroundColor(engine.sequenceBandVisible
-                             ? PanelTheme.accentColor : PanelTheme.headerColor)
-        }
-        .buttonStyle(.plain)
-        .help(engine.sequenceBandVisible
-              ? "Hide the scene sequences (⌘2). The tab below takes the height back."
-              : "Show the sequences of the enabled scene objects above the tabs (⌘2)."
-                + " They stay up whichever tab you pick.")
-    }
-
     /// All four tabs, live as of #419. A tab that is not `isAvailable` is still drawn
     /// disabled rather than hidden — the drawer's shape is decided (spec §4) and a user
     /// who sees where a thing will go learns the layout once — but nothing is in that
-    /// state today. Since #456 the strip sits on the FILTER row rather than in the
-    /// header: the band above it is the drawer's, these are the set's.
+    /// state today. The strip sits on the FILTER row rather than in the header (#456,
+    /// spec §4's sketch): the header is the DRAWER's, this row is the SET's.
     private var tabStrip: some View {
         HStack(spacing: 2) {
             ForEach(DataDrawerTab.allCases) { item in
