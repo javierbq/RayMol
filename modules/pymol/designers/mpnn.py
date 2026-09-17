@@ -24,8 +24,14 @@ contract this module writes.
 MEASURED COST. Design mode's own interactive use is the measurement: a click on a
 ~100-residue region returns in well under a second on an M3 Pro, which is why there is no
 progress tray card per sequence and why `MAX_SEQUENCES` is a foot-gun bound rather than a
-time budget. A backbone's cost grows with its residue count; `DesignSizeGuard` at the far
-end refuses one too large for this machine before any GPU work.
+time budget. A backbone's cost grows with its residue count.
+
+THE SIZE BOUND BELOW IS THE ONLY ONE THERE IS, on the platform this ships on.
+`DesignSizeGuard` exists and Design mode's panel consults it, but its `evaluate` returns
+`.ok` unconditionally off iOS and `MPNNJobManager` does not call it at all -- so unlike
+`rfd3`, where the exact refusal lives at the far end and the Python bound is the friendly
+half of it, here there is no far-end refusal to be the friendly half of. `MAX_RESIDUES`
+is therefore a real ceiling and not a courtesy.
 """
 from .base import BackboneSpec, SequenceDesigner, require_designable
 from .metrics import DESIGN_SEQUENCE_SPECS
@@ -43,10 +49,15 @@ RUNTIME = 'mpnn'
 #: `n_sequences` cannot ask for a hundred thousand entries in a set.
 MAX_SEQUENCES = 32
 
-#: Ceiling on backbone residues. `DesignSizeGuard` at the far end is the exact refusal --
-#: it fits a measured per-residue cost to this machine's own free memory and refuses
-#: before touching the GPU. This is the friendly half of the same rule, and it refuses
-#: here so a 1000-member batch does not submit 1000 jobs that are all refused one by one.
+#: Ceiling on backbone residues, and the ONLY size refusal on macOS -- see the module
+#: docstring: `DesignSizeGuard.evaluate` is a no-op off iOS and `MPNNJobManager` does not
+#: call it. So this is a real bound rather than the friendly half of an exact one, and it
+#: refuses before a 1000-member batch submits 1000 jobs that would each fail late.
+#:
+#: 2000 rather than a fitted number, because nothing here has been measured against a
+#: machine's free memory. `DesignSizeGuard`'s own model -- 1.4 MB per residue plus 448 MB
+#: fixed -- puts 2000 residues near 3.2 GB of transient, which is comfortable on a Mac
+#: and is why this is a foot-gun bound rather than a memory one.
 MAX_RESIDUES = 2000
 
 #: Sampling temperature bounds. 0 is legal and means greedy argmax -- worth keeping,

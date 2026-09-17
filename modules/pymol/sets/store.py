@@ -832,6 +832,20 @@ class Container:
             out.append(record)
         return out
 
+    def has_entry_name(self, set_id, name):
+        """True when this set already holds an entry called `name`.
+
+        A POINT LOOKUP on the `UNIQUE (set_id, name)` index, and that is the whole
+        reason it exists: `binding._unique_entry_name` used to answer the same question
+        by reading every row of the set through `entries()`, which JSON-decodes
+        `sequences` and `parents` per row and carries the whole metrics table along.
+        Measured at 1000 landing entries (#453 review): 11.1 s of delivery, 16.8 s of
+        18.6 s profiled inside that one call, 509k `_parse_json` calls. A batch lands one
+        entry at a time, so the cost was quadratic in the set's own size.
+        """
+        return self._one('SELECT 1 FROM entries WHERE set_id = ? AND name = ?',
+                         (set_id, str(name))) is not None
+
     def count(self, set_id, where='', params=()):
         sql, _ = self._entries_sql(set_id, 'SELECT count(*)', where, order_by=None)
         with self._lock:

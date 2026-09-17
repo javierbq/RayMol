@@ -1408,6 +1408,11 @@ struct SetSendMenu: View {
     /// sequences per backbone"); the console takes any count up to 32.
     static let sequencesPerBackbone = 8
 
+    /// Whether sequence design has anything to work with here: its input is a BACKBONE,
+    /// and a `sequences` set has none. `mixed` is allowed through — some of it is
+    /// designable, and the command refuses the rest by name.
+    static func designable(_ set: SetEntry) -> Bool { set.kind != "sequences" }
+
     var body: some View {
         Menu {
             Section("Acting on \(target.label)") {
@@ -1432,12 +1437,22 @@ struct SetSendMenu: View {
                 // from a target object and hotspots and always will (decided
                 // 2026-09-15, spec §4.2). MPNN is the design step that does belong
                 // here, and as of #453 it has a command to call.
-                Button("Design / MPNN…") {
+                Button("Design / MPNN") {
                     engine.sendSetToDesignSequences(set, selector: target.selector)
                 }
-                .help("Design \(Self.sequencesPerBackbone) sequences for each backbone "
-                      + "with ProteinMPNN, into a child set you can then fold with "
-                      + "Predict.")
+                // Disabled on a set that HAS no backbones. A sequence entry carries no
+                // structure, so `design_sequences` refuses every one of them by name —
+                // and a menu item that always fails is worse than one that says why, the
+                // rule this menu already follows. `kind` is on the row, so this costs no
+                // query.
+                .disabled(Self.designable(set) == false)
+                .help(Self.designable(set)
+                      ? "Design \(Self.sequencesPerBackbone) sequences for each backbone "
+                        + "with ProteinMPNN, into a child set you can then fold with "
+                        + "Predict."
+                      : "This set holds sequences, not backbones, and a sequence cannot "
+                        + "be redesigned. Fold it with Predict first, then design on the "
+                        + "structures that come back.")
             }
             Divider()
             Menu("Export") {

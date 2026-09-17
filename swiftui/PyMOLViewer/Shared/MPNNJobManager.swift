@@ -20,7 +20,7 @@ import MPNNKit
 ///   array, and two decoders is two chances to disagree about which residue is index 7.
 /// * **The output is N results, not one structure.** A job samples `nSequences` sequences
 ///   from one encoder pass, and writes them as a JSON document at `outPath` (see
-///   ``composeResult(backbone:samples:elapsed:)``). `metricsPath` is deliberately unused:
+///   ``composeResult(backbone:samples:fixed:elapsed:)``). `metricsPath` is deliberately unused:
 ///   a metrics document describes one object, and this job produces neither.
 /// * **The weights are BUNDLED.** `MPNNGate.packURL`, not `request.weightsDir` — the pack
 ///   is a resource of the app, so no run can be gated on a download and `weights_dir`
@@ -51,7 +51,12 @@ final class MPNNJobManager: InferenceRuntime {
     static let maxSequences = 32
 
     /// MLX must never run on the main thread; the marker arrives ON it. Serial, so two
-    /// jobs cannot both hold the peak transient — `DesignSizeGuard` sizes one.
+    /// jobs cannot both hold the peak transient.
+    ///
+    /// Nothing here consults `DesignSizeGuard`: its `evaluate` returns `.ok`
+    /// unconditionally off iOS, and this manager is macOS-only, so it would refuse
+    /// nothing. The size bound that does apply is `pymol.designers.mpnn.MAX_RESIDUES`,
+    /// which says so out loud.
     private let queue = DispatchQueue(label: "io.raymol.design.mpnn", qos: .userInitiated)
     /// Guards `cancelled`, which the design thread reads and the main thread writes.
     private let stateQueue = DispatchQueue(label: "io.raymol.design.mpnn.state")
@@ -66,6 +71,35 @@ final class MPNNJobManager: InferenceRuntime {
     /// Test seam, matching the other managers'. UNGATED, like those: a `#if DEBUG` here
     /// would not compile against a Release app host.
     var cancelRequestedForTesting: Set<String> { stateQueue.sync { cancelled } }
+
+    // MARK: Injected inference
+
+    /// Returns the designed ALPHABET INDICES, which is all `run` reads off a
+    /// `DesignResult` -- and the only part of one a test can build, since
+    /// `MPNNModel.DesignResult` has no public initialiser.
+    typealias DesignFn =
+        ([MPNNModel.Residue], MPNNModel.DesignOptions) throws -> [Int]
+    typealias ScoreFn = ([MPNNModel.Residue], [Int]) throws -> MPNNModel.ScoreResult
+
+    /// The two model calls, injectable. Nil means "load the bundled pack and use it",
+    /// which is every real run.
+    ///
+    /// Injection rather than a mock object, matching `DesignController`'s
+    /// `designRegionFn` / `scoreFn`, and for the same reason: `run` is where the seed
+    /// derivation, the `fixedPositions` remap, the `omit` mapping, the cancel poll and
+    /// the write → `loadResult` → `report("done")` ordering all live, and every one of
+    /// them is otherwise reachable only through a 100 MB pack and a GPU. With these, a
+    /// test drives a real backbone file through the real `run` to a real document.
+    ///
+    /// Set on the shared instance, so a test must clear them in `tearDown`.
+    var designFn: DesignFn?
+    var scoreFn: ScoreFn?
+
+    /// Run a request on THIS thread, for tests. `submit` hops to `queue`, which a test
+    /// would then have to wait on; there is nothing about the queue hop under test.
+    func runForTesting(_ request: InferenceJob.Request) {
+        run(request)
+    }
 
     // MARK: InferenceRuntime
 
@@ -167,7 +201,20 @@ final class MPNNJobManager: InferenceRuntime {
                 return
             }
             let native = backbone.nativeSequence
-            let model = try loadedModel()
+            // The pack is read only when it is going to be used: an injected run must not
+            // need 100 MB of weights on disk to exercise this function.
+            let model = (designFn == nil || scoreFn == nil) ? try loadedModel() : nil
+            let design = designFn ?? { residues, options in
+                try MPNNRuntime.withMLXErrorsAsThrows {
+                    try model!.design(residues, options: options).indices
+                }
+            }
+            let score = scoreFn ?? { residues, sequence in
+                try MPNNRuntime.withMLXErrorsAsThrows {
+                    try model!.score(residues, sequence: sequence, mode: .leaveOneOut,
+                                     seed: 0)
+                }
+            }
 
             var options = MPNNModel.DesignOptions()
             options.temperature = Float(request.temperature ?? 0.1)
@@ -195,19 +242,14 @@ final class MPNNJobManager: InferenceRuntime {
                 // carries, or every sample of a run would be the same draw. Derived
                 // rather than random so the whole set is reproducible from `seed=N`.
                 options.seed = request.seed &+ UInt64(index)
-                let design = try MPNNRuntime.withMLXErrorsAsThrows {
-                    try model.design(residues, options: options)
-                }
+                let designed = try design(residues, options)
                 // Scored leave-one-out against the sequence just designed, which is what
                 // makes `native_fit` a statement about THIS sequence on THIS backbone.
-                let scored = try MPNNRuntime.withMLXErrorsAsThrows {
-                    try model.score(residues, sequence: design.indices,
-                                    mode: .leaveOneOut, seed: 0)
-                }
+                let scored = try score(residues, designed)
                 samples.append(Sample(
                     number: index + 1, seed: options.seed ?? 0,
                     temperature: Double(options.temperature),
-                    indices: design.indices,
+                    indices: designed,
                     scores: DesignColor.scores(from: scored,
                                                validMask: backbone.residues.map(\.valid))))
                 let fraction = Double(index + 1) / Double(count)
@@ -221,6 +263,7 @@ final class MPNNJobManager: InferenceRuntime {
             elapsed = Date().timeIntervalSince(started)
 
             let document = Self.composeResult(backbone: backbone, samples: samples,
+                                              fixed: options.fixedPositions,
                                               elapsed: elapsed ?? 0)
             try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
                 .write(to: URL(fileURLWithPath: request.outPath), options: .atomic)
@@ -304,8 +347,17 @@ final class MPNNJobManager: InferenceRuntime {
     ///
     /// `chains` covers EVERY residue of the backbone, with the native letter where the
     /// model wrote none, so the entry's sequence is the thing a later `predict` folds.
+    /// `fixed` is in VALID order -- the same set handed to `MPNNModel.DesignOptions`.
+    /// It is a parameter rather than something derived here because a held position is
+    /// not visible in the result: `MPNNModel.design` returns the NATIVE letter at a fixed
+    /// position (that is how `DesignController` reads it), so counting those as designed
+    /// scored every one of them as recovered and made `sequence_recovery` a function of
+    /// how much was held rather than of what the model wrote. Measured before the fix:
+    /// a 3-of-10-residue region reported ≥ 0.7 whatever MPNN produced (#453 review,
+    /// finding 3). The set path is unaffected -- nothing is held there -- but this is a
+    /// column the drawer sorts on.
     static func composeResult(backbone: DesignResidueSet, samples: [Sample],
-                              elapsed: Double) -> [String: Any] {
+                              fixed: Set<Int> = [], elapsed: Double) -> [String: Any] {
         let index = backbone.residues.map { [$0.chain, $0.resi] }
         var sequences: [[String: Any]] = []
         for sample in samples {
@@ -319,8 +371,10 @@ final class MPNNJobManager: InferenceRuntime {
                 }
                 let designedIndex = sample.indices[cursor]
                 letters.append(Self.letter(for: designedIndex))
-                designed += 1
-                if designedIndex == residue.aa { recovered += 1 }
+                if !fixed.contains(cursor) {
+                    designed += 1
+                    if designedIndex == residue.aa { recovered += 1 }
+                }
                 cursor += 1
             }
             var chains: [String: String] = [:]

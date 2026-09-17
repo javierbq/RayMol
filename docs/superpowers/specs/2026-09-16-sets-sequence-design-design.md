@@ -255,6 +255,35 @@ Swift: `MPNNRuntimeTests.swift` for the wire decode (built from the snake_case J
 `host.py` writes, never the memberwise init) and the preflight refusals, plus the
 `InferenceRouterTests` table assertion, which pins the runtime set and must name `mpnn`.
 
+## 10a. Amended after review
+
+Six decisions changed or were made explicit during review of PR #460. Recorded here
+rather than edited into the sections above, so the reasoning that produced them survives.
+
+- **The pending table is a FIFO of job RECORDS, not a name keyed to a mode.** §3 split the
+  delivery key from the member keys but kept side tables keyed by name alone. Two jobs can
+  genuinely share a key -- a seed sweep from a script, because the command returns a handle
+  immediately -- and the second result was dropped silently. Worse, a set batch pending
+  under key `ent` plus an object called `ent` (which `set_stage` creates: staged objects are
+  named after their entry) routed the SET job's sequences through the object path, recorded
+  them against an unrelated structure and reaped the child set to nothing. Delivery now pops
+  the oldest record and routes on the RECORD; the key retires when its last job does.
+- **A sample with no `chains` is refused, not landed.** §5 says the keys are a contract and
+  that a skew "does not fail loudly"; the guard checked only the outer `sequences` key, so a
+  runtime that wrote no `chains` produced a complete-looking child set of sequence-less rows.
+  The product is now checked per sample, by name, and a sample without one settles unlanded.
+- **`n` is read, not just written.** Samples are ordered by it and the numbering is verified
+  to be 1..N; a document that disagrees is refused whole rather than landed mislabelled.
+- **`sequence_recovery` counts DESIGNED positions only.** `MPNNModel.design` returns the
+  native letter at a fixed position, so counting held residues scored every one of them as
+  recovered -- a 3-of-10 region read >= 0.7 whatever the model wrote. `composeResult` now
+  takes the fixed set.
+- **The entry's `seed` is the one that produced it**, read off the sample, not the
+  invocation's base seed written at submit.
+- **`DesignSizeGuard` refuses nothing here.** §9 implied a far-end size refusal by analogy
+  with `rfd3`. `evaluate` returns `.ok` unconditionally off iOS and this manager never calls
+  it, so `designers.mpnn.MAX_RESIDUES` is the only size bound there is, and says so.
+
 ## 11. Deferred
 
 - **iOS.** `MPNNJobManager` is macOS-gated; the iOS Design-mode path is unchanged.

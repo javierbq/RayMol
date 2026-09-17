@@ -8,6 +8,8 @@ request was given. No host, no weights, no network. The fake's sequences differ 
 sample, which is what makes "N sequences per backbone is N entries" a statement about the
 delivery rather than about identical inputs.
 """
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -486,3 +488,373 @@ class TheWholeChain(SequenceDesignTestCase):
                              ['certainty', 'native_fit'])
         self.assertEqual(len(parents), 2)
         self.assertEqual(c.count(c.get_set(folded['name'])['id']), 4)
+
+
+class ResultDocumentIsChecked(SequenceDesignTestCase):
+    """What a skewed or short result does. Every one of these was a silent wrong answer
+    before the #453 review."""
+
+    def deliver(self, job, document):
+        """Deliver a hand-written document under `job`'s key, as the runtime would."""
+        from pymol import designing_sequences
+        path = os.path.join(_RESULTS['dir'], 'hand-%s.json' % job.job_id)
+        with open(path, 'w') as handle:
+            json.dump(document, handle)
+        designing_sequences.deliver_result(path, job.spec.name)
+
+    def backbone_index(self, count=8):
+        return [['A', str(i + 1)] for i in range(count)]
+
+    def testARecordWithNoChainsIsRefusedRatherThanLandedEmpty(self):
+        """Finding 1: the key carrying the PRODUCT was read with `.get(...) or {}`."""
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=4)
+        self.deliver(jobs[0], {
+            'index': self.backbone_index(),
+            'sequences': [{'n': n + 1, 'scalars': {}, 'arrays': {}}
+                          for n in range(4)]})
+        # Nothing landed, so the batch reaps its empty set rather than leaving four
+        # complete-looking rows with no sequence in them.
+        self.assertEqual([row['name'] for row in self.sets()], ['bb'])
+        self.assertEqual(batch.running(), {})
+
+    def testARecordWithAnEmptyChainStringIsAlsoRefused(self):
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all')
+        self.deliver(jobs[0], {'index': self.backbone_index(),
+                               'sequences': [{'n': 1, 'chains': {'A': '   '}}]})
+        self.assertEqual([row['name'] for row in self.sets()], ['bb'])
+
+    def testAShortResultSaysSoAndLandsWhatCame(self):
+        """Finding 7: fewer sequences than asked was silent."""
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=4)
+        with capture_console() as out:
+            self.deliver(jobs[0], {
+                'index': self.backbone_index(),
+                'sequences': [{'n': 1, 'chains': {'A': 'ACDEFGHI'}},
+                              {'n': 2, 'chains': {'A': 'CDEFGHIK'}}]})
+        self.assertIn('returned 2 sequences of the 4 asked for', out.getvalue())
+        child = [row for row in self.sets() if row['name'] != 'bb'][0]
+        self.assertEqual(store.active().count(child['id']), 2)
+        self.assertEqual(batch.running(), {})
+
+    def testSequencesAreOrderedByTheirOwnNNotByPosition(self):
+        """Finding 12: `n` was written and then ignored, so a reorder mislabelled rows."""
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=2)
+        self.deliver(jobs[0], {
+            'index': self.backbone_index(),
+            'sequences': [{'n': 2, 'chains': {'A': 'CCCCCCCC'}, 'scalars': {}},
+                          {'n': 1, 'chains': {'A': 'AAAAAAAA'}, 'scalars': {}}]})
+        c = store.active()
+        child = [row for row in self.sets() if row['name'] != 'bb'][0]
+        by_n = {e['scalars']['sequence_n']: e['sequences']['A']
+                for e in c.entries(child['id'])}
+        self.assertEqual(by_n, {1: 'AAAAAAAA', 2: 'CCCCCCCC'})
+
+    def testNumberingThatIsNotOneToNIsRefusedWhole(self):
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=2)
+        with capture_console() as out:
+            self.deliver(jobs[0], {
+                'index': self.backbone_index(),
+                'sequences': [{'n': 1, 'chains': {'A': 'AAAAAAAA'}},
+                              {'n': 1, 'chains': {'A': 'CCCCCCCC'}}]})
+        self.assertIn('which is not 1..2', out.getvalue())
+        self.assertEqual([row['name'] for row in self.sets()], ['bb'])
+
+    def testTheSeedOnAnEntryIsTheOneThatProducedIt(self):
+        """Finding 11: every entry carried the invocation's BASE seed."""
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=3, seed=100)
+        deliver_sequences(jobs)
+        c = store.active()
+        child = [row for row in self.sets() if row['name'] != 'bb'][0]
+        seeds = {e['scalars']['sequence_n']: e['scalars']['seed']
+                 for e in c.entries(child['id'])}
+        # The fake derives seed + n - 1, as MPNNJobManager does.
+        self.assertEqual(seeds, {1: 100, 2: 101, 3: 102})
+
+
+class TwoJobsUnderOneKey(SequenceDesignTestCase):
+    """Finding 2: the pending tables were keyed by name and held one mode, so a second
+    job under a key was lost and a set job could be routed through the object path."""
+
+    def testASeedSweepOnOneObjectDeliversBothRuns(self):
+        from pymol import designing_sequences
+        self.helix('bb', length=8)
+        first = cmd.design_sequences(DESIGNER, 'bb', seed=1)
+        second = cmd.design_sequences(DESIGNER, 'bb', seed=2)
+        self.assertEqual(len(designing_sequences._PENDING['bb']), 2)
+        deliver_sequences([first, second])
+        # TWO metrics runs, not one: the second finished design used to be discarded
+        # with no print at all.
+        self.assertEqual(len(mstore.runs(object='bb')), 2)
+        self.assertEqual(designing_sequences._PENDING, {})
+
+    def testASetJobIsNotRoutedThroughTheObjectPathByALaterObjectOfThatName(self):
+        """`set_stage` names a staged object after its entry, which is exactly the key a
+        set job is pending under."""
+        from pymol import designing_sequences
+        parent = self.backbone_set(count=1)
+        entry = store.active().entries(parent['id'])[0]
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=2)
+        key = jobs[0].spec.name
+        self.assertEqual(key, entry['name'])
+        # ...and now an object of that name exists, as staging would make one, and the
+        # user runs the OBJECT path on it. Both jobs are now pending under `key`.
+        self.helix(key, length=8)
+        object_job = cmd.design_sequences(DESIGNER, key)
+        deliver_sequences(jobs)
+        # The sequences went to the SET, not to metric runs on the object.
+        child = [row for row in self.sets() if row['name'] != 'bb']
+        self.assertEqual(len(child), 1, [row['name'] for row in self.sets()])
+        self.assertEqual(store.active().count(child[0]['id']), 2)
+        self.assertEqual(mstore.runs(object=key), [])
+        # ...and the object job is still outstanding, not swallowed by the set one.
+        self.assertEqual(len(designing_sequences._PENDING[key]), 1)
+        deliver_sequences(object_job)
+        self.assertEqual(len(mstore.runs(object=key)), 1)
+        self.assertEqual(designing_sequences._PENDING, {})
+
+    def testAKeyIsMovedAsideWhenAnObjectAlreadyAnswersToIt(self):
+        parent = self.backbone_set(count=1)
+        entry = store.active().entries(parent['id'])[0]
+        self.helix(entry['name'], length=8)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all')
+        self.assertNotEqual(jobs[0].spec.name, entry['name'])
+
+    def testDiscardingRetiresOneJobNotTheWholeKey(self):
+        from pymol import designing_sequences
+        self.helix('bb', length=8)
+        first = cmd.design_sequences(DESIGNER, 'bb')
+        cmd.design_sequences(DESIGNER, 'bb')
+        designing_sequences.discard_pending('bb')
+        self.assertEqual(len(designing_sequences._PENDING['bb']), 1)
+        # ...and the one still outstanding is the SECOND, so the first's handle is gone.
+        self.assertNotEqual(designing_sequences._PENDING['bb'][0]['job_id'],
+                            first.job_id)
+
+
+class CancelAfterTheBatchSettles(SequenceDesignTestCase):
+
+    def testCancellingAFinishedBatchIsQuietRatherThanAnError(self):
+        """Finding 6: the docstring promises this and the code raised."""
+        self.backbone_set(count=1)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all')
+        child = [row for row in self.sets() if row['name'] != 'bb'][0]
+        deliver_sequences(jobs)
+        self.assertEqual(cmd.design_sequences_cancel(child['name']), child['name'])
+
+    def testAnUnknownNameStillRaises(self):
+        with self.assertRaises(Exception):
+            cmd.design_sequences_cancel('no_such_job')
+
+
+class TheWireContract(SequenceDesignTestCase):
+    """The request keys `designers.mpnn` writes against the ones `InferenceJob.Request`
+    decodes, read out of the Swift source.
+
+    Both halves have tests and both pass, because each writes its own fixture. Nothing
+    compared the two, so a rename on either side is a silent decode failure at runtime --
+    for this runtime, a job that runs with a default it was never asked for. The same
+    trick `msa_e2e.SwiftWireContractTest` uses.
+    """
+
+    SWIFT_REQUEST = os.path.join('swiftui', 'PyMOLViewer', 'Shared', 'InferenceJob.swift')
+    SWIFT_MANAGER = os.path.join('swiftui', 'PyMOLViewer', 'Shared',
+                                 'MPNNJobManager.swift')
+
+    def source(self, relative):
+        root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+        path = os.path.normpath(os.path.join(root, relative))
+        if not os.path.isfile(path):
+            # Skipped rather than passed: a source-reading contract test that cannot find
+            # the source has checked nothing, and saying so is the honest outcome.
+            self.skipTest('%s not present; not a repo checkout' % relative)
+        with open(path) as handle:
+            return handle.read()
+
+    def swift_wire_names(self, after):
+        import re
+        source = self.source(self.SWIFT_REQUEST)
+        start = source.index(after)
+        block = source[source.index('enum CodingKeys', start):]
+        block = block[:block.index('}')]
+        names = set()
+        for entry in re.findall(r'case\s+([^\n]+)', block):
+            for part in entry.split(','):
+                part = part.strip().rstrip('}').strip()
+                if not part:
+                    continue
+                if '=' in part:
+                    names.add(part.split('=', 1)[1].strip().strip('"'))
+                else:
+                    names.add(part)
+        return names
+
+    def request(self):
+        """Submit a real `mpnn` job through the real transport and read its request."""
+        import os as _os
+        from pymol.designers import registry as dreg
+        from pymol.predictors import host
+        had_host = _os.environ.get(host.HOST_ENV)
+        had_runtimes = _os.environ.get(host.RUNTIMES_ENV)
+        _os.environ[host.HOST_ENV] = '1'
+        _os.environ[host.RUNTIMES_ENV] = 'mpnn'
+        try:
+            self.helix('wire', length=6)
+            designer = dreg.get('mpnn')
+            designer.check_available()
+            job = cmd.design_sequences('mpnn', 'wire', n_sequences=2, temperature=0.3,
+                                       seed=5, omit='C')
+        finally:
+            for key, value in ((host.HOST_ENV, had_host),
+                               (host.RUNTIMES_ENV, had_runtimes)):
+                if value is None:
+                    _os.environ.pop(key, None)
+                else:
+                    _os.environ[key] = value
+        self.addCleanup(lambda: _unlink(job.request_path))
+        for path in job.input_paths:
+            self.addCleanup(lambda p=path: _unlink(p))
+        with open(job.request_path) as handle:
+            return job, json.load(handle)
+
+    def testEveryKeyPythonWritesIsOneSwiftDecodes(self):
+        _, request = self.request()
+        unknown = set(request) - self.swift_wire_names('struct Request: Codable')
+        self.assertEqual(unknown, set(),
+                         'Python writes %s, which Swift Request does not decode'
+                         % sorted(unknown))
+        # The sequence-design keys specifically, so this cannot pass vacuously on a
+        # request that lost them.
+        for key in ('backbone_path', 'n_sequences', 'temperature', 'fixed_positions',
+                    'omit', 'runtime', 'seed'):
+            self.assertIn(key, request)
+        self.assertEqual(request['runtime'], 'mpnn')
+        self.assertEqual(request['n_sequences'], 2)
+        self.assertEqual(request['omit'], 'C')
+        # ...and NOT the schedule, which is what made those fields optional in Swift.
+        self.assertNotIn('recycling_steps', request)
+        self.assertNotIn('diffusion_steps', request)
+
+    def testTheBackboneFileSwiftIsToldToOpenReallyExistsAndParses(self):
+        """The one failure a key check cannot see: a path that decodes and is not there.
+        Python writes the backbone before the request that names it."""
+        _, request = self.request()
+        path = request['backbone_path']
+        self.assertTrue(os.path.isfile(path), '%s does not exist' % path)
+        with open(path) as handle:
+            backbone = json.load(handle)
+        self.assertEqual(sorted(backbone), ['object', 'residues', 'state'])
+        self.assertEqual(sorted(backbone['residues'][0]),
+                         ['aa', 'c', 'ca', 'chain', 'n', 'o', 'resi', 'resn', 'valid'])
+
+    def testEveryResultKeyThisModuleReadsIsOneTheManagerWrites(self):
+        """The other half of the contract: the document `composeResult` composes."""
+        manager = self.source(self.SWIFT_MANAGER)
+        composed = manager[manager.index('static func composeResult'):]
+        for key in ('"designer"', '"elapsed_s"', '"index"', '"sequences"', '"n"',
+                    '"seed"', '"chains"', '"scalars"', '"arrays"',
+                    '"sequence_recovery"', '"mean_native_fit"', '"mean_certainty"',
+                    '"temperature"'):
+            self.assertIn(key, composed,
+                          'MPNNJobManager.composeResult no longer writes %s, which'
+                          ' designing_sequences reads' % key)
+        # The residue arrays are named by their MetricSpecs on the Python side, so a
+        # rename there has to be matched here.
+        from pymol.designers.metrics import RESIDUE_SPECS
+        for spec in RESIDUE_SPECS:
+            self.assertIn('"%s"' % spec.key, composed)
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def capture_console():
+    """Both streams: `colorprinting` writes through `sys.stdout`, which pytest replaces
+    with an object that does not write to fd 1 -- so an fd-level capture alone sees
+    nothing (see the notes on #272)."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        yield buffer
+
+
+class DeliveryCost(SequenceDesignTestCase):
+    """Finding 8: delivery was quadratic in the set's own size.
+
+    `binding._unique_entry_name` answered "is this name taken" by reading every row of
+    the set through `entries()`, which JSON-decodes two fields per row and drags the
+    whole metrics table along. A batch lands one entry at a time, so the cost grew with
+    every landing -- measured before the fix at 11.1 s for 1000 entries, with 16.8 s of
+    18.6 s profiled inside that one call. `InferenceJob.loadResult` dispatches to main,
+    so that was main-thread time.
+    """
+
+    #: Entries to land. Enough that a quadratic cost is unmistakable and a linear one is
+    #: still under a second; the real campaign number is 1000.
+    N = 400
+
+    def testLandingIsNotQuadraticInTheSetsOwnSize(self):
+        import time
+        self.backbone_set(count=1, length=6)
+        jobs = cmd.design_sequences(DESIGNER, 'set:bb@all', n_sequences=1)
+        child = [row for row in self.sets() if row['name'] != 'bb'][0]
+        c = store.active()
+        started = time.monotonic()
+        # Straight at the store layer: the shape under test is `_unique_entry_name`'s
+        # cost per landing, not the command's.
+        for index in range(self.N):
+            name = binding._unique_entry_name(c, child['id'], 'row_%d' % index)
+            c.add_entry(child['id'], name, sequences={'A': 'ACDEFG'})
+        elapsed = time.monotonic() - started
+        self.assertEqual(c.count(child['id']), self.N)
+        # A generous ceiling -- this is a shape assertion, not a benchmark. The quadratic
+        # version needed ~1.9 s for 400 here; the point-lookup version is ~0.15 s.
+        self.assertLess(elapsed, 1.0,
+                        '%d entries took %.2f s to name and write; _unique_entry_name is'
+                        ' reading the whole set again per landing' % (self.N, elapsed))
+        deliver_sequences(jobs)
+
+    def testAUniqueNameStillAvoidsWhatIsAlreadyThere(self):
+        """The cheap lookup must still answer the question it replaced."""
+        self.backbone_set(count=1, length=6)
+        c = store.active()
+        bb = c.get_set('bb')
+        self.assertEqual(binding._unique_entry_name(c, bb['id'], 'fresh'), 'fresh')
+        taken = c.entries(bb['id'])[0]['name']
+        self.assertEqual(binding._unique_entry_name(c, bb['id'], taken), taken + '_2')
+        c.add_entry(bb['id'], taken + '_2', sequences={'A': 'AA'})
+        self.assertEqual(binding._unique_entry_name(c, bb['id'], taken), taken + '_3')
+
+
+class ObjectIdentity(SequenceDesignTestCase):
+    """The object path's equivalent of `sets.batch._still_ours`: a `.pse` load mid-flight
+    can put a DIFFERENT structure under the name a run was started against."""
+
+    def testADifferentStructureUnderTheSameNameRecordsNothing(self):
+        self.helix('bb', length=10)
+        job = cmd.design_sequences(DESIGNER, 'bb')
+        # The name survives; the structure under it does not.
+        cmd.delete('bb')
+        self.helix('bb', length=4)
+        with capture_console() as out:
+            deliver_sequences(job)
+        self.assertIn('is not the structure this run was started against', out.getvalue())
+        self.assertEqual(mstore.runs(object='bb'), [])
+        # The sequences are still PRINTED: the design took real time and the user must
+        # see it even when nothing can be recorded against the session.
+        self.assertIn('sequence 1 chain A', out.getvalue())
+
+    def testTheUnchangedObjectStillRecords(self):
+        self.helix('bb', length=10)
+        job = cmd.design_sequences(DESIGNER, 'bb')
+        deliver_sequences(job)
+        self.assertEqual(len(mstore.runs(object='bb')), 1)

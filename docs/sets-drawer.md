@@ -231,10 +231,13 @@ point back at the ones they were folded from. **Design / MPNN** runs
 `design_sequences mpnn, set:<name>@<selector>, n_sequences=8`, which designs eight
 sequences for each selected backbone and writes a child set of **sequences** — one entry
 per sequence, each pointing back at the backbone it came from, with its native fit and
-certainty as per-residue strips. Those entries carry no structure until you fold them,
+certainty stored as per-residue arrays (the heat strips draw them for structure entries
+today; a sequences set shows the per-sequence summary columns). Those entries carry no
+structure until you fold them,
 which is what **Predict** on the child set is for: backbones → sequences → folds, without
 leaving the drawer. An entry with no structure cannot be redesigned, so a sequences set
-is refused by name rather than half-processed.
+is refused by name rather than half-processed — and the menu item is disabled on
+one, saying so.
 **Export** writes CSV, FASTA or a folder
 of CIFs. Binder Design is
 not in the menu at all — it starts from a target and produces candidates, so a set of

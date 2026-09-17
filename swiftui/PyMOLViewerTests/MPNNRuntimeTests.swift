@@ -27,6 +27,10 @@ final class MPNNRuntimeTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        // The manager is a singleton, so an injected closure left behind would run in
+        // whatever test came next.
+        MPNNJobManager.shared.designFn = nil
+        MPNNJobManager.shared.scoreFn = nil
         try? FileManager.default.removeItem(at: dir)
     }
 
@@ -288,6 +292,233 @@ final class MPNNRuntimeTests: XCTestCase {
         XCTAssertEqual(MPNNJobManager.letter(for: 0), MPNNModel.alphabet[0])
         XCTAssertEqual(MPNNJobManager.letter(for: -1), "X")
         XCTAssertEqual(MPNNJobManager.letter(for: 99), "X")
+    }
+
+    // MARK: Recovery counts DESIGNED positions only (#453 review, finding 3)
+
+    /// `MPNNModel.design` returns the NATIVE letter at a fixed position, so counting held
+    /// residues as designed scored every one of them as recovered: a 3-of-10 region read
+    /// >= 0.7 whatever the model wrote.
+    func testHeldPositionsAreOutsideTheRecoveryDenominator() throws {
+        let path = try writeBackbone("bb-fixed", count: 4)
+        let backbone = try DesignResidueSet.parse(jsonAt: URL(fileURLWithPath: path))
+        // Every residue is native ALA (aa 0). The model "designs" ALA at the two held
+        // positions (as it must) and CYS at the two free ones — so nothing was recovered.
+        let sample = MPNNJobManager.Sample(
+            number: 1, seed: 0, temperature: 0.1, indices: [0, 0, 1, 1],
+            scores: DesignScores(nativeFit: [nil, nil, nil, nil],
+                                 certainty: [nil, nil, nil, nil],
+                                 propensities: [nil, nil, nil, nil]))
+
+        let held = MPNNJobManager.composeResult(backbone: backbone, samples: [sample],
+                                                fixed: [0, 1], elapsed: 0)
+        let scalars = try XCTUnwrap(
+            ((held["sequences"] as? [[String: Any]])?[0]["scalars"]) as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(scalars["sequence_recovery"] as? Double), 0.0,
+                       accuracy: 1e-9)
+
+        // ...and with nothing held, the same sample recovers the two ALAs: 2 of 4.
+        let free = MPNNJobManager.composeResult(backbone: backbone, samples: [sample],
+                                                fixed: [], elapsed: 0)
+        let freeScalars = try XCTUnwrap(
+            ((free["sequences"] as? [[String: Any]])?[0]["scalars"]) as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(freeScalars["sequence_recovery"] as? Double), 0.5,
+                       accuracy: 1e-9)
+    }
+
+    /// Holding EVERYTHING leaves no denominator at all, so the column is absent rather
+    /// than 1.0 or a division by zero. (`design_sequences` refuses this case on the
+    /// Python side; the document must still be well formed if it ever arrives.)
+    func testHoldingEverythingLeavesNoRecoveryColumn() throws {
+        let path = try writeBackbone("bb-allfixed", count: 2)
+        let backbone = try DesignResidueSet.parse(jsonAt: URL(fileURLWithPath: path))
+        let document = MPNNJobManager.composeResult(
+            backbone: backbone,
+            samples: [MPNNJobManager.Sample(
+                number: 1, seed: 0, temperature: 0, indices: [0, 0],
+                scores: DesignScores(nativeFit: [nil, nil], certainty: [nil, nil],
+                                     propensities: [nil, nil]))],
+            fixed: [0, 1], elapsed: 0)
+        let scalars = try XCTUnwrap(
+            ((document["sequences"] as? [[String: Any]])?[0]["scalars"]) as? [String: Any])
+        XCTAssertNil(scalars["sequence_recovery"])
+    }
+
+    // MARK: run() end to end, on injected inference (#453 review, finding 5)
+
+    /// Install doubles for the two model calls and record what `run` hands them.
+    /// `MPNNModel.DesignResult` and `.ScoreResult` are both public inits, so these are
+    /// real values rather than mocks.
+    private final class Recorder {
+        var seeds: [UInt64?] = []
+        var fixed: [Set<Int>] = []
+        var omits: [[Set<Int>]?] = []
+        var temperatures: [Float] = []
+        var scoredSequences: [[Int]] = []
+    }
+
+    @discardableResult
+    private func installDoubles(_ recorder: Recorder, letters: [Int]) -> Recorder {
+        MPNNJobManager.shared.designFn = { residues, options in
+            recorder.seeds.append(options.seed)
+            recorder.fixed.append(options.fixedPositions)
+            recorder.omits.append(options.omit)
+            recorder.temperatures.append(options.temperature)
+            return Array(letters.prefix(residues.count))
+        }
+        MPNNJobManager.shared.scoreFn = { residues, sequence in
+            recorder.scoredSequences.append(sequence)
+            return MPNNModel.ScoreResult(
+                logProbs: Array(repeating: Array(repeating: Float(-3), count: 21),
+                                count: residues.count),
+                currentAALogProb: Array(repeating: Float(-1.25), count: residues.count))
+        }
+        return recorder
+    }
+
+    private func status(of request: InferenceJob.Request) throws -> InferenceJob.Status {
+        try JSONDecoder().decode(
+            InferenceJob.Status.self,
+            from: Data(contentsOf: URL(fileURLWithPath: request.statusPath)))
+    }
+
+    func testRunWritesADocumentPythonCanRead() throws {
+        let recorder = Recorder()
+        installDoubles(recorder, letters: [1, 1, 1])
+        let request = try writeRequest(job: "mpnn-run",
+                                       backbonePath: try writeBackbone("bb-run", count: 3),
+                                       nSequences: 3, temperature: 0.4)
+        MPNNJobManager.shared.runForTesting(request)
+
+        // A DISTINCT seed per sample, derived from the request's one seed — otherwise
+        // every sample of a run is the same draw.
+        XCTAssertEqual(recorder.seeds, [11, 12, 13])
+        XCTAssertEqual(recorder.temperatures, [0.4, 0.4, 0.4])
+        // Scored against the sequence just designed, not against the native one.
+        XCTAssertEqual(recorder.scoredSequences, [[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+
+        let done = try status(of: request)
+        XCTAssertEqual(done.state, "done")
+        XCTAssertEqual(done.resultPath, request.outPath)
+        XCTAssertNotNil(done.elapsedSeconds)
+
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: URL(fileURLWithPath: request.outPath)))
+            as? [String: Any])
+        XCTAssertEqual(document["designer"] as? String, "mpnn")
+        let sequences = try XCTUnwrap(document["sequences"] as? [[String: Any]])
+        XCTAssertEqual(sequences.count, 3)
+        XCTAssertEqual(sequences.map { $0["n"] as? Int }, [1, 2, 3])
+        XCTAssertEqual(sequences.map { $0["seed"] as? UInt64 }, [11, 12, 13])
+        // The product is there, on every record — the key `designing_sequences` now
+        // refuses a record for lacking.
+        for sample in sequences {
+            let chains = try XCTUnwrap(sample["chains"] as? [String: String])
+            XCTAssertEqual(chains["A"], "CCC")
+        }
+        let arrays = try XCTUnwrap(sequences[0]["arrays"] as? [String: [Any]])
+        XCTAssertEqual(arrays["native_fit"]?.count, 3)
+        XCTAssertEqual(arrays["certainty"]?.count, 3)
+    }
+
+    /// Wire positions are remapped onto the array the model sees, and the held ones stay
+    /// out of the recovery denominator — the two halves of finding 3, through `run`.
+    func testRunRemapsFixedPositionsAndHonoursThemInRecovery() throws {
+        let recorder = Recorder()
+        // Backbone of 4 with a gap at 1, so valid order is wire 0, 2, 3 -> 0, 1, 2.
+        // Every residue is native ALA (0). The double writes ALA at the HELD position —
+        // as the model does, which is the whole trap — and CYS (1) at the two free ones.
+        // Free-only recovery is therefore 0/2; counting the held one would give 1/3.
+        installDoubles(recorder, letters: [0, 1, 1])
+        let request = try writeRequest(
+            job: "mpnn-fixed-run",
+            backbonePath: try writeBackbone("bb-fixed-run", count: 4, invalidAt: 1),
+            nSequences: 1, fixedPositions: [0, 1])
+        MPNNJobManager.shared.runForTesting(request)
+
+        // Wire 0 -> valid 0; wire 1 is the gap and is dropped.
+        XCTAssertEqual(recorder.fixed, [[0]])
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: URL(fileURLWithPath: request.outPath)))
+            as? [String: Any])
+        let scalars = try XCTUnwrap(
+            ((document["sequences"] as? [[String: Any]])?[0]["scalars"]) as? [String: Any])
+        // Neither free position was recovered; the held one is outside the fraction, so
+        // this is 0.0 and not the 1/3 that counting it would give.
+        XCTAssertEqual(try XCTUnwrap(scalars["sequence_recovery"] as? Double), 0.0,
+                       accuracy: 1e-9)
+    }
+
+    func testRunTurnsOmitLettersIntoPerPositionAlphabetIndices() throws {
+        let recorder = Recorder()
+        installDoubles(recorder, letters: [0, 0, 0])
+        let request = try writeRequest(job: "mpnn-omit-run",
+                                       backbonePath: try writeBackbone("bb-omit", count: 3),
+                                       nSequences: 1, omit: "CW")
+        MPNNJobManager.shared.runForTesting(request)
+        let omit = try XCTUnwrap(recorder.omits.first ?? nil)
+        XCTAssertEqual(omit.count, 3)
+        let expected = Set(["C", "W"].compactMap { MPNNModel.alphabet.firstIndex(of: Character($0)) })
+        XCTAssertEqual(Set(omit), [expected])
+    }
+
+    func testRunWithNoOmitSendsNoOmitTable() throws {
+        let recorder = Recorder()
+        installDoubles(recorder, letters: [0, 0, 0])
+        let request = try writeRequest(job: "mpnn-noomit-run",
+                                       backbonePath: try writeBackbone("bb-noomit", count: 3),
+                                       nSequences: 1)
+        MPNNJobManager.shared.runForTesting(request)
+        XCTAssertNil(recorder.omits.first ?? nil)
+    }
+
+    /// The cancel arm BEFORE any work: a campaign queues one job per backbone on a serial
+    /// queue, so most of a thousand sit here and must fall out without reading anything.
+    func testACancelBeforeTheJobStartsSettlesWithoutCallingTheModel() throws {
+        let recorder = Recorder()
+        installDoubles(recorder, letters: [0, 0, 0])
+        let request = try writeRequest(job: "mpnn-cancel-run",
+                                       backbonePath: try writeBackbone("bb-cancel", count: 3))
+        MPNNJobManager.shared.cancel(jobID: request.jobID)
+        MPNNJobManager.shared.runForTesting(request)
+
+        XCTAssertTrue(recorder.seeds.isEmpty, "the model ran for a cancelled job")
+        let settled = try status(of: request)
+        XCTAssertEqual(settled.state, "cancelled")
+        XCTAssertEqual(settled.phase, "queued")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.outPath))
+    }
+
+    /// A model that throws settles `failed` with the error TEXT, not the useless
+    /// "The operation couldn't be completed" that `localizedDescription` gives an enum.
+    func testAModelFailureSettlesFailedWithTheErrorText() throws {
+        let boom = NSError(domain: "mpnn.test", code: 7,
+                           userInfo: [NSLocalizedDescriptionKey: "no residues"])
+        MPNNJobManager.shared.designFn = { _, _ in throw boom }
+        MPNNJobManager.shared.scoreFn = { _, _ in
+            MPNNModel.ScoreResult(logProbs: [], currentAALogProb: nil)
+        }
+        let request = try writeRequest(job: "mpnn-throw-run",
+                                       backbonePath: try writeBackbone("bb-throw", count: 3))
+        MPNNJobManager.shared.runForTesting(request)
+        let settled = try status(of: request)
+        XCTAssertEqual(settled.state, "failed")
+        XCTAssertEqual(settled.error, String(describing: boom))
+    }
+
+    /// A backbone whose every residue lacks an atom is refused rather than designed as an
+    /// empty sequence — which is what would land as an entry that looks like a result.
+    func testABackboneWithNoCompleteResidueIsRefused() throws {
+        let recorder = Recorder()
+        installDoubles(recorder, letters: [])
+        let path = try writeBackbone("bb-empty", count: 1, invalidAt: 0)
+        let request = try writeRequest(job: "mpnn-empty-run", backbonePath: path)
+        MPNNJobManager.shared.runForTesting(request)
+        XCTAssertTrue(recorder.seeds.isEmpty)
+        let settled = try status(of: request)
+        XCTAssertEqual(settled.state, "failed")
+        XCTAssertTrue(settled.error?.contains("N, CA, C and O") == true,
+                      settled.error ?? "")
     }
 }
 #endif

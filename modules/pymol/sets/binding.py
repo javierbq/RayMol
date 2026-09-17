@@ -121,10 +121,15 @@ def canonical_cif(text, label):
 def _unique_entry_name(c, set_id, base):
     """`base`, or `base_2`, `base_3`... -- the first not yet in the set. Names from
     objects and files are made unique rather than refused (spec §4): a folder import
-    into a set that already holds `d_0417` must not stop halfway."""
-    taken = {e['name'] for e in c.entries(set_id)}
+    into a set that already holds `d_0417` must not stop halfway.
+
+    One point lookup PER CANDIDATE, not one full read of the set. The loop almost always
+    runs once, and `has_entry_name` hits the `UNIQUE (set_id, name)` index; reading every
+    row instead made a 1000-entry batch's delivery quadratic and cost 11 s of main thread
+    (#453 review, measured).
+    """
     candidate, n = base, 1
-    while candidate in taken:
+    while c.has_entry_name(set_id, candidate):
         n += 1
         candidate = '%s_%d' % (base, n)
     return candidate
