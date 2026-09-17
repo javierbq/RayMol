@@ -61,8 +61,11 @@ final class InferenceRouterTests: XCTestCase {
     /// What this macOS build actually links. Fails when a runtime is added to the app and
     /// not to the table — the state in which it is neither routable nor cancellable.
     func testTheTableCarriesEveryRuntimeThisBuildLinks() {
-        XCTAssertEqual(Set(InferenceRouter.runtimes.map(name(of:))),
-                       ["boltz", "protenix", "rfd3"])
+        var expected: Set<String> = ["boltz", "protenix", "rfd3"]
+        #if RAYMOL_MPNN
+        expected.insert("mpnn")
+        #endif
+        XCTAssertEqual(Set(InferenceRouter.runtimes.map(name(of:))), expected)
     }
 
     // MARK: Cancel reaches the whole table

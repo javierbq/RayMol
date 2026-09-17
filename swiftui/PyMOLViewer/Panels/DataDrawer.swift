@@ -1390,8 +1390,9 @@ struct SetHistogramBrushView: View {
 ///
 /// A tool that cannot yet take a set is DISABLED and says why, rather than hidden: the
 /// user's question is "can I send this to MPNN", and an absent menu item answers it
-/// with silence. #416 built the `predict` side; design and binder design still read a
-/// target object, not a set.
+/// with silence. #416 built the `predict` side and #453 the MPNN side, so the chain in
+/// the protein-CAD spec's flow 1 -- backbones, sequences, folds -- now runs from this
+/// menu end to end. Binder design still reads a target object, and always will.
 struct SetSendMenu: View {
     let set: SetEntry
     let target: SetSendTarget
@@ -1401,6 +1402,11 @@ struct SetSendMenu: View {
     @EnvironmentObject var engine: PyMOLEngine
 
     private var predictors: [PredictorInfo] { engine.predictController.availablePredictors }
+
+    /// How many sequences the menu asks MPNN for per backbone. Eight, which is the
+    /// number the protein-CAD spec's flow 1 is written around ("MPNN produces eight
+    /// sequences per backbone"); the console takes any count up to 32.
+    static let sequencesPerBackbone = 8
 
     var body: some View {
         Menu {
@@ -1425,12 +1431,13 @@ struct SetSendMenu: View {
                 // campaign per selected entry" is not a flow anyone wants. It starts
                 // from a target object and hotspots and always will (decided
                 // 2026-09-15, spec §4.2). MPNN is the design step that does belong
-                // here; it is disabled only until it has a command to call (#453).
-                Button("Design / MPNN…") {}
-                    .disabled(true)
-                    .help("MPNN does not take a set as its input yet — it designs on an "
-                          + "object. Stage the candidates, or Export a folder, and run "
-                          + "design on those. Tracked on #453.")
+                // here, and as of #453 it has a command to call.
+                Button("Design / MPNN…") {
+                    engine.sendSetToDesignSequences(set, selector: target.selector)
+                }
+                .help("Design \(Self.sequencesPerBackbone) sequences for each backbone "
+                      + "with ProteinMPNN, into a child set you can then fold with "
+                      + "Predict.")
             }
             Divider()
             Menu("Export") {

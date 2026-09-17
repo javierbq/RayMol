@@ -91,9 +91,26 @@ enum InferenceJob {
         /// are method-specific, so running one method's request on another's backend would
         /// not fail, it would return a confident wrong answer.
         let runtime: String?
-        let recyclingSteps: Int
-        let diffusionSteps: Int
+        /// The sampler schedule, as it arrived. OPTIONAL as of #453, and for the rule
+        /// stated above rather than as a convenience: a SEQUENCE DESIGNER has no
+        /// diffusion schedule, so `host.submit(knobs:)` writes neither key for it, and a
+        /// non-optional field here would turn every `mpnn` request into "malformed
+        /// prediction request" for EVERY runtime at once.
+        ///
+        /// Read through ``recyclingSteps`` / ``diffusionSteps`` below, never directly:
+        /// the defaults are what every Python side before those knobs existed sent, and
+        /// keeping them here means one copy of them rather than one per manager.
+        let recyclingStepsRaw: Int?
+        let diffusionStepsRaw: Int?
         let seed: UInt64
+
+        /// Upstream boltz-mlx's own defaults, which are what `predict`'s defaults are
+        /// too. Used only when a request carries no schedule at all.
+        static let defaultRecyclingSteps = 3
+        static let defaultDiffusionSteps = 200
+
+        var recyclingSteps: Int { recyclingStepsRaw ?? Self.defaultRecyclingSteps }
+        var diffusionSteps: Int { diffusionStepsRaw ?? Self.defaultDiffusionSteps }
         let outPath: String
         let statusPath: String
         /// Per-chain alignments. OPTIONAL, so a request written by a Python side that
@@ -170,9 +187,27 @@ enum InferenceJob {
         /// `liveView`: absent from the design key, and the finished object is the same
         /// either way apart from the states themselves.
         let keepFrames: Bool?
+        /// Path to the backbone a SEQUENCE DESIGNER threads sequences onto (#453), in the
+        /// shape `raymol_design.enumerate_design_residues` writes -- which is exactly what
+        /// ``DesignResidueSet/parse(jsonAt:)`` already reads. A path, and that shape, so
+        /// there is ONE parser of that array rather than two that can disagree about which
+        /// residue is index 7 -- the index `fixedPositions` and every returned per-residue
+        /// array are resolved against.
+        let backbonePath: String?
+        /// How many sequences to sample from that backbone. One encoder pass produces all
+        /// of them, which is why this is a count on one request rather than N requests.
+        let nSequences: Int?
+        /// Sampling temperature. 0 is greedy argmax.
+        let temperature: Double?
+        /// POSITIONS in the backbone array to hold at their native identity. Positions,
+        /// not residue numbers, for the reason `hotspots` is.
+        let fixedPositions: [Int]?
+        /// One-letter amino-acid codes disallowed at every position, e.g. "C".
+        let omit: String?
         enum CodingKeys: String, CodingKey {
             case jobID = "job_id", weightsDir = "weights_dir", chains, runtime
-            case recyclingSteps = "recycling_steps", diffusionSteps = "diffusion_steps"
+            case recyclingStepsRaw = "recycling_steps"
+            case diffusionStepsRaw = "diffusion_steps"
             case seed, outPath = "out_path", statusPath = "status_path"
             case objectName = "object_name", metricsPath = "metrics_path"
             case alignments, msaDepth = "msa_depth"
@@ -181,6 +216,8 @@ enum InferenceJob {
             case liveView = "live_view"
             case liveInterval = "live_interval"
             case keepFrames = "keep_frames"
+            case backbonePath = "backbone_path", nSequences = "n_sequences"
+            case temperature, fixedPositions = "fixed_positions", omit
         }
     }
 

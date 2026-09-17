@@ -136,8 +136,15 @@ void PyMOLBridge_InitPython(PyMOLHandle h, const char *resourcePath)
     // second variable would be a second thing to forget. macOS only, like protenix:
     // RFD3JobManager, RFD3Runtime and RFD3SizeGuard are all behind `#if os(macOS)`, and
     // one design against a full-length target peaks near half a 36 GiB Mac.
+    // "mpnn" is a SEQUENCE DESIGNER (#453), in this same list for the reason "rfd3" is:
+    // the list advertises which Swift inference runtimes are LINKED, and `predict`,
+    // `binder_design` and `design_sequences` all ask the same question through
+    // host.supported_runtimes(). macOS only, though MPNNKit itself is linked on iOS too:
+    // MPNNJobManager is behind `#if os(macOS) && RAYMOL_MPNN`, and Design mode on iOS is
+    // gated to iOS 18 by DesignAvailability -- a Swift decision this file cannot consult,
+    // because RAYMOL_PREDICT_RUNTIMES must be set before Py_InitializeFromConfig.
 #if TARGET_OS_OSX
-    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix,rfd3", 1);
+    setenv("RAYMOL_PREDICT_RUNTIMES", "boltz,protenix,rfd3,mpnn", 1);
 #else
     setenv("RAYMOL_PREDICT_RUNTIMES", "boltz", 1);
 #endif
