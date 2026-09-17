@@ -1,7 +1,8 @@
 """A running tool delivers into a set (#416).
 
-The shared half of "batch delivery lands in a set", used by `designing.binder_design`
-and `predicting.predict`. Both commands submit N jobs to a serial runtime queue and are
+The shared half of "batch delivery lands in a set", used by `designing.binder_design`,
+`predicting.predict` and `designing_sequences.design_sequences`. Each submits N jobs to a
+serial runtime queue and is
 told, minutes or hours later, that job k finished by OBJECT NAME: `deliver_result(path,
 name, seed)`. That name is the key of every pending table those modules keep, and of the
 Swift runtime's own bookkeeping, so it stays the key here too. What changes is that the
@@ -25,9 +26,15 @@ Three moments, three functions:
             staging decision. The entry is on disk before anything is deleted, so a crash
             mid-batch loses at most the design in flight
 
+`land_sequence()` is `land`'s sibling for a member that HAS no object: `design_sequences`
+delivers N sequences per backbone and a designed sequence is a `kind='sequences'` entry
+with no structure blob until something folds it (#453). Same batch, same identity check,
+same settle -- only the source of the entry differs, and there is nothing to stage.
+
 Nothing here is reached by a poll except `running()`, which reads process state only.
 
-Spec: docs/superpowers/specs/2026-09-13-sets-batch-delivery-design.md
+Spec: docs/superpowers/specs/2026-09-13-sets-batch-delivery-design.md,
+docs/superpowers/specs/2026-09-16-sets-sequence-design-design.md
 """
 import sys
 
@@ -47,6 +54,10 @@ SEED_SPEC = {'key': 'seed', 'scope': 'object', 'dtype': 'int', 'label': 'Seed',
              'description': 'random seed this entry was generated at'}
 MODEL_SPEC = {'key': 'model', 'scope': 'object', 'dtype': 'int', 'label': 'Model',
               'description': 'which model of an n_models run this entry is'}
+SEQUENCE_SPEC = {'key': 'sequence_n', 'scope': 'object', 'dtype': 'int',
+                 'label': 'Sequence',
+                 'description': 'which sequence of an n_sequences design run this entry'
+                                ' is (#453)'}
 
 #: batch id -> _Batch, for every batch with a member still outstanding.
 _BATCHES = {}
@@ -212,8 +223,17 @@ def open(name, tool, tool_version='', inputs=None, total=1, reference='',
     # Free stage slots NOW, not the budget: a set being extended may already hold
     # staged objects, and a placeholder for a member that could never be staged is a
     # finished design deleted in front of the user.
-    staged_now = len(binding._staged(c, set_row['id'], _self=_self))
-    slots = max(binding.budget(set_row) - staged_now, 0)
+    #
+    # ZERO for a set that is not `structures` (#453): staging means "keep the delivered
+    # object", and a designed SEQUENCE has no object at any point -- so a placeholder
+    # would be an empty object that nothing ever loads into. Read off the set row rather
+    # than off the caller, so a batch extending an existing sequences set gets the same
+    # answer as the one that created it.
+    if (set_row.get('kind') or 'structures') != 'structures':
+        slots = 0
+    else:
+        staged_now = len(binding._staged(c, set_row['id'], _self=_self))
+        slots = max(binding.budget(set_row) - staged_now, 0)
     batch = _Batch(name, set_row['id'], run_id, tool, total, group, superpose, slots)
     _BATCHES[name] = batch
     return batch
@@ -331,6 +351,51 @@ def land(object_name, state=None, _self=cmd):
         staged = False
     _settle(batch, object_name)
     return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': staged,
+            'entry': entry_name}
+
+
+def land_sequence(member_name, sequences, scalars=None, arrays=(), specs=(), _self=cmd):
+    """Write a member that has no object -- a DESIGNED SEQUENCE (#453) -- as an entry of
+    its batch's set. Returns None when the name is not a member (or its batch detached),
+    else `{'set_id', 'entry_id', 'staged': False, 'entry'}`.
+
+    The sibling of `land`, not a second delivery path: same batch, same `_still_ours`
+    identity check, same settle and the same reap. What differs is where the entry comes
+    FROM. `land` captures one out of the session (`binding.capture_object` reads chains
+    and sequences off an object and its metrics runs); a designed sequence has no object
+    and never will -- it is a `kind='sequences'` entry with no structure blob until
+    something folds it -- so the entry is written straight from what the runtime returned.
+
+    Nothing is staged, for the same reason: staging keeps the delivered object, and there
+    is none. `open` already gave a non-structures set zero stage slots, so no member of
+    such a batch was promised a placeholder either.
+
+    `sequences` is {chain: one-letter}; `scalars` and `arrays` are merged over what
+    `expect` recorded for this member, so a caller may register what it knows at submit
+    (the seed, which sequence of the run this is) and add what it learns at delivery.
+    """
+    batch = batch_of(member_name)
+    if batch is None or batch.detached:
+        return None
+    member = batch.members[member_name]
+    _check_document(batch)
+    c = _container()
+    entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
+    all_scalars = dict(member['scalars'])
+    all_scalars.update(dict(scalars or {}))
+    all_specs = list(member['specs'])
+    for spec in specs or ():
+        record = dict(spec)
+        record.setdefault('tool', batch.tool)
+        all_specs.append(record)
+    entry_id = c.add_entry(batch.set_id, entry_name, run_id=batch.run_id,
+                           sequences=dict(sequences or {}),
+                           parents=member['parents'], chains=(),
+                           scalars=all_scalars, arrays=list(arrays or ()),
+                           specs=all_specs)
+    batch.landed += 1
+    _settle(batch, member_name)
+    return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': False,
             'entry': entry_name}
 
 

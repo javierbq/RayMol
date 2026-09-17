@@ -54,6 +54,17 @@ from .designing import \
       design_weights_cancel
 
 #--------------------------------------------------------------------
+# Sequence DESIGN (#453), a third surface for the reason the second one exists: a
+# sequence designer is handed a backbone and returns the sequences for it, so it has
+# neither a PredictionSpec's chains nor a DesignSpec's hotspots and length. It is the
+# middle link of a campaign -- backbones in, sequences out, folded by `predict`.
+from . import designing_sequences
+from .designing_sequences import \
+      design_sequences,         \
+      design_sequences_status,  \
+      design_sequences_cancel
+
+#--------------------------------------------------------------------
 from . import msa
 from .msa import \
       load_msa,             \
