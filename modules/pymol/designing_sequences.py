@@ -151,24 +151,45 @@ def _one_object(source, _self=cmd):
     return str(objects[0])
 
 
-def _fixed_positions(backbone, fixed, obj, _self=cmd):
-    """POSITIONS in `backbone['residues']` that `fixed` selects. Positions, not residue
-    numbers: the model identifies a residue purely by where it is in the array.
+def _positions_of(backbone, selection, obj, what, _self=cmd):
+    """POSITIONS in `backbone['residues']` that `selection` covers, within `obj`.
 
-    Empty when `fixed` is empty, which means "design every residue" -- the whole-chain
-    redesign Design mode does when nothing is picked.
+    Positions, not residue numbers: the model identifies a residue purely by where it is
+    in the array it was handed, so this is the one translation that has to happen on this
+    side and happen once.
     """
-    if not str(fixed or '').strip():
-        return []
     keys = set()
     try:
-        _self.iterate('(%s) and (%s) and polymer and guide' % (obj, fixed),
+        _self.iterate('(%s) and (%s) and polymer and guide' % (obj, selection),
                       'keys.add((chain, resi))', space={'keys': keys})
     except Exception as exc:
-        raise PredictionInputError('fixed=%s is not a selection this session can'
-                                   ' resolve (%s)' % (fixed, exc))
+        raise PredictionInputError('%s=%s is not a selection this session can resolve'
+                                   ' (%s)' % (what, selection, exc))
     return [index for index, residue in enumerate(backbone['residues'])
             if (residue['chain'], residue['resi']) in keys]
+
+
+def _held_positions(backbone, source, fixed, obj, _self=cmd):
+    """The positions to hold at their native identity: everything OUTSIDE `source`, plus
+    whatever `fixed` names inside it.
+
+    THE SOURCE SELECTION IS THE REGION TO REDESIGN, which is what Design mode means by a
+    region and therefore what `design_sequences mpnn, sele` has to mean too. Naming the
+    whole object designs the whole object, because then nothing is outside it. Without
+    this, a narrower selection would resolve to its object and silently redesign every
+    residue in it -- a different answer from the one the panel gives for the same picks.
+
+    `fixed` is the second knob rather than the only one because the two questions are
+    different: `source` says what is being designed, `fixed` pins residues inside it that
+    must not move (a catalytic triad, a motif).
+    """
+    residues = backbone['residues']
+    held = set(_positions_of(backbone, fixed, obj, 'fixed', _self=_self)
+               if str(fixed or '').strip() else ())
+    region = set(_positions_of(backbone, source, obj, 'source', _self=_self))
+    if len(region) < len(residues):
+        held |= set(range(len(residues))) - region
+    return sorted(held)
 
 
 def _entry_backbone(container, entry, scratch, _self=cmd):
@@ -217,10 +238,13 @@ DESCRIPTION
     inverse-folding method. It returns a job handle (or a list of them); poll with
     "design_sequences_status".
 
-    Given an OBJECT it does what Design mode does, at the console: it samples
-    n_sequences for the backbone, prints them, and records each one's per-residue
-    native fit and certainty against the object so "metrics_color mpnn, certainty"
-    can draw them.
+    Given an OBJECT or a SELECTION it does what Design mode does, at the console: it
+    samples n_sequences for the region, prints them, and records each one's
+    per-residue native fit and certainty against the object so "metrics_color mpnn,
+    certainty" can draw them. The selection IS the region -- residues of the object
+    outside it are held at their current identity, which is what a region means in
+    the panel -- so "design_sequences mpnn, myobj" redesigns everything and
+    "design_sequences mpnn, sele" redesigns only what you picked.
 
     Given a SET or a VIEW it designs every selected entry and writes a CHILD SET of
     sequences -- one entry per designed sequence, each pointing back at the backbone
@@ -245,7 +269,8 @@ ARGUMENTS
 
     designer = str: id of a registered sequence designer, e.g. mpnn
 
-    source = str: an atom selection naming ONE object, or "set:<name>" /
+    source = str: an atom selection inside ONE object -- the REGION to redesign,
+    with the rest of that object held fixed -- or "set:<name>" /
     "set:<name>@<selector>" to design every selected entry of a set. The selector
     defaults to "filtered" -- the set's active filter in its active sort.
 
@@ -262,8 +287,9 @@ ARGUMENTS
     seed = int: the seed of the FIRST sequence; the rest follow from it. Random when
     omitted, and the value used is recorded on every entry {default: random}
 
-    fixed = str: atom selection for residues to hold at their current identity. Must
-    be inside the backbone {default: '', design everything}
+    fixed = str: atom selection for residues to hold at their current identity
+    INSIDE the region -- a catalytic triad, a motif that must not move. Everything
+    outside `source` is already held {default: ''}
 
     omit = str: one-letter codes to disallow at every position, e.g. "C" to keep
     cysteines out of a design {default: ''}
@@ -285,8 +311,8 @@ SEE ALSO
     state = max(1, int(_self.get_state() or 1))
     backbone = designer_base.read_backbone(obj, state, _self=_self)
     spec = designer_obj.parse_backbone(
-        backbone, name=obj, fixed=_fixed_positions(backbone, fixed, obj, _self=_self),
-        source=obj, state=state)
+        backbone, name=obj, source=obj, state=state,
+        fixed=_held_positions(backbone, source, fixed, obj, _self=_self))
     options = _resolve_options(designer_obj, n_sequences, temperature, seed, omit)
 
     job = designer_obj.submit(spec, options, '')

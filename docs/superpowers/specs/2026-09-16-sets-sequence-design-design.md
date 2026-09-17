@@ -71,6 +71,14 @@ the FULL index, masked residues written as None (absent is not zero: a residue w
 backbone was not scored). No set: an object is not a set, and `set_add` is the one step
 between them. `n_sequences` defaults to 1 here, which is what Design mode does per click.
 
+**The selection IS the region.** Residues of the object outside `source` are held at
+their native identity, so `design_sequences mpnn, sele` redesigns what was picked and
+`design_sequences mpnn, myobj` redesigns everything. Without that rule a narrower
+selection would resolve to its object and silently redesign every residue in it -- a
+different answer from the one the panel gives for the same picks. `fixed=` is the second
+knob, for residues to pin INSIDE the region; it is refused for a set input, because a
+selection is resolved against the session and a set entry is not in it.
+
 **The set path** resolves the selector to entries, submits one job per entry, and writes
 one child set.
 

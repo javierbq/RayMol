@@ -425,6 +425,22 @@ class ObjectPath(SequenceDesignTestCase):
         self.assertIn('bb', cmd.get_names('objects'))
         self.assertEqual(cmd.count_atoms('bb and name CA'), 10)
 
+    def testTheSelectionIsTheRegionAndTheRestOfTheObjectIsHeld(self):
+        """`design_sequences m, sele` redesigns what was picked, as the panel does."""
+        self.helix('bb', length=10)
+        cmd.select('region', 'bb and resi 3-5')
+        job = cmd.design_sequences(DESIGNER, 'region')
+        # Positions are 0-based over the residue array: resi 3, 4, 5 are 2, 3, 4.
+        self.assertEqual(job.spec.fixed, [0, 1, 5, 6, 7, 8, 9])
+        self.assertEqual(job.spec.n_designable, 3)
+        # ...and `fixed` pins residues INSIDE the region on top of that.
+        job = cmd.design_sequences(DESIGNER, 'region', fixed='bb and resi 4')
+        self.assertEqual(job.spec.fixed, [0, 1, 3, 5, 6, 7, 8, 9])
+        # The whole object means the whole object: nothing is outside it.
+        job = cmd.design_sequences(DESIGNER, 'bb')
+        self.assertEqual(job.spec.fixed, [])
+        self.assertEqual(job.spec.n_designable, 10)
+
     def testTwoObjectsAreRefusedRatherThanRunTwice(self):
         self.helix('one', length=6)
         self.helix('two', length=6)
