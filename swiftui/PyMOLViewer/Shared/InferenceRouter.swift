@@ -97,6 +97,14 @@ enum InferenceRouter {
         #if os(macOS)
         table.append(ProtenixJobManager.shared)
         table.append(RFD3JobManager.shared)
+        #if RAYMOL_MPNN
+        // Sequence design (#453). Inside the macOS branch AND behind RAYMOL_MPNN,
+        // because both have to hold: `MPNNJobManager` is `#if os(macOS) && RAYMOL_MPNN`,
+        // and `PyMOLBridge` advertises `mpnn` on macOS only -- MPNN is linked on iOS but
+        // Design mode is gated there on iOS 18 by `DesignAvailability`, which is a Swift
+        // decision the bridge cannot consult before `Py_InitializeFromConfig`.
+        table.append(MPNNJobManager.shared)
+        #endif
         #endif
         return table
     }()

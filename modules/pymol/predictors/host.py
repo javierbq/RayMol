@@ -88,13 +88,18 @@ TERMINAL_STATES = ('done', 'failed', 'cancelled')
 class HostJob:
     """Handle on a job owned by the Swift side. Every method is a cheap poll."""
 
-    def __init__(self, job_id, spec, options):
+    def __init__(self, job_id, spec, options, result_suffix='pdb'):
         self.job_id = job_id
         self.spec = spec
         self.options = options
         self.request_path = _path('req', job_id)
         self.status_path = _path('status', job_id)
-        self.out_path = _path('result', job_id, 'pdb')
+        #: `pdb` for anything that returns COORDINATES, which was every method until
+        #: sequence design (#453): its result is N sequences and their per-residue
+        #: arrays, which is a JSON document and not a structure. The suffix is on the
+        #: handle rather than assumed by the reader because `predict_result` and the
+        #: Swift `loadResult` both take the path from here.
+        self.out_path = _path('result', job_id, result_suffix)
         #: Where the host writes what it MEASURED, as a pymol.metrics document (#308).
         #: Separate from the PDB because most of it does not fit in one: a PAE matrix
         #: is per residue PAIR, and the interface scores are per run. Optional at the
@@ -103,6 +108,11 @@ class HostJob:
         self.metrics_path = _path('metrics', job_id, 'json')
         #: Chain id -> a3m written for this job. Cleaned up when the job settles.
         self.a3m_paths = {}
+        #: Any OTHER file this job's request names as input -- a sequence designer's
+        #: backbone array (#453). Same lifetime rule as an a3m: the host only reads it,
+        #: so it goes when the status turns terminal. A list rather than more keys in
+        #: `a3m_paths`, because that dict is keyed by chain and these are not per chain.
+        self.input_paths = []
 
     def status(self):
         """The host's last written status, or 'queued' if it has not started."""
@@ -129,12 +139,14 @@ class HostJob:
         do so long after the job finished. The status file stays too -- predict_status
         must keep answering for a job that has already settled.
         """
-        for path in list(self.a3m_paths.values()) + [self.request_path]:
+        for path in (list(self.a3m_paths.values()) + list(self.input_paths)
+                     + [self.request_path]):
             try:
                 os.remove(path)
             except OSError:
                 pass
         self.a3m_paths = {}
+        self.input_paths = []
 
     def cancel(self):
         """Ask the host to stop.
@@ -157,7 +169,7 @@ def _write(path, text):
 
 
 def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None,
-           extra=None):
+           extra=None, input_paths=(), result_suffix='pdb'):
     """Write the request, print the marker, return the handle. Never blocks.
 
     `runtime` names the backend the host must dispatch to. `knobs` is the option names to
@@ -176,9 +188,18 @@ def submit(spec, options, weights_path, runtime=DEFAULT_RUNTIME, knobs=None,
     contract with the Swift `Request` decoder, and a caller silently replacing `out_path`
     or `runtime` would produce a job that reports to the wrong file or runs on the wrong
     backend -- neither of which fails, both of which return something plausible.
+
+    `input_paths` are files the caller wrote for the host to READ, named from inside
+    `extra`. They get an a3m's lifetime: deleted when the status turns terminal. Hand
+    them over rather than deleting them yourself -- the host reads them on another
+    thread, and a terminal status is the only point at which it certainly cannot.
+
+    `result_suffix` is the extension of `out_path`. `pdb` for anything returning
+    coordinates; `json` for a method whose result is not a structure (#453).
     """
     job_id = uuid.uuid4().hex[:12]
-    job = HostJob(job_id, spec, options)
+    job = HostJob(job_id, spec, options, result_suffix=result_suffix)
+    job.input_paths = [str(path) for path in input_paths or ()]
 
     # Alignments go as PATHS, and the files are written BEFORE the request that names
     # them. Two decisions worth keeping:

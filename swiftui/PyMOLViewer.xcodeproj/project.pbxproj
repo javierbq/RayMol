@@ -70,6 +70,7 @@
 		3494764DF6FC43A45FB259AF /* PredictSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */; };
 		34985FCB3C0FBC450384D4C9 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
 		356D80E89042BF1D497A5AEF /* RFD3JobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8746A760E75B98C92A547404 /* RFD3JobManager.swift */; };
+		DE5000005FECF43567D61901 /* MPNNJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE5000002D56E8FAB5C7934D /* MPNNJobManager.swift */; };
 		36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		3A8107D094C920B600681B74 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC5E722722DEF7FBB1D649F /* ThemeManager.swift */; };
 		3B4F843E2515C36E517E8FD7 /* PredictSizeGuardIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */; };
@@ -125,6 +126,7 @@
 		694C69FD489B930231565753 /* RFD3SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */; };
 		6A1DB5F97E3738FD1819FF6E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		6A37175866051AC88BD25C1D /* RFD3RuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB3DD619B055E99FD2F9C1E /* RFD3RuntimeTests.swift */; };
+		DE5000005999451A172C0D0E /* MPNNRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE5000005A9377F731AA6B70 /* MPNNRuntimeTests.swift */; };
 		6A3892FDD5939A57DC9FFCCE /* CopyRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0B47016374F32C7BB13017 /* CopyRoutingTests.swift */; };
 		6C028EE83C8A29A4FDCF2222 /* BoltzJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */; };
 		6C43C62D56480ABE7BA72AFD /* TempChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B945DAC97919F57996278E1F /* TempChannelTests.swift */; };
@@ -177,6 +179,7 @@
 		97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */ = {isa = PBXBuildFile; fileRef = 55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */; };
 		983BCF8F1E0F251E82C1CF0E /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
 		996828523DD2656E579ACE55 /* RFD3JobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8746A760E75B98C92A547404 /* RFD3JobManager.swift */; };
+		DE5000002DAB01FFC8A3E6CD /* MPNNJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE5000002D56E8FAB5C7934D /* MPNNJobManager.swift */; };
 		9C6CB8E2C25DB4AE13D42756 /* BinderDesignBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4B03344972863CC1362ECB /* BinderDesignBar.swift */; };
 		9E056CF2985B57F6BF968798 /* ProtenixMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 90EE4E4414E8FBDC2271BEA2 /* ProtenixMLX */; };
 		9FDA615BBA4A6BBDF131EF7F /* ProtenixRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56746569540D202277F2B47F /* ProtenixRuntimeTests.swift */; };
@@ -377,9 +380,11 @@
 		85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStudioPanel.swift; sourceTree = "<group>"; };
 		86E93358875495F499780A00 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
 		8746A760E75B98C92A547404 /* RFD3JobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3JobManager.swift; sourceTree = "<group>"; };
+		DE5000002D56E8FAB5C7934D /* MPNNJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNJobManager.swift; sourceTree = "<group>"; };
 		87825A30DE5C455B6270187F /* InferenceJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceJob.swift; sourceTree = "<group>"; };
 		8B0D207800BE2DDAF04598C1 /* PredictController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictController.swift; sourceTree = "<group>"; };
 		8FB3DD619B055E99FD2F9C1E /* RFD3RuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3RuntimeTests.swift; sourceTree = "<group>"; };
+		DE5000005A9377F731AA6B70 /* MPNNRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPNNRuntimeTests.swift; sourceTree = "<group>"; };
 		8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieExportSheet.swift; sourceTree = "<group>"; };
 		9371B6FFB30D6166234C678B /* RayMolMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolMain.swift; sourceTree = "<group>"; };
 		99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PyMOLViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -614,6 +619,7 @@
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				86E93358875495F499780A00 /* MLXRuntime.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
+				DE5000002D56E8FAB5C7934D /* MPNNJobManager.swift */,
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */,
 				11FAF50505ACF64A3F06AF73 /* SetsStore.swift */,
@@ -681,6 +687,7 @@
 				F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */,
+				DE5000005A9377F731AA6B70 /* MPNNRuntimeTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
 				B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */,
 				7DEAB18A89F026148528C71E /* PendingJobTests.swift */,
@@ -1447,6 +1454,7 @@
 				9FDA615BBA4A6BBDF131EF7F /* ProtenixRuntimeTests.swift in Sources */,
 				F143E36E786A3B7B29A47F3E /* RFD3ResultWriterTests.swift in Sources */,
 				6A37175866051AC88BD25C1D /* RFD3RuntimeTests.swift in Sources */,
+				DE5000005999451A172C0D0E /* MPNNRuntimeTests.swift in Sources */,
 				E8A73DC4C73D2E65901E1832 /* RFD3SizeGuardTests.swift in Sources */,
 				65873C0416944D5EF92140C6 /* RFD3TrajectoryTests.swift in Sources */,
 				7CE181E4C54482BD67384013 /* RFD3TrayTests.swift in Sources */,
@@ -1516,6 +1524,7 @@
 				24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */,
 				56CC6A9A8A95D5B1B8D92688 /* PyMOLEngine.swift in Sources */,
 				996828523DD2656E579ACE55 /* RFD3JobManager.swift in Sources */,
+				DE5000002DAB01FFC8A3E6CD /* MPNNJobManager.swift in Sources */,
 				E1A1B102C1E6B06ACB270F5E /* RFD3ResultWriter.swift in Sources */,
 				04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */,
 				08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */,
@@ -1595,6 +1604,7 @@
 				5D4BC69196C1256F5164E56A /* PyMOLBridge.mm in Sources */,
 				8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */,
 				356D80E89042BF1D497A5AEF /* RFD3JobManager.swift in Sources */,
+				DE5000005FECF43567D61901 /* MPNNJobManager.swift in Sources */,
 				2D81E4A3FB5DCDD98FC189FB /* RFD3ResultWriter.swift in Sources */,
 				D0BB5840BDEAA557F5B8F387 /* RFD3Runtime.swift in Sources */,
 				694C69FD489B930231565753 /* RFD3SizeGuard.swift in Sources */,

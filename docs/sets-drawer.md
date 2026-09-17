@@ -227,9 +227,19 @@ after browsing the target is usually that one row; the header is the thing to re
 before clicking.
 **Predict** lists the registered predictors and runs
 `predict <predictor>, set:<name>@<selector>`, which writes a child set whose entries
-point back at the ones they were folded from. **Export** writes CSV, FASTA or a folder
-of CIFs. **Design / MPNN** is disabled with a note saying why: sequence design still
-runs on an *object*, and has no command a set could be handed to (#453). Binder Design is
+point back at the ones they were folded from. **Design / MPNN** runs
+`design_sequences mpnn, set:<name>@<selector>, n_sequences=8`, which designs eight
+sequences for each selected backbone and writes a child set of **sequences** — one entry
+per sequence, each pointing back at the backbone it came from, with its native fit and
+certainty stored as per-residue arrays (the heat strips draw them for structure entries
+today; a sequences set shows the per-sequence summary columns). Those entries carry no
+structure until you fold them,
+which is what **Predict** on the child set is for: backbones → sequences → folds, without
+leaving the drawer. An entry with no structure cannot be redesigned, so a sequences set
+is refused by name rather than half-processed — and the menu item is disabled on
+one, saying so.
+**Export** writes CSV, FASTA or a folder
+of CIFs. Binder Design is
 not in the menu at all — it starts from a target and produces candidates, so a set of
 candidates is not an input it has any use for.
 

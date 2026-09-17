@@ -63,6 +63,43 @@ sequence agreement, 9/9 designs docked) and is 3.5× smaller, but it needs `line
 upstream first — and its large-system latency is bimodal, two of nine runs spiking to 2030 s
 and 6979 s against a 389 s median, so it is not a free win either.
 
+## Sequence design is a third family (#453)
+
+`pymol.designers` sits beside `pymol.predictors` and `pymol.generators`, and the split is
+the same one this document opens with — the INPUT differs all the way down:
+
+| | a predictor | a generator | a sequence designer |
+|---|---|---|---|
+| input | chain sequences | a target structure, hotspots, a length | a **backbone**, whose residue identities are what gets replaced |
+| output | a fold | a chain that did not exist | N sequences for that backbone |
+| spec | `PredictionSpec` | `DesignSpec` | `BackboneSpec` |
+| command | `predict` | `binder_design` | `design_sequences` |
+| shipped method | `boltz2`, `protenix` | `rfd3` | `mpnn` |
+
+    design_sequences mpnn, <object>                      # what Design mode does, at the console
+    design_sequences mpnn, set:rfd3_batch_1@starred, n_sequences=8
+
+Given an object it samples sequences for the whole backbone, prints them, and records each
+one's `native_fit` and `certainty` against the object so `metrics_color mpnn, certainty`
+draws them. Given a set or a view it designs every selected entry and writes a **child set
+of `kind='sequences'`** — one entry per designed sequence, `parents` its backbone, all
+sharing one run. That is the middle link of a campaign; `predict <predictor>,
+set:<child>@all` is the last one, and is what actually tests a designed sequence.
+
+Three things are worth knowing before adding a second method here:
+
+* **One job per backbone, N entries per job.** MPNN samples N sequences from one encoder
+  pass. `sets.batch.land_sequence` is `land`'s sibling for a member with no object.
+* **The backbone crosses the wire as a PATH**, in the shape
+  `raymol_design.enumerate_design_residues` writes, so the Swift side reuses Design mode's
+  own `DesignResidueSet.parse`. `fixed_positions` and both returned arrays are positions
+  in that one array.
+* **MPNN's weights are bundled, not fetched** (`MPNNGate.packURL`), so `weight_bundle` is
+  None and there is no deferred-job path. A method with a download gets the one
+  `predictors.fetching` already provides.
+
+Design: [2026-09-16-sets-sequence-design-design.md](superpowers/specs/2026-09-16-sets-sequence-design-design.md).
+
 ## The naming rule
 
 **The rule is about the OUTPUT, not about the word.**

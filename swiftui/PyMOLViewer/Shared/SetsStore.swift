@@ -1909,6 +1909,20 @@ extension PyMOLEngine {
         let input = "\(SetSendTarget.setPrefix)\(set.name)@\(selector)"
         runCommand("predict \(predictor), \(input)")
     }
+
+    /// Hand the selected entries to sequence design (#453), which writes a child set of
+    /// sequences pointing back at the backbones they came from.
+    ///
+    /// The designer id is named here rather than picked from a list, unlike `predict`'s
+    /// submenu: `mpnn` is the only sequence-design runtime this build links (see
+    /// `InferenceRouter.runtimes`), and the menu item says MPNN on its face. A second
+    /// method needs the registry list pushed to Swift the way `availablePredictors` is.
+    func sendSetToDesignSequences(_ set: SetEntry, selector: String,
+                                  designer: String = "mpnn",
+                                  sequences: Int = SetSendMenu.sequencesPerBackbone) {
+        let input = "\(SetSendTarget.setPrefix)\(set.name)@\(selector)"
+        runCommand("design_sequences \(designer), \(input), n_sequences=\(sequences)")
+    }
 }
 
 /// What a Send to ▾ item acts on: the rows the user picked, the active filter, or a

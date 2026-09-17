@@ -74,7 +74,11 @@ wrong featurizer and returns a confident wrong structure. So:
   applies its size model — which is fitted to Boltz's measured peaks and would be
   meaningless applied to another method's request even as a refusal.
 - `PyMOLBridge` advertises what is actually linked in `RAYMOL_PREDICT_RUNTIMES`, which is
-  what lets `check_available` refuse **before** a weight download rather than after.
+  what lets `check_available` refuse **before** a weight download rather than after. The
+  list is not predictors only: `rfd3` (a backbone generator) and `mpnn` (a sequence
+  designer) are in it too, because it advertises which Swift inference runtimes are
+  LINKED and all three command surfaces ask the same question through
+  `host.supported_runtimes()`. A second variable would be a second thing to forget.
 - `Request.runtime` is **optional** on the Swift side, absent meaning `boltz`. A
   non-optional field would turn any Python/Swift version skew into "malformed prediction
   request" instead of a refusal that names the missing runtime. The same reasoning applies

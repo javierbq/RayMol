@@ -9,44 +9,32 @@ import tempfile
 
 from pymol import cmd
 
-# 3-letter -> MPNN alphabet index ("ACDEFGHIKLMNPQRSTVWYX", X=20).
-_ONE = {'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLN': 'Q', 'GLU': 'E',
-        'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F',
-        'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'}
-_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
-_AA_INDEX = {c: i for i, c in enumerate(_ALPHABET)}
-# MPNN alphabet index -> 3-letter resname (index 20 / 'X' -> 'UNK').
-_ONE_LETTER_TO_THREE = {v: k for k, v in _ONE.items()}
-_ONE_LETTER_TO_THREE['X'] = 'UNK'
-_INDEX_TO_THREE = {i: _ONE_LETTER_TO_THREE.get(c, 'UNK') for i, c in enumerate(_ALPHABET)}
+# The MPNN alphabet and the residue-array builder, IMPORTED rather than re-spelled:
+# `pymol.designers.base` owns both now, because `design_sequences` (#453) builds the
+# same array for a set entry that this module builds for a session object, and an
+# alphabet that differs by one position between the two silently shifts every logit
+# column by one letter. `_INDEX_TO_THREE` is what the mutation helpers below read.
+from pymol.designers.base import INDEX_TO_THREE as _INDEX_TO_THREE, read_backbone
 
 #: What ProteinMPNN measures, declared for the metric store (#308).
 #:
-#: Both are per RESIDUE and per STATE: the score depends on the backbone the sequence
-#: was threaded onto, so a design run against model 2 of a five-model prediction is not
-#: a statement about model 1. The domains are DesignColor.nativeFitDomain and
-#: .certaintyDomain, kept in step with the Swift legend so a stored array colours the
-#: same way the live panel did.
+#: THE TUPLE IS NOT DECLARED HERE. `pymol.designers.metrics` owns it, because
+#: `design_sequences` (#453) registers the same tool id with the same `replace=True`
+#: and a SUPERSET of these keys -- the per-sequence summaries a set column needs. Two
+#: declarations of one tool id is last-one-wins, so whichever module imported second
+#: used to decide whether those columns existed. Importing the tuple makes the two
+#: registrations identical instead of ordered.
 #:
 #: Registered at import, not at first use: the object panel and `metrics_list` may meet
 #: a run restored from a .pse before Design mode has been opened in this session.
 _MPNN_TOOL = 'mpnn'
-_MPNN_SPECS = (
-    dict(key='native_fit', scope='residue', units='log P', label='Native fit',
-         lo=-6.0, hi=0.0, higher_is_better=True, summarizes='mean',
-         description='Log-probability MPNN assigns to the residue actually present,'
-                     ' scored leave-one-out against the backbone.'),
-    dict(key='certainty', scope='residue', label='Certainty', lo=0.0, hi=1.0,
-         higher_is_better=True, summarizes='mean',
-         description='1 - Shannon entropy / ln(21) over the 21-letter distribution:'
-                     ' 0 is flat, 1 is one-hot.'),
-)
 
 try:
+    from pymol.designers.metrics import DESIGN_SEQUENCE_SPECS as _MPNN_SPECS
     from pymol.metrics import schema as _metric_schema
-    _metric_schema.register(_MPNN_TOOL, [
-        _metric_schema.MetricSpec(**spec) for spec in _MPNN_SPECS], replace=True)
+    _metric_schema.register(_MPNN_TOOL, _MPNN_SPECS, replace=True)
 except Exception as _mt_e:      # pragma: no cover - bookkeeping must never break design
+    _MPNN_SPECS = ()
     print(' design: could not declare MPNN metrics (%s)' % _mt_e)
 
 
@@ -55,34 +43,17 @@ def _tmp(name):
 
 
 def enumerate_design_residues(obj, state):
-    state = int(state)
-    # Guide atoms give one row per residue in canonical (chain, resv, inscode) order.
-    order = []
-    cmd.iterate('(%s) and polymer and guide' % obj,
-                'order.append((chain, resi, resn))', space={'order': order})
-    # Backbone atom coords for the same residues.
-    atoms = {}
+    """Write the designable residues of `obj` at `state` where Design mode reads them.
 
-    def _collect(chain, resi, name, x, y, z):
-        atoms.setdefault((chain, resi), {})[name] = (x, y, z)
-
-    cmd.iterate_state(state, '(%s) and polymer and name N+CA+C+O' % obj,
-                      '_collect(chain, resi, name, x, y, z)',
-                      space={'_collect': _collect})
-    residues = []
-    for (chain, resi, resn) in order:
-        bb = atoms.get((chain, resi), {})
-        valid = all(k in bb for k in ('N', 'CA', 'C', 'O'))
-        aa = _AA_INDEX.get(_ONE.get(resn, 'X'), 20)
-        residues.append({
-            'chain': chain, 'resi': resi, 'resn': resn, 'aa': aa, 'valid': valid,
-            'n':  list(bb['N'])  if 'N'  in bb else None,
-            'ca': list(bb['CA']) if 'CA' in bb else None,
-            'c':  list(bb['C'])  if 'C'  in bb else None,
-            'o':  list(bb['O'])  if 'O'  in bb else None,
-        })
+    The ARRAY is built by `designers.base.read_backbone`, which `design_sequences` also
+    calls for a set entry (#453) -- one builder, because `DesignResidueSet.parse` at the
+    far end resolves every position index against it and two builders is two chances to
+    disagree about which residue is index 7. This function is the file half: the marker
+    contract with the Swift side, and the fixed temp path it polls.
+    """
+    backbone = read_backbone(obj, int(state))
     with open(_tmp('raymol_design_residues.json'), 'w') as f:
-        json.dump({'object': obj, 'state': state, 'residues': residues}, f)
+        json.dump(backbone, f)
     return 'DESIGN_RESIDUES:ready'
 
 
