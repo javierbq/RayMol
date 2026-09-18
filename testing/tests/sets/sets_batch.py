@@ -285,6 +285,160 @@ class BatchTestCase(testing.PyMOLTestCase):
                 if e.get('staged_object')]
 
 
+class PlanPreviewTest(BatchTestCase):
+    """What the Binder Design bar is allowed to promise before Generate (#463 review).
+
+    The bar used to say "a new set * N entries * N staged" unconditionally, and for an
+    identical re-run every clause of that was wrong: `batch.open` EXTENDS the set the
+    first run made (`testAnIdenticalRerunExtendsItsSetAsItLandsBackInItsGroup`) and
+    stages only its free slots (`testExtendingAFullSetMakesNoPlaceholderAndSaysWhereThe
+    DesignWent`). `designing.preview_set` is what the bar asks instead, so these pin the
+    answer against the behaviour those two tests pin.
+    """
+
+    def preview(self, **kwargs):
+        from pymol import designing
+        options = dict(target='tgt', hotspots='tgt and resi 5', generator=GEN,
+                       length=6, n_designs=2)
+        options.update(kwargs)
+        return designing.preview_set(**options)
+
+    def testAFirstRunIsANewSetWithTheWholeBudget(self):
+        self.helix()
+        plan = self.preview(seed=7)
+        self.assertEqual(plan, {'name': '', 'extends': False, 'budget': 6, 'staged': 0})
+
+    def testASettledIdenticalRerunSaysItExtendsAndHowManySlotsAreLeft(self):
+        jobs = self.design(2, seed=7)
+        deliver_designs(jobs)
+        row = self.only_set()
+        plan = self.preview(seed=7)
+        self.assertEqual(plan['extends'], True)
+        self.assertEqual(plan['name'], row['name'])
+        self.assertEqual(plan['budget'], 6)
+        # The two that landed are staged, so only four of the next run get an object.
+        self.assertEqual(plan['staged'], 2)
+
+    def testTheSetsOwnBudgetWinsOverTheFileDefault(self):
+        cmd.set_budget(2)
+        jobs = self.design(2, seed=7)
+        deliver_designs(jobs)
+        plan = self.preview(seed=7)
+        self.assertEqual((plan['extends'], plan['budget'], plan['staged']),
+                         (True, 2, 2))
+
+    def testWhileTheFirstBatchIsStillLandingItReallyIsANewSet(self):
+        # The sharp edge from the review: the name is taken by a LIVE batch, so
+        # `_free_group_name` bumps it to `_2` and the run does create a second set.
+        self.design(2, seed=7)
+        self.assertEqual(self.preview(seed=7)['extends'], False)
+
+    def testWithNoSeedTheNameCannotBeKnownAndTheSetIsNew(self):
+        jobs = self.design(2, seed=7)
+        deliver_designs(jobs)
+        plan = self.preview()
+        # A seed drawn at submit is a fresh key is a name nothing answers to.
+        self.assertEqual((plan['name'], plan['extends']), ('', False))
+
+    def testAUserNameExtendsItsOwnSetButOnlyForThisToolAndTarget(self):
+        jobs = self.design(2, name='camp')
+        deliver_designs(jobs)
+        self.assertEqual(self.preview(name='camp')['extends'], True)
+        self.assertEqual(self.preview(name='camp')['name'], 'camp')
+        # Another tool's set of the same name is left alone, so that run is a new set.
+        cmd.set_create('theirs')
+        self.assertEqual(self.preview(name='theirs')['extends'], False)
+
+    def testASingleDesignWithAFullSetIsANewSetNotAnExtension(self):
+        # `need_slot`: a single design that would land, be measured and then lose its
+        # object gets its own `_2` set instead, so the line must not say "extends".
+        cmd.set_budget(1)
+        job = self.design(1, seed=7)
+        deliver_designs(job)
+        self.assertEqual(self.preview(n_designs=1, seed=7)['extends'], False)
+
+    def testPreviewingCreatesNothing(self):
+        # A bar drawing a line must not create the working container, an object or a
+        # set as a side effect -- it runs on every keystroke.
+        self.helix()
+        store.reset()
+        before = sorted(cmd.get_names('all'))
+        self.assertEqual(self.preview(seed=7)['extends'], False)
+        self.assertEqual(store.is_open(), False)
+        self.assertEqual(sorted(cmd.get_names('all')), before)
+
+    def testABadFormNeverRaisesAndNeverPromisesAnExtension(self):
+        self.helix()
+        for kwargs in (dict(target='nosuchobject', seed=7),
+                       dict(generator='nosuchgenerator', seed=7),
+                       dict(length=0, seed=7),
+                       dict(seed='')):
+            plan = self.preview(**kwargs)
+            self.assertEqual((plan['name'], plan['extends']), ('', False), kwargs)
+
+
+class PlanPayloadTest(BatchTestCase):
+    """The plan reaches the bar through `appkit_design.emit`'s JSON, which is the only
+    Python->Swift path there is. `ToolSetStatusTests.testThePlanFromPythonDecidesThe
+    Wording` decodes the other end of exactly this dictionary."""
+
+    def payload(self, **kwargs):
+        import json
+        from pymol import appkit_design, raymol_tmp
+        options = dict(target_str='tgt', hotspots_str='tgt and resi 5',
+                       generator_id=GEN, length=6, n_designs=2)
+        options.update(kwargs)
+        appkit_design.emit(**options)
+        with open(raymol_tmp.channel_path('pymol_design')) as handle:
+            return json.load(handle)
+
+    def testTheEmittedPayloadCarriesThePlan(self):
+        jobs = self.design(2, seed=7)
+        deliver_designs(jobs)
+        row = self.only_set()
+        plan = self.payload(seed='7')['plan']
+        self.assertEqual(plan, {'name': row['name'], 'extends': True,
+                                'budget': 6, 'staged': 2})
+
+    def testAnEmptySeedBoxIsNoSeedRatherThanAFailedPayload(self):
+        self.helix()
+        payload = self.payload(seed='')
+        self.assertEqual(payload['plan'],
+                         {'name': '', 'extends': False, 'budget': 6, 'staged': 0})
+        # The half this function had before #463 is untouched by the new arguments.
+        self.assertEqual(payload['target']['residues'], 12)
+        self.assertIn({'id': GEN}, payload['generators'])
+
+    def testAnUnparseableSeedBoxIsTreatedAsNoSeed(self):
+        # The bar refuses Generate for it (`seedIsValid`), so it must not cost the
+        # payload -- the resolved target is the half the user is looking at.
+        self.helix()
+        payload = self.payload(seed='42x')
+        self.assertEqual(payload['plan']['extends'], False)
+        self.assertEqual(payload['error'], None)
+
+
+class BatchCancelAfterReapTest(BatchTestCase):
+    """Cancel on a batch that has already finished is a race, not an error (#463
+    review fix 3). The tool bar's Cancel is drawn from a poll up to 500 ms old, so the
+    click lands after the last delivery rather than merely sometimes."""
+
+    def testCancellingAReapedBatchIsQuiet(self):
+        from pymol import designing
+        jobs = self.design(2, seed=7)
+        batch_id = designing._BATCH_OF[jobs[0].spec.name]['batch']
+        deliver_designs(jobs)
+        designing.pump()
+        self.assertNotIn(batch_id, designing._BATCH, 'the batch is reaped')
+        # Raised " Error: unknown design job '<batch>'" before the fix.
+        self.assertEqual(cmd.design_cancel(batch_id), batch_id)
+
+    def testAnUnknownNameStillRaises(self):
+        # Only a name that was never a batch falls through to `_job`. The guard must not
+        # swallow a genuine typo.
+        self.assertRaises(Exception, cmd.design_cancel, 'never_a_job')
+
+
 class FiftyDesigns(BatchTestCase):
 
     def testFiftyDesignsLandInASetWithBudgetStagedAndOneTargetBlob(self):

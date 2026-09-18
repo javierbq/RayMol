@@ -1228,8 +1228,15 @@ extension PyMOLEngine {
         var nextSets = sets
         var nextRows = setRows
         var rowsChanged = false
+        var nextBudget = setsStageBudget
         if versionChanged || running != setsRunning {
             nextSets = setsStore?.sets(running: running) ?? []
+        }
+        // Once per version change, beside the read that already opens the file: the
+        // tool bars promise this number before a batch exists (#463), so it has to be
+        // the FILE's, not a constant Swift keeps beside Python's.
+        if versionChanged {
+            nextBudget = setsStore?.defaultStageBudget() ?? SetsStore.defaultStageBudget
         }
         if versionChanged || active != activeSetID {
             if let active, let set = nextSets.first(where: { $0.id == active }) {
@@ -1252,6 +1259,7 @@ extension PyMOLEngine {
             if self.sets != nextSets { self.sets = nextSets }
             if self.setsRunning != running { self.setsRunning = running }
             if self.setsRunningTruncated != truncated { self.setsRunningTruncated = truncated }
+            if self.setsStageBudget != nextBudget { self.setsStageBudget = nextBudget }
             if self.activeSetID != active {
                 self.activeSetID = active
                 // A set opened from Python (or closed under us) starts with a fresh
