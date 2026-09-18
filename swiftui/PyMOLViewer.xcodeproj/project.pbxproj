@@ -436,7 +436,7 @@
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_5487FBFE-5EBD-4631-B1D8-0328179DFE97" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_A37CB71E-EDFF-4BD3-B4F4-1DBB6E7FBEB2" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -702,10 +702,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_42819D1B-5157-4CE4-A4CA-CE19DE35FA14" /* swiftui */ = {
+		"TEMP_059B0B4C-CEBF-44E6-ACFC-72B21080E05E" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_5487FBFE-5EBD-4631-B1D8-0328179DFE97" /* PyMOLBridge.xcconfig */,
+				"TEMP_A37CB71E-EDFF-4BD3-B4F4-1DBB6E7FBEB2" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1605,7 +1605,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1619,7 +1619,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11.2;
+				MARKETING_VERSION = 1.11.3;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1639,7 +1639,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1653,7 +1653,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.2;
+				MARKETING_VERSION = 1.11.3;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1674,7 +1674,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1690,7 +1690,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.2;
+				MARKETING_VERSION = 1.11.3;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1731,7 +1731,7 @@
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1747,7 +1747,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11.2;
+				MARKETING_VERSION = 1.11.3;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1763,7 +1763,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_5487FBFE-5EBD-4631-B1D8-0328179DFE97" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_A37CB71E-EDFF-4BD3-B4F4-1DBB6E7FBEB2" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1870,7 +1870,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_5487FBFE-5EBD-4631-B1D8-0328179DFE97" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_A37CB71E-EDFF-4BD3-B4F4-1DBB6E7FBEB2" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
