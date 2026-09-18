@@ -38,8 +38,11 @@ See `references/gotchas.md` for the full failure-mode catalog (the four original
 ls ~/.appstoreconnect/private_keys/     # the AuthKey_<KeyID>.p8 upload key is present
 : "${ASC_KEY_ID:?export ASC_KEY_ID}" "${ASC_ISSUER:?export ASC_ISSUER}"  # from ASC ▸ Integrations
 xcodebuild -version                     # Xcode present
+# Xcode signed into an Apple ID? Empty list = NOT signed in; the archive will
+# build fine and then die at -exportArchive. Check this BEFORE the 15-25 min build.
+defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists
 ```
-- **Xcode must be signed into the Apple Developer account** (Xcode ▸ Settings ▸ Accounts; an Apple ID that is Admin/App Manager on team `VT99UQUQ89`) so automatic Distribution signing can mint the profile. GOTCHA: `security find-identity -v` showing **no** "Apple Distribution" / "3rd Party Mac Developer" cert is **NORMAL** — Xcode 26 uses cloud-managed signing (fetches the cert per build, doesn't persist a keychain identity). Don't diagnose "missing cert" as a blocker; the archive's `-allowProvisioningUpdates` handles it. If the account isn't signed in, the archive fails at export — that's the signal to sign in.
+- **Xcode must be signed into the Apple Developer account** (Xcode ▸ Settings ▸ Accounts; an Apple ID that is Admin/App Manager on team `VT99UQUQ89`) so automatic Distribution signing can mint the profile. GOTCHA: `security find-identity -v` showing **no** "Apple Distribution" / "3rd Party Mac Developer" cert is **NORMAL** — Xcode 26 uses cloud-managed signing (fetches the cert per build, doesn't persist a keychain identity). Don't diagnose "missing cert" as a blocker; the archive's `-allowProvisioningUpdates` handles it. If the account isn't signed in, the archive fails at export — that's the signal to sign in. The precise symptom is `error: exportArchive No Accounts` alongside `No signing certificate "Mac App Distribution" found`; `DVTDeveloperAccountManagerAppleIDLists` reads as an empty list. **Signing in is the human's job** (Apple ID + 2FA) — you can't do it for them. Two follow-on quirks: the list can still read empty for a few moments after they sign in (Xcode holds prefs in memory), and you do **not** need to rebuild — re-run just `xcodebuild -exportArchive` against the existing `.xcarchive`, which takes about a minute.
 
 ## Step 1 — Decide the version/build and check ASC state
 
@@ -90,7 +93,9 @@ KEY="$ASC_KEY_ID"; ISS="$ASC_ISSUER"   # export first (ASC ▸ Integrations); no
 xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$KEY" --apiIssuer "$ISS"   # VERIFY SUCCEEDED
 xcrun altool --upload-app   -f "$PKG" -t macos --apiKey "$KEY" --apiIssuer "$ISS"   # UPLOAD SUCCEEDED
 ```
-Uploading only makes the build **available** in ASC — it does NOT submit or publish. After upload, the build takes **a few minutes to appear + process** to `VALID` before it can be attached. Poll with `scripts/asc_status.py` until the build shows `VALID`.
+Uploading only makes the build **available** in ASC — it does NOT submit or publish. After upload, the build takes **a few minutes to appear + process** to `VALID` before it can be attached (~6.5 min for 1.11.2). Poll with `scripts/asc_status.py` until the build shows `VALID`.
+
+**A successful upload does NOT create a version record, and nothing about the new version appears in the ASC UI yet.** The Distribution page will still list only the previous version — that's correct, not a failed upload. The uploaded build lives in the build pool (TestFlight ▸ Builds) until Step 5 creates the version and attaches it. Expect to have to explain this; it looks like the upload silently failed.
 
 ## Step 5 — Create + submit the version in App Store Connect (human signs in)
 
@@ -98,6 +103,12 @@ The user chose "you drive, I sign in" or "you hand me a checklist." Either way, 
 
 1. Open `https://appstoreconnect.apple.com/apps/6781513038/distribution`. If it shows the login screen, **ask the user to sign in** (Apple ID + 2FA/passkey) — do not touch the fields. Wait for them to confirm.
 2. Click the **`+`** next to "macOS App" → **New Version** → type `X.Y.Z` → Create.
+   **DANGER — the macOS `+` has an empty `aria-label`.** The iOS one is labelled `Add iOS App`; the macOS one is labelled `""`, so it is invisible to name-based selectors and any positional fallback (`getByRole('button').nth(N)`) will happily click the **iOS** `+` instead. The resulting "New Version" dialog does **not** name its platform, so you cannot tell from the dialog which one you opened — and creating a stray iOS App Store version is a real, visible mistake. Target it structurally instead, e.g. tag it first:
+   ```js
+   const h = [...document.querySelectorAll('h2')].find(x => x.textContent.trim() === 'macOS App');
+   h.parentElement.querySelector('button').setAttribute('data-claude-target', 'macos-add');
+   ```
+   then click `[data-claude-target="macos-add"]`. Afterwards **verify the platform via the API** (`asc_status.py` must show `MAC_OS  X.Y.Z  PREPARE_FOR_SUBMISSION` and no new `IOS` row) before typing anything else. If you got the wrong one, Cancel the dialog — that leaves no version record behind.
 3. In **What's New in This Version**, paste the MAS notes (non-negotiable #8 — no Homebrew, no MCP). Save.
 4. **Build** section → **Add Build** → select `X.Y.Z (build)` → Done → Save. (The build must be `VALID` from Step 4.)
 5. **App Store Version Release** → **Manually release this version** (so approval doesn't auto-go-live; the user releases when ready). This usually carries over from the last version.
