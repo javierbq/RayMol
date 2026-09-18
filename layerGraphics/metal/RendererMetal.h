@@ -533,13 +533,12 @@ private:
 
   // Anti-aliased screen-space line quads. _vboLinePipeline (lazy, sample-count
   // aware) renders CPU-expanded feathered quads. _lineExpand is the per-frame
-  // scratch where segments are expanded (9 floats/vert); it's uploaded into
-  // _lineBuffer, grown on demand and tracked by _lineBufferSize.
+  // scratch where segments are expanded (9 floats/vert); each draw uploads it
+  // into its OWN transient MTLBuffer (see drawVBOLines: a buffer shared across
+  // draws is read by all of them at commit time, #462).
   id<MTLRenderPipelineState> _vboLinePipeline = nil;
   id<MTLFunction> _lineAAVtxFunc = nil;
   id<MTLFunction> _lineAAFragFunc = nil;
-  id<MTLBuffer> _lineBuffer = nil;
-  size_t _lineBufferSize = 0;
   std::vector<float> _lineExpand;
 
   // GPU-tessellated Bezier tube ("tube cartoon") pipeline.
@@ -763,12 +762,10 @@ private:
   // vertices, so there is no per-vertex buffer to cache beyond the CGO's own.
   id<MTLRenderPipelineState> _connectorPipeline = nil;
   size_t _connectorStride = 0;       // layout the pipeline was built for
-  // Grow-on-demand upload buffer for the per-connector records. Deliberately
-  // NOT the pointer-keyed _vboCache: the connector CGO is rebuilt whenever a
-  // label setting changes, and a recycled heap address would serve stale
-  // background/connector colors from the cache.
-  id<MTLBuffer> _connectorBuffer = nil;
-  size_t _connectorBufferSize = 0;
+  // The per-connector records are uploaded into a transient per-draw buffer
+  // (see drawConnectors). Deliberately NOT the pointer-keyed _vboCache: the
+  // connector CGO is rebuilt whenever a label setting changes, and a recycled
+  // heap address would serve stale background/connector colors from the cache.
   uint32_t _currentProgram = 0;
 
   // Depth/stencil state
