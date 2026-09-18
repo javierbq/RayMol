@@ -834,8 +834,12 @@ let colorOptions: [ColorOption] = [
 
 // MARK: - Action Menu Structure
 
-/// Hierarchical action menu item
-private indirect enum ActionMenuItem {
+/// Hierarchical action menu item.
+///
+/// Internal rather than private so the unit tests can assert which rows a given
+/// kind of object gets — menu *composition* is the behaviour in #461/#468, and
+/// it is otherwise only reachable by driving SwiftUI.
+indirect enum ActionMenuItem {
     case action(label: String, key: String)
     case separator
     case submenu(label: String, children: [ActionMenuItem])
@@ -849,6 +853,10 @@ private indirect enum ActionMenuItem {
     /// render time from engine.objects, like the align cases, because the set of
     /// groups changes with every poll.
     case moveToGroup(label: String)
+    /// Dynamic submenu listing "New Object…" plus every loaded molecule object,
+    /// mirroring desktop PyMOL's selection-menu "copy to object ▸" (#461). Built
+    /// at render time from engine.objects for the same reason as the cases above.
+    case copyToObject(label: String)
 }
 
 private let baseActionMenuItems: [ActionMenuItem] = [
@@ -1002,7 +1010,29 @@ private let groupActionMenuItems: [ActionMenuItem] = [
     .action(label: "Delete Group + Contents", key: "group_delete"),
 ]
 
-private func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [ActionMenuItem] {
+/// Copy / Extract section, shown on SELECTION rows only (#461, #468).
+///
+/// Both verbs make a new object out of the selected atoms; they differ in what
+/// happens to the source. **Copy to Object** leaves the source intact (upstream
+/// `cmd.copy_to` / `cmd.create`), **Extract** moves the atoms out of it
+/// (`cmd.extract`). Desktop PyMOL offers both on selections and neither on
+/// objects — `modules/pymol/menu.py:1183` (sele_action), :1209 (sele_action2),
+/// :1777 and :1836 all sit in the `else:` branch of an `if object:` — so the
+/// section is gated the same way here.
+///
+/// The three Extract variants come from PyMOL's own Extract submenu
+/// (`modules/pymol/menu.py:47`): the selection alone, or widened by one bond
+/// shell, atom-wise or residue-wise.
+private let copyExtractMenuItems: [ActionMenuItem] = [
+    .copyToObject(label: "Copy to Object"),
+    .submenu(label: "Extract", children: [
+        .action(label: "object",           key: "extract_object"),
+        .action(label: "extend 1",         key: "extract_extend_1"),
+        .action(label: "byres extend 1",   key: "extract_byres_extend_1"),
+    ]),
+]
+
+func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [ActionMenuItem] {
     if isGroup { return groupActionMenuItems }
     guard isSelection else { return baseActionMenuItems }
     var items = baseActionMenuItems
@@ -1019,7 +1049,151 @@ private func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [Actio
     } else {
         items.append(removeAtoms)
     }
+    // Copy / Extract goes in the object-management tail, just above "Move to
+    // Group" — next to Rename/Duplicate/Delete, which is where upstream keeps it
+    // too ("duplicate, copy to object, extract object" in sele_action). It rides
+    // on the separator already sitting before moveToGroup and adds its own after,
+    // so the tail reads: … Compute │ Copy/Extract │ Move to Group │ Rename….
+    if let groupIdx = items.firstIndex(where: {
+        if case .moveToGroup = $0 { return true }
+        return false
+    }) {
+        items.insert(contentsOf: copyExtractMenuItems + [.separator], at: groupIdx)
+    } else {
+        items.append(contentsOf: [.separator] + copyExtractMenuItems)
+    }
     return items
+}
+
+// MARK: - Copy / Extract command builders (#461, #468)
+
+/// How far an Extract reaches beyond the selection itself.
+///
+/// The widened variants copy the bonded neighbourhood into the new object but
+/// still remove only the *selected* atoms from the source — that asymmetry is
+/// upstream's (`modules/pymol/menu.py:47`), and it is what makes "extend 1"
+/// useful for pulling a ligand out with the residues it touches.
+enum ExtractScope: String, CaseIterable {
+    case object
+    case extend1
+    case byresExtend1
+
+    /// The selection the new object is built from.
+    fileprivate func createSelection(for sele: String) -> String {
+        switch self {
+        case .object:       return "(\(sele))"
+        case .extend1:      return "((\(sele)) extend 1)"
+        case .byresExtend1: return "(byres ((\(sele)) extend 1))"
+        }
+    }
+}
+
+/// Command for "Copy to Object ▸ <existing object>" (#461).
+///
+/// `copy_to` merges the atoms into an existing object and renames chain/segi/ID
+/// so they cannot collide with what is already there; the source object keeps
+/// its atoms. `quiet=0` so the " Copied N atoms to object X" line lands in the
+/// console feed — the panel gives no other confirmation that anything happened.
+///
+/// Wrapped in a python block to undo one thing `copy_to` does on its own: it
+/// disables every object the selection lives in (`modules/pymol/editing.py:3309`)
+/// so the merged result stands out. On the desktop that is a momentary thing in a
+/// menu; here the source's row stays in the panel with its checkbox silently
+/// clearing, right after a menu item that promises a *copy* — it reads as the
+/// copy having eaten the original. So the enabled sources are captured first and
+/// switched back on afterwards. Sources that were already hidden stay hidden.
+func copyToObjectCommand(sele: String, target: String) -> String {
+    let capture = "_on = [o for o in cmd.get_object_list(\"(\(sele))\") "
+        + "if o in cmd.get_names(\"objects\", enabled_only=1)]"
+    let copy = "cmd.copy_to(\"\(target)\", \"(\(sele))\", zoom=0, quiet=0)"
+    let restore = "[cmd.enable(o) for o in _on]"
+    return "python\n\(capture); \(copy); \(restore)\npython end"
+}
+
+/// Command for "Copy to Object ▸ New Object…" (#461).
+///
+/// Upstream is `cmd.create(None, sele, zoom=0)`, letting PyMOL auto-name the
+/// result; here the name comes from the modal instead, so the copy can be
+/// labelled at the moment it is made. `zoom=0` keeps the camera still — the new
+/// object sits exactly on top of the atoms it was copied from, so framing it
+/// would be a jump to nowhere.
+func copyToNewObjectCommand(sele: String, name: String) -> String {
+    "create \(name), (\(sele)), zoom=0"
+}
+
+/// Command for "Extract ▸ …" (#468) — move the selected atoms out of their
+/// parent object into a new one.
+///
+/// Routed through a `python` block rather than the `extract` console keyword
+/// because that keyword needs a name and this deliberately passes `None`, which
+/// makes PyMOL's own `get_unused_name("obj")` mint `obj01`, `obj02`, … exactly
+/// as the desktop menu item does.
+///
+/// Two notes on the widened variants:
+///
+/// - they must spell the extract selection out (`extract="<sele>"`) instead of
+///   the boolean `extract=1`, because the atoms to remove are a *subset* of the
+///   atoms to copy. `cmd.create` calls that form deprecated and says so on the
+///   console; upstream's menu has the same wart and the alternative is losing
+///   the feature.
+/// - the trailing `delete` drops the selection itself. `cmd.extract` only
+///   cleans up its own temporary, so the user's named selection would survive
+///   with every one of its atoms gone — a 0-atom row in the panel that still
+///   looks live. This mirrors what "Remove Atoms" already does.
+func extractCommand(sele: String, scope: ExtractScope) -> String {
+    let create: String
+    switch scope {
+    case .object:
+        // Selection == extraction target, so `cmd.extract` (which is `create`
+        // with the boolean `extract=1`) covers it without the deprecated form.
+        create = "cmd.extract(None, \"\(scope.createSelection(for: sele))\", zoom=0)"
+    case .extend1, .byresExtend1:
+        create = "cmd.create(None, \"\(scope.createSelection(for: sele))\", "
+            + "extract=\"\(sele)\", zoom=0)"
+    }
+    return "python\n\(create); cmd.delete(\"\(sele)\")\npython end"
+}
+
+/// Mirror of PyMOL's `ExecutiveGetUnusedName(G, "obj")`
+/// (`layer3/Executive.cpp:3553` → `ExecutiveMakeUnusedName`, pattern `%02d`
+/// starting at 1): the first `objNN` no existing name has taken.
+///
+/// Computed here rather than asked of the engine so the "New Object…" modal can
+/// be prefilled the instant it opens. `existing` should be every name PyMOL
+/// knows — objects, selections and groups all share one namespace.
+func defaultNewObjectName(existing: [String]) -> String {
+    let taken = Set(existing)
+    var n = 1
+    while true {
+        let candidate = String(format: "obj%02d", n)
+        if !taken.contains(candidate) { return candidate }
+        n += 1
+    }
+}
+
+/// PyMOL's own legal-name character set: A–Z, a–z, 0–9 and `+ - . ^ _`
+/// (`ObjectMakeValidName`, layer1/PyMOLObject.cpp).
+///
+/// Enforced up front rather than left to the engine because the engine's
+/// response to an illegal name is to quietly rewrite it — type `my obj!` and you
+/// get an object called `my_obj` — so the name in the panel is not the name that
+/// was asked for. A comma is worse than cosmetic: it splits the command into a
+/// different argument list and `create foo, bar, (sele), zoom=0` throws a Python
+/// traceback into the console feed.
+func isLegalObjectName(_ name: String) -> Bool {
+    !name.isEmpty && name.allSatisfy { c in
+        guard c.isASCII else { return false }
+        return c.isLetter || c.isNumber || "+-.^_".contains(c)
+    }
+}
+
+/// Whether `name` can be given to a brand-new object.
+///
+/// Legal, and not already taken: `create` against a name that already exists
+/// does *nothing at all* — no new object, no error, no console line — so an
+/// unchecked collision turns "New Object…" into a button that silently fails.
+func canNameNewObject(_ name: String, existing: [String]) -> Bool {
+    isLegalObjectName(name) && !existing.contains(name)
 }
 
 // MARK: - Command Dispatch
@@ -1134,6 +1308,11 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     // now-empty selection (PyMOL's selection-menu "remove atoms"). Shown only on
     // selection rows — see actionMenuItems(isSelection:).
     case "remove_atoms":       cmd = "remove (\(n)); delete \(n)"
+    // Extract the selection into a new auto-named object, moving its atoms out
+    // of the parent (#468). Shown only on selection rows, like "Remove Atoms".
+    case "extract_object":            cmd = extractCommand(sele: n, scope: .object)
+    case "extract_extend_1":          cmd = extractCommand(sele: n, scope: .extend1)
+    case "extract_byres_extend_1":    cmd = extractCommand(sele: n, scope: .byresExtend1)
     // Global ("all" row) actions
     case "deselect":           cmd = "deselect"
     case "hide_everything":    cmd = "hide everything, \(n)"
@@ -1250,6 +1429,7 @@ struct ObjectPanel: View {
     @State private var showSelectionBuilder = false
     @State private var renameText = ""
     @State private var groupNameText = ""
+    @State private var copyToNewText = ""
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
     @State private var openSections: Set<String> = ["objects", "selections",
@@ -1264,7 +1444,61 @@ struct ObjectPanel: View {
     // `group ..., action=open|close` — see the note in toggleGroupOpen.
     @State private var openGroups: Set<String> = []
 
+    // The panel's name-entry modals are split across two computed properties
+    // rather than one `.alert` chain: three of them in a single expression put
+    // the body past the Swift type-checker's budget ("unable to type-check in
+    // reasonable time"), which is the same reason other views in this file are
+    // broken up.
     var body: some View {
+        panelWithNamingAlerts
+            // "Copy to Object ▸ New Object…" (#461) — same request-channel shape
+            // as the two below. Unlike Extract, which auto-names the way desktop
+            // PyMOL does, the copy asks: a copy is usually made to be kept and
+            // compared against its source, and "obj01" tells you nothing then.
+            .alert("Copy “\(engine.pendingCopyToNew ?? "")” to a new object",
+                   isPresented: Binding(get: { engine.pendingCopyToNew != nil },
+                                        set: { if !$0 { engine.pendingCopyToNew = nil } })) {
+                TextField("Object name", text: $copyToNewText)
+                Button("Copy") {
+                    if let sele = engine.pendingCopyToNew {
+                        let new = copyToNewText.trimmingCharacters(in: .whitespaces)
+                        // Guard in the action body, not only via .disabled() on
+                        // the button: this is the path that actually builds a
+                        // command string, so it is where a bad name has to stop.
+                        if canNameNewObject(new, existing: engine.objects.map(\.name)) {
+                            engine.runCommand(copyToNewObjectCommand(sele: sele, name: new))
+                        }
+                    }
+                    engine.pendingCopyToNew = nil
+                }
+                .disabled(!canNameNewObject(copyToNewText.trimmingCharacters(in: .whitespaces),
+                                            existing: engine.objects.map(\.name)))
+                Button("Cancel", role: .cancel) { engine.pendingCopyToNew = nil }
+            } message: { Text(copyToNewMessage) }
+            .onChange(of: engine.pendingCopyToNew) { newValue in
+                if newValue != nil {
+                    copyToNewText = defaultNewObjectName(existing: engine.objects.map(\.name))
+                }
+            }
+    }
+
+    /// The "Copy to Object ▸ New Object…" alert's subtitle — the reassurance when
+    /// the name is usable, and the reason the Copy button is greyed when it is
+    /// not. Says *why* rather than just refusing, since both failure modes
+    /// (illegal character, name already taken) are invisible in the field itself.
+    private var copyToNewMessage: String {
+        let name = copyToNewText.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { return "Enter a name for the new object." }
+        if !isLegalObjectName(name) {
+            return "PyMOL names can use letters, digits and + - . ^ _ only."
+        }
+        if engine.objects.contains(where: { $0.name == name }) {
+            return "“\(name)” is already taken. Pick a name no object or selection is using."
+        }
+        return "The selected atoms stay in their current object too."
+    }
+
+    private var panelWithNamingAlerts: some View {
         panelBody
             // Name-entry modal for the action-menu "Rename" (engine.pendingRename).
             .alert("Rename “\(engine.pendingRename ?? "")”",
@@ -1954,6 +2188,33 @@ private func actionMenuContent(_ items: [ActionMenuItem], name: String, engine: 
                     Button("Remove from Group") { engine.runCommand("ungroup \(name)") }
                 }
             }
+        case .copyToObject(let label):
+            // "copy to object ▸" (#461). Targets are the loaded molecule objects;
+            // groups are excluded (copy_to needs something to hold atoms) and so
+            // is the selection itself. Upstream additionally hides the objects the
+            // selection already lives in (menu.py:1136) — copying atoms back into
+            // their own parent only renames their chain/segi — but the panel's row
+            // model does not record which objects a selection spans, so that
+            // filter is left out rather than guessed at.
+            //
+            // `isPending` rows ARE excluded: they are placeholders for a running
+            // inference job, greyed and non-interactive everywhere else in the
+            // panel, and holding no atoms yet. Copying into one would race the job
+            // that is about to populate it.
+            Menu(label) {
+                Button("New Object…") { engine.pendingCopyToNew = name }
+                let targets = engine.objects.filter {
+                    !$0.isSelection && !$0.isGroup && !$0.isPending && $0.name != name
+                }
+                if !targets.isEmpty {
+                    Divider()
+                    ForEach(targets) { target in
+                        Button(target.name) {
+                            engine.runCommand(copyToObjectCommand(sele: name, target: target.name))
+                        }
+                    }
+                }
+            }
         case .alignToMolecule(let label):
             // Candidate targets: every OTHER loaded molecule object (mirrors
             // desktop PyMOL's align_to_object). Empty when nothing else is loaded.
@@ -2017,6 +2278,9 @@ private struct ActionMenuButton: View {
                 .contentShape(Rectangle())
         }
         .repMenuChrome()
+        // Stable AX hook so UI tests can open a specific row's action menu
+        // (the visible label "A" is shared by every row), matching colorMenu.*.
+        .accessibilityIdentifier("actionMenu.\(name)")
     }
 }
 

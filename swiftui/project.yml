@@ -137,6 +137,23 @@ schemes:
         - PyMOLViewerTests
       gatherCoverageData: false
 
+  # Standalone iOS UI-test scheme. PyMOLViewerUITests is iOS-only, but the shared
+  # PyMOLViewer target's `scheme:` block lists both test bundles, so the generated
+  # PyMOLViewer_iOS scheme also carries the macOS-only PyMOLViewerTests — and
+  # xcodebuild refuses to build it for iphonesimulator ("Could not find test host
+  # for PyMOLViewerTests"), which `-skip-testing:` does not avoid because the
+  # failure is in host resolution, before any test runs. This scheme carries the UI
+  # tests alone so they can be run at all.
+  UITests_iOS:
+    build:
+      targets:
+        PyMOLViewer_iOS: [test, build]
+        PyMOLViewerUITests: [test, build]
+    test:
+      targets:
+        - PyMOLViewerUITests
+      gatherCoverageData: false
+
   # Inference-enabled variant: the tests that run REAL on-host MLX inference, which
   # every other scheme skips so the fast suite never blocks on weight loading. The
   # gates have to live here rather than in the shell environment — a unit-test bundle
