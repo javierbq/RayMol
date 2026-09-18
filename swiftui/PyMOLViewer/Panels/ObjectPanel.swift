@@ -2215,6 +2215,9 @@ private struct ActionMenuButton: View {
                 .contentShape(Rectangle())
         }
         .repMenuChrome()
+        // Stable AX hook so UI tests can open a specific row's action menu
+        // (the visible label "A" is shared by every row), matching colorMenu.*.
+        .accessibilityIdentifier("actionMenu.\(name)")
     }
 }
 
