@@ -453,14 +453,6 @@ RendererMetal::~RendererMetal()
   // Reusable batch buffer (+1; grown via newBufferWithLength).
   [_batchBuffer release];
 
-  // MRC: the grow-on-demand line-AA scratch buffer is owned here.
-  [_lineBuffer release];
-  _lineBuffer = nil;
-  _lineBufferSize = 0;
-  // Same for the connector (label background/outline/line) upload buffer.
-  [_connectorBuffer release];
-  _connectorBuffer = nil;
-  _connectorBufferSize = 0;
   [(id)_upscaler release];   // MetalFX spatial scaler (MRC)
   _upscaler = nil;
 }
@@ -5126,20 +5118,28 @@ void RendererMetal::drawLinesAA(PrimitiveType mode, int vertexCount,
   const NSUInteger emitVerts = (NSUInteger)(_lineExpand.size() / 9);
   if (emitVerts == 0) return;
   const size_t bytes = _lineExpand.size() * sizeof(float);
-  if (!_lineBuffer || _lineBufferSize < bytes) {
-    [_lineBuffer release];
-    _lineBuffer = [_device newBufferWithLength:std::max(bytes, (size_t)65536)
-                                       options:MTLResourceStorageModeShared];
-    _lineBufferSize = _lineBuffer ? _lineBuffer.length : 0;
-  }
-  if (!_lineBuffer) return;
-  std::memcpy(_lineBuffer.contents, _lineExpand.data(), bytes);
+  // One frame issues one line draw PER enabled object showing `lines`. The draw
+  // is only RECORDED here; the GPU reads the vertex buffer when the command
+  // buffer executes at commit. A single shared buffer rewritten at offset 0
+  // therefore leaves every draw reading the LAST object's vertices, so only the
+  // last object's lines appear and the others' silently vanish (#462; the same
+  // trap endBatch documents for the immediate-mode batch VBO). Allocate a fresh
+  // transient buffer per draw -- the encoder retains it until the frame
+  // completes, so each draw reads its own vertices. This also removes the
+  // cross-frame version of the hazard, where the next frame's memcpy landed on
+  // a buffer the previous frame's GPU work could still be reading.
+  id<MTLBuffer> lineVBO =
+      [_device newBufferWithLength:bytes
+                           options:MTLResourceStorageModeShared];
+  if (!lineVBO) return;
+  std::memcpy(lineVBO.contents, _lineExpand.data(), bytes);
 
   [_encoder setRenderPipelineState:_vboLinePipeline];
   // Lines depth-test/write like normal scene geometry.
   applyDepthStencilState();
   if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
-  [_encoder setVertexBuffer:_lineBuffer offset:0 atIndex:0];
+  [_encoder setVertexBuffer:lineVBO offset:0 atIndex:0];
+  [lineVBO release];  // MRC: the encoder holds its own reference for the frame
   struct LineAAU { float halfWidth; float feather; } u = {lw * 0.5f, feather};
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:0];
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
@@ -7721,17 +7721,17 @@ void RendererMetal::drawConnectors(const ConnectorDrawCall& call)
   if (!_connectorPipeline)
     return;
 
-  // Re-upload every draw (see _connectorBuffer: no pointer-keyed caching).
-  if (!_connectorBuffer || _connectorBufferSize < call.dataSize) {
-    [_connectorBuffer release];
-    _connectorBuffer =
-        [_device newBufferWithLength:std::max(call.dataSize, (size_t) 4096)
-                             options:MTLResourceStorageModeShared];
-    _connectorBufferSize = _connectorBuffer ? _connectorBuffer.length : 0;
-  }
-  if (!_connectorBuffer)
+  // Re-upload every draw (no pointer-keyed caching), into a transient buffer:
+  // a frame issues one connector draw per labelled object, and a shared buffer
+  // rewritten at offset 0 would leave every recorded draw reading the last
+  // call's data once the command buffer executes -- the same defect fixed for
+  // the line-AA path in #462. The encoder retains the buffer for the frame.
+  id<MTLBuffer> connVBO =
+      [_device newBufferWithLength:std::max(call.dataSize, (size_t) 4096)
+                           options:MTLResourceStorageModeShared];
+  if (!connVBO)
     return;
-  std::memcpy(_connectorBuffer.contents, call.data, call.dataSize);
+  std::memcpy(connVBO.contents, call.data, call.dataSize);
 
   [_encoder setRenderPipelineState:_connectorPipeline];
   applyDepthStencilState();
@@ -7739,7 +7739,8 @@ void RendererMetal::drawConnectors(const ConnectorDrawCall& call)
     [_encoder setDepthStencilState:_depthStencilState];
   // Screen-aligned quads with no reliable winding: don't inherit a cull mode.
   [_encoder setCullMode:MTLCullModeNone];
-  [_encoder setVertexBuffer:_connectorBuffer offset:0 atIndex:0];
+  [_encoder setVertexBuffer:connVBO offset:0 atIndex:0];
+  [connVBO release];  // MRC: the encoder holds its own reference for the frame
 
   struct {
     float modelview[16];
