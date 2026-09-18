@@ -16,11 +16,14 @@
 		A41800010000000000000003 /* SetPlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000001 /* SetPlot.swift */; };
 		A41900010000000000000003 /* LineageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900010000000000000001 /* LineageView.swift */; };
 		A41800010000000000000005 /* SetPlotModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000004 /* SetPlotModelTests.swift */; };
+		C4630001A1B2C3D4E5F60004 /* ToolSetStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4630001A1B2C3D4E5F60005 /* ToolSetStatusTests.swift */; };
 		A41900030000000000000002 /* LineageModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900030000000000000001 /* LineageModelTests.swift */; };
 		A41900020000000000000002 /* SequenceRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900020000000000000001 /* SequenceRowModelTests.swift */; };
 		5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
 		63F74F260E91A9424EED005C /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
+		C4630001A1B2C3D4E5F60001 /* ToolSetStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4630001A1B2C3D4E5F60003 /* ToolSetStatus.swift */; };
 		263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAF50505ACF64A3F06AF73 /* SetsStore.swift */; };
+		C4630001A1B2C3D4E5F60002 /* ToolSetStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4630001A1B2C3D4E5F60003 /* ToolSetStatus.swift */; };
 		04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB1F4D491FA24E65DD3B011 /* RFD3Runtime.swift */; };
 		047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */; };
 		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
@@ -340,6 +343,7 @@
 		A41800010000000000000001 /* SetPlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlot.swift; sourceTree = "<group>"; };
 		A41900010000000000000001 /* LineageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageView.swift; sourceTree = "<group>"; };
 		A41800010000000000000004 /* SetPlotModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlotModelTests.swift; sourceTree = "<group>"; };
+		C4630001A1B2C3D4E5F60005 /* ToolSetStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolSetStatusTests.swift; sourceTree = "<group>"; };
 		A41900030000000000000001 /* LineageModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageModelTests.swift; sourceTree = "<group>"; };
 		A41900020000000000000001 /* SequenceRowModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequenceRowModelTests.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
@@ -406,6 +410,7 @@
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
 		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
 		11FAF50505ACF64A3F06AF73 /* SetsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetsStore.swift; sourceTree = "<group>"; };
+		C4630001A1B2C3D4E5F60003 /* ToolSetStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolSetStatus.swift; sourceTree = "<group>"; };
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
 		B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3SizeGuard.swift; sourceTree = "<group>"; };
 		B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayoutTests.swift; sourceTree = "<group>"; };
@@ -623,6 +628,7 @@
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */,
 				11FAF50505ACF64A3F06AF73 /* SetsStore.swift */,
+				C4630001A1B2C3D4E5F60003 /* ToolSetStatus.swift */,
 				2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */,
 				F14E7328C4421ADC9E81417D /* PredictBar.swift */,
 				C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */,
@@ -679,6 +685,7 @@
 				3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */,
 				A707AECADA3B1B857F96E17D /* SetTableModelTests.swift */,
 				A41800010000000000000004 /* SetPlotModelTests.swift */,
+				C4630001A1B2C3D4E5F60005 /* ToolSetStatusTests.swift */,
 				A41900030000000000000001 /* LineageModelTests.swift */,
 				A41900020000000000000001 /* SequenceRowModelTests.swift */,
 				AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */,
@@ -1413,6 +1420,7 @@
 			files = (
 				F84E7EEEA0EF173518ACDD0F /* SetTableModelTests.swift in Sources */,
 				A41800010000000000000005 /* SetPlotModelTests.swift in Sources */,
+				C4630001A1B2C3D4E5F60004 /* ToolSetStatusTests.swift in Sources */,
 				A41900030000000000000002 /* LineageModelTests.swift in Sources */,
 				A41900020000000000000002 /* SequenceRowModelTests.swift in Sources */,
 				EF5E8D2D6A7BA6B77D164707 /* AnalysisNotesStoreTests.swift in Sources */,
@@ -1473,6 +1481,7 @@
 				A41800010000000000000002 /* SetPlot.swift in Sources */,
 				A41900010000000000000002 /* LineageView.swift in Sources */,
 				63F74F260E91A9424EED005C /* SetsStore.swift in Sources */,
+				C4630001A1B2C3D4E5F60001 /* ToolSetStatus.swift in Sources */,
 				B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */,
 				124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */,
 				876C79ECB2F8DA63EE7BAC84 /* BinderDesignBar.swift in Sources */,
@@ -1553,6 +1562,7 @@
 				A41800010000000000000003 /* SetPlot.swift in Sources */,
 				A41900010000000000000003 /* LineageView.swift in Sources */,
 				263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */,
+				C4630001A1B2C3D4E5F60002 /* ToolSetStatus.swift in Sources */,
 				AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */,
 				45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */,
 				9C6CB8E2C25DB4AE13D42756 /* BinderDesignBar.swift in Sources */,

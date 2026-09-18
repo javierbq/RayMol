@@ -134,6 +134,14 @@ final class PyMOLEngine: ObservableObject {
     /// feedback-line cap. The badge then shows a spinner with no numbers rather
     /// than a confident "0 / 0" (#417 review).
     @Published var setsRunningTruncated = false
+    /// The container's stage budget — `meta.stage_budget`, else
+    /// `binding.DEFAULT_BUDGET` (#416). Read once per version change through
+    /// `SetsStore.defaultStageBudget()`, the same call the set rows use, so the
+    /// number a tool bar promises ("6 staged as they land", #463) and the number
+    /// the drawer enforces cannot be two different numbers. The store's default
+    /// stands while no container is open, which is what a session with no sets
+    /// yet will get its first batch.
+    @Published var setsStageBudget = SetsStore.defaultStageBudget
 
     // Filters, linked selection and the Plot tab (#418). All of it belongs to the
     // ACTIVE set and is cleared when that changes (see `resetSetUIState`), so nothing

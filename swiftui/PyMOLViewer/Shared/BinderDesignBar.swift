@@ -32,6 +32,12 @@ struct BinderDesignBar: View {
         VStack(spacing: 0) {
             statusRow
             mainRow
+            plannedSetRow
+            if !batches.isEmpty {
+                Divider().opacity(0.3)
+                ToolBatchRow(batches: batches, cancelFunction: "design_cancel",
+                             engine: engine, theme: theme)
+            }
             if showAdvanced { Divider().opacity(0.3); advancedRow }
         }
         .background(theme.active.panelBackground.color)
@@ -153,6 +159,42 @@ struct BinderDesignBar: View {
                       + "the progress tray")
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    /// Row 2b: what Generate will CREATE, which until #463 the bar never said.
+    ///
+    /// Since #416 every batch becomes a set — `n_designs = 1` included — so Generate has a
+    /// side effect the panel did not mention: entries in the container, and only the first
+    /// `budget` of them as objects. This line is that sentence, in the bar's own idiom
+    /// (11 pt monospaced, the status row's dimmed text), and `PlannedSet` is where its
+    /// arithmetic and its wording live.
+    ///
+    /// Shown only when Generate can actually fire. It is a claim about a specific run, and
+    /// with no target resolved there is no run to make a claim about — so a bar that
+    /// cannot run is exactly the bar that shipped before #463.
+    @ViewBuilder private var plannedSetRow: some View {
+        if controller.canRun {
+            let plan = PlannedSet(entries: controller.nDesigns,
+                                  stageBudget: engine.setsStageBudget)
+            HStack(spacing: 6) {
+                Text(plan.summary)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(theme.active.panelText.color.opacity(0.6))
+                    .lineLimit(1)
+                    .accessibilityIdentifier("binderDesign.plannedSet")
+                Spacer(minLength: 0)
+            }
+            .help(plan.nameNote)
+            .padding(.horizontal, 12).padding(.bottom, 6)
+        }
+    }
+
+    /// The batches of the generators THIS bar drives — see `RunningToolBatch.forTools`
+    /// for why tool is the only honest key, and what happens when two are running.
+    private var batches: [RunningToolBatch] {
+        RunningToolBatch.forTools(controller.availableGenerators.map(\.id),
+                                  sets: engine.sets, jobs: engine.designJobs,
+                                  countsKnown: !engine.setsRunningTruncated)
     }
 
     // Row 3 (Advanced): schedule / seed / name.

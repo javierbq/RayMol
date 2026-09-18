@@ -19,11 +19,34 @@ struct PredictBar: View {
                 Divider().opacity(0.3)
                 msaRow
             }
+            if !batches.isEmpty {
+                Divider().opacity(0.3)
+                ToolBatchRow(batches: batches, cancelFunction: "predict_cancel",
+                             engine: engine, theme: theme)
+            }
             if showAdvanced { Divider().opacity(0.3); advancedRow }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
         .onChange(of: controller.inputText) { controller.inputChanged() }
+    }
+
+    /// Batches of the predictors THIS bar drives, still landing in a set (#463).
+    ///
+    /// A plain `predict <sequence>` makes no set — only `predict set:<name>` does
+    /// (`predicting._predict_into_set`), and until part 1 of #463 lands this bar cannot
+    /// compose one. So what this row reports today is a batch started from the drawer's
+    /// Send to ▾ or from the console, shown where the tool's own controls are. Empty,
+    /// and therefore invisible, in every session that has never made a set.
+    ///
+    /// No Cancel appears on it: `predicting.pending_info` publishes no `batch`, so
+    /// nothing on the wire names the set, and `predict_cancel` takes one object name. The
+    /// per-object cards in the progress tray remain the only way to stop a fold — see
+    /// `RunningToolBatch.cancelJob`.
+    private var batches: [RunningToolBatch] {
+        RunningToolBatch.forTools(controller.availablePredictors.map(\.id),
+                                  sets: engine.sets, jobs: engine.predictionJobs,
+                                  countsKnown: !engine.setsRunningTruncated)
     }
 
     private var selectedSupportsMSA: Bool {
