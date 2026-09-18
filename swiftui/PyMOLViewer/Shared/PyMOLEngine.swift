@@ -227,6 +227,10 @@ final class PyMOLEngine: ObservableObject {
     // Request channel for "New Group…" (#255): the object to put in a new group.
     // ObjectPanel presents the name-entry alert, mirroring pendingRename.
     @Published var pendingGroupFor: String? = nil
+    // Request channel for "Copy to Object ▸ New Object…" (#461): the selection to
+    // copy into a brand-new object. Same shape as pendingGroupFor — ObjectPanel
+    // presents the name-entry alert, prefilled with PyMOL's own objNN default.
+    @Published var pendingCopyToNew: String? = nil
     // Pick-debug instrumentation (active when PYMOL_PICKDEBUG is set): the last
     // click point in viewport (top-down, SwiftUI) points, drawn as a crosshair so
     // a screenshot shows click-vs-selection alignment. Set by MetalViewport.
