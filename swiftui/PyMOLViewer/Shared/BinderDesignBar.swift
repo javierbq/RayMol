@@ -35,13 +35,28 @@ struct BinderDesignBar: View {
             plannedSetRow
             if !batches.isEmpty {
                 Divider().opacity(0.3)
-                ToolBatchRow(batches: batches, cancelFunction: "design_cancel",
+                ToolBatchRow(batches: batches, style: .design,
                              engine: engine, theme: theme)
             }
             if showAdvanced { Divider().opacity(0.3); advancedRow }
         }
         .background(theme.active.panelBackground.color)
         .tint(theme.active.accent.color)
+        // The count, the seed and the name all feed the design key, and so decide
+        // whether this run makes a set or extends one (#463 review) — so each has to
+        // re-resolve, exactly as the target and hotspot boxes already do. The target box
+        // has re-resolved per keystroke since #342, so the added cost is one more
+        // `resolve_target` on fields a user touches rarely.
+        .onChange(of: controller.nDesigns) { controller.inputChanged() }
+        .onChange(of: controller.seedText) { controller.inputChanged() }
+        .onChange(of: controller.resultName) { controller.inputChanged() }
+        // The plan is also a fact about the CONTAINER, not only about the form: the run
+        // that turns "a new set" into "extends camp" is the one that created `camp`,
+        // and it finishes while the bar sits there untouched. Re-resolve when the
+        // container's version moves — the same counter the Lineage tab rebuilds on, and
+        // the same reason (`applySetsMarker` bumps it only on a real version change, so
+        // this is not per-tick work).
+        .onChange(of: engine.setsVersionTick) { controller.inputChanged() }
     }
 
     // Row 1: the resolved target, or what is wrong with it, or the hint.
@@ -163,19 +178,26 @@ struct BinderDesignBar: View {
 
     /// Row 2b: what Generate will CREATE, which until #463 the bar never said.
     ///
-    /// Since #416 every batch becomes a set — `n_designs = 1` included — so Generate has a
-    /// side effect the panel did not mention: entries in the container, and only the first
-    /// `budget` of them as objects. This line is that sentence, in the bar's own idiom
-    /// (11 pt monospaced, the status row's dimmed text), and `PlannedSet` is where its
-    /// arithmetic and its wording live.
+    /// Since #416 every batch becomes a set — `n_designs = 1` included — so Generate has
+    /// a side effect the panel did not mention: entries in the container, and only the
+    /// free slots of the budget as objects. This line is that sentence, in the bar's own
+    /// idiom (11 pt monospaced, the status row's dimmed text), and ``PlannedSet`` is
+    /// where its arithmetic and its wording live.
     ///
-    /// Shown only when Generate can actually fire. It is a claim about a specific run, and
-    /// with no target resolved there is no run to make a claim about — so a bar that
+    /// The plan comes from Python (`designing.preview_set`, over the round trip this bar
+    /// already runs on every edit) rather than from a guess here, because "a new set" is
+    /// FALSE for an identical re-run: that extends the set the first run made, and
+    /// stages only `budget - staged` of the new designs (#463 review). Before the first
+    /// payload arrives `plan` is nil and the line reads as a new set with the file's
+    /// default budget, which is what the bar said before.
+    ///
+    /// Shown only when Generate can actually fire. It is a claim about a specific run,
+    /// and with no target resolved there is no run to make a claim about — so a bar that
     /// cannot run is exactly the bar that shipped before #463.
     @ViewBuilder private var plannedSetRow: some View {
         if controller.canRun {
-            let plan = PlannedSet(entries: controller.nDesigns,
-                                  stageBudget: engine.setsStageBudget)
+            let plan = PlannedSet(entries: controller.nDesigns, plan: controller.setPlan,
+                                  defaultBudget: engine.setsStageBudget)
             HStack(spacing: 6) {
                 Text(plan.summary)
                     .font(.system(size: 11, design: .monospaced))

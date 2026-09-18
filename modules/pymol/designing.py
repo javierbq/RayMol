@@ -114,6 +114,17 @@ _BATCH = {}
 #: and no batch fields on the wire, so its row is exactly what it always was.
 _BATCH_OF = {}
 
+#: Batch ids this session has opened, LIVE OR REAPED.
+#:
+#: Retained after `_reap_batches` drops the batch so `design_cancel <batch>` answers
+#: quietly instead of raising "unknown design job" -- pressing Cancel as the last member
+#: settles is a race the user cannot avoid, and #463 put that button on a row drawn from a
+#: poll up to 500 ms old, so the click lands after the reap rather than merely sometimes.
+#: The sibling `designing_sequences._BATCH_IDS` has said exactly this since #460's review;
+#: this is the same rule for the same reason. Bounded by the number of multi-design
+#: invocations in a session -- a handful of strings -- and cleared with the pending table.
+_RETIRED_BATCHES = set()
+
 #: States a design does not come back from. `pending_info` publishes the first three;
 #: 'done' is what the runtime writes between finishing and `deliver_result` landing the
 #: object, and a design in that window is finished for the purpose of the run estimate.
@@ -211,6 +222,123 @@ def default_group_name(design_key, generator_id=''):
     method = ''.join(ch for ch in str(generator_id) if ch.isalnum() or ch == '_')
     stem = 'batch_%s' % str(design_key)[:OBJECT_NAME_DIGEST_CHARS]
     return '%s_%s' % (method, stem) if method else stem
+
+
+def preview_set(target, hotspots='', generator='', length=0, n_designs=1, seed=None,
+                name='', diffusion_steps=200, recycling_steps=2, _self=cmd):
+    """What the SET this command would deliver into is called, and whether it EXISTS.
+
+    For the Binder Design bar (#463), which has to say what Generate will create before
+    Generate is pressed. `{'name': str, 'extends': bool, 'budget': int, 'staged': int}`,
+    or None when this build has no set store.
+
+    **`extends` is the whole point, and it is read rather than predicted.** An identical
+    re-run does NOT make a second set: `batch.name_taken` answers False for the same tool
+    against the same reference, so `_free_group_name` leaves the candidate alone and
+    `batch.open` appends a second run to the set the first run made -- and only
+    `budget - staged` of the new designs get an object. A bar that said "a new set * 4
+    entries * 4 staged" there would be wrong twice over. So this returns the EXISTING
+    row's name, its own budget (`binding.budget`, which prefers the set's `budget`
+    column over `meta.stage_budget`) and how many of its entries are staged right now.
+
+    `name` is '' -- meaning "cannot be known yet, and it will be a new set" -- exactly
+    when the candidate is not computable:
+
+      * no seed. The derived name is `<generator>_batch_<key>` and `design_key` hashes
+        `options.seed`, which `binder_design` draws at submit when the caller omits it
+        (`random.randrange`), so the digest does not exist yet. It is also a NEW set for
+        that reason: a fresh seed is a fresh key is a name nothing answers to.
+      * `n_designs = 1` with a `name=`. The set is named as the batch would have been and
+        the typed name goes to the OBJECT, so the name box says nothing about the set.
+      * anything that will not resolve: no target, a hotspot outside it, a generator this
+        build cannot run. The bar is already showing that error in its status row.
+
+    A LIVE batch under the candidate name is a new set too, not an extension: the name is
+    taken while it lands (`_group_name_is_available`) and bumps to `_2`.
+
+    PURE, and that is a requirement rather than a nicety: the bar re-runs this on every
+    keystroke. It resolves the target (which `appkit_design.emit` does anyway), hashes it
+    for the key, and reads rows -- it creates no container (`name_taken` and `is_open`
+    promise that), creates no object, stages nothing, and clears no ghost staging link,
+    which is why the staged count is counted here instead of through
+    `binding._staged` -- that one WRITES. Never raises.
+
+    The answer is as of THIS resolve. Another window could take the name in the seconds
+    before Generate, in which case the run creates `<name>_2` and the line was
+    optimistic; the same race is the reason the name is decided at submit time and not
+    here.
+    """
+    sb = _sets_batch()
+    if sb is None:
+        return None
+    count = max(int(n_designs or 1), 1)
+    candidate = ''
+    try:
+        if count > 1 and name:
+            # The name the user gave IS the group and the set (`binder_design`), so no
+            # key is needed and no seed is either.
+            candidate = _legal_object_name(str(name), _self=_self)
+        elif seed is not None and str(seed).strip() != '' and int(length) > 0:
+            candidate = _derived_set_name(target, hotspots, generator, length, seed,
+                                          diffusion_steps, recycling_steps, _self=_self)
+    except Exception:
+        candidate = ''
+    row = None
+    if candidate and not (candidate in _PENDING or candidate in _BATCH):
+        try:
+            from pymol.sets import store as _store
+            if _store.is_open():
+                reference = _target_object(target, _self=_self)
+                if not sb.name_taken(candidate, generator, reference,
+                                     need_slot=(count == 1), _self=_self):
+                    row = _store.active().get_set(candidate)
+        except Exception:
+            row = None
+    if row is None:
+        return {'name': '', 'extends': False, 'budget': _new_set_budget(), 'staged': 0}
+    try:
+        from pymol.sets import binding as _binding, store as _store
+        present = set(_self.get_names('all') or [])
+        staged = sum(1 for e in _store.active().entries(
+                         row['id'], where='e.staged_object IS NOT NULL')
+                     if e['staged_object'] in present)
+        return {'name': row['name'], 'extends': True,
+                'budget': int(_binding.budget(row)), 'staged': int(staged)}
+    except Exception:
+        return {'name': row['name'], 'extends': True,
+                'budget': _new_set_budget(), 'staged': 0}
+
+
+def _derived_set_name(target, hotspots, generator, length, seed, diffusion_steps,
+                      recycling_steps, _self=cmd):
+    """`<generator>_batch_<design key>` for these arguments -- the same computation
+    `binder_design` makes, through the same resolver, spec and validator, so the two
+    cannot answer differently. Raises whatever any of them raises; `preview_set` catches."""
+    from pymol.generators import registry
+    structure = resolve_target(target, hotspots, quiet=1, _self=_self)
+    generator_obj = registry.get(generator)
+    spec = generator_obj.parse_target(structure, int(length))
+    options = generator_obj.validate_options(
+        dict(recycling_steps=int(recycling_steps), diffusion_steps=int(diffusion_steps),
+             seed=int(seed)))
+    key = spec.design_key(options,
+                          weights_version=_weight_version(generator_obj.id))
+    return _legal_object_name(default_group_name(key, generator_obj.id), _self=_self)
+
+
+def _new_set_budget():
+    """The stage budget a set created now would have: the file's `meta.stage_budget`,
+    else `binding.DEFAULT_BUDGET`. Never OPENS a container to find out -- a bar drawing a
+    line must not create the working file as a side effect (#447)."""
+    from pymol.sets import binding as _binding, store as _store
+    try:
+        if _store.is_open():
+            raw = _store.active().meta_get('stage_budget', None)
+            if raw not in (None, ''):
+                return int(raw)
+    except Exception:
+        pass
+    return _binding.DEFAULT_BUDGET
 
 
 def _legal_object_name(name, _self=cmd):
@@ -488,6 +616,9 @@ def _reap_batches():
         for member in batch['names']:
             _BATCH_OF.pop(member, None)
         _BATCH.pop(batch_id, None)
+        # Remembered as it goes, so Cancel on a row the poll drew a moment ago is a
+        # no-op rather than an error (see `_RETIRED_BATCHES`).
+        _RETIRED_BATCHES.add(batch_id)
 
 
 # -- The batch's set (#416) ----------------------------------------------------
@@ -1094,6 +1225,7 @@ def clear_pending(_self=cmd):
     _LAST_INFO.clear()
     _BATCH.clear()
     _BATCH_OF.clear()
+    _RETIRED_BATCHES.clear()
     sb = _sets_batch()
     if sb is not None:
         sb.clear()
@@ -3285,6 +3417,16 @@ SEE ALSO
             colorprinting.parrot(' design: cancel requested for %s (%d job(s))'
                                  % (job_id, len(ids)))
         pump(_self=_self)
+        return job_id
+    # A batch whose last member has already settled -- and whose entry `_reap_batches`
+    # has therefore dropped -- is NOT an error. The guard above only sees LIVE batches,
+    # so without this the fall-through below raised "unknown design job '<set>'" at a
+    # user who pressed the Cancel that #463 put in the tool bar, on a row the panel poll
+    # drew up to 500 ms earlier. Same rule, same wording as
+    # `design_sequences_cancel`; measured on a reaped ten-design batch.
+    if job_id in _RETIRED_BATCHES:
+        if not int(quiet):
+            colorprinting.parrot(' design: the batch %s has already finished' % job_id)
         return job_id
     job = _job(job_id)
     job.cancel()

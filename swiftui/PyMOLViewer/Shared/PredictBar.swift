@@ -21,7 +21,7 @@ struct PredictBar: View {
             }
             if !batches.isEmpty {
                 Divider().opacity(0.3)
-                ToolBatchRow(batches: batches, cancelFunction: "predict_cancel",
+                ToolBatchRow(batches: batches, style: .predict,
                              engine: engine, theme: theme)
             }
             if showAdvanced { Divider().opacity(0.3); advancedRow }
@@ -40,9 +40,10 @@ struct PredictBar: View {
     /// and therefore invisible, in every session that has never made a set.
     ///
     /// No Cancel appears on it: `predicting.pending_info` publishes no `batch`, so
-    /// nothing on the wire names the set, and `predict_cancel` takes one object name. The
-    /// per-object cards in the progress tray remain the only way to stop a fold — see
-    /// `RunningToolBatch.cancelJob`.
+    /// nothing on the wire names the set, and `predict_cancel` takes one object name —
+    /// which is why ``ToolBatchStyle/predict`` carries a nil cancel command rather than
+    /// one that would raise if it ever fired, and why the row says out loud where the
+    /// work came from and where its Cancels are (#463 review, fixes 4 and 5).
     private var batches: [RunningToolBatch] {
         RunningToolBatch.forTools(controller.availablePredictors.map(\.id),
                                   sets: engine.sets, jobs: engine.predictionJobs,

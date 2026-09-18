@@ -92,17 +92,58 @@ def _target(target_str, hotspots_str, generator_id):
         return None, str(exc)
 
 
-def emit(target_str='', hotspots_str='', generator_id=''):
+def _plan(target_str, hotspots_str, generator_id, length, n_designs, seed, name,
+          diffusion_steps, recycling_steps):
+    """`designing.preview_set`'s answer, or None.
+
+    The bar has to say what Generate will CREATE, and "a new set" is false for an
+    identical re-run -- `batch.open` extends the set the first run made and stages only
+    its free slots (#463 review). The decision is Python's, here as everywhere else in
+    this file: there is one naming rule and it is `binder_design`'s.
+
+    Never raises, for `emit`'s reason -- a throw would leave the bar with no payload at
+    all, which loses the resolved target as well as the plan.
+    """
+    try:
+        from pymol import designing
+        return designing.preview_set(
+            target_str, hotspots_str, generator_id, length=length, n_designs=n_designs,
+            seed=seed, name=name, diffusion_steps=diffusion_steps,
+            recycling_steps=recycling_steps, _self=cmd)
+    except Exception:
+        return None
+
+
+def emit(target_str='', hotspots_str='', generator_id='', length=0, n_designs=1,
+         seed='', name='', diffusion_steps=200, recycling_steps=2):
     """Write pymol_design_<pid>.json and print DESIGN_FORM:ready.
 
     Serialise BEFORE opening the file: open(..., 'w') truncates immediately, so a
     dumps() failure inside the `with` would leave a zero-byte file -- worse than a
     stale one. A process-local filename keeps multiple RayMol windows from
     overwriting each other's payload.
+
+    Everything past `generator_id` is for the `plan` half (#463) and is DEFAULTED, so a
+    caller that only wants the target and the generator list -- which is what this
+    function was until now -- gets exactly what it got before, with a plan that names no
+    set. `seed` arrives as the TEXT of the bar's seed box: empty means "drawn at submit",
+    which is the case whose name cannot be known.
     """
     try:
         summary, error = _target(target_str, hotspots_str, generator_id)
-        payload = {'generators': _generators(), 'target': summary, 'error': error}
+        seed_value = None
+        try:
+            text = str(seed).strip()
+            seed_value = int(text) if text else None
+        except (TypeError, ValueError):
+            # A seed box that does not parse: the bar already refuses Generate for it
+            # (`BinderDesignController.seedIsValid`), so treat it as no seed rather than
+            # failing the whole payload.
+            seed_value = None
+        payload = {'generators': _generators(), 'target': summary, 'error': error,
+                   'plan': _plan(target_str, hotspots_str, generator_id, length,
+                                 n_designs, seed_value, name, diffusion_steps,
+                                 recycling_steps)}
         blob = json.dumps(payload)
         path = raymol_tmp.channel_path('pymol_design')
         with open(path, 'w') as handle:

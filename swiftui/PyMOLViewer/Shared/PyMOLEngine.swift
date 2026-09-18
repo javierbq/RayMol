@@ -3094,16 +3094,27 @@ final class PyMOLEngine: ObservableObject {
         // way every other command's is, instead of duplicated into a second surface.
         dc.runCommandSeam = { [weak self] command in self?.runCommand(command) }
         // Trigger the tempfile-JSON feed; DESIGN_FORM:ready routes back in pollFeedback.
-        dc.refreshTrigger = { [weak self] target, hotspots, generator in
-            // All three are single-line tokens -- a selection expression, a selection
-            // expression, a generator id -- so the newline-deleting `pythonLiteral` is
-            // the right one; `pythonMultilineLiteral` is for PDB payloads. #352 folded
-            // this file's fourth copy of the escaper onto InferenceJob's.
-            let t = InferenceJob.pythonLiteral(target)
-            let h = InferenceJob.pythonLiteral(hotspots)
-            let g = InferenceJob.pythonLiteral(generator)
+        dc.refreshTrigger = { [weak self] form in
+            // The selections, the generator id, the seed box and the name box are all
+            // single-line tokens, so the newline-deleting `pythonLiteral` is the right
+            // one; `pythonMultilineLiteral` is for PDB payloads. #352 folded this file's
+            // fourth copy of the escaper onto InferenceJob's.
+            let t = InferenceJob.pythonLiteral(form.target)
+            let h = InferenceJob.pythonLiteral(form.hotspots)
+            let g = InferenceJob.pythonLiteral(form.generator)
+            // The numbers and the two boxes go too, because the SET's name is a function
+            // of all of them: `designing.preview_set` needs the design key (hence the
+            // length, the schedule and the seed) and the `name=` to answer whether this
+            // run makes a set or extends one (#463 review). Sent as a literal seed
+            // STRING -- empty means "drawn at submit", which is the case whose name
+            // cannot be known.
+            let seed = InferenceJob.pythonLiteral(form.seedText)
+            let name = InferenceJob.pythonLiteral(form.resultName)
             self?.runPython("from pymol import appkit_design as _ad\n"
-                            + "_ad.emit(\(t), \(h), \(g))")
+                            + "_ad.emit(\(t), \(h), \(g), length=\(form.length),"
+                            + " n_designs=\(form.count), seed=\(seed), name=\(name),"
+                            + " diffusion_steps=\(form.diffusionSteps),"
+                            + " recycling_steps=\(form.recyclingSteps))")
         }
         return dc
     }()
