@@ -23,7 +23,8 @@ See `references/gotchas.md` for the full failure-mode catalog and recovery recip
 
 - **Version:** `swiftui/project.yml` — `MARKETING_VERSION` (e.g. `1.5.1`) and `CURRENT_PROJECT_VERSION` (integer build). This is the xcodegen source of truth; `project.pbxproj` is regenerated from it and carries the same version strings across its build configs.
 - **Release notes:** `docs/release-notes/vX.Y.Z.md` — Markdown, spliced into the appcast and used as the GitHub release body. See `references/release-notes-style.md`.
-- **Scripts** (`swiftui/`): `build_macos.sh` (rebuild core `.a`; `CLEAN=1` wipes the build dir first — required when a setting default changed), `make_dmg.sh` (clean core → clean Release build → Developer-ID sign → notarize → DMG; auto-rebuilds the core clean + runs a stale-bundle sanity check, honors `SKIP_CORE_BUILD=1`, logs to `build_dmg_logs/`), `publish_release.sh` (EdDSA-sign → write `appcast.xml` → GitHub release).
+- **Scripts** (`swiftui/`): `build_macos.sh` (rebuild core `.a`; `CLEAN=1` wipes the build dir first — required when a setting default changed), `make_dmg.sh` (clean core → clean Release build → Developer-ID sign → notarize → DMG; auto-rebuilds the core clean + runs a stale-bundle sanity check, honors `SKIP_CORE_BUILD=1`, logs to `build_dmg_logs/`), `publish_release.sh` (EdDSA-sign → write `appcast.xml` → GitHub release → **bump the Homebrew cask**).
+- **Homebrew cask:** `Casks/raymol.rb` in the `javierbq/homebrew-raymol` tap. **`publish_release.sh` bumps and pushes it for you** (version + sha256 of the versioned DMG) as its last step, after the GitHub release exists — set `SKIP_CASK=1` to skip. It is NOT a separate manual channel; just verify it afterwards (Step 8).
 - **Live auto-update feed:** the release **asset** at `https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml` (NOT the tracked repo copy — that's optional bookkeeping that drifts).
 
 Version numbers below (`X.Y.Z`, build `N`) are placeholders — always read the live values, never assume the examples are current.
@@ -37,6 +38,8 @@ security show-keychain-info "$HOME/Library/Keychains/login.keychain-db"  # exits
 ```
 - The identity is `Developer ID Application: Javier Castellanos (VT99UQUQ89)`; the notary profile is `RayMol-notary`.
 - The keychain check exits 0 (and prints key metadata) when unlocked; if it errors, unlock: `security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"`. A locked keychain hangs the sign step ~30 min into the build.
+- **The login keychain re-locks on a timeout (default 7200s), and a full release takes longer than that.** Passing preflight is NOT enough — it can lock again between preflight and `make_dmg.sh`, or during the long notarization waits. `make_dmg.sh` fails fast on this (its `notarytool history` probe), but the fix needs a human: `security unlock-keychain` prompts for the passphrase interactively and an agent cannot supply it. To stop it recurring, raise the timeout once: `security set-keychain-settings -t 28800 "$HOME/Library/Keychains/login.keychain-db"`. Re-check right before Step 5 regardless.
+- **Run these outside any command sandbox.** Under a sandbox `security find-identity` reports **"0 valid identities found"** even when the Developer ID cert is present — which reads exactly like a missing certificate and invites a wrong diagnosis. `sysctl` (used by `build_macos.sh`) and git/gh network access are blocked too.
 - `build_macos.sh` aborts immediately if `deps_macos/python-standalone/python` is missing — Step 2 sets up the symlink, but know this is the expected failure if it's absent.
 
 ## Step 1 — Review master and decide the version
@@ -74,6 +77,15 @@ test -e deps_macos/python-standalone/python/include/python3.13/Python.h && echo 
 
 Bump the version and write notes:
 - Edit `swiftui/project.yml`: set `MARKETING_VERSION` to `X.Y.Z` and `CURRENT_PROJECT_VERSION` to `N`.
+- **Hand-edit `swiftui/PyMOLViewer.xcodeproj/project.pbxproj` to match** — do NOT regenerate it with `xcodegen` (that rewrites `RayMol.icon` and breaks the app icon). There are **four** of each entry, one per build config:
+  ```bash
+  sed -i '' 's/MARKETING_VERSION = <OLD>;/MARKETING_VERSION = X.Y.Z;/g; s/CURRENT_PROJECT_VERSION = <OLDN>;/CURRENT_PROJECT_VERSION = N;/g' \
+    swiftui/PyMOLViewer.xcodeproj/project.pbxproj
+  # assert 4 and 4 — a partial edit ships a mislabeled build
+  grep -c "MARKETING_VERSION = X.Y.Z;" swiftui/PyMOLViewer.xcodeproj/project.pbxproj
+  grep -c "CURRENT_PROJECT_VERSION = N;" swiftui/PyMOLViewer.xcodeproj/project.pbxproj
+  ```
+  Then confirm `git status` shows only `project.yml`, `project.pbxproj` and the release-notes file — nothing under `Resources/`.
 - Write `docs/release-notes/vX.Y.Z.md` (see `references/release-notes-style.md`).
 
 **Prepare the What's New splash — minor/major bumps only (Step 1 decides which).** RayMol shows an in-app "What's New" carousel on version bump, driven by bundled `swiftui/PyMOLViewer/Resources/WhatsNew.json` plus hero media (`whatsnew-*.png` / `.mp4`) in the same `Resources/` dir. These are baked into the app bundle, so the new page must exist in the **tagged commit** — prepare it now (before the RC build) and land it in the Step 3 PR.
@@ -83,12 +95,15 @@ Bump the version and write notes:
 Build the RC and open it (two-stage — non-negotiable #3). Prefer delegating to the `multiplatform-build-deployer` agent, instructing it to build **from `$WT`, not the main repo**:
 ```bash
 bash swiftui/build_macos.sh                             # rebuild core from THIS checkout (CLEAN=1 if a setting default changed)
-( cd swiftui && xcodegen generate )                     # regenerate pbxproj with the new version
 xcodebuild -project swiftui/PyMOLViewer.xcodeproj -scheme PyMOLViewer_macOS \
-  -configuration Debug -derivedDataPath swiftui/build_mac_dd CODE_SIGNING_ALLOWED=NO build
+  -configuration Debug -derivedDataPath swiftui/build_mac_dd \
+  -skipPackagePluginValidation -skipMacroValidation \
+  CODE_SIGNING_ALLOWED=NO build
 ps -eo pid,comm | awk '/build_mac_dd.*MacOS\/RayMol$/ {print $1}' | xargs -r kill   # relaunch fresh
 open -n swiftui/build_mac_dd/Build/Products/Debug/RayMol.app
 ```
+- **`-skipPackagePluginValidation -skipMacroValidation` are required**, not optional: mlx-swift ships a `CudaBuild` package plug-in that Xcode refuses to run unvalidated, and without these the build dies at `Validate plug-in "CudaBuild" in package "mlx-swift"` before compiling anything. `make_dmg.sh` and `archive_appstore.sh` already pass them; this snippet is the only place that has to say so explicitly.
+- **Do NOT run `xcodegen generate` here.** Hand-edit the version into `project.pbxproj` instead (Step 2's bump above): four `MARKETING_VERSION` + four `CURRENT_PROJECT_VERSION` entries, matching what the committed pbxproj already looks like. Regenerating rewrites `RayMol.icon` and breaks the app icon in the *committed* project. (The build scripts do regenerate the pbxproj transiently at build time — that's fine and does not affect the icon; verified on 1.11.2, where the shipped DMG and the MAS archive both carried a byte-identical `Assets.car` with `CFBundleIconName=RayMol`. The rule is about what you commit.)
 Confirm the launched app's `Info.plist` shows `X.Y.Z` / `N` — and, for a minor/major bump, that the new What's New splash appears on first launch — then **hand it to the user to test and wait for approval.** Note: the RC is a **Debug** build; the shipped DMG is **Release**. For an optimization/Metal-sensitive change, also smoke-test the actual notarized `build_dmg/RayMol.app` (Step 6) before publishing. Do not proceed until the user confirms.
 
 ## Step 3 — Land the bump via a PR (NOT a direct push)
@@ -154,7 +169,7 @@ git ls-remote --tags origin vX.Y.Z      # must return the annotated tag; STOP if
 cd "$WT"
 VERSION=X.Y.Z BUILD=$N NOTES_FILE=docs/release-notes/vX.Y.Z.md bash swiftui/publish_release.sh
 ```
-This EdDSA-signs the DMG, writes `appcast.xml`, and creates the `vX.Y.Z` GitHub release (DMG + stable `RayMol.dmg` + appcast). If the tag doesn't already exist, `gh release create` would lightweight-tag it at the default-branch tip — the gate above prevents a stray tag. (`publish_release.sh` finds Sparkle's `sign_update` in resolved SPM DerivedData; same `-resolvePackageDependencies` note as Step 5.)
+This EdDSA-signs the DMG, writes `appcast.xml`, creates the `vX.Y.Z` GitHub release (DMG + stable `RayMol.dmg` + appcast), **and then bumps the Homebrew cask** in `javierbq/homebrew-raymol` (`SKIP_CASK=1` opts out). Don't bump the cask by hand — you'll just be redoing what this already did. If the tag doesn't already exist, `gh release create` would lightweight-tag it at the default-branch tip — the gate above prevents a stray tag. (`publish_release.sh` finds Sparkle's `sign_update` in resolved SPM DerivedData; same `-resolvePackageDependencies` note as Step 5.)
 
 ## Step 8 — Verify live, then commit the appcast
 
@@ -164,7 +179,13 @@ gh release view vX.Y.Z -R javierbq/RayMol --json name,tagName,isDraft,assets \
 curl -sL https://github.com/javierbq/RayMol/releases/latest/download/appcast.xml \
   | grep -E "sparkle:version|shortVersionString|enclosure url"
 ```
-Confirm the feed serves `X.Y.Z` / build `N` with a matching signature. Then land the tracked `appcast.xml` via a **second small PR** (direct push is gated), based on `origin/master` so it fast-forwards:
+Confirm the feed serves `X.Y.Z` / build `N` with a matching signature. Also confirm the cask `publish_release.sh` pushed is correct — its sha256 must match the DMG you built:
+```bash
+shasum -a 256 "$WT/RayMol-X.Y.Z.dmg"
+gh api repos/javierbq/homebrew-raymol/contents/Casks/raymol.rb --jq '.content' \
+  | base64 -d | grep -E 'version|sha256'
+```
+Then land the tracked `appcast.xml` via a **second small PR** (direct push is gated), based on `origin/master` so it fast-forwards:
 ```bash
 cd "$WT"
 cp appcast.xml /tmp/appcast.gen.xml
@@ -182,4 +203,6 @@ gh pr merge chore/appcast-X.Y.Z -R javierbq/RayMol --merge
 
 ## Done
 
-Report: the release URL, that the DMG is notarized/stapled and stamped `X.Y.Z`/`N`, that the live feed serves it, and the PR links. Installed apps will offer the update on their next check.
+Report: the release URL, that the DMG is notarized/stapled and stamped `X.Y.Z`/`N`, that the live feed serves it, that the Homebrew cask was bumped to a matching version + sha256, and the PR links. Installed apps will offer the update on their next check.
+
+**Other channels this skill does NOT cover:** the Mac App Store (a separate build + submission — use `cut-mas-release`) and iOS TestFlight (automatic via Xcode Cloud on master pushes — nothing to do, but confirm a new build appeared rather than assuming).
