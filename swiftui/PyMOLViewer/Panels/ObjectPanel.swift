@@ -1094,8 +1094,20 @@ enum ExtractScope: String, CaseIterable {
 /// so they cannot collide with what is already there; the source object keeps
 /// its atoms. `quiet=0` so the " Copied N atoms to object X" line lands in the
 /// console feed — the panel gives no other confirmation that anything happened.
+///
+/// Wrapped in a python block to undo one thing `copy_to` does on its own: it
+/// disables every object the selection lives in (`modules/pymol/editing.py:3309`)
+/// so the merged result stands out. On the desktop that is a momentary thing in a
+/// menu; here the source's row stays in the panel with its checkbox silently
+/// clearing, right after a menu item that promises a *copy* — it reads as the
+/// copy having eaten the original. So the enabled sources are captured first and
+/// switched back on afterwards. Sources that were already hidden stay hidden.
 func copyToObjectCommand(sele: String, target: String) -> String {
-    "copy_to \(target), (\(sele)), zoom=0, quiet=0"
+    let capture = "_on = [o for o in cmd.get_object_list(\"(\(sele))\") "
+        + "if o in cmd.get_names(\"objects\", enabled_only=1)]"
+    let copy = "cmd.copy_to(\"\(target)\", \"(\(sele))\", zoom=0, quiet=0)"
+    let restore = "[cmd.enable(o) for o in _on]"
+    return "python\n\(capture); \(copy); \(restore)\npython end"
 }
 
 /// Command for "Copy to Object ▸ New Object…" (#461).
@@ -1157,6 +1169,31 @@ func defaultNewObjectName(existing: [String]) -> String {
         if !taken.contains(candidate) { return candidate }
         n += 1
     }
+}
+
+/// PyMOL's own legal-name character set: A–Z, a–z, 0–9 and `+ - . ^ _`
+/// (`ObjectMakeValidName`, layer1/PyMOLObject.cpp).
+///
+/// Enforced up front rather than left to the engine because the engine's
+/// response to an illegal name is to quietly rewrite it — type `my obj!` and you
+/// get an object called `my_obj` — so the name in the panel is not the name that
+/// was asked for. A comma is worse than cosmetic: it splits the command into a
+/// different argument list and `create foo, bar, (sele), zoom=0` throws a Python
+/// traceback into the console feed.
+func isLegalObjectName(_ name: String) -> Bool {
+    !name.isEmpty && name.allSatisfy { c in
+        guard c.isASCII else { return false }
+        return c.isLetter || c.isNumber || "+-.^_".contains(c)
+    }
+}
+
+/// Whether `name` can be given to a brand-new object.
+///
+/// Legal, and not already taken: `create` against a name that already exists
+/// does *nothing at all* — no new object, no error, no console line — so an
+/// unchecked collision turns "New Object…" into a button that silently fails.
+func canNameNewObject(_ name: String, existing: [String]) -> Bool {
+    isLegalObjectName(name) && !existing.contains(name)
 }
 
 // MARK: - Command Dispatch
@@ -1425,19 +1462,40 @@ struct ObjectPanel: View {
                 Button("Copy") {
                     if let sele = engine.pendingCopyToNew {
                         let new = copyToNewText.trimmingCharacters(in: .whitespaces)
-                        if !new.isEmpty {
+                        // Guard in the action body, not only via .disabled() on
+                        // the button: this is the path that actually builds a
+                        // command string, so it is where a bad name has to stop.
+                        if canNameNewObject(new, existing: engine.objects.map(\.name)) {
                             engine.runCommand(copyToNewObjectCommand(sele: sele, name: new))
                         }
                     }
                     engine.pendingCopyToNew = nil
                 }
+                .disabled(!canNameNewObject(copyToNewText.trimmingCharacters(in: .whitespaces),
+                                            existing: engine.objects.map(\.name)))
                 Button("Cancel", role: .cancel) { engine.pendingCopyToNew = nil }
-            } message: { Text("The selected atoms stay in their current object too.") }
+            } message: { Text(copyToNewMessage) }
             .onChange(of: engine.pendingCopyToNew) { newValue in
                 if newValue != nil {
                     copyToNewText = defaultNewObjectName(existing: engine.objects.map(\.name))
                 }
             }
+    }
+
+    /// The "Copy to Object ▸ New Object…" alert's subtitle — the reassurance when
+    /// the name is usable, and the reason the Copy button is greyed when it is
+    /// not. Says *why* rather than just refusing, since both failure modes
+    /// (illegal character, name already taken) are invisible in the field itself.
+    private var copyToNewMessage: String {
+        let name = copyToNewText.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { return "Enter a name for the new object." }
+        if !isLegalObjectName(name) {
+            return "PyMOL names can use letters, digits and + - . ^ _ only."
+        }
+        if engine.objects.contains(where: { $0.name == name }) {
+            return "“\(name)” is already taken. Pick a name no object or selection is using."
+        }
+        return "The selected atoms stay in their current object too."
     }
 
     private var panelWithNamingAlerts: some View {
@@ -2138,10 +2196,15 @@ private func actionMenuContent(_ items: [ActionMenuItem], name: String, engine: 
             // their own parent only renames their chain/segi — but the panel's row
             // model does not record which objects a selection spans, so that
             // filter is left out rather than guessed at.
+            //
+            // `isPending` rows ARE excluded: they are placeholders for a running
+            // inference job, greyed and non-interactive everywhere else in the
+            // panel, and holding no atoms yet. Copying into one would race the job
+            // that is about to populate it.
             Menu(label) {
                 Button("New Object…") { engine.pendingCopyToNew = name }
                 let targets = engine.objects.filter {
-                    !$0.isSelection && !$0.isGroup && $0.name != name
+                    !$0.isSelection && !$0.isGroup && !$0.isPending && $0.name != name
                 }
                 if !targets.isEmpty {
                     Divider()

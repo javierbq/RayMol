@@ -6,9 +6,12 @@
 // actually appear under a finger and do something to the object list. The
 // screenshots each test attaches are the artefact worth looking at.
 //
-// Run: xcodebuild test -scheme PyMOLViewer_iOS -sdk iphonesimulator \
+// Run: xcodebuild test -scheme UITests_iOS -sdk iphonesimulator \
 //        -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
 //        -only-testing:PyMOLViewerUITests/ObjectActionMenuUITests
+//
+// NOT -scheme PyMOLViewer_iOS: that generated scheme also carries the macOS-only
+// PyMOLViewerTests and xcodebuild will not build it for iphonesimulator.
 
 import XCTest
 
@@ -148,12 +151,18 @@ final class ObjectActionMenuUITests: XCTestCase {
     /// the *rendered* rows in the accessibility tree, so an off-screen row simply
     /// does not exist to query.
     @discardableResult
-    private func menuItem(_ title: String, swipes: Int = 8) -> XCUIElement {
+    private func menuItem(_ title: String, swipes: Int = 8,
+                          file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         for _ in 0..<swipes {
             if item(title).exists { return item(title) }
             app.swipeUp(velocity: .slow)
             settle(0.4)
         }
+        // Fail here rather than returning a non-existent element: the caller
+        // usually taps it, and "Failed to tap Any (First Match)" names neither
+        // the row it wanted nor the fact that scrolling ran out.
+        XCTFail("'\(title)' never came into view after \(swipes) swipes of the menu",
+                file: file, line: line)
         return item(title)
     }
 

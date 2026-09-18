@@ -59,15 +59,35 @@ final class ObjectPanelCopyExtractTests: XCTestCase {
 
     func testCopyToExistingObjectLeavesSourceIntact() {
         // copy_to (not create) is what renames chain/segi/ID on the way in, and
-        // it never touches the source object.
-        XCTAssertEqual(copyToObjectCommand(sele: "sele", target: "1ubq"),
-                       "copy_to 1ubq, (sele), zoom=0, quiet=0")
+        // it never touches the source object's atoms.
+        XCTAssertTrue(copyToObjectCommand(sele: "sele", target: "1ubq")
+            .contains("cmd.copy_to(\"1ubq\", \"(sele)\", zoom=0, quiet=0)"),
+                      copyToObjectCommand(sele: "sele", target: "1ubq"))
     }
 
     /// quiet=0 so the console reports the atom count — the panel itself gives no
     /// feedback that a merge happened.
     func testCopyToExistingObjectIsNotQuiet() {
         XCTAssertTrue(copyToObjectCommand(sele: "sele", target: "obj").contains("quiet=0"))
+    }
+
+    /// cmd.copy_to disables every object the selection lives in. The source row
+    /// stays in the panel, so its checkbox clearing on its own looks like the
+    /// copy consumed the original — capture the enabled ones and switch them back.
+    func testCopyToExistingObjectRestoresSourceVisibility() {
+        let cmd = copyToObjectCommand(sele: "sele", target: "obj")
+        XCTAssertTrue(cmd.contains("cmd.get_object_list(\"(sele)\")"), cmd)
+        XCTAssertTrue(cmd.contains("enabled_only=1"),
+                      "only the sources that were VISIBLE may be switched back on")
+        XCTAssertTrue(cmd.contains("[cmd.enable(o) for o in _on]"), cmd)
+        // Order matters: capture, copy, restore.
+        guard let capture = cmd.range(of: "_on = ["),
+              let copy = cmd.range(of: "cmd.copy_to("),
+              let restore = cmd.range(of: "[cmd.enable(o)") else {
+            return XCTFail("copy command lost one of its three steps: \(cmd)")
+        }
+        XCTAssertTrue(capture.lowerBound < copy.lowerBound, "must capture BEFORE copying")
+        XCTAssertTrue(copy.lowerBound < restore.lowerBound, "must restore AFTER copying")
     }
 
     func testCopyToNewObjectUsesCreate() {
@@ -175,6 +195,72 @@ final class ObjectPanelCopyExtractTests: XCTestCase {
     func testDefaultNameGoesPastNinetyNine() {
         let taken = (1...99).map { String(format: "obj%02d", $0) }
         XCTAssertEqual(defaultNewObjectName(existing: taken), "obj100")
+    }
+
+    // MARK: - New-object name validation
+
+    /// PyMOL's legal set is A–Z, a–z, 0–9 and + - . ^ _ (ObjectMakeValidName).
+    func testLegalNamesAreAccepted() {
+        for name in ["obj01", "ligand", "A", "9", "a_b", "a-b", "a+b", "a.b", "a^b", "Obj_01-x.y"] {
+            XCTAssertTrue(isLegalObjectName(name), "'\(name)' should be legal")
+        }
+    }
+
+    /// A space or a bang is not an error in the engine — it silently rewrites the
+    /// name (`my obj!` becomes `my_obj`), so the panel would show a name the user
+    /// never typed. Catch it while they can still see the field.
+    func testNamesTheEngineWouldRewriteAreRejected() {
+        for name in ["my obj", "obj!", "obj#1", "α", "obj/1", "obj\\1", ""] {
+            XCTAssertFalse(isLegalObjectName(name), "'\(name)' should be rejected")
+        }
+    }
+
+    /// A comma is the argument separator: `create foo, bar, (sele), zoom=0`
+    /// throws a Python traceback into the console feed.
+    func testACommaInTheNameIsRejected() {
+        XCTAssertFalse(isLegalObjectName("foo, bar"))
+        XCTAssertFalse(isLegalObjectName("foo,bar"))
+    }
+
+    /// `create` against an existing name does nothing at all — no object, no
+    /// error — so an unchecked collision makes the Copy button silently fail.
+    func testAnAlreadyTakenNameCannotNameANewObject() {
+        let existing = ["mol", "mysele", "obj01"]
+        XCTAssertFalse(canNameNewObject("mol", existing: existing))
+        XCTAssertFalse(canNameNewObject("mysele", existing: existing),
+                       "selections share the object namespace")
+        XCTAssertFalse(canNameNewObject("obj01", existing: existing))
+        XCTAssertTrue(canNameNewObject("obj02", existing: existing))
+    }
+
+    /// The prefilled default must itself always pass the check it is offered for.
+    func testTheDefaultNameIsAlwaysUsable() {
+        for existing in [[], ["obj01"], ["obj01", "obj02", "mol"], ["a b", "obj01"]] as [[String]] {
+            let name = defaultNewObjectName(existing: existing)
+            XCTAssertTrue(canNameNewObject(name, existing: existing),
+                          "default '\(name)' rejected against \(existing)")
+        }
+    }
+
+    // MARK: - Menu layout
+
+    /// Two separators in a row render as a doubled divider. The section is spliced
+    /// in just before Move to Group, riding the separator already there and adding
+    /// one after, so no pair of them may end up adjacent.
+    func testNoDoubledSeparators() {
+        for items in [actionMenuItems(isSelection: true),
+                      actionMenuItems(isSelection: false),
+                      actionMenuItems(isSelection: false, isGroup: true)] {
+            var lastWasSeparator = false
+            for (i, item) in items.enumerated() {
+                if case .separator = item {
+                    XCTAssertFalse(lastWasSeparator, "doubled separator at index \(i)")
+                    lastWasSeparator = true
+                } else {
+                    lastWasSeparator = false
+                }
+            }
+        }
     }
 
     // MARK: - Helpers
