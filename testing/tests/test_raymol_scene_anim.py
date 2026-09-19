@@ -142,15 +142,13 @@ class TestHelpers(unittest.TestCase):
         self.assertTrue(a.interpolatable("metal_dof_focus", 12.0, 0.0))
         self.assertTrue(a.interpolatable("metal_dof_focus", 8.0, 12.0))
 
-    def test_value_at_clamps_sentinel_floor(self):
+    def test_value_at_lerps_every_setting_including_down_to_zero(self):
         a = self.anim
-        # aperture <= 0 is a sentinel meaning MAX blur (14) — a fade to 0 must not
-        # reach it; the floor keeps the ramp in real territory.
-        self.assertGreaterEqual(a.value_at("metal_dof_aperture", 5.0, 0.0, 1.0),
-                                a._FLOOR["metal_dof_aperture"])
-        self.assertGreaterEqual(a.value_at("metal_dof_range", 5.0, 0.0, 1.0),
-                                a._FLOOR["metal_dof_range"])
-        # An unfloored setting interpolates plainly.
+        # Since #472 zero is no longer the renderer's "unset" sentinel: aperture 0
+        # is a closed aperture and range 0 an instant falloff, so a fade to 0 is
+        # honest and no setting needs clamping off its own minimum any more.
+        self.assertAlmostEqual(a.value_at("metal_dof_aperture", 5.0, 0.0, 1.0), 0.0)
+        self.assertAlmostEqual(a.value_at("metal_dof_range", 5.0, 0.0, 1.0), 0.0)
         self.assertAlmostEqual(a.value_at("ambient", 0.0, 1.0, 0.25), 0.25)
 
 
@@ -613,7 +611,7 @@ class TestDofFade(unittest.TestCase):
     def setUp(self):
         self.scenes, self.anim = load_modules()
         self.scenes.clear_all()
-        self.floor = self.anim._FLOOR['metal_dof_aperture']
+        self.off = self.anim._OFF_APERTURE
 
     def _store(self, name, **settings):
         self.scenes._scene_settings[name] = {k: str(v)
@@ -625,18 +623,18 @@ class TestDofFade(unittest.TestCase):
         self._store('ON', metal_dof='on', metal_dof_aperture=6,
                     metal_dof_focus=30, metal_dof_autofocus='off')
 
-    def test_fade_in_ramps_the_aperture_up_from_the_floor(self):
+    def test_fade_in_ramps_the_aperture_up_from_zero(self):
         self._pair()
         out = self.anim.build_dof_transition([(1, 'OFF', 0.0), (11, 'ON', 0.0)],
                                              _self=ViewCmd())
         self.assertEqual(sorted(out), list(range(2, 11)))
         aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
         self.assertEqual(aps, sorted(aps))                     # monotone up
-        # NEVER <= 0: that is the renderer's MAXIMUM-blur sentinel
-        # (RendererMetal.mm:2528), so a fade that reached it would flash full blur.
-        self.assertTrue(all(v > 0.0 for v in aps), aps)
-        self.assertTrue(all(v >= self.floor for v in aps), aps)
-        # Starts at the FLOOR (no blur), not at either scene's captured aperture.
+        # Never negative — that is the renderer's "unset" sentinel, which resolves
+        # to 14 (MAXIMUM blur), so a fade reaching it would flash full blur (#472).
+        self.assertTrue(all(v >= 0.0 for v in aps), aps)
+        # Starts from a closed aperture (no blur), not from either scene's
+        # captured aperture.
         self.assertLess(aps[0], 1.0)
         self.assertLess(aps[-1], 6.0)
         self.assertGreater(aps[-1], 5.0)
@@ -647,7 +645,7 @@ class TestDofFade(unittest.TestCase):
             self.assertAlmostEqual(out[f]['metal_dof_focus'], 30.0)
             self.assertEqual(out[f]['metal_dof_autofocus'], 0.0)
 
-    def test_fade_ramp_hits_the_floor_and_the_enabled_aperture_exactly(self):
+    def test_fade_ramp_hits_zero_and_the_enabled_aperture_exactly(self):
         # With a LINEAR power the ramp's own endpoints can be recovered by
         # extrapolating one step past each interior frame — pinning them without
         # re-deriving the eased values the code under test computes.
@@ -656,7 +654,8 @@ class TestDofFade(unittest.TestCase):
                                              _self=ViewCmd(), power=1.0)
         aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
         step = aps[1] - aps[0]
-        self.assertAlmostEqual(aps[0] - step, self.floor)      # t=0 -> floor
+        self.assertAlmostEqual(aps[0] - step, self.off)        # t=0 -> aperture 0
+        self.assertAlmostEqual(self.off, 0.0)                  # ...which IS zero
         self.assertAlmostEqual(aps[-1] + step, 6.0)            # t=1 -> ON's value
 
     def test_fade_out_is_the_mirror_image(self):
@@ -668,9 +667,9 @@ class TestDofFade(unittest.TestCase):
         self.assertEqual(sorted(fout), list(range(2, 11)))
         aps = [fout[f]['metal_dof_aperture'] for f in range(2, 11)]
         self.assertEqual(aps, sorted(aps, reverse=True))       # monotone down
-        self.assertTrue(all(v > 0.0 for v in aps), aps)
+        self.assertTrue(all(v >= 0.0 for v in aps), aps)
         self.assertGreater(aps[0], 5.0)                        # starts at ON's 6
-        self.assertLess(aps[-1], 1.0)                          # ends at the floor
+        self.assertLess(aps[-1], 1.0)                          # ends closed
         # The easing is symmetric (ease(t) + ease(1-t) == 1), so frame f of the
         # fade-out must equal frame 12-f of the fade-in exactly.
         for f in range(2, 11):

@@ -567,6 +567,8 @@ private:
   // off => the DOF stage is skipped entirely (no regression).
   int _dofEnabled = 0;
   float _dofFocus = 0.0f;   // eye-space focus distance; <=0 => auto (screen center)
+  // Range/aperture take 0 at face value (sharp falloff / closed aperture, i.e. no
+  // blur); only a NEGATIVE value means "unset" and resolves to the 14.0 default.
   float _dofRange = 14.0f;  // eye-space distance over which CoC ramps to max blur
   float _dofAperture = 14.0f;  // cSetting_metal_dof_aperture: max blur radius (px)
   int _dofQuality = 4;         // cSetting_metal_dof_quality: 1..4 bokeh quality
