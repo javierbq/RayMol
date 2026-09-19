@@ -313,10 +313,10 @@ enum SceneCatalog {
                    help: "Lock focus onto the current selection and keep it sharp as you zoom/rotate. Select an element, then turn this on to snapshot it (it stays locked even if you select elsewhere; toggle off→on to re-target). No selection → focuses the center of interest. Overrides the focus slider."),
         SceneParam(setting: "metal_dof_focus", label: "DOF focus (0=auto)", kind: .slider, min: 0, max: 120, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Distance of the in-focus plane (eye-space units). 0 = auto-focus on the center of interest. Disabled while Autofocus is on."),
-        SceneParam(setting: "metal_dof_range", label: "DOF range", kind: .slider, min: 1, max: 60, step: 0.5, decimals: 1, group: "Camera", dependsOn: "metal_dof",
-                   help: "How far beyond focus before blur reaches maximum. Smaller = sharper falloff."),
+        SceneParam(setting: "metal_dof_range", label: "DOF range", kind: .slider, min: 0, max: 60, step: 0.5, decimals: 1, group: "Camera", dependsOn: "metal_dof",
+                   help: "How far beyond focus before blur reaches maximum. Smaller = sharper falloff; 0 blurs everything off the focal plane fully."),
         SceneParam(setting: "metal_dof_aperture", label: "DOF aperture (blur)", kind: .slider, min: 0, max: 40, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
-                   help: "Maximum out-of-focus blur (bokeh radius). Larger = stronger blur."),
+                   help: "Maximum out-of-focus blur (bokeh radius). Larger = stronger blur; 0 closes the aperture for no blur at all."),
         SceneParam(setting: "metal_dof_quality", label: "DOF quality", kind: .slider, min: 1, max: 4, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Bokeh quality: higher traces more gather samples (1→16, 2→32, 3→64, 4→96) for denser, cleaner out-of-focus blur; levels 2+ add a de-noise pass. 1 = fastest single-pass, 4 = smoothest (GPU-heavy)."),
 

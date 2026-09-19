@@ -3048,7 +3048,9 @@ void RendererMetal::runPostChain()
   // Pass 2.5: depth-of-field — CoC blur by distance from the focal plane. Runs
   // on the fully-composited (opaque + OIT) color, before outlines. Default off
   // (_dofEnabled) => skipped entirely, so the default render is unchanged.
-  if (_dofEnabled && _dofPipeline && _sceneDepth) {
+  // A zero aperture is a closed aperture: no blur radius, so the pass would be an
+  // expensive no-op — skip it and leave sceneSrc alone (#472).
+  if (_dofEnabled && _dofPipeline && _sceneDepth && _dofAperture != 0.0f) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct {
       float projA, projB, invW, invH;
@@ -3058,11 +3060,16 @@ void RendererMetal::runPostChain()
     u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     u.focusDist = _dofFocus;
-    u.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
+    // The "unset" sentinel is NEGATIVE, not 0: aperture 0 is a closed aperture
+    // (zero blur radius) and range 0 is an infinitely sharp falloff, both of them
+    // meaningful values a user can dial in. Testing > 0 instead made 0 fall
+    // through to the 14.0 default — so dragging the aperture slider to its own
+    // minimum produced MAXIMUM blur (#472).
+    u.focusRange = (_dofRange >= 0.0f) ? _dofRange : 14.0f;
     // Resolution-relative: the aperture is authored in px at the live resolution,
     // so scale it for hi-res exports (pixelRadiusScale()==1 on the live view) —
     // otherwise the bokeh nearly vanishes in 2x/4K Copy/Save output (#48).
-    u.maxRadiusPx = ((_dofAperture > 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
+    u.maxRadiusPx = ((_dofAperture >= 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
 
     // metal_dof_quality (1..4): higher = more gather samples for denser, cleaner
     // bokeh. Levels >=2 also run the de-noise smoothing pass (two-pass); level 1
@@ -3298,8 +3305,8 @@ void RendererMetal::runPostChain()
     au.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     au.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     au.focusDist = _dofFocus;
-    au.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
-    au.maxRadiusPx = ((_dofAperture > 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
+    au.focusRange = (_dofRange >= 0.0f) ? _dofRange : 14.0f;   // negative = unset, see #472
+    au.maxRadiusPx = ((_dofAperture >= 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
     au.dofOn = _dofEnabled ? 1.0f : 0.0f;
     [ea setFragmentBytes:&au length:sizeof(au) atIndex:0];
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];

@@ -37,9 +37,11 @@ INTERPOLATE = frozenset([
     "ambient", "direct", "reflect", "specular", "shininess", "fog",
 ])
 
-# Values at/below the renderer's sentinel are reinterpreted as 14 (MAXIMUM blur)
-# — RendererMetal.mm:2528,2532 — so an interpolated fade must never reach them.
-_FLOOR = {"metal_dof_aperture": 0.02, "metal_dof_range": 0.02}
+# The aperture a DOF fade ramps to on the side where DOF is off: 0 is a closed
+# aperture, which the renderer skips outright (RendererMetal.mm, #472), so the
+# effect dissolves all the way out. Before #472 zero was the renderer's "unset"
+# sentinel and meant MAXIMUM blur, so the fade had to stop just short of it.
+_OFF_APERTURE = 0.0
 
 # Settings build_track must NOT emit because build_dof_transition owns them
 # outright. Focus is not a plain number: the renderer RESOLVES it every frame
@@ -148,12 +150,12 @@ def interpolatable(setting, a, b):
 
 
 def value_at(setting, a, b, e):
-    """Interpolated value at eased position `e`, clamped off the sentinel floor."""
-    v = a + (b - a) * e
-    floor = _FLOOR.get(setting)
-    if floor is not None and v < floor:
-        v = floor
-    return v
+    """Interpolated value at eased position `e`.
+
+    `setting` is unused — it was the hook for per-setting clamping, which only
+    ever existed to keep DOF fades off the renderer's zero sentinel (#472). The
+    argument stays so callers and the ramp table read the same way."""
+    return a + (b - a) * e
 
 
 def build_track(keyframes, power=None):
@@ -371,10 +373,10 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
 
     * metal_dof is boolean, so a scene that turns DOF on or off POPS. Across such
       a transition DOF is force-enabled for the interior frames and the aperture
-      ramps between the enabled scene's value and _FLOOR (0.02 = no visible blur;
-      never <= 0, which is the renderer's MAXIMUM-blur sentinel), dissolving the
-      effect in or out. The aperture captured on the DISABLED side is meaningless
-      — nothing was ever rendered with it — so it takes no part.
+      ramps between the enabled scene's value and _OFF_APERTURE (0 = closed
+      aperture = no blur), dissolving the effect in or out. The aperture
+      captured on the DISABLED side is meaningless — nothing was ever rendered
+      with it — so it takes no part.
     * metal_dof_focus is resolved by the renderer every frame, so the captured
       numbers are not the distances on screen. resolve_focus turns each side into
       the distance the renderer would actually use under THAT frame's
@@ -390,7 +392,6 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
     should reset to a specific frame afterwards if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
-    floor = _FLOOR['metal_dof_aperture']
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
     for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
         f0, f1 = int(f0), int(f1)
@@ -410,9 +411,10 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
             on_name = n1 if dof_b else n0
             ap_on = _as_float((sb if dof_b else sa).get('metal_dof_aperture'))
             if ap_on is None:
-                ap_on = 14.0              # RendererMetal's own maximum-blur value
-            ap_on = max(ap_on, floor)
-            ap_from, ap_to = (floor, ap_on) if dof_b else (ap_on, floor)
+                ap_on = 14.0              # metal_dof_aperture's own default
+            ap_on = max(ap_on, _OFF_APERTURE)
+            ap_from, ap_to = ((_OFF_APERTURE, ap_on) if dof_b
+                              else (ap_on, _OFF_APERTURE))
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
