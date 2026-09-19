@@ -6,28 +6,24 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.11.2</title>
+      <title>RayMol 1.11.3</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.11.2
+## RayMol 1.11.3
 
-A rendering fix for the `lines` representation with more than one object on screen.
+Two ways to turn a selection into its own object, restoring a pair of desktop PyMOL menu items the Objects panel was missing.
 
-- **Fixed: only one object's lines were drawn when two or more objects showed
-  lines.** Loading two structures and choosing *show ▸ lines* on **all** drew the
-  lines of the last object only; the others' lines were missing, and they came
-  back the moment you toggled that object off. Every line-drawing object shared a
-  single GPU vertex buffer, so whichever object was drawn last overwrote the
-  others' geometry before the frame reached the GPU. Each object now draws from
-  its own buffer. Sticks were never affected — only lines. The label leader lines
-  drawn beside offset labels shared the same flaw and are fixed with it.
+Both live on the **A** menu of a selection row, near the bottom beside *Move to Group*. They differ in what happens to the structure you selected from:
+
+- **Copy to Object ▸** — leaves the original untouched. Pick **New Object…** to name a fresh copy, or pick a loaded object to merge the atoms into it (chain, segment and atom IDs are renamed on the way in so nothing collides). The object you copied from stays visible and keeps every atom.
+- **Extract ▸** — moves the atoms out of their parent object into a new one, named `obj01`, `obj02`, … as PyMOL does. Choose **object** for the selection alone, or **extend 1** / **byres extend 1** to bring the bonded neighbourhood along — handy for pulling a ligand out together with the residues it touches. The emptied selection is cleared away afterwards rather than left behind as a row matching nothing.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Fri, 18 Sep 2026 05:21:21 +0000</pubDate>
-      <sparkle:version>30</sparkle:version>
-      <sparkle:shortVersionString>1.11.2</sparkle:shortVersionString>
+      <pubDate>Sat, 19 Sep 2026 04:46:35 +0000</pubDate>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>1.11.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.2/RayMol-1.11.2.dmg" type="application/octet-stream" sparkle:edSignature="OKCC2+fxLzE8GB1XH0xIWkdHZtotHheHxc0fzzRJVaTKdruUC+Zlz0srBjHfiij8AOQHgZgXAJbUdRFP0INtBQ==" length="83110465" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.3/RayMol-1.11.3.dmg" type="application/octet-stream" sparkle:edSignature="GAgXg/10IHChXTA3o9xsESNs5cQWBhXSG+YD1AEp1XCPq4GXOee852kxbq1a6WCQIKIF3iK/6PfZUHzlhAEfAA==" length="83122253" />
     </item>
   </channel>
 </rss>
