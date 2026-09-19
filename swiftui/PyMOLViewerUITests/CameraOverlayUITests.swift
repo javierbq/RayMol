@@ -19,6 +19,9 @@ final class CameraOverlayUITests: XCTestCase {
         app.launchEnvironment["PYMOL_AUTOLOAD"] = "1ubq.cif"
         app.launchEnvironment["PYMOL_AUTOPANEL"] = "closed"
         app.launchEnvironment["PYMOL_SKIP_GESTURE_HELP"] = "1"
+        // Without this the What's New sheet auto-shows after a version bump and
+        // covers the whole app, so every test here fails on "icon not found".
+        app.launchEnvironment["PYMOL_SKIP_WHATS_NEW"] = "1"
         app.launchEnvironment["PYMOL_AUTOCMD"] = "hide everything; show cartoon; orient"
     }
 
