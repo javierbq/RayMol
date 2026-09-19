@@ -1552,6 +1552,30 @@ struct ContentView: View {
     // clapperboard toggle are disabled here and the dock auto-closes on rotation.
     private var isPadPortrait: Bool { hSize != .compact && interfacePortrait }
 
+    // ── Bottom-edge chrome: the parked tongue vs the camera dock (#474) ──────
+    //
+    // In a PORTRAIT layout with the inspector closed, the horizontal tongue parks
+    // on the viewport's bottom edge — the same edge CameraDock docks to. The dock
+    // overlay is declared inside `viewportView` while the tongue overlay is applied
+    // by the layout that wraps it, so the tongue wins the z-order and lands across
+    // the dock's icon row (only the pill is hit-testable, so it also swallowed taps
+    // on the buttons under it). The dock pads itself clear of the pill instead.
+
+    // True when that horizontal pill is parked at the bottom edge. Landscape parks
+    // the tongue on the trailing edge instead, where it can't reach the dock.
+    private var bottomTongueShown: Bool {
+        guard !showThemeStudio, !iosFullScreen, !objectsBinding.wrappedValue else { return false }
+        return isPadPortrait || (hSize == .compact && vSize == .regular)
+    }
+    // How far the parked tongue is lifted off the bottom edge: the iPhone viewport
+    // is full-bleed under the home indicator and needs that cleared by hand; iPad
+    // keeps the standard safe area, so the edge is already clear.
+    private var bottomTongueInset: CGFloat { hSize == .compact ? windowBottomInset : 0 }
+    // Camera dock bottom margin: its usual 10pt, or above the tongue when parked.
+    private var cameraDockBottomPad: CGFloat {
+        bottomTongueShown ? bottomTongueInset + parkedTongueHeight + 8 : 10
+    }
+
     // iPad (regular size class) mac-style layout state. The left column stacks the
     // terminal (CommandPanel) on top, the sequence (SequencePanel) under it, then
     // the viewport — matching the desktop app. `termH` is the resizable terminal
@@ -2071,7 +2095,7 @@ struct ContentView: View {
                         // full-bleed under the bottom safe area, so without this the
                         // tappable pill sits on the system gesture bar.
                         panelTongue(shown: objectsBinding, axis: .horizontal)
-                            .padding(.bottom, windowBottomInset)
+                            .padding(.bottom, bottomTongueInset)
                     }
                 }
             if !iosFullScreen {
@@ -2429,6 +2453,11 @@ struct ContentView: View {
     private var dividerPillColor: Color { themeManager.active.panelText.color.opacity(0.4) }
     // Thin themed seam between the viewport and docked panels / the inspector.
     private var hairlineColor: Color { themeManager.active.panelText.color.opacity(0.18) }
+    // The HORIZONTAL tongue pill (see panelTongue) and the height it occupies
+    // once the 1pt padding of its strip is counted. Shared so the iOS camera dock
+    // can pad itself above the parked pill instead of being painted over (#474).
+    private let tonguePillHeight: CGFloat = 16
+    private var parkedTongueHeight: CGFloat { tonguePillHeight + 2 }
 
     // A small protruding "tongue" handle that shows/hides an adjacent inspector
     // panel. Horizontal (a wide little tab) when the panel docks at the bottom;
@@ -2452,7 +2481,7 @@ struct ContentView: View {
                 // reads as a sibling of the rail pills and lights up when open.
                 .foregroundColor(isShown ? .white : themeManager.active.panelText.color.opacity(0.82))
                 .frame(width: axis == .horizontal ? 52 : 16,
-                       height: axis == .horizontal ? 16 : 52)
+                       height: axis == .horizontal ? tonguePillHeight : 52)
                 .background(
                     Capsule()
                         .fill(isShown ? TimelineTheme.accent : themeManager.active.panelText.color.opacity(0.14))
@@ -2783,12 +2812,13 @@ struct ContentView: View {
             }
             // Camera control dock: a bottom-docked icon strip (one control open at
             // a time). Same component on iPhone / iPad. Drag down or tap the chip
-            // to dismiss.
+            // to dismiss. Sits ABOVE the parked inspector tongue when there is one
+            // (cameraDockBottomPad) so the pill can't overlap the icon row (#474).
             .overlay(alignment: .bottom) {
                 if showCameraPanel && !engine.objects.isEmpty {
                     CameraDock(engine: engine, onClose: { withAnimation(.easeOut(duration: 0.22)) { showCameraPanel = false } })
                         .padding(.horizontal, 10)
-                        .padding(.bottom, 10)
+                        .padding(.bottom, cameraDockBottomPad)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .gesture(DragGesture().onEnded { v in
                             if v.translation.height > 40 {
