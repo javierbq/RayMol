@@ -76,6 +76,13 @@ public:
   {
     return false;
   }
+  // grid_mode: SceneRenderMetal calls this right after viewport()/scissor()
+  // for each cell it is about to draw (slot >= 1), and with 0 once the grid
+  // loop is done. Lets a renderer with world-space effects (the Metal
+  // real-time ray tracer) attribute the geometry it captures to the cell that
+  // drew it, so cell A's rays never hit cell B's objects (#478). Default: no-op
+  // (the GL path only ever filters draw calls per cell).
+  virtual void setGridSlot(int slot) {}
   virtual void clear(bool color, bool depth, bool stencil) = 0;
   virtual void clearColor(float r, float g, float b, float a) = 0;
   virtual void scissor(int x, int y, int w, int h) = 0;

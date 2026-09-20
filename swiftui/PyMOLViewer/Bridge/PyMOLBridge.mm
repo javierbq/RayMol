@@ -687,12 +687,16 @@ void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
     PyMOL_Reshape(INST(h), width, height, 0);
 
     // The RT acceleration structure is built (in beginFrame) from the PREVIOUS
-    // frame's accumulated geometry. When we're turning RT ON for this export and
-    // the live view had it OFF, no AS exists yet — render one throwaway frame
-    // first to accumulate the geometry, so the real frame's beginFrame can build
-    // the AS and the RT resolve pass runs. (Not needed when RT was already live:
-    // the draw loop keeps the AS current.)
-    if (desiredRT == 1 && savedRT == 0)
+    // frame's recorded geometry, so with RT on render one throwaway frame first
+    // and the real frame's beginFrame builds the AS from it. This used to be
+    // skipped when the live view already had RT on, trusting the draw loop to
+    // have kept the AS current — but the live loop may not have drawn since the
+    // scene changed (headless PYMOL_AUTOEXPORT runs, an occluded or locked
+    // screen), and the export's layout can differ from the live one: in
+    // grid_mode the per-cell caster masks and cell rects (#478) must come from a
+    // frame with THIS export's aspect. One extra offscreen frame per RT export is
+    // cheap next to the trace itself, and makes the export WYSIWYG for RT.
+    if (desiredRT == 1)
         renderOneOffscreen(h, G, renderer, width, height, std::string());
 
     renderOneOffscreen(h, G, renderer, width, height, std::string(path));
