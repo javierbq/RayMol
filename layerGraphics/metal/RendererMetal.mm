@@ -941,9 +941,16 @@ static float post_linear_depth(float d, float projA, float projB,
 // (zc, linear eye distance) — a depth step of that size is a crease / contact /
 // occluding silhouette, which is exactly the contact darkening users read as
 // depth. Returns the occluded fraction 0..1; callers scale it by an intensity.
+// `cell` (x0,y0,x1,y1 in uv) limits the ring to the pixel's own grid_mode cell:
+// a sample from the neighbouring cell is another object entirely and must not
+// read as an occluder (#478). Default: the whole frame.
+static bool post_in_cell(float2 uv, float4 cell) {
+  return uv.x >= cell.x && uv.x < cell.z && uv.y >= cell.y && uv.y < cell.w;
+}
 static float post_ssao_occlusion(depth2d<float> depthTex, sampler s, float2 uv,
                                  float2 invres, float zc, float radiusPx,
-                                 float projA, float projB, float ortho) {
+                                 float projA, float projB, float ortho,
+                                 float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   const int N = 12;
   const float TWO_PI = 6.28318530718;
   const float range = 0.06; // ignore occluders farther than 6% of center z
@@ -953,6 +960,7 @@ static float post_ssao_occlusion(depth2d<float> depthTex, sampler s, float2 uv,
     // vary the radius across the ring to cover the disk
     float rr = radiusPx * (0.35 + 0.65 * float((i % 4) + 1) / 4.0);
     float2 off = float2(cos(ang), sin(ang)) * rr * invres;
+    if (!post_in_cell(uv + off, cell)) continue; // other cell: not an occluder
     float dn = depthTex.sample(s, uv + off);
     if (dn >= 0.99999) continue; // background neighbor: no occlusion (no halo)
     float zn = post_linear_depth(dn, projA, projB, ortho);
@@ -1029,10 +1037,17 @@ static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
   float2 uy = float2(0.0, invres.y);
   float dl = depthTex.sample(s, uv - ux), dr = depthTex.sample(s, uv + ux);
   float dd = depthTex.sample(s, uv - uy), du = depthTex.sample(s, uv + uy);
-  float3 gx = (abs(dl - cd) < abs(dr - cd))
+  // A neighbour that lies in another grid_mode cell belongs to another object
+  // drawn under another viewport: treat it as the discontinuous side (#478).
+  const float far = 1e30;
+  float sl = post_in_cell(uv - ux, cell) ? abs(dl - cd) : far;
+  float sr = post_in_cell(uv + ux, cell) ? abs(dr - cd) : far;
+  float sd = post_in_cell(uv - uy, cell) ? abs(dd - cd) : far;
+  float su = post_in_cell(uv + uy, cell) ? abs(du - cd) : far;
+  float3 gx = (sl < sr)
                   ? (cp - post_eye_pos(uv - ux, dl, projA, projB, projX, projY, ortho, cell))
                   : (post_eye_pos(uv + ux, dr, projA, projB, projX, projY, ortho, cell) - cp);
-  float3 gy = (abs(dd - cd) < abs(du - cd))
+  float3 gy = (sd < su)
                   ? (cp - post_eye_pos(uv - uy, dd, projA, projB, projX, projY, ortho, cell))
                   : (post_eye_pos(uv + uy, du, projA, projB, projX, projY, ortho, cell) - cp);
   float3 n = normalize(cross(gx, gy));
@@ -1060,6 +1075,7 @@ static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 
     for (int i = -1; i <= 1; i++) {
       if (i == 0 && j == 0) continue;
       float2 o = float2(float(i), float(j)) * 2.0 * invres;
+      if (!post_in_cell(uv + o, cell)) continue;  // other grid cell (#478)
       float dn = depthTex.sample(s, uv + o);
       if (dn >= 0.99999) continue;
       float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY, ortho, cell);
@@ -2318,9 +2334,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 uv = in.uv + float2(i, j) * texel;
       // grid_mode: never blend AO/visibility across a cell border, another
       // cell's object at a similar depth must not bleed into this cell (#478).
-      if (u.gridActive > 0.5 &&
-          (uv.x < cell.x || uv.x >= cell.z || uv.y < cell.y || uv.y >= cell.w))
-        continue;
+      if (!post_in_cell(uv, cell)) continue;
       float dn = depthTex.sample(s, uv);
       if (dn >= 0.99999) continue;
       // Neighbour eye-z via the shared, ortho-aware inverse (post_linear_depth
@@ -2357,7 +2371,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     if (!exempt) {
       float zc = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
       float occ = post_ssao_occlusion(depthTex, s, in.uv, invres, zc,
-                                      u.aoCreaseRadiusPx, u.projA, u.projB, u.projOrtho);
+                                      u.aoCreaseRadiusPx, u.projA, u.projB, u.projOrtho, cell);
       ao = min(ao, clamp(1.0 - occ * u.aoCrease, 0.0, 1.0));
     }
   }
