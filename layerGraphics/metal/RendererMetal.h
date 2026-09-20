@@ -61,6 +61,7 @@ public:
   // Viewport and clear
   void viewport(int x, int y, int w, int h) override;
   bool getViewportRect(int& x, int& y, int& w, int& h) const override;
+  void setGridSlot(int slot) override;
   void clear(bool color, bool depth, bool stencil) override;
   void clearColor(float r, float g, float b, float a) override;
   void scissor(int x, int y, int w, int h) override;
@@ -732,11 +733,36 @@ private:
   // freed (or whose contents changed). Handles both primary and alias keys.
   void rtDropGeometry(const void* cpuData);
   id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
-  id<MTLAccelerationStructure> _rtTriProtoAS = nil;     // world triangle mesh
+  // World triangle meshes, one primitive AS per grid cell (a single one when
+  // grid_mode is off), all pointing into _rtTriBuffer at that cell's range.
+  std::vector<id<MTLAccelerationStructure>> _rtTriProtoASs;
   id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
                                       // shadow ray can read the hit facet's plane (grazing-hit reject)
-  int _rtTriInstance = -1;            // top-level instance index of the world-tri mesh (-1 = none)
+
+  // grid_mode cell attribution (#478). Every cell shares one world space, so
+  // an acceleration structure built from all cells' geometry lets cell A's AO
+  // and shadow rays hit cell B's objects. SceneRenderMetal calls setGridSlot
+  // before each cell's draws; the frame record is split into cells at those
+  // points, each cell's instances carry a distinct instance mask bit, and
+  // rt_ao traces with the mask of the cell the pixel lies in. Cells past
+  // kRTMaxGridCells (32 mask bits) are left out of the AS and render
+  // unshadowed, like the raster shadow-map path does for every cell.
+  static constexpr int kRTMaxGridCells = 32;
+  struct RTFrameCell {
+    int slot = 0;                       // grid slot (>= 1)
+    float rect[4] = {0.f, 0.f, 1.f, 1.f}; // x0,y0,x1,y1 in scene-texture uv
+    size_t firstKey = 0;                // index into _rtFrameKeys of its first draw
+  };
+  std::vector<RTFrameCell> _rtFrameCells;   // recorded this frame, draw order
+  // Snapshot matching the built AS (same one-frame latency as the geometry).
+  struct RTBuiltCell {
+    float rect[4] = {0.f, 0.f, 1.f, 1.f};
+    uint32_t triBase = 0, triCount = 0;   // this cell's range in _rtTriBuffer
+    int triInstance = -1;                 // top-level instance id of its tri mesh
+  };
+  std::vector<RTBuiltCell> _rtBuiltCells;
+  bool _rtBuiltGrid = false;              // built AS carries per-cell masks
   id<MTLBuffer> _rtProtoVerts = nil;
   id<MTLBuffer> _rtProtoIndices = nil;
   uint32_t _rtProtoIndexCount = 0;

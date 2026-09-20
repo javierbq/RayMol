@@ -2031,6 +2031,11 @@ static void SceneSetMetalGridCell(
   G->Renderer->viewport(x0, y0, cw, ch);
   G->Renderer->enable(pymol::Capability::ScissorTest);
   G->Renderer->scissor(x0, y0, cw, ch);
+  // Tell the renderer which cell the following draws belong to, so the
+  // real-time ray tracer confines each cell's AO/shadow rays to that cell's
+  // own geometry (#478). Must follow viewport(): the renderer records the
+  // cell rect from its current viewport.
+  G->Renderer->setGridSlot(slot);
   grid->slot = slot;
   grid->cur_viewport_size = Extent2D{
       static_cast<std::uint32_t>(cw), static_cast<std::uint32_t>(ch)};
@@ -2331,7 +2336,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // replay the same passes. Scissor clips each cell so nothing bleeds across
     // borders. Post-effects (SSAO/outline/OIT-resolve/FXAA) stay global — they
     // run once over the whole frame in endFrame; minor seams at cell edges are
-    // acceptable for this geometry-first parity pass.
+    // acceptable for this geometry-first parity pass. The real-time RT pass is
+    // global too, but it is cell-aware: setGridSlot (in SceneSetMetalGridCell)
+    // tags each cell's casters so a cell's rays never hit another cell's
+    // objects (#478).
     int vpX = 0, vpY = 0, vpW = I->Width, vpH = I->Height;
     G->Renderer->getViewportRect(vpX, vpY, vpW, vpH);
     Rect2D sceneVP{vpX, vpY, static_cast<std::uint32_t>(vpW),
@@ -2361,6 +2369,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // whole frame instead of being clipped to the last cell.
     G->Renderer->disable(pymol::Capability::ScissorTest);
     G->Renderer->viewport(vpX, vpY, vpW, vpH);
+    G->Renderer->setGridSlot(0);
     I->grid.slot = 0;
   } else {
     for (auto pass : {RenderPass::Opaque, RenderPass::Antialias}) {
@@ -2446,6 +2455,7 @@ void SceneRenderMetalSelections(PyMOLGlobals* G)
     }
     G->Renderer->disable(pymol::Capability::ScissorTest);
     G->Renderer->viewport(vpX, vpY, vpW, vpH);
+    G->Renderer->setGridSlot(0);
     I->grid.slot = 0;
     return;
   }

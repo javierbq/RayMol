@@ -446,7 +446,9 @@ RendererMetal::~RendererMetal()
 
   // Real-time ray-tracing buffers + acceleration structures (+1).
   [_rtProtoVerts release];       [_rtProtoIndices release];
-  [_rtSphereProtoAS release];    [_rtTriProtoAS release];   [_rtInstanceAS release];
+  [_rtSphereProtoAS release];    [_rtInstanceAS release];
+  for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [as release];
+  _rtTriProtoASs.clear();
   [_rtTriBuffer release];
   [_bezierTessFactors release];
 
@@ -764,6 +766,7 @@ void RendererMetal::beginFrame()
   _rtFrameKeys.clear();
   _rtFrameXform.clear();
   _rtFrameClip.clear();
+  _rtFrameCells.clear();   // grid_mode cells are re-recorded by setGridSlot
   _rtFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
@@ -985,11 +988,18 @@ static bool post_ao_exempt(texture2d<float> aoMaskTex, sampler s, float2 uv,
 // position and the normal derived from it become garbage — which turns the SSAO /
 // shadow terms fully black across the geometry (issue #139). projX/projY are
 // proj[0]/proj[5]; PyMOL's ortho frustum is symmetric so there is no x/y offset.
+// `cell` (x0,y0,x1,y1 in texture uv) is the viewport the pixel was projected
+// into: in grid_mode every cell replays the projection into its own sub-rect,
+// so ndc must be measured against THAT rect, not the whole frame, or the
+// reconstructed positions (and so the RT ray origins) land off the surface
+// (#478). Default: the full frame.
 static float3 post_eye_pos(float2 uv, float d, float projA, float projB,
-                           float projX, float projY, float ortho = 0.0) {
+                           float projX, float projY, float ortho = 0.0,
+                           float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
+  float2 uvl = (uv - cell.xy) / max(cell.zw - cell.xy, float2(1e-6));
   float ndcz = 2.0 * d - 1.0;
-  float ndcx = 2.0 * uv.x - 1.0;
-  float ndcy = 1.0 - 2.0 * uv.y;
+  float ndcx = 2.0 * uvl.x - 1.0;
+  float ndcy = 1.0 - 2.0 * uvl.y;
   if (ortho > 0.5) {
     float ez = (ndcz - projB) / projA;             // ortho: linear eye z
     return float3(ndcx / projX, ndcy / projY, ez); // no -ez foreshortening
@@ -1012,17 +1022,18 @@ static float3 post_eye_pos(float2 uv, float d, float projA, float projB,
 static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
                               float2 invres, float cd, float3 cp, float projA,
                               float projB, float projX, float projY,
-                              float ortho = 0.0) {
+                              float ortho = 0.0,
+                              float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   float2 ux = float2(invres.x, 0.0);
   float2 uy = float2(0.0, invres.y);
   float dl = depthTex.sample(s, uv - ux), dr = depthTex.sample(s, uv + ux);
   float dd = depthTex.sample(s, uv - uy), du = depthTex.sample(s, uv + uy);
   float3 gx = (abs(dl - cd) < abs(dr - cd))
-                  ? (cp - post_eye_pos(uv - ux, dl, projA, projB, projX, projY, ortho))
-                  : (post_eye_pos(uv + ux, dr, projA, projB, projX, projY, ortho) - cp);
+                  ? (cp - post_eye_pos(uv - ux, dl, projA, projB, projX, projY, ortho, cell))
+                  : (post_eye_pos(uv + ux, dr, projA, projB, projX, projY, ortho, cell) - cp);
   float3 gy = (abs(dd - cd) < abs(du - cd))
-                  ? (cp - post_eye_pos(uv - uy, dd, projA, projB, projX, projY, ortho))
-                  : (post_eye_pos(uv + uy, du, projA, projB, projX, projY, ortho) - cp);
+                  ? (cp - post_eye_pos(uv - uy, dd, projA, projB, projX, projY, ortho, cell))
+                  : (post_eye_pos(uv + uy, du, projA, projB, projX, projY, ortho, cell) - cp);
   float3 n = normalize(cross(gx, gy));
   if (n.z < 0.0) n = -n; // face toward camera
   return n;
@@ -1038,9 +1049,10 @@ static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
 static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 uv,
                                      float2 invres, float cd, float3 cp, float projA,
                                      float projB, float projX, float projY,
-                                     float ortho = 0.0) {
+                                     float ortho = 0.0,
+                                     float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   float3 nSum = post_eye_normal(depthTex, s, uv, invres, cd, cp,
-                                projA, projB, projX, projY, ortho);
+                                projA, projB, projX, projY, ortho, cell);
   float wSum = 1.0;
   float ztol = max(0.02 * abs(cp.z), 0.05);
   for (int j = -1; j <= 1; j++)
@@ -1049,10 +1061,10 @@ static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 
       float2 o = float2(float(i), float(j)) * 2.0 * invres;
       float dn = depthTex.sample(s, uv + o);
       if (dn >= 0.99999) continue;
-      float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY, ortho);
+      float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY, ortho, cell);
       float w = exp(-abs(pn.z - cp.z) / ztol);
       nSum += post_eye_normal(depthTex, s, uv + o, invres, dn, pn,
-                              projA, projB, projX, projY, ortho) * w;
+                              projA, projB, projX, projY, ortho, cell) * w;
       wSum += w;
     }
   return normalize(nSum);
@@ -1972,8 +1984,8 @@ struct RTU {
   float shadowRadius;      // world half-extent of the shadow ortho box (Angstroms)
   float shadowBias;        // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;         // >0.5: orthographic projection (linear eye-z / no foreshortening)
-  float triInstance;       // instance_id of the world-triangle mesh in the AS (-1 = none)
-  float triCount;          // number of triangles in the world-tri buffer
+  float gridActive;        // >0.5: grid_mode, trace with the pixel's cell mask (#478)
+  float cellCount;         // entries in RTGridU (1 without grid_mode; <= 32)
   float klx, kly, klz;     // key-light dir (toward light, eye space) = -normalize(cSetting_light)
                            // -> still 8 floats after lightViewProj: struct size is a
                            //    multiple of 16 on both sides (validation checks
@@ -1983,6 +1995,37 @@ struct RTU {
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
   float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
 };
+
+// grid_mode cells (#478). rect = x0,y0,x1,y1 of the cell in scene uv; tri =
+// {first triangle of the cell's mesh in `tris`, its triangle count, top-level
+// instance id of that mesh (0xFFFFFFFF = none), unused}. Cell k's casters carry
+// instance mask bit k. Without grid_mode there is one cell spanning the frame
+// and every instance has an all-bits mask.
+struct RTCellU { float4 rect; uint4 tri; };
+struct RTGridU { RTCellU cell[32]; };
+
+// Which grid cell a pixel belongs to. Returns false when grid_mode is on and the
+// pixel is in no listed cell (a cell past the 32-bit mask limit): such pixels
+// get no rays and stay lit, like the raster shadow-map path in grid mode. With
+// grid_mode off, cell 0 spans the frame and the mask has every bit set.
+static bool rt_find_cell(float2 uv, constant RTU& u, constant RTGridU& g,
+                         thread uint& ci, thread uint& mask, thread float4& rect) {
+  ci = 0u;
+  mask = 0xFFFFFFFFu;
+  rect = float4(0.0, 0.0, 1.0, 1.0);
+  if (u.gridActive <= 0.5) return true;
+  uint n = min(uint(u.cellCount), 32u);
+  for (uint k = 0u; k < n; ++k) {
+    float4 rc = g.cell[k].rect;
+    if (uv.x >= rc.x && uv.x < rc.z && uv.y >= rc.y && uv.y < rc.w) {
+      ci = k;
+      mask = 1u << k;
+      rect = rc;
+      return true;
+    }
+  }
+  return false;
+}
 
 // Facet normal of world-tri p, averaged with its strip neighbours p-1 and p+1.
 // Ribbon strips arrive as consecutive triangles, and on a twisted quad the two
@@ -2037,22 +2080,36 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     sampler s [[sampler(0)]],
     instance_acceleration_structure accel [[buffer(0)]],
     constant RTU& u [[buffer(1)]],
-    device const packed_float3* tris [[buffer(2)]]) {
+    device const packed_float3* tris [[buffer(2)]],
+    constant RTGridU& g [[buffer(3)]]) {
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
+
+  // grid_mode (#478): find the cell this pixel is drawn in. Every ray below is
+  // traced with that cell's instance mask, so objects that live in other cells
+  // (same world space, different viewport) can neither occlude nor shadow it,
+  // and the eye-space reconstruction measures ndc against the cell's own rect,
+  // so the ray origins sit on the surface actually drawn there.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(1.0, 1.0, 1.0, 1.0);
+  // This cell's world-triangle mesh: where it starts in `tris`, how many, and
+  // its top-level instance id (-1 = the cell has no triangles).
+  const uint triCount = g.cell[ci].tri.y;
+  const int triInst = int(g.cell[ci].tri.z);
+  device const packed_float3* ctris = tris + 3u * g.cell[ci].tri.x;
 
   // Eye-space position + robust normal (matches post_ssao_fog reconstruction).
   // post_eye_normal avoids the cross-silhouette derivative blow-up that plain
   // cross(dfdx,dfdy) produces, which otherwise mis-orients the AO hemisphere /
   // ray-origin bias in a 1-2px band along every silhouette.
-  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
   float2 invres = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
   // SMOOTH normal (bilateral over the facets, silhouette-preserving), like the
   // shadow-map path: the plain per-triangle reconstruction made the ray-origin
   // offset and the light-facing test flip per triangle on coarse cartoon
   // strands -> "triangles under shadows" in the traced-shadow path too.
   float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
-                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
 
   float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
   float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
@@ -2084,11 +2141,11 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     pr.direction = dirM;
     pr.min_distance = 0.0;
     pr.max_distance = dEye + 0.5;
-    auto pres = pit.intersect(pr, accel);
-    if (pres.type != intersection_type::none && u.triInstance >= 0.0
-        && int(pres.instance_id) == int(u.triInstance)
+    auto pres = pit.intersect(pr, accel, mask);
+    if (pres.type != intersection_type::none && triInst >= 0
+        && int(pres.instance_id) == triInst
         && abs(pres.distance - dEye) < 0.5) {
-      nSelf = rt_tri_normal_smooth(tris, pres.primitive_id, uint(u.triCount));
+      nSelf = rt_tri_normal_smooth(ctris, pres.primitive_id, triCount);
       if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;   // face the camera side
     }
   }
@@ -2128,7 +2185,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     // that grazing contribute almost nothing to a cosine-weighted estimate.
     rr.min_distance = bias / max(dirT.z, 0.15);
     rr.max_distance = u.aoRadius;
-    auto res = it.intersect(rr, accel);
+    auto res = it.intersect(rr, accel, mask);
     if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
@@ -2183,12 +2240,12 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
       // incidence the ray travels inside the slab for thickness/sin(angle).
       float const ownReach = 1.2 * u.shadowBias / max(abs(nL), 0.15);
       for (int k = 0; k < 4; ++k) {
-        auto sres = sit.intersect(sr, accel);
+        auto sres = sit.intersect(sr, accel, mask);
         if (sres.type == intersection_type::none) break;
-        bool onTri = (u.triInstance >= 0.0 && int(sres.instance_id) == int(u.triInstance));
+        bool onTri = (triInst >= 0 && int(sres.instance_id) == triInst);
         bool ownFace = false, grazingSelf = false;
         if (onTri && sres.distance < 12.0 * u.shadowBias) {
-          float3 fn = rt_tri_normal_smooth(tris, sres.primitive_id, uint(u.triCount));
+          float3 fn = rt_tri_normal_smooth(ctris, sres.primitive_id, triCount);
           // OWN face: a facet (near-)parallel to this fragment's surface, within
           // the slab reach. That is the far face when we sit on the unlit side
           // of a thin ribbon/surface (ray entered the slab), or the ribbon's own
@@ -2230,19 +2287,25 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     texture2d<float> aoMaskTex [[texture(4)]],
     sampler s [[sampler(0)]],
     sampler shadowSamp [[sampler(1)]],
-    constant RTU& u [[buffer(1)]]) {
+    constant RTU& u [[buffer(1)]],
+    constant RTGridU& g [[buffer(3)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999) return float4(col, 1.0);  // background: leave as-is
   if (d <= 0.0015) return float4(col, 1.0);   // interior-cap cross-section: flat
 
+  // grid_mode (#478): reconstruct against the pixel's own cell rect (see rt_ao).
+  // A pixel in no listed cell got no rays (AO 1, lit): leave its colour as-is.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(col, 1.0);
+
   // Eye-space position + SMOOTH normal (matches post_ssao_fog). The bilateral
   // smoothing removes the coarse-mesh facet normal that made faceGate + the
   // shadow-map self-compare step per triangle.
-  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
   float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
   float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
-                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
 
   // Depth-aware 5x5 blur of the AO term: weight neighbours by eye-space depth
   // closeness so AO doesn't bleed across object silhouettes.
@@ -2555,7 +2618,12 @@ void RendererMetal::ensureRayTracingAS()
   // entries at the same generations and lands on the same signature.
   uint64_t h = _rtFrameSig;
   if (_rtReady && _rtInstanceAS && !_rtGeomDirty && h == _rtSphereHash) {
-    /* unchanged */
+    // Unchanged casters. The grid cell RECTS are not part of the signature (a
+    // window resize must not rebuild), so refresh them from this frame's record.
+    if (_rtBuiltGrid) {
+      for (size_t c = 0; c < _rtBuiltCells.size() && c < _rtFrameCells.size(); ++c)
+        std::memcpy(_rtBuiltCells[c].rect, _rtFrameCells[c].rect, 4 * sizeof(float));
+    }
   } else {
     // Concatenate the frame's cached geometry. Entries can have been erased
     // since (invalidateVBOCacheEntry runs between draws), so tolerate misses:
@@ -2589,9 +2657,42 @@ void RendererMetal::ensureRayTracingAS()
     static const Mat4 kIdentity = identityMatrix();
 
     if (nSph > 0) buildSphereProtoAS();
-    // (Re)build the world-triangle primitive AS (sticks + cartoon/surface).
-    [_rtTriProtoAS release];  // MRC: release the previous rebuild's proto AS (+1)
-    _rtTriProtoAS = nil;
+
+    // grid_mode (#478): split the frame record into cells. setGridSlot opened
+    // one cell per slot in draw order, so cell c owns the keys
+    // [firstKey_c, firstKey_c+1). Cell c's instances get mask bit c; rt_ao
+    // traces each pixel with the mask of the cell it lies in, so a cell's
+    // rays only ever meet that cell's own casters. Without grid_mode there is
+    // one cell owning every key with an all-bits mask. Cells beyond the 32
+    // mask bits are left out (their pixels trace nothing and stay lit).
+    struct CellRange { size_t keyBegin, keyEnd; const float* rect; };
+    std::vector<CellRange> cells;
+    const bool gridBuild = !_rtFrameCells.empty();
+    static const float kFullRect[4] = {0.f, 0.f, 1.f, 1.f};
+    const size_t nKeys = _rtFrameKeys.size();
+    if (!gridBuild) {
+      cells.push_back({0, nKeys, kFullRect});
+    } else {
+      const size_t nCells = std::min<size_t>(_rtFrameCells.size(), kRTMaxGridCells);
+      for (size_t c = 0; c < nCells; ++c) {
+        size_t b = std::min(_rtFrameCells[c].firstKey, nKeys);
+        size_t e = c + 1 < _rtFrameCells.size()
+            ? std::min(_rtFrameCells[c + 1].firstKey, nKeys) : nKeys;
+        cells.push_back({b, std::max(b, e), _rtFrameCells[c].rect});
+      }
+    }
+    auto cellMask = [&](size_t c) -> uint32_t {
+      return gridBuild ? (1u << (uint32_t)c) : 0xFFFFFFFFu;
+    };
+    std::vector<RTBuiltCell> built(cells.size());
+    for (size_t c = 0; c < cells.size(); ++c)
+      std::memcpy(built[c].rect, cells[c].rect, 4 * sizeof(float));
+
+    // (Re)build the world-triangle primitive AS (sticks + cartoon/surface):
+    // one per cell, each covering that cell's contiguous range of the shared
+    // vertex buffer.
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [as release];  // MRC (+1 each)
+    _rtTriProtoASs.clear();
     // Written entry by entry straight into the shared buffer: the old per-frame
     // std::vector<float> _rtTris only ever existed as an intermediate copy.
     id<MTLBuffer> tb = nTris > 0
@@ -2602,51 +2703,63 @@ void RendererMetal::ensureRayTracingAS()
     size_t actualTris = 0;   // triangles kept after pose-baking + clip drop
     if (nTris > 0) {
       float* dst = static_cast<float*>(tb.contents);
-      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
-        auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
-        if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
-        const std::vector<float>& tr = it->second.tris;
-        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
-        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
-        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
-        const bool clipOn = cf >= 0.0f;
-        for (size_t t = 0; t + 8 < tr.size(); t += 9) {
-          float w[3][3];
-          xformPt(xf, tr[t + 0], tr[t + 1], tr[t + 2], w[0]);
-          xformPt(xf, tr[t + 3], tr[t + 4], tr[t + 5], w[1]);
-          xformPt(xf, tr[t + 6], tr[t + 7], tr[t + 8], w[2]);
-          if (clipOn) {
-            float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
-            // Drop only triangles fully outside the slab, so the clip cut edge
-            // (partially-inside tris) still casts and the cavity walls stay lit.
-            if ((d0 < cf && d1 < cf && d2 < cf) ||
-                (d0 > cb && d1 > cb && d2 > cb))
-              continue;
+      for (size_t c = 0; c < cells.size(); ++c) {
+        built[c].triBase = (uint32_t)actualTris;
+        for (size_t ki = cells[c].keyBegin; ki < cells[c].keyEnd; ++ki) {
+          auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
+          if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
+          const std::vector<float>& tr = it->second.tris;
+          const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+          const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+          const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+          const bool clipOn = cf >= 0.0f;
+          for (size_t t = 0; t + 8 < tr.size(); t += 9) {
+            float w[3][3];
+            xformPt(xf, tr[t + 0], tr[t + 1], tr[t + 2], w[0]);
+            xformPt(xf, tr[t + 3], tr[t + 4], tr[t + 5], w[1]);
+            xformPt(xf, tr[t + 6], tr[t + 7], tr[t + 8], w[2]);
+            if (clipOn) {
+              float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
+              // Drop only triangles fully outside the slab, so the clip cut edge
+              // (partially-inside tris) still casts and the cavity walls stay lit.
+              if ((d0 < cf && d1 < cf && d2 < cf) ||
+                  (d0 > cb && d1 > cb && d2 > cb))
+                continue;
+            }
+            std::memcpy(dst + 0, w[0], 3 * sizeof(float));
+            std::memcpy(dst + 3, w[1], 3 * sizeof(float));
+            std::memcpy(dst + 6, w[2], 3 * sizeof(float));
+            dst += 9;
+            ++actualTris;
           }
-          std::memcpy(dst + 0, w[0], 3 * sizeof(float));
-          std::memcpy(dst + 3, w[1], 3 * sizeof(float));
-          std::memcpy(dst + 6, w[2], 3 * sizeof(float));
-          dst += 9;
-          ++actualTris;
         }
+        built[c].triCount = (uint32_t)(actualTris - built[c].triBase);
       }
     }
     nTris = actualTris;
+    std::vector<int> triProto(cells.size(), -1);   // index into _rtTriProtoASs
     if (nTris > 0) {
-      MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
-          [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-      tgeo.vertexBuffer = tb;
-      tgeo.vertexStride = 3 * sizeof(float);
-      tgeo.vertexFormat = MTLAttributeFormatFloat3;
-      tgeo.triangleCount = nTris;
-      tgeo.opaque = YES;
-      MTLPrimitiveAccelerationStructureDescriptor* pd =
-          [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-      pd.geometryDescriptors = @[tgeo];
-      _rtTriProtoAS = buildAccelStructure(pd);
-      // MRC: keep the (+1) vertex buffer alive as _rtTriBuffer — the AS holds
-      // its own compacted geometry, but rt_ao reads the hit triangle's vertices
-      // from this buffer to reject grazing self-hits of the shadow ray.
+      for (size_t c = 0; c < cells.size(); ++c) {
+        if (built[c].triCount == 0) continue;
+        MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
+            [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+        tgeo.vertexBuffer = tb;
+        tgeo.vertexBufferOffset = (NSUInteger)built[c].triBase * 9 * sizeof(float);
+        tgeo.vertexStride = 3 * sizeof(float);
+        tgeo.vertexFormat = MTLAttributeFormatFloat3;
+        tgeo.triangleCount = built[c].triCount;
+        tgeo.opaque = YES;
+        MTLPrimitiveAccelerationStructureDescriptor* pd =
+            [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        pd.geometryDescriptors = @[tgeo];
+        id<MTLAccelerationStructure> as = buildAccelStructure(pd);
+        if (!as) continue;
+        triProto[c] = (int)_rtTriProtoASs.size();
+        _rtTriProtoASs.push_back(as);
+      }
+      // MRC: keep the (+1) vertex buffer alive as _rtTriBuffer — the ASs hold
+      // their own compacted geometry, but rt_ao reads the hit triangle's
+      // vertices from this buffer to reject grazing self-hits of the shadow ray.
       [_rtTriBuffer release];
       _rtTriBuffer = tb;
     } else {
@@ -2656,16 +2769,22 @@ void RendererMetal::ensureRayTracingAS()
       [_rtTriBuffer release];
       _rtTriBuffer = nil;
     }
-    _rtTriInstance = -1;
 
-    // Top-level instance AS: N icosphere instances (atoms) + 1 world-tri
-    // instance (identity). instancedAccelerationStructures indexes the protos.
+    // Top-level instance AS: N icosphere instances (atoms) + one world-tri
+    // instance (identity) per cell that has triangles.
+    // instancedAccelerationStructures indexes the protos.
     NSMutableArray* protos = [NSMutableArray array];
-    int sphereIdx = -1, triIdx = -1;
+    int sphereIdx = -1;
     if (nSph > 0 && _rtSphereProtoAS) { sphereIdx = (int)protos.count; [protos addObject:_rtSphereProtoAS]; }
-    if (_rtTriProtoAS) { triIdx = (int)protos.count; [protos addObject:_rtTriProtoAS]; }
-    size_t nInst = (sphereIdx >= 0 ? nSph : 0) + (triIdx >= 0 ? 1 : 0);
-    if (nInst == 0 || protos.count == 0) { _rtTriCount = 0; _rtReady = false; return; }
+    const int triProtoBase = (int)protos.count;
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [protos addObject:as];
+    size_t nInst = (sphereIdx >= 0 ? nSph : 0) + _rtTriProtoASs.size();
+    if (nInst == 0 || protos.count == 0) {
+      _rtTriCount = 0;
+      _rtBuiltCells.clear();
+      _rtReady = false;
+      return;
+    }
 
     id<MTLBuffer> instBuf =
         [_device newBufferWithLength:nInst * sizeof(MTLAccelerationStructureInstanceDescriptor)
@@ -2673,43 +2792,47 @@ void RendererMetal::ensureRayTracingAS()
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
     size_t ii = 0;
     if (sphereIdx >= 0) {
-      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
-        auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
-        if (git == _rtGeomCache.end()) continue;
-        const std::vector<float>& sp = git->second.spheres;
-        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
-        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
-        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
-        const bool clipOn = cf >= 0.0f;
-        for (size_t i = 0; i * 4 + 3 < sp.size(); ++i) {
-          float x = sp[i * 4], y = sp[i * 4 + 1],
-                z = sp[i * 4 + 2], r = sp[i * 4 + 3];
-          if (r <= 0.0f) r = 0.001f;
-          // Bake the pose delta: world center = xf·center, and the sphere's
-          // linear block is xf's rotation scaled by r (a rotation keeps it a
-          // sphere), so the instance transform is xf · (scale(r)·translate(c)).
-          float wc[3];
-          xformPt(xf, x, y, z, wc);
-          if (clipOn) {
-            float d = eyeDepth(wc);
-            if (d + r < cf || d - r > cb) continue;  // sphere fully outside slab
+      for (size_t c = 0; c < cells.size(); ++c) {
+        const uint32_t mask = cellMask(c);
+        for (size_t ki = cells[c].keyBegin; ki < cells[c].keyEnd; ++ki) {
+          auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
+          if (git == _rtGeomCache.end()) continue;
+          const std::vector<float>& sp = git->second.spheres;
+          const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+          const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+          const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+          const bool clipOn = cf >= 0.0f;
+          for (size_t i = 0; i * 4 + 3 < sp.size(); ++i) {
+            float x = sp[i * 4], y = sp[i * 4 + 1],
+                  z = sp[i * 4 + 2], r = sp[i * 4 + 3];
+            if (r <= 0.0f) r = 0.001f;
+            // Bake the pose delta: world center = xf·center, and the sphere's
+            // linear block is xf's rotation scaled by r (a rotation keeps it a
+            // sphere), so the instance transform is xf · (scale(r)·translate(c)).
+            float wc[3];
+            xformPt(xf, x, y, z, wc);
+            if (clipOn) {
+              float d = eyeDepth(wc);
+              if (d + r < cf || d - r > cb) continue;  // sphere fully outside slab
+            }
+            MTLPackedFloat4x3 m;
+            m.columns[0].x = xf[0] * r; m.columns[0].y = xf[1] * r; m.columns[0].z = xf[2] * r;
+            m.columns[1].x = xf[4] * r; m.columns[1].y = xf[5] * r; m.columns[1].z = xf[6] * r;
+            m.columns[2].x = xf[8] * r; m.columns[2].y = xf[9] * r; m.columns[2].z = xf[10] * r;
+            m.columns[3].x = wc[0]; m.columns[3].y = wc[1]; m.columns[3].z = wc[2];
+            inst[ii].transformationMatrix = m;
+            inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
+            inst[ii].mask = mask;
+            inst[ii].intersectionFunctionTableOffset = 0;
+            inst[ii].accelerationStructureIndex = sphereIdx;
+            ++ii;
           }
-          MTLPackedFloat4x3 m;
-          m.columns[0].x = xf[0] * r; m.columns[0].y = xf[1] * r; m.columns[0].z = xf[2] * r;
-          m.columns[1].x = xf[4] * r; m.columns[1].y = xf[5] * r; m.columns[1].z = xf[6] * r;
-          m.columns[2].x = xf[8] * r; m.columns[2].y = xf[9] * r; m.columns[2].z = xf[10] * r;
-          m.columns[3].x = wc[0]; m.columns[3].y = wc[1]; m.columns[3].z = wc[2];
-          inst[ii].transformationMatrix = m;
-          inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
-          inst[ii].mask = 0xFF;
-          inst[ii].intersectionFunctionTableOffset = 0;
-          inst[ii].accelerationStructureIndex = sphereIdx;
-          ++ii;
         }
       }
     }
-    if (triIdx >= 0) {
-      _rtTriInstance = (int)ii;   // instance_id the shadow ray sees for world tris
+    for (size_t c = 0; c < cells.size(); ++c) {
+      if (triProto[c] < 0) continue;
+      built[c].triInstance = (int)ii;   // instance_id the shadow ray sees for this cell's tris
       MTLPackedFloat4x3 m;
       m.columns[0].x = 1; m.columns[0].y = 0; m.columns[0].z = 0;
       m.columns[1].x = 0; m.columns[1].y = 1; m.columns[1].z = 0;
@@ -2717,9 +2840,9 @@ void RendererMetal::ensureRayTracingAS()
       m.columns[3].x = 0; m.columns[3].y = 0; m.columns[3].z = 0;
       inst[ii].transformationMatrix = m;
       inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
-      inst[ii].mask = 0xFF;
+      inst[ii].mask = cellMask(c);
       inst[ii].intersectionFunctionTableOffset = 0;
-      inst[ii].accelerationStructureIndex = triIdx;
+      inst[ii].accelerationStructureIndex = (NSUInteger)(triProtoBase + triProto[c]);
       ++ii;
     }
 
@@ -2728,6 +2851,7 @@ void RendererMetal::ensureRayTracingAS()
     if (ii == 0) {
       [instBuf release];
       _rtTriCount = 0;
+      _rtBuiltCells.clear();
       _rtReady = false;
       return;
     }
@@ -2743,11 +2867,14 @@ void RendererMetal::ensureRayTracingAS()
     _rtSphereHash = h;
     _rtBuiltCount = nSph;
     _rtTriCount = nTris;
+    _rtBuiltCells = std::move(built);
+    _rtBuiltGrid = gridBuild;
     _rtReady = (_rtInstanceAS != nil);
 
     static int once = 0;
     if (_rtReady && once++ < 5)
-      NSLog(@"RendererMetal RT: AS rebuilt — %zu spheres + %zu triangles", nSph, nTris);
+      NSLog(@"RendererMetal RT: AS rebuilt — %zu spheres + %zu triangles in %zu cell(s)%s",
+            nSph, nTris, cells.size(), gridBuild ? " (grid_mode)" : "");
   }
 
   // Lazily compile the RT resolve pipeline (separate library so the raytracing
@@ -2819,8 +2946,8 @@ void RendererMetal::runPostChain()
       float shadowRadius;        // matches MSL RTU: shadow ortho half-extent
       float shadowBias;          // matches MSL RTU: metal_shadow_bias multiplier
       float projOrtho;           // matches MSL RTU: 1 = orthographic (#139)
-      float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
-      float triCount;            // matches MSL RTU: world-tri triangle count
+      float gridActive;          // matches MSL RTU: >0.5 = per-cell masks (grid_mode, #478)
+      float cellCount;           // matches MSL RTU: entries in the RTGridU table
       float klx, kly, klz;       // matches MSL RTU: key-light dir (toward light, eye space)
       float aoCrease;            // matches MSL RTU: crease-term intensity (0 = off)
       float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
@@ -2865,8 +2992,22 @@ void RendererMetal::runPostChain()
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
     u.shadowBias = _shadowBias;
-    u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
-    u.triCount = (float)_rtTriCount;
+    u.gridActive = _rtBuiltGrid ? 1.0f : 0.0f;
+    u.cellCount = (float)std::min<size_t>(_rtBuiltCells.size(), kRTMaxGridCells);
+    // Per-cell table (#478): cell rects for the pixel -> mask lookup, and each
+    // cell's slice of the world-tri buffer + the instance id of its tri mesh.
+    // Matches MSL RTGridU exactly (32 x {float4 rect; uint4 tri}).
+    struct RTCellU { float rect[4]; uint32_t tri[4]; };
+    struct RTGridU { RTCellU cell[32]; } gu;
+    static_assert(sizeof(gu) == 32 * 32, "RTGridU must match the MSL layout");
+    std::memset(&gu, 0, sizeof(gu));
+    for (size_t c = 0; c < _rtBuiltCells.size() && c < (size_t)kRTMaxGridCells; ++c) {
+      std::memcpy(gu.cell[c].rect, _rtBuiltCells[c].rect, 4 * sizeof(float));
+      gu.cell[c].tri[0] = _rtBuiltCells[c].triBase;
+      gu.cell[c].tri[1] = _rtBuiltCells[c].triCount;
+      gu.cell[c].tri[2] = (uint32_t)_rtBuiltCells[c].triInstance;  // -1 -> 0xFFFFFFFF
+      gu.cell[c].tri[3] = 0u;
+    }
     u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
     // Screen-space crease term under RT (#436): gated by the Ambient-occlusion
     // toggle exactly like the raster pass, with the same cartoon/ribbon exemption
@@ -2892,18 +3033,19 @@ void RendererMetal::runPostChain()
     [ea setRenderPipelineState:_rtAOPipeline];
     if (_rtSphereProtoAS)
       [ea useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
-    if (_rtTriProtoAS)
-      [ea useResource:_rtTriProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+      [ea useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     [ea setFragmentTexture:_sceneDepth atIndex:1];
     [ea setFragmentSamplerState:_postSampler atIndex:0];
     [ea setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
     [ea setFragmentBytes:&u length:sizeof(u) atIndex:1];
-    if (_rtTriBuffer && _rtTriInstance >= 0) {
+    if (_rtTriBuffer) {
       [ea setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
     } else {
-      float dummyTri[9] = {0};   // never read: triInstance = -1 gates the lookup
+      float dummyTri[9] = {0};   // never read: every cell's triInstance is -1
       [ea setFragmentBytes:dummyTri length:sizeof(dummyTri) atIndex:2];
     }
+    [ea setFragmentBytes:&gu length:sizeof(gu) atIndex:3];
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [ea endEncoding];
 
@@ -2961,6 +3103,7 @@ void RendererMetal::runPostChain()
     [er setFragmentSamplerState:_postSampler atIndex:0];
     [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
+    [er setFragmentBytes:&gu length:sizeof(gu) atIndex:3];   // cell table (#478)
     [er drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [er endEncoding];
     sceneSrc = _postColor;
@@ -3580,6 +3723,37 @@ bool RendererMetal::getViewportRect(int& x, int& y, int& w, int& h) const
   w = static_cast<int>(_viewport.width);
   h = static_cast<int>(_viewport.height);
   return true;
+}
+
+// grid_mode (#478): open a new cell in this frame's RT geometry record. Every
+// draw noted from here until the next call belongs to `slot`, and the cell
+// rect is the viewport SceneSetMetalGridCell just set, in scene-texture uv
+// (same top-left origin as the post-pass uv). The OIT and selection replays
+// visit each slot again after the opaque pass; they note no RT geometry, so a
+// slot already recorded this frame is ignored rather than opened twice. Slot 0
+// (end of the grid loop) records nothing.
+void RendererMetal::setGridSlot(int slot)
+{
+  if (slot <= 0) return;
+  for (const RTFrameCell& c : _rtFrameCells)
+    if (c.slot == slot) return;
+  RTFrameCell cell;
+  cell.slot = slot;
+  cell.firstKey = _rtFrameKeys.size();
+  const double tw = _rtW > 0 ? (double)_rtW : 1.0;
+  const double th = _rtH > 0 ? (double)_rtH : 1.0;
+  cell.rect[0] = (float)(_viewport.originX / tw);
+  cell.rect[1] = (float)(_viewport.originY / th);
+  cell.rect[2] = (float)((_viewport.originX + _viewport.width) / tw);
+  cell.rect[3] = (float)((_viewport.originY + _viewport.height) / th);
+  _rtFrameCells.push_back(cell);
+  // Fold the cell boundary into the frame signature: an object moving to
+  // another slot, or grid_mode toggling, changes the per-cell masks and so
+  // must rebuild the acceleration structure even though the geometry is the
+  // same. (The rect is NOT folded — a resize only changes the lookup table.)
+  _rtFrameSig = (_rtFrameSig ^ (0x9E3779B97F4A7C15ULL + (uint64_t)slot)) *
+                1099511628211ULL;
+  _rtFrameSig = (_rtFrameSig ^ (uint64_t)cell.firstKey) * 1099511628211ULL;
 }
 
 void RendererMetal::clear(bool color, bool depth, bool stencil)
