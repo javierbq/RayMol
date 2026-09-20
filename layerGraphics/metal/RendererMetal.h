@@ -520,6 +520,12 @@ private:
   id<MTLRenderPipelineState> _sphereShadowPipeline = nil;   // Stage 3
   id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3, alias
   bool _shadowMode = false;       // true between begin/endShadowPass
+  // The shadow-map pre-pass ran THIS frame, so _shadowDepth / _lightViewProjEye
+  // describe this frame's scene. SceneRenderMetal skips the pre-pass in
+  // grid_mode (one global map cannot be per-cell), and without this gate the
+  // post passes kept PCF-sampling whatever the map held from the last non-grid
+  // frame — stale shadows, and from every cell's objects at once (#478).
+  bool _shadowMapValid = false;
   float _lightViewProjEye[16];    // eye-space light VP, column-major (PostU)
   float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box
                                   // (from SceneBuildLightViewProjEye); lets the

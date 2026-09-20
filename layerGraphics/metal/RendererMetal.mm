@@ -776,6 +776,7 @@ void RendererMetal::beginFrame()
   _coverageDraws.clear();  // surface outer-contour: re-stashed during this frame
   _contourActive = false;
   _aoExemptDraws.clear();  // cartoon/ribbon AO-exempt mask: re-stashed this frame
+  _shadowMapValid = false; // set again by endShadowPass if the pre-pass runs
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -2315,6 +2316,11 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
+      // grid_mode: never blend AO/visibility across a cell border, another
+      // cell's object at a similar depth must not bleed into this cell (#478).
+      if (u.gridActive > 0.5 &&
+          (uv.x < cell.x || uv.x >= cell.z || uv.y < cell.y || uv.y >= cell.w))
+        continue;
       float dn = depthTex.sample(s, uv);
       if (dn >= 0.99999) continue;
       // Neighbour eye-z via the shared, ortho-aware inverse (post_linear_depth
@@ -2927,6 +2933,10 @@ void RendererMetal::runPostChain()
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
   bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
+  // The shadow MAP may only be sampled when this frame rendered it. In
+  // grid_mode the pre-pass is skipped, so the raster path renders unshadowed
+  // and the RT path keeps only its traced shadow (metal_rt_shadows).
+  bool doShadowMap = doShadow && _shadowMapValid;
   if (_rtEnabled) ensureRTAOTargets(_rtW, _rtH);   // metal_rt_scale may have changed
   bool doRT = _rtEnabled && _rtReady && _rtResolvePipeline && _rtAOPipeline &&
               _rtInstanceAS && _postColor && _rtAO;
@@ -2971,7 +2981,8 @@ void RendererMetal::runPostChain()
     u.projOrtho = _projOrtho;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
     u.aoRadius = _rtAORadius; u.aoIntensity = _rtAOIntensity;
-    u.shadowIntensity = doShadow ? _rtShadowIntensity : 0.0f;
+    u.shadowIntensity =
+        (doShadow && (_rtShadowEnabled || _shadowMapValid)) ? _rtShadowIntensity : 0.0f;
     // AO rays/pixel: the live view uses metal_rt_samples (_rtSamples, default 16
     // stratified Hammersley samples — clean and shimmer-free with the composite
     // blur); the single-shot offscreen PNG (no temporal smoothing) traces more
@@ -3110,12 +3121,12 @@ void RendererMetal::runPostChain()
   }
 
   // Pass 1: SSAO + screen-space shadows + depth-cue/fog (color+depth -> post).
-  else if ((doAO || doFog || doShadow) && _postColor) {
+  else if ((doAO || doFog || doShadowMap) && _postColor) {
     // Per-rep AO/shadow exemption (#79): rasterize the stashed cartoon/ribbon
     // draws (depth-tested vs the scene) into _aoExemptMaskTex BEFORE the SSAO
     // pass, so post_ssao_fog can skip the contour terms on those pixels. Only
     // meaningful when AO or shadow is actually running.
-    bool aoMaskReady = (doAO || doShadow) ? renderAOExemptMask() : false;
+    bool aoMaskReady = (doAO || doShadowMap) ? renderAOExemptMask() : false;
 
     struct {
       float projA, projB, fogStart, fogEnd;
@@ -3139,7 +3150,7 @@ void RendererMetal::runPostChain()
     u.aoIntensity = kSSAOIntensity;
     u.aoRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.projX = _projX; u.projY = _projY;
-    u.shadowEnabled = doShadow ? 1.0f : 0.0f;
+    u.shadowEnabled = doShadowMap ? 1.0f : 0.0f;
     u.shadowIntensity = 0.45f;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
@@ -3667,6 +3678,7 @@ void RendererMetal::endShadowPass()
   if (!_shadowMode) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _shadowMode = false;
+  _shadowMapValid = true;
   // Re-open the scene pass with a fresh CLEAR — the shadow pre-pass runs BEFORE
   // the opaque loop, so the scene starts empty (mirrors beginFrame's clear; the
   // earlier beginFrame encoder we ended above did a redundant, harmless clear).
