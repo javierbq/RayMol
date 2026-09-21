@@ -970,7 +970,7 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
-    /// Called once per completed Metal frame (from heavyRenderTick). Counts the
+    /// Called once per PRESENTED Metal frame (from heavyRenderTick). Counts the
     /// restored scene's presented frames down; the handoff itself waits for the
     /// object list too (finishRestoreHandoffIfReady, also polled by the timer).
     private func restoreRenderTick() {
@@ -1164,9 +1164,12 @@ final class PyMOLEngine: ObservableObject {
     // Called once per completed Metal frame (from MetalViewport.draw, main thread).
     // Clears the "Calculating…" overlay after the render frame that actually built
     // the deferred rep geometry, so the overlay spans the real build work.
-    func heavyRenderTick() {
+    // `presented` is false when the frame rendered but no drawable was
+    // available, so nothing reached the screen; the restore handoff must not
+    // count those (the snapshot would clear over a still-blank viewport).
+    func heavyRenderTick(presented: Bool = true) {
         #if os(iOS)
-        restoreRenderTick()
+        if presented { restoreRenderTick() }
         #endif
         guard pendingHeavyClearFrames > 0 else { return }
         pendingHeavyClearFrames -= 1
