@@ -2775,7 +2775,13 @@ struct ContentView: View {
                 }
             }
             // Cold-launch restore: cover the viewport with the last-scene snapshot
-            // until the reloaded session has rendered (see restoreAutosaveIfAvailable).
+            // until the reloaded session has presented (see restoreAutosaveIfAvailable).
+            // The engine clears it inside withAnimation, which drives this
+            // transition. Deliberately NO `.animation(value:)` on the viewport
+            // chain: that animated the viewport's own launch-time frame changes
+            // too, so the snapshot grew in from a small top-left rect and lagged
+            // the settling layout (#480). The snapshot is captured at the
+            // viewport's aspect, so fill == fit in the normal case.
             .overlay {
                 #if os(iOS)
                 if let snap = engine.restoreSnapshot {
@@ -2787,7 +2793,6 @@ struct ContentView: View {
                 }
                 #endif
             }
-            .animation(.easeOut(duration: 0.35), value: hasRestoreSnapshot)
             // Box Select rubber band (#358) — see the macOS site for why this one
             // is SwiftUI and the Move gizmo is not.
             .overlay {

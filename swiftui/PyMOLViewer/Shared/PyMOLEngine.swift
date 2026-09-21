@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import SwiftUI
 import MetalKit
 #if os(iOS)
 import UIKit
@@ -461,15 +462,29 @@ final class PyMOLEngine: ObservableObject {
     // Set by .onOpenURL: the app was launched to open a specific file, which
     // takes precedence over the autosaved scene (don't merge the old session
     // underneath the opened document).
-    var launchOpenRequested = false
+    var launchOpenRequested = false {
+        // A launch-to-open arriving before the engine is up must also drop the
+        // snapshot preloaded in init(), or the old scene shows over the new file.
+        didSet { if launchOpenRequested { clearRestoreSnapshot(animated: false) } }
+    }
     // A snapshot of the viewport captured alongside the autosave, shown over the
     // viewport while the session reloads on cold launch so the user sees their
-    // last scene instead of the empty "open a file" state flashing. Cleared once
-    // the restored scene has had time to render.
+    // last scene instead of the empty "open a file" state flashing. Preloaded in
+    // init() so it is in place for the very FIRST SwiftUI frame (#480), cleared
+    // once the restored scene has actually presented (restoreRenderTick).
     @Published var restoreSnapshot: UIImage?
+    // Frames the restored scene still has to present before the snapshot hands
+    // off. nil = no handoff armed (nothing restored yet, or already done).
+    private var restoreFramesToPresent: Int?
+    // Backstop that drops a stuck snapshot if the render loop never presents.
+    private var restoreBackstop: DispatchWorkItem?
     #endif
 
-    private init() {}
+    private init() {
+        #if os(iOS)
+        preloadRestoreSnapshot()
+        #endif
+    }
 
     // MARK: - Lifecycle
 
@@ -756,11 +771,9 @@ final class PyMOLEngine: ObservableObject {
         // Cold-launch resume: reload the session iOS purged when the app was
         // backgrounded. Skipped when a test affordance scripts the scene
         // (PYMOL_AUTOLOAD/PYMOL_AUTOCMD imply deterministic screenshot content)
-        // and when launched to open a specific file (handled by .onOpenURL).
-        let env = ProcessInfo.processInfo.environment
-        if env["PYMOL_AUTOLOAD"] == nil && env["PYMOL_AUTOCMD"] == nil {
-            restoreAutosaveIfAvailable()
-        }
+        // and when launched to open a specific file (handled by .onOpenURL) —
+        // both checked inside (autosaveIsRestorable).
+        restoreAutosaveIfAvailable()
         #endif
 
         // Poll feedback every 100ms
@@ -769,6 +782,11 @@ final class PyMOLEngine: ObservableObject {
             self.pollFeedback()
             self.drainMCPMainQueue()
             self.pollObjects()
+            #if os(iOS)
+            // The restore handoff may be waiting only on the object list, which
+            // pollFeedback just parsed.
+            self.finishRestoreHandoffIfReady()
+            #endif
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
             // When idle, the cheaper 500ms pollObjects() discovery suffices.
@@ -875,13 +893,49 @@ final class PyMOLEngine: ObservableObject {
         // the time scenePhase hits .inactive, so reading it yields nothing.
         // renderHiResPNG builds its own offscreen target — and .inactive is still
         // foreground, so the GPU submit is permitted (it isn't in .background).
-        // Half-screen resolution keeps the one-off render cheap; it's only a
-        // placeholder shown briefly during the cold-launch reload.
-        let scale = UIScreen.main.scale
-        let sz = UIScreen.main.bounds.size
-        let w = max(Int(sz.width * scale / 2), 1)
-        let h = max(Int(sz.height * scale / 2), 1)
+        // Rendered at the VIEWPORT's aspect (half its drawable size), not the
+        // screen's: the placeholder stands in for the viewport, and a
+        // screen-aspect render of a letterboxed viewport is a ~2× crop of the
+        // scene once scaled to fill it (#480). Half resolution keeps the one-off
+        // render cheap. Falls back to the screen only before the first reshape.
+        var sz = viewportPixelSize
+        if sz.width < 2 || sz.height < 2 {
+            let scale = UIScreen.main.scale
+            sz = CGSize(width: UIScreen.main.bounds.width * scale,
+                        height: UIScreen.main.bounds.height * scale)
+        }
+        let w = max(Int(sz.width / 2), 1)
+        let h = max(Int(sz.height / 2), 1)
         renderHiResPNG(img.path, width: w, height: h, rayTraced: 0)
+    }
+
+    /// True when this launch will resume the autosave: the flag is set, the .pse
+    /// exists, no test affordance scripts the scene (PYMOL_AUTOLOAD/PYMOL_AUTOCMD
+    /// imply deterministic screenshot content), and the launch isn't opening a
+    /// specific file. Shared by the init()-time snapshot preload and the restore
+    /// itself so the two can't disagree.
+    private var autosaveIsRestorable: Bool {
+        guard !launchOpenRequested else { return false }
+        let env = ProcessInfo.processInfo.environment
+        guard env["PYMOL_AUTOLOAD"] == nil, env["PYMOL_AUTOCMD"] == nil else { return false }
+        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
+              let url = autosaveURL,
+              FileManager.default.fileExists(atPath: url.path) else { return false }
+        return true
+    }
+
+    /// Put the last-scene snapshot in place BEFORE the first SwiftUI body
+    /// evaluation (#480). The engine is the App's @StateObject, so it exists
+    /// before ContentView renders: with the snapshot already set, the very first
+    /// frame shows the previous scene instead of the empty "open a file" CTA —
+    /// which the synchronous restore in initialize() would otherwise freeze on
+    /// screen, half laid out, for the whole .pse load. Cheap (one PNG decode).
+    private func preloadRestoreSnapshot() {
+        guard restoreSnapshot == nil, autosaveIsRestorable,
+              let img = autosaveImageURL,
+              let data = try? Data(contentsOf: img),
+              let snap = UIImage(data: data) else { return }
+        restoreSnapshot = snap
     }
 
     /// Reload the autosaved session on cold launch. One-shot per process, and
@@ -893,26 +947,53 @@ final class PyMOLEngine: ObservableObject {
     /// override the saved scene and the goal is to resume it exactly. Loading
     /// into the empty cold-launch scene reproduces the prior session exactly.
     func restoreAutosaveIfAvailable() {
-        guard isReady, !didRestoreAutosave, !launchOpenRequested else { return }
-        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
-              let url = autosaveURL,
-              FileManager.default.fileExists(atPath: url.path) else { return }
-        didRestoreAutosave = true
-        // Show the last-scene snapshot over the viewport immediately so the
-        // empty "open a file" state never flashes while the .pse reloads.
-        if let img = autosaveImageURL,
-           let data = try? Data(contentsOf: img),
-           let snap = UIImage(data: data) {
-            restoreSnapshot = snap
+        guard isReady, !didRestoreAutosave else { return }
+        guard autosaveIsRestorable, let url = autosaveURL else {
+            // Nothing to resume (or a file open won): drop any preloaded snapshot
+            // so the empty state / opened document shows instead.
+            clearRestoreSnapshot(animated: false)
+            return
         }
+        didRestoreAutosave = true
+        preloadRestoreSnapshot()   // no-op when init() already loaded it
         runCommand("load \(url.path)")
         refreshAfterRestore()
-        // Clear the snapshot once the restored scene has had time to build and
-        // render its first frame; cross-fade so the handoff is seamless.
+        // Hand the snapshot off once the restored scene has actually presented
+        // (restoreRenderTick) AND the object list has landed (so the empty-state
+        // CTA can't flash in between) — not after a fixed delay, which either
+        // cut the snapshot before the first frame or held it over a live scene.
         if restoreSnapshot != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-                self?.restoreSnapshot = nil   // ContentView fades it via .animation(value:)
-            }
+            restoreFramesToPresent = 2   // the first frame builds the rep geometry
+            let bs = DispatchWorkItem { [weak self] in self?.clearRestoreSnapshot(animated: true) }
+            restoreBackstop = bs
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: bs)
+        }
+    }
+
+    /// Called once per completed Metal frame (from heavyRenderTick). Counts the
+    /// restored scene's presented frames down; the handoff itself waits for the
+    /// object list too (finishRestoreHandoffIfReady, also polled by the timer).
+    private func restoreRenderTick() {
+        guard let left = restoreFramesToPresent, left > 0 else { return }
+        restoreFramesToPresent = left - 1
+        finishRestoreHandoffIfReady()
+    }
+
+    private func finishRestoreHandoffIfReady() {
+        guard restoreFramesToPresent == 0, !objects.isEmpty else { return }
+        clearRestoreSnapshot(animated: true)
+    }
+
+    /// Drop the restore snapshot; ContentView's `.transition(.opacity)` fades it
+    /// when the change is animated.
+    private func clearRestoreSnapshot(animated: Bool) {
+        restoreBackstop?.cancel(); restoreBackstop = nil
+        restoreFramesToPresent = nil
+        guard restoreSnapshot != nil else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.35)) { restoreSnapshot = nil }
+        } else {
+            restoreSnapshot = nil
         }
     }
     #endif
@@ -1084,6 +1165,9 @@ final class PyMOLEngine: ObservableObject {
     // Clears the "Calculating…" overlay after the render frame that actually built
     // the deferred rep geometry, so the overlay spans the real build work.
     func heavyRenderTick() {
+        #if os(iOS)
+        restoreRenderTick()
+        #endif
         guard pendingHeavyClearFrames > 0 else { return }
         pendingHeavyClearFrames -= 1
         if pendingHeavyClearFrames == 0 {
