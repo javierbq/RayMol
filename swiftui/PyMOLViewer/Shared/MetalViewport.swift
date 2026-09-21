@@ -644,7 +644,7 @@ extension MetalViewport {
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
-            engine.heavyRenderTick()
+            engine.heavyRenderTick(presented: presented)
         }
 
         // MARK: - Coordinate conversion
