@@ -60,6 +60,22 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
   return 1;
 }
 
+// Traced-reflection material of the rep about to be drawn (metal_rt_reflect /
+// _tint / _rough, object-scoped with a global fallback). Programs the renderer
+// for the NEXT draw; every Metal draw path calls it so a reflective surface
+// cannot leak its material onto the cartoon drawn after it.
+static void metalApplyRepMaterial(CCGORenderer* I)
+{
+  auto* G = I->G;
+  if (!G->Renderer) return;
+  CSetting *s1 = (I->rep && I->rep->cs) ? I->rep->cs->Setting.get() : nullptr;
+  CSetting *s2 = (I->rep && I->rep->obj) ? I->rep->obj->Setting.get() : nullptr;
+  G->Renderer->setRepMaterial(
+      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect),
+      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint),
+      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough));
+}
+
 // Per-representation clipping: program the renderer's per-rep clip planes for
 // the lit VBO draw that follows. Only the surface rep carries clip fractions
 // (surface_clip_front/back); every other lit draw (cartoon/lines) must reset to
@@ -75,6 +91,7 @@ static void metalApplyRepClip(CCGORenderer* I)
 {
   auto* G = I->G;
   if (!G->Renderer) return;
+  metalApplyRepMaterial(I);
   // Gate on the ACTUAL rep type, not the metalIsSurfaceShader flag (that flag is
   // set on GL_SURFACE_SHADER enable; it must not leak the clip onto a later rep).
   pymol::CObject* obj = I->rep ? I->rep->obj : nullptr;
@@ -258,6 +275,7 @@ static void drawSphereImpostorsViaMetal(
     call.interiorCap = SettingGet_b(G, s1, s2, cSetting_metal_interior_cap) ? 1 : 0;
     if (call.interiorCap) metalApplyInteriorCapColor(I);
   }
+  metalApplyRepMaterial(I);
 
   G->Renderer->drawSphereImpostors(call);
 }
@@ -341,6 +359,7 @@ static void drawCylinderImpostorsViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     call.interiorCap = SettingGet_b(G, s1, s2, cSetting_metal_interior_cap) ? 1 : 0;
     if (call.interiorCap) metalApplyInteriorCapColor(I);
   }
+  metalApplyRepMaterial(I);
 
   G->Renderer->drawCylinderImpostors(call);
 }

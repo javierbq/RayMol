@@ -940,6 +940,11 @@ enum {
   REC_i( 830, metal_dof_quality                       , global    , 4 ),     /* Metal depth-of-field: bokeh quality level 1..4. Higher traces more gather samples (1->16, 2->32, 3->64, 4->96) for denser, cleaner out-of-focus blur; levels >=2 also run a de-noise smoothing pass (two-pass). 1 = fast single-pass. */
   REC_b( 831, cartoon_spline                          , ostate    , 1 ),
   REC_f( 832, metal_rt_scale                          , global    , 0.5F ),  /* Metal real-time RT: resolution scale of the ray-traced AO + shadow pass in the LIVE view (0.25..1). 0.5 traces a quarter of the rays; the depth-aware composite blur hides the upscale. Offscreen PNG/movie export always traces at full resolution. */     /* Cartoon path tessellation: 0 = classic per-residue Hermite blend (cartoon_throw/power, cartoon_refine); 1 = ChimeraX-style natural cubic spline through the CA trace with parallel-transported, smoothly twisted orientation frames (no per-residue bulges or facets; pairs well with cartoon_sampling 14-20 and Metal ray-traced shadows). */
+  REC_f( 833, metal_rt_reflect                        , object    , 0.0F ),  /* Metal real-time RT: traced self-reflection strength (Fresnel F0, 0..1). 0 = off; ~0.25 = glossy plastic/lacquer; 1 = mirror. Per object: set metal_rt_reflect, 0.3, myobj. Needs metal_raytrace. */
+  REC_f( 834, metal_rt_reflect_tint                   , object    , 0.0F ),  /* Metal real-time RT: how much the surface's own colour tints its reflection (0 = chrome-like white reflection, 1 = coloured/anodised metal). */
+  REC_f( 835, metal_rt_reflect_rough                  , object    , 0.0F ),  /* Metal real-time RT: reflection roughness (0 = mirror, 1 = very blurry). The live view traces one jittered ray; exports average metal_rt_reflect_samples rays. */
+  REC_b( 836, metal_rt_reflect_env                    , global    , true ),  /* Metal real-time RT: reflection rays that miss the molecule see a soft studio environment (on) or the plain background colour (off). */
+  REC_i( 837, metal_rt_reflect_samples                , global    , 8 ),     /* Metal real-time RT: reflection rays per pixel for glossy (rough > 0) materials in offscreen PNG/movie exports (1..64). The live view always traces one. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

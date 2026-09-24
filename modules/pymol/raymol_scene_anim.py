@@ -34,6 +34,7 @@ INTERPOLATE = frozenset([
     "metal_dof_focus", "metal_dof_range", "metal_dof_aperture",
     "metal_exposure", "metal_sss_wrap", "metal_outline_width",
     "metal_rt_ao_radius", "metal_rt_ao_intensity", "metal_rt_shadow_intensity",
+    "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     "ambient", "direct", "reflect", "specular", "shininess", "fog",
 ])
 
