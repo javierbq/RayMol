@@ -8,6 +8,8 @@ them on recall, persisting them in the .pse via registered session save/restore
 tasks (see cmd._deferred_init_pymol_internals):
 
   * render "look" settings (CAPTURE below) — metal_* / lighting / DOF / fog
+  * per-object overrides of the object-scoped ones (OBJECT_CAPTURE below) —
+    _scene_object_settings
   * per-object TTT matrices (Move mode) — _scene_ttt
   * the autofocus target selection 'dof_focus' — _scene_focus; a single GLOBAL
     named selection the native scene never stored, so without it every auto-lock
@@ -39,6 +41,26 @@ CAPTURE = [
 
 # {scene_name: {setting: value}} — persisted into the .pse via session tasks.
 _scene_settings = {}
+
+# Object-scoped settings a scene also captures PER OBJECT. `cmd.get`/`cmd.set`
+# with no object name read and write only the GLOBAL fallback of these, so the
+# CAPTURE list above can restore that fallback and nothing else: a scene with
+# one reflective object beside a matte one could not be expressed, and an object
+# that gained an override AFTER the scene was stored kept it on recall. Captured
+# from each object's own table (cmd.get_object_settings — explicitly set entries
+# only, so a global value is never baked onto an object) and applied with the
+# object argument.
+OBJECT_CAPTURE = [
+    "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
+]
+
+# {scene_name: {obj_name: {setting: value}}} — per-object overrides of
+# OBJECT_CAPTURE. Every object alive at store time is a key, with {} when it had
+# no override of its own, so recall can UNSET as well as set (the _apply_ttt
+# reset pattern). A scene absent from this map — every scene in a .pse written
+# before per-object capture existed — leaves each object's own values alone
+# instead of unsetting them. Persisted into the .pse alongside the settings.
+_scene_object_settings = {}
 
 # Identity TTT (16-float) used when an object has no transform yet / to reset one.
 _IDENTITY_TTT = [1.0, 0.0, 0.0, 0.0,
@@ -101,6 +123,72 @@ def _capture(_self=cmd):
         except Exception:
             pass   # setting absent in this build — skip
     return out
+
+
+def _object_capture_indices():
+    """{setting index: name} for OBJECT_CAPTURE, skipping names this build does
+    not define (the module can be imported against an older core)."""
+    from pymol import setting
+    out = {}
+    for s in OBJECT_CAPTURE:
+        try:
+            out[setting._get_index(s)] = s
+        except Exception:
+            pass
+    return out
+
+
+def _capture_object_settings(_self=cmd):
+    """{obj: {setting: value}} for every current object, read from each object's
+    own explicitly-set table. An object with no override of its own gets {},
+    which is what tells recall to unset rather than to leave it alone."""
+    want = _object_capture_indices()
+    out = {}
+    if not want:
+        return out
+    try:
+        objs = _self.get_names('objects') or []
+    except Exception:
+        objs = []
+    for o in objs:
+        d = {}
+        try:
+            entries = _self.get_object_settings(o) or []
+        except Exception:
+            entries = []
+        for e in entries:
+            try:
+                name = want.get(e[0])   # [index, type, value], SettingAsPyList
+            except Exception:
+                continue
+            if name is not None:
+                d[name] = e[2]
+        out[o] = d
+    return out
+
+
+def _apply_object_settings(name, _self=cmd):
+    """Restore per-object overrides for scene `name`; unset the settings an
+    object did not have of its own when the scene was stored; skip objects that
+    no longer exist. A scene with no recorded map (legacy .pse) is a no-op."""
+    d = _scene_object_settings.get(name)
+    if not d:
+        return
+    try:
+        live = set(_self.get_names('objects') or [])
+    except Exception:
+        live = set()
+    for o, kv in d.items():
+        if o not in live:
+            continue
+        for s in OBJECT_CAPTURE:
+            try:
+                if s in kv:
+                    _self.set(s, kv[s], o)
+                else:
+                    _self.unset(s, o)
+            except Exception:
+                pass
 
 
 def _capture_ttt(_self=cmd):
@@ -192,6 +280,12 @@ def scene_settings_map(name):
     return dict(_scene_settings.get(name, {}))
 
 
+def scene_object_settings_map(name):
+    """Copy of the per-object setting overrides captured for scene `name`
+    ({} if the scene has none, e.g. a .pse written before this existed)."""
+    return {o: dict(kv) for o, kv in _scene_object_settings.get(name, {}).items()}
+
+
 def scene_focus_map(name):
     """Copy of the autofocus target atoms captured for scene `name` ([] if none)."""
     return list(_scene_focus.get(name, []))
@@ -236,6 +330,7 @@ def snapshot_current(_self=cmd):
     name = _current(_self)
     if name:
         _scene_settings[name] = _capture(_self)
+        _scene_object_settings[name] = _capture_object_settings(_self)
         _scene_ttt[name] = _capture_ttt(_self)
         _scene_focus[name] = _capture_focus(_self)
     return name
@@ -251,6 +346,9 @@ def apply(name, _self=cmd):
                 _self.set(s, v)
             except Exception:
                 pass
+    # After the globals: a per-object override has to win over the fallback the
+    # same recall just wrote.
+    _apply_object_settings(name, _self)
     _apply_ttt(name, _self)
     _apply_focus(name, _self)
 
@@ -269,6 +367,9 @@ def prune(_self=cmd):
     for name in list(_scene_settings.keys()):
         if name not in live:
             _scene_settings.pop(name, None)
+    for name in list(_scene_object_settings.keys()):
+        if name not in live:
+            _scene_object_settings.pop(name, None)
     for name in list(_scene_ttt.keys()):
         if name not in live:
             _scene_ttt.pop(name, None)
@@ -280,6 +381,7 @@ def prune(_self=cmd):
 def clear_all(_self=cmd):
     """Forget all snapshots (call after `scene *, clear`)."""
     _scene_settings.clear()
+    _scene_object_settings.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
 
@@ -290,6 +392,8 @@ def rename(old, new, _self=cmd):
         return
     if old in _scene_settings:
         _scene_settings[new] = _scene_settings.pop(old)
+    if old in _scene_object_settings:
+        _scene_object_settings[new] = _scene_object_settings.pop(old)
     if old in _scene_ttt:
         _scene_ttt[new] = _scene_ttt.pop(old)
     if old in _scene_focus:
@@ -318,18 +422,41 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
 # --- .pse persistence (registered in cmd._deferred_init_pymol_internals) ---
 def session_save(session, *, _self=cmd):
     session["raymol_scene_settings"] = dict(_scene_settings)
+    session["raymol_scene_object_settings"] = {
+        k: {o: dict(kv) for o, kv in v.items()}
+        for k, v in _scene_object_settings.items()}
     session["raymol_scene_ttt"] = {k: dict(v) for k, v in _scene_ttt.items()}
     session["raymol_scene_focus"] = {k: list(v) for k, v in _scene_focus.items()}
     return 1
 
 
+def _restore_object_settings(session):
+    """Read the per-object payload, tolerating everything an older .pse can
+    hold. A session written before per-object capture existed has no such key at
+    all: it restores as "no per-object data", so recall applies the flat
+    (global) payload exactly as that build did and unsets nothing. A payload
+    that is not the nested {scene: {object: {setting: value}}} shape is dropped
+    for that scene rather than raising."""
+    payload = session.get("raymol_scene_object_settings")
+    if not isinstance(payload, dict):
+        return
+    for name, per_obj in payload.items():
+        if not isinstance(per_obj, dict):
+            continue
+        clean = {o: dict(kv) for o, kv in per_obj.items() if isinstance(kv, dict)}
+        if len(clean) == len(per_obj):
+            _scene_object_settings[name] = clean
+
+
 def session_restore(session, *, _self=cmd):
     _scene_settings.clear()
+    _scene_object_settings.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
     d = session.get("raymol_scene_settings")
     if isinstance(d, dict):
         _scene_settings.update(d)
+    _restore_object_settings(session)
     t = session.get("raymol_scene_ttt")
     if isinstance(t, dict):
         _scene_ttt.update({k: dict(v) for k, v in t.items()})
