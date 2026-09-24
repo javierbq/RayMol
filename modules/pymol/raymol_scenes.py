@@ -31,6 +31,7 @@ CAPTURE = [
     "metal_rt_shadow_intensity", "metal_rt_scale", "metal_outline", "metal_outline_width",
     "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     "metal_rt_reflect_env", "metal_rt_reflect_samples",
+    "material_default", "material_env",
     "metal_msaa", "metal_tonemap", "metal_exposure", "metal_sss_wrap",
     "metal_dof", "metal_dof_focus", "metal_dof_range", "metal_dof_aperture",
     "metal_dof_quality", "metal_dof_autofocus", "metal_temporal_ao",
@@ -38,6 +39,13 @@ CAPTURE = [
     "ambient", "direct", "reflect", "specular", "shininess",
     "ray_opaque_background",
 ]
+
+# Settings in CAPTURE whose value is a material ID. `cmd.get` renders those as
+# NAMES, which round-trip only in a build that knows the name; the id is what
+# every other part of the format stores, including the per-object map below and
+# the setting table in the .pse itself. Captured as ints so a scene written here
+# still means the same thing to a build with a different material table.
+MATERIAL_ID_SETTINGS = frozenset(["material_default"])
 
 # {scene_name: {setting: value}} — persisted into the .pse via session tasks.
 _scene_settings = {}
@@ -52,6 +60,12 @@ _scene_settings = {}
 # object argument.
 OBJECT_CAPTURE = [
     "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
+    # Materials (#503). Ids, so a scene stores what the object is MADE OF
+    # independently of its colour. They step at a scene cut -- there is nothing
+    # meaningful to interpolate between two materials -- which is why they are
+    # captured here and deliberately absent from raymol_scene_anim.INTERPOLATE.
+    "cartoon_material", "surface_material", "stick_material", "sphere_material",
+    "transparency_peel",
 ]
 
 # {scene_name: {obj_name: {setting: value}}} — per-object overrides of
@@ -119,7 +133,8 @@ def _capture(_self=cmd):
     out = {}
     for s in CAPTURE:
         try:
-            out[s] = _self.get(s)
+            out[s] = (_self.get_setting_int(s) if s in MATERIAL_ID_SETTINGS
+                      else _self.get(s))
         except Exception:
             pass   # setting absent in this build — skip
     return out
