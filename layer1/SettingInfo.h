@@ -946,10 +946,10 @@ enum {
   REC_b( 836, metal_rt_reflect_env                    , global    , true ),  /* Metal real-time RT: reflection rays that miss the molecule see a soft studio environment (on) or the plain background colour (off). */
   REC_i( 837, metal_rt_reflect_samples                , global    , 8 ),     /* Metal real-time RT: reflection rays per pixel for glossy (rough > 0) materials in offscreen PNG/movie exports (1..64). The live view always traces one. */
   /* Materials (#503). Ids, not names, so they round-trip through .pse and
-     through older builds; SettingGetTextPtr renders them as names. 0 is
-     `default`: today's shading, byte for byte. Resolution for a draw is the
-     rep's object-level value, then the rep's global value, then
-     material_default. */
+     through older builds. 0 is `default`: today's shading, byte for byte.
+     Resolution for a draw is the rep's object-level value, then the rep's
+     global value, then material_default. The name <-> id mapping arrives with
+     the material table, both directions together. */
   REC_i( 838, cartoon_material                       , object    , 0 ),     /* Material of the cartoon representation, as a material id. 0 = default (unchanged shading). Object-scoped: the object's value wins over this setting's global value, which wins over material_default. */
   REC_i( 839, surface_material                       , object    , 0 ),     /* Material of the surface representation (see cartoon_material). 0 = default. */
   REC_i( 840, stick_material                         , object    , 0 ),     /* Material of the stick representation, including the stick_ball spheres the stick rep emits (see cartoon_material). 0 = default. */

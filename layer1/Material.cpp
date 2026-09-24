@@ -1,38 +1,9 @@
 /*
- * Materials (#503): the named material table. See Material.h.
+ * Materials (#503): material ids, and which settings hold one. See Material.h.
  */
 
 #include "Material.h"
 #include "Setting.h"
-
-namespace
-{
-/* Index is the material id; the order must match the enum in Material.h. */
-const char* const kMaterialNames[] = {
-    "default",
-    "matte",
-    "plastic",
-    "metallic",
-    "glass",
-    "frosted_glass",
-    "jelly",
-    "marble",
-    "clay",
-    "rubber",
-};
-
-static_assert(sizeof(kMaterialNames) / sizeof(kMaterialNames[0]) ==
-                  cMaterial_count,
-    "material name table and id enum disagree");
-} // namespace
-
-const char* MaterialGetName(int id)
-{
-  if (id < 0 || id >= cMaterial_count) {
-    return nullptr;
-  }
-  return kMaterialNames[id];
-}
 
 bool MaterialIsRepMaterialSetting(int index)
 {
@@ -55,8 +26,3 @@ bool MaterialIsSelectionRejectedSetting(int index)
          MaterialIsRepMaterialSetting(index);
 }
 
-bool MaterialIsMaterialSetting(int index)
-{
-  return index == cSetting_material_default ||
-         MaterialIsRepMaterialSetting(index);
-}

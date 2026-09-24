@@ -1,17 +1,15 @@
 /*
- * Materials (#503): the named material table.
+ * Materials (#503): material ids, and which settings hold one.
  *
  * A material says what a representation is MADE OF, the way colour says what
  * it IS. Ids — not names — are what `cartoon_material`, `surface_material`,
  * `stick_material`, `sphere_material` and `material_default` store, so the
  * values round-trip through `.pse` and through builds that predate a given
- * material. Names live here, on the C side, so `get`, the `Setting: ... set
- * to ...` feedback line, `iterate s.stick_material`, the Settings panel and
- * `.pml` logs all show `marble` rather than `7`.
+ * material. Id 0 is `default`: today's shading, byte for byte.
  *
- * Id 0 is `default`: today's shading, byte for byte. An id with no row here is
- * not renamed and resolves to `default` at draw time; a NAME never falls back,
- * it is an error at set time.
+ * The names, and the table behind them, arrive with the material table — both
+ * directions of the mapping at once, so `get` never reports a name that `set`
+ * would refuse.
  */
 
 #pragma once
@@ -32,11 +30,6 @@ enum {
 };
 
 /**
- * Name of a material id, or nullptr when no row has that id.
- */
-const char* MaterialGetName(int id);
-
-/**
  * True for the four PER-REPRESENTATION material settings.
  */
 bool MaterialIsRepMaterialSetting(int index);
@@ -49,9 +42,3 @@ bool MaterialIsRepMaterialSetting(int index);
  */
 bool MaterialIsSelectionRejectedSetting(int index);
 
-/**
- * True for every setting whose value is a material id (the four
- * per-representation ones plus `material_default`) — i.e. every setting whose
- * value should be rendered as a name rather than as a number.
- */
-bool MaterialIsMaterialSetting(int index);
