@@ -98,8 +98,16 @@ class FakeServer:
         self.downloads = 0
         #: ticket id -> the query it was submitted for.
         self.tickets = {}
+        #: Held shut, the worker blocks before it can finish. `msa_search` pumps
+        #: on its way out (msa.py:627, so a cached search lands before the call
+        #: returns), so a test that needs a search which has FINISHED but not
+        #: yet LANDED has to keep the worker busy until msa_search has returned
+        #: -- otherwise whether it lands early is a race with the scheduler.
+        self.gate = threading.Event()
+        self.gate.set()
 
     def __call__(self, request, timeout=None):
+        self.gate.wait(timeout=10)
         url = request.full_url
         if url.endswith('/ticket/msa'):
             self.submits += 1
@@ -682,7 +690,14 @@ class PanelPollTest(MSAEndToEndTestCase):
 
         server = FakeServer()
         with patch('pymol.msas.colabfold._urlopen', server):
+            # Hold the worker before its first request so it cannot possibly
+            # finish while msa_search is still running: msa_search pumps on the
+            # way out, and a search that settled by then lands there instead of
+            # here, which is the state this test exists to rule out.
+            server.gate.clear()
             search_id = cmd.msa_search(QUERY, name='aln')
+            self.assertEqual(store.names(), [])   # nothing could have landed yet
+            server.gate.set()
             searching.join(search_id, timeout=10)
         # The worker is done and yet the store is untouched: only the main thread writes.
         self.assertEqual(store.names(), [])
