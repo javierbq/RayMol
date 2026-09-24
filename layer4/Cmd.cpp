@@ -53,6 +53,7 @@ Z* -------------------------------------------------------------------
 #include"Ortho.h"
 #include"ObjectMolecule.h"
 #include"ObjectMolecule3.h"
+#include"Material.h"
 #include"Executive.h"
 #include"ExecutivePython.h"
 #include"Selector.h"
@@ -2343,6 +2344,47 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
   auto res = ExecutiveGetType(G, str1);
   APIExit(G);
   return APIResult(G, res);
+}
+
+/**
+ * Materials (#503): the material id one representation of one object resolves
+ * to for a draw -- object value, then the rep's global value, then
+ * material_default. Internal; the Inspector and the CI test read it.
+ *
+ * _cmd.get_rep_material(object_name_or_empty, rep_index)
+ */
+static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = -1;
+  if (!PyArg_ParseTuple(args, "Osi", &self, &oname, &repType)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  const CSetting* objSetting = nullptr;
+  bool ok = true;
+  if (oname && oname[0]) {
+    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    if (!obj) {
+      ErrMessage(G, "GetRepMaterial", "named object not found.");
+      ok = false;
+    } else {
+      objSetting = obj->Setting.get();
+    }
+  }
+  PyObject* result = nullptr;
+  if (ok) {
+    result = PyInt_FromLong(
+        MaterialResolveSettingId(G, nullptr, objSetting, repType));
+  }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
 }
 
 static PyObject *CmdGetObjectSettings(PyObject * self, PyObject * args)
@@ -6579,6 +6621,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_matrix", CmdGetObjectMatrix, METH_VARARGS},
   {"get_object_ttt", CmdGetObjectTTT, METH_VARARGS},
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
+  {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},
   {"get_povray", CmdGetPovRay, METH_VARARGS},

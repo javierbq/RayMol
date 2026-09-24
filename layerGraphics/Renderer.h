@@ -1,4 +1,6 @@
 #pragma once
+
+#include "Material.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -222,12 +224,16 @@ public:
   virtual void setRepClip(
       float front, float back, float fracFront = 0.0f, float fracBack = 0.0f) {}
 
-  // Per-representation traced-reflection material for the NEXT draw
-  // (metal_rt_reflect / _tint / _rough, object-scoped settings). Recorded per
-  // RT geometry occurrence so the reflection pass can look up the material of
-  // the primitive under each pixel and of every reflection hit. Persists like
-  // setRepClip: set before every draw. Default: no-op.
-  virtual void setRepMaterial(float reflect, float tint, float rough) {}
+  // Material of the representation about to be drawn (#503). Resolved from the
+  // rep's material setting, object value first, then the rep's global value,
+  // then material_default; `reflect`/`tint`/`rough` additionally carry the
+  // legacy metal_rt_reflect* triple, which the `default` material reads.
+  //
+  // Called on EVERY lit draw, including the reps that have no material of
+  // their own (they pass `default`), so a material cannot leak from one rep
+  // onto the next. Persists like setRepClip: set before every draw.
+  // Default: no-op.
+  virtual void setRepMaterial(const MaterialParams& params) {}
   // Global traced-reflection knobs: environment on miss (studio vs background)
   // and rays/pixel for glossy materials in offscreen exports. Default: no-op.
   virtual void setReflectionParams(int env, int samples) {}
