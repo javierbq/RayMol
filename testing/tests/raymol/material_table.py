@@ -36,6 +36,11 @@ TABLE = [
 MATERIAL_SETTINGS = ['cartoon_material', 'surface_material', 'stick_material',
                      'sphere_material', 'material_default']
 
+# The materials this build can actually draw, in id order. Each wave of the epic
+# flips one or more `implemented` flags in layer1/Material.cpp and must update
+# this list in the same change -- that is the point of asserting it exactly.
+IMPLEMENTED_TODAY = ['default']
+
 
 class TestMaterialTable(testing.PyMOLTestCase):
     def testTheWholeTableIsExactlyTheV1List(self):
@@ -45,12 +50,34 @@ class TestMaterialTable(testing.PyMOLTestCase):
         full = _cmd.get_material_names(0)
         self.assertEqual([i for i, _ in full], list(range(len(full))))
 
-    def testNamesApiOffersOnlyWhatCanDraw(self):
-        implemented = _cmd.get_material_names(1)
-        full = _cmd.get_material_names(0)
-        self.assertTrue(set(map(tuple, implemented)) <= set(map(tuple, full)))
+    def testNamesApiOffersExactlyTheImplementedRows(self):
+        self.assertEqual([n for _, n in _cmd.get_material_names(1)],
+                         IMPLEMENTED_TODAY)
         # `default` can always draw, and is first so a dropdown leads with it.
-        self.assertEqual(tuple(implemented[0]), (0, 'default'))
+        self.assertEqual(tuple(_cmd.get_material_names(1)[0]), (0, 'default'))
+
+    def testTheFlagActuallyFilters(self):
+        """Without this, a no-op `only_implemented` would leave every other
+        assertion in this file green while the dropdown offered looks that
+        cannot draw -- which is the whole reason the flag exists."""
+        full = _cmd.get_material_names(0)
+        implemented = _cmd.get_material_names(1)
+        self.assertLess(len(implemented), len(full))
+        excluded = set(map(tuple, full)) - set(map(tuple, implemented))
+        self.assertTrue(excluded)
+        self.assertTrue(set(map(tuple, implemented)) <= set(map(tuple, full)))
+
+    def testAnExcludedRowIsStillASettableId(self):
+        """Hidden from the dropdown, but a real material: a .pse written by a
+        build where it IS implemented still has to open here."""
+        implemented = set(i for i, _ in _cmd.get_material_names(1))
+        excluded = sorted((i, n) for i, n in _cmd.get_material_names(0)
+                          if i not in implemented)
+        self.assertTrue(excluded)
+        want_id, name = excluded[0]
+        cmd.set('surface_material', name)
+        self.assertEqual(cmd.get_setting_int('surface_material'), want_id)
+        self.assertEqual(cmd.get('surface_material'), name)
 
     def testTheDefaultOfTheApiIsImplementedOnly(self):
         self.assertEqual(_cmd.get_material_names(), _cmd.get_material_names(1))

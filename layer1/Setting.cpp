@@ -2233,9 +2233,15 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
     SceneChanged(G);
     break;
   case cSetting_material_default:
-    /* The global fallback changes the resolved material of every rep that has
-       no material of its own. */
-    ExecutiveInvalidateRep(G, inv_sele, cRepAll, cRepInvColor);
+    /* The global fallback reaches exactly the four representations that HAVE a
+       material setting; ribbon, mesh, dots, lines and labels resolve to
+       `default` whatever this is (MaterialSettingForRep returns none for them),
+       so rebuilding them would be pure cost on a setting the Scene panel
+       exposes as a slider. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepCartoon, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepSurface, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepSphere, cRepInvColor);
     SceneChanged(G);
     break;
   case cSetting_stick_transparency:
