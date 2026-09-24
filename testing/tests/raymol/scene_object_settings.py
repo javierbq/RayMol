@@ -92,6 +92,29 @@ class TestSceneObjectSettings(testing.PyMOLTestCase):
         self.assertEqual(rs.scene_object_settings_map('A'), {})
         self.assertNotEqual(rs.scene_object_settings_map('B'), {})
 
+    def testAGroupIsNeverCapturedOrApplied(self):
+        """`get_names('objects')` includes groups, and `cmd.set`/`cmd.unset`
+        expand a group name to its MEMBERS. Capturing a group would record its
+        own (empty) table and then unset the setting on every member on recall,
+        wiping the very overrides this module restores."""
+        cmd.set(REFLECT, 1.0, 'm1')
+        cmd.group('grp', 'm1 m2')
+        cmd.scene('A', 'store')
+        self.assertNotIn('grp', rs.scene_object_settings_map('A'))
+        self.assertEqual(sorted(rs.scene_object_settings_map('A')), ['m1', 'm2'])
+        cmd.unset(REFLECT, 'm1')
+        cmd.scene('A', 'recall', animate=0)
+        self.assertAlmostEqual(self._objval('m1'), 1.0, places=5)
+
+    def testALegacyMapNamingAGroupIsIgnored(self):
+        """A .pse written before the guard existed can still carry a group."""
+        cmd.set(REFLECT, 1.0, 'm1')
+        cmd.group('grp', 'm1 m2')
+        cmd.scene('A', 'store')
+        rs._scene_object_settings['A']['grp'] = {}       # as the old build stored it
+        cmd.scene('A', 'recall', animate=0)
+        self.assertAlmostEqual(self._objval('m1'), 1.0, places=5)
+
     def testPSERoundTrip(self):
         cmd.set(REFLECT, 1.0, 'm1')
         cmd.set(TINT, 0.7, 'm1')

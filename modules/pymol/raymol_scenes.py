@@ -138,6 +138,30 @@ def _object_capture_indices():
     return out
 
 
+def _material_objects(_self=cmd):
+    """Current objects that own settings, WITHOUT groups.
+
+    `get_names('objects')` includes group objects, and `cmd.set`/`cmd.unset`
+    expand a group name to its members. Capturing a group would therefore record
+    the group's own (always empty) table and then, on recall, `unset` the
+    setting on every member -- wiping exactly the per-object overrides this
+    module exists to restore, in an order that depends on where the group
+    happens to sit in the name list."""
+    try:
+        objs = _self.get_names('objects') or []
+    except Exception:
+        return []
+    out = []
+    for o in objs:
+        try:
+            if _self.get_type(o) == 'object:group':
+                continue
+        except Exception:
+            pass
+        out.append(o)
+    return out
+
+
 def _capture_object_settings(_self=cmd):
     """{obj: {setting: value}} for every current object, read from each object's
     own explicitly-set table. An object with no override of its own gets {},
@@ -146,10 +170,7 @@ def _capture_object_settings(_self=cmd):
     out = {}
     if not want:
         return out
-    try:
-        objs = _self.get_names('objects') or []
-    except Exception:
-        objs = []
+    objs = _material_objects(_self)
     for o in objs:
         d = {}
         try:
@@ -174,10 +195,10 @@ def _apply_object_settings(name, _self=cmd):
     d = _scene_object_settings.get(name)
     if not d:
         return
-    try:
-        live = set(_self.get_names('objects') or [])
-    except Exception:
-        live = set()
+    # Groups are excluded here as well as at capture: a .pse written before this
+    # guard existed can still carry a group in its map, and applying it would
+    # expand to the members.
+    live = set(_material_objects(_self))
     for o, kv in d.items():
         if o not in live:
             continue
