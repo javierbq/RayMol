@@ -48,7 +48,7 @@ const MaterialRow kMaterialTable[] = {
        params = {family, mode, reflect, tint, rough, {p0..p5}, wantsPeel} */
     {cMaterial_default, "default", cMaterialFamily_default, true, 0.0f, {}},
 
-    {cMaterial_matte, "matte", cMaterialFamily_procedural, false, 0.0f,
+    {cMaterial_matte, "matte", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_matte, 0.0f, 0.0f, 1.0f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
@@ -73,17 +73,17 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.1f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
-    {cMaterial_marble, "marble", cMaterialFamily_procedural, false, 0.0f,
+    {cMaterial_marble, "marble", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_marble, 0.0f, 0.0f, 0.9f,
             {0.0f, 0.22f, 0.0f, 0.0f, 0.85f, 6.0f}, 0}},
 
-    {cMaterial_clay, "clay", cMaterialFamily_procedural, false, 0.0f,
+    {cMaterial_clay, "clay", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_clay, 0.0f, 0.0f, 1.0f,
             {0.04f, 8.0f, 0.15f, 0.0f, 0.0f, 0.0f}, 0}},
 
-    {cMaterial_rubber, "rubber", cMaterialFamily_procedural, false, 0.0f,
+    {cMaterial_rubber, "rubber", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_rubber, 0.0f, 0.0f, 0.95f,
-            {0.14f, 14.0f, 0.0f, 0.10f, 0.0f, 0.0f}, 0}},
+            {0.14f, 14.0f, 0.12f, 0.10f, 0.0f, 0.0f}, 0}},
 };
 
 constexpr int kMaterialTableSize =
@@ -105,6 +105,19 @@ const MaterialRow* MaterialFindRow(int id)
 int MaterialTableSize()
 {
   return kMaterialTableSize;
+}
+
+bool MaterialFamilyIsImplemented(int family)
+{
+  if (family == cMaterialFamily_default) {
+    return true;   // `default` is the family every un-materialled rep draws with
+  }
+  for (int i = 0; i < kMaterialTableSize; ++i) {
+    if (kMaterialTable[i].implemented && kMaterialTable[i].family == family) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool MaterialIsImplemented(int id)

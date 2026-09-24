@@ -27,12 +27,24 @@ from pymol import testing
 SOURCE = os.path.join('layerGraphics', 'metal', 'RendererMetal.mm')
 
 _LITERAL = re.compile(r'static NSString\* const (k\w+) = @R"\((.*?)\)"(.)', re.S)
-# Hand-written helpers in these literals are post_* / rt_*; everything else that
-# looks like a call is an MSL builtin (smoothstep, sample_compare, ...).
+# Hand-written helpers in these literals are post_* / rt_* / mat_*; everything
+# else that looks like a call is an MSL builtin (smoothstep, sample_compare...).
 _DEF = re.compile(
-    r'^\s*(?:static\s+|fragment\s+|vertex\s+)?[\w:<>]+\s+((?:post|rt)_\w+)\s*\(',
+    r'^\s*(?:static\s+|fragment\s+|vertex\s+)?[\w:<>]+\s+((?:post|rt|mat)_\w+)\s*\(',
     re.M)
-_CALL = re.compile(r'\b((?:post|rt)_\w+)\s*\(')
+_CALL = re.compile(r'\b((?:post|rt|mat)_\w+)\s*\(')
+
+# Which shared block(s) each library is compiled with. Mirrors the
+# newLibraryWithSource: call sites in RendererMetal.mm; a library that gained a
+# helper from a block it is NOT built with would fail only at runtime, with
+# nothing but an NSLog.
+_PREPENDED = {
+    'kPostSrc': ('kEyeReconSrc',),
+    'kRTSrc': ('kEyeReconSrc',),
+    'kVBOSrc': ('kMaterialSrc',),
+    'kSphereImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
+    'kCylinderImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
+}
 
 
 def shader_literals(source):
@@ -72,18 +84,62 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
 
     def testRawStringsEndWhereIntended(self):
         literals = shader_literals(self.source())
-        for name in ('kEyeReconSrc', 'kPostSrc', 'kRTSrc'):
+        for name in ('kEyeReconSrc', 'kPostSrc', 'kRTSrc', 'kMaterialSrc',
+                     'kMaterialImpostorSrc', 'kVBOSrc', 'kSphereImpostorSrc',
+                     'kCylinderImpostorSrc'):
             self.assertIn(name, literals)
 
     def testEachLibraryIsSelfContained(self):
         """Every helper a library calls is visible in shared + that library."""
         literals = shader_literals(self.source())
-        shared = literals['kEyeReconSrc']
-        for lib in ('kPostSrc', 'kRTSrc'):
+        for lib, shared_names in sorted(_PREPENDED.items()):
+            shared = ''.join(literals[n] for n in shared_names)
             missing = undefined_helpers(shared + literals[lib])
             self.assertFalse(
                 missing, '%s calls helpers it cannot see at runtime: %s'
                 % (lib, sorted(missing)))
+
+    def testTheMaterialBlockReachesEveryLitLibrary(self):
+        """kMaterialSrc is what stops the three lit libraries drifting apart --
+        the prototype hand-copied its noise into each and they diverged (the
+        cylinder lost a grain octave, marble never reached the impostors)."""
+        source = self.source()
+        for lib in ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc'):
+            self.assertIn(
+                'stringByAppendingString:%s]' % lib, source,
+                '%s must be compiled with the shared material block' % lib)
+        # ...and the noise lives in ONE place.
+        literals = shader_literals(source)
+        for lib in ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc'):
+            self.assertNotIn('float mat_noise(', literals[lib],
+                             '%s re-declares the shared noise' % lib)
+
+    def testTheMaterialModeConstantsMatchTheCTable(self):
+        """The MSL dispatch compares against literal ids. If Material.h ever
+        renumbers a material, the shader would silently shade the wrong one."""
+        import os
+        literals = shader_literals(self.source())
+        msl = literals['kMaterialSrc']
+        root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                            os.pardir)
+        header = os.path.normpath(os.path.join(root, 'layer1', 'Material.h'))
+        if not os.path.isfile(header):
+            self.skipTest('layer1/Material.h not found (not a repo checkout)')
+        with open(header) as handle:
+            enum = handle.read()
+        order = [line.strip().rstrip(',').replace('cMaterial_', '')
+                 for line in enum[enum.index('enum {', enum.index('Material ids')):]
+                                 .splitlines()[1:]
+                 if line.strip().startswith('cMaterial_')]
+        ids = {name: i for i, name in enumerate(order)}
+        for name in ('matte', 'marble', 'clay', 'rubber'):
+            self.assertIn(name, ids, 'material %s vanished from the C enum' % name)
+            self.assertIn('kMatMode_%s' % name, msl)
+            declared = re.search(
+                r'constant int kMatMode_%s\s*=\s*(\d+);' % name, msl)
+            self.assertIsNotNone(declared, name)
+            self.assertEqual(int(declared.group(1)), ids[name],
+                             'kMatMode_%s disagrees with layer1/Material.h' % name)
 
     def testRTBlurUsesTheSharedOrthoAwareDepth(self):
         """rt_composite's bilateral AO blur must reconstruct the neighbour depth

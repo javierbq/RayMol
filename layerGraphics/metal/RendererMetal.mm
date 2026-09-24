@@ -223,15 +223,11 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _drawable(nil)
     , _currentPipeline(nil)
     , _batchPipeline(nil)
-    , _vboPipelineUByte(nil)
-    , _vboPipelineFloat(nil)
     , _vboVertexFunc(nil)
-    , _vboFragmentFunc(nil)
     , _vboVertexUnlitFunc(nil)
     , _vboFragmentUnlitFunc(nil)
     , _vboVertexUnlitFlatFunc(nil)
     , _batchBuffer(nil)
-    , _sphereImpostorPipeline(nil)
     , _cylinderImpostorPipeline(nil)
     , _depthStencilState(nil)
     , _inFlight(std::make_shared<std::atomic<int>>(0))
@@ -401,7 +397,10 @@ void RendererMetal::setSampleCount(NSUInteger n)
   // MRC: release the +1 sample-count-dependent pipelines before discarding them.
   // Lazy ones (sphere/cylinder/bezier/label/line) rebuild on next use; the eager
   // batch/VBO pipelines are rebuilt by build*Pipelines() below.
-  [_sphereImpostorPipeline release];   _sphereImpostorPipeline = nil;
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_sphereImpostorPipeline[f] release]; _sphereImpostorPipeline[f] = nil;
+    [_sphereOitPipeline[f] release];      _sphereOitPipeline[f] = nil;
+  }
   releaseCylinderPipelines();
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
   [_labelPipeline release];            _labelPipeline = nil;
@@ -468,9 +467,7 @@ RendererMetal::~RendererMetal()
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
   [_vboPipelineUByte release];        [_vboPipelineFloat release];
-  [_sphereImpostorPipeline release];
   [_vboOitPipelineUByte release];     [_vboOitPipelineFloat release];
-  [_sphereOitPipeline release];
   [_oitResolvePipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
   [_sphereShadowPipeline release];
@@ -492,7 +489,14 @@ RendererMetal::~RendererMetal()
   [_connectorPipeline release];
 
   // Shader functions (newFunctionWithName, +1).
-  [_vboVertexFunc release];           [_vboFragmentFunc release];
+  [_vboVertexFunc release];
+  [_vboLibrary release];  [_sphereLibrary release];  [_cylinderLibrary release];
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_vboFragmentFunc[f] release];      [_vboFragmentOitFunc[f] release];
+    [_vboPipelineUByte[f] release];     [_vboPipelineFloat[f] release];
+    [_vboOitPipelineUByte[f] release];  [_vboOitPipelineFloat[f] release];
+    [_sphereImpostorPipeline[f] release];  [_sphereOitPipeline[f] release];
+  }
   [_vboVertexUnlitFunc release];      [_vboFragmentUnlitFunc release];
   [_vboVertexUnlitFlatFunc release];
   [_vboFragmentOitFunc release];      [_vboFragmentShadowFunc release];
@@ -5031,37 +5035,206 @@ void RendererMetal::pixelStorei(int /*pname*/, int /*param*/)
 #pragma mark - VBO Pipeline
 // ---------------------------------------------------------------------------
 
-void RendererMetal::buildVBOPipelines()
-{
-  // MRC: release the previous build's owned objects before this call rebuilds
-  // them (e.g. on an MSAA sample-count change via setSampleCount). On the first
-  // call (from the ctor) every ivar is nil, so each release is a no-op. The
-  // _vboShadowPipeline* are NOT included — buildShadowPipelines() guards against
-  // a second build, so this function never overwrites them.
-  [_vboVertexFunc release];           _vboVertexFunc = nil;
-  [_vboFragmentFunc release];         _vboFragmentFunc = nil;
-  [_vboVertexUnlitFunc release];      _vboVertexUnlitFunc = nil;
-  [_vboFragmentUnlitFunc release];    _vboFragmentUnlitFunc = nil;
-  [_vboVertexUnlitFlatFunc release];  _vboVertexUnlitFlatFunc = nil;
-  [_vboFragmentShadowFunc release];   _vboFragmentShadowFunc = nil;
-  [_capMarkVtxFunc release];          _capMarkVtxFunc = nil;
-  [_capMarkFragFunc release];         _capMarkFragFunc = nil;
-  [_capFillVtxFunc release];          _capFillVtxFunc = nil;
-  [_capFillFragFunc release];         _capFillFragFunc = nil;
-  [_lineAAVtxFunc release];           _lineAAVtxFunc = nil;
-  [_lineAAFragFunc release];          _lineAAFragFunc = nil;
-  [_vboFragmentOitFunc release];      _vboFragmentOitFunc = nil;
-  [_capMarkDSS release];              _capMarkDSS = nil;
-  [_capFillDSS release];              _capFillDSS = nil;
-  [_capFillPipeline release];         _capFillPipeline = nil;
-  [_vboPipelineUByte release];        _vboPipelineUByte = nil;
-  [_vboPipelineFloat release];        _vboPipelineFloat = nil;
-  [_vboOitPipelineUByte release];     _vboOitPipelineUByte = nil;
-  [_vboOitPipelineFloat release];     _vboOitPipelineFloat = nil;
+// Shared material shading (#503), prepended to every lit MSL library.
+//
+// Metal does no cross-library linking, so each library ends up with its own
+// compiled copy of these helpers -- but there is exactly ONE source for them,
+// which is the point. The prototype hand-copied its noise into three libraries
+// and they had already drifted: the cylinder's rubber grain had lost an octave,
+// and marble existed only on the lit-VBO path because the impostor copies never
+// got fBm at all.
+//
+// The three libraries have incompatible uniform structs (LightU vs SphereU vs
+// CylU), so everything here takes explicit scalars instead of any one of them.
+// Every function is a pure function of its inputs: no material writes a
+// setting, and none touches the user's colour except as the `base` handed in.
+//
+// The mode constants mirror the ids in layer1/Material.h; material_modes.py
+// fails if they drift.
+static NSString* const kMaterialSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
 
-  // Metal shader for VBO-based molecular geometry (cartoons, surfaces, etc.)
-  // Supports position + normal + color with basic Lambertian lighting.
-  NSString* vboSrc = @R"(
+// Specialised per PIPELINE, not tested per draw. The default family compiles
+// with every material branch below eliminated at compile time, which is what
+// makes a `default` render byte-identical to the build before materials
+// existed rather than merely equal to it.
+constant int kMatFamily [[function_constant(0)]];
+constant bool kMatProcedural = (kMatFamily == 1);
+
+constant int kMatMode_matte  = 1;
+constant int kMatMode_marble = 7;
+constant int kMatMode_clay   = 8;
+constant int kMatMode_rubber = 9;
+
+struct MaterialU {
+  float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
+
+// --- value noise -----------------------------------------------------------
+static float mat_hash(float3 p) {
+  p = fract(p * 0.3183099 + float3(0.1, 0.2, 0.3));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+static float mat_noise(float3 x) {
+  float3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(mat_hash(i + float3(0, 0, 0)), mat_hash(i + float3(1, 0, 0)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 0)), mat_hash(i + float3(1, 1, 0)), f.x), f.y),
+             mix(mix(mat_hash(i + float3(0, 0, 1)), mat_hash(i + float3(1, 0, 1)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 1)), mat_hash(i + float3(1, 1, 1)), f.x), f.y), f.z);
+}
+static float mat_fbm(float3 p) {   // 5 octaves, 0..~1
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * mat_noise(p); p = p * 2.03 + float3(1.7, 9.2, 3.1); a *= 0.5; }
+  return s;
+}
+static float mat_turb(float3 p) {  // turbulence: sum of |noise - 0.5|
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * abs(mat_noise(p) * 2.0 - 1.0); p = p * 2.03 + float3(3.1, 1.7, 9.2); a *= 0.5; }
+  return s;
+}
+
+// Two octaves of model-space grain, centred on 1.0. Every grainy material uses
+// the same shape so they differ only by amplitude and frequency.
+static float mat_grain(float3 pModel, float amount, float freq, float harmonic, float offset) {
+  if (amount <= 0.0) return 1.0;
+  return 1.0 + amount * (mat_noise(pModel * freq) * 2.0 - 1.0)
+             + 0.5 * amount * (mat_noise(pModel * freq * harmonic + offset) * 2.0 - 1.0);
+}
+
+// --- marble ----------------------------------------------------------------
+// Veined albedo, applied BEFORE lighting: marble is the one procedural material
+// that keeps the default two-light model, so the caller multiplies the base
+// colour through this and then shades normally.
+//
+// p[1] vein scale, p[4] vein contrast, p[5] vein sharpness.
+static float3 mat_marble_albedo(float3 base, float3 pModel, constant MaterialU& m) {
+  float3 p = pModel * max(m.p[1], 1e-3);
+  float turb = mat_turb(p * 0.9);
+  // Primary veins: one dominant direction with a second, weaker crossing set.
+  float v1 = sin((p.x + 0.55 * p.y + 0.35 * p.z) * 1.0 + turb * 6.5);
+  float v2 = sin((0.4 * p.x - p.y + 0.6 * p.z) * 0.7 + turb * 4.0 + 2.1);
+  float sharp = max(m.p[5], 1.0);
+  float vein = saturate(pow(1.0 - abs(v1), sharp) + 0.45 * pow(1.0 - abs(v2), sharp * 1.4));
+  // Mottling: slow fbm moves the stone between slightly lighter and darker.
+  float mottle = mat_fbm(p * 0.35 + 11.0);
+  float3 stone = base * mix(0.88, 1.06, mottle);
+  // Vein colour is DERIVED from the base, never replaces it: a rainbow cartoon
+  // in marble stays a rainbow.
+  float3 veinCol = base * 0.42 + float3(0.06, 0.055, 0.05);
+  // A soft halo around each vein reads as the translucent diffusion of stone.
+  float halo = pow(1.0 - abs(v1), max(sharp * 0.25, 1.0)) * 0.25;
+  stone = mix(stone, base * 0.8 + float3(0.02), halo * m.p[4]);
+  return mix(stone, veinCol, vein * m.p[4]);
+}
+
+// --- matte / clay / rubber -------------------------------------------------
+// One shading model with three parameter sets, replacing the default two-light
+// result entirely. `expo` compresses the diffuse falloff: 1.0 is plain Lambert
+// (matte), below that lifts the low end the way a scattering body does.
+//
+// p[0] grain amplitude, p[1] grain frequency, p[2] grazing darkening
+// (rubber: specular strength), p[3] velvet sheen.
+static float3 mat_body_shade(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, float expo, float harmonic, float offset) {
+  const float3 L0 = float3(0.0, 0.0, 1.0);
+  float3 L1 = normalize(keyDir);
+  float grain = mat_grain(pModel, m.p[0], m.p[1], harmonic, offset);
+  float n0 = max(dot(N, L0), 0.0), n1 = max(dot(N, L1), 0.0);
+  float diff = ambient + direct * pow(n0, expo) + reflectAmt * pow(n1, expo);
+  return base * min(diff, 1.0) * grain;
+}
+
+static float3 mat_matte_shade(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m) {
+  return mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                        keyDir, m, 1.0, 1.0, 0.0);
+}
+
+static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m) {
+  if (m.mode == kMatMode_matte) {
+    return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+  }
+  if (m.mode == kMatMode_rubber) {
+    // Matte and grainy, with a broad dim highlight and a velvet sheen at
+    // grazing angles. Both are tinted toward the base so they never read as a
+    // glossy clear coat -- that is plastic, not rubber.
+    float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m, 0.85, 3.1, 7.0);
+    float3 L1 = normalize(keyDir);
+    float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
+    float n1 = max(dot(N, L1), 0.0);
+    float spec = m.p[2] * pow(max(dot(N, H), 0.0), 8.0) * (n1 > 0.0 ? 1.0 : 0.0);
+    float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
+    return col + (spec + sheen) * mix(float3(1.0), saturate(base * 1.4), 0.7);
+  }
+  if (m.mode == kMatMode_clay) {
+    // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
+    // darkening that reads as an unglazed porous body.
+    float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m, 0.9, 2.7, 5.0);
+    return col * (1.0 - m.p[2] * pow(1.0 - saturate(N.z), 2.0));
+  }
+  // matte (and any procedural mode this build cannot draw): Lambert and
+  // nothing else. Every knob is zero, so the grain and the grazing terms fold
+  // away -- this is the "kill the highlights" look users ask for first.
+  return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+}
+
+)";
+
+// The impostor half of the shared material block: prepended to the sphere and
+// cylinder libraries only, because the lit VBO path gets its model-space
+// position from the vertex stage and has no use for this.
+static NSString* const kMaterialImpostorSrc = @R"(
+// Final colour for an impostor fragment.
+//
+// Both impostor libraries derive their surface point in EYE space, so the
+// model-space position a procedural pattern needs comes from the inverse
+// modelview -- as a POINT (w = 1), not a direction. The prototype used
+// transpose(modelview) with w = 0, which is the inverse only for a pure
+// rotation and discards the translation outright: its grain slid across the
+// geometry on pan and changed frequency on zoom.
+//
+// Under the default family this collapses to exactly the expression the
+// impostors used before materials existed.
+static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, float defaultIntensity, float defaultSpecular) {
+  if (kMatProcedural) {
+    float3 pModel = (m.invModelview * float4(pEye, 1.0)).xyz;
+    if (m.mode == kMatMode_marble) {
+      // Marble keeps the impostor's own lighting and only re-colours it, so a
+      // marble sphere sits in the same light as the cartoon beside it.
+      return mat_marble_albedo(base, pModel, m) * min(defaultIntensity, 1.0)
+             + defaultSpecular;
+    }
+    return mat_shade_procedural(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m);
+  }
+  return base * min(defaultIntensity, 1.0) + defaultSpecular;
+}
+)";
+
+// Metal shader for VBO-based molecular geometry (cartoons, surfaces, etc.)
+// Supports position + normal + color with basic Lambertian lighting.
+static NSString* const kVBOSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -5082,29 +5255,11 @@ struct VBOVertexOut {
   float4 color;
   float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
   float  eyeDist;     // distance from camera (-eyeZ), for per-rep clipping
+  float3 posModel;    // model-space position: procedural patterns are evaluated
+                      // here so the grain stays glued to the molecule instead
+                      // of swimming when the camera moves
 };
 
-// Material of the representation being drawn (#503), mirroring MaterialParams
-// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
-// can be evaluated in true model space -- a rotation-only transform makes the
-// grain swim under pan and zoom. family 0 is `default` and compiles to today's
-// code. Bound on every lit draw; the shading branches arrive with the shared
-// material block (#487). Keep the field order and the padding identical to the
-// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
-// argument the function declares.
-struct MaterialU {
-  float4x4 invModelview;
-  int family;
-  int mode;
-  int wantsPeel;
-  int _pad0;
-  float reflect;
-  float tint;
-  float rough;
-  float _pad1;
-  float p[6];
-  float _pad2[2];
-};
 
 // Per-representation clip planes (eye-space distances from the camera). Lets one
 // rep (e.g. the surface) clip tighter than the global slab so the user can peek
@@ -5165,6 +5320,29 @@ struct VBOVertexInUnlit {
   float4 color    [[attribute(2)]];
 };
 
+// Material dispatch for the lit VBO path. Under the default family the
+// compiler drops this whole block and the call collapses to vbo_shade.
+//
+// Marble is the one procedural material that KEEPS the default two-light
+// model: it only replaces the albedo (and lifts the light wrap, the waxy
+// diffusion real stone has), so it reads as the same scene lit the same way.
+// Matte, clay and rubber replace the shading outright.
+static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
+    LightU lt, constant MaterialU& mat) {
+  if (kMatProcedural) {
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;   // two-sided, as the default model is
+    if (mat.mode == kMatMode_marble) {
+      LightU waxy = lt;
+      waxy.wrap = max(lt.wrap, 0.35);
+      return vbo_shade(mat_marble_albedo(baseColor, pModel, mat), nEye, waxy);
+    }
+    return mat_shade_procedural(baseColor, N, pModel, lt.ambient, lt.direct,
+                                lt.reflect, float3(lt.klx, lt.kly, lt.klz), mat);
+  }
+  return vbo_shade(baseColor, nEye, lt);
+}
+
 struct VBOVertexOutUnlit {
   float4 position [[position]];
   float4 color;
@@ -5193,6 +5371,8 @@ vertex VBOVertexOut vbo_vertex(
   // Eye-space distance from the camera (eyePos.z is negative in front), used by
   // the fragment stage to discard fragments outside this rep's clip planes.
   out.eyeDist = -eyePos.z;
+  // The raw vertex attribute IS model space; no transform needed on this path.
+  out.posModel = in.position;
   return out;
 }
 
@@ -5202,7 +5382,8 @@ fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
+  return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat),
+                in.color.a);
 }
 
 // Unlit: flat color, no lighting. Used for lines/ribbon (GL_LINES) and dots
@@ -5331,7 +5512,8 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
+  float4 c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat),
+                    in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
   o.accum = float4(c.rgb * c.a, c.a) * w;
@@ -5379,8 +5561,64 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
 }
 )";
 
+// One fragment function compiled with kMatFamily fixed to `family` (#503).
+//
+// Returns nil when the family has no implemented material, so callers simply
+// skip building its pipelines. Unlike -newFunctionWithName:, the specialising
+// form can FAIL AT RUNTIME (a missing constant, a wrong MTLDataType), so the
+// error is checked and logged rather than trapping: a failure degrades to "no
+// pipeline for this family", which draws `default`.
+id<MTLFunction> RendererMetal::materialFragmentFunction(
+    id<MTLLibrary> lib, NSString* name, int family)
+{
+  if (!lib || !MaterialFamilyIsImplemented(family)) {
+    return nil;
+  }
+  MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
+  int fam = family;
+  [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  NSError* err = nil;
+  id<MTLFunction> fn = [lib newFunctionWithName:name constantValues:cv error:&err];
+  [cv release];   // MRC: MTLFunctionConstantValues alloc/init is +1
+  if (!fn) {
+    NSLog(@"RendererMetal: specialising %@ for material family %d failed: %@",
+          name, family, err);
+  }
+  return fn;      // +1, caller owns
+}
+
+void RendererMetal::buildVBOPipelines()
+{
+  // MRC: release the previous build's owned objects before this call rebuilds
+  // them (e.g. on an MSAA sample-count change via setSampleCount). On the first
+  // call (from the ctor) every ivar is nil, so each release is a no-op. The
+  // _vboShadowPipeline* are NOT included — buildShadowPipelines() guards against
+  // a second build, so this function never overwrites them.
+  [_vboVertexFunc release];           _vboVertexFunc = nil;
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_vboFragmentFunc[f] release];      _vboFragmentFunc[f] = nil;
+    [_vboFragmentOitFunc[f] release];   _vboFragmentOitFunc[f] = nil;
+    [_vboPipelineUByte[f] release];     _vboPipelineUByte[f] = nil;
+    [_vboPipelineFloat[f] release];     _vboPipelineFloat[f] = nil;
+    [_vboOitPipelineUByte[f] release];  _vboOitPipelineUByte[f] = nil;
+    [_vboOitPipelineFloat[f] release];  _vboOitPipelineFloat[f] = nil;
+  }
+  [_vboVertexUnlitFunc release];      _vboVertexUnlitFunc = nil;
+  [_vboFragmentUnlitFunc release];    _vboFragmentUnlitFunc = nil;
+  [_vboVertexUnlitFlatFunc release];  _vboVertexUnlitFlatFunc = nil;
+  [_vboFragmentShadowFunc release];   _vboFragmentShadowFunc = nil;
+  [_capMarkVtxFunc release];          _capMarkVtxFunc = nil;
+  [_capMarkFragFunc release];         _capMarkFragFunc = nil;
+  [_capFillVtxFunc release];          _capFillVtxFunc = nil;
+  [_capFillFragFunc release];         _capFillFragFunc = nil;
+  [_lineAAVtxFunc release];           _lineAAVtxFunc = nil;
+  [_lineAAFragFunc release];          _lineAAFragFunc = nil;
+  [_capMarkDSS release];              _capMarkDSS = nil;
+  [_capFillDSS release];              _capFillDSS = nil;
+  [_capFillPipeline release];         _capFillPipeline = nil;
+
   NSError* error = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:vboSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[kMaterialSrc stringByAppendingString:kVBOSrc]
                                              options:nil
                                                error:&error];
   if (!lib) {
@@ -5388,8 +5626,14 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     return;
   }
 
+  [_vboLibrary release];
+  _vboLibrary = [lib retain];   // MRC: kept so families can be specialised later
   _vboVertexFunc = [lib newFunctionWithName:@"vbo_vertex"];
-  _vboFragmentFunc = [lib newFunctionWithName:@"vbo_fragment"];
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    _vboFragmentFunc[f] = materialFragmentFunction(lib, @"vbo_fragment", f);
+    _vboFragmentOitFunc[f] =
+        materialFragmentFunction(lib, @"vbo_fragment_oit", f);
+  }
   _vboVertexUnlitFunc = [lib newFunctionWithName:@"vbo_vertex_unlit"];
   _vboFragmentUnlitFunc = [lib newFunctionWithName:@"vbo_fragment_unlit"];
   _vboVertexUnlitFlatFunc = [lib newFunctionWithName:@"vbo_vertex_unlit_flat"];
@@ -5402,7 +5646,7 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   _coverageFragFunc = [lib newFunctionWithName:@"coverage_fragment"];
   _lineAAVtxFunc = [lib newFunctionWithName:@"line_aa_vertex"];
   _lineAAFragFunc = [lib newFunctionWithName:@"line_aa_fragment"];
-  if (!_vboVertexFunc || !_vboFragmentFunc) {
+  if (!_vboVertexFunc || !_vboFragmentFunc[cMaterialFamily_default]) {
     NSLog(@"RendererMetal: VBO shader functions not found");
     [lib release];  // MRC: library (+1) consumed
     return;
@@ -5474,7 +5718,6 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     MTLRenderPipelineDescriptor* psd =
         [[MTLRenderPipelineDescriptor alloc] init];
     psd.vertexFunction = _vboVertexFunc;
-    psd.fragmentFunction = _vboFragmentFunc;
     psd.vertexDescriptor = vd;
     psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     psd.colorAttachments[0].blendingEnabled = YES;
@@ -5488,10 +5731,14 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-    _vboPipelineUByte = [_device newRenderPipelineStateWithDescriptor:psd
-                                                                error:&error];
-    if (!_vboPipelineUByte) {
-      NSLog(@"RendererMetal: failed to create VBO UByte pipeline: %@", error);
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentFunc[f]) continue;   // family has nothing to draw
+      psd.fragmentFunction = _vboFragmentFunc[f];
+      _vboPipelineUByte[f] = [_device newRenderPipelineStateWithDescriptor:psd error:&error];
+      if (!_vboPipelineUByte[f]) {
+        NSLog(@"RendererMetal: failed to create VBO UByte pipeline (family %d): %@",
+              f, error);
+      }
     }
     [psd release];  // MRC: descriptor (+1) consumed by pipeline creation
   }
@@ -5516,7 +5763,6 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     MTLRenderPipelineDescriptor* psd =
         [[MTLRenderPipelineDescriptor alloc] init];
     psd.vertexFunction = _vboVertexFunc;
-    psd.fragmentFunction = _vboFragmentFunc;
     psd.vertexDescriptor = vd;
     psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     psd.colorAttachments[0].blendingEnabled = YES;
@@ -5530,10 +5776,14 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-    _vboPipelineFloat = [_device newRenderPipelineStateWithDescriptor:psd
-                                                                error:&error];
-    if (!_vboPipelineFloat) {
-      NSLog(@"RendererMetal: failed to create VBO Float pipeline: %@", error);
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentFunc[f]) continue;   // family has nothing to draw
+      psd.fragmentFunction = _vboFragmentFunc[f];
+      _vboPipelineFloat[f] = [_device newRenderPipelineStateWithDescriptor:psd error:&error];
+      if (!_vboPipelineFloat[f]) {
+        NSLog(@"RendererMetal: failed to create VBO Float pipeline (family %d): %@",
+              f, error);
+      }
     }
     [psd release];  // MRC: descriptor (+1) consumed by pipeline creation
   }
@@ -5543,8 +5793,7 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   // for order-independent transparency. Prebuild the two common layouts; other
   // layouts (e.g. the surface's stride-44 layout) get a one-off via
   // oitPipelineForVD() at draw time.
-  _vboFragmentOitFunc = [lib newFunctionWithName:@"vbo_fragment_oit"];
-  if (_vboFragmentOitFunc) {
+  if (_vboFragmentOitFunc[cMaterialFamily_default]) {
     auto mkvd = [](MTLVertexFormat colorFmt,
                    NSUInteger strideBytes) -> MTLVertexDescriptor* {
       MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -5558,9 +5807,13 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
       vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
       return vd;
     };
-    _vboOitPipelineUByte =
-        oitPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
-    _vboOitPipelineFloat = oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentOitFunc[f]) continue;
+      _vboOitPipelineUByte[f] =
+          oitPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28), f);
+      _vboOitPipelineFloat[f] =
+          oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40), f);
+    }
   }
   [lib release];  // MRC: library (+1) no longer needed once functions are created
 
@@ -5798,12 +6051,13 @@ void RendererMetal::drawLinesAA(PrimitiveType mode, int vertexCount,
 }
 
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
-    MTLVertexDescriptor* vd)
+    MTLVertexDescriptor* vd, int family)
 {
-  if (!_vboVertexFunc || !_vboFragmentOitFunc) return nil;
+  if (family < 0 || family >= cMaterialFamily_count) family = cMaterialFamily_default;
+  if (!_vboVertexFunc || !_vboFragmentOitFunc[family]) return nil;
   MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
   p.vertexFunction = _vboVertexFunc;
-  p.fragmentFunction = _vboFragmentOitFunc;
+  p.fragmentFunction = _vboFragmentOitFunc[family];
   p.vertexDescriptor = vd;
   p.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
   p.colorAttachments[0].blendingEnabled = YES;
@@ -5848,12 +6102,21 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
   mix((uint32_t)colorOffset);
   mix((uint64_t)colorType);
   mix((uint64_t)_sampleCount);
+  // Without the family a marble surface and a default surface at the same
+  // stride would share one cached pipeline, and whichever drew first would
+  // decide how both looked.
+  int family = _repMatParams.family;
+  if (family < 0 || family >= cMaterialFamily_count ||
+      (variant != VBOPipelineVariant::Lit && variant != VBOPipelineVariant::Oit)) {
+    family = cMaterialFamily_default;   // only the lit variants read a material
+  }
+  mix((uint64_t)family);
   auto it = _vboPipelineCache.find(key);
   if (it != _vboPipelineCache.end()) return it->second;  // borrowed (cache-owned)
 
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
-    ps = oitPipelineForVD(vd);       // +1
+    ps = oitPipelineForVD(vd, family);   // +1
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
   } else {
@@ -5864,7 +6127,7 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
         : (variant == VBOPipelineVariant::Unlit ? _vboVertexUnlitFunc
                                                 : _vboVertexFunc);
     id<MTLFunction> ffn = (variant == VBOPipelineVariant::Lit)
-        ? _vboFragmentFunc : _vboFragmentUnlitFunc;
+        ? _vboFragmentFunc[family] : _vboFragmentUnlitFunc;
     if (vfn && ffn) {
       MTLRenderPipelineDescriptor* psd =
           [[MTLRenderPipelineDescriptor alloc] init];
@@ -6018,14 +6281,23 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // Check if layout matches pre-built pipelines
   if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
+    int fam = _repMatParams.family;
+    if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
+    // A family with no pipeline -- nothing implemented draws with it, or its
+    // specialisation failed -- falls back to `default`, which is always built.
     if (_oitActive) {
-      // Transparent pass: route lit common layouts to the OIT MRT pipelines.
-      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
-      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
-    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
-      pipeline = _vboPipelineUByte;
-    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
-      pipeline = _vboPipelineFloat;
+      if (colorType == 0 && stride == 28)
+        pipeline = _vboOitPipelineUByte[fam] ? _vboOitPipelineUByte[fam]
+                                             : _vboOitPipelineUByte[cMaterialFamily_default];
+      else if (colorType == 1 && stride == 40)
+        pipeline = _vboOitPipelineFloat[fam] ? _vboOitPipelineFloat[fam]
+                                             : _vboOitPipelineFloat[cMaterialFamily_default];
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte[cMaterialFamily_default]) {
+      pipeline = _vboPipelineUByte[fam] ? _vboPipelineUByte[fam]
+                                        : _vboPipelineUByte[cMaterialFamily_default];
+    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat[cMaterialFamily_default]) {
+      pipeline = _vboPipelineFloat[fam] ? _vboPipelineFloat[fam]
+                                        : _vboPipelineFloat[cMaterialFamily_default];
     }
   }
   // In the OIT pass only MRT pipelines can render; build a one-off OIT
@@ -6290,13 +6562,23 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   }
   if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
+    int fam = _repMatParams.family;
+    if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
+    // A family with no pipeline -- nothing implemented draws with it, or its
+    // specialisation failed -- falls back to `default`, which is always built.
     if (_oitActive) {
-      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
-      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
-    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
-      pipeline = _vboPipelineUByte;
-    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
-      pipeline = _vboPipelineFloat;
+      if (colorType == 0 && stride == 28)
+        pipeline = _vboOitPipelineUByte[fam] ? _vboOitPipelineUByte[fam]
+                                             : _vboOitPipelineUByte[cMaterialFamily_default];
+      else if (colorType == 1 && stride == 40)
+        pipeline = _vboOitPipelineFloat[fam] ? _vboOitPipelineFloat[fam]
+                                             : _vboOitPipelineFloat[cMaterialFamily_default];
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte[cMaterialFamily_default]) {
+      pipeline = _vboPipelineUByte[fam] ? _vboPipelineUByte[fam]
+                                        : _vboPipelineUByte[cMaterialFamily_default];
+    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat[cMaterialFamily_default]) {
+      pipeline = _vboPipelineFloat[fam] ? _vboPipelineFloat[fam]
+                                        : _vboPipelineFloat[cMaterialFamily_default];
     }
   }
   if (_oitActive && !pipeline) {
@@ -6532,27 +6814,6 @@ struct SphereIn {
   float  rightUpFlags  [[attribute(2)]];
 };
 
-// Material of the representation being drawn (#503), mirroring MaterialParams
-// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
-// can be evaluated in true model space -- a rotation-only transform makes the
-// grain swim under pan and zoom. family 0 is `default` and compiles to today's
-// code. Bound on every lit draw; the shading branches arrive with the shared
-// material block (#487). Keep the field order and the padding identical to the
-// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
-// argument the function declares.
-struct MaterialU {
-  float4x4 invModelview;
-  int family;
-  int mode;
-  int wantsPeel;
-  int _pad0;
-  float reflect;
-  float tint;
-  float rough;
-  float _pad1;
-  float p[6];
-  float _pad2[2];
-};
 struct SphereU {
   float4x4 modelview;
   float4x4 projection;
@@ -6628,8 +6889,19 @@ static float sph_oit_weight(float a, float z) {
 
 // Shared ray-sphere intersection + PyMOL two-light shading. Discards on miss /
 // out-of-range depth. Returns lit rgb, alpha, and window depth.
+// Geometry, depth and the DEFAULT two-light result. Deliberately material-free
+// so the shadow pass -- which only needs depth -- does not have to bind a
+// material or be specialised per family. Colour fragments hand the extras to
+// mat_impostor_composite.
 static void sphere_shade(SphereVOut in, constant SphereU& u,
-    thread float3& rgb, thread float& alpha, thread float& depth) {
+    thread float3& rgb, thread float& alpha, thread float& depth,
+    thread float3& nOut, thread float3& pOut,
+    thread float& intensityOut, thread float& specularOut,
+    thread bool& litOut) {
+  // litOut == false means this fragment took a path that produced a FINAL
+  // colour -- the interior cap at the slab plane -- rather than a lit surface.
+  // A material must leave those alone, or the cap loses its darkening.
+  litOut = true;
   float3 ray_origin, ray_dir, sphere_dir;
   if (u.ortho >= 0.5) {
     ray_origin = in.point; ray_dir = float3(0.0,0.0,-1.0);
@@ -6663,6 +6935,8 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : in.color.rgb * 0.45; // else atom darkened
     alpha = in.color.a;
+    nOut = float3(0.0, 0.0, 1.0); pOut = ipoint;
+    intensityOut = 1.0; specularOut = 0.0; litOut = false;
     return;
   }
   float3 normal = normalize(ipoint - in.sphere_center);
@@ -6688,13 +6962,29 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
   }
   rgb = in.color.rgb * min(intensity, 1.0) + specular;
   alpha = in.color.a;
+  nOut = normal; pOut = ipoint;
+  intensityOut = intensity; specularOut = specular;
+}
+
+// The material-aware entry point the colour fragments use.
+static void sphere_shade_material(SphereVOut in, constant SphereU& u,
+    constant MaterialU& mat,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  sphere_shade(in, u, rgb, alpha, depth, n, pt, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
+                               u.lReflect, float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular);
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
     constant SphereU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);
+  sphere_shade_material(in, u, mat, rgb, a, depth);
   SphereFOut out;
   out.color = float4(rgb, a);
   out.depth = depth;
@@ -6705,7 +6995,7 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     constant SphereU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);
+  sphere_shade_material(in, u, mat, rgb, a, depth);
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
   out.accum = float4(rgb * a, a) * w;
@@ -6722,20 +7012,25 @@ struct SphereShadowOut { float depth [[depth(any)]]; };
 fragment SphereShadowOut sphere_impostor_fragment_shadow(
     SphereVOut in [[stage_in]], constant SphereU& u [[buffer(1)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);  // discards on ray miss
+  float3 n; float3 pt; float intensity, specular; bool lit;
+  sphere_shade(in, u, rgb, a, depth, n, pt, intensity, specular, lit);  // discards on ray miss
   SphereShadowOut out; out.depth = depth; return out;
 }
 )";
 
 void RendererMetal::buildImpostorPipelines()
 {
-  if (_sphereImpostorPipeline) return;
+  if (_sphereImpostorPipeline[cMaterialFamily_default]) return;
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:kSphereImpostorSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+                                                   stringByAppendingString:kSphereImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
-  id<MTLFunction> ffn = [lib newFunctionWithName:@"sphere_impostor_fragment"];
+  [_sphereLibrary release];
+  _sphereLibrary = [lib retain];   // MRC: kept for later family specialisation
+  id<MTLFunction> ffn =
+      materialFragmentFunction(lib, @"sphere_impostor_fragment", cMaterialFamily_default);
   if (!vfn || !ffn) { NSLog(@"RendererMetal: sphere impostor funcs missing"); return; }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -6759,13 +7054,23 @@ void RendererMetal::buildImpostorPipelines()
   psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-  _sphereImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
-  if (!_sphereImpostorPipeline)
-    NSLog(@"RendererMetal: sphere impostor pipeline failed: %@", err);
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    id<MTLFunction> fn = (f == cMaterialFamily_default)
+        ? [ffn retain]
+        : materialFragmentFunction(lib, @"sphere_impostor_fragment", f);
+    if (!fn) continue;
+    psd.fragmentFunction = fn;
+    _sphereImpostorPipeline[f] =
+        [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+    [fn release];   // MRC: the pipeline holds its own reference
+    if (!_sphereImpostorPipeline[f])
+      NSLog(@"RendererMetal: sphere impostor pipeline failed (family %d): %@", f, err);
+  }
 
   // Transparent sphere OIT variant: same vertex shader + geometry, MRT
   // accum/reveal output, ray-cast depth retained for occlusion.
-  id<MTLFunction> offn = [lib newFunctionWithName:@"sphere_impostor_fragment_oit"];
+  id<MTLFunction> offn = materialFragmentFunction(
+      lib, @"sphere_impostor_fragment_oit", cMaterialFamily_default);
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
     op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
@@ -6783,8 +7088,18 @@ void RendererMetal::buildImpostorPipelines()
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-    _sphereOitPipeline = [_device newRenderPipelineStateWithDescriptor:op error:&err];
-    if (!_sphereOitPipeline)
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      id<MTLFunction> fn = (f == cMaterialFamily_default)
+          ? [offn retain]
+          : materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f);
+      if (!fn) continue;
+      op.fragmentFunction = fn;
+      _sphereOitPipeline[f] = [_device newRenderPipelineStateWithDescriptor:op error:&err];
+      [fn release];
+      if (!_sphereOitPipeline[f])
+        NSLog(@"RendererMetal: sphere OIT pipeline failed (family %d): %@", f, err);
+    }
+    if (!_sphereOitPipeline[cMaterialFamily_default])
       NSLog(@"RendererMetal: sphere OIT pipeline failed: %@", err);
   }
 
@@ -6807,8 +7122,11 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   ensureEncoder();
   if (!_encoder) return;
   buildImpostorPipelines();
-  if (!_sphereImpostorPipeline) return;
-  if (_oitActive && !_sphereOitPipeline) return; // no OIT variant: skip
+  int sphereFam = _repMatParams.family;
+  if (sphereFam < 0 || sphereFam >= cMaterialFamily_count) sphereFam = cMaterialFamily_default;
+  if (!_sphereImpostorPipeline[sphereFam]) sphereFam = cMaterialFamily_default;
+  if (!_sphereImpostorPipeline[sphereFam]) return;
+  if (_oitActive && !_sphereOitPipeline[sphereFam]) return; // no OIT variant: skip
   if (_shadowMode && !_sphereShadowPipeline) return; // can't cast: skip safely
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
@@ -6875,10 +7193,10 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     [_encoder setDepthStencilState:_shadowDepthState]; // LESS + write (light POV)
     [_encoder setCullMode:MTLCullModeNone]; // billboards: don't inherit VBO cull-front
   } else if (_oitActive) {
-    [_encoder setRenderPipelineState:_sphereOitPipeline];
+    [_encoder setRenderPipelineState:_sphereOitPipeline[sphereFam]];
     [_encoder setDepthStencilState:oitDepthState()];
   } else {
-    [_encoder setRenderPipelineState:_sphereImpostorPipeline];
+    [_encoder setRenderPipelineState:_sphereImpostorPipeline[sphereFam]];
     applyDepthStencilState();
     if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
   }
@@ -6952,27 +7270,6 @@ struct CylIn {
   uchar  cap     [[attribute(6)]];
 };
 
-// Material of the representation being drawn (#503), mirroring MaterialParams
-// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
-// can be evaluated in true model space -- a rotation-only transform makes the
-// grain swim under pan and zoom. family 0 is `default` and compiles to today's
-// code. Bound on every lit draw; the shading branches arrive with the shared
-// material block (#487). Keep the field order and the padding identical to the
-// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
-// argument the function declares.
-struct MaterialU {
-  float4x4 invModelview;
-  int family;
-  int mode;
-  int wantsPeel;
-  int _pad0;
-  float reflect;
-  float tint;
-  float rough;
-  float _pad1;
-  float p[6];
-  float _pad2[2];
-};
 struct CylU {
   float4x4 modelview;
   float4x4 projection;
@@ -7089,8 +7386,15 @@ static float cyl_oit_weight(float a, float z) {
 
 // Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
 // Discards on miss; returns lit rgb, alpha, window depth.
+// Geometry, depth and the DEFAULT two-light result; material-free for the same
+// reason as sphere_shade.
 static void cyl_shade(CylVOut in, constant CylU& u,
-    thread float3& rgb, thread float& alpha, thread float& depth) {
+    thread float3& rgb, thread float& alpha, thread float& depth,
+    thread float3& nOut, thread float3& pOut, thread float3& baseOut,
+    thread float& intensityOut, thread float& specularOut,
+    thread bool& litOut) {
+  // See sphere_shade: false means the fragment is already a final colour.
+  litOut = true;
   float3 ray_target = in.surface_point;
   float3 ray_origin, ray_dir;
   if (u.ortho >= 0.5) { ray_origin = in.surface_point; ray_dir = float3(0.0,0.0,1.0); }
@@ -7172,6 +7476,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : color.rgb * 0.45;    // else bond darkened
     alpha = color.a;
+    litOut = false;
     return;
   }
 
@@ -7195,13 +7500,29 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   }
   rgb = color.rgb * min(intensity, 1.0) + specular;
   alpha = color.a;
+  nOut = normal; pOut = new_point; baseOut = color.rgb;
+  intensityOut = intensity; specularOut = specular;
+}
+
+// The material-aware entry point the colour fragments use.
+static void cyl_shade_material(CylVOut in, constant CylU& u,
+    constant MaterialU& mat,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  cyl_shade(in, u, rgb, alpha, depth, n, pt, base, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
+                               float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular);
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
     constant CylU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);
+  cyl_shade_material(in, u, mat, rgb, a, depth);
   CylFOut o;
   o.color = float4(rgb, a);
   o.depth = depth;
@@ -7212,7 +7533,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
     constant CylU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);
+  cyl_shade_material(in, u, mat, rgb, a, depth);
   float w = cyl_oit_weight(a, depth);
   CylOITOut o;
   o.accum = float4(rgb * a, a) * w;
@@ -7227,7 +7548,9 @@ struct CylShadowOut { float depth [[depth(any)]]; };
 fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
     constant CylU& u [[buffer(1)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);  // discards on ray miss
+  float3 n; float3 pt; float intensity, specular;
+  float3 base; bool lit;
+  cyl_shade(in, u, rgb, a, depth, n, pt, base, intensity, specular, lit);  // discards on ray miss
   CylShadowOut o; o.depth = depth; return o;
 }
 )";
@@ -7240,8 +7563,13 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // pipelines even at the same stride — and Move mode draws both every frame, so
   // a single slot would recompile the MSL library twice per frame and (MRC) leak
   // the displaced pipelines. Point the ivars at this layout's entry instead.
-  const auto layout = std::make_pair(
-      static_cast<NSUInteger>(call.stride), call.capOff);
+  int cylFam = _repMatParams.family;
+  if (cylFam < 0 || cylFam >= cMaterialFamily_count ||
+      !MaterialFamilyIsImplemented(cylFam)) {
+    cylFam = cMaterialFamily_default;
+  }
+  const auto layout = std::make_tuple(
+      static_cast<NSUInteger>(call.stride), call.capOff, cylFam);
   {
     auto it = _cylinderPipelines.find(layout);
     if (it != _cylinderPipelines.end()) {
@@ -7256,11 +7584,18 @@ void RendererMetal::buildCylinderImpostorPipeline(
   _cylinderShadowPipeline = nil;
 
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:kCylinderImpostorSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+                                                   stringByAppendingString:kCylinderImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: cyl impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"cyl_impostor_vertex"];
-  id<MTLFunction> ffn = [lib newFunctionWithName:@"cyl_impostor_fragment"];
+  [_cylinderLibrary release];
+  _cylinderLibrary = [lib retain];   // MRC: kept for later family specialisation
+  // The cylinder fragments read the kMatFamily function constant, so they MUST
+  // be specialised: -newFunctionWithName: alone fails at runtime for a function
+  // with an unset constant, and sticks would silently stop drawing.
+  id<MTLFunction> ffn =
+      materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
   if (!vfn || !ffn) { NSLog(@"RendererMetal: cyl impostor funcs missing"); return; }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -7304,7 +7639,8 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
-  id<MTLFunction> offn = [lib newFunctionWithName:@"cyl_impostor_fragment_oit"];
+  id<MTLFunction> offn =
+      materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylFam);
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
     op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
