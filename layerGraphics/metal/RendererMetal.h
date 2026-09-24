@@ -173,6 +173,8 @@ public:
       float fracBack = 0.0f) override;
   void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
+  void setRepMaterial(float reflect, float tint, float rough) override;
+  void setReflectionParams(int env, int samples) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
   void invalidateVBOCacheEntry(const void* cpuData) override;
@@ -410,6 +412,7 @@ private:
   // acceleration structure when the accumulated sphere set changes.
   void buildSphereProtoAS();
   void ensureRayTracingAS();
+  void uploadRTMaterials();
   id<MTLAccelerationStructure> buildAccelStructure(MTLAccelerationStructureDescriptor* desc);
 
   // Order-independent transparency (weighted-blended). Transparent geometry
@@ -475,6 +478,11 @@ private:
   // setRepClip alongside the eye-space depths.
   float _repClipFracFront = 0.0f;
   float _repClipFracBack = 0.0f;
+  // Traced-reflection material for the next draw (setRepMaterial): reflect (F0),
+  // tint, roughness. Recorded per RT geometry occurrence in _rtFrameMat.
+  float _repMat[3] = {0.0f, 0.0f, 0.0f};
+  int _reflEnv = 1;        // metal_rt_reflect_env
+  int _reflSamples = 8;    // metal_rt_reflect_samples (offscreen exports)
   // Surface outer-contour outline (per-surface, coverage-boundary). When armed
   // (setRepContour), the next surface draw is stashed; after the scene the
   // stashed geometry is rendered to a coverage mask and a post pass outlines the
@@ -634,6 +642,11 @@ private:
   struct RTGeom {
     std::vector<float> spheres;  // x,y,z,r per sphere (size scale applied)
     std::vector<float> tris;     // 9 floats per triangle
+    // Traced reflections: per-primitive colour + per-vertex normals so a
+    // reflection ray can shade what it hits. 3 floats per triangle / per sphere.
+    std::vector<float> triCols;
+    std::vector<float> triNrms;  // 9 floats per triangle: per-vertex normals
+    std::vector<float> sphereCols;
     uint64_t params = 0;         // draw-call scalars the extraction used
     uint64_t gen = 0;            // bumped on every (re)extraction; 0 = never
   };
@@ -664,6 +677,12 @@ private:
   //    surface-clipped-open cavities stop occluding (#425).
   std::vector<Mat4> _rtFrameXform;
   std::vector<std::array<float, 2>> _rtFrameClip;
+  // Per-occurrence traced-reflection material {reflect, tint, rough, 0}. NOT
+  // folded into the rebuild signature: the built AS stores each primitive's
+  // occurrence index, and the material table is refreshed from the current
+  // frame's record every frame, so dragging a material slider never rebuilds.
+  std::vector<std::array<float, 4>> _rtFrameMat;
+  std::vector<std::array<float, 4>> _rtBuiltMat;   // table uploaded for the built AS
   Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
   Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
 
@@ -679,6 +698,9 @@ private:
     if (g.gen == 0 || g.params != params) {
       g.spheres.clear();
       g.tris.clear();
+      g.triCols.clear();
+      g.triNrms.clear();
+      g.sphereCols.clear();
       extract(g);
       g.params = params;
       g.gen = ++_rtGeomGen;
@@ -705,6 +727,7 @@ private:
     std::memcpy(delta.data(), &d, 64);
     _rtFrameXform.push_back(delta);
     _rtFrameClip.push_back({_repClipFront, _repClipBack});
+    _rtFrameMat.push_back({_repMat[0], _repMat[1], _repMat[2], 0.0f});
 
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
@@ -743,6 +766,15 @@ private:
   // grid_mode is off), all pointing into _rtTriBuffer at that cell's range.
   std::vector<id<MTLAccelerationStructure>> _rtTriProtoASs;
   id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
+  // Traced reflections: parallel per-triangle colour (3 floats/tri,
+  // same global triangle index as _rtTriBuffer) and per-sphere-instance record
+  // {cx,cy,cz,r, r,g,b,0} indexed by instance_id (sphere instances come first).
+  id<MTLBuffer> _rtTriColBuffer = nil;
+  id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
+  id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
+  id<MTLBuffer> _rtMatBuffer = nil;      // float4 per occurrence: {reflect, tint, rough, 0}
+  id<MTLBuffer> _rtSphereBuffer = nil;
+  size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
                                       // shadow ray can read the hit facet's plane (grazing-hit reject)
 

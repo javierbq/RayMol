@@ -450,6 +450,8 @@ RendererMetal::~RendererMetal()
   for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [as release];
   _rtTriProtoASs.clear();
   [_rtTriBuffer release];
+  [_rtTriColBuffer release];  [_rtSphereBuffer release];  [_rtTriNrmBuffer release];
+  [_rtTriMatBuffer release];  [_rtMatBuffer release];
   [_bezierTessFactors release];
 
   // Reusable batch buffer (+1; grown via newBufferWithLength).
@@ -636,6 +638,19 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
   _repClipFracBack = fracBack;
 }
 
+void RendererMetal::setRepMaterial(float reflect, float tint, float rough)
+{
+  _repMat[0] = reflect < 0.0f ? 0.0f : (reflect > 1.0f ? 1.0f : reflect);
+  _repMat[1] = tint < 0.0f ? 0.0f : (tint > 1.0f ? 1.0f : tint);
+  _repMat[2] = rough < 0.0f ? 0.0f : (rough > 1.0f ? 1.0f : rough);
+}
+
+void RendererMetal::setReflectionParams(int env, int samples)
+{
+  _reflEnv = env ? 1 : 0;
+  _reflSamples = samples < 1 ? 1 : (samples > 64 ? 64 : samples);
+}
+
 void RendererMetal::setRepContour(bool enabled, const float* rgba, float widthPx)
 {
   _repContourEnabled = enabled; // armed => the next surface draw is stashed
@@ -766,6 +781,7 @@ void RendererMetal::beginFrame()
   _rtFrameKeys.clear();
   _rtFrameXform.clear();
   _rtFrameClip.clear();
+  _rtFrameMat.clear();
   _rtFrameCells.clear();   // grid_mode cells are re-recorded by setGridSlot
   _rtFrameSig = 1469598103934665603ULL;
 
@@ -2011,6 +2027,13 @@ struct RTU {
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
   float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
+  // Traced self-reflections (metal_rt_reflect*): env 0 = bg colour / 1 = studio
+  // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
+  // sphereCount = number of sphere instances (ids below it are spheres);
+  // matCount = rows in the material table; then the two-light model.
+  float reflEnv, reflSamples, sphereCount, matCount;
+  float lAmbient, lDirect, lReflect, lSpec;
+  float lShin, pad4, pad5, pad6;   // -> 24 floats after lightViewProj
 };
 
 // grid_mode cells (#478). rect = x0,y0,x1,y1 of the cell in scene uv; tri =
@@ -2068,6 +2091,13 @@ static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uin
   return normalize(acc);
 }
 
+// Traced reflections: smooth normal of world-tri q at barycentric (b.x -> v1, b.y -> v2).
+static float3 rt_interp_normal(device const packed_float3* nrms, uint q, float2 b) {
+  float3 n0 = float3(nrms[3 * q]), n1 = float3(nrms[3 * q + 1]), n2 = float3(nrms[3 * q + 2]);
+  float3 n = n0 * (1.0 - b.x - b.y) + n1 * b.x + n2 * b.y;
+  float l = length(n);
+  return l > 1e-6 ? n / l : normalize(cross(n1 - n0, n2 - n0));
+}
 static float rt_hash(float2 p) {
   return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
 }
@@ -2305,8 +2335,16 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     sampler s [[sampler(0)]],
     sampler shadowSamp [[sampler(1)]],
     constant RTU& u [[buffer(1)]],
-    constant RTGridU& g [[buffer(3)]]) {
+    constant RTGridU& g [[buffer(3)]],
+    instance_acceleration_structure accel [[buffer(0)]],
+    device const packed_float3* tris [[buffer(2)]],
+    device const packed_float3* triCols [[buffer(4)]],
+    device const float4* sph [[buffer(5)]],
+    device const packed_float3* triNrms [[buffer(6)]],
+    device const uint* triMat [[buffer(7)]],
+    device const float4* mats [[buffer(8)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
+  float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999) return float4(col, 1.0);  // background: leave as-is
   if (d <= 0.0015) return float4(col, 1.0);   // interior-cap cross-section: flat
@@ -2431,6 +2469,135 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   }
 
+  // Traced self-reflections (metal_rt_reflect / _tint / _rough, per object).
+  // A primary ray finds the primitive under the pixel -> its occurrence's
+  // material and a barycentric-smooth normal. If the material reflects, one
+  // reflection ray (NS jittered rays for glossy exports) is traced against the
+  // same instance AS the AO/shadow rays use; the hit is shaded with the
+  // two-light model from the per-primitive colour + normal buffers, a miss
+  // returns the environment. Blended with a Schlick Fresnel whose F0 is the
+  // material strength, so grazing angles reflect more like real dielectrics.
+  if (u.matCount > 0.5) {
+    const uint triBase = g.cell[ci].tri.x;
+    const int triInst = int(g.cell[ci].tri.z);
+    float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
+    float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+    float3 camM, viewM;   // camera position / direction from camera to the point
+    if (u.projOrtho > 0.5) {
+      viewM = normalize((u.invModelview * float4(0.0, 0.0, -1.0, 0.0)).xyz);
+      camM = pModel - viewM * 1000.0;
+    } else {
+      camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+      viewM = normalize(pModel - camM);
+    }
+    // Own primitive: material row + smooth normal. Sphere impostors keep the
+    // depth normal (analytic, already smooth); a pixel whose primary ray finds
+    // no matching caster (labels, lines, clipped caps) is not reflective.
+    float3 nSelf = nModel;
+    int mi = -1;
+    {
+      float const dEye = length(pModel - camM);
+      intersector<instancing, triangle_data> pit;
+      pit.assume_geometry_type(geometry_type::triangle);
+      pit.accept_any_intersection(false);
+      ray pr; pr.origin = camM; pr.direction = viewM; pr.min_distance = 0.0; pr.max_distance = dEye + 0.5;
+      auto pres = pit.intersect(pr, accel, mask);
+      if (pres.type != intersection_type::none && abs(pres.distance - dEye) < 0.5) {
+        if (float(pres.instance_id) < u.sphereCount) {
+          mi = int(sph[2u * pres.instance_id + 1u].w);
+        } else if (triInst >= 0 && int(pres.instance_id) == triInst) {
+          uint prim = triBase + pres.primitive_id;
+          mi = int(triMat[prim]);
+          nSelf = rt_interp_normal(triNrms, prim, pres.triangle_barycentric_coord);
+          if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;
+        }
+      }
+    }
+    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[mi] : float4(0.0);
+    const float F0 = mat.x, tint = mat.y, rough = mat.z;
+    if (F0 > 0.001) {
+      float3 R0 = reflect(viewM, nSelf);
+      // Light directions in model space (key light + fill on +Z, like the raster).
+      float3 L1 = normalize(u.lightDirModel.xyz);
+      float3 L0 = normalize((u.invModelview * float4(0.0, 0.0, 1.0, 0.0)).xyz);
+      float3 reflAcc = float3(0.0);
+      int NS = rough > 0.0 ? max(int(u.reflSamples), 1) : 1;
+      for (int si = 0; si < NS; ++si) {
+        float3 R = R0;
+        if (rough > 0.0) {   // glossy: jitter inside a cone (frame-stable)
+          float2 hx = float2(fract(rt_hash(in.uv * 977.0) + float(si) * 0.618034),
+                             fract(rt_hash(in.uv * 1543.0 + 7.0) + rt_radinv2(uint(si))));
+          float3 upv = abs(R.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+          float3 tx = normalize(cross(upv, R)), ty = cross(R, tx);
+          float a = rough * rough * 0.5;
+          float phi = 6.2831853 * hx.x, rr = a * sqrt(hx.y);
+          R = normalize(R + tx * (rr * cos(phi)) + ty * (rr * sin(phi)));
+        }
+        // Environment on a miss: bg colour, or a simple studio (eye-space up
+        // gradient + a soft key-light card) so a mirror surface reads as
+        // reflective even where nothing of the molecule is in view.
+        float3 Re = float3(dot(u.invModelview[0].xyz, R), dot(u.invModelview[1].xyz, R),
+                           dot(u.invModelview[2].xyz, R));   // model -> eye (rotation^T)
+        float3 envCol = u.bgFog.rgb;
+        if (u.reflEnv > 0.5) {
+          float t = saturate(Re.y * 0.5 + 0.5);
+          envCol = mix(float3(0.06, 0.06, 0.07), float3(0.55, 0.57, 0.62), t);
+          envCol += float3(1.0, 0.98, 0.92) * pow(max(dot(Re, normalize(float3(u.klx, u.kly, u.klz))), 0.0), 14.0) * 1.2;
+          envCol += float3(0.5, 0.6, 0.8) * pow(max(dot(Re, normalize(float3(-0.7, 0.2, 0.3))), 0.0), 24.0) * 0.6;
+        }
+        float3 reflCol = envCol;
+        intersector<instancing, triangle_data> it;
+        it.assume_geometry_type(geometry_type::triangle);
+        it.accept_any_intersection(false);
+        ray rr;
+        rr.origin = pModel + nSelf * 0.03;
+        rr.direction = R;
+        rr.min_distance = 0.05;
+        rr.max_distance = 1.0e4;
+        for (int k = 0; k < 4; ++k) {
+          auto res = it.intersect(rr, accel, mask);
+          if (res.type == intersection_type::none) break;
+          float3 hitP = rr.origin + R * res.distance;
+          float3 hn, hc;
+          bool isSphere = float(res.instance_id) < u.sphereCount;
+          if (isSphere) {
+            float4 c = sph[2u * res.instance_id];
+            hc = sph[2u * res.instance_id + 1u].rgb;
+            hn = normalize(hitP - c.xyz);
+          } else {
+            uint prim = triBase + res.primitive_id;
+            hn = rt_interp_normal(triNrms, prim, res.triangle_barycentric_coord);
+            if (dot(hn, R) > 0.0) hn = -hn;          // face the incoming ray
+            hc = float3(triCols[prim]);
+            // Grazing self-hit on our own strip (facet nearly parallel to us,
+            // very close): step past it instead of reflecting ourselves.
+            if (res.distance < 0.6 && abs(dot(hn, nSelf)) > 0.85) {
+              rr.min_distance = res.distance + 0.02;
+              continue;
+            }
+          }
+          float inten = u.lAmbient + u.lDirect * max(dot(hn, L0), 0.0) + u.lReflect * max(dot(hn, L1), 0.0);
+          float specv = 0.0;
+          if (dot(hn, L1) > 0.0) {
+            float3 H = normalize(L1 - R);            // view direction at the hit is -R
+            specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
+          }
+          reflCol = hc * min(inten, 1.0) + specv;
+          // Fade distant hits toward the environment so far-off geometry does
+          // not read as a hard mirror image (cheap "reflection fog").
+          reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
+          break;
+        }
+        reflAcc += reflCol;
+      }
+      float3 reflCol = reflAcc / float(NS);
+      reflCol *= mix(float3(1.0), saturate(colRaw * 1.6), tint);
+      float NdotV = saturate(dot(nSelf, -viewM));
+      float F = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+      col = mix(col, reflCol, F);
+    }
+  }
+
   // Depth-cue fog toward bg (eye distance), matching the SSAO pass.
   if (u.bgFog.w > 0.5) {
     float dist = -pEye.z; // eye distance (pEye.z is the eye-space z, negative)
@@ -2462,7 +2629,8 @@ static inline uint64_t rtFloatBits(float f)
 
 // Tessellate a cylinder (a→b, radius r) into a K-sided tube (no caps — bonded
 // atoms cover the ends) and append the triangles (x,y,z per vertex) to `out`.
-static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3 b, float r)
+static void rtAppendCylinder(std::vector<float>& out, std::vector<float>& cols,
+    std::vector<float>& nrms, simd_float3 rgb, simd_float3 a, simd_float3 b, float r)
 {
   simd_float3 axis = b - a;
   float len = simd_length(axis);
@@ -2475,26 +2643,33 @@ static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3
   // 12 sides: the shadow/AO proxy for sticks. Six sides cast visibly hexagonal
   // hard shadows at high zoom; twelve is still 2 tris/side (24 tris per stick).
   const int K = 12;
-  simd_float3 ringA[K], ringB[K];
+  simd_float3 ringA[K], ringB[K], ringN[K];
   for (int i = 0; i < K; ++i) {
     float ang = 6.2831853f * (float)i / (float)K;
-    simd_float3 off = (cosf(ang) * t1 + sinf(ang) * t2) * r;
-    ringA[i] = a + off;
-    ringB[i] = b + off;
+    simd_float3 n = cosf(ang) * t1 + sinf(ang) * t2;
+    ringN[i] = n;
+    ringA[i] = a + n * r;
+    ringB[i] = b + n * r;
   }
   auto push = [&](simd_float3 p) { out.push_back(p.x); out.push_back(p.y); out.push_back(p.z); };
+  auto pushN = [&](simd_float3 n) { nrms.push_back(n.x); nrms.push_back(n.y); nrms.push_back(n.z); };
   for (int i = 0; i < K; ++i) {
     int j = (i + 1) % K;
     push(ringA[i]); push(ringA[j]); push(ringB[j]);
+    pushN(ringN[i]); pushN(ringN[j]); pushN(ringN[j]);
     push(ringA[i]); push(ringB[j]); push(ringB[i]);
+    pushN(ringN[i]); pushN(ringN[j]); pushN(ringN[i]);
+    for (int t = 0; t < 2; ++t) { cols.push_back(rgb.x); cols.push_back(rgb.y); cols.push_back(rgb.z); }
   }
 }
 
 // Append the triangles of a VBO (cartoon/surface mesh) to `out`, reading the
 // float3 position at posOffset. Handles triangle list/strip/fan/quads; indices
 // are UInt32 (matches drawVBOIndexed) or sequential when indexData is null.
-static void rtAppendVBOTris(std::vector<float>& out, PrimitiveType mode,
-    int count, const void* data, size_t stride, int posOffset, const void* indexData)
+static void rtAppendVBOTris(std::vector<float>& out, std::vector<float>& cols,
+    std::vector<float>& nrms, int normalOffset, int colorOffset, int colorType,
+    PrimitiveType mode, int count, const void* data, size_t stride, int posOffset,
+    const void* indexData)
 {
   if (!data || stride == 0 || posOffset < 0 || count < 3) return;
   const uint8_t* base = static_cast<const uint8_t*>(data);
@@ -2504,7 +2679,37 @@ static void rtAppendVBOTris(std::vector<float>& out, PrimitiveType mode,
     const float* p = reinterpret_cast<const float*>(base + (size_t)vi * stride + posOffset);
     out.push_back(p[0]); out.push_back(p[1]); out.push_back(p[2]);
   };
-  auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) { push(i0); push(i1); push(i2); };
+  // Traced reflections: colour of the triangle = average of its three vertex colours
+  // (UByte4Norm when colorType == 0, Float4 otherwise; grey when absent).
+  auto vcol = [&](uint32_t vi, float c[3]) {
+    if (colorOffset < 0) { c[0] = c[1] = c[2] = 0.8f; return; }
+    const uint8_t* cp = base + (size_t)vi * stride + colorOffset;
+    if (colorType == 0) { c[0] = cp[0] / 255.f; c[1] = cp[1] / 255.f; c[2] = cp[2] / 255.f; }
+    else { const float* f = reinterpret_cast<const float*>(cp); c[0] = f[0]; c[1] = f[1]; c[2] = f[2]; }
+  };
+  auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+    push(i0); push(i1); push(i2);
+    float a[3], b[3], c[3];
+    vcol(i0, a); vcol(i1, b); vcol(i2, c);
+    for (int k = 0; k < 3; ++k) cols.push_back((a[k] + b[k] + c[k]) / 3.f);
+    // Traced reflections: per-vertex normals (Float3 at normalOffset); facet normal when absent.
+    if (normalOffset >= 0) {
+      const uint32_t vi[3] = {i0, i1, i2};
+      for (int v = 0; v < 3; ++v) {
+        const float* n = reinterpret_cast<const float*>(base + (size_t)vi[v] * stride + normalOffset);
+        nrms.push_back(n[0]); nrms.push_back(n[1]); nrms.push_back(n[2]);
+      }
+    } else {
+      const float* p0 = reinterpret_cast<const float*>(base + (size_t)i0 * stride + posOffset);
+      const float* p1 = reinterpret_cast<const float*>(base + (size_t)i1 * stride + posOffset);
+      const float* p2 = reinterpret_cast<const float*>(base + (size_t)i2 * stride + posOffset);
+      simd_float3 e1 = simd_make_float3(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]);
+      simd_float3 e2 = simd_make_float3(p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]);
+      simd_float3 fn = simd_cross(e1, e2);
+      float l = simd_length(fn); fn = l > 1e-12f ? fn / l : simd_make_float3(0, 0, 1);
+      for (int v = 0; v < 3; ++v) { nrms.push_back(fn.x); nrms.push_back(fn.y); nrms.push_back(fn.z); }
+    }
+  };
   using PT = PrimitiveType;
   if (mode == PT::Triangles) {
     for (int k = 0; k + 2 < count; k += 3) tri(gi(k), gi(k + 1), gi(k + 2));
@@ -2627,6 +2832,24 @@ void RendererMetal::buildSphereProtoAS()
 // atom, transform = translate(center)·scale(radius), MODEL space). Rebuilt only
 // when the accumulated sphere set changes — model-space centers are invariant
 // under camera rotation, so this does NOT rebuild while orbiting.
+// Upload the per-occurrence traced-reflection material table ({reflect, tint,
+// rough, 0} per RT geometry occurrence, indexed by the per-primitive occurrence
+// index the built AS carries). Tiny; rewritten whenever the record or a
+// material slider changes.
+void RendererMetal::uploadRTMaterials()
+{
+  const size_t n = _rtBuiltMat.size();
+  const size_t bytes = std::max<size_t>(n, 1) * 4 * sizeof(float);
+  if (!_rtMatBuffer || _rtMatBuffer.length < bytes) {
+    [_rtMatBuffer release];
+    _rtMatBuffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  }
+  if (!_rtMatBuffer) return;
+  float* dst = static_cast<float*>(_rtMatBuffer.contents);
+  if (n == 0) { dst[0] = dst[1] = dst[2] = dst[3] = 0.0f; return; }
+  std::memcpy(dst, _rtBuiltMat.data(), n * 4 * sizeof(float));
+}
+
 void RendererMetal::ensureRayTracingAS()
 {
   if (!_rtEnabled || !_rtSupported) { _rtReady = false; return; }
@@ -2643,6 +2866,12 @@ void RendererMetal::ensureRayTracingAS()
     if (_rtBuiltGrid) {
       for (size_t c = 0; c < _rtBuiltCells.size() && c < _rtFrameCells.size(); ++c)
         std::memcpy(_rtBuiltCells[c].rect, _rtFrameCells[c].rect, 4 * sizeof(float));
+    }
+    // Same record, possibly new materials (a slider drag): refresh the table.
+    // Occurrence order is identical (same signature), so indices still match.
+    if (_rtFrameMat.size() == _rtBuiltMat.size() && _rtFrameMat != _rtBuiltMat) {
+      _rtBuiltMat = _rtFrameMat;
+      uploadRTMaterials();
     }
   } else {
     // Concatenate the frame's cached geometry. Entries can have been erased
@@ -2720,15 +2949,35 @@ void RendererMetal::ensureRayTracingAS()
                                options:MTLResourceStorageModeShared]
         : nil;
     if (!tb) nTris = 0;
+    // Traced reflections: parallel per-triangle colour buffer (3 floats / kept triangle).
+    id<MTLBuffer> cb = nTris > 0
+        ? [_device newBufferWithLength:(nTriFloats / 3) * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    id<MTLBuffer> nb = nTris > 0
+        ? [_device newBufferWithLength:nTriFloats * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    id<MTLBuffer> mb = nTris > 0
+        ? [_device newBufferWithLength:(nTriFloats / 9) * sizeof(uint32_t)
+                               options:MTLResourceStorageModeShared]
+        : nil;
     size_t actualTris = 0;   // triangles kept after pose-baking + clip drop
     if (nTris > 0) {
       float* dst = static_cast<float*>(tb.contents);
+      float* cdst = cb ? static_cast<float*>(cb.contents) : nullptr;
+      float* ndst = nb ? static_cast<float*>(nb.contents) : nullptr;
+      uint32_t* mdst = mb ? static_cast<uint32_t*>(mb.contents) : nullptr;
       for (size_t c = 0; c < cells.size(); ++c) {
         built[c].triBase = (uint32_t)actualTris;
         for (size_t ki = cells[c].keyBegin; ki < cells[c].keyEnd; ++ki) {
           auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
           if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
           const std::vector<float>& tr = it->second.tris;
+          const std::vector<float>& tc = it->second.triCols;
+          const bool haveCols = tc.size() * 3 == tr.size();
+          const std::vector<float>& tn = it->second.triNrms;
+          const bool haveNrms = tn.size() == tr.size();
           const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
           const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
           const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
@@ -2750,6 +2999,28 @@ void RendererMetal::ensureRayTracingAS()
             std::memcpy(dst + 3, w[1], 3 * sizeof(float));
             std::memcpy(dst + 6, w[2], 3 * sizeof(float));
             dst += 9;
+            if (cdst) {
+              if (haveCols) std::memcpy(cdst, tc.data() + t / 3, 3 * sizeof(float));
+              else { cdst[0] = cdst[1] = cdst[2] = 0.8f; }
+              cdst += 3;
+            }
+            if (ndst) {
+              for (int v = 0; v < 3; ++v) {
+                float nx, ny, nz;
+                if (haveNrms) { nx = tn[t + 3*v]; ny = tn[t + 3*v + 1]; nz = tn[t + 3*v + 2]; }
+                else {   // facet normal from the world positions
+                  float e1[3] = {w[1][0]-w[0][0], w[1][1]-w[0][1], w[1][2]-w[0][2]};
+                  float e2[3] = {w[2][0]-w[0][0], w[2][1]-w[0][1], w[2][2]-w[0][2]};
+                  nx = e1[1]*e2[2]-e1[2]*e2[1]; ny = e1[2]*e2[0]-e1[0]*e2[2]; nz = e1[0]*e2[1]-e1[1]*e2[0];
+                }
+                // rotate by the pose delta (rotation part of xf)
+                ndst[0] = xf[0]*nx + xf[4]*ny + xf[8]*nz;
+                ndst[1] = xf[1]*nx + xf[5]*ny + xf[9]*nz;
+                ndst[2] = xf[2]*nx + xf[6]*ny + xf[10]*nz;
+                ndst += 3;
+              }
+            }
+            if (mdst) *mdst++ = (uint32_t)ki;   // occurrence -> material table row
             ++actualTris;
           }
         }
@@ -2782,7 +3053,20 @@ void RendererMetal::ensureRayTracingAS()
       // vertices from this buffer to reject grazing self-hits of the shadow ray.
       [_rtTriBuffer release];
       _rtTriBuffer = tb;
+      [_rtTriColBuffer release];
+      _rtTriColBuffer = cb;
+      [_rtTriNrmBuffer release];
+      _rtTriNrmBuffer = nb;
+      [_rtTriMatBuffer release];
+      _rtTriMatBuffer = mb;
     } else {
+      [cb release];  [nb release];  [mb release];
+      [_rtTriMatBuffer release];
+      _rtTriMatBuffer = nil;
+      [_rtTriColBuffer release];
+      _rtTriColBuffer = nil;
+      [_rtTriNrmBuffer release];
+      _rtTriNrmBuffer = nil;
       // No triangles survived (none present, or all clipped away). Release the
       // upper-bound buffer we may have allocated so it does not leak (#425).
       [tb release];
@@ -2811,6 +3095,13 @@ void RendererMetal::ensureRayTracingAS()
                             options:MTLResourceStorageModeShared];
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
     size_t ii = 0;
+    // Traced reflections: per sphere instance {cx,cy,cz,r, r,g,b,0} in instance order.
+    [_rtSphereBuffer release];
+    _rtSphereBuffer = (sphereIdx >= 0 && nSph > 0)
+        ? [_device newBufferWithLength:nSph * 8 * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    float* srec = _rtSphereBuffer ? static_cast<float*>(_rtSphereBuffer.contents) : nullptr;
     if (sphereIdx >= 0) {
       for (size_t c = 0; c < cells.size(); ++c) {
         const uint32_t mask = cellMask(c);
@@ -2818,6 +3109,8 @@ void RendererMetal::ensureRayTracingAS()
           auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
           if (git == _rtGeomCache.end()) continue;
           const std::vector<float>& sp = git->second.spheres;
+          const std::vector<float>& sc = git->second.sphereCols;
+          const bool haveSC = sc.size() * 4 == sp.size() * 3;
           const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
           const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
           const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
@@ -2845,11 +3138,19 @@ void RendererMetal::ensureRayTracingAS()
             inst[ii].mask = mask;
             inst[ii].intersectionFunctionTableOffset = 0;
             inst[ii].accelerationStructureIndex = sphereIdx;
+            if (srec) {
+              float* o = srec + ii * 8;
+              o[0] = wc[0]; o[1] = wc[1]; o[2] = wc[2]; o[3] = r;
+              if (haveSC) { o[4] = sc[i * 3]; o[5] = sc[i * 3 + 1]; o[6] = sc[i * 3 + 2]; }
+              else { o[4] = o[5] = o[6] = 0.8f; }
+              o[7] = (float)ki;   // occurrence -> material table row
+            }
             ++ii;
           }
         }
       }
     }
+    _rtSphereInstCount = ii;   // sphere instances occupy ids [0, ii)
     for (size_t c = 0; c < cells.size(); ++c) {
       if (triProto[c] < 0) continue;
       built[c].triInstance = (int)ii;   // instance_id the shadow ray sees for this cell's tris
@@ -2889,6 +3190,8 @@ void RendererMetal::ensureRayTracingAS()
     _rtTriCount = nTris;
     _rtBuiltCells = std::move(built);
     _rtBuiltGrid = gridBuild;
+    _rtBuiltMat = _rtFrameMat;
+    uploadRTMaterials();
     _rtReady = (_rtInstanceAS != nil);
 
     static int once = 0;
@@ -2977,6 +3280,9 @@ void RendererMetal::runPostChain()
       float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
       float aoExemptEnabled;     // matches MSL RTU: cartoon mask bound at texture(4)
       float pad3;                // matches MSL RTU padding (16-byte multiple)
+      float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
+      float lAmbient, lDirect, lReflect, lSpec;
+      float lShin, pad4, pad5, pad6;
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -3042,6 +3348,19 @@ void RendererMetal::runPostChain()
     u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     u.pad3 = 0.0f;
+    // Traced self-reflections: materials come from the per-occurrence table
+    // (metal_rt_reflect/_tint/_rough per object); only the global knobs and the
+    // hit-shading light model travel in the uniform. matCount 0 = nothing
+    // reflective this frame -> the composite skips the reflection block.
+    bool anyReflective = false;
+    for (const auto& m : _rtBuiltMat) if (m[0] > 0.001f) { anyReflective = true; break; }
+    u.reflEnv = (float)_reflEnv;
+    u.reflSamples = _offscreen ? (float)_reflSamples : 1.0f;
+    u.sphereCount = (float)_rtSphereInstCount;
+    u.matCount = anyReflective ? (float)_rtBuiltMat.size() : 0.0f;
+    u.lAmbient = _lightAmbient; u.lDirect = _lightDirect; u.lReflect = _lightReflect;
+    u.lSpec = _lightSpecular; u.lShin = _lightShininess;
+    u.pad4 = u.pad5 = u.pad6 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -3129,6 +3448,29 @@ void RendererMetal::runPostChain()
     [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
     [er setFragmentBytes:&gu length:sizeof(gu) atIndex:3];   // cell table (#478)
+    // Traced self-reflections: the composite traces one reflection ray per
+    // reflective pixel, so it needs the AS + the geometry/colour/normal/material
+    // buffers built beside it.
+    if (_rtSphereProtoAS)
+      [er useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+      [er useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    [er setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
+    {
+      static const float kDummy[16] = {0};
+      if (_rtTriBuffer) [er setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:2];
+      if (_rtTriColBuffer) [er setFragmentBuffer:_rtTriColBuffer offset:0 atIndex:4];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:4];
+      if (_rtSphereBuffer) [er setFragmentBuffer:_rtSphereBuffer offset:0 atIndex:5];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:5];
+      if (_rtTriNrmBuffer) [er setFragmentBuffer:_rtTriNrmBuffer offset:0 atIndex:6];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:6];
+      if (_rtTriMatBuffer) [er setFragmentBuffer:_rtTriMatBuffer offset:0 atIndex:7];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:7];
+      if (_rtMatBuffer) [er setFragmentBuffer:_rtMatBuffer offset:0 atIndex:8];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:8];
+    }
     [er drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [er endEncoding];
     sceneSrc = _postColor;
@@ -5486,9 +5828,10 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   if (_rtEnabled && !_shadowMode && !_oitActive) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
-                     (uint64_t)posOffset}),
+                     (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, mode, vertexCount, data, stride, posOffset, nullptr);
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+                          mode, vertexCount, data, stride, posOffset, nullptr);
         });
   }
 
@@ -5777,11 +6120,11 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   if (_rtEnabled && !_shadowMode && !_oitActive) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
-                     (uint64_t)posOffset,
+                     (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
                      (uint64_t)reinterpret_cast<uintptr_t>(indexData)}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, mode, indexCount, vertexData, stride, posOffset,
-              indexData);
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+              mode, indexCount, vertexData, stride, posOffset, indexData);
         });
   }
 
@@ -6383,6 +6726,15 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
             g.spheres.push_back(c[1]);
             g.spheres.push_back(c[2]);
             g.spheres.push_back(c[3] * call.sphereSizeScale);
+            // Traced reflections: sphere colour (a_Color UByte4Norm) for reflection shading.
+            if (call.colorOff >= 0) {
+              const uint8_t* cp = base + (6 * k) * call.stride + call.colorOff;
+              g.sphereCols.push_back(cp[0] / 255.f);
+              g.sphereCols.push_back(cp[1] / 255.f);
+              g.sphereCols.push_back(cp[2] / 255.f);
+            } else {
+              g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f);
+            }
           }
         });
   }
@@ -6909,7 +7261,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
             float r = call.uniRadius > 0.0f
                           ? call.uniRadius
                           : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
-            rtAppendCylinder(g.tris, simd_make_float3(p1[0], p1[1], p1[2]),
+            simd_float3 rgb = simd_make_float3(0.8f, 0.8f, 0.8f);
+            if (call.colorOff >= 0) {   // Traced reflections: stick colour (first half)
+              const uint8_t* cp = vb + bptr + call.colorOff;
+              if (call.colorIsFloat) { const float* f = reinterpret_cast<const float*>(cp); rgb = simd_make_float3(f[0], f[1], f[2]); }
+              else rgb = simd_make_float3(cp[0] / 255.f, cp[1] / 255.f, cp[2] / 255.f);
+            }
+            rtAppendCylinder(g.tris, g.triCols, g.triNrms, rgb, simd_make_float3(p1[0], p1[1], p1[2]),
                              simd_make_float3(p2[0], p2[1], p2[2]), r);
           }
         });

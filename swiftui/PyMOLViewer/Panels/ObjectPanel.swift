@@ -152,6 +152,13 @@ enum RepCatalog {
                 RepProperty(setting: "cartoon_fancy_helices", label: "Fancy helices", kind: .toggle),
                 RepProperty(setting: "cartoon_flat_sheets",   label: "Flat sheets",   kind: .toggle),
                 RepProperty(setting: "cartoon_spline",        label: "Spline ribbon", kind: .toggle),
+                // Object-scoped, so these three rows show the SAME value in every
+                // rep panel of this object and moving one moves them all. The
+                // labels say so until #498 collapses them into one object-wide
+                // "Reflection (legacy)" group on the object header.
+                RepProperty(setting: "metal_rt_reflect", label: "Reflection (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_tint", label: "Refl. tint (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_rough", label: "Refl. roughness (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
             ]),
         "surface": RepSpec(rep: "surface", display: "Surface",
             colorSetting: "surface_color", defaultColor: -1, properties: [
@@ -166,6 +173,13 @@ enum RepCatalog {
                 RepProperty(setting: "surface_contour_width", label: "Contour width", kind: .slider, min: 0.5, max: 6, step: 0.5, decimals: 1),
                 RepProperty(setting: "surface_contour_color", label: "Contour color", kind: .color),
                 RepProperty(setting: "surface_contour_opaque", label: "Contour opaque", kind: .toggle),
+                // Object-scoped, so these three rows show the SAME value in every
+                // rep panel of this object and moving one moves them all. The
+                // labels say so until #498 collapses them into one object-wide
+                // "Reflection (legacy)" group on the object header.
+                RepProperty(setting: "metal_rt_reflect", label: "Reflection (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_tint", label: "Refl. tint (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_rough", label: "Refl. roughness (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
             ]),
         "sticks": RepSpec(rep: "sticks", display: "Sticks",
             colorSetting: "stick_color", defaultColor: -1, properties: [
@@ -173,12 +187,26 @@ enum RepCatalog {
                 RepProperty(setting: "stick_radius",   label: "Radius",  kind: .slider),
                 RepProperty(setting: "stick_h_scale",  label: "H scale", kind: .slider),
                 RepProperty(setting: "metal_interior_cap", label: "Solid interior", kind: .toggle),
+                // Object-scoped, so these three rows show the SAME value in every
+                // rep panel of this object and moving one moves them all. The
+                // labels say so until #498 collapses them into one object-wide
+                // "Reflection (legacy)" group on the object header.
+                RepProperty(setting: "metal_rt_reflect", label: "Reflection (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_tint", label: "Refl. tint (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_rough", label: "Refl. roughness (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
             ]),
         "spheres": RepSpec(rep: "spheres", display: "Spheres",
             colorSetting: "sphere_color", defaultColor: -1, properties: [
                 RepProperty(setting: "sphere_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "sphere_scale", label: "Scale", kind: .slider, max: 3, step: 0.05),
                 RepProperty(setting: "metal_interior_cap", label: "Solid interior", kind: .toggle),
+                // Object-scoped, so these three rows show the SAME value in every
+                // rep panel of this object and moving one moves them all. The
+                // labels say so until #498 collapses them into one object-wide
+                // "Reflection (legacy)" group on the object header.
+                RepProperty(setting: "metal_rt_reflect", label: "Reflection (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_tint", label: "Refl. tint (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+                RepProperty(setting: "metal_rt_reflect_rough", label: "Refl. roughness (object)", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
             ]),
         "ribbon": RepSpec(rep: "ribbon", display: "Ribbon",
             colorSetting: "ribbon_color", defaultColor: -1, properties: [
@@ -357,6 +385,19 @@ enum SceneCatalog {
                    help: "Ambient-occlusion darkening amount."),
         SceneParam(setting: "metal_rt_shadow_intensity", label: "RT shadow strength", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "Cast-shadow darkening amount (still needs Shadows on)."),
+        // Traced self-reflections. The global value is the default for every
+        // object; each rep's Inspector panel exposes the same three settings
+        // per object (metal_rt_reflect / _tint / _rough are object-scoped).
+        SceneParam(setting: "metal_rt_reflect", label: "Reflections", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Ray-traced reflections of the molecule in itself. 0 = off, ~0.25 = glossy plastic, 1 = mirror. Global default; override per object in each rep's panel."),
+        SceneParam(setting: "metal_rt_reflect_tint", label: "Reflection tint", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "How much the surface's own colour tints its reflection: 0 = chrome-like, 1 = coloured/anodised metal."),
+        SceneParam(setting: "metal_rt_reflect_rough", label: "Reflection roughness", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Blur of the reflections: 0 = mirror, 1 = brushed. Exports average several rays; the live view traces one."),
+        SceneParam(setting: "metal_rt_reflect_env", label: "Studio environment", kind: .toggle, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Reflection rays that miss the molecule see a soft studio backdrop instead of the flat background colour."),
+        SceneParam(setting: "metal_rt_reflect_samples", label: "Reflection samples (export)", kind: .slider, min: 1, max: 32, step: 1, decimals: 0, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Reflection rays per pixel for rough materials in PNG/movie exports. Higher is smoother but slower."),
         SceneParam(setting: "metal_msaa",   label: "MSAA 4×", kind: .toggle, group: "Metal optimization",
                    help: "4× multisample antialiasing — smoother edges at some GPU cost."),
         SceneParam(setting: "metal_upscale", label: "Reduced-res upscale", kind: .toggle, group: "Metal optimization",
