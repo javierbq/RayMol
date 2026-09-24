@@ -31,9 +31,10 @@ class TestMetalRTReflectSettings(testing.PyMOLTestCase):
 
     def testDefaultsOff(self):
         for n in OBJECT_SCOPED:
-            self.assertAlmostEqual(float(cmd.get(n)), 0.0, msg=n)
-        self.assertEqual(int(cmd.get('metal_rt_reflect_env')), 1)
-        self.assertGreaterEqual(int(cmd.get('metal_rt_reflect_samples')), 1)
+            self.assertAlmostEqual(cmd.get_setting_float(n), 0.0, msg=n)
+        # cmd.get() renders a boolean as 'on'/'off', so read the typed getter.
+        self.assertEqual(cmd.get_setting_boolean('metal_rt_reflect_env'), 1)
+        self.assertGreaterEqual(cmd.get_setting_int('metal_rt_reflect_samples'), 1)
 
     def testPerObjectOverride(self):
         cmd.pseudoatom('m1')
