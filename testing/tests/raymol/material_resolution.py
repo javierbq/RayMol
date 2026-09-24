@@ -5,7 +5,7 @@ first, then that setting's global value, then `material_default`. The
 representations that have no material in v1 (ribbon, mesh, dots, lines, labels)
 stay `default` and `material_default` does not reach them.
 
-`_cmd.get_rep_material(object_or_empty, rep_index)` is the same C function the
+`_cmd.get_rep_material(object_or_empty, rep_index[, state])` is the same C function the
 renderer calls on every lit draw, so these assertions test the shipped path and
 not a Python re-implementation of it.
 
@@ -117,8 +117,12 @@ class TestMaterialResolution(testing.PyMOLTestCase):
         cmd.set('cartoon_material', MARBLE, 'm1')
         cmd.set('cartoon_material', METALLIC, 'm1', state=1)
         self.assertEqual(resolve(CARTOON, 'm1', state=1), METALLIC)
-        # ...and the object value still answers when no state is named.
-        self.assertEqual(resolve(CARTOON, 'm1'), MARBLE)
+        # The default (state 0) answers for the state the VIEWPORT is drawing,
+        # which for a one-state object is state 1 -- anything else would report
+        # a different material than the picture on screen.
+        self.assertEqual(resolve(CARTOON, 'm1'), METALLIC)
+        # A negative state forces the object level.
+        self.assertEqual(resolve(CARTOON, 'm1', state=-1), MARBLE)
 
     def testUnsetFallsBackAgain(self):
         cmd.set('cartoon_material', MARBLE)

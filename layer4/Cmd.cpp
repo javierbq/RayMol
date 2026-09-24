@@ -2356,6 +2356,11 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  * the coordinate set's settings first and the object's second, and the
  * coordinate-set (object-state) slot is the highest-precedence branch.
  *
+ * state 0 (the default) means the state the VIEWPORT is drawing, because that
+ * is the coordinate set `metalApplyRepMaterial` reads: answering with the
+ * object-level value instead would disagree with the picture on screen.
+ * state N>0 names a state explicitly; state <0 forces the object level.
+ *
  * _cmd.get_rep_material(object_name_or_empty, rep_index[, state=0])
  */
 static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
@@ -2383,9 +2388,12 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
       ok = false;
     } else {
       objSetting = obj->Setting.get();
+      // 0 -> the state being drawn; N>0 -> that state; <0 -> the object level.
+      int const resolved =
+          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
       // Same shape as CmdGetObjectSettings: a state handle equal to the
       // object's own means the state carries no settings of its own.
-      auto* handle = obj->getSettingHandle(state - 1);
+      auto* handle = obj->getSettingHandle(resolved);
       if (handle && handle != &obj->Setting) {
         stateSetting = handle->get();
       }
