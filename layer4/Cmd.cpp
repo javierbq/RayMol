@@ -2347,6 +2347,48 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
 }
 
 /**
+ * Materials (#503): the material table as [(id, name), ...].
+ *
+ * With only_implemented (the default), only the materials that can actually
+ * draw today, which is what the Inspector dropdown offers. Pass 0 for the whole
+ * table, which is what `set stick_material, marble` maps a name through: an
+ * unimplemented material is a real id that renders as `default`, not an error.
+ *
+ * Static table, no globals: safe to call at import time.
+ *
+ * _cmd.get_material_names([only_implemented=1])
+ */
+static PyObject* CmdGetMaterialNames(PyObject*, PyObject* args)
+{
+  int onlyImplemented = 1;
+  if (!PyArg_ParseTuple(args, "|i", &onlyImplemented)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  PyObject* list = PyList_New(0);
+  if (!list) {
+    return APIAutoNone(nullptr);
+  }
+  for (int id = 0; id < MaterialTableSize(); ++id) {
+    if (onlyImplemented && !MaterialIsImplemented(id)) {
+      continue;
+    }
+    const char* name = MaterialGetName(id);
+    if (!name) {
+      continue;
+    }
+    PyObject* item = Py_BuildValue("is", id, name);
+    if (!item) {
+      Py_DECREF(list);
+      return APIAutoNone(nullptr);
+    }
+    PyList_Append(list, item);
+    Py_DECREF(item);
+  }
+  return list;
+}
+
+/**
  * Materials (#503): the material id one representation of one object resolves
  * to for a draw -- object value, then the rep's global value, then
  * material_default. Internal; the Inspector and the CI test read it.
@@ -6642,6 +6684,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_matrix", CmdGetObjectMatrix, METH_VARARGS},
   {"get_object_ttt", CmdGetObjectTTT, METH_VARARGS},
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
+  {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},

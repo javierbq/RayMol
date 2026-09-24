@@ -408,6 +408,8 @@ def get_help_only_keywords(self_cmd=cmd):
         'keyboard'              : [ self_cmd.helping.keyboard   ],
         'launching'             : [ self_cmd.helping.launching  ],
         'load_model'            : [ self_cmd.load_model  ],
+        'material'              : [ self_cmd.helping.material ],
+        'materials'             : [ self_cmd.helping.material ],
         'movies'                : [ self_cmd.helping.movies  ],
         'python_help'           : [ self_cmd.python_help   ],
         'povray'                : [ self_cmd.helping.povray  ],

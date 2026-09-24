@@ -25,6 +25,7 @@ Z* -------------------------------------------------------------------
 #include"Err.h"
 #include"MemoryDebug.h"
 #include"Ortho.h"
+#include"Material.h"
 #include"Setting.h"
 #include"Scene.h"
 #include"ButMode.h"
@@ -1192,6 +1193,19 @@ const char * SettingGetTextPtr(PyMOLGlobals * G, const CSetting * set1, const CS
     sprintf(buffer, SettingGet_b(G, set1, set2, index) ? "on" : "off");
     break;
   case cSetting_int:
+    // Materials are stored as ids and read back as NAMES, the way colour
+    // settings are, so `get`, the "Setting: ... set to ..." feedback line,
+    // `iterate s.stick_material`, the Settings panel and .pml logs all show
+    // `marble` rather than `7`. The name -> id direction lands in the same
+    // change (modules/pymol/setting.py), so the round trip closes here and not
+    // a ticket later. An id with no row keeps its NUMBER: `get` must not
+    // report `default` for a value it would not accept back, and a name never
+    // silently falls back -- an unknown one is an error at set time.
+    if (MaterialIsMaterialSetting(index)) {
+      sptr = MaterialGetName(SettingGet_i(G, set1, set2, index));
+      if (sptr)
+        return sptr;
+    }
     sprintf(buffer, "%d", SettingGet_i(G, set1, set2, index));
     break;
   case cSetting_float:
@@ -2195,6 +2209,39 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
   case cSetting_hide_long_bonds:
     ExecutiveInvalidateRep(G, inv_sele, cRepLine, cRepInvRep);
     ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvRep);
+    SceneChanged(G);
+    break;
+  /* Materials (#503). A glass-family material carries an IMPLIED ALPHA that the
+     rep bakes into its per-vertex colour at BUILD time, so changing a material
+     has to rebuild the rep exactly the way a colour change does. Without this
+     the surface keeps the alpha of the material it had before. */
+  case cSetting_cartoon_material:
+    ExecutiveInvalidateRep(G, inv_sele, cRepCartoon, cRepInvColor);
+    SceneChanged(G);
+    break;
+  case cSetting_surface_material:
+    ExecutiveInvalidateRep(G, inv_sele, cRepSurface, cRepInvColor);
+    SceneChanged(G);
+    break;
+  case cSetting_stick_material:
+    /* The stick rep also emits the stick_ball spheres. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
+    SceneChanged(G);
+    break;
+  case cSetting_sphere_material:
+    ExecutiveInvalidateRep(G, inv_sele, cRepSphere, cRepInvColor);
+    SceneChanged(G);
+    break;
+  case cSetting_material_default:
+    /* The global fallback reaches exactly the four representations that HAVE a
+       material setting; ribbon, mesh, dots, lines and labels resolve to
+       `default` whatever this is (MaterialSettingForRep returns none for them),
+       so rebuilding them would be pure cost on a setting the Scene panel
+       exposes as a slider. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepCartoon, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepSurface, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepSphere, cRepInvColor);
     SceneChanged(G);
     break;
   case cSetting_stick_transparency:
