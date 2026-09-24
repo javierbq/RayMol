@@ -68,12 +68,17 @@ class TestSceneObjectSettings(testing.PyMOLTestCase):
         self.assertAlmostEqual(
             rs.scene_object_settings_map('A')['m2'][TINT], 0.8, places=5)
 
-    def testObjectsGoneAtRecallAreSkipped(self):
+    def testAnObjectGoneAtRecallDoesNotStopTheRest(self):
+        """The deleted object must be skipped, not abort the loop: m2's value
+        still has to be applied after m1 has gone."""
         cmd.set(REFLECT, 1.0, 'm1')
+        cmd.set(REFLECT, 0.75, 'm2')
         cmd.scene('A', 'store')
         cmd.delete('m1')
+        cmd.unset(REFLECT, 'm2')
         cmd.scene('A', 'recall', animate=0)         # must not raise
         self.assertEqual(cmd.get_names('objects'), ['m2'])
+        self.assertAlmostEqual(self._objval('m2'), 0.75, places=5)
 
     def testRenameKeepsPerObjectCapture(self):
         cmd.set(REFLECT, 1.0, 'm1')
