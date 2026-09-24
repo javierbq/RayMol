@@ -200,6 +200,9 @@ def _apply_object_settings(name, _self=cmd):
     # expand to the members.
     live = set(_material_objects(_self))
     for o, kv in d.items():
+        # Not merely defensive: without this, a scene stored with many objects
+        # that were later deleted raises (and swallows) one exception per
+        # setting per missing object on every recall.
         if o not in live:
             continue
         for s in OBJECT_CAPTURE:
@@ -213,12 +216,14 @@ def _apply_object_settings(name, _self=cmd):
 
 
 def _capture_ttt(_self=cmd):
-    """Per-object TTT for every current object (None where unmoved)."""
+    """Per-object TTT for every current object (None where unmoved).
+
+    Groups are excluded for the same reason as the settings above:
+    `set_object_ttt` expands a group name to its members, so capturing a group
+    and then resetting it to identity on recall wiped every member's stored
+    Move-mode transform."""
     out = {}
-    try:
-        objs = _self.get_names('objects') or []
-    except Exception:
-        objs = []
+    objs = _material_objects(_self)
     for o in objs:
         try:
             out[o] = _self.get_object_ttt(o)   # list[16] or None
@@ -233,10 +238,9 @@ def _apply_ttt(name, _self=cmd):
     d = _scene_ttt.get(name)
     if not d:
         return
-    try:
-        live = set(_self.get_names('objects') or [])
-    except Exception:
-        live = set()
+    # Groups filtered here too, not only at capture: a .pse written before this
+    # guard existed still has them in its map.
+    live = set(_material_objects(_self))
     for o, ttt in d.items():
         if o not in live:
             continue

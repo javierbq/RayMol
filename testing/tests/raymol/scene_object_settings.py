@@ -120,6 +120,18 @@ class TestSceneObjectSettings(testing.PyMOLTestCase):
         cmd.scene('A', 'recall', animate=0)
         self.assertAlmostEqual(self._objval('m1'), 1.0, places=5)
 
+    def testAGroupDoesNotWipeAMemberObjectTTT(self):
+        """`set_object_ttt` expands a group to its members exactly as `set`
+        does, so capturing the group and resetting it to identity on recall
+        wiped every member's Move-mode transform."""
+        moved = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, 0, 0, 1]
+        cmd.set_object_ttt('m1', moved)
+        cmd.group('grp', 'm1 m2')
+        cmd.scene('A', 'store')
+        cmd.set_object_ttt('m1', list(rs._IDENTITY_TTT))
+        cmd.scene('A', 'recall', animate=0)
+        self.assertAlmostEqual(cmd.get_object_ttt('m1')[12], 7.0, places=5)
+
     def testPSERoundTrip(self):
         cmd.set(REFLECT, 1.0, 'm1')
         cmd.set(TINT, 0.7, 'm1')
