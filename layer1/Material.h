@@ -37,16 +37,17 @@ enum {
 const char* MaterialGetName(int id);
 
 /**
- * Id of a material name (exact match, case sensitive), or -1 when unknown.
- */
-int MaterialGetId(const char* name);
-
-/**
- * True for the four PER-REPRESENTATION material settings. These are the ones a
- * selection-scoped `set` has to be refused for: they are ints, and the generic
- * selection path would happily write an atom-level int that nothing reads.
+ * True for the four PER-REPRESENTATION material settings.
  */
 bool MaterialIsRepMaterialSetting(int index);
+
+/**
+ * True for the object-scoped settings a SELECTION-scoped `set` is refused for:
+ * the four per-representation materials plus `transparency_peel`. They are
+ * ints, so the generic selection path would write an atom-level value on every
+ * matched atom that no draw path reads -- a success message and no change.
+ */
+bool MaterialIsSelectionRejectedSetting(int index);
 
 /**
  * True for every setting whose value is a material id (the four

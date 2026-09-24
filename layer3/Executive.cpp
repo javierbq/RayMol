@@ -12245,6 +12245,37 @@ pymol::Result<> ExecutiveSetSetting(PyMOLGlobals* G, int index, PyObject* tuple,
 
     CTracker* I_Tracker = I->Tracker;
     int list_id = ExecutiveGetNamesListFromPattern(G, sele, true, true);
+
+    // Refuse a SELECTION-scoped material BEFORE writing anything. A material is
+    // a property of an object's REPRESENTATION; the atomic path would write the
+    // int on every matched atom, where no draw path reads it -- a success
+    // message and no change. The check has to come before the loop because one
+    // pattern can match objects AND a selection (`m*` next to a selection named
+    // `m_sel`, or a group holding one): refusing inside the loop left the
+    // objects already written and then raised, so the command half-succeeded
+    // and failed at the same time.
+    if (MaterialIsSelectionRejectedSetting(index)) {
+      bool sawSelection = false;
+      SpecRec* scan = nullptr;
+      int scan_id = TrackerNewIter(I_Tracker, 0, list_id);
+      while (TrackerIterNextCandInList(
+          I_Tracker, scan_id, (TrackerRef**) (void*) &scan)) {
+        if (scan && scan->type == cExecSelection) {
+          sawSelection = true;
+          break;
+        }
+      }
+      TrackerDelIter(I_Tracker, scan_id);
+      if (sawSelection) {
+        TrackerDelList(I_Tracker, list_id);
+        SettingGetName(G, index, name);
+        return pymol::make_error(name,
+            " is a property of an object's representation, not of a selection. "
+            "Name an object instead: set ",
+            name, ", <value>, <object-name>");
+      }
+    }
+
     int iter_id = TrackerNewIter(I_Tracker, 0, list_id);
     while (TrackerIterNextCandInList(
         I_Tracker, iter_id, (TrackerRef**) (void*) &rec)) {
@@ -12287,20 +12318,8 @@ pymol::Result<> ExecutiveSetSetting(PyMOLGlobals* G, int index, PyObject* tuple,
           }
           break;
         case cExecSelection:
-          // A material belongs to a REPRESENTATION OF AN OBJECT. The atomic
-          // path below would take the int and write it on every matched atom,
-          // where no draw path reads it: the user would get a success message
-          // and no change. Object names, `all`, groups and wildcards still
-          // work, so this only refuses what could never have worked.
-          if (MaterialIsRepMaterialSetting(index)) {
-            SettingGetName(G, index, name);
-            TrackerDelIter(I_Tracker, iter_id);
-            TrackerDelList(I_Tracker, list_id);
-            return pymol::make_error(name,
-                " is a property of an object's representation, not of a "
-                "selection. Name an object instead: set ",
-                name, ", <material>, <object-name>");
-          }
+          // A material setting never reaches here: the pre-pass above refused
+          // the whole command before anything was written.
           if (SettingLevelCheckMask(
                   G, index, SettingLevelInfo[cSettingLevel_bond].mask)) {
             // handle bond-level settings (PYMOL-2726)
@@ -12560,6 +12579,38 @@ int ExecutiveSetSettingFromString(PyMOLGlobals* G, int index, const char* value,
   } else {
     CTracker* I_Tracker = I->Tracker;
     int list_id = ExecutiveGetNamesListFromPattern(G, sele, true, true);
+
+    // Refuse a SELECTION-scoped material BEFORE writing anything. A material is
+    // a property of an object's REPRESENTATION; the atomic path would write the
+    // int on every matched atom, where no draw path reads it -- a success
+    // message and no change. The check has to come before the loop because one
+    // pattern can match objects AND a selection (`m*` next to a selection named
+    // `m_sel`, or a group holding one): refusing inside the loop left the
+    // objects already written and then raised, so the command half-succeeded
+    // and failed at the same time.
+    if (MaterialIsSelectionRejectedSetting(index)) {
+      bool sawSelection = false;
+      SpecRec* scan = nullptr;
+      int scan_id = TrackerNewIter(I_Tracker, 0, list_id);
+      while (TrackerIterNextCandInList(
+          I_Tracker, scan_id, (TrackerRef**) (void*) &scan)) {
+        if (scan && scan->type == cExecSelection) {
+          sawSelection = true;
+          break;
+        }
+      }
+      TrackerDelIter(I_Tracker, scan_id);
+      if (sawSelection) {
+        TrackerDelList(I_Tracker, list_id);
+        SettingGetName(G, index, name);
+        PRINTFB(G, FB_Setting, FB_Errors)
+        " Setting-Error: %s is a property of an object's representation, not "
+        "of a selection. Name an object instead.\n",
+            name ENDFB(G);
+        return 0;
+      }
+    }
+
     int iter_id = TrackerNewIter(I_Tracker, 0, list_id);
     while (TrackerIterNextCandInList(
         I_Tracker, iter_id, (TrackerRef**) (void*) &rec)) {
@@ -12603,18 +12654,8 @@ int ExecutiveSetSettingFromString(PyMOLGlobals* G, int index, const char* value,
         case cExecSelection:
           /* this code has not yet been tested... */
 
-          // Same refusal as ExecutiveSetSetting: a material is a property of
-          // an object's representation, never of a selection.
-          if (MaterialIsRepMaterialSetting(index)) {
-            SettingGetName(G, index, name);
-            PRINTFB(G, FB_Setting, FB_Errors)
-            " Setting-Error: %s is a property of an object's representation, "
-            "not of a selection. Name an object instead.\n",
-                name ENDFB(G);
-            ok = false;
-            break;
-          }
-
+          // A material setting never reaches here: the pre-pass above refused
+          // the whole command before anything was written.
           sele1 = SelectorIndexByName(G, rec->name);
           if (sele1 >= 0) {
             int type;

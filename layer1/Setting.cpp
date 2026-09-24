@@ -25,7 +25,6 @@ Z* -------------------------------------------------------------------
 #include"Err.h"
 #include"MemoryDebug.h"
 #include"Ortho.h"
-#include"Material.h"
 #include"Setting.h"
 #include"Scene.h"
 #include"ButMode.h"
@@ -1193,16 +1192,6 @@ const char * SettingGetTextPtr(PyMOLGlobals * G, const CSetting * set1, const CS
     sprintf(buffer, SettingGet_b(G, set1, set2, index) ? "on" : "off");
     break;
   case cSetting_int:
-    // Materials are stored as ids and read back as NAMES, the way colour
-    // settings are, so `get`, the "Setting: ... set to ..." feedback line,
-    // `iterate s.stick_material`, the Settings panel and .pml logs all show
-    // `marble` rather than `7`. An id with no row keeps its number: a name
-    // never falls back to `default`, it is an error at set time.
-    if (MaterialIsMaterialSetting(index)) {
-      sptr = MaterialGetName(SettingGet_i(G, set1, set2, index));
-      if (sptr)
-        return sptr;
-    }
     sprintf(buffer, "%d", SettingGet_i(G, set1, set2, index));
     break;
   case cSetting_float:

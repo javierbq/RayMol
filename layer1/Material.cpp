@@ -2,8 +2,6 @@
  * Materials (#503): the named material table. See Material.h.
  */
 
-#include <cstring>
-
 #include "Material.h"
 #include "Setting.h"
 
@@ -36,19 +34,6 @@ const char* MaterialGetName(int id)
   return kMaterialNames[id];
 }
 
-int MaterialGetId(const char* name)
-{
-  if (!name) {
-    return -1;
-  }
-  for (int i = 0; i < cMaterial_count; ++i) {
-    if (strcmp(name, kMaterialNames[i]) == 0) {
-      return i;
-    }
-  }
-  return -1;
-}
-
 bool MaterialIsRepMaterialSetting(int index)
 {
   switch (index) {
@@ -60,6 +45,14 @@ bool MaterialIsRepMaterialSetting(int index)
   default:
     return false;
   }
+}
+
+bool MaterialIsSelectionRejectedSetting(int index)
+{
+  // transparency_peel is object-scoped for the same reason the materials are,
+  // and a selection-scoped set of it fails the same silent way.
+  return index == cSetting_transparency_peel ||
+         MaterialIsRepMaterialSetting(index);
 }
 
 bool MaterialIsMaterialSetting(int index)
