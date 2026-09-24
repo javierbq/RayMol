@@ -14,6 +14,70 @@
 #include "MyPNG.h"
 #include "Image.h"
 
+// MaterialU, the fragment-stage mirror of MaterialParams (#503). Mirrored field
+// for field by the `MaterialU` struct in every lit MSL library; the inverse
+// modelview is appended here so impostor fragment shaders can evaluate
+// procedural patterns in TRUE model space (a rotation-only transform makes the
+// grain swim under pan and zoom). Floats and ints only, 16-byte aligned, bound
+// at fragment buffer kMaterialBufferIndex on every lit draw.
+//
+// Metal API validation aborts a draw whose bound buffer is smaller than the
+// argument the function declares, so the size must not drift from the MSL side.
+namespace
+{
+// Fragment buffer index for MaterialU. Above every existing fragment binding on
+// every lit pipeline (ClipU and the impostor uniforms both sit at 1).
+constexpr NSUInteger kMaterialBufferIndex = 2;
+
+struct MaterialU {
+  simd_float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
+static_assert(sizeof(MaterialU) == 128, "MaterialU must match the MSL struct");
+static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
+
+// Fill and bind MaterialU for the draw about to be issued. Called from EVERY
+// lit draw path, so a material cannot leak from one representation onto the
+// next; the reps that have no material of their own bind a neutral `default`.
+void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
+    const float* invModelview)
+{
+  if (!enc)
+    return;
+  MaterialU u{};
+  std::memcpy(&u.invModelview, invModelview, 16 * sizeof(float));
+  u.family = mp.family;
+  u.mode = mp.mode;
+  u.wantsPeel = mp.wantsPeel;
+  u.reflect = mp.reflect;
+  u.tint = mp.tint;
+  u.rough = mp.rough;
+  for (int i = 0; i < 6; ++i)
+    u.p[i] = mp.p[i];
+  [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
+}
+
+// The neutral `default` material, bound when an encoder is created so no draw
+// can ever see an unbound buffer even if a future draw path forgets the
+// per-draw bind.
+void bindNeutralMaterialU(id<MTLRenderCommandEncoder> enc)
+{
+  static const float kIdentity4x4[16] = {
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  bindMaterialU(enc, MaterialParams{}, kIdentity4x4);
+}
+} // namespace
+
+
 // Read a Metal BGRA8 texture and write it to a PNG via PyMOL's libpng writer.
 // Converts BGRA→RGBA and flips to PyMOL's bottom-up row order. Runs off the
 // render thread (command-buffer completion handler) after the GPU finishes.
@@ -572,6 +636,7 @@ void RendererMetal::ensureEncoder()
   }
 
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
+  bindNeutralMaterialU(_encoder);
   if (!_encoder) return;
 
   // Restore viewport
@@ -638,12 +703,19 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
   _repClipFracBack = fracBack;
 }
 
-void RendererMetal::setRepMaterial(float reflect, float tint, float rough)
+void RendererMetal::setRepMaterial(const MaterialParams& params)
 {
-  _repMat[0] = reflect < 0.0f ? 0.0f : (reflect > 1.0f ? 1.0f : reflect);
-  _repMat[1] = tint < 0.0f ? 0.0f : (tint > 1.0f ? 1.0f : tint);
-  _repMat[2] = rough < 0.0f ? 0.0f : (rough > 1.0f ? 1.0f : rough);
+  _repMatParams = params;
+  auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  _repMatParams.reflect = clamp01(params.reflect);
+  _repMatParams.tint = clamp01(params.tint);
+  _repMatParams.rough = clamp01(params.rough);
+  // The ray tracer's per-occurrence table reads the same three fields.
+  _repMat[0] = _repMatParams.reflect;
+  _repMat[1] = _repMatParams.tint;
+  _repMat[2] = _repMatParams.rough;
 }
+
 
 void RendererMetal::setReflectionParams(int env, int samples)
 {
@@ -806,6 +878,7 @@ void RendererMetal::beginFrame()
 
     // Create the encoder immediately to ensure the clear executes
     _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
+    bindNeutralMaterialU(_encoder);
   }
 }
 
@@ -3954,6 +4027,7 @@ void RendererMetal::beginTransparentOIT()
 
   _passDesc = _oitPassDesc;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_oitPassDesc];
+  bindNeutralMaterialU(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
   [_encoder setViewport:_viewport];
   // Depth-test against opaque depth (LEQUAL), but DO NOT write depth, so
@@ -3979,6 +4053,7 @@ void RendererMetal::endTransparentOIT()
   _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  bindNeutralMaterialU(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -4014,6 +4089,7 @@ void RendererMetal::beginShadowPass()
   _passDesc = _shadowPassDesc;
   _shadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_shadowPassDesc];
+  bindNeutralMaterialU(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
@@ -4047,6 +4123,7 @@ void RendererMetal::endShadowPass()
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionClear;
   _scenePassDesc.stencilAttachment.clearStencil = 0;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  bindNeutralMaterialU(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -5007,6 +5084,28 @@ struct VBOVertexOut {
   float  eyeDist;     // distance from camera (-eyeZ), for per-rep clipping
 };
 
+// Material of the representation being drawn (#503), mirroring MaterialParams
+// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
+// can be evaluated in true model space -- a rotation-only transform makes the
+// grain swim under pan and zoom. family 0 is `default` and compiles to today's
+// code. Bound on every lit draw; the shading branches arrive with the shared
+// material block (#487). Keep the field order and the padding identical to the
+// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
+// argument the function declares.
+struct MaterialU {
+  float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
+
 // Per-representation clip planes (eye-space distances from the camera). Lets one
 // rep (e.g. the surface) clip tighter than the global slab so the user can peek
 // inside while cartoon/sticks stay whole. enabled<0.5 => no per-rep clip.
@@ -5099,7 +5198,8 @@ vertex VBOVertexOut vbo_vertex(
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     constant LightU& lt [[buffer(0)]],
-    constant ClipU& clip [[buffer(1)]])
+    constant ClipU& clip [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
   return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
@@ -5227,7 +5327,8 @@ static float oit_weight(float a, float z) {
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     constant LightU& lt [[buffer(0)]],
-    constant ClipU& clip [[buffer(1)]])
+    constant ClipU& clip [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
   float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
@@ -5995,6 +6096,9 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
       _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+  // Material of THIS rep (#503). Bound per draw, like the clip above, so a
+  // material cannot leak onto the rep drawn next.
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -6254,6 +6358,9 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
       _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+  // Material of THIS rep (#503). Bound per draw, like the clip above, so a
+  // material cannot leak onto the rep drawn next.
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
@@ -6424,6 +6531,28 @@ struct SphereIn {
   float4 color         [[attribute(1)]];  // UByte4Norm -> float4
   float  rightUpFlags  [[attribute(2)]];
 };
+
+// Material of the representation being drawn (#503), mirroring MaterialParams
+// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
+// can be evaluated in true model space -- a rotation-only transform makes the
+// grain swim under pan and zoom. family 0 is `default` and compiles to today's
+// code. Bound on every lit draw; the shading branches arrive with the shared
+// material block (#487). Keep the field order and the padding identical to the
+// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
+// argument the function declares.
+struct MaterialU {
+  float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
 struct SphereU {
   float4x4 modelview;
   float4x4 projection;
@@ -6562,7 +6691,8 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
-    constant SphereU& u [[buffer(1)]]) {
+    constant SphereU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
   sphere_shade(in, u, rgb, a, depth);
   SphereFOut out;
@@ -6572,7 +6702,8 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
 }
 
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
-    constant SphereU& u [[buffer(1)]]) {
+    constant SphereU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
   sphere_shade(in, u, rgb, a, depth);
   float w = sph_oit_weight(a, depth);
@@ -6788,6 +6919,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // reads zero and clip.z/clip.w = 0/0 = NaN (all fragments fail the depth
   // range test / produce garbage depth).
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
                vertexStart:0
@@ -6818,6 +6950,28 @@ struct CylIn {
   float  radius  [[attribute(4)]];
   uchar  flags   [[attribute(5)]];
   uchar  cap     [[attribute(6)]];
+};
+
+// Material of the representation being drawn (#503), mirroring MaterialParams
+// on the C++ side plus the object's INVERSE MODELVIEW, so a procedural pattern
+// can be evaluated in true model space -- a rotation-only transform makes the
+// grain swim under pan and zoom. family 0 is `default` and compiles to today's
+// code. Bound on every lit draw; the shading branches arrive with the shared
+// material block (#487). Keep the field order and the padding identical to the
+// C++ mirror: Metal aborts a draw whose bound buffer is smaller than the
+// argument the function declares.
+struct MaterialU {
+  float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
 };
 struct CylU {
   float4x4 modelview;
@@ -7044,7 +7198,8 @@ static void cyl_shade(CylVOut in, constant CylU& u,
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
-    constant CylU& u [[buffer(1)]]) {
+    constant CylU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
   cyl_shade(in, u, rgb, a, depth);
   CylFOut o;
@@ -7054,7 +7209,8 @@ fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
 }
 
 fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
-    constant CylU& u [[buffer(1)]]) {
+    constant CylU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
   cyl_shade(in, u, rgb, a, depth);
   float w = cyl_oit_weight(a, depth);
@@ -7327,6 +7483,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                        indexCount:call.indexCount

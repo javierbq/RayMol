@@ -8,7 +8,9 @@
 #include "Feedback.h"
 #include "GLVertexBuffer.h"
 #include "GraphicsUtil.h"
+#include "Material.h"
 #include "PyMOLGlobals.h"
+#include "Rep.h"
 #include "Renderer.h"
 #include "RendererGL.h"
 #include "Scene.h"
@@ -60,20 +62,30 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
   return 1;
 }
 
-// Traced-reflection material of the rep about to be drawn (metal_rt_reflect /
-// _tint / _rough, object-scoped with a global fallback). Programs the renderer
-// for the NEXT draw; every Metal draw path calls it so a reflective surface
-// cannot leak its material onto the cartoon drawn after it.
+// Material of the rep about to be drawn (#503). Programs the renderer for the
+// NEXT draw; EVERY Metal draw path calls it -- including the reps that have no
+// material of their own, which pass `default` -- so a reflective surface cannot
+// leak its material onto the cartoon drawn after it.
 static void metalApplyRepMaterial(CCGORenderer* I)
 {
   auto* G = I->G;
   if (!G->Renderer) return;
   CSetting *s1 = (I->rep && I->rep->cs) ? I->rep->cs->Setting.get() : nullptr;
   CSetting *s2 = (I->rep && I->rep->obj) ? I->rep->obj->Setting.get() : nullptr;
-  G->Renderer->setRepMaterial(
-      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect),
-      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint),
-      SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough));
+  // The rep's OWN material setting: cartoon_material for a cartoon,
+  // stick_material for a stick -- and for the stick_ball spheres the stick rep
+  // emits, which arrive here as cRepCyl. Object value first, then the rep's
+  // global value, then material_default.
+  int const repType = I->rep ? I->rep->type() : cRepNone;
+  MaterialParams params =
+      MaterialResolve(MaterialResolveSettingId(G, s1, s2, repType), repType);
+  // reflect/tint/rough carry the legacy object-scoped metal_rt_reflect* triple,
+  // which the `default` material reads; the reflective materials take these
+  // over in the ticket that adds them.
+  params.reflect = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect);
+  params.tint = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint);
+  params.rough = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough);
+  G->Renderer->setRepMaterial(params);
 }
 
 // Per-representation clipping: program the renderer's per-rep clip planes for
@@ -1155,6 +1167,7 @@ static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
     // Metal: GPU-tessellate the cubic Bezier control points into a smooth tube
     // (the GL "bezier" tessellation shader is absent in NO_OPENGL builds).
     if (I->isPicking) return;
+    metalApplyRepMaterial(I);
     auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
     if (vbo && vbo->hasCPUData()) {
       float radius =

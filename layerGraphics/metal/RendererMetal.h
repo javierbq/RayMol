@@ -173,7 +173,7 @@ public:
       float fracBack = 0.0f) override;
   void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
-  void setRepMaterial(float reflect, float tint, float rough) override;
+  void setRepMaterial(const MaterialParams& params) override;
   void setReflectionParams(int env, int samples) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
@@ -481,6 +481,9 @@ private:
   // Traced-reflection material for the next draw (setRepMaterial): reflect (F0),
   // tint, roughness. Recorded per RT geometry occurrence in _rtFrameMat.
   float _repMat[3] = {0.0f, 0.0f, 0.0f};
+  // Full material of the next draw (#503). Bound to the lit fragment shaders as
+  // MaterialU; _repMat above is the ray tracer's view of the same three fields.
+  MaterialParams _repMatParams;
   int _reflEnv = 1;        // metal_rt_reflect_env
   int _reflSamples = 8;    // metal_rt_reflect_samples (offscreen exports)
   // Surface outer-contour outline (per-surface, coverage-boundary). When armed
