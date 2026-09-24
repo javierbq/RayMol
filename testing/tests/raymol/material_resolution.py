@@ -39,8 +39,8 @@ PLAIN_REPS = [RIBBON, MESH, LINES, DOTS, LABELS]
 MARBLE, CLAY, METALLIC, GLASS = 7, 8, 3, 4
 
 
-def resolve(rep, obj=''):
-    return _cmd.get_rep_material(cmd._COb, obj, rep)
+def resolve(rep, obj='', state=0):
+    return _cmd.get_rep_material(cmd._COb, obj, rep, state)
 
 
 class TestMaterialResolution(testing.PyMOLTestCase):
@@ -109,6 +109,16 @@ class TestMaterialResolution(testing.PyMOLTestCase):
         for rep in PLAIN_REPS:
             self.assertEqual(resolve(rep, 'm1'), 0, rep)
             self.assertEqual(resolve(rep), 0, rep)
+
+    def testAnObjectStateValueBeatsTheObjectValue(self):
+        """The coordinate set's settings are the FIRST branch the renderer
+        consults, so the shim has to pass them too or it would report a
+        different material than the one drawn."""
+        cmd.set('cartoon_material', MARBLE, 'm1')
+        cmd.set('cartoon_material', METALLIC, 'm1', state=1)
+        self.assertEqual(resolve(CARTOON, 'm1', state=1), METALLIC)
+        # ...and the object value still answers when no state is named.
+        self.assertEqual(resolve(CARTOON, 'm1'), MARBLE)
 
     def testUnsetFallsBackAgain(self):
         cmd.set('cartoon_material', MARBLE)

@@ -2351,14 +2351,20 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  * to for a draw -- object value, then the rep's global value, then
  * material_default. Internal; the Inspector and the CI test read it.
  *
- * _cmd.get_rep_material(object_name_or_empty, rep_index)
+ * It must pass the SAME two setting tables the renderer does, or it would report
+ * a different material than the one drawn: `metalApplyRepMaterial` resolves with
+ * the coordinate set's settings first and the object's second, and the
+ * coordinate-set (object-state) slot is the highest-precedence branch.
+ *
+ * _cmd.get_rep_material(object_name_or_empty, rep_index[, state=0])
  */
 static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   const char* oname = "";
   int repType = -1;
-  if (!PyArg_ParseTuple(args, "Osi", &self, &oname, &repType)) {
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
     API_HANDLE_ERROR;
     return APIAutoNone(nullptr);
   }
@@ -2367,6 +2373,7 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
     return APIAutoNone(nullptr);
   }
   APIEnterBlocked(G);
+  const CSetting* stateSetting = nullptr;
   const CSetting* objSetting = nullptr;
   bool ok = true;
   if (oname && oname[0]) {
@@ -2376,12 +2383,18 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
       ok = false;
     } else {
       objSetting = obj->Setting.get();
+      // Same shape as CmdGetObjectSettings: a state handle equal to the
+      // object's own means the state carries no settings of its own.
+      auto* handle = obj->getSettingHandle(state - 1);
+      if (handle && handle != &obj->Setting) {
+        stateSetting = handle->get();
+      }
     }
   }
   PyObject* result = nullptr;
   if (ok) {
     result = PyInt_FromLong(
-        MaterialResolveSettingId(G, nullptr, objSetting, repType));
+        MaterialResolveSettingId(G, stateSetting, objSetting, repType));
   }
   APIExitBlocked(G);
   return APIAutoNone(result);
