@@ -482,7 +482,8 @@ from .setting import \
       get_setting_float as get_setting_legacy,   \
       get_setting_tuple,   \
       get_setting_updates, \
-      get_setting_text
+      get_setting_text,     \
+      get_material_names
 
 #--------------------------------------------------------------------
 from .parsing import \

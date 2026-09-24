@@ -488,6 +488,42 @@ PyMOL COMMAND LINE OPTIONS
         '''
         _self.help('launching')
 
+    def material(*, _self=cmd):
+        '''
+MATERIALS
+
+    A material says what a representation is MADE OF, the way colour says what
+    it IS. Every material keeps your colour scheme intact.
+
+    Set one per representation, per object:
+
+        set cartoon_material, marble, myobj
+        set surface_material, glass
+        set stick_material, metallic, myobj
+        set sphere_material, default, myobj
+
+    The four settings above resolve in that order: the object's own value, then
+    that setting's global value, then "material_default". Setting a material
+    back to "default" on one object is how that object opts out of a global
+    material.
+
+    "material_default" is the fallback for every representation that has no
+    material of its own. Ribbon, mesh, dots, lines and labels always render
+    with default shading.
+
+    The materials this build can draw:
+
+        cmd.get_material_names()
+
+    Setting a material never writes any other setting and never changes a
+    colour. Materials apply to the Metal renderer; "ray" approximates them.
+
+SEE ALSO
+
+    set, get_material_names
+        '''
+        print(material.__doc__)
+
     def movies(*, _self=cmd):
         '''
 MOVIES

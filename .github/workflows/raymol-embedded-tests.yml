@@ -78,6 +78,7 @@ jobs:
               testing/tests/raymol/design_saverestore.py \
               testing/tests/raymol/material_resolution.py \
               testing/tests/raymol/material_settings.py \
+              testing/tests/raymol/material_table.py \
               testing/tests/raymol/metal_pick.py \
               testing/tests/raymol/metal_rt_reflect.py \
               testing/tests/raymol/metal_shader_sources.py \
