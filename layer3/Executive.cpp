@@ -48,6 +48,7 @@
 #include "ListMacros.h"
 #include "Map.h"
 #include "Match.h"
+#include "Material.h"
 #include "Matrix.h"
 #include "Menu.h"
 #include "Movie.h"
@@ -12286,6 +12287,20 @@ pymol::Result<> ExecutiveSetSetting(PyMOLGlobals* G, int index, PyObject* tuple,
           }
           break;
         case cExecSelection:
+          // A material belongs to a REPRESENTATION OF AN OBJECT. The atomic
+          // path below would take the int and write it on every matched atom,
+          // where no draw path reads it: the user would get a success message
+          // and no change. Object names, `all`, groups and wildcards still
+          // work, so this only refuses what could never have worked.
+          if (MaterialIsRepMaterialSetting(index)) {
+            SettingGetName(G, index, name);
+            TrackerDelIter(I_Tracker, iter_id);
+            TrackerDelList(I_Tracker, list_id);
+            return pymol::make_error(name,
+                " is a property of an object's representation, not of a "
+                "selection. Name an object instead: set ",
+                name, ", <material>, <object-name>");
+          }
           if (SettingLevelCheckMask(
                   G, index, SettingLevelInfo[cSettingLevel_bond].mask)) {
             // handle bond-level settings (PYMOL-2726)
@@ -12587,6 +12602,18 @@ int ExecutiveSetSettingFromString(PyMOLGlobals* G, int index, const char* value,
           break;
         case cExecSelection:
           /* this code has not yet been tested... */
+
+          // Same refusal as ExecutiveSetSetting: a material is a property of
+          // an object's representation, never of a selection.
+          if (MaterialIsRepMaterialSetting(index)) {
+            SettingGetName(G, index, name);
+            PRINTFB(G, FB_Setting, FB_Errors)
+            " Setting-Error: %s is a property of an object's representation, "
+            "not of a selection. Name an object instead.\n",
+                name ENDFB(G);
+            ok = false;
+            break;
+          }
 
           sele1 = SelectorIndexByName(G, rec->name);
           if (sele1 >= 0) {
