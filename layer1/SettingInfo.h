@@ -945,6 +945,18 @@ enum {
   REC_f( 835, metal_rt_reflect_rough                  , object    , 0.0F ),  /* Metal real-time RT: reflection roughness (0 = mirror, 1 = very blurry). The live view traces one jittered ray; exports average metal_rt_reflect_samples rays. */
   REC_b( 836, metal_rt_reflect_env                    , global    , true ),  /* Metal real-time RT: reflection rays that miss the molecule see a soft studio environment (on) or the plain background colour (off). */
   REC_i( 837, metal_rt_reflect_samples                , global    , 8 ),     /* Metal real-time RT: reflection rays per pixel for glossy (rough > 0) materials in offscreen PNG/movie exports (1..64). The live view always traces one. */
+  /* Materials (#503). Ids, not names, so they round-trip through .pse and
+     through older builds. 0 is `default`: today's shading, byte for byte.
+     Resolution for a draw is the rep's object-level value, then the rep's
+     global value, then material_default. The name <-> id mapping arrives with
+     the material table, both directions together. */
+  REC_i( 838, cartoon_material                       , object    , 0 ),     /* Material of the cartoon representation, as a material id. 0 = default (unchanged shading). Object-scoped: the object's value wins over this setting's global value, which wins over material_default. */
+  REC_i( 839, surface_material                       , object    , 0 ),     /* Material of the surface representation (see cartoon_material). 0 = default. */
+  REC_i( 840, stick_material                         , object    , 0 ),     /* Material of the stick representation, including the stick_ball spheres the stick rep emits (see cartoon_material). 0 = default. */
+  REC_i( 841, sphere_material                        , object    , 0 ),     /* Material of the sphere representation (see cartoon_material). 0 = default. */
+  REC_i( 842, material_default                       , global    , 0 ),     /* Fallback material for every representation that has no material of its own. 0 = default. */
+  REC_i( 843, material_env                           , global    , 0 ),     /* Environment reflected by the reflective materials: 0 = background colour, 1 = studio, 2 = none. */
+  REC_i( 844, transparency_peel                      , object    , -1 ),    /* Keep only the nearest transparent layer of this object, so a translucent ball-and-stick or a glass shell reads as one skin instead of showing its internal joins. -1 = auto (on for glass-family materials), 0 = off, 1 = on. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

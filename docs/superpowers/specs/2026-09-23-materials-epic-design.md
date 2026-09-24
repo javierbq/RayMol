@@ -146,8 +146,22 @@ one `WobbleParam` triple per render, and precedence against a user's own
   int: 0 background, 1 studio, 2 none), `transparency_peel` (`object` int:
   -1 auto-from-material, 0 off, 1 on). Declaring all seven at once keeps later
   scene-capture work independent of shader issues. The index-collision test
-  guards duplicates; whether RayMol-owned settings move to a reserved high
-  block is decided and recorded in that PR.
+  guards duplicates.
+
+  **Reserved-block decision (recorded in M1a, 2026-09-24): no.** RayMol's own
+  settings continue contiguously from the end of the upstream table — 838–844
+  here, after 800–837. A reserved high block (say 2000+) was considered as
+  insurance against an upstream PyMOL release claiming the same indices in a
+  future merge, and rejected. It cannot rescue the settings already shipped at
+  800–837, because a `.pse` stores the *index* and moving one silently
+  reinterprets old files. It would leave the table sparse, and
+  `SettingAsPyList` walks `cSetting_INIT` entries, so the gap is paid on every
+  session save. And the risk it insures against is already covered:
+  `material_settings.py` and `metal_rt_reflect.py` assert exact indices and
+  whole-table uniqueness, so an upstream collision fails CI at merge time
+  instead of corrupting sessions quietly. If that day comes, what moves is the
+  *upstream* newcomer, or a RayMol setting that has never shipped — never one
+  that has.
 - `layer1/Material.cpp` (new): the material table as data (`id, name,
   family, implemented, MaterialParams, impliedAlpha`), `MaterialLookup`,
   `MaterialNames`, `MaterialResolve(id, repType)`, `MaterialImpliedAlpha(id)`.
