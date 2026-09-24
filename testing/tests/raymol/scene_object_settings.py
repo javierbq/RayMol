@@ -18,6 +18,7 @@ TINT = 'metal_rt_reflect_tint'
 
 class TestSceneObjectSettings(testing.PyMOLTestCase):
     def setUp(self):
+        super().setUp()
         cmd.reinitialize()
         rs.clear_all()
         cmd.fragment('ala', 'm1')
@@ -119,10 +120,12 @@ class TestLegacyPayload(testing.PyMOLTestCase):
     `raymol_scene_settings` payload."""
 
     def setUp(self):
+        super().setUp()
         rs.clear_all()
 
     def tearDown(self):
         rs.clear_all()
+        super().tearDown()
 
     def testFlatPayloadRestoresWithoutError(self):
         session = {'raymol_scene_settings': {'A': {REFLECT: 0.4, 'metal_dof': 1}}}
