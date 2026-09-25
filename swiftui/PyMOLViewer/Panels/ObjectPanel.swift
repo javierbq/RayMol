@@ -961,6 +961,10 @@ private let baseActionMenuItems: [ActionMenuItem] = [
         // whatever is on screen and change only the material and the light rig.
         .action(label: "marble (statuary)",            key: "material_marble"),
         .action(label: "clay (unglazed)",              key: "material_clay"),
+        .action(label: "copper",                       key: "material_copper"),
+        .action(label: "gold",                         key: "material_gold"),
+        .action(label: "steel",                        key: "material_steel"),
+        .action(label: "chrome",                       key: "material_chrome"),
         .separator,
         .action(label: "default",                      key: "preset_default"),
     ]),
@@ -1305,6 +1309,10 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     // Material looks (#491)
     case "material_marble":         cmd = "python\nfrom pymol import materials; materials.marble('\(n)', _self=cmd)\npython end"
     case "material_clay":           cmd = "python\nfrom pymol import materials; materials.clay('\(n)', _self=cmd)\npython end"
+    case "material_copper":         cmd = "python\nfrom pymol import materials; materials.copper('\(n)', _self=cmd)\npython end"
+    case "material_gold":           cmd = "python\nfrom pymol import materials; materials.gold('\(n)', _self=cmd)\npython end"
+    case "material_steel":          cmd = "python\nfrom pymol import materials; materials.steel('\(n)', _self=cmd)\npython end"
+    case "material_chrome":         cmd = "python\nfrom pymol import materials; materials.chrome('\(n)', _self=cmd)\npython end"
     // Find
     case "find_polar_within":  cmd = "dist \(n)_polar_conts, \(n), \(n), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
     case "find_polar_other":   cmd = "dist \(n)_polar_conts, (\(n)), (byobj (\(n))) and (not (\(n))), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"

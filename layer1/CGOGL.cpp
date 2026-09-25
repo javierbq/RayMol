@@ -95,6 +95,26 @@ static void metalApplyRepMaterial(CCGORenderer* I)
     params.reflect = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect);
     params.tint = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint);
     params.rough = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough);
+  } else {
+    // A reflective material starts from its TABLE row, but an EXPLICIT
+    // per-object metal_rt_reflect* value still wins (#497).
+    //
+    // "Explicit" is the whole point: SettingGetIfDefined, not SettingGet. An
+    // object that has never been touched has no value here, so it keeps the
+    // table's -- which is what stopped `metallic` rendering with the sliders'
+    // default 0 and no reflection at all. But a user (or a bundle) who does set
+    // one gets it, which is how `chrome` can be metallic with a tighter tint
+    // and a sharper roughness without needing a table row of its own.
+    float v = 0.0f;
+    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect, &v) ||
+        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect, &v))
+      params.reflect = v;
+    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect_tint, &v) ||
+        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect_tint, &v))
+      params.tint = v;
+    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect_rough, &v) ||
+        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect_rough, &v))
+      params.rough = v;
   }
   G->Renderer->setRepMaterial(params);
 }
