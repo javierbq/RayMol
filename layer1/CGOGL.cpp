@@ -79,12 +79,23 @@ static void metalApplyRepMaterial(CCGORenderer* I)
   int const repType = I->rep ? I->rep->type() : cRepNone;
   MaterialParams params =
       MaterialResolve(MaterialResolveSettingId(G, s1, s2, repType), repType);
-  // reflect/tint/rough carry the legacy object-scoped metal_rt_reflect* triple,
-  // which the `default` material reads; the reflective materials take these
-  // over in the ticket that adds them.
-  params.reflect = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect);
-  params.tint = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint);
-  params.rough = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough);
+  // reflect/tint/rough: `default` reads the legacy object-scoped
+  // metal_rt_reflect* triple, and a REFLECTIVE material carries its own (#494).
+  //
+  // This is the whole difference between the two. Overwriting unconditionally
+  // -- as this did while no reflective material was implemented -- made the
+  // reflect/tint/rough columns of the material table dead data, so `metallic`
+  // would have rendered with whatever the legacy sliders happened to hold,
+  // which for an untouched object is 0: no reflection at all.
+  //
+  // Only the reflective family is exempt. The procedural materials (matte,
+  // marble, clay, rubber) do not read these at all, so leaving them on the
+  // legacy path keeps `default` and every already-shipped material byte-exact.
+  if (params.family != cMaterialFamily_reflective) {
+    params.reflect = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect);
+    params.tint = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint);
+    params.rough = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough);
+  }
   G->Renderer->setRepMaterial(params);
 }
 

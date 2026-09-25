@@ -52,11 +52,11 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_procedural, cMaterial_matte, 0.0f, 0.0f, 1.0f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
-    {cMaterial_plastic, "plastic", cMaterialFamily_reflective, false, 0.0f,
+    {cMaterial_plastic, "plastic", cMaterialFamily_reflective, true, 0.0f,
         {cMaterialFamily_reflective, cMaterial_plastic, 0.25f, 0.0f, 0.15f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
-    {cMaterial_metallic, "metallic", cMaterialFamily_reflective, false, 0.0f,
+    {cMaterial_metallic, "metallic", cMaterialFamily_reflective, true, 0.0f,
         {cMaterialFamily_reflective, cMaterial_metallic, 0.6f, 0.35f, 0.35f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 

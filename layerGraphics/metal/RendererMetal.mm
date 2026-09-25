@@ -5577,6 +5577,25 @@ constant float kMatMarbleWrap = 0.35;
 // one. That is why the texture is mipmapped and the sampler trilinear -- it is
 // a one-texture stand-in for a pre-convolved radiance map, which is what makes
 // a roughness slider smooth instead of stepped.
+// Soft knee on specular + reflection (#494), Reinhard above a threshold.
+//
+// The 8-bit target hard-clips anything over 1.0, and a clip is per CHANNEL --
+// so a bright highlight on a red object clips red first and the pixel slides
+// toward white, taking the hue with it. That is the "flat-white hue-shifted
+// highlight" a gold sphere set shows without this, and why a plain clamp() is
+// no fix: clamp IS the hard clip.
+//
+// Below the knee nothing changes at all, which is what keeps `default`
+// byte-identical: its specular rarely reaches 0.8, and where it does the curve
+// is continuous and C1 at the knee.
+static float3 mat_soft_knee(float3 c) {
+  const float knee = 0.8;
+  float3 over = max(c - float3(knee), float3(0.0));
+  // Reinhard on the excess only: x/(1+x) asymptotes to 1, so a very bright
+  // reflection compresses toward white instead of arriving there and staying.
+  return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
+}
+
 // Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
 // the head-on reflectance -- what makes a metal reflect strongly everywhere and
 // a dielectric only at the rim.
@@ -5614,7 +5633,7 @@ static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
   // the pre-filtered sample carries the lobe, which is what keeps this one
   // texture fetch instead of an integral per fragment.
   float3 F = mat_fresnel(f0, ndotv);
-  return room * F;
+  return mat_soft_knee(room * F);
 }
 
 constant int kMatMode_matte  = 1;
@@ -5790,8 +5809,8 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     // reflect the same room -- the drift that bit marble in #487.
     float3 V = float3(0.0, 0.0, 1.0);
     float3 f0 = mix(float3(m.reflect), base * m.reflect, m.tint);
-    return base * min(defaultIntensity, 1.0) + defaultSpecular
-         + mat_env_specular(N, V, m.rough, f0, envMap, envSmp);
+    return mat_soft_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
+                       + mat_env_specular(N, V, m.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {
     float3 pModel = (m.invModelview * float4(pEye, 1.0)).xyz;
@@ -5925,8 +5944,8 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     // object's own colour, which is what separates a coloured metal from a
     // clear coat over it.
     float3 f0 = mix(float3(mat.reflect), baseColor * mat.reflect, mat.tint);
-    return vbo_shade(baseColor, nEye, lt)
-         + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp);
+    return mat_soft_knee(vbo_shade(baseColor, nEye, lt)
+                       + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {
     float3 N = normalize(nEye);
