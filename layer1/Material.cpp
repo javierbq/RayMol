@@ -488,27 +488,38 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
      pair of table lookups per rep; the VETO costs atom scans. An object with no
      material set -- every object in a default session -- must not pay the
      second, and this runs once per object per FRAME. */
-  bool anyWantsPeel = false;
+  bool maybeWantsPeel = false;
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
     if (MaterialResolve(
             MaterialResolveSettingId(G, set1, set2, kReps[i]), kReps[i])
             .wantsPeel) {
-      anyWantsPeel = true;
+      maybeWantsPeel = true;
       break;
     }
   }
-  if (!anyWantsPeel) {
+  if (!maybeWantsPeel) {
     return false;
   }
+  /* MAYBE, not "does": the gate reads the material row BEFORE the per-rep
+     degradations, because seeing them needs the coordinate set this pass exists
+     to avoid touching. It is a sound over-approximation -- degradation can only
+     ever clear wantsPeel -- so the answer still has to come from the second
+     loop. Returning true here on the strength of the gate turned peel ON for a
+     ball-and-stick glass object, whose sticks degrade to `default` and have no
+     transparent fragments at all: a depth blit and two encoder boundaries per
+     grid cell for nothing, and enough to evict a real glass object from the
+     three-slot peel cap. */
   /* Indexed, not range-for: the rep and its visibility BIT have to stay in
      step, and a range-for gives a copy whose address says nothing about which
      element it came from. */
+  bool wantsPeel = false;
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
     int const rep = kReps[i];
     // Re-resolved through the DRAW path, so a glass stick that degrades to
     // `default` on a stick_ball object is not treated as asking for a peel it
     // will never use.
     if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
+      wantsPeel = true;
       continue;
     }
     // A rep the object does not draw cannot be occluded by the peel, so it must
@@ -522,7 +533,7 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
       return false;
     }
   }
-  return true;
+  return wantsPeel;
 }
 
 int MaterialSettingForRep(int repType)

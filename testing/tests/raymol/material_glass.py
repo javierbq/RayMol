@@ -306,6 +306,30 @@ class TestGlass(testing.PyMOLTestCase):
         self.assertEqual(cmd.get_setting_float('cartoon_transparency', 'm1'), 0.0)
         self.assertEqual(resolved_peel('m1'), 1)
 
+    def testBallAndStickGlassDoesNotTurnPeelOn(self):
+        """A glass stick on a stick_ball object degrades to `default` and builds
+        fully opaque, so it has no transparent fragments to peel.
+
+        Turning peel on for it costs a depth blit and two encoder boundaries per
+        grid cell for nothing -- and with only three peel slots it can evict a
+        genuinely glass object from the set, which is visible, not just waste.
+        The cheap gate that decides whether to look at all reads the material
+        row BEFORE the degradations, so the answer has to come from the second
+        pass; returning the gate's own verdict got this wrong."""
+        cmd.set('stick_ball', 1, 'm1')
+        cmd.set('stick_material', 'glass', 'm1')
+        build('m1', 'sticks')
+        self.assertAlmostEqual(
+            built_transparency('m1', repres['sticks']), 0.0, places=4)
+        self.assertEqual(resolved_peel('m1'), 0)
+
+    def testGlassSticksWithoutBallsDoTurnPeelOn(self):
+        """The mirror, so the test above cannot pass by peel simply never
+        turning on for sticks."""
+        cmd.set('stick_material', 'glass', 'm1')
+        build('m1', 'sticks')
+        self.assertEqual(resolved_peel('m1'), 1)
+
     def testAnExplicitPeelOffStillBeatsGlass(self):
         cmd.set('surface_material', 'glass', 'm1')
         cmd.set('transparency_peel', 0, 'm1')
