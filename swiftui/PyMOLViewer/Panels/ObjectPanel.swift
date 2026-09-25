@@ -109,7 +109,12 @@ struct ObjStateMeta: Equatable {
 
 // MARK: - Representation inspector: control metadata
 
-enum RepControlKind { case slider, segmented, toggle, color }
+enum RepControlKind {
+    case slider, segmented, toggle, color
+    /// A named choice backed by an integer setting whose options are supplied by
+    /// the core at runtime rather than compiled in (#490: the material table).
+    case menu
+}
 
 /// One controllable property row (label + control bound to a PyMOL setting).
 struct RepProperty: Identifiable {
@@ -122,10 +127,22 @@ struct RepProperty: Identifiable {
     var step: Double = 0.01
     var decimals: Int = 2
     var options: [(label: String, value: Double)] = []   // for .segmented
+    /// Where a `.menu` row gets its options. Compiled-in options would have to
+    /// be kept in step with layer1/Material.cpp by hand, and a build whose table
+    /// differs would offer looks it cannot draw.
+    var optionSource: RepMenuSource = .inline
     // Apply only on release (not on every live drag tick). For settings whose
     // change forces an expensive rebuild (e.g. solvent_radius re-tessellates the
     // whole surface), live updates would recompute on every drag step.
     var commitOnly: Bool = false
+}
+
+/// Runtime source for a `.menu` row's options.
+enum RepMenuSource {
+    /// Options come from the row's own `options` array.
+    case inline
+    /// Options come from the core's material table at runtime.
+    case materials
 }
 
 /// Static description of a representation: display name, color-override setting
@@ -146,6 +163,7 @@ enum RepCatalog {
     static let specs: [String: RepSpec] = [
         "cartoon": RepSpec(rep: "cartoon", display: "Cartoon",
             colorSetting: "cartoon_color", defaultColor: -1, properties: [
+                RepProperty(setting: "cartoon_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "cartoon_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "cartoon_loop_radius",   label: "Loop radius",  kind: .slider),
                 RepProperty(setting: "cartoon_tube_radius",   label: "Tube radius",  kind: .slider),
@@ -162,6 +180,7 @@ enum RepCatalog {
             ]),
         "surface": RepSpec(rep: "surface", display: "Surface",
             colorSetting: "surface_color", defaultColor: -1, properties: [
+                RepProperty(setting: "surface_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "transparency",   label: "Transparency", kind: .slider),
                 RepProperty(setting: "surface_quality", label: "Quality", kind: .segmented,
                             options: [("0", 0), ("1", 1), ("2", 2)]),
@@ -183,6 +202,7 @@ enum RepCatalog {
             ]),
         "sticks": RepSpec(rep: "sticks", display: "Sticks",
             colorSetting: "stick_color", defaultColor: -1, properties: [
+                RepProperty(setting: "stick_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "stick_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "stick_radius",   label: "Radius",  kind: .slider),
                 RepProperty(setting: "stick_h_scale",  label: "H scale", kind: .slider),
@@ -197,6 +217,7 @@ enum RepCatalog {
             ]),
         "spheres": RepSpec(rep: "spheres", display: "Spheres",
             colorSetting: "sphere_color", defaultColor: -1, properties: [
+                RepProperty(setting: "sphere_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "sphere_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "sphere_scale", label: "Scale", kind: .slider, max: 3, step: 0.05),
                 RepProperty(setting: "metal_interior_cap", label: "Solid interior", kind: .toggle),
@@ -288,6 +309,13 @@ enum CameraCommands {
 }
 
 enum SceneCatalog {
+    /// Scene settings whose value is a material id, so a `.menu` row for one is
+    /// served from the core's material table rather than from its own options.
+    /// Named explicitly: `SceneParam` has no optionSource field, and silently
+    /// handing the material list to an unrelated menu is the failure this
+    /// prevents. (#498 adds the rows themselves.)
+    static let materialSettings: Set<String> = ["material_default"]
+
     // Ordered sub-groups shown inside the SCENE section (see panel reorg).
     static let groups = ["Canvas", "Camera", "Lighting", "Shadows & AO", "Metal optimization", "Effects", "Quality"]
     // Viewport camera dock (see CameraDock): the always-visible strip icons, in
@@ -2995,6 +3023,74 @@ private struct SegmentedSetting: View {
     }
 }
 
+/// A named choice backed by an integer setting, with the options supplied at
+/// runtime (#490: the material table).
+///
+/// Labels are Text, never shapes: a SwiftUI `Menu` silently drops shape-based
+/// row content on macOS, so a checkmark drawn as a shape would vanish. The
+/// current row is marked by weight and a leading bullet in the string instead.
+private struct MenuSetting: View {
+    let options: [(label: String, value: Double)]
+    let value: Double
+    let onSelect: (Double) -> Void
+    /// Clears the override so the row inherits again. nil hides the row.
+    var onInherit: (() -> Void)? = nil
+
+    /// What the chip reads. An id with no row in the table is shown as its
+    /// NUMBER, not as "default": `set cartoon_material, glass` is a supported
+    /// command today (names resolve against the FULL table, implemented or
+    /// not), and a .pse from a newer build carries ids this one has no name
+    /// for. Showing those as "default" invited the user to click "default" to
+    /// confirm what they were already seeing and silently destroy the value.
+    private var current: String {
+        if let hit = options.first(where: { abs($0.value - value) < 0.5 }) {
+            return hit.label
+        }
+        return value < 0.5 ? "default" : "#\(Int(value))"
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                let sel = abs(opt.value - value) < 0.5
+                Button(action: { onSelect(opt.value) }) {
+                    Text(sel ? "• \(opt.label)" : opt.label)
+                }
+            }
+            if let onInherit {
+                Divider()
+                // Without this the dropdown is a one-way pin: the first pick
+                // writes an object-level override and nothing in the UI could
+                // ever take it off again, so a later change to the rep global
+                // or to material_default would never reach this object. The
+                // colour controls in this same panel lead with the same
+                // affordance.
+                Button("Inherit", action: onInherit)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(current).font(.system(size: 10))
+                Text("⌄").font(.system(size: 9))
+            }
+            .foregroundColor(PanelTheme.buttonText)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(PanelTheme.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        // An empty table means the core has not answered yet; offering a menu
+        // that can only set `default` would be worse than showing it disabled.
+        // The opacity is what makes "disabled" legible -- the label sets its
+        // own foreground and background colours, which survive SwiftUI's
+        // disabled styling, so without it a dead chip looks live. Same pairing
+        // the scene rows in this file use.
+        .disabled(options.isEmpty)
+        .opacity(options.isEmpty ? 0.4 : 1.0)
+    }
+}
+
 private struct ToggleSetting: View {
     let value: Double
     let onToggle: (Bool) -> Void
@@ -3736,12 +3832,41 @@ private struct RepPropertyGrid: View {
             // (e.g. surface_contour_color). -1 = inherit (here: the surface color).
             SettingColorControl(objName: objName, rep: spec.rep, setting: p.setting,
                                 colorState: state.settingColors[p.setting] ?? "inherit")
+        case .menu:
+            // Options come from the core (engine.materialNames), so a build
+            // whose table differs cannot be offered a look it can't draw.
+            MenuSetting(options: options(for: p), value: v,
+                        onSelect: { set(p.setting, $0) },
+                        onInherit: { unset(p.setting) })
+        }
+    }
+
+    /// Options for a `.menu` row, from the core rather than compiled in.
+    private func options(for p: RepProperty) -> [(label: String, value: Double)] {
+        switch p.optionSource {
+        case .materials:
+            return engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
+        case .inline:
+            return p.options
         }
     }
 
     private func set(_ setting: String, _ value: Double) {
         let s = (value == value.rounded()) ? String(Int(value)) : String(format: "%.4f", value)
         engine.runCommand("set \(setting), \(s), \(objName)")
+        // The displayed value comes from a poll that runs at most every ~500ms,
+        // so without this the menu keeps the bullet on the old entry until the
+        // next tick. The sliders and toggles hold local state to hide that lag;
+        // a discrete menu cannot, so it asks for the refresh instead -- the
+        // same thing the per-atom transparency row does after its unset.
+        engine.refreshExpandedDetail()
+    }
+
+    /// Drop the object-level override so the row inherits the rep global (and
+    /// then `material_default`) again.
+    private func unset(_ setting: String) {
+        engine.runCommand("unset \(setting), \(objName)")
+        engine.refreshExpandedDetail()
     }
 
     @ViewBuilder
@@ -3999,6 +4124,20 @@ struct SceneParamRow: View {
                 }
             case .color:
                 EmptyView()  // scene colors use p.isColor above, not the .color kind
+            case .menu:
+                // Scene-level named choices. Only the material-valued ones are
+                // served from the material table -- SceneParam has no
+                // optionSource field, so mapping engine.materialNames
+                // unconditionally would hand the material list to the first
+                // non-material scene menu anyone adds, silently, while it wrote
+                // to an unrelated setting. Anything else falls back to the
+                // param's own options. (The global material_default and
+                // material_env dropdowns themselves arrive with #498.)
+                MenuSetting(options: SceneCatalog.materialSettings.contains(p.setting)
+                                ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
+                                : p.options.map { (label: $0.label, value: $0.value) },
+                            value: v,
+                            onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
             }
         }
     }
