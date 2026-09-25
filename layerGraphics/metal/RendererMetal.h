@@ -335,11 +335,6 @@ private:
   id<MTLRenderPipelineState> _vboPipelineFloat[cMaterialFamily_count] = {};
   id<MTLFunction> _vboVertexFunc;
   id<MTLFunction> _vboFragmentFunc[cMaterialFamily_count] = {};
-  // The lit libraries are retained so specialised functions can be created
-  // after the initial build (MRC: each is a +1 released in the dtor).
-  id<MTLLibrary> _vboLibrary = nil;
-  id<MTLLibrary> _sphereLibrary = nil;
-  id<MTLLibrary> _cylinderLibrary = nil;
   // Fragment function specialised for one material family, or nil when the
   // family has no implemented material or specialisation failed.
   id<MTLFunction> materialFragmentFunction(

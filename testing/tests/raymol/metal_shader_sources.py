@@ -114,6 +114,32 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
             self.assertNotIn('float mat_noise(', literals[lib],
                              '%s re-declares the shared noise' % lib)
 
+    def testTheFamilyConstantMatchesTheCEnum(self):
+        """`kMatProcedural` hard-codes the procedural family's id. If the C enum
+        ever gains a family before it, every procedural material would be
+        shaded as whatever moved into slot 1 -- with the pipelines still
+        specialised correctly, so nothing else would notice."""
+        import os
+        literals = shader_literals(self.source())
+        msl = literals['kMaterialSrc']
+        root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                            os.pardir)
+        header = os.path.normpath(os.path.join(root, 'layer1', 'Material.h'))
+        if not os.path.isfile(header):
+            self.skipTest('layer1/Material.h not found (not a repo checkout)')
+        with open(header) as handle:
+            enum = handle.read()
+        families = [line.strip().rstrip(',').split(' ')[0]
+                    .replace('cMaterialFamily_', '')
+                    for line in enum[enum.index('enum {'):].splitlines()[1:]
+                    if line.strip().startswith('cMaterialFamily_')]
+        self.assertIn('procedural', families)
+        declared = re.search(r'constant bool kMatProcedural\s*=\s*\(kMatFamily == (\d+)\);',
+                             msl)
+        self.assertIsNotNone(declared, 'kMatProcedural not found in kMaterialSrc')
+        self.assertEqual(int(declared.group(1)), families.index('procedural'),
+                         'kMatProcedural disagrees with layer1/Material.h')
+
     def testTheMaterialModeConstantsMatchTheCTable(self):
         """The MSL dispatch compares against literal ids. If Material.h ever
         renumbers a material, the shader would silently shade the wrong one."""

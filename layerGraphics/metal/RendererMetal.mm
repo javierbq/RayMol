@@ -466,8 +466,6 @@ RendererMetal::~RendererMetal()
 
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
-  [_vboPipelineUByte release];        [_vboPipelineFloat release];
-  [_vboOitPipelineUByte release];     [_vboOitPipelineFloat release];
   [_oitResolvePipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
   [_sphereShadowPipeline release];
@@ -490,7 +488,6 @@ RendererMetal::~RendererMetal()
 
   // Shader functions (newFunctionWithName, +1).
   [_vboVertexFunc release];
-  [_vboLibrary release];  [_sphereLibrary release];  [_cylinderLibrary release];
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     [_vboFragmentFunc[f] release];      [_vboFragmentOitFunc[f] release];
     [_vboPipelineUByte[f] release];     [_vboPipelineFloat[f] release];
@@ -499,7 +496,7 @@ RendererMetal::~RendererMetal()
   }
   [_vboVertexUnlitFunc release];      [_vboFragmentUnlitFunc release];
   [_vboVertexUnlitFlatFunc release];
-  [_vboFragmentOitFunc release];      [_vboFragmentShadowFunc release];
+  [_vboFragmentShadowFunc release];
   [_capMarkVtxFunc release];          [_capMarkFragFunc release];
   [_capFillVtxFunc release];          [_capFillFragFunc release];
   [_lineAAVtxFunc release];           [_lineAAFragFunc release];
@@ -4024,8 +4021,10 @@ void RendererMetal::beginTransparentOIT()
 {
   // OIT requires its targets + pipelines; if any are missing, leave the scene
   // encoder active so transparent draws fall back to normal blending.
-  if (!_cmdBuffer || !_oitPassDesc || !_vboOitPipelineUByte ||
-      !_oitResolvePipeline)
+  // The default family is the one that always exists; testing the array itself
+  // would test its ADDRESS, which is never null, and silently disable the guard.
+  if (!_cmdBuffer || !_oitPassDesc ||
+      !_vboOitPipelineUByte[cMaterialFamily_default] || !_oitResolvePipeline)
     return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
 
@@ -5062,6 +5061,11 @@ using namespace metal;
 constant int kMatFamily [[function_constant(0)]];
 constant bool kMatProcedural = (kMatFamily == 1);
 
+// Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
+// BOTH the lit VBO path and the impostors so one object's cartoon and spheres
+// are lit the same way.
+constant float kMatMarbleWrap = 0.35;
+
 constant int kMatMode_matte  = 1;
 constant int kMatMode_marble = 7;
 constant int kMatMode_clay   = 8;
@@ -5216,13 +5220,25 @@ static NSString* const kMaterialImpostorSrc = @R"(
 // impostors used before materials existed.
 static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float ambient, float direct, float reflectAmt, float3 keyDir,
-    constant MaterialU& m, float defaultIntensity, float defaultSpecular) {
+    constant MaterialU& m, float defaultIntensity, float defaultSpecular,
+    float sceneWrap) {
   if (kMatProcedural) {
     float3 pModel = (m.invModelview * float4(pEye, 1.0)).xyz;
     if (m.mode == kMatMode_marble) {
-      // Marble keeps the impostor's own lighting and only re-colours it, so a
-      // marble sphere sits in the same light as the cartoon beside it.
-      return mat_marble_albedo(base, pModel, m) * min(defaultIntensity, 1.0)
+      // Marble keeps the default two-light model and only re-colours it, but it
+      // also lifts the light WRAP -- the translucent diffusion real stone has.
+      // The lit VBO path gets that from vbo_shade; here the impostor's own
+      // intensity was computed with the scene wrap, so it is recomputed with
+      // marble's. Without this a marble cartoon and the marble spheres of the
+      // same object are lit differently along the terminator.
+      float wrap = max(sceneWrap, kMatMarbleWrap);
+      float3 L1 = normalize(keyDir);
+      float n0 = dot(N, float3(0.0, 0.0, 1.0));
+      float n1 = dot(N, L1);
+      float intensity = ambient
+          + direct * saturate((n0 + wrap) / (1.0 + wrap))
+          + reflectAmt * saturate((n1 + wrap) / (1.0 + wrap));
+      return mat_marble_albedo(base, pModel, m) * min(intensity, 1.0)
              + defaultSpecular;
     }
     return mat_shade_procedural(base, N, pModel, ambient, direct, reflectAmt,
@@ -5334,7 +5350,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     if (N.z < 0.0) N = -N;   // two-sided, as the default model is
     if (mat.mode == kMatMode_marble) {
       LightU waxy = lt;
-      waxy.wrap = max(lt.wrap, 0.35);
+      waxy.wrap = max(lt.wrap, kMatMarbleWrap);
       return vbo_shade(mat_marble_albedo(baseColor, pModel, mat), nEye, waxy);
     }
     return mat_shade_procedural(baseColor, N, pModel, lt.ambient, lt.direct,
@@ -5626,8 +5642,6 @@ void RendererMetal::buildVBOPipelines()
     return;
   }
 
-  [_vboLibrary release];
-  _vboLibrary = [lib retain];   // MRC: kept so families can be specialised later
   _vboVertexFunc = [lib newFunctionWithName:@"vbo_vertex"];
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     _vboFragmentFunc[f] = materialFragmentFunction(lib, @"vbo_fragment", f);
@@ -6117,6 +6131,8 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
     ps = oitPipelineForVD(vd, family);   // +1
+    if (!ps && family != cMaterialFamily_default)
+      ps = oitPipelineForVD(vd, cMaterialFamily_default);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
   } else {
@@ -6126,8 +6142,14 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
         ? _vboVertexUnlitFlatFunc
         : (variant == VBOPipelineVariant::Unlit ? _vboVertexUnlitFunc
                                                 : _vboVertexFunc);
-    id<MTLFunction> ffn = (variant == VBOPipelineVariant::Lit)
-        ? _vboFragmentFunc[family] : _vboFragmentUnlitFunc;
+    // A family whose specialisation failed must draw as `default`, not vanish:
+    // this cache serves the non-prebuilt lit layouts, the molecular surface
+    // among them, and returning nil here hides the geometry outright.
+    id<MTLFunction> ffn = _vboFragmentUnlitFunc;
+    if (variant == VBOPipelineVariant::Lit) {
+      ffn = _vboFragmentFunc[family] ? _vboFragmentFunc[family]
+                                     : _vboFragmentFunc[cMaterialFamily_default];
+    }
     if (vfn && ffn) {
       MTLRenderPipelineDescriptor* psd =
           [[MTLRenderPipelineDescriptor alloc] init];
@@ -6977,7 +6999,7 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
   if (!lit) return;   // interior cap: already a final colour
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
-                               intensity, specular);
+                               intensity, specular, u.lSSSWrap);
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
@@ -7027,8 +7049,6 @@ void RendererMetal::buildImpostorPipelines()
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
-  [_sphereLibrary release];
-  _sphereLibrary = [lib retain];   // MRC: kept for later family specialisation
   id<MTLFunction> ffn =
       materialFragmentFunction(lib, @"sphere_impostor_fragment", cMaterialFamily_default);
   if (!vfn || !ffn) { NSLog(@"RendererMetal: sphere impostor funcs missing"); return; }
@@ -7126,7 +7146,11 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   if (sphereFam < 0 || sphereFam >= cMaterialFamily_count) sphereFam = cMaterialFamily_default;
   if (!_sphereImpostorPipeline[sphereFam]) sphereFam = cMaterialFamily_default;
   if (!_sphereImpostorPipeline[sphereFam]) return;
-  if (_oitActive && !_sphereOitPipeline[sphereFam]) return; // no OIT variant: skip
+  // Fall back to `default` rather than skipping: a missing OIT variant for one
+  // family must not make the transparent spheres disappear.
+  if (_oitActive && !_sphereOitPipeline[sphereFam])
+    sphereFam = cMaterialFamily_default;
+  if (_oitActive && !_sphereOitPipeline[sphereFam]) return; // no OIT variant at all
   if (_shadowMode && !_sphereShadowPipeline) return; // can't cast: skip safely
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
@@ -7515,7 +7539,7 @@ static void cyl_shade_material(CylVOut in, constant CylU& u,
   if (!lit) return;   // interior cap: already a final colour
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
-                               intensity, specular);
+                               intensity, specular, u.lSSSWrap);
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
@@ -7568,6 +7592,9 @@ void RendererMetal::buildCylinderImpostorPipeline(
       !MaterialFamilyIsImplemented(cylFam)) {
     cylFam = cMaterialFamily_default;
   }
+  // Keyed on the family that was ASKED for, not the one that may be fallen back
+  // to below, so a family whose specialisation fails caches its default-family
+  // pipeline here and is not recompiled on every later frame.
   const auto layout = std::make_tuple(
       static_cast<NSUInteger>(call.stride), call.capOff, cylFam);
   {
@@ -7589,13 +7616,18 @@ void RendererMetal::buildCylinderImpostorPipeline(
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: cyl impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"cyl_impostor_vertex"];
-  [_cylinderLibrary release];
-  _cylinderLibrary = [lib retain];   // MRC: kept for later family specialisation
   // The cylinder fragments read the kMatFamily function constant, so they MUST
   // be specialised: -newFunctionWithName: alone fails at runtime for a function
   // with an unset constant, and sticks would silently stop drawing.
   id<MTLFunction> ffn =
       materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+  if (!ffn && cylFam != cMaterialFamily_default) {
+    // Draw as `default` rather than not at all. Returning here would also leave
+    // the layout UNCACHED, so the MSL library would be recompiled on every
+    // frame that tried this material.
+    cylFam = cMaterialFamily_default;
+    ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+  }
   if (!vfn || !ffn) { NSLog(@"RendererMetal: cyl impostor funcs missing"); return; }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
