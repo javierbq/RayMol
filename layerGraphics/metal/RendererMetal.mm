@@ -728,6 +728,13 @@ void RendererMetal::setRepMaterial(const MaterialParams& params)
   _repMatParams.reflect = clamp01(params.reflect);
   _repMatParams.tint = clamp01(params.tint);
   _repMatParams.rough = clamp01(params.rough);
+  // Frost tap count for the glass family (#495), carried in the last knob slot
+  // so the shader needs no extra uniform. Capped in the LIVE view: this is a
+  // per-fragment cubemap sample loop on geometry that can cover the whole
+  // viewport, and an export can afford what an interactive orbit cannot.
+  if (_repMatParams.family == cMaterialFamily_glass) {
+    _repMatParams.p[5] = _offscreen ? kFrostTaps : kFrostTapsLive;
+  }
   // The ray tracer's per-occurrence table reads the same three fields.
   _repMat[0] = _repMatParams.reflect;
   _repMat[1] = _repMatParams.tint;
@@ -4227,6 +4234,24 @@ void RendererMetal::endPeelPrepass()
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _peelMode = false;
   _passDesc = _scenePassDesc;
+  // Disarm the frame's CLEAR here, not just in resumeScenePass().
+  //
+  // This normally hands straight over to beginTransparentOIT, but that function
+  // guards on a DIFFERENT capability set than peelSupported() does: a device
+  // where the OIT resolve pipeline failed to build while the peel pipelines
+  // succeeded returns from it with no encoder. The next transparent draw's
+  // ensureEncoder() would then re-open the scene pass with CLEAR still armed
+  // and wipe the frame's opaque colour and depth. The pre-pass is the first
+  // thing that ever ends the scene encoder mid-frame, so this window is new.
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  // The pre-pass programmed peelWriteState (depth WRITE on) straight onto its
+  // own encoder without going through the cached flags, so on the fallback
+  // above the next ensureEncoder() would apply that stale state and let the
+  // transparent draws write depth. resumeScenePass() is what normally resets
+  // these; doing it here costs nothing and does not create an encoder.
+  _depthStencilDirty = true;
 }
 
 void RendererMetal::resumeScenePass()
@@ -5561,6 +5586,18 @@ using namespace metal;
 constant int kMatFamily [[function_constant(0)]];
 constant bool kMatProcedural = (kMatFamily == 1);
 constant bool kMatReflective = (kMatFamily == 2);
+constant bool kMatGlass = (kMatFamily == 3);
+
+constant int kMatMode_frosted_glass = 5;
+
+// Attenuates the object's own COLOUR under glass, so the tint reads as seen
+// THROUGH something rather than painted on. It is deliberately not the coverage
+// of the surface: coverage is `reveal`, driven by the baked vertex alpha the
+// material implies (0.15 / 0.2), and this constant cannot change how much of
+// the scene behind the glass shows through. It was named kMatGlassCoverage,
+// which invited exactly that misreading -- the next person to tune transparency
+// would have reached for this and moved the colour instead.
+constant float kMatGlassBaseAttenuation = 0.82;
 
 // Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
 // BOTH the lit VBO path and the impostors so one object's cartoon and spheres
@@ -5601,6 +5638,54 @@ static float3 mat_soft_knee(float3 c) {
 // a dielectric only at the rim.
 static float3 mat_fresnel(float3 f0, float vdoth) {
   return f0 + (float3(1.0) - f0) * pow(1.0 - saturate(vdoth), 5.0);
+}
+
+// Glass shading (#495): a Fresnel-weighted environment reflection over a
+// mostly-transparent body.
+//
+// Deliberately NOT refraction. A real refractive glass needs the scene behind
+// it, which inside an OIT pass is not available -- the accumulation buffer has
+// no depth-ordered layer behind to bend. What IS available is the environment
+// cubemap (#493) and the fragment's own alpha, and a Fresnel rim over a
+// see-through body is what actually reads as glass at molecular scale, where
+// the geometry is thousands of small curved surfaces rather than one slab.
+//
+// `frost` spreads the environment samples around the reflection direction, so
+// frosted glass blurs the room rather than mirroring it. The taps are tiny
+// fixed offsets rather than a real cone: at this sample count a proper
+// distribution would alias worse than the offsets do.
+static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
+    int taps, texturecube<float> envMap, sampler envSmp) {
+  float3 R = reflect(-V, N);
+  float lod = sqrt(saturate(rough)) * 7.0;
+  float3 room = float3(0.0);
+  if (taps <= 1) {
+    room = envMap.sample(envSmp, R, level(lod)).rgb;
+  } else {
+    // Offsets in the plane perpendicular to R, scaled by roughness.
+    float3 up = abs(R.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    float3 t = normalize(cross(up, R));
+    float3 b = cross(R, t);
+    float spread = 0.08 + 0.35 * saturate(rough);
+    room = envMap.sample(envSmp, R, level(lod)).rgb;
+    float w = 1.0;
+    // Ring starts at 0: with i/(taps-1) the last tap landed on 2*PI, a repeat of
+    // angle 0, and at the live tap count that left exactly ONE offset sample --
+    // a one-sided smear along t rather than a blur. Symmetric pairs also keep
+    // the result stable across the `up` basis flip below.
+    for (int i = 1; i < taps; ++i) {
+      float a = 6.2831853 * float(i - 1) / float(taps - 1);
+      float3 d = normalize(R + spread * (cos(a) * t + sin(a) * b));
+      room += envMap.sample(envSmp, d, level(lod + 1.0)).rgb;
+      w += 1.0;
+    }
+    room /= w;
+  }
+  // Glass is almost all rim: F0 is low, so the reflection appears at grazing
+  // angles and the face-on view stays clear. That is the whole look.
+  float ndotv = saturate(dot(N, V));
+  float3 F = mat_fresnel(float3(0.04), ndotv);
+  return mat_soft_knee(base * kMatGlassBaseAttenuation + room * F);
 }
 
 // Environment specular for the reflective family: one GGX lobe against the
@@ -5804,6 +5889,12 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float ambient, float direct, float reflectAmt, float3 keyDir,
     constant MaterialU& m, float defaultIntensity, float defaultSpecular,
     float sceneWrap, texturecube<float> envMap, sampler envSmp) {
+  if (kMatGlass) {
+    float3 V = float3(0.0, 0.0, 1.0);
+    int taps = (m.mode == kMatMode_frosted_glass)
+                 ? int(max(1.0, m.p[5])) : 1;
+    return mat_glass_shade(base, N, V, m.rough, taps, envMap, envSmp);
+  }
   if (kMatReflective) {
     // Same base as the lit VBO path, so one object's surface and its spheres
     // reflect the same room -- the drift that bit marble in #487.
@@ -5932,6 +6023,17 @@ struct VBOVertexInUnlit {
 static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     LightU lt, constant MaterialU& mat,
     texturecube<float> envMap, sampler envSmp) {
+  if (kMatGlass) {
+    // Glass: a Fresnel rim over a mostly see-through body. The frost tap count
+    // is capped in the live view (mat.p[5] carries it) -- this runs per
+    // fragment on geometry that can cover the viewport.
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;
+    float3 V = float3(0.0, 0.0, 1.0);
+    int taps = (mat.mode == kMatMode_frosted_glass)
+                 ? int(max(1.0, mat.p[5])) : 1;
+    return mat_glass_shade(baseColor, N, V, mat.rough, taps, envMap, envSmp);
+  }
   if (kMatReflective) {
     // The reflective family's BASE: the default shading plus one GGX lobe
     // against the environment cubemap. Works on every GPU; #494's traced

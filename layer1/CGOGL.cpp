@@ -77,45 +77,13 @@ static void metalApplyRepMaterial(CCGORenderer* I)
   // emits, which arrive here as cRepCyl. Object value first, then the rep's
   // global value, then material_default.
   int const repType = I->rep ? I->rep->type() : cRepNone;
-  MaterialParams params =
-      MaterialResolve(MaterialResolveSettingId(G, s1, s2, repType), repType);
-  // reflect/tint/rough: `default` reads the legacy object-scoped
-  // metal_rt_reflect* triple, and a REFLECTIVE material carries its own (#494).
-  //
-  // This is the whole difference between the two. Overwriting unconditionally
-  // -- as this did while no reflective material was implemented -- made the
-  // reflect/tint/rough columns of the material table dead data, so `metallic`
-  // would have rendered with whatever the legacy sliders happened to hold,
-  // which for an untouched object is 0: no reflection at all.
-  //
-  // Only the reflective family is exempt. The procedural materials (matte,
-  // marble, clay, rubber) do not read these at all, so leaving them on the
-  // legacy path keeps `default` and every already-shipped material byte-exact.
-  if (params.family != cMaterialFamily_reflective) {
-    params.reflect = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect);
-    params.tint = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_tint);
-    params.rough = SettingGet_f(G, s1, s2, cSetting_metal_rt_reflect_rough);
-  } else {
-    // A reflective material starts from its TABLE row, but an EXPLICIT
-    // per-object metal_rt_reflect* value still wins (#497).
-    //
-    // "Explicit" is the whole point: SettingGetIfDefined, not SettingGet. An
-    // object that has never been touched has no value here, so it keeps the
-    // table's -- which is what stopped `metallic` rendering with the sliders'
-    // default 0 and no reflection at all. But a user (or a bundle) who does set
-    // one gets it, which is how `chrome` can be metallic with a tighter tint
-    // and a sharper roughness without needing a table row of its own.
-    float v = 0.0f;
-    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect, &v) ||
-        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect, &v))
-      params.reflect = v;
-    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect_tint, &v) ||
-        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect_tint, &v))
-      params.tint = v;
-    if (SettingGetIfDefined<float>(s1, cSetting_metal_rt_reflect_rough, &v) ||
-        SettingGetIfDefined<float>(s2, cSetting_metal_rt_reflect_rough, &v))
-      params.rough = v;
-  }
+  // Every rule -- the per-rep degradations, the stick_ball one, and which
+  // families read the legacy metal_rt_reflect* triple (including #497's
+  // explicit per-object override for reflective materials) -- lives in
+  // MaterialDrawParams, so this is a thin caller and the rules stay testable
+  // from Python without a Metal context.
+  MaterialParams params = MaterialDrawParamsCached(G, s1, s2, repType,
+      (I->rep && I->rep->emitsStickBalls()));
   G->Renderer->setRepMaterial(params);
 }
 
@@ -165,7 +133,12 @@ static void metalApplyRepClip(CCGORenderer* I)
         rgba[0] = c[0]; rgba[1] = c[1]; rgba[2] = c[2];
       }
       if (!SettingGet_b(G, s1, s2, cSetting_surface_contour_opaque)) {
-        float tr = SettingGet_f(G, s1, s2, cSetting_transparency);
+        // The setting's purpose is "the contour picks up the surface's
+        // transparency", so it has to see a material's implied one too (#495) --
+        // otherwise an opaque line rides on a glass surface.
+        float tr = MaterialEffectiveTransparency(G, s1, s2, cRepSurface,
+            SettingGet_f(G, s1, s2, cSetting_transparency),
+            (I->rep ? I->rep->cs : nullptr));
         rgba[3] = 1.0f - (tr < 0.0f ? 0.0f : (tr > 1.0f ? 1.0f : tr));
       }
       G->Renderer->setRepContour(true, rgba, width);

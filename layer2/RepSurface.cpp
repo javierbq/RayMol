@@ -31,6 +31,7 @@ Z* -------------------------------------------------------------------
 #include "P.h"
 #include "PConv.h"
 #include "Rep.h"
+#include "Material.h"
 #include "RepSurface.h"
 #include "Scene.h"
 #include "Selector.h"
@@ -242,6 +243,13 @@ static int RepSurfaceCGOGenerate(RepSurface* I, RenderInfo* info)
       G, cs->Setting.get(), obj->Setting.get(), cSetting_dot_as_spheres);
   alpha = SettingGet_f(
       G, cs->Setting.get(), obj->Setting.get(), cSetting_transparency);
+  // A glass material implies its own transparency when the user has left the
+  // slider at 0 (#495). Consulted HERE, at rep-build time, because alpha is
+  // baked into the geometry -- and never written back as a setting, so a .pse
+  // opened in a build that does not know `glass` renders an opaque surface,
+  // visible and wrong, rather than an invisible one.
+  alpha = MaterialEffectiveTransparency(G, cs->Setting.get(),
+      obj->Setting.get(), cRepSurface, alpha);
   alpha = 1.0F - alpha;
   if (fabs(alpha - 1.0) < R_SMALL4)
     alpha = 1.0F;
@@ -1938,6 +1946,13 @@ Rep* RepSurface::recolor()
       G, cs->Setting.get(), obj->Setting.get(), cSetting_surface_clear_cutoff);
   transp = SettingGet_f(
       G, cs->Setting.get(), obj->Setting.get(), cSetting_transparency);
+  // The PER-VERTEX alpha array VA is built from this, and every triangle branch
+  // except the single-colour one prefers VA over the scalar alpha computed in
+  // RepSurfaceCGOGenerate. Converting only there left a multi-coloured glass
+  // surface fully opaque while still paying for the transparent pass (#495).
+  transp = MaterialEffectiveTransparency(
+      G, cs->Setting.get(), obj->Setting.get(), cRepSurface, transp);
+  setBuiltTransparency(transp);
   carve_normal_cutoff = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(),
       cSetting_surface_carve_normal_cutoff);
   carve_normal_flag = carve_normal_cutoff > (-1.0F);

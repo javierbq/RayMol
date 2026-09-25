@@ -37,6 +37,7 @@ Z* -------------------------------------------------------------------
 #include"CGO.h"
 #include"Extrude.h"
 #include"ShaderMgr.h"
+#include "Material.h"
 #include "Lex.h"
 #include "CoordSet.h"
 
@@ -135,7 +136,12 @@ static int RepCartoonCGOGenerate(RepCartoon * I, RenderInfo * info)
   int ok = true;
 
   int use_shaders, has_cylinders_to_optimize;
-  float alpha = 1.0F - SettingGet_f(G, I->cs->Setting.get(), I->obj->Setting.get(), cSetting_cartoon_transparency);
+  // Glass implies its own transparency when the slider is 0 (#495); see
+  // MaterialEffectiveTransparency for why this is a rep-BUILD input.
+  float alpha = 1.0F - MaterialEffectiveTransparency(G, I->cs->Setting.get(),
+      I->obj->Setting.get(), cRepCartoon,
+      SettingGet_f(G, I->cs->Setting.get(), I->obj->Setting.get(),
+          cSetting_cartoon_transparency));
 
   bool const hasAlpha = alpha < 1 || [](RepCartoon * I){
     for(CoordSetAtomIterator iter(I->cs); iter.next();){
@@ -4399,8 +4405,19 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
   obj = cs->Obj;
 
 
-  alpha =
-    1.0F - SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_transparency);
+  // This is the alpha baked into every cartoon VERTEX (the objAlpha threaded
+  // through the extrude paths), so the implied alpha has to be applied HERE.
+  // The copy in RepCartoonCGOGenerate feeds only the hasTransparency flag, so
+  // converting there alone made a glass cartoon render opaque while still being
+  // routed through the transparent pass (#495).
+  {
+    float const cartoonTransp = MaterialEffectiveTransparency(G,
+        cs->Setting.get(), obj->Setting.get(), cRepCartoon,
+        SettingGet_f(G, cs->Setting.get(), obj->Setting.get(),
+            cSetting_cartoon_transparency));
+    I->setBuiltTransparency(cartoonTransp);
+    alpha = 1.0F - cartoonTransp;
+  }
   round_helices =
     SettingGet_i(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_round_helices);
   na_mode =

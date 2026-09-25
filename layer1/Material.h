@@ -19,6 +19,8 @@
 
 struct PyMOLGlobals;
 struct CSetting;
+struct CoordSet;
+namespace pymol { class CObject; }
 
 /* The function-constant axis the Metal pipelines are specialised on. Family 0
    compiles to today's code, so a `default` draw is byte for byte unchanged. */
@@ -114,7 +116,10 @@ int MaterialTableSize();
 bool MaterialIsImplemented(int id);
 
 /**
- * The opacity a glass-family material implies, or 0 when it implies none.
+ * The ALPHA -- opacity, where 1 is fully solid -- that a glass-family material
+ * implies, or 0 when it implies none. Clear `glass` is 0.15, i.e. mostly
+ * see-through. Callers that want a TRANSPARENCY must use 1 - alpha;
+ * MaterialEffectiveTransparency is the one place that conversion lives.
  *
  * Consulted at REP-BUILD time in layer2, beside the rep's own transparency
  * setting, and only when that setting is 0 -- the user's transparency slider
@@ -122,6 +127,29 @@ bool MaterialIsImplemented(int id);
  * older build renders an opaque surface, visible and wrong, never invisible.
  */
 float MaterialImpliedAlpha(int id);
+
+/**
+ * The transparency a representation should build with (#495).
+ *
+ * `transparency` is the rep's own setting, already resolved. When it is 0 and
+ * the rep's material implies an opacity -- the glass family does -- the implied
+ * value is used instead. The user's slider always wins: a non-zero setting is
+ * returned untouched, so turning glass down to opaque stays possible.
+ *
+ * Implied alpha is a rep-BUILD input, never written back as a setting. A .pse
+ * opened in a build that does not know the material then renders an opaque
+ * surface -- visible and wrong -- rather than an invisible one.
+ *
+ * @param set1 coordinate-set settings, may be null
+ * @param set2 object settings, may be null
+ * @param repType the cRep_t whose material to consult
+ * @param transparency the rep's own resolved transparency (0 = opaque)
+ * @param cs the coordinate set, so ATOM-level overrides of `stick_ball` are
+ *        seen; without it only the object-level value is consulted
+ */
+float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, float transparency,
+    const CoordSet* cs = nullptr);
 
 /**
  * The parameters a material id renders with on a given representation.
@@ -134,6 +162,46 @@ float MaterialImpliedAlpha(int id);
  * is drawn.
  */
 MaterialParams MaterialResolve(int id, int repType);
+
+/**
+ * The parameters a representation actually DRAWS with: the resolved material id
+ * put through MaterialResolve, plus the degradation rules that depend on a
+ * SETTING rather than on the rep alone (glass on `stick_ball` sticks).
+ *
+ * The single definition of "what this rep is made of". Shading and implied
+ * alpha both go through it, because they have to agree: a rep that shades as
+ * `default` but still builds transparent is not rendering `default`.
+ */
+MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const CoordSet* cs = nullptr);
+
+/**
+ * The FINAL parameters a draw uses: MaterialResolveForDraw plus the decision of
+ * which families read the legacy object-scoped `metal_rt_reflect*` triple.
+ *
+ * The draw site is a thin caller of this, so the rules stay in one place and
+ * can be asserted from Python without a Metal context.
+ */
+MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const CoordSet* cs = nullptr);
+
+/**
+ * MaterialDrawParams for the DRAW path, taking the `stick_ball` answer that the
+ * rep cached at build time (Rep::emitsStickBalls) instead of rescanning atoms.
+ *
+ * metalApplyRepMaterial runs per draw op, per pass, per frame; the scan is
+ * O(atoms) and its worst case -- a full scan, no early out -- is exactly the
+ * configuration the rule targets, glass sticks with no balls.
+ */
+MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, bool emitsStickBalls);
+
+/**
+ * Does this stick rep emit any `stick_ball` sphere? Atom-level, so this scans.
+ * Call once at rep-build time and cache on the rep.
+ */
+bool MaterialRepEmitsStickBalls(PyMOLGlobals* G, const CoordSet* cs,
+    const CSetting* set1, const CSetting* set2);
 
 /**
  * Name of a material id, or nullptr when no row has that id.
@@ -152,9 +220,29 @@ const char* MaterialGetName(int id);
 int MaterialGetFamily(int id);
 
 /**
+ * The material id a representation EFFECTIVELY draws with, after the per-rep
+ * degradation in MaterialResolve (glass on sphere impostors, for one, which
+ * would otherwise float as near-invisible discs).
+ *
+ * Distinct from MaterialResolveSettingId, which answers what the SETTING says.
+ * Both matter: the setting keeps the user's intent across a .pse, while this is
+ * what actually reaches the shader. Exposed so the difference is testable.
+ */
+int MaterialEffectiveId(int id, int repType);
+
+/**
  * True for the four PER-REPRESENTATION material settings.
  */
 bool MaterialIsRepMaterialSetting(int index);
+
+/**
+ * The transparency setting a representation reads, or 0 when it has none.
+ *
+ * `transparency` for a surface, `cartoon_transparency` for a cartoon, and so
+ * on. Returning 0 for the rest matters: mapping every unknown rep onto
+ * `transparency` would report the SURFACE's value for a mesh or a ribbon.
+ */
+int MaterialTransparencySettingForRep(int repType);
 
 /**
  * Whether an object's transparent geometry should be depth-PEELED (#488):
@@ -170,11 +258,18 @@ bool MaterialIsRepMaterialSetting(int index);
  * surface changes a look users already rely on, and it costs a depth blit and
  * two encoder boundaries per object per grid cell.
  *
+ * Auto also REFUSES when the object has another transparent representation
+ * that did not ask to be peeled -- peeling is object-scoped, so turning it on
+ * would erase that rep. Pass the object so the already-BUILT reps can be asked:
+ * the four transparency settings are atom- and bond-level and are routinely
+ * written through a selection, which leaves the object-level value at 0.
+ *
  * @param set1 coordinate-set (object-state) settings, may be null
  * @param set2 object settings, may be null
+ * @param obj the object, so its built reps can be consulted; may be null
  */
-bool MaterialObjectWantsPeel(
-    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2);
+bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, const pymol::CObject* obj = nullptr);
 
 /**
  * True for every setting whose value is a material id (the four
