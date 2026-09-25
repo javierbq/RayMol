@@ -743,6 +743,13 @@ def presets(self_cmd, sele):
               [ 0, ''               ,''                             ],
               [ 1, 'protein interface', 'preset.interface("'+sele+'",_self=cmd)' ],
               [ 0, '', '' ],
+              # Material LOOKS (#491). Separated from the presets above because
+              # they are a different contract: a preset rebuilds the
+              # representation set from scratch, these keep whatever is on
+              # screen and change only the material and the light rig.
+              [ 1, 'marble (statuary)', 'materials.marble("'+sele+'",_self=cmd)' ],
+              [ 1, 'clay (unglazed)', 'materials.clay("'+sele+'",_self=cmd)' ],
+              [ 0, '', '' ],
               [ 1, 'default'   ,'preset.default("'+sele+'",_self=cmd)'          ],
               ]
 

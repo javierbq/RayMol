@@ -134,6 +134,9 @@ _ACTION_OPTIONS = [
         ('---', None),
         ('protein interface', 'preset_interface'),
         ('---', None),
+        ('marble (statuary)', 'material_marble'),
+        ('clay (unglazed)', 'material_clay'),
+        ('---', None),
         ('default', 'preset_default'),
     ]),
     ('Find', None, [
@@ -362,6 +365,14 @@ def _run_action_command(cmd, name, title):
         elif cmd_key == 'preset_interface':
             from pymol import preset
             preset.interface(name, _self=cmd)
+        # ---- Material looks (#491): material + the light rig it needs. Unlike a
+        # preset, these keep the current representation set.
+        elif cmd_key == 'material_marble':
+            from pymol import materials
+            materials.marble(name, _self=cmd)
+        elif cmd_key == 'material_clay':
+            from pymol import materials
+            materials.clay(name, _self=cmd)
         elif cmd_key == 'preset_default':
             from pymol import preset
             preset.default(name, _self=cmd)

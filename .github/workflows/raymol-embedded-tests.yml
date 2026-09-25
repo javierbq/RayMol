@@ -76,6 +76,7 @@ jobs:
               testing/tests/raymol/design_enumerate.py \
               testing/tests/raymol/design_region.py \
               testing/tests/raymol/design_saverestore.py \
+              testing/tests/raymol/material_bundles.py \
               testing/tests/raymol/material_resolution.py \
               testing/tests/raymol/material_settings.py \
               testing/tests/raymol/material_table.py \

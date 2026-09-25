@@ -956,6 +956,12 @@ private let baseActionMenuItems: [ActionMenuItem] = [
         .separator,
         .action(label: "protein interface",            key: "preset_interface"),
         .separator,
+        // Material LOOKS (#491) -- a different contract from the presets above.
+        // A preset rebuilds the representation set from scratch; these keep
+        // whatever is on screen and change only the material and the light rig.
+        .action(label: "marble (statuary)",            key: "material_marble"),
+        .action(label: "clay (unglazed)",              key: "material_clay"),
+        .separator,
         .action(label: "default",                      key: "preset_default"),
     ]),
     .submenu(label: "Find", children: [
@@ -1296,6 +1302,9 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "preset_pub_solv":         cmd = "python\nfrom pymol import preset; preset.pub_solv('\(n)', _self=cmd)\npython end"
     case "preset_interface":        cmd = "python\nfrom pymol import preset; preset.interface('\(n)', _self=cmd)\npython end"
     case "preset_default":          cmd = "python\nfrom pymol import preset; preset.default('\(n)', _self=cmd)\npython end"
+    // Material looks (#491)
+    case "material_marble":         cmd = "python\nfrom pymol import materials; materials.marble('\(n)', _self=cmd)\npython end"
+    case "material_clay":           cmd = "python\nfrom pymol import materials; materials.clay('\(n)', _self=cmd)\npython end"
     // Find
     case "find_polar_within":  cmd = "dist \(n)_polar_conts, \(n), \(n), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
     case "find_polar_other":   cmd = "dist \(n)_polar_conts, (\(n)), (byobj (\(n))) and (not (\(n))), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
