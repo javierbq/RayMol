@@ -2232,6 +2232,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
         SettingGetGlobal_f(G, cSetting_metal_rt_ao_intensity),
         SettingGetGlobal_f(G, cSetting_metal_rt_shadow_intensity),
         SettingGetGlobal_f(G, cSetting_metal_rt_scale));
+    // The environment the reflective materials sample (#493). Pushed every
+    // frame; the renderer rebuilds the cubemap only when one of these changes.
+    G->Renderer->setEnvironment(SettingGetGlobal_i(G, cSetting_material_env),
+        bg[0], bg[1], bg[2]);
     G->Renderer->setReflectionParams(
         SettingGetGlobal_b(G, cSetting_metal_rt_reflect_env) ? 1 : 0,
         SettingGetGlobal_i(G, cSetting_metal_rt_reflect_samples));

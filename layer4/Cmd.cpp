@@ -2358,6 +2358,22 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  *
  * _cmd.get_material_names([only_implemented=1])
  */
+/**
+ * Shading family of a material id: 0 default, 1 procedural, 2 reflective,
+ * 3 glass. -1 when no row has that id.
+ *
+ * _cmd.get_material_family(id)
+ */
+static PyObject* CmdGetMaterialFamily(PyObject*, PyObject* args)
+{
+  int id = -1;
+  if (!PyArg_ParseTuple(args, "i", &id)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  return PyInt_FromLong(MaterialGetFamily(id));
+}
+
 static PyObject* CmdGetMaterialNames(PyObject*, PyObject* args)
 {
   int onlyImplemented = 1;
@@ -6685,6 +6701,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_ttt", CmdGetObjectTTT, METH_VARARGS},
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
   {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
+  {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},
