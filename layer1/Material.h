@@ -141,6 +141,17 @@ MaterialParams MaterialResolve(int id, int repType);
 const char* MaterialGetName(int id);
 
 /**
+ * Shading family of a material id, or -1 when no row has that id.
+ *
+ * Exposed so a test can ask which family a material belongs to. Without it the
+ * only Python-visible facts are the id, the name and whether it is implemented
+ * -- so a test that means "no implemented material is reflective yet" cannot
+ * express itself and quietly asserts something else instead. That happened
+ * (#493's own guard), which is why this exists.
+ */
+int MaterialGetFamily(int id);
+
+/**
  * True for the four PER-REPRESENTATION material settings.
  */
 bool MaterialIsRepMaterialSetting(int index);

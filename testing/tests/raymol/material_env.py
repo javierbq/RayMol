@@ -97,14 +97,32 @@ class TestMaterialEnv(testing.PyMOLTestCase):
         self.assertEqual(before, after)
 
     def testNoMaterialIsReflectiveYet(self):
-        """Guard for the claim these tests rest on: while no implemented
-        material is in the reflective family, material_env cannot change any
-        rendered pixel, which is what makes `default` byte-identical. When #494
-        flips plastic/metallic this fails, and that is the prompt to extend the
-        gallery rather than a regression."""
-        from pymol import setting
-        for _id, name in setting.get_material_names(1):
-            cmd.set('cartoon_material', name, 'm1')
-            # reflect/tint/rough stay at their metal_rt_reflect* values; a
-            # reflective material would be the first to carry its own.
-            self.assertEqual(cmd.get_setting_int('material_env'), 0, name)
+        """Guard for the claim these tests rest on: while no IMPLEMENTED
+        material is in the reflective family, nothing samples the environment
+        cubemap, which is what makes `default` byte-identical without a render.
+
+        Asserted against the family the C table actually reports. The first
+        version of this test looped over the names and then checked
+        material_env -- a value the loop never touched -- so it could not have
+        failed when #494 flips plastic and metallic. It asserts the real thing
+        now, and failing IS the signal to extend the gallery."""
+        from pymol import _cmd, setting
+        REFLECTIVE = 2
+        reflective = [n for i, n in setting.get_material_names(1)
+                      if _cmd.get_material_family(i) == REFLECTIVE]
+        self.assertEqual(reflective, [], 'reflective materials are implemented '
+                                         'now; #493 can no longer claim nothing '
+                                         'samples the cubemap')
+
+    def testTheFamilyAccessorAgreesWithTheTable(self):
+        """It is load-bearing for the guard above, so it gets its own check:
+        plastic and metallic are reflective rows whether or not they are
+        implemented yet, and `default` is family 0."""
+        from pymol import _cmd, setting
+        by_name = {n: i for i, n in setting.get_material_names(0)}
+        self.assertEqual(_cmd.get_material_family(by_name['default']), 0)
+        for name in ('plastic', 'metallic'):
+            self.assertEqual(_cmd.get_material_family(by_name[name]), 2, name)
+        for name in ('matte', 'marble', 'clay', 'rubber'):
+            self.assertEqual(_cmd.get_material_family(by_name[name]), 1, name)
+        self.assertEqual(_cmd.get_material_family(999), -1)

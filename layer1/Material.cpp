@@ -170,6 +170,16 @@ const char* MaterialGetName(int id)
   return row ? row->name : nullptr;
 }
 
+int MaterialGetFamily(int id)
+{
+  for (int i = 0; i < MaterialTableSize(); ++i) {
+    if (kMaterialTable[i].id == id) {
+      return kMaterialTable[i].family;
+    }
+  }
+  return -1;
+}
+
 bool MaterialIsRepMaterialSetting(int index)
 {
   switch (index) {

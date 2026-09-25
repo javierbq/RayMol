@@ -503,6 +503,8 @@ RendererMetal::~RendererMetal()
 
   // Samplers (newSamplerStateWithDescriptor, +1).
   [_postSampler release];   [_shadowSampler release];   [_labelSampler release];
+  [_envCubemap release];    [_envSampler release];
+  [_envFallbackCube release];
 
   // Depth-stencil states (newDepthStencilStateWithDescriptor, +1).
   [_depthStencilState release];  [_shadowDepthState release];
@@ -4318,6 +4320,14 @@ bool RendererMetal::ensureEnvironmentMap()
     return true;
   if (!_device)
     return false;
+  // setEnvironment() arrives from SceneRenderMetal, which runs AFTER
+  // beginFrame has already opened the frame's first encoder -- so on frame 1
+  // this would otherwise run with the {-1,-1,-1} sentinel and fill all six
+  // faces with NEGATIVE radiance, then mip-average it. Wait for a real value;
+  // until then bindEnvironment falls back to the black map below, which is a
+  // legitimate environment (material_env 2) rather than a broken one.
+  if (_envMode < 0)
+    return false;
 
   if (!_envCubemap) {
     MTLTextureDescriptor* d = [MTLTextureDescriptor
@@ -4330,18 +4340,8 @@ bool RendererMetal::ensureEnvironmentMap()
     if (!_envCubemap)
       return false;
   }
-  if (!_envSampler) {
-    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
-    sd.minFilter = MTLSamplerMinMagFilterLinear;
-    sd.magFilter = MTLSamplerMinMagFilterLinear;
-    // Trilinear: the mip level IS the roughness axis, so blending between
-    // levels is what keeps a roughness slider smooth instead of stepped.
-    sd.mipFilter = MTLSamplerMipFilterLinear;
-    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
-    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-    _envSampler = [_device newSamplerStateWithDescriptor:sd];
-    [sd release];
-  }
+  if (!ensureEnvironmentSampler())
+    return false;
 
   // Luminance of the backdrop, used to keep the studio in proportion to it.
   const float bgLum = 0.299f * _envBg[0] + 0.587f * _envBg[1] + 0.114f * _envBg[2];
@@ -4401,28 +4401,93 @@ bool RendererMetal::ensureEnvironmentMap()
   }
 
   // Mips are the roughness axis, so they have to exist before anything samples
-  // a rough material. A blit on its own command buffer: this runs outside the
-  // frame's encoder, and waiting is fine because it happens only on a change.
+  // a rough material. A blit on its own command buffer, committed and NOT
+  // waited on: this buffer is created and committed while the frame's own
+  // buffer is still open, so Metal orders it ahead of the frame regardless --
+  // and the wait cost 5.45 ms measured, on every bg_rgb change, i.e. on every
+  // step of an interactive colour drag. beginFrame makes the same argument
+  // about the RT acceleration structure a few hundred lines up.
   if (_queue) {
     id<MTLCommandBuffer> cb = [_queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
     [blit generateMipmapsForTexture:_envCubemap];
     [blit endEncoding];
     [cb commit];
-    [cb waitUntilCompleted];
   }
 
   _envDirty = false;
   return true;
 }
 
+// A 1x1 black cubemap + default sampler, so slot 6 is NEVER empty.
+//
+// The fragments declare the texture and sampler unconditionally; a
+// reflective-family draw with either missing is a hard Metal assertion
+// ("missing Sampler binding at index 6"). Every path that could leave the real
+// map unbuilt -- a nil device, a failed allocation, or simply the first
+// encoder of frame 1 before setEnvironment has been called -- lands here
+// instead. Black is also a MEANINGFUL environment (material_env 2 = none), so
+// the fallback degrades to a defined look rather than to garbage.
+bool RendererMetal::ensureEnvironmentFallback()
+{
+  if (_envFallbackCube && _envSampler)
+    return true;
+  if (!_device)
+    return false;
+  if (!_envFallbackCube) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                        size:1
+                                   mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;
+    _envFallbackCube = [_device newTextureWithDescriptor:d];
+    if (!_envFallbackCube)
+      return false;
+    const uint16_t black[4] = {0, 0, 0, envHalf(1.0f)};
+    for (NSUInteger f = 0; f < 6; ++f)
+      [_envFallbackCube replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                          mipmapLevel:0
+                                slice:f
+                            withBytes:black
+                          bytesPerRow:4 * sizeof(uint16_t)
+                        bytesPerImage:0];
+  }
+  return ensureEnvironmentSampler();
+}
+
+bool RendererMetal::ensureEnvironmentSampler()
+{
+  if (_envSampler)
+    return true;
+  if (!_device)
+    return false;
+  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+  sd.minFilter = MTLSamplerMinMagFilterLinear;
+  sd.magFilter = MTLSamplerMinMagFilterLinear;
+  // Trilinear: the mip level IS the roughness axis, so blending between levels
+  // is what keeps a roughness slider smooth instead of stepped.
+  sd.mipFilter = MTLSamplerMipFilterLinear;
+  sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+  sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+  _envSampler = [_device newSamplerStateWithDescriptor:sd];
+  [sd release];
+  return _envSampler != nil;
+}
+
 void RendererMetal::bindEnvironment(id<MTLRenderCommandEncoder> enc)
 {
   if (!enc)
     return;
-  if (!ensureEnvironmentMap())
+  id<MTLTexture> cube = ensureEnvironmentMap() ? _envCubemap : nil;
+  if (!cube) {
+    if (!ensureEnvironmentFallback())
+      return;    // no device: nothing can draw anyway
+    cube = _envFallbackCube;
+  }
+  if (!_envSampler && !ensureEnvironmentSampler())
     return;
-  [enc setFragmentTexture:_envCubemap atIndex:kEnvTextureIndex];
+  [enc setFragmentTexture:cube atIndex:kEnvTextureIndex];
   [enc setFragmentSamplerState:_envSampler atIndex:kEnvTextureIndex];
 }
 
@@ -5278,10 +5343,16 @@ static float3 mat_fresnel(float3 f0, float vdoth) {
 // environment reflection alone.
 //
 // `N` and `V` are EYE space, which is the space both the lit VBO path and the
-// impostors already have a normal in. The cubemap is sampled with the eye-space
-// reflection vector directly: the room is anchored to the camera rather than to
-// the model, so orbiting an object sweeps the reflection across it the way a
-// real room does, instead of the room turning with the molecule.
+// impostors already have a normal in, and the cubemap is sampled with the
+// eye-space reflection vector directly.
+//
+// That anchors the room to the CAMERA, not to the world: a sphere's eye-space
+// normal does not change as you orbit, so its reflection stays put -- the
+// classic matcap behaviour, not the sweep a real room would give. That is a
+// deliberate trade. The alternative (transforming R into world space) makes the
+// reflection swim during the smallest camera move, which on molecular geometry
+// -- thousands of small curved surfaces -- reads as noise rather than as
+// realism. Stability wins here; #501 can revisit it with a real room.
 static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
     texturecube<float> envMap, sampler envSmp) {
   float3 R = reflect(-V, N);

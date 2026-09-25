@@ -460,9 +460,10 @@ private:
   // material samples a coarser level, which is what lets brushed metal read
   // differently from a mirror without a second texture.
   //
-  // Bound on the scene, OIT and RT-composite encoders so a reflective object
-  // reflects the SAME room whichever path draws it -- toggling metal_raytrace
-  // must not change the reflection.
+  // Bound on EVERY encoder that draws molecular geometry -- the scene pass, the
+  // shadow pass and its resume, and the OIT pass -- so a reflective object
+  // reflects the same room whichever one draws it. NOT the RT composite: that
+  // is a post pass with its own fullscreen fragment and never samples this.
   static constexpr NSUInteger kEnvFaceDim = 128;
   static constexpr NSUInteger kEnvTextureIndex = 6;   // fragment texture slot
   id<MTLTexture> _envCubemap = nil;
@@ -470,7 +471,10 @@ private:
   int _envMode = -1;            // the material_env the cubemap was built for
   float _envBg[3] = {-1.0f, -1.0f, -1.0f};
   bool _envDirty = true;
+  id<MTLTexture> _envFallbackCube = nil;   // 1x1 black; slot 6 is never empty
   bool ensureEnvironmentMap();
+  bool ensureEnvironmentSampler();
+  bool ensureEnvironmentFallback();
   void bindEnvironment(id<MTLRenderCommandEncoder> enc);
 
   bool _oitActive = false;      // true while the transparent pass is rendering
