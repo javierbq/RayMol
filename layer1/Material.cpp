@@ -84,7 +84,11 @@ const MaterialRow kMaterialTable[] = {
        more than 16/255 on all four representations. A material the dropdown
        offers has to be one the user can actually tell apart. The grazing
        darkening does most of the work: it is what reads as an unglazed porous
-       body rather than a flat matte one. */
+       body rather than a flat matte one.
+
+       Only p[0..2] reach the GPU for this family. `reflect`, `tint` and `rough`
+       in every row are overwritten from the metal_rt_reflect* settings in
+       CGOGL.cpp before upload, so tuning them here has no effect. */
     {cMaterial_clay, "clay", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_clay, 0.0f, 0.0f, 1.0f,
             {0.10f, 9.0f, 0.45f, 0.0f, 0.0f, 0.0f}, 0}},

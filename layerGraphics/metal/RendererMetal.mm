@@ -7679,11 +7679,13 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
-  // Same fallback as the opaque variant above, and independent of it: the two
-  // pipelines may legitimately settle on different families. Without this a
-  // failed OIT specialisation left _cylinderOitPipeline nil, the layout was
-  // cached that way because the OPAQUE pipeline had compiled, and transparent
-  // sticks disappeared permanently for that layout.
+  // Same fallback as the opaque variant above. It runs AFTER that one, on
+  // whatever family the opaque pipeline settled on, and then falls back again
+  // on its own -- so the two always agree, and the OIT half can still drop to
+  // `default` when only its specialisation is the one that fails. Without this
+  // second fallback a failed OIT specialisation left _cylinderOitPipeline nil,
+  // the layout was cached that way because the OPAQUE pipeline had compiled,
+  // and transparent sticks disappeared permanently for that layout.
   int cylOitFam = cylFam;
   id<MTLFunction> offn =
       materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
@@ -7728,6 +7730,16 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // The map takes ownership of the +1 pipelines; the ivars stay as aliases.
   // Only cache a layout whose opaque pipeline compiled, so a transient failure
   // is retried rather than cached forever.
+  //
+  // Deliberately NOT extended to the OIT pipeline. Caching a layout whose OIT
+  // half failed to CREATE (as opposed to failing to specialise, which the
+  // fallback above handles) does pin transparent sticks off for that layout --
+  // but refusing to cache would re-run this whole builder every frame instead,
+  // which is the worse failure. A create failure here is descriptor-level and
+  // family-independent, so a retry could not succeed anyway: the descriptor is
+  // structurally the same as the sphere and VBO ones, and beginTransparentOIT
+  // already gates the entire OIT pass on the default VBO OIT pipeline, so the
+  // pass would be off before this could bite.
   if (_cylinderImpostorPipeline) {
     _cylinderPipelines[layout] = CylinderPipelines{
         _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline};
