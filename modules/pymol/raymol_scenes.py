@@ -32,6 +32,13 @@ CAPTURE = [
     "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     "metal_rt_reflect_env", "metal_rt_reflect_samples",
     "material_default", "material_env",
+    # The per-rep materials are OBJECT-level settings, so they have a global
+    # fallback as well as per-object overrides -- exactly like metal_rt_reflect
+    # above. Both halves have to be captured: the global is what an object with
+    # no override of its own renders with, and what a NEW object created after
+    # the recall picks up. OBJECT_CAPTURE below covers the other half.
+    "cartoon_material", "surface_material", "stick_material", "sphere_material",
+    "transparency_peel",
     "metal_msaa", "metal_tonemap", "metal_exposure", "metal_sss_wrap",
     "metal_dof", "metal_dof_focus", "metal_dof_range", "metal_dof_aperture",
     "metal_dof_quality", "metal_dof_autofocus", "metal_temporal_ao",
@@ -40,12 +47,39 @@ CAPTURE = [
     "ray_opaque_background",
 ]
 
-# Settings in CAPTURE whose value is a material ID. `cmd.get` renders those as
-# NAMES, which round-trip only in a build that knows the name; the id is what
-# every other part of the format stores, including the per-object map below and
-# the setting table in the .pse itself. Captured as ints so a scene written here
-# still means the same thing to a build with a different material table.
-MATERIAL_ID_SETTINGS = frozenset(["material_default"])
+_MATERIAL_ID_SETTINGS = None
+
+
+def MATERIAL_ID_SETTINGS():
+    """Settings in CAPTURE whose value is a material ID.
+
+    `cmd.get` renders those as NAMES, which round-trip only in a build that
+    knows the name; the id is what every other part of the format stores,
+    including the per-object map below and the setting table in the .pse itself.
+    Captured as ints so a scene written here still means the same thing to a
+    build with a different material table.
+
+    Derived from `setting.material_indices` -- the one list the rest of the code
+    resolves material names against -- rather than spelled out here, so a
+    material setting added later is captured as an id without touching this
+    module. Against a core with no materials this is empty, which degrades to
+    capturing those settings the way every other one is captured."""
+    global _MATERIAL_ID_SETTINGS
+    if _MATERIAL_ID_SETTINGS is None:
+        names = set()
+        try:
+            from pymol import setting
+            for n in CAPTURE:
+                try:
+                    if setting._get_index(n) in setting.material_indices:
+                        names.add(n)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        _MATERIAL_ID_SETTINGS = frozenset(names)
+    return _MATERIAL_ID_SETTINGS
+
 
 # {scene_name: {setting: value}} — persisted into the .pse via session tasks.
 _scene_settings = {}
@@ -67,6 +101,13 @@ OBJECT_CAPTURE = [
     "cartoon_material", "surface_material", "stick_material", "sphere_material",
     "transparency_peel",
 ]
+
+# NOTE (#508): a MOVIE built from scenes does not replay this map. The animator
+# emits camera + global-setting keyframes and per-object TTT (emit_object_motion
+# below), but nothing re-applies per-object overrides at a scene cut, so a movie
+# through a marble scene and a clay scene renders both with whatever the objects
+# carry when the movie is built. Recall is unaffected -- this is a gap in the
+# movie path, tracked separately.
 
 # {scene_name: {obj_name: {setting: value}}} — per-object overrides of
 # OBJECT_CAPTURE. Every object alive at store time is a key, with {} when it had
@@ -133,7 +174,7 @@ def _capture(_self=cmd):
     out = {}
     for s in CAPTURE:
         try:
-            out[s] = (_self.get_setting_int(s) if s in MATERIAL_ID_SETTINGS
+            out[s] = (_self.get_setting_int(s) if s in MATERIAL_ID_SETTINGS()
                       else _self.get(s))
         except Exception:
             pass   # setting absent in this build — skip
@@ -203,6 +244,38 @@ def _capture_object_settings(_self=cmd):
     return out
 
 
+def _setting_differs(name, value, obj='', _self=cmd):
+    """True when writing `value` would actually change `name`.
+
+    Compared through the same accessor the capture used, so a material captured
+    as an id is compared as an id and everything else as the text `cmd.get`
+    returns. Unknown or unreadable settings answer True, which degrades to the
+    old unconditional write rather than silently skipping one."""
+    try:
+        if name in MATERIAL_ID_SETTINGS():
+            return _self.get_setting_int(name, obj) != value
+        return _self.get(name, obj) != value
+    except Exception:
+        return True
+
+
+def _object_settings_now(obj, want, _self=cmd):
+    """{setting: value} an object has EXPLICITLY set, restricted to `want`
+    ({index: name} from _object_capture_indices) -- the same read the capture
+    uses, so the two agree on what "the object has this set" means."""
+    out = {}
+    if not want:
+        return out
+    for entry in (_self.get_object_settings(obj) or []):
+        try:
+            nm = want.get(entry[0])
+        except Exception:
+            continue
+        if nm is not None:
+            out[nm] = entry[2]
+    return out
+
+
 def _apply_object_settings(name, _self=cmd):
     """Restore per-object overrides for scene `name`; unset the settings an
     object did not have of its own when the scene was stored; skip objects that
@@ -214,17 +287,26 @@ def _apply_object_settings(name, _self=cmd):
     # guard existed can still carry a group in its map, and applying it would
     # expand to the members.
     live = set(_material_objects(_self))
+    want = _object_capture_indices()
     for o, kv in d.items():
         # Not merely defensive: without this, a scene stored with many objects
         # that were later deleted raises (and swallows) one exception per
         # setting per missing object on every recall.
         if o not in live:
             continue
+        try:
+            current = _object_settings_now(o, want, _self)
+        except Exception:
+            current = {}
         for s in OBJECT_CAPTURE:
             try:
                 if s in kv:
-                    _self.set(s, kv[s], o)
-                else:
+                    # Skip a write that would not change the value: these carry
+                    # a rep-rebuild side effect (see apply()).
+                    if s not in current or current[s] != kv[s]:
+                        _self.set(s, kv[s], o)
+                elif s in current:
+                    # ...and only unset what the object actually has set.
                     _self.unset(s, o)
             except Exception:
                 pass
@@ -383,7 +465,13 @@ def apply(name, _self=cmd):
     if d:
         for s, v in d.items():
             try:
-                _self.set(s, v)
+                # Only write what actually CHANGES. The material settings carry
+                # a cRepInvColor side effect, so an unconditional re-write made
+                # every recall rebuild cartoon, surface, stick and sphere
+                # geometry on every object even when no material differed --
+                # measured at 2 ms -> 177 ms per recall on a 58k-atom cartoon.
+                if _setting_differs(s, v, '', _self):
+                    _self.set(s, v)
             except Exception:
                 pass
     # After the globals: a per-object override has to win over the fallback the

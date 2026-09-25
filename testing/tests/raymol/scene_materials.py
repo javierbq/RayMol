@@ -15,6 +15,40 @@ from pymol import raymol_scenes as rs
 REP_MATERIALS = ['cartoon_material', 'surface_material',
                  'stick_material', 'sphere_material']
 
+MATERIAL_SETTINGS = REP_MATERIALS + ['material_default', 'material_env',
+                                     'transparency_peel']
+
+
+def material_id(name):
+    """The id of a material by NAME, from the live table -- never a literal, so
+    the test keeps passing when a row is inserted above it."""
+    from pymol import setting
+    return setting.material_id_dict[name]
+
+
+class _Recorder:
+    """cmd proxy that records every set/unset and still performs it.
+
+    Lets a test assert on the WRITES a recall makes, not only on the values it
+    ends with: the material settings carry a rep-rebuild side effect, so a write
+    that changes nothing still costs a full geometry rebuild."""
+
+    def __init__(self, target=cmd):
+        self._t = target
+        self.sets = []
+        self.unsets = []
+
+    def __getattr__(self, k):
+        return getattr(self._t, k)
+
+    def set(self, *a, **kw):
+        self.sets.append(a)
+        return self._t.set(*a, **kw)
+
+    def unset(self, *a, **kw):
+        self.unsets.append(a)
+        return self._t.unset(*a, **kw)
+
 
 class TestSceneMaterials(testing.PyMOLTestCase):
     def setUp(self):
@@ -60,7 +94,18 @@ class TestSceneMaterials(testing.PyMOLTestCase):
         id, which is what the rest of the .pse format uses."""
         cmd.set('material_default', 'clay')
         cmd.scene('A', 'store')
-        self.assertEqual(rs.scene_settings_map('A')['material_default'], 8)
+        self.assertEqual(rs.scene_settings_map('A')['material_default'],
+                         material_id('clay'))
+
+    def testEveryMaterialSettingIsCapturedAsAnId(self):
+        """Not just material_default: each of the five is id-valued, and the
+        id-valued set is derived from the table rather than listed by hand."""
+        for name in REP_MATERIALS + ['material_default']:
+            self.assertIn(name, rs.MATERIAL_ID_SETTINGS(), name)
+        cmd.set('cartoon_material', 'marble')
+        cmd.scene('A', 'store')
+        self.assertEqual(rs.scene_settings_map('A')['cartoon_material'],
+                         material_id('marble'))
 
     def testTheGlobalDefaultRecalls(self):
         cmd.set('material_default', 'clay')
@@ -98,9 +143,102 @@ class TestSceneMaterials(testing.PyMOLTestCase):
         self.assertEqual(cmd.get('cartoon_material', 'm2'), 'rubber')
         self.assertEqual(cmd.get('material_default'), 'matte')
 
+    def testTheGlobalRepMaterialsAreCapturedAndRecalled(self):
+        """The four rep materials are OBJECT-level settings: they have a global
+        fallback AS WELL AS per-object overrides, and an object with no override
+        of its own renders with the global. Capturing only the per-object half
+        left that global to whatever was set last."""
+        for name in REP_MATERIALS:
+            self.assertIn(name, rs.CAPTURE, name)
+        cmd.set('cartoon_material', 'marble')       # global, no object
+        cmd.set('stick_material', 'rubber')
+        cmd.scene('A', 'store')
+        cmd.set('cartoon_material', 'default')
+        cmd.set('stick_material', 'default')
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get('cartoon_material'), 'marble')
+        self.assertEqual(cmd.get('stick_material'), 'rubber')
+        # an object with no override of its own follows the restored global
+        self.assertEqual(cmd.get('cartoon_material', 'm1'), 'marble')
+
+    def testTheGlobalEnvironmentRecalls(self):
+        cmd.set('material_env', 1)
+        cmd.scene('A', 'store')
+        cmd.set('material_env', 0)
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get_setting_int('material_env'), 1)
+
+    def testPeelKeepsItsThreeStatesApart(self):
+        """`transparency_peel` is a tri-state: -1 follow the global, 0 off,
+        1 on. Unset-on-the-object and set-to-0 are different scenes, so a
+        recall that confused them would silently flip one object's peel."""
+        cmd.set('transparency_peel', 0, 'm1')       # explicitly OFF
+        cmd.scene('OFF', 'store')
+        cmd.unset('transparency_peel', 'm1')        # follow the global
+        cmd.scene('UNSET', 'store')
+        cmd.set('transparency_peel', 1, 'm1')
+        cmd.scene('ON', 'store')
+
+        self.assertIn('transparency_peel', rs.scene_object_settings_map('OFF')['m1'])
+        self.assertNotIn('transparency_peel', rs.scene_object_settings_map('UNSET')['m1'])
+
+        cmd.scene('OFF', 'recall', animate=0)
+        self.assertEqual(cmd.get_setting_int('transparency_peel', 'm1'), 0)
+        self.assertIn('transparency_peel', _explicit('m1'))
+        cmd.scene('UNSET', 'recall', animate=0)
+        self.assertNotIn('transparency_peel', _explicit('m1'))
+        cmd.scene('ON', 'recall', animate=0)
+        self.assertEqual(cmd.get_setting_int('transparency_peel', 'm1'), 1)
+
+    def testRecallWritesNothingWhenNothingChanged(self):
+        """Every material setting invalidates the representations it feeds, so
+        re-writing a value that already matches costs a full geometry rebuild of
+        every object. A recall of the scene already on screen must be silent."""
+        cmd.set('cartoon_material', 'marble', 'm1')
+        cmd.set('material_default', 'clay')
+        cmd.set('transparency_peel', 1, 'm2')
+        cmd.scene('A', 'store')
+
+        rec = _Recorder()
+        rs.apply('A', rec)
+        self.assertEqual([a for a in rec.sets if a[0] in MATERIAL_SETTINGS], [])
+        self.assertEqual(rec.unsets, [])
+
+    def testRecallStillWritesWhatDidChange(self):
+        """The other direction of the check above: skipping no-op writes must
+        not skip the real ones."""
+        cmd.set('cartoon_material', 'marble', 'm1')
+        cmd.set('material_default', 'clay')
+        cmd.scene('A', 'store')
+        cmd.set('cartoon_material', 'rubber', 'm1')
+        cmd.set('material_default', 'matte')
+        cmd.set('surface_material', 'marble', 'm2')   # gained an override
+
+        rec = _Recorder()
+        rs.apply('A', rec)
+        self.assertIn(('material_default', material_id('clay')), rec.sets)
+        self.assertIn(('cartoon_material', material_id('marble'), 'm1'), rec.sets)
+        self.assertIn(('surface_material', 'm2'), rec.unsets)
+        self.assertEqual(cmd.get('cartoon_material', 'm1'), 'marble')
+        self.assertEqual(cmd.get('material_default'), 'clay')
+        self.assertEqual(cmd.get_setting_int('surface_material', 'm2'), 0)
+
     def testAMaterialIsNeverBakedOntoAnObjectThatHasNone(self):
         cmd.set('material_default', 'clay')      # global only
         cmd.scene('A', 'store')
         captured = rs.scene_object_settings_map('A')
         for obj in ('m1', 'm2'):
             self.assertNotIn('cartoon_material', captured[obj], obj)
+
+
+def _explicit(obj):
+    """The setting names object `obj` has EXPLICITLY set (its own table), by
+    name -- what distinguishes "set to 0" from "not set"."""
+    from pymol import setting
+    out = set()
+    for entry in (cmd.get_object_settings(obj) or []):
+        try:
+            out.add(setting._get_name(entry[0]))
+        except Exception:
+            pass
+    return out
