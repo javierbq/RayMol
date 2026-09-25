@@ -130,7 +130,7 @@ struct RepProperty: Identifiable {
     /// Where a `.menu` row gets its options. Compiled-in options would have to
     /// be kept in step with layer1/Material.cpp by hand, and a build whose table
     /// differs would offer looks it cannot draw.
-    var optionSource: RepMenuSource = .none
+    var optionSource: RepMenuSource = .inline
     // Apply only on release (not on every live drag tick). For settings whose
     // change forces an expensive rebuild (e.g. solvent_radius re-tessellates the
     // whole surface), live updates would recompute on every drag step.
@@ -138,7 +138,12 @@ struct RepProperty: Identifiable {
 }
 
 /// Runtime source for a `.menu` row's options.
-enum RepMenuSource { case none, materials }
+enum RepMenuSource {
+    /// Options come from the row's own `options` array.
+    case inline
+    /// Options come from the core's material table at runtime.
+    case materials
+}
 
 /// Static description of a representation: display name, color-override setting
 /// (empty = no per-rep color), and the property rows it exposes. Setting names
@@ -304,6 +309,13 @@ enum CameraCommands {
 }
 
 enum SceneCatalog {
+    /// Scene settings whose value is a material id, so a `.menu` row for one is
+    /// served from the core's material table rather than from its own options.
+    /// Named explicitly: `SceneParam` has no optionSource field, and silently
+    /// handing the material list to an unrelated menu is the failure this
+    /// prevents. (#498 adds the rows themselves.)
+    static let materialSettings: Set<String> = ["material_default"]
+
     // Ordered sub-groups shown inside the SCENE section (see panel reorg).
     static let groups = ["Canvas", "Camera", "Lighting", "Shadows & AO", "Metal optimization", "Effects", "Quality"]
     // Viewport camera dock (see CameraDock): the always-visible strip icons, in
@@ -3021,9 +3033,20 @@ private struct MenuSetting: View {
     let options: [(label: String, value: Double)]
     let value: Double
     let onSelect: (Double) -> Void
+    /// Clears the override so the row inherits again. nil hides the row.
+    var onInherit: (() -> Void)? = nil
 
+    /// What the chip reads. An id with no row in the table is shown as its
+    /// NUMBER, not as "default": `set cartoon_material, glass` is a supported
+    /// command today (names resolve against the FULL table, implemented or
+    /// not), and a .pse from a newer build carries ids this one has no name
+    /// for. Showing those as "default" invited the user to click "default" to
+    /// confirm what they were already seeing and silently destroy the value.
     private var current: String {
-        options.first { abs($0.value - value) < 0.5 }?.label ?? "default"
+        if let hit = options.first(where: { abs($0.value - value) < 0.5 }) {
+            return hit.label
+        }
+        return value < 0.5 ? "default" : "#\(Int(value))"
     }
 
     var body: some View {
@@ -3033,6 +3056,16 @@ private struct MenuSetting: View {
                 Button(action: { onSelect(opt.value) }) {
                     Text(sel ? "• \(opt.label)" : opt.label)
                 }
+            }
+            if let onInherit {
+                Divider()
+                // Without this the dropdown is a one-way pin: the first pick
+                // writes an object-level override and nothing in the UI could
+                // ever take it off again, so a later change to the rep global
+                // or to material_default would never reach this object. The
+                // colour controls in this same panel lead with the same
+                // affordance.
+                Button("Inherit", action: onInherit)
             }
         } label: {
             HStack(spacing: 3) {
@@ -3047,9 +3080,14 @@ private struct MenuSetting: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        // An empty table means the core answered nothing; offering a menu that
-        // can only set `default` would be worse than showing it disabled.
+        // An empty table means the core has not answered yet; offering a menu
+        // that can only set `default` would be worse than showing it disabled.
+        // The opacity is what makes "disabled" legible -- the label sets its
+        // own foreground and background colours, which survive SwiftUI's
+        // disabled styling, so without it a dead chip looks live. Same pairing
+        // the scene rows in this file use.
         .disabled(options.isEmpty)
+        .opacity(options.isEmpty ? 0.4 : 1.0)
     }
 }
 
@@ -3797,7 +3835,9 @@ private struct RepPropertyGrid: View {
         case .menu:
             // Options come from the core (engine.materialNames), so a build
             // whose table differs cannot be offered a look it can't draw.
-            MenuSetting(options: options(for: p), value: v) { set(p.setting, $0) }
+            MenuSetting(options: options(for: p), value: v,
+                        onSelect: { set(p.setting, $0) },
+                        onInherit: { unset(p.setting) })
         }
     }
 
@@ -3806,7 +3846,7 @@ private struct RepPropertyGrid: View {
         switch p.optionSource {
         case .materials:
             return engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
-        case .none:
+        case .inline:
             return p.options
         }
     }
@@ -3814,6 +3854,19 @@ private struct RepPropertyGrid: View {
     private func set(_ setting: String, _ value: Double) {
         let s = (value == value.rounded()) ? String(Int(value)) : String(format: "%.4f", value)
         engine.runCommand("set \(setting), \(s), \(objName)")
+        // The displayed value comes from a poll that runs at most every ~500ms,
+        // so without this the menu keeps the bullet on the old entry until the
+        // next tick. The sliders and toggles hold local state to hide that lag;
+        // a discrete menu cannot, so it asks for the refresh instead -- the
+        // same thing the per-atom transparency row does after its unset.
+        engine.refreshExpandedDetail()
+    }
+
+    /// Drop the object-level override so the row inherits the rep global (and
+    /// then `material_default`) again.
+    private func unset(_ setting: String) {
+        engine.runCommand("unset \(setting), \(objName)")
+        engine.refreshExpandedDetail()
     }
 
     @ViewBuilder
@@ -4072,15 +4125,19 @@ struct SceneParamRow: View {
             case .color:
                 EmptyView()  // scene colors use p.isColor above, not the .color kind
             case .menu:
-                // Scene-level named choices. No SceneParam uses one yet -- the
-                // global material_default and material_env dropdowns arrive with
-                // #498 -- but this is wired rather than stubbed so adding one
-                // there is a catalogue entry, not a second control path that
-                // could silently render nothing.
-                MenuSetting(options: engine.materialNames.map {
-                                (label: $0.name, value: Double($0.id))
-                            },
-                            value: v) { engine.runCommand("set \(p.setting), \(Int($0))") }
+                // Scene-level named choices. Only the material-valued ones are
+                // served from the material table -- SceneParam has no
+                // optionSource field, so mapping engine.materialNames
+                // unconditionally would hand the material list to the first
+                // non-material scene menu anyone adds, silently, while it wrote
+                // to an unrelated setting. Anything else falls back to the
+                // param's own options. (The global material_default and
+                // material_env dropdowns themselves arrive with #498.)
+                MenuSetting(options: SceneCatalog.materialSettings.contains(p.setting)
+                                ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
+                                : p.options.map { (label: $0.label, value: $0.value) },
+                            value: v,
+                            onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
             }
         }
     }

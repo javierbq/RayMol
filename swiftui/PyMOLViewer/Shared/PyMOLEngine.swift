@@ -218,6 +218,9 @@ final class PyMOLEngine: ObservableObject {
     /// looks this build cannot draw. Only the IMPLEMENTED rows arrive here --
     /// the rest are real ids that still work by name from the command line.
     @Published var materialNames: [(id: Int, name: String)] = []
+    /// How many times the material table has been asked for; see
+    /// requestMaterialsIfNeeded().
+    private var materialRequests = 0
     // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
     @Published var sceneState = SceneState()
     // Per-object state metadata (effective current state + overlay-all) for the
@@ -715,15 +718,20 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
-        // Material table for the Inspector dropdowns (#490). Once per session --
-        // the table is static in layer1/Material.cpp, so polling it would be
-        // pure overhead, and compiling a copy into Swift would let the two
-        // drift and offer looks this build cannot draw. Deferred a beat so the
-        // Python layer is up; the dropdowns render disabled until it lands.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.runPythonQuiet(
-                "from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
-        }
+        // Material table for the Inspector dropdowns (#490). The table is
+        // static in layer1/Material.cpp, so this is a one-shot rather than a
+        // poll, and compiling a copy into Swift would let the two drift and
+        // offer looks this build cannot draw.
+        //
+        // Issued synchronously, not on a timer. The Python layer is
+        // demonstrably up by here -- initialize() already made a synchronous
+        // runPython call above -- so a deferral was a guess with nothing behind
+        // it, and if the guess were ever wrong the single shot would be lost
+        // and every Material row would sit dead and reading "default" for the
+        // whole session. requestMaterialsIfNeeded() also re-asks from the
+        // object poll while the table is still empty, so a lost line costs one
+        // tick rather than the session.
+        requestMaterialsIfNeeded()
 
         // Test affordance: seed the inspector's expanded object cards so the
         // expanded representation grid can be screenshotted without a click.
@@ -3803,6 +3811,12 @@ final class PyMOLEngine: ObservableObject {
         objectPollCounter += 1
         guard objectPollCounter % 5 == 0 else { return }
 
+        // Re-ask for the material table if the startup request never landed.
+        // AFTER the tick guard on purpose: the retries want to be spread over a
+        // couple of seconds, which is the timescale a slow Python layer would
+        // need, not crammed into the first 500ms. A no-op once the table is in.
+        requestMaterialsIfNeeded()
+
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
         if sequenceVisible {
@@ -3895,6 +3909,17 @@ final class PyMOLEngine: ObservableObject {
             if let i = r[0] as? Int, let n = r[1] as? String { out.append((id: i, name: n)) }
         }
         return out.isEmpty ? nil : out
+    }
+
+    /// Ask the core for the material table, unless we already have it.
+    ///
+    /// Bounded: the table cannot change within a session, so after a handful of
+    /// silent failures something is wrong in a way re-asking will not fix, and
+    /// re-asking forever would put a Python call on every poll tick.
+    func requestMaterialsIfNeeded() {
+        guard materialNames.isEmpty, materialRequests < 5 else { return }
+        materialRequests += 1
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
     }
 
     private func parseMaterialsFeedback(_ line: String) {

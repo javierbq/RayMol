@@ -91,7 +91,13 @@ def _material_id(rep_name, obj):
         entry = MATERIAL_REPS.get(rep_name)
         if not entry:
             return 0.0
-        value = _cmd.get_rep_material(cmd._COb, obj or '', repres[entry[1]])
+        # state=-1 asks for the OBJECT tier, which is the tier the Inspector's
+        # dropdown writes. Asking for the drawn state (0) instead would let a
+        # state-level value -- which `cmd.set(..., state=N)` stores even though
+        # PyMOL warns the setting is object-level -- outrank every write the
+        # dropdown makes, so the row would accept clicks and never change.
+        # Every other row in the grid reads and writes the object tier too.
+        value = _cmd.get_rep_material(cmd._COb, obj or '', repres[entry[1]], -1)
         return float(value) if value is not None else 0.0
     except Exception:
         return 0.0
