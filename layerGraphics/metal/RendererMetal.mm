@@ -5207,6 +5207,18 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
 // cylinder libraries only, because the lit VBO path gets its model-space
 // position from the vertex stage and has no use for this.
 static NSString* const kMaterialImpostorSrc = @R"(
+// The impostors' two-light diffuse, in ONE place. sphere_shade and cyl_shade
+// each still inline their own copy for the default path; this exists so the
+// marble branch cannot drift from them the way the lit-VBO and impostor paths
+// already drifted once. If that expression ever changes, it changes here too.
+static float mat_impostor_intensity(float3 N, float3 keyDir, float ambient,
+    float direct, float reflectAmt, float wrap) {
+  float n0 = dot(N, float3(0.0, 0.0, 1.0));
+  float n1 = dot(N, normalize(keyDir));
+  return ambient + direct * saturate((n0 + wrap) / (1.0 + wrap))
+                 + reflectAmt * saturate((n1 + wrap) / (1.0 + wrap));
+}
+
 // Final colour for an impostor fragment.
 //
 // Both impostor libraries derive their surface point in EYE space, so the
@@ -5231,13 +5243,9 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
       // intensity was computed with the scene wrap, so it is recomputed with
       // marble's. Without this a marble cartoon and the marble spheres of the
       // same object are lit differently along the terminator.
-      float wrap = max(sceneWrap, kMatMarbleWrap);
-      float3 L1 = normalize(keyDir);
-      float n0 = dot(N, float3(0.0, 0.0, 1.0));
-      float n1 = dot(N, L1);
-      float intensity = ambient
-          + direct * saturate((n0 + wrap) / (1.0 + wrap))
-          + reflectAmt * saturate((n1 + wrap) / (1.0 + wrap));
+      float intensity = mat_impostor_intensity(N, keyDir, ambient, direct,
+                                               reflectAmt,
+                                               max(sceneWrap, kMatMarbleWrap));
       return mat_marble_albedo(base, pModel, m) * min(intensity, 1.0)
              + defaultSpecular;
     }
@@ -7671,8 +7679,18 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
+  // Same fallback as the opaque variant above, and independent of it: the two
+  // pipelines may legitimately settle on different families. Without this a
+  // failed OIT specialisation left _cylinderOitPipeline nil, the layout was
+  // cached that way because the OPAQUE pipeline had compiled, and transparent
+  // sticks disappeared permanently for that layout.
+  int cylOitFam = cylFam;
   id<MTLFunction> offn =
-      materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylFam);
+      materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+  if (!offn && cylOitFam != cMaterialFamily_default) {
+    cylOitFam = cMaterialFamily_default;
+    offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+  }
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
     op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;

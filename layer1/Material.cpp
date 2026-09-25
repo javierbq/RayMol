@@ -77,9 +77,17 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_procedural, cMaterial_marble, 0.0f, 0.0f, 0.9f,
             {0.0f, 0.22f, 0.0f, 0.0f, 0.85f, 6.0f}, 0}},
 
+    /* Clay's knobs are raised from the prototype's 0.04 / 8 / 0.15. Those were
+       tuned against `default`, which has a specular highlight; against `matte`,
+       which this epic adds and which is the same Lambert with every knob at
+       zero, they were invisible -- measured at 0.000% of pixels differing by
+       more than 16/255 on all four representations. A material the dropdown
+       offers has to be one the user can actually tell apart. The grazing
+       darkening does most of the work: it is what reads as an unglazed porous
+       body rather than a flat matte one. */
     {cMaterial_clay, "clay", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_clay, 0.0f, 0.0f, 1.0f,
-            {0.04f, 8.0f, 0.15f, 0.0f, 0.0f, 0.0f}, 0}},
+            {0.10f, 9.0f, 0.45f, 0.0f, 0.0f, 0.0f}, 0}},
 
     {cMaterial_rubber, "rubber", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_rubber, 0.0f, 0.0f, 0.95f,
