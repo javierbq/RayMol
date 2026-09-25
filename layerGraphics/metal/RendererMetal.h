@@ -510,9 +510,18 @@ private:
   id<MTLRenderPipelineState> _cylinderPeelPipeline = nil;  // alias, not owned
   id<MTLRenderPipelineState> peelPipelineForVD(MTLVertexDescriptor* vd);
   id<MTLDepthStencilState> oitDepthPeelAwareState();
+  // Re-open the scene pass with LOAD semantics after an aborted peel pass.
+  void resumeScenePass();
+  // Create _peelDepth on first use and point the two peel descriptors at it.
+  bool ensurePeelTargets();
   id<MTLDepthStencilState> peelWriteState();
   id<MTLDepthStencilState> peelTestState();
   bool _peelMode = false;       // true between begin/endPeelPrepass
+  // Set when a draw could not run its peel pre-pass (no pipeline for that
+  // layout). Its OIT draw must then use the ordinary LessEqual test: EQUAL
+  // against a depth it never wrote rejects it at every pixel, i.e. the geometry
+  // disappears.
+  bool _peelUnseeded = false;
   bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
   bool _oitCleared = false;     // the frame's first transparent encoder cleared
 
@@ -528,6 +537,9 @@ private:
   id<MTLDepthStencilState> _shadowDepthState = nil;
   id<MTLSamplerState> _shadowSampler = nil;
   id<MTLFunction> _vboFragmentShadowFunc = nil;  // depth-only VBO fragment
+  // Depth-only VBO fragment for the PEEL pre-pass: applies the per-rep clip so
+  // the depth it records matches what vbo_fragment_oit writes (#488).
+  id<MTLFunction> _vboFragmentPeelFunc = nil;
   // Surface interior-cap (stencil): mark = position-only/no-color/stencil-INVERT,
   // fill = full-screen quad gated on stencil. Built once; mark rebuilt per stride.
   id<MTLRenderPipelineState> _capMarkPipeline = nil;

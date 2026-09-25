@@ -62,13 +62,18 @@ void SceneRenderMetalSelections(PyMOLGlobals* G);
  *   to replay one object on its own -- first depth-only into the peel target,
  *   then into the OIT targets -- and must not disturb how the rest of the pass
  *   is assembled.
+ * @param exclude when non-null, skip these objects. The peel's bulk pass uses
+ *   it to leave out what it already drew peeled; without it a peeled object is
+ *   composited TWICE -- its front shell plus the whole unpeeled stack -- which
+ *   makes it denser rather than cleaner, the exact opposite of the feature.
  */
 void SceneRenderAll(PyMOLGlobals * G, SceneUnitContext * context,
                     float *normal, PickColorManager*,
                     RenderPass pass, int fat, float width_scale,
                     GridInfo * grid, int dynamic_pass, SceneRenderWhich which_objects,
                     SceneRenderOrder render_order,
-                    pymol::CObject* only_object = nullptr);
+                    pymol::CObject* only_object = nullptr,
+                    const std::vector<pymol::CObject*>* exclude = nullptr);
 
 void SceneInitializeViewport(PyMOLGlobals* G, bool offscreen);
 

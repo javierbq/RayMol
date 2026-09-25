@@ -710,12 +710,20 @@ void SceneRenderAA(PyMOLGlobals* G, const GLFramebufferConfig& fbConfig)
 static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
     SceneUnitContext* context, RenderInfo* info, float* normal, int state,
     pymol::CObject* obj, GridInfo* grid, int* slot_vla, int fat,
-    pymol::CObject* only_object = nullptr)
+    pymol::CObject* only_object = nullptr,
+    const std::vector<pymol::CObject*>* exclude = nullptr)
 {
-  // Per-object peel (#488) replays one object at a time. Filtering here rather
-  // than in each of SceneRenderAll's four iteration branches keeps the one
-  // place that decides whether an object draws at all.
+  // Per-object peel (#488) replays one object at a time, then renders the rest
+  // together. Filtering here rather than in each of SceneRenderAll's four
+  // iteration branches keeps the one place that decides whether an object draws
+  // at all.
   if (only_object && obj != only_object)
+    return;
+  // ...and the bulk pass must SKIP what was already drawn peeled, or the object
+  // is composited twice: once as its peeled front shell and again as the full
+  // unpeeled stack. That reads as MORE transparent depth, not less -- the exact
+  // opposite of the feature.
+  if (exclude && std::find(exclude->begin(), exclude->end(), obj) != exclude->end())
     return;
   if (!SceneGetDrawFlag(grid, slot_vla, obj->grid_slot))
     return;
@@ -824,7 +832,8 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
 void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
     PickColorManager* pickmgr, RenderPass pass, int fat, float width_scale,
     GridInfo* grid, int dynamic_pass, SceneRenderWhich which_objects,
-    SceneRenderOrder render_order, pymol::CObject* only_object)
+    SceneRenderOrder render_order, pymol::CObject* only_object,
+    const std::vector<pymol::CObject*>* exclude)
 {
   CScene* I = G->Scene;
   int state = SceneGetState(G);
@@ -909,7 +918,7 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
           }
           if (!rayVolume || obj->type == cObjectVolume) {
             SceneRenderAllObject(G, I, context, &info, normal, state, obj,
-                grid, slot_vla, fat, only_object);
+                grid, slot_vla, fat, only_object, exclude);
           }
         }
         break;
@@ -918,7 +927,7 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
           /* EXPERIMENTAL RAY-VOLUME COMPOSITION CODE */
           if (!rayVolume || obj->type == cObjectVolume) {
             SceneRenderAllObject(G, I, context, &info, normal, state, obj,
-                grid, slot_vla, fat, only_object);
+                grid, slot_vla, fat, only_object, exclude);
           }
         }
         for (auto obj : I->GadgetObjs) {
@@ -926,7 +935,7 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
             continue;
           }
           SceneRenderAllObject(G, I, context, &info, normal, state, obj, grid,
-              slot_vla, fat, only_object);
+              slot_vla, fat, only_object, exclude);
         }
         break;
       } // end render order for all objects
@@ -939,19 +948,27 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
         // rendered with t_mode3 shader derivatives
         info.pass = RenderPass::Opaque;
         SceneRenderAllObject(G, I, context, &info, normal, state, obj, grid,
-            slot_vla, fat, only_object);
+            slot_vla, fat, only_object, exclude);
         info.pass = RenderPass::Transparent;
       }
     } else if (which_objects_int & std::underlying_type_t<SceneRenderWhich>(
                                        SceneRenderWhich::NonGadgets)) {
       for (auto obj : I->NonGadgetObjs) {
         SceneRenderAllObject(G, I, context, &info, normal, state, obj, grid,
-            slot_vla, fat, only_object);
+            slot_vla, fat, only_object, exclude);
       }
     }
   }
 
-  if (info.alpha_cgo) {
+  if (info.alpha_cgo && !only_object) {
+    // Skipped entirely for a single-object replay (#488). This CGO is the
+    // whole FRAME's globally sorted transparent triangles, with no notion of
+    // which object contributed them: replaying it inside a peel pre-pass would
+    // depth-write every other object's transparency into the peel target, and
+    // replaying it in each peeled object's OIT pass would accumulate every
+    // transparent object once per peeled object. The unpeeled pass that always
+    // follows has only_object == nullptr and renders it exactly once, as
+    // before.
     CGOStop(info.alpha_cgo);
     /* this only works when all objects are rendered in the same frame of
      * reference */
@@ -966,12 +983,15 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
  * Objects whose transparent geometry should be depth-peeled this frame (#488),
  * in draw order, capped at kMaxPeeledObjects.
  *
- * Each peeled object costs a depth blit and two encoder boundaries, per grid
- * cell -- so a session that flags fifty objects must not pay fifty times. Past
- * the cap the rest simply render in the ordinary transparent pass, which is
- * exactly how they rendered before this existed.
+ * Each peeled object costs a full-frame depth blit and two encoder boundaries,
+ * PER GRID CELL -- and under MSAA the scene pass re-opens between them, which
+ * is a full colour+depth multisample resolve with no draws in it. At 2560x1440
+ * with 4x MSAA that is on the order of a couple of hundred MB of traffic per
+ * object per cell. The spec proposed 8; measured against that cost the knee is
+ * much earlier, so this is 3. Past the cap the rest render in the ordinary
+ * transparent pass, exactly as they did before this existed.
  */
-static constexpr int kMaxPeeledObjects = 8;
+static constexpr int kMaxPeeledObjects = 3;
 
 static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
 {
@@ -980,9 +1000,20 @@ static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
   if (!G->Renderer || !G->Renderer->peelSupported())
     return out;   // no targets or pipelines: nothing peels, nothing changes
   for (auto obj : I->NonGadgetObjs) {
-    if (!obj || !obj->Setting)
+    if (!obj)
       continue;
-    if (!MaterialObjectWantsPeel(G, nullptr, obj->Setting.get()))
+    // A freshly loaded object has NO settings block at all -- it is created
+    // lazily by the first object-level `set`. Skipping those would mean a
+    // global `set transparency_peel, 1` peeled nothing until the user happened
+    // to write some unrelated object setting, while _cmd.get_object_peel (and
+    // the Inspector) said it was on. Resolve with a null object setting and let
+    // the global fallback answer.
+    const CSetting* objSet = obj->Setting ? obj->Setting.get() : nullptr;
+    if (!MaterialObjectWantsPeel(G, nullptr, objSet))
+      continue;
+    // An object nobody can see must not consume one of the cap's slots, nor
+    // cost a depth blit and two encoder boundaries per grid cell.
+    if (!obj->Enabled)
       continue;
     out.push_back(obj);
     if (static_cast<int>(out.size()) >= kMaxPeeledObjects)
@@ -1006,6 +1037,14 @@ static void SceneRenderTransparentMetal(PyMOLGlobals* G,
     const std::vector<pymol::CObject*>& peeled)
 {
   for (auto obj : peeled) {
+    // In grid mode the peel passes are opened per CELL, so skip the object
+    // entirely in the cells it does not belong to: otherwise every (object,
+    // cell) pair paid a full-frame depth blit and two encoder boundaries to
+    // draw nothing. With 8 peeled objects in a 4x4 grid that was 56 of 64
+    // iterations wasted.
+    if (grid && grid->active &&
+        !SceneGetDrawFlag(grid, G->Scene->m_slots.data(), obj->grid_slot))
+      continue;
     // Colour-less depth pre-pass: this object alone, writing its nearest
     // surface over a copy of the opaque depth.
     G->Renderer->beginPeelPrepass();
@@ -1021,11 +1060,14 @@ static void SceneRenderTransparentMetal(PyMOLGlobals* G,
         obj);
     G->Renderer->endTransparentOIT();
   }
-  // Everything that is not peeled, in one ordinary pass. Runs even when the
-  // list is empty -- that is the unchanged pre-#488 path.
+  // Everything that is not peeled, in one ordinary pass -- EXCLUDING the
+  // objects just drawn peeled. Runs even when the list is empty, and with an
+  // empty list the exclusion is a no-op, so this is the unchanged pre-#488
+  // path.
   G->Renderer->beginTransparentOIT(false);
   SceneRenderAll(G, context, normal, nullptr, RenderPass::Transparent, false,
-      0.0f, grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+      0.0f, grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast,
+      nullptr, peeled.empty() ? nullptr : &peeled);
   G->Renderer->endTransparentOIT();
 }
 
