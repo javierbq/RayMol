@@ -4246,6 +4246,12 @@ void RendererMetal::endPeelPrepass()
   _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
   _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  // The pre-pass programmed peelWriteState (depth WRITE on) straight onto its
+  // own encoder without going through the cached flags, so on the fallback
+  // above the next ensureEncoder() would apply that stale state and let the
+  // transparent draws write depth. resumeScenePass() is what normally resets
+  // these; doing it here costs nothing and does not create an encoder.
+  _depthStencilDirty = true;
 }
 
 void RendererMetal::resumeScenePass()

@@ -643,6 +643,9 @@ Rep *RepCylBondNew(CoordSet * cs, int state)
   // a build input that is never written back, so the rep itself is the only
   // honest place to observe it from (#495).
   I->setBuiltTransparency(transp);
+  // Cached here so the DRAW path does not rescan atoms every draw op.
+  I->setEmitsStickBalls(MaterialRepEmitsStickBalls(
+      G, cs, cs->Setting.get(), obj->Setting.get()));
 
   I->primitiveCGO = CGONew(G);
   if(ok && obj->NBond) {

@@ -1009,7 +1009,7 @@ static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
     // the Inspector) said it was on. Resolve with a null object setting and let
     // the global fallback answer.
     const CSetting* objSet = obj->Setting ? obj->Setting.get() : nullptr;
-    if (!MaterialObjectWantsPeel(G, nullptr, objSet))
+    if (!MaterialObjectWantsPeel(G, nullptr, objSet, obj))
       continue;
     // An object nobody can see must not consume one of the cap's slots, nor
     // cost a depth blit and two encoder boundaries per grid cell.

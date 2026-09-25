@@ -234,6 +234,7 @@ class TestGlass(testing.PyMOLTestCase):
     def testGlassTurnsPeelAutoOn(self):
         """#488 shipped `transparency_peel` -1 (auto) with NO material that
         asked for it. Glass is the first, so this is auto's first real test."""
+        build('m1', 'surface')
         self.assertEqual(resolved_peel('m1'), 0)
         cmd.set('surface_material', 'glass', 'm1')
         self.assertEqual(resolved_peel('m1'), 1)
@@ -249,7 +250,42 @@ class TestGlass(testing.PyMOLTestCase):
         had before and never asked to change."""
         cmd.set('cartoon_transparency', 0.5, 'm1')
         cmd.set('surface_material', 'glass', 'm1')
+        # build(), not show(): hasRep consults Obj->RepVisCache, which is only
+        # recomputed on a refresh, so a bare show() leaves the rep invisible to
+        # the veto.
+        build('m1', 'cartoon')
+        build('m1', 'surface')
         self.assertEqual(resolved_peel('m1'), 0)
+
+    def testAGlobalTransparencyDoesNotDisableAutoPeel(self):
+        """The veto must only consider reps the object actually DRAWS.
+
+        SettingGet_f falls back to the GLOBAL value, so reading it blindly made
+        a global `set transparency, 0.5` -- one of the most common things a user
+        types -- turn auto-peel off for every glass cartoon in the session, on
+        account of a surface nothing was showing."""
+        cmd.set('transparency', 0.5)          # global, and no surface is shown
+        cmd.fab('AAAAAAAAAA', 'm2', ss=1)
+        cmd.hide('everything', 'm2')
+        cmd.set('cartoon_material', 'glass', 'm2')
+        build('m2', 'cartoon')
+        self.assertEqual(resolved_peel('m2'), 1)
+
+    def testAnAtomLevelTransparencyStillVetoesAutoPeel(self):
+        """The four transparency settings are atom- and bond-level and are
+        routinely written through a SELECTION, which leaves the object value at
+        0. Reading only the object value missed those entirely -- the same
+        vanishing rep, just a narrower trigger. Rep::hasTransparency() is what
+        the renderer routes on, so it sees per-atom overrides by construction."""
+        cmd.fab('AAAAAAAAAA', 'm2', ss=1)
+        cmd.hide('everything', 'm2')
+        cmd.set('cartoon_transparency', 0.5, 'm2 and all')   # atom level
+        self.assertEqual(
+            cmd.get_setting_float('cartoon_transparency', 'm2'), 0.0)
+        cmd.set('surface_material', 'glass', 'm2')
+        build('m2', 'cartoon')
+        build('m2', 'surface')
+        self.assertEqual(resolved_peel('m2'), 0)
 
     def testAnExplicitPeelOnStillPeelsTheWholeObject(self):
         """The refusal above is a property of AUTO only. An explicit request is
@@ -257,12 +293,16 @@ class TestGlass(testing.PyMOLTestCase):
         cmd.set('cartoon_transparency', 0.5, 'm1')
         cmd.set('surface_material', 'glass', 'm1')
         cmd.set('transparency_peel', 1, 'm1')
+        build('m1', 'cartoon')
+        build('m1', 'surface')
         self.assertEqual(resolved_peel('m1'), 1)
 
     def testAnOpaqueSecondRepDoesNotBlockAutoPeel(self):
         """The refusal is narrow: an untouched rep is opaque and the peel cannot
         affect it either way, so the common case still gets auto-peel."""
         cmd.set('surface_material', 'glass', 'm1')
+        build('m1', 'cartoon')
+        build('m1', 'surface')
         self.assertEqual(cmd.get_setting_float('cartoon_transparency', 'm1'), 0.0)
         self.assertEqual(resolved_peel('m1'), 1)
 
@@ -335,8 +375,13 @@ class TestGlass(testing.PyMOLTestCase):
         """The mirror case: an object-level `stick_ball 1` that every visible
         atom overrides back to 0 emits no balls at all, so glass should still
         apply rather than silently doing nothing."""
-        cmd.set('stick_ball', 1, 'm1')
-        cmd.set('stick_ball', 0, 'm1')
+        cmd.set('stick_ball', 1, 'm1')          # object level
+        # ...overridden per ATOM. `cmd.set(..., 'm1')` is an OBJECT name and
+        # would just overwrite the object value, which is what made the first
+        # version of this test vacuous: it could not fail if the per-atom scan
+        # were reverted. A selection routes to the atom-level branch.
+        cmd.set('stick_ball', 0, 'm1 and all')
+        self.assertEqual(cmd.get_setting_boolean('stick_ball', 'm1'), 1)
         cmd.set('stick_material', 'glass', 'm1')
         build('m1', 'sticks')
         self.assertAlmostEqual(

@@ -216,7 +216,8 @@ struct Rep {
   //! Sets the hasTransparency() flag.
   void setHasTransparency(bool has = true) { m_has_transparency = has; }
 
-  //! The transparency this rep's GEOMETRY was built with (0 = opaque).
+  //! The transparency this rep's GEOMETRY was built with (0 = opaque), or a
+  //! negative sentinel for a rep that never records one.
   //!
   //! Recorded at build time so the value that actually reached the vertices can
   //! be observed. A material's implied alpha (#495) is a build input that is
@@ -228,11 +229,27 @@ struct Rep {
   //! Records the transparency the geometry was built with; see above.
   void setBuiltTransparency(float t) { m_built_transparency = t; }
 
+  //! Does this (stick) rep emit any stick_ball sphere?
+  //!
+  //! `stick_ball` is atom-level, so answering it means scanning atoms. Cached
+  //! here at build time because the DRAW path needs it too -- a glass stick
+  //! degrades to `default` when balls are present -- and metalApplyRepMaterial
+  //! runs per draw op, per pass, per frame. Scanning there made it O(atoms)
+  //! every time, worst case on exactly the configuration the rule targets.
+  bool emitsStickBalls() const { return m_emits_stick_balls; }
+  //! Records the answer at build time; see above.
+  void setEmitsStickBalls(bool v) { m_emits_stick_balls = v; }
+
 protected:
   cRepInv_t MaxInvalid = cRepInvNone;
 
 private:
-  float m_built_transparency = 0.0f;
+  //! Negative = "this rep does not record a built transparency". Defaulting to
+  //! 0 would make an unrecorded rep answer "opaque" with full confidence, and a
+  //! test written against that would be vacuous -- the exact failure mode this
+  //! accessor exists to prevent.
+  float m_built_transparency = -1.0f;
+  bool m_emits_stick_balls = false;
   Rep* rebuild();
   virtual Rep* recolor() { return rebuild(); }
   virtual bool sameVis() const { return false; }

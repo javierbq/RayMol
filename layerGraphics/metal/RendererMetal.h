@@ -472,10 +472,14 @@ private:
   // Frosted-glass environment taps: what an export can afford vs what an
   // interactive orbit can. Mirrored into MaterialParams.p[5] by setRepMaterial.
   static constexpr float kFrostTaps = 5.0f;
-  // 3, not 2: the ring loop draws taps-1 offset samples, so 2 gave a single
-  // one-sided tap instead of a blur. 3 is an opposed pair -- symmetric, and so
-  // stable across the shader's basis flip.
-  static constexpr float kFrostTapsLive = 3.0f;
+  // 4, not 2: the ring loop draws taps-1 offset samples, so 2 gave a single
+  // one-sided tap -- a one-sided smear, not a blur. 3 would only be an opposed
+  // PAIR, still one-dimensional; 4 is a real 2-D ring, which is also what makes
+  // the result stable across the shader's `up` basis flip. Measured residual
+  // step at the flip, worst case: 0.108 at 2 taps, 0.039 at 3, 0.0049 at 4 --
+  // i.e. from a visible contour ring on a curved glass surface to nothing, for
+  // one extra sample.
+  static constexpr float kFrostTapsLive = 4.0f;
   static constexpr NSUInteger kEnvFaceDim = 128;
   static constexpr NSUInteger kEnvTextureIndex = 6;   // fragment texture slot
   id<MTLTexture> _envCubemap = nil;

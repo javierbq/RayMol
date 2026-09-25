@@ -76,7 +76,6 @@ static void metalApplyRepMaterial(CCGORenderer* I)
   // stick_material for a stick -- and for the stick_ball spheres the stick rep
   // emits, which arrive here as cRepCyl. Object value first, then the rep's
   // global value, then material_default.
-  //
   int const repType = I->rep ? I->rep->type() : cRepNone;
   // Every rule -- the per-rep degradations, the stick_ball one, and which
   // families read the legacy metal_rt_reflect* triple (including #497's
@@ -134,7 +133,12 @@ static void metalApplyRepClip(CCGORenderer* I)
         rgba[0] = c[0]; rgba[1] = c[1]; rgba[2] = c[2];
       }
       if (!SettingGet_b(G, s1, s2, cSetting_surface_contour_opaque)) {
-        float tr = SettingGet_f(G, s1, s2, cSetting_transparency);
+        // The setting's purpose is "the contour picks up the surface's
+        // transparency", so it has to see a material's implied one too (#495) --
+        // otherwise an opaque line rides on a glass surface.
+        float tr = MaterialEffectiveTransparency(G, s1, s2, cRepSurface,
+            SettingGet_f(G, s1, s2, cSetting_transparency),
+            (I->rep ? I->rep->cs : nullptr));
         rgba[3] = 1.0f - (tr < 0.0f ? 0.0f : (tr > 1.0f ? 1.0f : tr));
       }
       G->Renderer->setRepContour(true, rgba, width);

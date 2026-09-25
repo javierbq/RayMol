@@ -2576,7 +2576,15 @@ static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
       PyErr_SetString(PyExc_ValueError,
           "representation is not built; show it first");
     } else {
-      result = PyFloat_FromDouble(cs->Rep[repType]->builtTransparency());
+      float const t = cs->Rep[repType]->builtTransparency();
+      if (t < 0.0f) {
+        /* Built, but this rep never records one. Answering 0.0 would look like
+           a confident "opaque" and make any test written against it vacuous. */
+        PyErr_SetString(PyExc_ValueError,
+            "this representation does not record a built transparency");
+      } else {
+        result = PyFloat_FromDouble(t);
+      }
     }
   }
   APIExitBlocked(G);
@@ -2600,8 +2608,9 @@ static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
   const CSetting* stateSetting = nullptr;
   const CSetting* objSetting = nullptr;
   bool ok = true;
+  pymol::CObject* obj = nullptr;
   if (oname && oname[0]) {
-    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    obj = ExecutiveFindObjectByName(G, oname);
     if (!obj) {
       ErrMessage(G, "GetObjectPeel", "named object not found.");
       ok = false;
@@ -2618,7 +2627,7 @@ static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
   PyObject* result = nullptr;
   if (ok) {
     result = PyInt_FromLong(
-        MaterialObjectWantsPeel(G, stateSetting, objSetting) ? 1 : 0);
+        MaterialObjectWantsPeel(G, stateSetting, objSetting, obj) ? 1 : 0);
   }
   APIExitBlocked(G);
   return APIAutoNone(result);

@@ -20,6 +20,7 @@
 struct PyMOLGlobals;
 struct CSetting;
 struct CoordSet;
+namespace pymol { class CObject; }
 
 /* The function-constant axis the Metal pipelines are specialised on. Family 0
    compiles to today's code, so a `default` draw is byte for byte unchanged. */
@@ -185,6 +186,24 @@ MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
 
 /**
+ * MaterialDrawParams for the DRAW path, taking the `stick_ball` answer that the
+ * rep cached at build time (Rep::emitsStickBalls) instead of rescanning atoms.
+ *
+ * metalApplyRepMaterial runs per draw op, per pass, per frame; the scan is
+ * O(atoms) and its worst case -- a full scan, no early out -- is exactly the
+ * configuration the rule targets, glass sticks with no balls.
+ */
+MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, bool emitsStickBalls);
+
+/**
+ * Does this stick rep emit any `stick_ball` sphere? Atom-level, so this scans.
+ * Call once at rep-build time and cache on the rep.
+ */
+bool MaterialRepEmitsStickBalls(PyMOLGlobals* G, const CoordSet* cs,
+    const CSetting* set1, const CSetting* set2);
+
+/**
  * Name of a material id, or nullptr when no row has that id.
  */
 const char* MaterialGetName(int id);
@@ -239,11 +258,18 @@ int MaterialTransparencySettingForRep(int repType);
  * surface changes a look users already rely on, and it costs a depth blit and
  * two encoder boundaries per object per grid cell.
  *
+ * Auto also REFUSES when the object has another transparent representation
+ * that did not ask to be peeled -- peeling is object-scoped, so turning it on
+ * would erase that rep. Pass the object so the already-BUILT reps can be asked:
+ * the four transparency settings are atom- and bond-level and are routinely
+ * written through a selection, which leaves the object-level value at 0.
+ *
  * @param set1 coordinate-set (object-state) settings, may be null
  * @param set2 object settings, may be null
+ * @param obj the object, so its built reps can be consulted; may be null
  */
-bool MaterialObjectWantsPeel(
-    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2);
+bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, const pymol::CObject* obj = nullptr);
 
 /**
  * True for every setting whose value is a material id (the four
