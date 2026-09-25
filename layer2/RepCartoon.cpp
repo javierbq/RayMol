@@ -37,6 +37,7 @@ Z* -------------------------------------------------------------------
 #include"CGO.h"
 #include"Extrude.h"
 #include"ShaderMgr.h"
+#include "Material.h"
 #include "Lex.h"
 #include "CoordSet.h"
 
@@ -135,7 +136,12 @@ static int RepCartoonCGOGenerate(RepCartoon * I, RenderInfo * info)
   int ok = true;
 
   int use_shaders, has_cylinders_to_optimize;
-  float alpha = 1.0F - SettingGet_f(G, I->cs->Setting.get(), I->obj->Setting.get(), cSetting_cartoon_transparency);
+  // Glass implies its own transparency when the slider is 0 (#495); see
+  // MaterialEffectiveTransparency for why this is a rep-BUILD input.
+  float alpha = 1.0F - MaterialEffectiveTransparency(G, I->cs->Setting.get(),
+      I->obj->Setting.get(), cRepCartoon,
+      SettingGet_f(G, I->cs->Setting.get(), I->obj->Setting.get(),
+          cSetting_cartoon_transparency));
 
   bool const hasAlpha = alpha < 1 || [](RepCartoon * I){
     for(CoordSetAtomIterator iter(I->cs); iter.next();){

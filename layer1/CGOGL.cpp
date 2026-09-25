@@ -77,8 +77,10 @@ static void metalApplyRepMaterial(CCGORenderer* I)
   // emits, which arrive here as cRepCyl. Object value first, then the rep's
   // global value, then material_default.
   int const repType = I->rep ? I->rep->type() : cRepNone;
-  MaterialParams params =
-      MaterialResolve(MaterialResolveSettingId(G, s1, s2, repType), repType);
+  // Every degradation rule lives in MaterialResolveForDraw, including the
+  // stick_ball one (#495) -- shared with the implied alpha that layer2 builds
+  // with, so the two cannot disagree about what this rep is made of.
+  MaterialParams params = MaterialResolveForDraw(G, s1, s2, repType);
   // reflect/tint/rough: `default` reads the legacy object-scoped
   // metal_rt_reflect* triple, and a REFLECTIVE material carries its own (#494).
   //

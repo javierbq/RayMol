@@ -2364,6 +2364,23 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  *
  * _cmd.get_material_family(id)
  */
+/**
+ * The material id a representation EFFECTIVELY draws with, after the per-rep
+ * degradation (glass on sphere impostors -> default). The SETTING still holds
+ * what the user typed; this is what reaches the shader.
+ *
+ * _cmd.get_effective_material(id, rep_index)
+ */
+static PyObject* CmdGetEffectiveMaterial(PyObject*, PyObject* args)
+{
+  int id = -1, repType = -1;
+  if (!PyArg_ParseTuple(args, "ii", &id, &repType)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  return PyInt_FromLong(MaterialEffectiveId(id, repType));
+}
+
 static PyObject* CmdGetMaterialFamily(PyObject*, PyObject* args)
 {
   int id = -1;
@@ -2477,6 +2494,69 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
  *
  * _cmd.get_object_peel(object_name_or_empty[, state=0])
  */
+/* The transparency a representation would BUILD with (#495): the rep's own
+   transparency setting, or the glass family's implied opacity when that
+   setting is 0. Exposed because a test that means "glass implies transparency"
+   has otherwise nothing to assert but that the SETTING is untouched -- true,
+   and true just as much when the feature is broken. */
+static PyObject* CmdGetEffectiveTransparency(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = 0;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  const CSetting* stateSetting = nullptr;
+  const CSetting* objSetting = nullptr;
+  bool ok = true;
+  if (oname && oname[0]) {
+    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    if (!obj) {
+      ErrMessage(G, "GetEffectiveTransparency", "named object not found.");
+      ok = false;
+    } else {
+      objSetting = obj->Setting.get();
+      int const resolved =
+          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
+      auto* handle = obj->getSettingHandle(resolved);
+      if (handle && handle != &obj->Setting) {
+        stateSetting = handle->get();
+      }
+    }
+  }
+  PyObject* result = nullptr;
+  if (ok) {
+    /* the same setting each rep's own build path reads */
+    int index = cSetting_transparency;
+    switch (repType) {
+    case cRepCartoon:
+      index = cSetting_cartoon_transparency;
+      break;
+    case cRepCyl:
+      index = cSetting_stick_transparency;
+      break;
+    case cRepSphere:
+      index = cSetting_sphere_transparency;
+      break;
+    default:
+      break;
+    }
+    float const own = SettingGet_f(G, stateSetting, objSetting, index);
+    result = PyFloat_FromDouble(MaterialEffectiveTransparency(
+        G, stateSetting, objSetting, repType, own));
+  }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
+}
+
 static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -6754,7 +6834,9 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
   {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
   {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
+  {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
+  {"get_effective_transparency", CmdGetEffectiveTransparency, METH_VARARGS},
   {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},

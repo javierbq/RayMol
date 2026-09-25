@@ -469,6 +469,10 @@ private:
   // shadow pass and its resume, and the OIT pass -- so a reflective object
   // reflects the same room whichever one draws it. NOT the RT composite: that
   // is a post pass with its own fullscreen fragment and never samples this.
+  // Frosted-glass environment taps: what an export can afford vs what an
+  // interactive orbit can. Mirrored into MaterialParams.p[5] by setRepMaterial.
+  static constexpr float kFrostTaps = 5.0f;
+  static constexpr float kFrostTapsLive = 2.0f;
   static constexpr NSUInteger kEnvFaceDim = 128;
   static constexpr NSUInteger kEnvTextureIndex = 6;   // fragment texture slot
   id<MTLTexture> _envCubemap = nil;

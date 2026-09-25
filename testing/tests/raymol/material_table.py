@@ -39,8 +39,8 @@ MATERIAL_SETTINGS = ['cartoon_material', 'surface_material', 'stick_material',
 # The materials this build can actually draw, in id order. Each wave of the epic
 # flips one or more `implemented` flags in layer1/Material.cpp and must update
 # this list in the same change -- that is the point of asserting it exactly.
-IMPLEMENTED_TODAY = ['default', 'matte', 'plastic', 'metallic', 'marble',
-                     'clay', 'rubber']
+IMPLEMENTED_TODAY = ['default', 'matte', 'plastic', 'metallic', 'glass',
+                     'frosted_glass', 'marble', 'clay', 'rubber']
 
 
 class TestMaterialTable(testing.PyMOLTestCase):

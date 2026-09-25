@@ -114,7 +114,10 @@ int MaterialTableSize();
 bool MaterialIsImplemented(int id);
 
 /**
- * The opacity a glass-family material implies, or 0 when it implies none.
+ * The ALPHA -- opacity, where 1 is fully solid -- that a glass-family material
+ * implies, or 0 when it implies none. Clear `glass` is 0.15, i.e. mostly
+ * see-through. Callers that want a TRANSPARENCY must use 1 - alpha;
+ * MaterialEffectiveTransparency is the one place that conversion lives.
  *
  * Consulted at REP-BUILD time in layer2, beside the rep's own transparency
  * setting, and only when that setting is 0 -- the user's transparency slider
@@ -122,6 +125,26 @@ bool MaterialIsImplemented(int id);
  * older build renders an opaque surface, visible and wrong, never invisible.
  */
 float MaterialImpliedAlpha(int id);
+
+/**
+ * The transparency a representation should build with (#495).
+ *
+ * `transparency` is the rep's own setting, already resolved. When it is 0 and
+ * the rep's material implies an opacity -- the glass family does -- the implied
+ * value is used instead. The user's slider always wins: a non-zero setting is
+ * returned untouched, so turning glass down to opaque stays possible.
+ *
+ * Implied alpha is a rep-BUILD input, never written back as a setting. A .pse
+ * opened in a build that does not know the material then renders an opaque
+ * surface -- visible and wrong -- rather than an invisible one.
+ *
+ * @param set1 coordinate-set settings, may be null
+ * @param set2 object settings, may be null
+ * @param repType the cRep_t whose material to consult
+ * @param transparency the rep's own resolved transparency (0 = opaque)
+ */
+float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, float transparency);
 
 /**
  * The parameters a material id renders with on a given representation.
@@ -134,6 +157,18 @@ float MaterialImpliedAlpha(int id);
  * is drawn.
  */
 MaterialParams MaterialResolve(int id, int repType);
+
+/**
+ * The parameters a representation actually DRAWS with: the resolved material id
+ * put through MaterialResolve, plus the degradation rules that depend on a
+ * SETTING rather than on the rep alone (glass on `stick_ball` sticks).
+ *
+ * The single definition of "what this rep is made of". Shading and implied
+ * alpha both go through it, because they have to agree: a rep that shades as
+ * `default` but still builds transparent is not rendering `default`.
+ */
+MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType);
 
 /**
  * Name of a material id, or nullptr when no row has that id.
@@ -150,6 +185,17 @@ const char* MaterialGetName(int id);
  * (#493's own guard), which is why this exists.
  */
 int MaterialGetFamily(int id);
+
+/**
+ * The material id a representation EFFECTIVELY draws with, after the per-rep
+ * degradation in MaterialResolve (glass on sphere impostors, for one, which
+ * would otherwise float as near-invisible discs).
+ *
+ * Distinct from MaterialResolveSettingId, which answers what the SETTING says.
+ * Both matter: the setting keeps the user's intent across a .pse, while this is
+ * what actually reaches the shader. Exposed so the difference is testable.
+ */
+int MaterialEffectiveId(int id, int repType);
 
 /**
  * True for the four PER-REPRESENTATION material settings.

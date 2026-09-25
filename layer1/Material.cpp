@@ -60,11 +60,11 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_reflective, cMaterial_metallic, 0.6f, 0.35f, 0.35f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
-    {cMaterial_glass, "glass", cMaterialFamily_glass, false, 0.15f,
+    {cMaterial_glass, "glass", cMaterialFamily_glass, true, 0.15f,
         {cMaterialFamily_glass, cMaterial_glass, 0.0f, 0.0f, 0.0f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
-    {cMaterial_frosted_glass, "frosted_glass", cMaterialFamily_glass, false,
+    {cMaterial_frosted_glass, "frosted_glass", cMaterialFamily_glass, true,
         0.2f,
         {cMaterialFamily_glass, cMaterial_frosted_glass, 0.0f, 0.0f, 0.6f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
@@ -168,6 +168,60 @@ const char* MaterialGetName(int id)
 {
   const MaterialRow* row = MaterialFindRow(id);
   return row ? row->name : nullptr;
+}
+
+MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType)
+{
+  int const id = MaterialResolveSettingId(G, set1, set2, repType);
+  MaterialParams params = MaterialResolve(id, repType);
+  // stick_ball spheres are emitted by the STICK rep, so they arrive as cRepCyl
+  // and take stick_material -- including a glass one, which the sphere impostor
+  // has no path for. A glassy stick beside near-invisible ball discs looks
+  // broken, so the WHOLE rep degrades to `default` rather than half of it.
+  //
+  // This rule depends on a setting, not on the rep alone, so MaterialResolve
+  // cannot express it. It lives here rather than at the draw site because
+  // implied alpha has to obey it too: a ball-and-stick that shades as `default`
+  // while still building 85% transparent is not "rendering default".
+  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
+      SettingGet_b(G, set1, set2, cSetting_stick_ball)) {
+    return MaterialParams{};
+  }
+  return params;
+}
+
+float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, float transparency)
+{
+  // The slider wins. Only a rep the user has left fully opaque picks up the
+  // material's implied opacity, so `set transparency, 0.3` on a glass surface
+  // means 0.3 and not the material's own value.
+  if (transparency > 0.0f) {
+    return transparency;
+  }
+  // The table stores ALPHA -- opacity, the spec's "implied alpha 0.15" -- while
+  // layer2 builds with a TRANSPARENCY. They are opposite ends of the same axis,
+  // so the conversion has to happen exactly here. Returning the alpha unchanged
+  // makes clear glass 85% OPAQUE instead of 85% clear, which still shades like
+  // glass and so looks plausible rather than broken.
+  // Through MaterialResolveForDraw, so a material that DEGRADES on this rep
+  // implies nothing either -- `mode` carries the row's own id, and the neutral
+  // MaterialParams{} carries 0 (= default, which implies no opacity).
+  float const impliedAlpha =
+      MaterialImpliedAlpha(MaterialResolveForDraw(G, set1, set2, repType).mode);
+  if (impliedAlpha <= 0.0f) {
+    return transparency; // this material implies no opacity of its own
+  }
+  return 1.0f - impliedAlpha;
+}
+
+int MaterialEffectiveId(int id, int repType)
+{
+  // MaterialResolve already encodes every degradation rule; its `mode` field is
+  // the row's own id, and the neutral MaterialParams{} carries 0 (= default).
+  // Reusing it means this cannot drift from what the renderer receives.
+  return MaterialResolve(id, repType).mode;
 }
 
 int MaterialGetFamily(int id)
