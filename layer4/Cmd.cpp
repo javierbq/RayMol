@@ -53,6 +53,8 @@ Z* -------------------------------------------------------------------
 #include"Ortho.h"
 #include"ObjectMolecule.h"
 #include"ObjectMolecule3.h"
+#include"CoordSet.h"
+#include"Rep.h"
 #include"Material.h"
 #include"Executive.h"
 #include"ExecutivePython.h"
@@ -2494,12 +2496,12 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
  *
  * _cmd.get_object_peel(object_name_or_empty[, state=0])
  */
-/* The transparency a representation would BUILD with (#495): the rep's own
-   transparency setting, or the glass family's implied opacity when that
-   setting is 0. Exposed because a test that means "glass implies transparency"
-   has otherwise nothing to assert but that the SETTING is untouched -- true,
-   and true just as much when the feature is broken. */
-static PyObject* CmdGetEffectiveTransparency(PyObject* self, PyObject* args)
+/* The FINAL material parameters a representation draws with: family, mode and
+   the reflect/tint/rough triple after the legacy-slider decision. Exposed so
+   the rules can be asserted without a Metal context -- `frosted_glass` losing
+   its roughness to `metal_rt_reflect_rough` (default 0) made it render as clear
+   glass, and nothing in Python could see the difference. */
+static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   const char* oname = "";
@@ -2514,47 +2516,71 @@ static PyObject* CmdGetEffectiveTransparency(PyObject* self, PyObject* args)
     return APIAutoNone(nullptr);
   }
   APIEnterBlocked(G);
-  const CSetting* stateSetting = nullptr;
-  const CSetting* objSetting = nullptr;
-  bool ok = true;
-  if (oname && oname[0]) {
-    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
-    if (!obj) {
-      ErrMessage(G, "GetEffectiveTransparency", "named object not found.");
-      ok = false;
-    } else {
-      objSetting = obj->Setting.get();
-      int const resolved =
-          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
-      auto* handle = obj->getSettingHandle(resolved);
-      if (handle && handle != &obj->Setting) {
-        stateSetting = handle->get();
-      }
-    }
-  }
   PyObject* result = nullptr;
-  if (ok) {
-    /* the same setting each rep's own build path reads */
-    int index = cSetting_transparency;
-    switch (repType) {
-    case cRepCartoon:
-      index = cSetting_cartoon_transparency;
-      break;
-    case cRepCyl:
-      index = cSetting_stick_transparency;
-      break;
-    case cRepSphere:
-      index = cSetting_sphere_transparency;
-      break;
-    default:
-      break;
-    }
-    float const own = SettingGet_f(G, stateSetting, objSetting, index);
-    result = PyFloat_FromDouble(MaterialEffectiveTransparency(
-        G, stateSetting, objSetting, repType, own));
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    MaterialParams const p = MaterialDrawParams(G,
+        cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
+    result = Py_BuildValue("(iifff)", p.family, p.mode, p.reflect, p.tint,
+        p.rough);
   }
   APIExitBlocked(G);
-  return APIAutoNone(result);
+  return result;
+}
+
+/* The transparency a representation's GEOMETRY was actually built with (#495).
+   Read off the REP, not re-derived from the settings: a material's implied
+   alpha is a build input that is deliberately never written back as a setting,
+   so re-deriving it only ever proves that the derivation agrees with itself.
+   Two dead layer2 call sites passed CI that way -- the conversion had been
+   applied downstream of where the per-vertex alpha is written, so glass
+   cartoons and multi-coloured glass surfaces still built fully opaque while
+   every test stayed green. */
+static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = 0;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  if (repType < 0 || repType >= cRepCnt) {
+    PyErr_SetString(PyExc_ValueError, "representation index out of range");
+    return nullptr;
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    /* A rep that has not been built yet is not "transparency 0" -- saying so
+       would let a test pass against geometry that never existed. */
+    if (!cs || !cs->Rep[repType]) {
+      PyErr_SetString(PyExc_ValueError,
+          "representation is not built; show it first");
+    } else {
+      result = PyFloat_FromDouble(cs->Rep[repType]->builtTransparency());
+    }
+  }
+  APIExitBlocked(G);
+  return result;
 }
 
 static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
@@ -6836,7 +6862,8 @@ static PyMethodDef Cmd_methods[] = {
   {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
   {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
-  {"get_effective_transparency", CmdGetEffectiveTransparency, METH_VARARGS},
+  {"get_built_transparency", CmdGetBuiltTransparency, METH_VARARGS},
+  {"get_material_draw_params", CmdGetMaterialDrawParams, METH_VARARGS},
   {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},

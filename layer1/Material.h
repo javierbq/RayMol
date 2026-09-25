@@ -19,6 +19,7 @@
 
 struct PyMOLGlobals;
 struct CSetting;
+struct CoordSet;
 
 /* The function-constant axis the Metal pipelines are specialised on. Family 0
    compiles to today's code, so a `default` draw is byte for byte unchanged. */
@@ -142,9 +143,12 @@ float MaterialImpliedAlpha(int id);
  * @param set2 object settings, may be null
  * @param repType the cRep_t whose material to consult
  * @param transparency the rep's own resolved transparency (0 = opaque)
+ * @param cs the coordinate set, so ATOM-level overrides of `stick_ball` are
+ *        seen; without it only the object-level value is consulted
  */
 float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, float transparency);
+    const CSetting* set2, int repType, float transparency,
+    const CoordSet* cs = nullptr);
 
 /**
  * The parameters a material id renders with on a given representation.
@@ -168,7 +172,17 @@ MaterialParams MaterialResolve(int id, int repType);
  * `default` but still builds transparent is not rendering `default`.
  */
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType);
+    const CSetting* set2, int repType, const CoordSet* cs = nullptr);
+
+/**
+ * The FINAL parameters a draw uses: MaterialResolveForDraw plus the decision of
+ * which families read the legacy object-scoped `metal_rt_reflect*` triple.
+ *
+ * The draw site is a thin caller of this, so the rules stay in one place and
+ * can be asserted from Python without a Metal context.
+ */
+MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const CoordSet* cs = nullptr);
 
 /**
  * Name of a material id, or nullptr when no row has that id.
@@ -201,6 +215,15 @@ int MaterialEffectiveId(int id, int repType);
  * True for the four PER-REPRESENTATION material settings.
  */
 bool MaterialIsRepMaterialSetting(int index);
+
+/**
+ * The transparency setting a representation reads, or 0 when it has none.
+ *
+ * `transparency` for a surface, `cartoon_transparency` for a cartoon, and so
+ * on. Returning 0 for the rest matters: mapping every unknown rep onto
+ * `transparency` would report the SURFACE's value for a mesh or a ribbon.
+ */
+int MaterialTransparencySettingForRep(int repType);
 
 /**
  * Whether an object's transparent geometry should be depth-PEELED (#488):

@@ -216,10 +216,23 @@ struct Rep {
   //! Sets the hasTransparency() flag.
   void setHasTransparency(bool has = true) { m_has_transparency = has; }
 
+  //! The transparency this rep's GEOMETRY was built with (0 = opaque).
+  //!
+  //! Recorded at build time so the value that actually reached the vertices can
+  //! be observed. A material's implied alpha (#495) is a build input that is
+  //! deliberately never written back as a setting, so without this the only
+  //! Python-visible fact is the SETTING -- which stays 0 by design, and so stays
+  //! true when the feature is broken. Asserting against a re-derivation of the
+  //! rule instead of against the rep is how two dead call sites passed CI.
+  float builtTransparency() const { return m_built_transparency; }
+  //! Records the transparency the geometry was built with; see above.
+  void setBuiltTransparency(float t) { m_built_transparency = t; }
+
 protected:
   cRepInv_t MaxInvalid = cRepInvNone;
 
 private:
+  float m_built_transparency = 0.0f;
   Rep* rebuild();
   virtual Rep* recolor() { return rebuild(); }
   virtual bool sameVis() const { return false; }

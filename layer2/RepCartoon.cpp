@@ -4405,8 +4405,19 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
   obj = cs->Obj;
 
 
-  alpha =
-    1.0F - SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_transparency);
+  // This is the alpha baked into every cartoon VERTEX (the objAlpha threaded
+  // through the extrude paths), so the implied alpha has to be applied HERE.
+  // The copy in RepCartoonCGOGenerate feeds only the hasTransparency flag, so
+  // converting there alone made a glass cartoon render opaque while still being
+  // routed through the transparent pass (#495).
+  {
+    float const cartoonTransp = MaterialEffectiveTransparency(G,
+        cs->Setting.get(), obj->Setting.get(), cRepCartoon,
+        SettingGet_f(G, cs->Setting.get(), obj->Setting.get(),
+            cSetting_cartoon_transparency));
+    I->setBuiltTransparency(cartoonTransp);
+    alpha = 1.0F - cartoonTransp;
+  }
   round_helices =
     SettingGet_i(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_round_helices);
   na_mode =

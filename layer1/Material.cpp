@@ -5,6 +5,9 @@
 #include "Material.h"
 #include "Rep.h"
 #include "Setting.h"
+#include "CoordSet.h"
+#include "AtomInfo.h"
+#include "ObjectMolecule.h"
 
 namespace
 {
@@ -170,8 +173,43 @@ const char* MaterialGetName(int id)
   return row ? row->name : nullptr;
 }
 
+/* Does this stick rep emit any stick_ball sphere?
+ *
+ * `stick_ball` is an ATOM-level setting (SettingInfo.h: REC_b(276, stick_ball,
+ * atom)) and RepCylBond reads it per atom via AtomSettingGetWD. Asking only the
+ * object/global value therefore answers the wrong question in both directions:
+ * an atom-level `stick_ball 1` under an object-level 0 drew glass balls (the
+ * near-invisible discs the rule exists to prevent, and reachable now that the
+ * glass-family sphere pipelines are built), while every atom overriding an
+ * object-level 1 back to 0 degraded a rep that emits no balls at all.
+ *
+ * Scanned only for a glass stick rep, which is rare and already expensive; the
+ * default path never reaches this.
+ */
+static bool MaterialRepEmitsStickBalls(
+    PyMOLGlobals* G, const CoordSet* cs, const CSetting* set1,
+    const CSetting* set2)
+{
+  bool const objLevel = SettingGet_b(G, set1, set2, cSetting_stick_ball);
+  if (!cs) {
+    return objLevel; // no atoms to consult; the object value is all there is
+  }
+  /* Indexed directly rather than through CoordSetAtomIterator: that lives in
+     layer3 and this is layer1. */
+  for (int idx = 0; idx < cs->getNIndex(); ++idx) {
+    const AtomInfoType* ai = cs->getAtomInfo(idx);
+    if (!ai || !(ai->visRep & cRepCylBit)) {
+      continue;
+    }
+    if (AtomSettingGetWD(G, ai, cSetting_stick_ball, objLevel)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType)
+    const CSetting* set2, int repType, const CoordSet* cs)
 {
   int const id = MaterialResolveSettingId(G, set1, set2, repType);
   MaterialParams params = MaterialResolve(id, repType);
@@ -185,14 +223,70 @@ MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
   // implied alpha has to obey it too: a ball-and-stick that shades as `default`
   // while still building 85% transparent is not "rendering default".
   if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
-      SettingGet_b(G, set1, set2, cSetting_stick_ball)) {
+      MaterialRepEmitsStickBalls(G, cs, set1, set2)) {
     return MaterialParams{};
   }
   return params;
 }
 
+MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const CoordSet* cs)
+{
+  MaterialParams params = MaterialResolveForDraw(G, set1, set2, repType, cs);
+  // reflect/tint/rough: `default` reads the legacy object-scoped
+  // metal_rt_reflect* triple, and a REFLECTIVE material carries its own (#494).
+  //
+  // Overwriting unconditionally -- as this did while no reflective material was
+  // implemented -- made the reflect/tint/rough columns of the table dead data,
+  // so `metallic` would have rendered with whatever the legacy sliders happened
+  // to hold: 0 for an untouched object, i.e. no reflection at all.
+  //
+  // GLASS is exempt for the same reason, and it was not: `rough` is its frost
+  // axis (the cubemap mip is sqrt(rough) * 7, and it sets the tap spread), so
+  // taking `metal_rt_reflect_rough` -- default 0 -- replaced frosted_glass's
+  // 0.6 with a near-mirror sample. `frosted_glass` rendered as clear `glass`,
+  // and the only surviving difference between the two materials was their
+  // implied alpha. It also let a legacy object slider reshape a material that
+  // is meant to be a pure function of its id.
+  //
+  // The procedural materials (matte, marble, clay, rubber) do not read these at
+  // all, so leaving them on the legacy path keeps `default` and every
+  // already-shipped material byte-exact.
+  if (params.family != cMaterialFamily_reflective &&
+      params.family != cMaterialFamily_glass) {
+    params.reflect = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect);
+    params.tint = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect_tint);
+    params.rough = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect_rough);
+  } else if (params.family == cMaterialFamily_reflective) {
+    // A reflective material starts from its TABLE row, but an EXPLICIT
+    // per-object metal_rt_reflect* value still wins (#497).
+    //
+    // "Explicit" is the whole point: SettingGetIfDefined, not SettingGet. An
+    // object that has never been touched has no value here, so it keeps the
+    // table's -- which is what stopped `metallic` rendering with the sliders'
+    // default 0 and no reflection at all. But a user (or a bundle) who does set
+    // one gets it, which is how `chrome` can be metallic with a tighter tint
+    // and a sharper roughness without needing a table row of its own.
+    //
+    // GLASS is deliberately NOT given this: `rough` is its frost axis, not a
+    // reflection knob, and letting a legacy slider reshape it is the bug fixed
+    // earlier in this ticket.
+    float v = 0.0f;
+    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect, &v) ||
+        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect, &v))
+      params.reflect = v;
+    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect_tint, &v) ||
+        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect_tint, &v))
+      params.tint = v;
+    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect_rough, &v) ||
+        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect_rough, &v))
+      params.rough = v;
+  }
+  return params;
+}
+
 float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, float transparency)
+    const CSetting* set2, int repType, float transparency, const CoordSet* cs)
 {
   // The slider wins. Only a rep the user has left fully opaque picks up the
   // material's implied opacity, so `set transparency, 0.3` on a glass surface
@@ -209,7 +303,8 @@ float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
   // implies nothing either -- `mode` carries the row's own id, and the neutral
   // MaterialParams{} carries 0 (= default, which implies no opacity).
   float const impliedAlpha =
-      MaterialImpliedAlpha(MaterialResolveForDraw(G, set1, set2, repType).mode);
+      MaterialImpliedAlpha(
+          MaterialResolveForDraw(G, set1, set2, repType, cs).mode);
   if (impliedAlpha <= 0.0f) {
     return transparency; // this material implies no opacity of its own
   }
@@ -261,6 +356,22 @@ bool MaterialIsSelectionRejectedSetting(int index)
          MaterialIsRepMaterialSetting(index);
 }
 
+int MaterialTransparencySettingForRep(int repType)
+{
+  switch (repType) {
+  case cRepCartoon:
+    return cSetting_cartoon_transparency;
+  case cRepSurface:
+    return cSetting_transparency;
+  case cRepCyl:
+    return cSetting_stick_transparency;
+  case cRepSphere:
+    return cSetting_sphere_transparency;
+  default:
+    return 0; // this rep has no transparency setting of its own
+  }
+}
+
 bool MaterialObjectWantsPeel(
     PyMOLGlobals* G, const CSetting* set1, const CSetting* set2)
 {
@@ -276,14 +387,33 @@ bool MaterialObjectWantsPeel(
   // material whose row asks for peeling. Four settings, resolved the same way
   // the draw path resolves them, so what the user sees and what gets peeled
   // cannot disagree.
+  //
+  // But peeling is OBJECT-scoped: the pre-pass records the nearest transparent
+  // depth across ALL of the object's transparent reps, and everything behind it
+  // fails the equality test. So auto must refuse when the object also has a
+  // transparent rep that did NOT ask for this -- otherwise setting
+  // `surface_material, glass` on an object whose cartoon is at
+  // `cartoon_transparency 0.5` makes that cartoon VANISH, a look the user had
+  // before and never asked to change. An explicit `transparency_peel 1` still
+  // peels the whole object: that one the user did ask for.
   static const int kReps[] = {cRepCartoon, cRepSurface, cRepCyl, cRepSphere};
+  bool anyWantsPeel = false;
   for (int rep : kReps) {
     int const id = MaterialResolveSettingId(G, set1, set2, rep);
     if (MaterialResolve(id, rep).wantsPeel) {
-      return true;
+      anyWantsPeel = true;
+      continue;
+    }
+    // A rep only stands in the way if it is actually drawn transparent. An
+    // untouched rep is opaque and is unaffected by the peel either way, so the
+    // common case still gets auto-peel.
+    int const transpIndex = MaterialTransparencySettingForRep(rep);
+    if (transpIndex != 0 &&
+        SettingGet_f(G, set1, set2, transpIndex) > 0.0f) {
+      return false;
     }
   }
-  return false;
+  return anyWantsPeel;
 }
 
 int MaterialSettingForRep(int repType)

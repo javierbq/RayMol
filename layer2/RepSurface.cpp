@@ -1946,6 +1946,13 @@ Rep* RepSurface::recolor()
       G, cs->Setting.get(), obj->Setting.get(), cSetting_surface_clear_cutoff);
   transp = SettingGet_f(
       G, cs->Setting.get(), obj->Setting.get(), cSetting_transparency);
+  // The PER-VERTEX alpha array VA is built from this, and every triangle branch
+  // except the single-colour one prefers VA over the scalar alpha computed in
+  // RepSurfaceCGOGenerate. Converting only there left a multi-coloured glass
+  // surface fully opaque while still paying for the transparent pass (#495).
+  transp = MaterialEffectiveTransparency(
+      G, cs->Setting.get(), obj->Setting.get(), cRepSurface, transp);
+  setBuiltTransparency(transp);
   carve_normal_cutoff = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(),
       cSetting_surface_carve_normal_cutoff);
   carve_normal_flag = carve_normal_cutoff > (-1.0F);

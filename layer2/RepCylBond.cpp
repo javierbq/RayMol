@@ -595,7 +595,7 @@ Rep *RepCylBondNew(CoordSet * cs, int state)
   transp = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_stick_transparency);
   // Glass implies its own transparency when the slider is 0 (#495).
   transp = MaterialEffectiveTransparency(G, cs->Setting.get(),
-      obj->Setting.get(), cRepCyl, transp);
+      obj->Setting.get(), cRepCyl, transp, cs);
   hide_long = SettingGet_b(G, cs->Setting.get(), obj->Setting.get(), cSetting_hide_long_bonds);
 
   std::set<int> all_zero_order_bond_atoms;
@@ -639,6 +639,10 @@ Rep *RepCylBondNew(CoordSet * cs, int state)
     SettingGet_i(G, cs->Setting.get(), obj->Setting.get(), cSetting_valence_zero_mode);
 
   auto I = new RepCylBond(cs, state);
+  // Recorded for the same reason as in RepSurface/RepCartoon: implied alpha is
+  // a build input that is never written back, so the rep itself is the only
+  // honest place to observe it from (#495).
+  I->setBuiltTransparency(transp);
 
   I->primitiveCGO = CGONew(G);
   if(ok && obj->NBond) {

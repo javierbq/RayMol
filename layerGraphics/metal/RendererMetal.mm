@@ -4234,6 +4234,18 @@ void RendererMetal::endPeelPrepass()
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _peelMode = false;
   _passDesc = _scenePassDesc;
+  // Disarm the frame's CLEAR here, not just in resumeScenePass().
+  //
+  // This normally hands straight over to beginTransparentOIT, but that function
+  // guards on a DIFFERENT capability set than peelSupported() does: a device
+  // where the OIT resolve pipeline failed to build while the peel pipelines
+  // succeeded returns from it with no encoder. The next transparent draw's
+  // ensureEncoder() would then re-open the scene pass with CLEAR still armed
+  // and wipe the frame's opaque colour and depth. The pre-pass is the first
+  // thing that ever ends the scene encoder mid-frame, so this window is new.
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
 }
 
 void RendererMetal::resumeScenePass()
@@ -5572,11 +5584,14 @@ constant bool kMatGlass = (kMatFamily == 3);
 
 constant int kMatMode_frosted_glass = 5;
 
-// How much of the glass surface the material itself covers. Below 1 on purpose:
-// the OIT pass writes the glass, and the post-processed image behind it mixes
-// back in, which is what stops a glass surface reading as an opaque shell with
-// a reflection painted on.
-constant float kMatGlassCoverage = 0.82;
+// Attenuates the object's own COLOUR under glass, so the tint reads as seen
+// THROUGH something rather than painted on. It is deliberately not the coverage
+// of the surface: coverage is `reveal`, driven by the baked vertex alpha the
+// material implies (0.15 / 0.2), and this constant cannot change how much of
+// the scene behind the glass shows through. It was named kMatGlassCoverage,
+// which invited exactly that misreading -- the next person to tune transparency
+// would have reached for this and moved the colour instead.
+constant float kMatGlassBaseAttenuation = 0.82;
 
 // Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
 // BOTH the lit VBO path and the impostors so one object's cartoon and spheres
@@ -5648,8 +5663,12 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
     float spread = 0.08 + 0.35 * saturate(rough);
     room = envMap.sample(envSmp, R, level(lod)).rgb;
     float w = 1.0;
+    // Ring starts at 0: with i/(taps-1) the last tap landed on 2*PI, a repeat of
+    // angle 0, and at the live tap count that left exactly ONE offset sample --
+    // a one-sided smear along t rather than a blur. Symmetric pairs also keep
+    // the result stable across the `up` basis flip below.
     for (int i = 1; i < taps; ++i) {
-      float a = 6.2831853 * float(i) / float(taps - 1);
+      float a = 6.2831853 * float(i - 1) / float(taps - 1);
       float3 d = normalize(R + spread * (cos(a) * t + sin(a) * b));
       room += envMap.sample(envSmp, d, level(lod + 1.0)).rgb;
       w += 1.0;
@@ -5660,7 +5679,7 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
   // angles and the face-on view stays clear. That is the whole look.
   float ndotv = saturate(dot(N, V));
   float3 F = mat_fresnel(float3(0.04), ndotv);
-  return mat_soft_knee(base * kMatGlassCoverage + room * F);
+  return mat_soft_knee(base * kMatGlassBaseAttenuation + room * F);
 }
 
 // Environment specular for the reflective family: one GGX lobe against the

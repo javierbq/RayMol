@@ -27,11 +27,26 @@ def family(name):
     return _cmd.get_material_family(by_name[name])
 
 
-def effective_transparency(obj, rep):
-    """What the rep would BUILD with -- its own transparency setting, or the
-    material's implied opacity converted to a transparency when that setting is
-    0. The rendered quantity, as opposed to what the SETTING says."""
-    return _cmd.get_effective_transparency(cmd._COb, obj, rep)
+def built_transparency(obj, rep):
+    """What the rep's GEOMETRY was actually built with, read off the rep.
+
+    Deliberately NOT a re-derivation from the settings: implied alpha is a build
+    input that is never written back, so re-deriving it only proves the
+    derivation agrees with itself. Two dead call sites passed CI that way -- the
+    conversion sat downstream of where the per-vertex alpha is written, so glass
+    cartoons and multi-coloured glass surfaces still built fully opaque."""
+    return _cmd.get_built_transparency(cmd._COb, obj, rep)
+
+
+def build(obj, rep_name):
+    """Show a representation and force its geometry to be BUILT.
+
+    builtTransparency is recorded during the rep build, so a test that only
+    calls cmd.show() would be asking an unbuilt rep -- which now raises rather
+    than reporting 0.0, so this cannot silently pass."""
+    cmd.show(rep_name, obj)
+    cmd.rebuild(obj)
+    cmd.refresh()
 
 
 def resolved_peel(obj):
@@ -70,47 +85,140 @@ class TestGlass(testing.PyMOLTestCase):
         Both halves have to be asserted. Checking only that the setting stayed 0
         is true just as much when the feature is dead, which is exactly how the
         alpha/transparency inversion below survived into a render."""
-        cmd.show('surface', 'm1')
         cmd.set('surface_material', 'glass', 'm1')
+        build('m1', 'surface')
         # the setting is untouched ...
         self.assertEqual(cmd.get_setting_float('transparency', 'm1'), 0.0)
         # ... and the rep still builds see-through. The table stores ALPHA
         # (0.15 = mostly clear); layer2 wants a TRANSPARENCY, so this must be
         # 0.85. Returning 0.15 here shades like glass but is 85% OPAQUE.
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['surface']), 0.85, places=4)
+            built_transparency('m1', repres['surface']), 0.85, places=4)
 
     def testFrostedGlassImpliesItsOwnOpacity(self):
         """Each glass row carries its own alpha; frosted is the denser of the
         two, so the two materials must not collapse to one value."""
-        cmd.show('surface', 'm1')
         cmd.set('surface_material', 'frosted_glass', 'm1')
+        build('m1', 'surface')
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['surface']), 0.80, places=4)
+            built_transparency('m1', repres['surface']), 0.80, places=4)
 
     def testANonGlassMaterialImpliesNoOpacity(self):
         """Only the glass family implies anything; a procedural material leaves
         an opaque rep opaque."""
-        cmd.show('surface', 'm1')
         cmd.set('surface_material', 'marble', 'm1')
+        build('m1', 'surface')
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['surface']), 0.0, places=4)
+            built_transparency('m1', repres['surface']), 0.0, places=4)
 
     def testTheUsersSliderWins(self):
         """A non-zero transparency is returned untouched, so turning glass down
         to nearly opaque stays possible -- 0.3, not the material's 0.85."""
         cmd.set('transparency', 0.3, 'm1')
         cmd.set('surface_material', 'glass', 'm1')
+        build('m1', 'surface')
         self.assertAlmostEqual(cmd.get_setting_float('transparency', 'm1'), 0.3,
                                places=4)
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['surface']), 0.3, places=4)
+            built_transparency('m1', repres['surface']), 0.3, places=4)
+
+    def testFrostedGlassKeepsItsRoughness(self):
+        """`rough` is the FROST axis for glass: the cubemap mip is
+        sqrt(rough)*7 and it sets the tap spread.
+
+        The legacy object-scoped metal_rt_reflect* triple used to overwrite it
+        for every non-reflective family, so frosted_glass's 0.6 became
+        metal_rt_reflect_rough's default 0 -- a near-mirror sample. It rendered
+        as clear `glass`, and the only surviving difference between the two
+        materials was their implied alpha, which is exactly what the render
+        probe measured. Nothing could see it."""
+        cmd.set('surface_material', 'frosted_glass', 'm1')
+        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        self.assertAlmostEqual(rough, 0.6, places=4)
+
+    def testALegacyReflectSliderCannotReshapeGlass(self):
+        """A material is a pure function of its id. The legacy sliders must not
+        reach into one -- turning metal_rt_reflect_rough up used to make clear
+        glass frosted."""
+        cmd.set('surface_material', 'glass', 'm1')
+        cmd.set('metal_rt_reflect_rough', 1.0, 'm1')
+        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        self.assertAlmostEqual(rough, 0.0, places=4)
+
+    def testDefaultStillReadsTheLegacySliders(self):
+        """The exemption is narrow: `default` keeps reading the legacy triple,
+        which is what makes this PR byte-identical for it."""
+        cmd.set('metal_rt_reflect_rough', 0.42, 'm1')
+        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        self.assertAlmostEqual(rough, 0.42, places=4)
+
+    def testGlassCartoonBuildsTransparent(self):
+        """The cartoon's per-vertex alpha is baked in RepCartoonNew, not in
+        RepCartoonCGOGenerate. Converting only in the latter left a glass
+        cartoon fully OPAQUE while still being routed through the transparent
+        pass -- paying the cost of transparency and showing none of it."""
+        # A real peptide, not the `ala` fragment: a single residue has no
+        # cartoon geometry, so the rep would not be built and the assertion
+        # would be resting on an exception rather than on a value.
+        cmd.fab('AAAAAAAAAA', 'm2', ss=1)
+        cmd.set('cartoon_material', 'glass', 'm2')
+        build('m2', 'cartoon')
+        self.assertAlmostEqual(
+            built_transparency('m2', repres['cartoon']), 0.85, places=4)
+        # and the same cartoon with no material stays opaque
+        cmd.set('cartoon_material', 'default', 'm2')
+        build('m2', 'cartoon')
+        self.assertAlmostEqual(
+            built_transparency('m2', repres['cartoon']), 0.0, places=4)
+
+    def testGlassSurfaceIsTransparentWhateverTheColouring(self):
+        """A surface's per-vertex VA array is built in recolor() from the raw
+        setting, and every triangle branch except the single-colour one prefers
+        VA over the scalar alpha. So a MULTI-COLOURED glass surface built opaque
+        while a uniformly coloured one was translucent: same material, same
+        settings, transparency depending on the colouring."""
+        for colouring in ('uniform', 'multi'):
+            with self.subTest(colouring=colouring):
+                cmd.reinitialize()
+                cmd.fragment('ala', 'm1')
+                if colouring == 'uniform':
+                    cmd.color('grey80', 'm1')
+                else:
+                    cmd.util.cbaw('m1')
+                cmd.set('surface_material', 'glass', 'm1')
+                build('m1', 'surface')
+                self.assertAlmostEqual(
+                    built_transparency('m1', repres['surface']), 0.85, places=4)
+
+    def testAnUnbuiltRepIsAnErrorNotZero(self):
+        """Guard on the accessor itself: reporting 0.0 for a rep that was never
+        built would let every assertion above pass against geometry that does
+        not exist."""
+        cmd.set('surface_material', 'glass', 'm1')
+        with self.assertRaises(Exception):
+            built_transparency('m1', repres['surface'])
 
     def testSettingGlassWritesNothingElseAtAll(self):
-        before = {n: cmd.get(n) for n in setting.get_name_list()}
+        """The non-negotiable: a material writes no OTHER setting.
+
+        Must read the values on the OBJECT the material was set on. Reading
+        cmd.get(n) with no object reads the GLOBAL, so the old version asserted
+        only that an object-level `set` leaves globals alone -- true of every
+        setting in PyMOL, and still true if glass wrote `transparency` or
+        `transparency_peel` on m1, which is precisely what it guards."""
+        names = setting.get_name_list()
+        before_obj = {n: cmd.get(n, 'm1') for n in names}
+        before_global = {n: cmd.get(n) for n in names}
         cmd.set('surface_material', 'glass', 'm1')
-        after = {n: cmd.get(n) for n in setting.get_name_list()}
-        self.assertEqual({n for n in after if before.get(n) != after[n]}, set())
+        after_obj = {n: cmd.get(n, 'm1') for n in names}
+        after_global = {n: cmd.get(n) for n in names}
+        changed_obj = {n for n in names if before_obj[n] != after_obj[n]}
+        changed_global = {n for n in names if before_global[n] != after_global[n]}
+        self.assertEqual(changed_obj, {'surface_material'})
+        self.assertEqual(changed_global, set())
 
     def testGlassDoesNotTouchColour(self):
         cmd.color('red', 'm1')
@@ -128,6 +236,34 @@ class TestGlass(testing.PyMOLTestCase):
         asked for it. Glass is the first, so this is auto's first real test."""
         self.assertEqual(resolved_peel('m1'), 0)
         cmd.set('surface_material', 'glass', 'm1')
+        self.assertEqual(resolved_peel('m1'), 1)
+
+    def testAutoPeelRefusesWhenAnotherRepIsAlreadyTransparent(self):
+        """Peeling is OBJECT-scoped: the pre-pass records the nearest
+        transparent depth across all of the object's transparent reps, and
+        anything behind it fails the equality test.
+
+        So auto must NOT turn on when the object also has a transparent rep that
+        did not ask for it -- otherwise setting a glass surface makes an
+        already-translucent cartoon on the same object vanish, a look the user
+        had before and never asked to change."""
+        cmd.set('cartoon_transparency', 0.5, 'm1')
+        cmd.set('surface_material', 'glass', 'm1')
+        self.assertEqual(resolved_peel('m1'), 0)
+
+    def testAnExplicitPeelOnStillPeelsTheWholeObject(self):
+        """The refusal above is a property of AUTO only. An explicit request is
+        the user asking for object-wide peeling, and still gets it."""
+        cmd.set('cartoon_transparency', 0.5, 'm1')
+        cmd.set('surface_material', 'glass', 'm1')
+        cmd.set('transparency_peel', 1, 'm1')
+        self.assertEqual(resolved_peel('m1'), 1)
+
+    def testAnOpaqueSecondRepDoesNotBlockAutoPeel(self):
+        """The refusal is narrow: an untouched rep is opaque and the peel cannot
+        affect it either way, so the common case still gets auto-peel."""
+        cmd.set('surface_material', 'glass', 'm1')
+        self.assertEqual(cmd.get_setting_float('cartoon_transparency', 'm1'), 0.0)
         self.assertEqual(resolved_peel('m1'), 1)
 
     def testAnExplicitPeelOffStillBeatsGlass(self):
@@ -170,13 +306,57 @@ class TestGlass(testing.PyMOLTestCase):
         this pins it."""
         cmd.set('stick_ball', 1, 'm1')
         cmd.set('stick_material', 'glass', 'm1')
+        build('m1', 'sticks')
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['sticks']), 0.0, places=4)
+            built_transparency('m1', repres['sticks']), 0.0, places=4)
         # ...and with stick_ball off the same material does imply its opacity,
         # so this is a degradation and not glass being inert on sticks.
         cmd.set('stick_ball', 0, 'm1')
+        build('m1', 'sticks')
         self.assertAlmostEqual(
-            effective_transparency('m1', repres['sticks']), 0.85, places=4)
+            built_transparency('m1', repres['sticks']), 0.85, places=4)
+
+    def testAtomLevelStickBallDegradesGlassToo(self):
+        """`stick_ball` is an ATOM-level setting and RepCylBond reads it per
+        atom, so asking only the object value answers the wrong question.
+
+        An atom-level `stick_ball 1` under an object-level 0 left the rep glass:
+        the ball sphere then drew through the glass impostor path at alpha 0.15
+        -- the near-invisible disc the rule exists to prevent, and reachable now
+        that the glass-family sphere pipelines are built."""
+        cmd.set('stick_ball', 1, 'index 1')
+        cmd.set('stick_material', 'glass', 'm1')
+        build('m1', 'sticks')
+        self.assertEqual(cmd.get_setting_boolean('stick_ball', 'm1'), 0)
+        self.assertAlmostEqual(
+            built_transparency('m1', repres['sticks']), 0.0, places=4)
+
+    def testEveryAtomOptingOutDoesNotDegrade(self):
+        """The mirror case: an object-level `stick_ball 1` that every visible
+        atom overrides back to 0 emits no balls at all, so glass should still
+        apply rather than silently doing nothing."""
+        cmd.set('stick_ball', 1, 'm1')
+        cmd.set('stick_ball', 0, 'm1')
+        cmd.set('stick_material', 'glass', 'm1')
+        build('m1', 'sticks')
+        self.assertAlmostEqual(
+            built_transparency('m1', repres['sticks']), 0.85, places=4)
+
+    def testGlassSurvivesAPseRoundTrip(self):
+        """The stated reason implied alpha is never written back as a setting is
+        session survival, and nothing tested it. A .pse must carry the material
+        ID and leave `transparency` at 0 -- an older build then renders an
+        opaque surface, visible and wrong, rather than an invisible one."""
+        cmd.set('surface_material', 'glass', 'm1')
+        with testing.mktemp('.pse') as path:
+            cmd.save(path)
+            cmd.reinitialize()
+            cmd.load(path)
+            self.assertEqual(cmd.get('surface_material', 'm1'), 'glass')
+            self.assertEqual(cmd.get_setting_float('transparency', 'm1'), 0.0)
+            build('m1', 'surface')
+            self.assertAlmostEqual(
+                built_transparency('m1', repres['surface']), 0.85, places=4)
 
     def testGlassIsStillSettableOnSpheresAndRoundTrips(self):
         """Degrading at DRAW time is not the same as refusing the value: the
