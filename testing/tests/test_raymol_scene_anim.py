@@ -921,10 +921,27 @@ class TestAuthorAndSession(unittest.TestCase):
             self.assertNotIn(name, self.anim._track.get(3, {}), name)
         self.assertEqual(self.anim._track[3]['ambient'], 0.25)
 
+    def test_the_restore_filter_accepts_every_allowlisted_name(self):
+        """Direct coverage of the allowlist itself. The test below exercises
+        only the handful of names a two-scene FakeCmd movie happens to emit --
+        `metal_dof_focus` and `metal_dof_autofocus` never appear there, so
+        deleting either from _DOF_EMITTED would slip past it. This feeds every
+        name in the allowlist through session_restore instead."""
+        self._two_scenes()
+        allowed = set(self.anim.INTERPOLATE) | set(self.anim._DOF_EMITTED)
+        self.assertIn('metal_dof_focus', allowed)
+        self.assertIn('metal_dof_autofocus', allowed)
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {n: 0.5 for n in allowed}}, 'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(set(self.anim._track[3]), allowed)
+
     def test_every_setting_author_emits_survives_the_restore_filter(self):
         """The allowlist has to stay in step with the two builders, or a movie
         silently loses keyframe data on reload. Asserted against what `author()`
-        actually put on the track, not against a hand-written list."""
+        actually put on the track, not against a hand-written list -- which
+        under FakeCmd is only a few of the allowlisted names, hence the direct
+        test above."""
         self._two_scenes()
         self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=FakeCmd())
         emitted = set()

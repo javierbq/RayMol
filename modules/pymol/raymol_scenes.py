@@ -283,8 +283,16 @@ def _capture_object_settings(_self=cmd):
 
 
 # (scene, setting) pairs already reported by apply_settings. A failure that
-# repeats every frame is reported once, not once per frame.
+# repeats every frame is reported once, not once per frame -- and the entries
+# are dropped with the scenes they name, because scene names like "A" or "001"
+# collide across sessions constantly: a stale entry would silence a REAL first
+# failure in a different .pse for the life of the process.
 _reported = set()
+
+
+def _forget_reports(name):
+    for key in [k for k in _reported if k[0] == name]:
+        _reported.discard(key)
 
 
 def apply_settings(name, _self=cmd):
@@ -604,6 +612,9 @@ def prune(_self=cmd):
     for name in list(_scene_object_capture.keys()):
         if name not in live:
             _scene_object_capture.pop(name, None)
+    for name in {k[0] for k in _reported}:
+        if name not in live:
+            _forget_reports(name)
     for name in list(_scene_ttt.keys()):
         if name not in live:
             _scene_ttt.pop(name, None)
@@ -619,6 +630,7 @@ def clear_all(_self=cmd):
     _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
+    _reported.clear()
 
 
 def rename(old, new, _self=cmd):
@@ -631,6 +643,9 @@ def rename(old, new, _self=cmd):
         _scene_object_settings[new] = _scene_object_settings.pop(old)
     if old in _scene_object_capture:
         _scene_object_capture[new] = _scene_object_capture.pop(old)
+    for key in [k for k in _reported if k[0] == old]:
+        _reported.discard(key)
+        _reported.add((new, key[1]))
     if old in _scene_ttt:
         _scene_ttt[new] = _scene_ttt.pop(old)
     if old in _scene_focus:
@@ -703,6 +718,9 @@ def session_restore(session, *, _self=cmd):
     _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
+    # A different .pse can hold a scene with the same NAME and a different bad
+    # value; its first failure has to be reported.
+    _reported.clear()
     d = session.get("raymol_scene_settings")
     if isinstance(d, dict):
         _scene_settings.update(d)
