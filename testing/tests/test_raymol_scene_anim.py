@@ -890,6 +890,71 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
         self.assertTrue(fake.appended)           # commands regenerated, not replayed
 
+    def test_session_restore_refuses_to_ramp_a_material_id(self):
+        """A track value is validated as "a name in CAPTURE + parses as a
+        float". The material settings joined CAPTURE, but they hold table ROWS,
+        not quantities: `author()` can never emit one, and each write
+        invalidates every representation. A .pse carrying one must be dropped,
+        not replayed at a rebuild per frame."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'cartoon_material': 8.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertNotIn('cartoon_material', self.anim._track.get(3, {}))
+        # ...and a legitimate neighbour on the same frame still survives.
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
+    def test_session_restore_accepts_only_what_author_can_emit(self):
+        """The filter is an allowlist of what `author()` produces, not the whole
+        CAPTURE list minus whatever looked dangerous at the time. CAPTURE is the
+        set a scene SNAPSHOTS and is much larger; `surface_quality` lives there
+        and is worse than any material -- cRepInvRep, a full surface
+        re-tessellation on every write -- and `author()` can never emit it."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'surface_quality': 4.0, 'metal_msaa': 8.0,
+                            'material_env': 1.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        for name in ('surface_quality', 'metal_msaa', 'material_env'):
+            self.assertNotIn(name, self.anim._track.get(3, {}), name)
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
+    def test_the_restore_filter_accepts_every_allowlisted_name(self):
+        """Direct coverage of the allowlist itself. The test below exercises
+        only the handful of names a two-scene FakeCmd movie happens to emit --
+        `metal_dof_focus` and `metal_dof_autofocus` never appear there, so
+        deleting either from _DOF_EMITTED would slip past it. This feeds every
+        name in the allowlist through session_restore instead."""
+        self._two_scenes()
+        allowed = set(self.anim.INTERPOLATE) | set(self.anim._DOF_EMITTED)
+        self.assertIn('metal_dof_focus', allowed)
+        self.assertIn('metal_dof_autofocus', allowed)
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {n: 0.5 for n in allowed}}, 'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(set(self.anim._track[3]), allowed)
+
+    def test_every_setting_author_emits_survives_the_restore_filter(self):
+        """The allowlist has to stay in step with the two builders, or a movie
+        silently loses keyframe data on reload. Asserted against what `author()`
+        actually put on the track, not against a hand-written list -- which
+        under FakeCmd is only a few of the allowlisted names, hence the direct
+        test above."""
+        self._two_scenes()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=FakeCmd())
+        emitted = set()
+        for vals in self.anim._track.values():
+            emitted.update(vals)
+        self.assertTrue(emitted, 'author() emitted nothing; test proves nothing')
+        sess = {}
+        self.anim.session_save(sess, _self=FakeCmd())
+        saved = dict(self.anim._track)
+        self.anim._track.clear()
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(self.anim._track, saved)
+
     def test_session_save_blanks_only_our_own_commands(self):
         self._two_scenes()
         fake = FakeCmd()
