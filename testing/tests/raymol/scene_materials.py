@@ -223,6 +223,67 @@ class TestSceneMaterials(testing.PyMOLTestCase):
         self.assertEqual(cmd.get('material_default'), 'clay')
         self.assertEqual(cmd.get_setting_int('surface_material', 'm2'), 0)
 
+    def testTheMovieFrameCallbackWritesNothingWhenNothingChanged(self):
+        """`enter_scene` is the second consumer of the captured payload -- it
+        runs at every scene keyframe, twice per scene, on every pass of a
+        looping movie and every frame of an export. It had its own copy of the
+        write loop, so the conditional-write fix reached only half the product:
+        a movie with no materials in it at all still rebuilt cartoon, surface,
+        stick and sphere geometry at each cut."""
+        import base64
+        from pymol import raymol_scene_anim as ra
+        cmd.set('cartoon_material', 'marble', 'm1')
+        cmd.set('material_default', 'clay')
+        cmd.scene('A', 'store')
+
+        rec = _Recorder()
+        ra.enter_scene(base64.b64encode(b'A').decode(), rec)
+        self.assertEqual([a for a in rec.sets if a[0] in MATERIAL_SETTINGS], [])
+
+    def testTheMovieFrameCallbackStillAppliesWhatDidChange(self):
+        import base64
+        from pymol import raymol_scene_anim as ra
+        cmd.set('material_default', 'clay')
+        cmd.scene('A', 'store')
+        cmd.set('material_default', 'matte')
+
+        rec = _Recorder()
+        ra.enter_scene(base64.b64encode(b'A').decode(), rec)
+        self.assertIn(('material_default', material_id('clay')), rec.sets)
+        self.assertEqual(cmd.get('material_default'), 'clay')
+
+    def testALegacySceneDoesNotUnsetMaterialsItNeverCaptured(self):
+        """A scene stored before the materials joined OBJECT_CAPTURE recorded
+        only the reflection settings per object. Reading "absent from the map"
+        as "the object had no material" would make recalling such a scene WIPE
+        a material the user set afterwards -- silently, and only for objects
+        with an explicit override, so the scene would half-restore."""
+        cmd.scene('A', 'store')
+        # Exactly what a .pse from that build leaves behind: a per-object map
+        # with no record of which names the capture was looking for.
+        rs._scene_object_capture.pop('A', None)
+        cmd.set('cartoon_material', 'marble', 'm1')
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get('cartoon_material', 'm1'), 'marble')
+
+    def testASceneStoredNowStillUnsetsWhatItCaptured(self):
+        """The other direction: the guard above must not disable unsetting for
+        scenes that DID capture the materials."""
+        cmd.scene('A', 'store')
+        self.assertIn('cartoon_material', rs._scene_object_capture['A'])
+        cmd.set('cartoon_material', 'marble', 'm1')
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get_setting_int('cartoon_material', 'm1'), 0)
+
+    def testTheCapturedNameListSurvivesAPse(self):
+        cmd.scene('A', 'store')
+        with testing.mktemp('.pse') as fn:
+            cmd.save(fn)
+            cmd.reinitialize()
+            rs.clear_all()
+            cmd.load(fn)
+        self.assertIn('cartoon_material', rs._scene_object_capture['A'])
+
     def testAMaterialIsNeverBakedOntoAnObjectThatHasNone(self):
         cmd.set('material_default', 'clay')      # global only
         cmd.scene('A', 'store')

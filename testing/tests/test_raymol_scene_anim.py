@@ -890,6 +890,21 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
         self.assertTrue(fake.appended)           # commands regenerated, not replayed
 
+    def test_session_restore_refuses_to_ramp_a_material_id(self):
+        """A track value is validated as "a name in CAPTURE + parses as a
+        float". The material settings joined CAPTURE, but they hold table ROWS,
+        not quantities: `author()` can never emit one, and each write
+        invalidates every representation. A .pse carrying one must be dropped,
+        not replayed at a rebuild per frame."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'cartoon_material': 8.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertNotIn('cartoon_material', self.anim._track.get(3, {}))
+        # ...and a legitimate neighbour on the same frame still survives.
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
     def test_session_save_blanks_only_our_own_commands(self):
         self._two_scenes()
         fake = FakeCmd()

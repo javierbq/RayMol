@@ -56,8 +56,11 @@ def MATERIAL_ID_SETTINGS():
     `cmd.get` renders those as NAMES, which round-trip only in a build that
     knows the name; the id is what every other part of the format stores,
     including the per-object map below and the setting table in the .pse itself.
-    Captured as ints so a scene written here still means the same thing to a
-    build with a different material table.
+    Captured as ints because that is what the rest of the .pse holds: the
+    setting table in the same file stores the id, so a scene storing the NAME
+    would be the one piece of the session that disagreed with it after a table
+    reorder. The id is not portable across a reordered table -- nothing here is
+    -- it is merely consistent with everything it sits beside.
 
     Derived from `setting.material_indices` -- the one list the rest of the code
     resolves material names against -- rather than spelled out here, so a
@@ -65,19 +68,25 @@ def MATERIAL_ID_SETTINGS():
     module. Against a core with no materials this is empty, which degrades to
     capturing those settings the way every other one is captured."""
     global _MATERIAL_ID_SETTINGS
-    if _MATERIAL_ID_SETTINGS is None:
-        names = set()
-        try:
-            from pymol import setting
-            for n in CAPTURE:
-                try:
-                    if setting._get_index(n) in setting.material_indices:
-                        names.add(n)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        _MATERIAL_ID_SETTINGS = frozenset(names)
+    if _MATERIAL_ID_SETTINGS is not None:
+        return _MATERIAL_ID_SETTINGS
+    names = set()
+    try:
+        from pymol import setting
+        for n in CAPTURE:
+            try:
+                if setting._get_index(n) in setting.material_indices:
+                    names.add(n)
+            except Exception:
+                pass
+    except Exception:
+        # Deliberately NOT memoised. Caching an empty answer -- which is what a
+        # failure here produces -- would make every later capture write material
+        # NAMES into the .pse and make _setting_differs compare an int against a
+        # string, i.e. permanently True, i.e. the full-rebuild regression this
+        # module just removed. Better to retry on the next call.
+        return frozenset()
+    _MATERIAL_ID_SETTINGS = frozenset(names)
     return _MATERIAL_ID_SETTINGS
 
 
@@ -102,12 +111,29 @@ OBJECT_CAPTURE = [
     "transparency_peel",
 ]
 
-# NOTE (#508): a MOVIE built from scenes does not replay this map. The animator
+# The OBJECT_CAPTURE names in force when a given scene was STORED. Recall reads
+# "name absent from this scene's per-object map" as "the object had no override,
+# so unset it" -- which is only sound for names the capture was actually looking
+# for. Without this, growing OBJECT_CAPTURE silently re-interprets every scene
+# already sitting in a .pse: a scene stored before the materials were captured
+# would be read as "this object had no material" and the recall would WIPE one
+# the user set afterwards. Persisted per scene; a scene with no record (any .pse
+# written before this existed) is read with the list below.
+_scene_object_capture = {}
+
+# What OBJECT_CAPTURE was before the materials joined it (#489). Every scene in
+# an older .pse was stored with exactly these three.
+_LEGACY_OBJECT_CAPTURE = ("metal_rt_reflect", "metal_rt_reflect_tint",
+                          "metal_rt_reflect_rough")
+
+# NOTE (#508): a MOVIE built from scenes replays only HALF of this. The animator
 # emits camera + global-setting keyframes and per-object TTT (emit_object_motion
-# below), but nothing re-applies per-object overrides at a scene cut, so a movie
-# through a marble scene and a clay scene renders both with whatever the objects
-# carry when the movie is built. Recall is unaffected -- this is a gap in the
-# movie path, tracked separately.
+# below). Since the four rep materials are in CAPTURE too, the GLOBAL half does
+# animate across a scene cut -- but nothing re-applies the per-object overrides,
+# so in a marble -> clay movie every object EXCEPT the ones the user deliberately
+# styled changes material, and those stay frozen at whatever the last authoring
+# recall left on them. Recall itself is unaffected; this is a gap in the movie
+# path, tracked separately.
 
 # {scene_name: {obj_name: {setting: value}}} — per-object overrides of
 # OBJECT_CAPTURE. Every object alive at store time is a key, with {} when it had
@@ -244,6 +270,42 @@ def _capture_object_settings(_self=cmd):
     return out
 
 
+def apply_settings(name, _self=cmd):
+    """Make scene `name`'s captured GLOBAL settings current, skipping every
+    write that would not change anything.
+
+    Public because the movie animator replays the same payload at each scene
+    keyframe (raymol_scene_anim.enter_scene). It used to have its own copy of
+    this loop; the two then have to be fixed twice, and the second copy was
+    missed exactly once -- see below for why that is expensive.
+
+    Only what CHANGES is written. The material settings carry a cRepInvColor
+    side effect, so an unconditional re-write rebuilds cartoon, surface, stick
+    and sphere geometry on every object even when no material differs. Measured
+    on 1aon (58 870 atoms, cartoon + surface): 144 s per no-op recall before
+    this, 0.0002 s after."""
+    d = _scene_settings.get(name)
+    if not d:
+        return
+    for s, v in d.items():
+        try:
+            if _setting_differs(s, v, '', _self):
+                _self.set(s, v)
+        except Exception as exc:
+            # A value this build cannot accept -- an unknown material NAME from
+            # a .pse written by a build with a different table is the realistic
+            # case. Say so rather than dropping it silently: a scene that
+            # quietly stops restoring one setting is much harder to diagnose
+            # than one that names it once.
+            try:
+                from pymol import colorprinting
+                colorprinting.warning(
+                    ' scene: %s could not be restored for scene "%s": %s'
+                    % (s, name, exc))
+            except Exception:
+                pass
+
+
 def _setting_differs(name, value, obj='', _self=cmd):
     """True when writing `value` would actually change `name`.
 
@@ -287,7 +349,13 @@ def _apply_object_settings(name, _self=cmd):
     # guard existed can still carry a group in its map, and applying it would
     # expand to the members.
     live = set(_material_objects(_self))
-    want = _object_capture_indices()
+    try:
+        want = _object_capture_indices()
+    except Exception:
+        want = {}
+    # Only the names this scene was stored with may be unset; see
+    # _scene_object_capture.
+    captured = _scene_object_capture.get(name) or _LEGACY_OBJECT_CAPTURE
     for o, kv in d.items():
         # Not merely defensive: without this, a scene stored with many objects
         # that were later deleted raises (and swallows) one exception per
@@ -298,7 +366,7 @@ def _apply_object_settings(name, _self=cmd):
             current = _object_settings_now(o, want, _self)
         except Exception:
             current = {}
-        for s in OBJECT_CAPTURE:
+        for s in captured:
             try:
                 if s in kv:
                     # Skip a write that would not change the value: these carry
@@ -453,6 +521,7 @@ def snapshot_current(_self=cmd):
     if name:
         _scene_settings[name] = _capture(_self)
         _scene_object_settings[name] = _capture_object_settings(_self)
+        _scene_object_capture[name] = tuple(OBJECT_CAPTURE)
         _scene_ttt[name] = _capture_ttt(_self)
         _scene_focus[name] = _capture_focus(_self)
     return name
@@ -461,19 +530,7 @@ def snapshot_current(_self=cmd):
 def apply(name, _self=cmd):
     """Re-apply scene `name`'s captured render settings, per-object TTT, and
     autofocus target."""
-    d = _scene_settings.get(name)
-    if d:
-        for s, v in d.items():
-            try:
-                # Only write what actually CHANGES. The material settings carry
-                # a cRepInvColor side effect, so an unconditional re-write made
-                # every recall rebuild cartoon, surface, stick and sphere
-                # geometry on every object even when no material differed --
-                # measured at 2 ms -> 177 ms per recall on a 58k-atom cartoon.
-                if _setting_differs(s, v, '', _self):
-                    _self.set(s, v)
-            except Exception:
-                pass
+    apply_settings(name, _self)
     # After the globals: a per-object override has to win over the fallback the
     # same recall just wrote.
     _apply_object_settings(name, _self)
@@ -498,6 +555,7 @@ def prune(_self=cmd):
     for name in list(_scene_object_settings.keys()):
         if name not in live:
             _scene_object_settings.pop(name, None)
+            _scene_object_capture.pop(name, None)
     for name in list(_scene_ttt.keys()):
         if name not in live:
             _scene_ttt.pop(name, None)
@@ -510,6 +568,7 @@ def clear_all(_self=cmd):
     """Forget all snapshots (call after `scene *, clear`)."""
     _scene_settings.clear()
     _scene_object_settings.clear()
+    _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
 
@@ -522,6 +581,8 @@ def rename(old, new, _self=cmd):
         _scene_settings[new] = _scene_settings.pop(old)
     if old in _scene_object_settings:
         _scene_object_settings[new] = _scene_object_settings.pop(old)
+    if old in _scene_object_capture:
+        _scene_object_capture[new] = _scene_object_capture.pop(old)
     if old in _scene_ttt:
         _scene_ttt[new] = _scene_ttt.pop(old)
     if old in _scene_focus:
@@ -553,6 +614,8 @@ def session_save(session, *, _self=cmd):
     session["raymol_scene_object_settings"] = {
         k: {o: dict(kv) for o, kv in v.items()}
         for k, v in _scene_object_settings.items()}
+    session["raymol_scene_object_capture"] = {
+        k: list(v) for k, v in _scene_object_capture.items()}
     session["raymol_scene_ttt"] = {k: dict(v) for k, v in _scene_ttt.items()}
     session["raymol_scene_focus"] = {k: list(v) for k, v in _scene_focus.items()}
     return 1
@@ -574,11 +637,22 @@ def _restore_object_settings(session):
         clean = {o: dict(kv) for o, kv in per_obj.items() if isinstance(kv, dict)}
         if len(clean) == len(per_obj):
             _scene_object_settings[name] = clean
+    # Which names the capture was LOOKING for when each scene was stored. A .pse
+    # without this key predates the materials joining OBJECT_CAPTURE, so its
+    # scenes are read with the list that was in force then -- otherwise every one
+    # of them would unset materials it never knew about.
+    caps = session.get("raymol_scene_object_capture")
+    if isinstance(caps, dict):
+        for name, names in caps.items():
+            if isinstance(names, (list, tuple)):
+                _scene_object_capture[name] = tuple(
+                    str(n) for n in names if isinstance(n, str))
 
 
 def session_restore(session, *, _self=cmd):
     _scene_settings.clear()
     _scene_object_settings.clear()
+    _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
     d = session.get("raymol_scene_settings")

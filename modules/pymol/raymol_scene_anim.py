@@ -576,7 +576,16 @@ def session_restore(session, *, _self=cmd):
     if not isinstance(d, dict):
         return 1
     from pymol import raymol_scenes as _rs
-    known = set(_rs.CAPTURE)
+    # A track value is validated as "a name in CAPTURE that parses as a float".
+    # The material settings are in CAPTURE now, and they are IDS -- table rows,
+    # not quantities -- which author() can never emit and which invalidate every
+    # representation on every write. Left in `known` they would let a corrupted
+    # or hostile .pse make each interior frame emit `set cartoon_material,
+    # <float>` and rebuild all the geometry per frame. Everything else in
+    # CAPTURE stays: author() emits some settings that are not in INTERPOLATE
+    # (metal_dof is stepped by build_dof_transition, not ramped).
+    known = set(_rs.CAPTURE) - set(_rs.MATERIAL_ID_SETTINGS()) - {
+        'transparency_peel'}
     raw = d.get('track')
     if isinstance(raw, dict):
         for fs, vals in raw.items():
@@ -620,11 +629,15 @@ def enter_scene(name_b64, _self=cmd):
     except Exception:
         return
     from pymol import raymol_scenes as _rs
-    for s, v in _rs.scene_settings_map(name).items():
-        try:
-            _self.set(s, v)
-        except Exception as e:
-            print('MOVIE_ERR:' + str(e))
+    # The same conditional-write path a recall uses, not a second copy of the
+    # loop. The material settings invalidate every representation on every
+    # write, so re-asserting a scene's values unchanged at each keyframe rebuilt
+    # cartoon, surface, stick and sphere geometry for every object -- twice per
+    # scene, on every pass of a looping movie and on every frame of an export.
+    try:
+        _rs.apply_settings(name, _self)
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
     try:
         _rs.apply_focus_target(name, _self)
     except Exception:
