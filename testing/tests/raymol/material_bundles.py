@@ -151,6 +151,79 @@ class TestMaterialBundles(testing.PyMOLTestCase):
         materials.clay('m1')
         self.assertEqual((cmd.get_object_list('m1'), _shown('m1')), before)
 
+    # -- named metals (#497) --------------------------------------------------
+
+    def testEachMetalSetsMetallicAndItsColour(self):
+        """A named metal is `metallic` plus a colour. It writes colour ON
+        PURPOSE -- that is exactly what separates a bundle from a material, and
+        why copper cannot be a table row: what makes copper copper is mostly
+        its colour, and a material must never touch that."""
+        for name in ('copper', 'gold', 'steel', 'chrome'):
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            before = [c for c in _colors('m1')]
+            getattr(materials, name)('m1')
+            for s in REP_MATERIALS:
+                self.assertEqual(cmd.get(s, 'm1'), 'metallic', '%s/%s' % (name, s))
+            self.assertNotEqual(_colors('m1'), before, name)
+
+    def testTheMetalsAreDistinctFromEachOther(self):
+        """If two bundles wrote the same colour the test above would pass on a
+        pair that is not actually different."""
+        seen = {}
+        for name in ('copper', 'gold', 'steel', 'chrome'):
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            getattr(materials, name)('m1')
+            seen[name] = tuple(_colors('m1'))
+        self.assertEqual(len(set(seen.values())), 4, seen)
+
+    def testChromeIsSharperThanPlainMetallic(self):
+        """Chrome's whole character is that it is the mirror end of the range.
+        The table gives `metallic` tint 0.35 / rough 0.35; chrome overrides both
+        per object, which is what the explicit-override path exists for."""
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        materials.chrome('m1')
+        self.assertAlmostEqual(cmd.get_setting_float('metal_rt_reflect_rough', 'm1'),
+                               0.05, places=4)
+        self.assertAlmostEqual(cmd.get_setting_float('metal_rt_reflect_tint', 'm1'),
+                               0.10, places=4)
+
+    def testAMetalWritesNothingOutsideItsDocumentedSet(self):
+        """Same whole-table guard as the look bundles, widened to the settings a
+        metal is allowed: the rep materials (object level) and the three
+        reflection overrides."""
+        allowed = set(REP_MATERIALS) | {'metal_rt_reflect',
+                                        'metal_rt_reflect_tint',
+                                        'metal_rt_reflect_rough'}
+        from pymol import setting
+        want = {setting._get_index(n) for n in allowed}
+        for name in ('copper', 'gold', 'steel', 'chrome'):
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            g_before = snapshot()
+            o_before = _obj_settings('m1')
+            getattr(materials, name)('m1')
+            self.assertEqual(snapshot(), g_before,
+                             '%s changed a GLOBAL setting' % name)
+            changed = {k for k in _obj_settings('m1')
+                       if o_before.get(k) != _obj_settings('m1')[k]}
+            self.assertTrue(changed <= want,
+                            '%s wrote %s' % (name, changed - want))
+
+    def testAMetalAppliesColourToTheSELECTIONNotTheWholeObject(self):
+        """Colour is per atom, unlike a material -- so `gold('resi 1')` golds
+        residue 1 and leaves the rest of the object alone. This is the one place
+        a bundle can honour a selection, and it should."""
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.color('white', 'm1')
+        materials.gold('m1 and name CA')
+        cols = {}
+        cmd.iterate('m1', 'cols[name] = color', space={'cols': cols})
+        self.assertNotEqual(cols['CA'], cols['CB'])
+
     # -- registration ---------------------------------------------------------
 
     def testBothBundlesAreOfferedAndResolve(self):
@@ -213,6 +286,13 @@ def _shown(obj):
                 out.append(rep)
         except Exception:
             pass
+    return out
+
+
+def _colors(obj):
+    """Atom colour indices, in iteration order."""
+    out = []
+    cmd.iterate(obj, 'out.append(color)', space={'out': out})
     return out
 
 

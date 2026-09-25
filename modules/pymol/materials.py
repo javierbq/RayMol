@@ -170,9 +170,81 @@ def clay(selection='(all)', _self=cmd):
     _self.set('metal_rt_ao_intensity', 0.9)
 
 
+# --- Named metals (#497) ----------------------------------------------------
+#
+# These are BUNDLES, not table rows, and the difference is the point. A material
+# never touches colour -- that is one of the epic's non-negotiables -- so
+# `copper` cannot be a material: what makes copper copper is mostly its colour.
+# A bundle is user-invoked and may set colour, because the user asked for
+# "copper" rather than for "a material".
+#
+# Each is `metallic` plus a documented colour, and where the metal needs it, an
+# explicit per-object reflect/tint/roughness. Those overrides ride the existing
+# object-scoped metal_rt_reflect* settings, which a reflective material honours
+# when they are EXPLICITLY set (#497) -- so chrome can be sharper and less
+# tinted than plain metallic without needing a table row of its own.
+#
+# {name: (rgb hex, reflect|None, tint|None, rough|None)}
+_METALS = {
+    'copper': ('0xb87333', None, 0.55, 0.30),
+    'gold':   ('0xd4af37', None, 0.55, 0.25),
+    'steel':  ('0x8c9299', None, 0.15, 0.35),
+    # Chrome is the mirror: barely tinted, almost perfectly smooth.
+    'chrome': ('0xdbe2e9', 0.75, 0.10, 0.05),
+}
+
+
+def _metal(name, selection, _self=cmd):
+    """Apply a named metal: `metallic` on every material-bearing rep, the
+    metal's colour, and its reflect/tint/roughness overrides."""
+    rgb, reflect, tint, rough = _METALS[name]
+    objects = _apply_material('metallic', selection, _self)
+    if not objects:
+        _warn(_self, 'no object matched %s; nothing changed.' % repr(selection))
+        return
+    # Colour goes on the SELECTION, not the object: unlike a material, colour is
+    # per atom, so `gold('chain A')` golds chain A and leaves the rest alone.
+    _self.color(rgb, selection)
+    for obj in _objects(selection, _self):
+        if reflect is not None:
+            _self.set('metal_rt_reflect', reflect, obj)
+        if tint is not None:
+            _self.set('metal_rt_reflect_tint', tint, obj)
+        if rough is not None:
+            _self.set('metal_rt_reflect_rough', rough, obj)
+
+
+def copper(selection='(all)', _self=cmd):
+    """Copper: `metallic` + 0xb87333, tint 0.55, roughness 0.30.
+
+    Colour IS written -- that is what separates a named metal from a material.
+    """
+    _metal('copper', selection, _self)
+
+
+def gold(selection='(all)', _self=cmd):
+    """Gold: `metallic` + 0xd4af37, tint 0.55, roughness 0.25."""
+    _metal('gold', selection, _self)
+
+
+def steel(selection='(all)', _self=cmd):
+    """Steel: `metallic` + 0x8c9299, tint 0.15, roughness 0.35."""
+    _metal('steel', selection, _self)
+
+
+def chrome(selection='(all)', _self=cmd):
+    """Chrome: `metallic` + 0xdbe2e9, reflect 0.75, tint 0.10, roughness 0.05 --
+    the mirror end of the range."""
+    _metal('chrome', selection, _self)
+
+
 #: (menu label, attribute name) for the menu and the Inspector's preset list.
 #: Only the looks whose material is implemented appear here.
 BUNDLES = (
     ('Marble (statuary)', 'marble'),
     ('Clay (unglazed)', 'clay'),
+    ('Copper', 'copper'),
+    ('Gold', 'gold'),
+    ('Steel', 'steel'),
+    ('Chrome', 'chrome'),
 )
