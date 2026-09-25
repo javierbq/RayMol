@@ -211,6 +211,13 @@ final class PyMOLEngine: ObservableObject {
     // Per-object active representations + their current setting values + color
     // override, populated by pollDetails()/parseObjectDetailFeedback().
     @Published var objectDetails: [String: [RepState]] = [:]
+
+    /// Materials the Inspector may offer, `default` first (#490). Delivered once
+    /// by the core rather than compiled in: the table lives in
+    /// layer1/Material.cpp, and a hard-coded copy would drift from it and offer
+    /// looks this build cannot draw. Only the IMPLEMENTED rows arrive here --
+    /// the rest are real ids that still work by name from the command line.
+    @Published var materialNames: [(id: Int, name: String)] = []
     // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
     @Published var sceneState = SceneState()
     // Per-object state metadata (effective current state + overlay-all) for the
@@ -706,6 +713,16 @@ final class PyMOLEngine: ObservableObject {
                 for _ in 0..<reps { self.zoomBy(frac) }
                 NSLog("PYMOL_AUTOZOOM: zoomBy(\(frac)) x\(reps)")
             }
+        }
+
+        // Material table for the Inspector dropdowns (#490). Once per session --
+        // the table is static in layer1/Material.cpp, so polling it would be
+        // pure overhead, and compiling a copy into Swift would let the two
+        // drift and offer looks this build cannot draw. Deferred a beat so the
+        // Python layer is up; the dropdowns render disabled until it lands.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.runPythonQuiet(
+                "from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
         }
 
         // Test affordance: seed the inspector's expanded object cards so the
@@ -3682,6 +3699,8 @@ final class PyMOLEngine: ObservableObject {
                     parseMeasureFeedback(line)
                 } else if line.hasPrefix("MEASURE_ERR:") {
                     // swallow
+                } else if line.hasPrefix("MATERIALS:") {
+                    parseMaterialsFeedback(line)
                 } else if line.hasPrefix("SETTINGS:ready") {
                     loadSettingsCatalogFile()
                 } else if line.hasPrefix("SETTINGS:err") {
@@ -3858,6 +3877,31 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Parse the inspector JSON (written by appkit_inspector.poll to a temp file;
+    /// `MATERIALS:[[id,name],...]` — the material table, once per session.
+    ///
+    /// Static and pure so it can be tested without standing up an engine (which
+    /// starts the core). Returns nil for anything it cannot use, and the caller
+    /// then keeps the table it already has: emptying the dropdowns mid-session
+    /// because one payload was malformed would be worse than ignoring it.
+    static func parseMaterials(_ line: String) -> [(id: Int, name: String)]? {
+        let json = String(line.dropFirst("MATERIALS:".count))
+        guard let data = json.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]]
+        else { return nil }
+        var out: [(id: Int, name: String)] = []
+        for r in rows where r.count >= 2 {
+            // Ids are table rows, not positions: `marble` is 7. A row that is
+            // not an (Int, String) pair is dropped rather than guessed at.
+            if let i = r[0] as? Int, let n = r[1] as? String { out.append((id: i, name: n)) }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private func parseMaterialsFeedback(_ line: String) {
+        guard let out = PyMOLEngine.parseMaterials(line) else { return }
+        DispatchQueue.main.async { self.materialNames = out }
+    }
+
     // the feedback line is just the "OBJDETAIL:ready" trigger) → objectDetails +
     // sceneState. File-based to avoid the ~1KB feedback-line cap splitting the
     // payload and leaking continuation lines into the terminal log.

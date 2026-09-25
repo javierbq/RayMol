@@ -18,18 +18,22 @@ REPS = ['lines', 'sticks', 'ribbon', 'cartoon', 'dots', 'spheres',
 
 # Numeric/bool settings exposed per rep (besides color, handled separately).
 REP_SETTINGS = {
-    'cartoon':    ['cartoon_transparency', 'cartoon_loop_radius',
+    'cartoon':    ['cartoon_material',
+                   'cartoon_transparency', 'cartoon_loop_radius',
                    'cartoon_tube_radius', 'cartoon_fancy_helices',
                    'cartoon_flat_sheets', 'cartoon_spline',
                    'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
-    'surface':    ['transparency', 'surface_quality', 'solvent_radius',
+    'surface':    ['surface_material',
+                   'transparency', 'surface_quality', 'solvent_radius',
                    'surface_clip_front', 'surface_clip_back', 'metal_interior_cap',
                    'surface_contour', 'surface_contour_width',
                    'surface_contour_opaque',
                    'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
-    'sticks':     ['stick_transparency', 'stick_radius', 'stick_h_scale', 'metal_interior_cap',
+    'sticks':     ['stick_material',
+                   'stick_transparency', 'stick_radius', 'stick_h_scale', 'metal_interior_cap',
                    'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
-    'spheres':    ['sphere_transparency', 'sphere_scale', 'metal_interior_cap',
+    'spheres':    ['sphere_material',
+                   'sphere_transparency', 'sphere_scale', 'metal_interior_cap',
                    'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
     'nb_spheres': ['nb_spheres_size'],
     'mesh':       ['transparency', 'mesh_width'],
@@ -39,6 +43,59 @@ REP_SETTINGS = {
     'nonbonded':  ['nonbonded_size'],
     'labels':     ['label_size'],
 }
+
+# The material setting each rep reads, with the cRep_t index the C resolver
+# wants (#490). Reported as the RESOLVED id -- object value, else the rep's
+# global, else material_default -- because that is what the rep actually renders
+# with, and a dropdown showing anything else would disagree with the picture.
+# `cmd.get` would answer with the NAME, which _num cannot turn into a number.
+MATERIAL_REPS = {
+    'cartoon': ('cartoon_material', 'cartoon'),
+    'surface': ('surface_material', 'surface'),
+    'sticks':  ('stick_material',  'sticks'),
+    'spheres': ('sphere_material', 'spheres'),
+}
+
+
+def material_names():
+    """The materials the Inspector dropdown may offer, as [[id, name], ...] with
+    `default` first.
+
+    Only the IMPLEMENTED ones: a material whose shader has not landed yet is a
+    real id that can be set by name from the command line and round-trips
+    through a .pse, but offering it in a dropdown would promise a look that
+    silently renders as `default`. Emitted once at startup rather than on every
+    poll -- the table cannot change within a session."""
+    try:
+        from pymol import setting
+        return [[int(i), str(n)] for (i, n) in setting.get_material_names(1)]
+    except Exception:
+        return []
+
+
+def poll_materials():
+    """Print `MATERIALS:<json>` once, for the Inspector's material dropdowns."""
+    import json
+    try:
+        print('MATERIALS:' + json.dumps(material_names()))
+    except Exception:
+        print('MATERIALS:[]')
+
+
+def _material_id(rep_name, obj):
+    """Resolved material id for `rep_name` on `obj`, or 0 (default) if this
+    build has no materials or the lookup fails."""
+    try:
+        from pymol import _cmd
+        from pymol.constants import repres
+        entry = MATERIAL_REPS.get(rep_name)
+        if not entry:
+            return 0.0
+        value = _cmd.get_rep_material(cmd._COb, obj or '', repres[entry[1]])
+        return float(value) if value is not None else 0.0
+    except Exception:
+        return 0.0
+
 
 # Per-rep color-override setting (default -1 / -6 = inherit the atom color).
 REP_COLOR = {
@@ -299,7 +356,14 @@ def _build(objs):
                 present = False
             if not present:
                 continue
-            vals = {s: _num(s, o) for s in REP_SETTINGS.get(r, [])}
+            vals = {}
+            for s in REP_SETTINGS.get(r, []):
+                entry = MATERIAL_REPS.get(r)
+                # A material is an id, not a quantity, and `cmd.get` renders it
+                # as a NAME -- _num would read that as 0 and every rep would
+                # report `default`.
+                vals[s] = (_material_id(r, o) if entry and s == entry[0]
+                           else _num(s, o))
             col = _rep_color(o, REP_COLOR[r]) if r in REP_COLOR else 'inherit'
             cols = {s: _rep_color(o, s) for s in REP_EXTRA_COLORS.get(r, [])}
             rep = {'rep': r, 'vis': 1, 'vals': vals, 'color': col, 'colors': cols}
