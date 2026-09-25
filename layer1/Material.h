@@ -157,6 +157,26 @@ int MaterialGetFamily(int id);
 bool MaterialIsRepMaterialSetting(int index);
 
 /**
+ * Whether an object's transparent geometry should be depth-PEELED (#488):
+ * a colour-less depth pre-pass, then the object's transparent draws tested for
+ * equality against it, so only the nearest surface per pixel contributes.
+ * Without it a translucent ball-and-stick reads as dense mottle -- the front
+ * and back of every stick, and every stick behind it, all accumulate.
+ *
+ * `transparency_peel` decides: 1 on, 0 off, and -1 (the default) means AUTO --
+ * on when any of the object's four representations resolves to a material whose
+ * row asks for it (`wantsPeel`, which the glass family sets). Auto is
+ * deliberately not "any transparent object": peeling a plain translucent
+ * surface changes a look users already rely on, and it costs a depth blit and
+ * two encoder boundaries per object per grid cell.
+ *
+ * @param set1 coordinate-set (object-state) settings, may be null
+ * @param set2 object settings, may be null
+ */
+bool MaterialObjectWantsPeel(
+    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2);
+
+/**
  * True for every setting whose value is a material id (the four
  * per-representation ones plus `material_default`) — i.e. every setting whose
  * value `get` should render as a NAME rather than as a number.
