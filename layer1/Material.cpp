@@ -519,7 +519,18 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
     // `default` on a stick_ball object is not treated as asking for a peel it
     // will never use.
     if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
-      wantsPeel = true;
+      // ...but only if the object actually DRAWS it. `set surface_material,
+      // glass` on an object showing nothing but an opaque cartoon would
+      // otherwise turn peel on for geometry that does not exist -- a depth blit
+      // and two encoder boundaries per grid cell, and one of only three peel
+      // slots, which can evict an object that really is glass.
+      //
+      // `!cs ||` is load-bearing: cs is null for every non-ObjectMolecule in
+      // NonGadgetObjs, and those still resolve materials through CGOGL, so a
+      // bare hasRep gate would silently stop peeling them.
+      if (!cs || const_cast<CoordSet*>(cs)->hasRep(kRepBits[i])) {
+        wantsPeel = true;
+      }
       continue;
     }
     // A rep the object does not draw cannot be occluded by the peel, so it must

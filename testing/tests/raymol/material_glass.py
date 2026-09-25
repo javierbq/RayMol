@@ -323,6 +323,20 @@ class TestGlass(testing.PyMOLTestCase):
             built_transparency('m1', repres['sticks']), 0.0, places=4)
         self.assertEqual(resolved_peel('m1'), 0)
 
+    def testAGlassMaterialOnAnUNSHOWNRepDoesNotTurnPeelOn(self):
+        """Peel must be asked for by geometry that EXISTS.
+
+        Glass is the first material to set wantsPeel, so this branch was
+        unreachable before this ticket: a glass material on a rep the object
+        does not draw turned peeling on for nothing -- and with three slots,
+        that can evict an object that really is glass."""
+        cmd.set('surface_material', 'glass', 'm1')   # but only a cartoon shown
+        build('m1', 'cartoon')
+        self.assertEqual(resolved_peel('m1'), 0)
+        # ...and it turns on as soon as the surface is actually drawn.
+        build('m1', 'surface')
+        self.assertEqual(resolved_peel('m1'), 1)
+
     def testGlassSticksWithoutBallsDoTurnPeelOn(self):
         """The mirror, so the test above cannot pass by peel simply never
         turning on for sticks."""
