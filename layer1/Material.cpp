@@ -3,7 +3,6 @@
  */
 
 #include "Material.h"
-#include "Rep.h"
 #include "Setting.h"
 #include "CoordSet.h"
 #include "AtomInfo.h"
@@ -213,7 +212,7 @@ bool MaterialRepEmitsStickBalls(
   return false;
 }
 
-MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
+static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
     const CSetting* set1, const CSetting* set2, int repType,
     bool emitsStickBalls)
 {
@@ -238,13 +237,17 @@ MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  /* The scan is only meaningful for a stick rep, and only glass degrades, so
-     this stays off every other path. Build-time callers use this; the DRAW
-     path uses the cached overload. */
-  bool const balls = (repType == cRepCyl)
-      ? MaterialRepEmitsStickBalls(G, cs, set1, set2)
-      : false;
-  return MaterialResolveForDrawCached(G, set1, set2, repType, balls);
+  int const id = MaterialResolveSettingId(G, set1, set2, repType);
+  MaterialParams params = MaterialResolve(id, repType);
+  /* LAZY on purpose: resolve first, and walk atoms only when the answer can
+     change something. Computing it eagerly for every cRepCyl call -- as this
+     briefly did -- put an O(atoms) pass back on the `default` path, which is
+     the exact cost the cached variant exists to remove. */
+  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
+      MaterialRepEmitsStickBalls(G, cs, set1, set2)) {
+    return MaterialParams{};
+  }
+  return params;
 }
 
 static MaterialParams MaterialApplyLegacyTriple(
@@ -481,27 +484,35 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
     cs = const_cast<ObjectMolecule*>(objmol)->getCoordSet(
         const_cast<ObjectMolecule*>(objmol)->getCurrentState());
   }
+  /* Two passes, cheap one first. Asking whether anything wants peeling is a
+     pair of table lookups per rep; the VETO costs atom scans. An object with no
+     material set -- every object in a default session -- must not pay the
+     second, and this runs once per object per FRAME. */
   bool anyWantsPeel = false;
+  for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
+    if (MaterialResolve(
+            MaterialResolveSettingId(G, set1, set2, kReps[i]), kReps[i])
+            .wantsPeel) {
+      anyWantsPeel = true;
+      break;
+    }
+  }
+  if (!anyWantsPeel) {
+    return false;
+  }
   /* Indexed, not range-for: the rep and its visibility BIT have to stay in
      step, and a range-for gives a copy whose address says nothing about which
      element it came from. */
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
     int const rep = kReps[i];
-    MaterialParams const params =
-        MaterialResolveForDraw(G, set1, set2, rep, cs);
-    if (params.wantsPeel) {
-      anyWantsPeel = true;
+    // Re-resolved through the DRAW path, so a glass stick that degrades to
+    // `default` on a stick_ball object is not treated as asking for a peel it
+    // will never use.
+    if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
       continue;
     }
-    // Is this rep actually drawn transparent? Ask the BUILT rep first: the four
-    // transparency settings are atom- and bond-level, routinely written through
-    // a selection, which leaves the object-level value at 0. Reading only the
-    // object value therefore missed `set cartoon_transparency, 0.5, m1 and
-    // chain A` entirely -- the same vanishing cartoon, just a narrower trigger.
-    // Rep::hasTransparency() is what the renderer itself routes on, so it sees
-    // the per-atom overrides by construction.
-    // A rep the object does not draw cannot be occluded by the peel, so it
-    // must not veto. Without this a GLOBAL `set transparency, 0.5` -- which
+    // A rep the object does not draw cannot be occluded by the peel, so it must
+    // not veto. Without this gate a GLOBAL `set transparency, 0.5` -- which
     // SettingGet_f falls back to -- turned auto-peel off for every glass
     // cartoon in the session on account of a surface nothing was showing.
     if (!cs || !const_cast<CoordSet*>(cs)->hasRep(kRepBits[i])) {
@@ -511,7 +522,7 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
       return false;
     }
   }
-  return anyWantsPeel;
+  return true;
 }
 
 int MaterialSettingForRep(int repType)

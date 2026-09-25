@@ -2226,6 +2226,14 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
   case cSetting_stick_material:
     /* The stick rep also emits the stick_ball spheres. */
     ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
+    /* And the LINE rep: line_stick_helper suppresses lines where sticks are,
+       but only while the sticks are opaque -- and a glass stick is translucent
+       without ever writing stick_transparency (#495). Without this the already
+       built line rep keeps the old decision, so the fix in RepWireBond never
+       fires for the flow it exists for and the user gets see-through sticks
+       with nothing behind them. cRepInvRep because the helper changes which
+       geometry is emitted, not just its colour. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepLine, cRepInvRep);
     SceneChanged(G);
     break;
   case cSetting_sphere_material:
@@ -2242,9 +2250,17 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
     ExecutiveInvalidateRep(G, inv_sele, cRepSurface, cRepInvColor);
     ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
     ExecutiveInvalidateRep(G, inv_sele, cRepSphere, cRepInvColor);
+    /* Lines too, for the line_stick_helper reason in cSetting_stick_material. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepLine, cRepInvRep);
     SceneChanged(G);
     break;
   case cSetting_stick_transparency:
+    /* line_stick_helper reads this too, and the line rep was never invalidated
+       for it -- a pre-existing hole, same shape as the material one above. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepLine, cRepInvRep);
+    ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvRep);
+    SceneChanged(G);
+    break;
   case cSetting_stick_debug:
   case cSetting_stick_round_nub:
   case cSetting_stick_as_cylinders:
