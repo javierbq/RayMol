@@ -136,6 +136,7 @@ _ACTION_OPTIONS = [
         ('---', None),
         ('marble (statuary)', 'material_marble'),
         ('clay (unglazed)', 'material_clay'),
+        ('---', None),
         ('default', 'preset_default'),
     ]),
     ('Find', None, [

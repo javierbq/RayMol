@@ -158,12 +158,46 @@ class TestMaterialBundles(testing.PyMOLTestCase):
             self.assertTrue(hasattr(materials, attr), attr)
             self.assertTrue(callable(getattr(materials, attr)), attr)
 
-    def testAGroupIsNotWrittenTwice(self):
-        """`cmd.set` expands a group to its members, so writing the group as
-        well would double every member."""
+    def testAGroupResolvesToItsMembers(self):
         cmd.group('g1', 'm1 m2')
         objs = materials._objects('g1')
         self.assertNotIn('g1', objs)
+        self.assertEqual(sorted(objs), ['m1', 'm2'])
+
+    def testABundleWritesNoOBJECTSettingItDoesNotDocument(self):
+        """The global snapshot above structurally cannot see an object-level
+        stray, and `_apply_material` is the function that takes an object
+        argument -- so this is the half that can actually regress."""
+        from pymol import setting
+        want = {setting._get_index(n) for n in REP_MATERIALS}
+        for fn in (materials.marble, materials.clay):
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            cmd.fragment('gly', 'm2')
+            cmd.show('cartoon'); cmd.show('sticks'); cmd.show('spheres')
+            cmd.refresh()
+            before = {o: _obj_settings(o) for o in ('m1', 'm2')}
+            fn('m1')
+            after = {o: _obj_settings(o) for o in ('m1', 'm2')}
+            changed = {k for k in after['m1']
+                       if before['m1'].get(k) != after['m1'][k]}
+            self.assertEqual(changed, want,
+                             '%s changed object settings %s' % (fn.__name__, changed))
+            self.assertEqual(before['m2'], after['m2'],
+                             '%s touched another object' % fn.__name__)
+
+    def testNothingIsWrittenWhenNoObjectMatches(self):
+        """A typo'd name used to rewrite the whole global light rig and apply no
+        material, silently -- a changed scene and nothing to explain it."""
+        before = snapshot()
+        materials.marble('typo_object_name')
+        self.assertEqual(snapshot(), before)
+
+    def testAnUnknownMaterialNameIsNotSwallowed(self):
+        """A bundle that silently applied nothing would be much harder to
+        diagnose than one that names what it could not resolve."""
+        with self.assertRaises(pymol.CmdException):
+            materials._apply_material('no_such_material', 'm1')
 
     def testAnEmptySelectionIsHarmless(self):
         materials.marble('none')   # must not raise
@@ -180,3 +214,8 @@ def _shown(obj):
         except Exception:
             pass
     return out
+
+
+def _obj_settings(obj):
+    """{index: value} an object has explicitly set."""
+    return {e[0]: e[2] for e in (cmd.get_object_settings(obj) or [])}

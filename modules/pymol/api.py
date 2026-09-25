@@ -367,6 +367,15 @@ from .preset import \
       publication
 
 #--------------------------------------------------------------------
+# Material look bundles (#491). Imported for its SIDE EFFECT as much as its
+# names: importing a submodule binds it on the parent package, and that is the
+# namespace `modules/pymol/parser.py` execs menu command strings in. Without
+# this, the "marble (statuary)" / "clay (unglazed)" entries menu.py adds to the
+# Preset menu are a NameError at click time -- which is exactly how `preset`
+# itself comes to be resolvable there, via the import above.
+from . import materials
+
+#--------------------------------------------------------------------
 from .morphing import \
     morph
 
