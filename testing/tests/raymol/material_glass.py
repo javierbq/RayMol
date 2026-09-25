@@ -147,6 +147,30 @@ class TestGlass(testing.PyMOLTestCase):
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(rough, 0.0, places=4)
 
+    def testAReflectiveMaterialKeepsItsExplicitOverride(self):
+        """#497: a reflective material starts from its TABLE row, but an
+        EXPLICIT per-object metal_rt_reflect* value still wins.
+
+        Pinned here because moving the legacy-triple rule out of CGOGL into
+        MaterialDrawParams dropped this branch, and the rebase onto #497 is the
+        only thing that caught it -- no test covered it."""
+        by_name = {n: i for i, n in setting.get_material_names(0)}
+        cmd.set('surface_material', 'metallic', 'm1')
+        _f, _m, refl, tint, rough = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        # untouched: the table row, NOT the sliders' default of 0
+        self.assertAlmostEqual(refl, 0.6, places=4)
+        self.assertAlmostEqual(tint, 0.35, places=4)
+        self.assertAlmostEqual(rough, 0.35, places=4)
+        # explicit values win, and only the ones actually set
+        cmd.set('metal_rt_reflect', 0.9, 'm1')
+        cmd.set('metal_rt_reflect_rough', 0.05, 'm1')
+        _f, _m, refl, tint, rough = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        self.assertAlmostEqual(refl, 0.9, places=4)
+        self.assertAlmostEqual(tint, 0.35, places=4)   # untouched, table wins
+        self.assertAlmostEqual(rough, 0.05, places=4)
+
     def testDefaultStillReadsTheLegacySliders(self):
         """The exemption is narrow: `default` keeps reading the legacy triple,
         which is what makes this PR byte-identical for it."""
