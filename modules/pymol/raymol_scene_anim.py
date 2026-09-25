@@ -52,6 +52,12 @@ _OFF_APERTURE = 0.0
 # accident of ordering.
 _DOF_OWNED = frozenset(["metal_dof_focus"])
 
+# Everything build_dof_transition can put on a track. Together with INTERPOLATE
+# (all build_track can emit) this is the COMPLETE set of names author() is able
+# to produce, which is what session_restore validates against.
+_DOF_EMITTED = frozenset(["metal_dof", "metal_dof_aperture", "metal_dof_focus",
+                          "metal_dof_autofocus"])
+
 # Focus distances closer together than this (Angstroms) are the same plane;
 # ramping between them would only switch autofocus off for no visible gain.
 _FOCUS_EPS = 1e-6
@@ -575,17 +581,20 @@ def session_restore(session, *, _self=cmd):
     d = session.get('raymol_movie_anim')
     if not isinstance(d, dict):
         return 1
-    from pymol import raymol_scenes as _rs
-    # A track value is validated as "a name in CAPTURE that parses as a float".
-    # The material settings are in CAPTURE now, and they are IDS -- table rows,
-    # not quantities -- which author() can never emit and which invalidate every
-    # representation on every write. Left in `known` they would let a corrupted
-    # or hostile .pse make each interior frame emit `set cartoon_material,
-    # <float>` and rebuild all the geometry per frame. Everything else in
-    # CAPTURE stays: author() emits some settings that are not in INTERPOLATE
-    # (metal_dof is stepped by build_dof_transition, not ramped).
-    known = set(_rs.CAPTURE) - set(_rs.MATERIAL_ID_SETTINGS()) - {
-        'transparency_peel'}
+    # What author() can actually emit -- an ALLOWLIST, not the whole CAPTURE
+    # list minus the names that happen to look dangerous today.
+    #
+    # A track value used to be validated as "a name in CAPTURE + parses as a
+    # float". CAPTURE is the set a scene SNAPSHOTS, which is much larger than
+    # the set a movie can ramp, and it holds several settings that force a
+    # rebuild on every write: the material ids (cRepInvColor on all four reps)
+    # and, worse, surface_quality, which is cRepInvRep -- a full surface
+    # re-tessellation. None can be produced by author(), but all were accepted
+    # from a .pse, so a corrupted or hand-edited session could put one on every
+    # interior frame and make playback rebuild the geometry per frame.
+    # Validating against what the author emits closes all of them at once and
+    # stays closed the next time CAPTURE grows.
+    known = set(INTERPOLATE) | set(_DOF_EMITTED)
     raw = d.get('track')
     if isinstance(raw, dict):
         for fs, vals in raw.items():
@@ -620,10 +629,11 @@ def session_restore(session, *, _self=cmd):
 
 def enter_scene(name_b64, _self=cmd):
     """Movie-frame callback: make scene `name`'s captured render settings and
-    autofocus target current. Applies ALL captured settings (at a keyframe the
-    scene's own values are by definition the correct endpoint) but deliberately
-    NOT object TTT — the movie owns object motion through its own keyframes and
-    re-applying would fight the interpolation."""
+    autofocus target current. Restores every captured setting that DIFFERS (at a
+    keyframe the scene's own values are by definition the correct endpoint, and
+    re-asserting one that already matches costs a full rebuild for several of
+    them) but deliberately NOT object TTT — the movie owns object motion through
+    its own keyframes and re-applying would fight the interpolation."""
     try:
         name = base64.b64decode(name_b64).decode('utf-8')
     except Exception:
@@ -635,6 +645,8 @@ def enter_scene(name_b64, _self=cmd):
     # cartoon, surface, stick and sphere geometry for every object -- twice per
     # scene, on every pass of a looping movie and on every frame of an export.
     try:
+        # apply_settings reports a per-setting failure itself, so this only
+        # catches something structural -- the scene having no payload at all.
         _rs.apply_settings(name, _self)
     except Exception as e:
         print('MOVIE_ERR:' + str(e))

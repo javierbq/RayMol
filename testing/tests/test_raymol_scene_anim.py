@@ -905,6 +905,39 @@ class TestAuthorAndSession(unittest.TestCase):
         # ...and a legitimate neighbour on the same frame still survives.
         self.assertEqual(self.anim._track[3]['ambient'], 0.25)
 
+    def test_session_restore_accepts_only_what_author_can_emit(self):
+        """The filter is an allowlist of what `author()` produces, not the whole
+        CAPTURE list minus whatever looked dangerous at the time. CAPTURE is the
+        set a scene SNAPSHOTS and is much larger; `surface_quality` lives there
+        and is worse than any material -- cRepInvRep, a full surface
+        re-tessellation on every write -- and `author()` can never emit it."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'surface_quality': 4.0, 'metal_msaa': 8.0,
+                            'material_env': 1.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        for name in ('surface_quality', 'metal_msaa', 'material_env'):
+            self.assertNotIn(name, self.anim._track.get(3, {}), name)
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
+    def test_every_setting_author_emits_survives_the_restore_filter(self):
+        """The allowlist has to stay in step with the two builders, or a movie
+        silently loses keyframe data on reload. Asserted against what `author()`
+        actually put on the track, not against a hand-written list."""
+        self._two_scenes()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=FakeCmd())
+        emitted = set()
+        for vals in self.anim._track.values():
+            emitted.update(vals)
+        self.assertTrue(emitted, 'author() emitted nothing; test proves nothing')
+        sess = {}
+        self.anim.session_save(sess, _self=FakeCmd())
+        saved = dict(self.anim._track)
+        self.anim._track.clear()
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(self.anim._track, saved)
+
     def test_session_save_blanks_only_our_own_commands(self):
         self._two_scenes()
         fake = FakeCmd()

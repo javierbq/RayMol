@@ -241,6 +241,9 @@ class TestSceneMaterials(testing.PyMOLTestCase):
         self.assertEqual([a for a in rec.sets if a[0] in MATERIAL_SETTINGS], [])
 
     def testTheMovieFrameCallbackStillAppliesWhatDidChange(self):
+        """Guard, not detector: this passes against the old unconditional loop
+        too. Its job is to stop the conditional-write fix from over-skipping in
+        the movie path the way it must not in the recall path."""
         import base64
         from pymol import raymol_scene_anim as ra
         cmd.set('material_default', 'clay')
@@ -267,8 +270,11 @@ class TestSceneMaterials(testing.PyMOLTestCase):
         self.assertEqual(cmd.get('cartoon_material', 'm1'), 'marble')
 
     def testASceneStoredNowStillUnsetsWhatItCaptured(self):
-        """The other direction: the guard above must not disable unsetting for
-        scenes that DID capture the materials."""
+        """The other direction. This does NOT detect a revert of the fix (with
+        the guard removed, unsetting happens anyway) -- it pins the opposite
+        failure: a fallback that always answered _LEGACY_OBJECT_CAPTURE would
+        leave the material in place here, and every scene stored today would
+        quietly stop unsetting."""
         cmd.scene('A', 'store')
         self.assertIn('cartoon_material', rs._scene_object_capture['A'])
         cmd.set('cartoon_material', 'marble', 'm1')

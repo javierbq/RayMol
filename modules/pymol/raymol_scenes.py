@@ -65,27 +65,32 @@ def MATERIAL_ID_SETTINGS():
     Derived from `setting.material_indices` -- the one list the rest of the code
     resolves material names against -- rather than spelled out here, so a
     material setting added later is captured as an id without touching this
-    module. Against a core with no materials this is empty, which degrades to
-    capturing those settings the way every other one is captured."""
+    A core with no material table at all answers empty -- those settings are
+    then captured the way every other one is, as text -- but that answer is not
+    cached, because a build that HAS materials must never get stuck with it."""
     global _MATERIAL_ID_SETTINGS
     if _MATERIAL_ID_SETTINGS is not None:
         return _MATERIAL_ID_SETTINGS
-    names = set()
     try:
         from pymol import setting
-        for n in CAPTURE:
-            try:
-                if setting._get_index(n) in setting.material_indices:
-                    names.add(n)
-            except Exception:
-                pass
+        indices = setting.material_indices      # OUTSIDE the per-name try
     except Exception:
-        # Deliberately NOT memoised. Caching an empty answer -- which is what a
-        # failure here produces -- would make every later capture write material
-        # NAMES into the .pse and make _setting_differs compare an int against a
-        # string, i.e. permanently True, i.e. the full-rebuild regression this
-        # module just removed. Better to retry on the next call.
+        # Deliberately NOT memoised. Caching an empty answer would make every
+        # later capture write material NAMES into the .pse and make
+        # _setting_differs compare an int against a string -- permanently
+        # unequal, i.e. the full-rebuild regression this module exists to
+        # remove, silently reinstated for the life of the process. The lookup
+        # above is hoisted out of the loop for the same reason: inside it, a
+        # missing material_indices was swallowed once per name and the empty
+        # result WAS memoised.
         return frozenset()
+    names = set()
+    for n in CAPTURE:
+        try:
+            if setting._get_index(n) in indices:
+                names.add(n)
+        except Exception:
+            pass        # a name this build does not define
     _MATERIAL_ID_SETTINGS = frozenset(names)
     return _MATERIAL_ID_SETTINGS
 
@@ -123,6 +128,13 @@ _scene_object_capture = {}
 
 # What OBJECT_CAPTURE was before the materials joined it (#489). Every scene in
 # an older .pse was stored with exactly these three.
+#
+# Known limit: absence of a record cannot distinguish "stored before the record
+# existed AND before the materials joined" (this list is right) from "stored
+# before the record existed but AFTER they joined" (it is not -- the recall will
+# neither apply nor unset the materials, and the scene half-restores). Only
+# sessions written by the intermediate commits of the PR that added this are in
+# the second case, and none of those shipped, so there is nothing to migrate.
 _LEGACY_OBJECT_CAPTURE = ("metal_rt_reflect", "metal_rt_reflect_tint",
                           "metal_rt_reflect_rough")
 
@@ -270,6 +282,11 @@ def _capture_object_settings(_self=cmd):
     return out
 
 
+# (scene, setting) pairs already reported by apply_settings. A failure that
+# repeats every frame is reported once, not once per frame.
+_reported = set()
+
+
 def apply_settings(name, _self=cmd):
     """Make scene `name`'s captured GLOBAL settings current, skipping every
     write that would not change anything.
@@ -281,22 +298,45 @@ def apply_settings(name, _self=cmd):
 
     Only what CHANGES is written. The material settings carry a cRepInvColor
     side effect, so an unconditional re-write rebuilds cartoon, surface, stick
-    and sphere geometry on every object even when no material differs. Measured
-    on 1aon (58 870 atoms, cartoon + surface): 144 s per no-op recall before
-    this, 0.0002 s after."""
+    and sphere geometry on every object even when no material differs:
+    0.0021 s -> 0.1774 s per no-op recall on 1aon (58 870 atoms, cartoon).
+
+    They are not the worst thing in CAPTURE, and this fix is not only for them.
+    Measured on the same structure with a surface shown, one no-op recall with
+    unconditional writes:
+
+        whole payload                130.4 s
+        payload minus the materials  126.3 s
+        materials only                 1.1 s
+        surface_quality only         127.0 s
+
+    surface_quality is cRepInvRep -- a full surface RE-TESSELLATION -- and has
+    been in this list since long before the materials. All of it goes away; the
+    share this module is answerable for is the 1.1 s."""
     d = _scene_settings.get(name)
     if not d:
         return
+    known = set(CAPTURE)
     for s, v in d.items():
+        # A name this build does not capture comes from a .pse written by a
+        # NEWER one. Skipped in silence and left in the payload untouched, so
+        # re-saving here does not strip it -- warning about it would put a line
+        # on the console at every scene keyframe of every pass of a movie.
+        if s not in known:
+            continue
         try:
             if _setting_differs(s, v, '', _self):
                 _self.set(s, v)
         except Exception as exc:
-            # A value this build cannot accept -- an unknown material NAME from
-            # a .pse written by a build with a different table is the realistic
-            # case. Say so rather than dropping it silently: a scene that
-            # quietly stops restoring one setting is much harder to diagnose
-            # than one that names it once.
+            # A name this build DOES capture but cannot accept the value for --
+            # an unknown material name from a build with a different table is
+            # the realistic case. Worth saying, but once: apply_settings runs at
+            # every scene keyframe, so an unconditional print here is a console
+            # line per setting per frame for the life of the movie.
+            key = (name, s)
+            if key in _reported:
+                continue
+            _reported.add(key)
             try:
                 from pymol import colorprinting
                 colorprinting.warning(
@@ -355,7 +395,10 @@ def _apply_object_settings(name, _self=cmd):
         want = {}
     # Only the names this scene was stored with may be unset; see
     # _scene_object_capture.
-    captured = _scene_object_capture.get(name) or _LEGACY_OBJECT_CAPTURE
+    # Explicit membership, not truthiness: a malformed payload can restore an
+    # EMPTY tuple, which means "this scene captured nothing", not "no record".
+    captured = (_scene_object_capture[name] if name in _scene_object_capture
+                else _LEGACY_OBJECT_CAPTURE)
     for o, kv in d.items():
         # Not merely defensive: without this, a scene stored with many objects
         # that were later deleted raises (and swallows) one exception per
@@ -555,6 +598,11 @@ def prune(_self=cmd):
     for name in list(_scene_object_settings.keys()):
         if name not in live:
             _scene_object_settings.pop(name, None)
+    # Its own loop, not nested in the one above: _restore_object_settings can
+    # leave a capture record for a scene whose settings map was rejected, and a
+    # nested pop could never reclaim it.
+    for name in list(_scene_object_capture.keys()):
+        if name not in live:
             _scene_object_capture.pop(name, None)
     for name in list(_scene_ttt.keys()):
         if name not in live:
