@@ -326,10 +326,19 @@ private:
   // Pipeline state cache
   id<MTLRenderPipelineState> _currentPipeline;
   id<MTLRenderPipelineState> _batchPipeline;  // built-in batch shader pipeline
-  id<MTLRenderPipelineState> _vboPipelineUByte; // VBO with UByte4Norm color
-  id<MTLRenderPipelineState> _vboPipelineFloat; // VBO with Float4 color
+  // Lit pipelines are specialised per MATERIAL FAMILY (#503): the fragment
+  // function is compiled with kMatFamily fixed, so the `default` family carries
+  // none of the material code at all and renders byte for byte as it did before
+  // materials existed. Only families with an implemented material are built
+  // (MaterialFamilyIsImplemented), so a family nothing can draw costs nothing.
+  id<MTLRenderPipelineState> _vboPipelineUByte[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _vboPipelineFloat[cMaterialFamily_count] = {};
   id<MTLFunction> _vboVertexFunc;
-  id<MTLFunction> _vboFragmentFunc;
+  id<MTLFunction> _vboFragmentFunc[cMaterialFamily_count] = {};
+  // Fragment function specialised for one material family, or nil when the
+  // family has no implemented material or specialisation failed.
+  id<MTLFunction> materialFragmentFunction(
+      id<MTLLibrary> lib, NSString* name, int family);
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Unlit, position-ONLY (no per-vertex color attribute): used for uniform-
@@ -339,7 +348,7 @@ private:
   // attribute 2 and would fail to compile a pipeline for such a layout).
   id<MTLFunction> _vboVertexUnlitFlatFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
-  id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
+  id<MTLRenderPipelineState> _sphereImpostorPipeline[cMaterialFamily_count] = {};
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -353,7 +362,10 @@ private:
     id<MTLRenderPipelineState> oit = nil;
     id<MTLRenderPipelineState> shadow = nil;
   };
-  std::map<std::pair<NSUInteger, int>, CylinderPipelines> _cylinderPipelines;
+  // Keyed by (stride, a_cap offset, MATERIAL FAMILY): a marble stick and a
+  // default stick at the same layout need different pipelines, and whichever
+  // drew first would otherwise decide how both looked.
+  std::map<std::tuple<NSUInteger, int, int>, CylinderPipelines> _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
@@ -421,12 +433,13 @@ private:
   id<MTLTexture> _oitAccum = nil;    // RGBA16Float, additive
   id<MTLTexture> _oitReveal = nil;   // R16Float, revealage (multiplicative)
   MTLRenderPassDescriptor* _oitPassDesc = nil;
-  id<MTLRenderPipelineState> _vboOitPipelineUByte = nil;
-  id<MTLRenderPipelineState> _vboOitPipelineFloat = nil;
-  id<MTLFunction> _vboFragmentOitFunc = nil;  // for one-off OIT pipelines
+  id<MTLRenderPipelineState> _vboOitPipelineUByte[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _vboOitPipelineFloat[cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitFunc[cMaterialFamily_count] = {};
   // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
   // for an arbitrary vertex layout (e.g. the surface's stride-44 layout).
-  id<MTLRenderPipelineState> oitPipelineForVD(MTLVertexDescriptor* vd);
+  id<MTLRenderPipelineState> oitPipelineForVD(
+      MTLVertexDescriptor* vd, int family);
   // Build-once cache for one-off VBO pipelines whose vertex layout does not match
   // a prebuilt stride (e.g. the molecular-surface stride-44 layout). Without it,
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
@@ -436,7 +449,7 @@ private:
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
       int colorType, MTLVertexDescriptor* vd);
-  id<MTLRenderPipelineState> _sphereOitPipeline = nil;
+  id<MTLRenderPipelineState> _sphereOitPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;

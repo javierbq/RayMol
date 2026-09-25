@@ -27,6 +27,7 @@ enum {
   cMaterialFamily_procedural,
   cMaterialFamily_reflective,
   cMaterialFamily_glass,
+  cMaterialFamily_count
 };
 
 /* Material ids. Append only: these are written into .pse files. */
@@ -90,6 +91,14 @@ int MaterialSettingForRep(int repType);
  */
 int MaterialResolveSettingId(
     PyMOLGlobals* G, const CSetting* set1, const CSetting* set2, int repType);
+
+/**
+ * True when at least one IMPLEMENTED material belongs to this family, so the
+ * renderer knows which specialised pipelines are worth building. The default
+ * family is always in use. As later waves flip `implemented` flags this grows;
+ * a family nothing can draw costs no pipeline.
+ */
+bool MaterialFamilyIsImplemented(int family);
 
 /**
  * Number of rows in the material table.
