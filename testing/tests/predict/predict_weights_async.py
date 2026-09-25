@@ -222,10 +222,22 @@ class AsyncFetchTest(testing.PyMOLTestCase):
     def testPumpSubmitsTheJobOnceTheWeightsLand(self):
         from pymol import predicting
         from pymol.predictors import fetching
-        with patch('pymol.predictors.weights._urlopen',
-                   return_value=FakeResponse(self.data)):
+        # GATED, not a plain FakeResponse. `fetching.start()` publishes the
+        # record and starts the worker, then hands the Fetch back for predict()
+        # to read `state` off; with an ungated in-memory body the worker can run
+        # the whole "download" to completion inside that window, in which case
+        # predict() correctly sees state == 'done' and submits the job directly
+        # instead of deferring it -- so `job` is the predictor's own handle,
+        # which has no `submitted` at all. That is what made this test flaky in
+        # CI (AttributeError: 'StubJob' object has no attribute 'submitted').
+        # Holding the body open makes the deferral the only possible outcome,
+        # which is the thing this test is actually about.
+        response = GatedResponse(self.data)
+        with patch('pymol.predictors.weights._urlopen', return_value=response):
             job = cmd.predict('stub', 'AA', name='async_test')
+            self.assertTrue(response.serving.wait(5), 'download never started')
             self.assertFalse(job.submitted, 'must not submit before weights exist')
+            response.gate.set()
             fetching.join('stub', timeout=10)
             predicting.pump()
             self.assertTrue(job.submitted)
