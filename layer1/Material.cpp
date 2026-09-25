@@ -207,6 +207,31 @@ bool MaterialIsSelectionRejectedSetting(int index)
          MaterialIsRepMaterialSetting(index);
 }
 
+bool MaterialObjectWantsPeel(
+    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2)
+{
+  int peel = -1;
+  if (!SettingGetIfDefined_i(G, set1, cSetting_transparency_peel, &peel) &&
+      !SettingGetIfDefined_i(G, set2, cSetting_transparency_peel, &peel)) {
+    peel = SettingGetGlobal_i(G, cSetting_transparency_peel);
+  }
+  if (peel >= 0) {
+    return peel != 0;   // an explicit on/off, at any level, wins outright
+  }
+  // Auto: on when any representation this object can draw resolves to a
+  // material whose row asks for peeling. Four settings, resolved the same way
+  // the draw path resolves them, so what the user sees and what gets peeled
+  // cannot disagree.
+  static const int kReps[] = {cRepCartoon, cRepSurface, cRepCyl, cRepSphere};
+  for (int rep : kReps) {
+    int const id = MaterialResolveSettingId(G, set1, set2, rep);
+    if (MaterialResolve(id, rep).wantsPeel) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int MaterialSettingForRep(int repType)
 {
   switch (repType) {

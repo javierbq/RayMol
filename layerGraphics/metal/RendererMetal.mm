@@ -457,18 +457,21 @@ RendererMetal::~RendererMetal()
   [_sceneColor release];     [_sceneDepth release];     [_postColor release];
   [_sceneColorMS release];   [_sceneDepthMS release];
   [_oitAccum release];       [_oitReveal release];
+  [_peelDepth release];      _peelDepth = nil;
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
   [_shadowDepth release];    [_labelAtlas release];
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
   [_scenePassDesc release];  [_oitPassDesc release];    [_shadowPassDesc release];
+  [_peelPassDesc release];   [_oitPeelPassDesc release];
 
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
   [_oitResolvePipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
-  [_sphereShadowPipeline release];
+  [_vboPeelPipelineUByte release];    [_vboPeelPipelineFloat release];
+  [_sphereShadowPipeline release];    [_spherePeelPipeline release];
   releaseCylinderPipelines(); // per-layout cylinder pipelines (owner)
   [_shadowDebugPipeline release];
   [_capMarkPipeline release];         [_capFillPipeline release];
@@ -510,6 +513,7 @@ RendererMetal::~RendererMetal()
   [_depthStencilState release];  [_shadowDepthState release];
   [_capMarkDSS release];         [_capFillDSS release];
   [_oitDepthState release];      [_bezierDepthState release];
+  [_peelWriteState release];     [_peelTestState release];
 
   // Real-time ray-tracing buffers + acceleration structures (+1).
   [_rtProtoVerts release];       [_rtProtoIndices release];
@@ -855,6 +859,16 @@ void RendererMetal::beginFrame()
   // render command buffer is in flight (that stalls/blackouts the frame).
   // Model-space geometry is stable, so one-frame latency is invisible.
   if (_rtEnabled) ensureRayTracingAS();
+  // Arm the OIT clear for this frame (#488). The peel path opens several
+  // transparent encoders per frame and only the first may CLEAR the
+  // accumulation and reveal targets -- but the flag has to be re-armed by the
+  // FRAME, not by the scene loop. Resetting it only where the transparent pass
+  // is assembled leaves every render path that does not go through there --
+  // and there is more than one -- clearing exactly once for the life of the
+  // process: revealage then decays multiplicatively toward zero, accumulation
+  // grows without bound, and the composite turns the whole frame black after a
+  // few frames. Which is exactly what it did.
+  _oitCleared = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -1751,6 +1765,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_sceneColor release];   [_postColor release];   [_sceneDepth release];
   [_sceneColorMS release];  [_sceneDepthMS release];
   [_oitAccum release];      [_oitReveal release];
+  [_peelDepth release];
   [_rtAO release];          [_dofTex release];
   [_rtAOHistory release];   [_rtAOAccum release];
   [_surfaceCoverageTex release];
@@ -1758,6 +1773,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = nil;
+  _peelDepth = nil;
   _surfaceCoverageTex = nil;
   _aoExemptMaskTex = nil;
   _rtAO = nil;              _dofTex = nil;
@@ -1876,6 +1892,50 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
   _oitPassDesc.stencilAttachment.texture = _sceneDepth;
   _oitPassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+
+  // --- Per-object peel (#488) ---
+  // Same format and size as _sceneDepth so the blit that seeds it is a plain
+  // texture copy, and so the OIT pipelines -- whose depthAttachmentPixelFormat
+  // is fixed at build time -- can be bound against either one unchanged.
+  // Single-sample even under MSAA, exactly like _oitPassDesc, which also tests
+  // against the RESOLVED _sceneDepth.
+  MTLTextureDescriptor* pd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                   width:w height:h mipmapped:NO];
+  pd.usage = MTLTextureUsageRenderTarget;
+  pd.storageMode = MTLStorageModePrivate;
+  _peelDepth = [_device newTextureWithDescriptor:pd];
+
+  // The pre-pass descriptor has ZERO colour attachments -- that is the whole
+  // point of it being cheap. Depth loads (the blit put the opaque depth there)
+  // and stores.
+  if (!_peelPassDesc)
+    _peelPassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _peelPassDesc.depthAttachment.texture = _peelDepth;
+  _peelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _peelPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  _peelPassDesc.stencilAttachment.texture = _peelDepth;
+  _peelPassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  _peelPassDesc.stencilAttachment.storeAction = MTLStoreActionStore;
+
+  // The peeled object's OIT pass: the same MRT targets as _oitPassDesc (so the
+  // peeled and unpeeled passes accumulate into one image) but depth-tested
+  // against _peelDepth. Load actions for the colour targets are set per pass in
+  // beginTransparentOIT, since only the first encoder of the frame may clear.
+  if (!_oitPeelPassDesc)
+    _oitPeelPassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _oitPeelPassDesc.colorAttachments[0].texture = _oitAccum;
+  _oitPeelPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+  _oitPeelPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.colorAttachments[1].texture = _oitReveal;
+  _oitPeelPassDesc.colorAttachments[1].clearColor = MTLClearColorMake(1, 0, 0, 0);
+  _oitPeelPassDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.depthAttachment.texture = _peelDepth;
+  _oitPeelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _oitPeelPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.stencilAttachment.texture = _peelDepth;
+  _oitPeelPassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  _oitPeelPassDesc.stencilAttachment.storeAction = MTLStoreActionStore;
 
   // Shadow map: fixed-resolution single-sample depth target rendered from the
   // light POV. Independent of the viewport (kShadowDim^2), so it survives
@@ -4000,6 +4060,15 @@ void RendererMetal::runPostChain()
   }
 }
 
+id<MTLDepthStencilState> RendererMetal::oitDepthPeelAwareState()
+{
+  // Which depth test a transparent draw uses. Every draw path re-applies its
+  // own depth state after setting a pipeline, so the state beginTransparentOIT
+  // put on the encoder does not survive to the draw -- this is the one place
+  // that decides, and it has to agree with the pass that is open.
+  return _oitPeelTest ? peelTestState() : oitDepthState();
+}
+
 id<MTLDepthStencilState> RendererMetal::oitDepthState()
 {
   // Transparent/OIT draws: depth-test vs opaque (LessEqual), never write depth.
@@ -4029,7 +4098,94 @@ id<MTLDepthStencilState> RendererMetal::bezierDepthState()
   return _bezierDepthState;
 }
 
-void RendererMetal::beginTransparentOIT()
+bool RendererMetal::peelSupported() const
+{
+  // Everything the peel path needs, checked in one place so the scene loop can
+  // ask BEFORE it reorders the transparent pass. Missing anything, the caller
+  // draws every transparent object in one ordinary OIT pass -- the pre-#488
+  // look, rather than nothing at all.
+  return _peelDepth && _peelPassDesc && _oitPeelPassDesc && _sceneDepth &&
+      _vboPeelPipelineUByte && _vboPeelPipelineFloat;
+}
+
+void RendererMetal::resetTransparentOIT()
+{
+  // Called once per frame, before the first transparent pass. The peel path
+  // opens several transparent encoders per frame and only the first may CLEAR
+  // the accumulation and reveal targets; every later one loads what is there.
+  _oitCleared = false;
+}
+
+id<MTLDepthStencilState> RendererMetal::peelWriteState()
+{
+  // Pre-pass: ordinary depth test and WRITE, so the texture ends holding the
+  // object's nearest surface wherever that is in front of the opaque depth the
+  // blit seeded it with, and the opaque depth everywhere else.
+  if (!_peelWriteState) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLess;
+    d.depthWriteEnabled = YES;
+    _peelWriteState = [_device newDepthStencilStateWithDescriptor:d];
+    [d release];
+  }
+  return _peelWriteState;
+}
+
+id<MTLDepthStencilState> RendererMetal::peelTestState()
+{
+  // The peeled object's OIT draw: EQUAL, no write. Only the fragments whose
+  // depth is exactly what the pre-pass recorded survive -- one shell per pixel.
+  // Exactness is not luck: the pre-pass and this draw compute depth with the
+  // same shader code (the shadow vertex/fragment functions for VBOs, the same
+  // ray-cast intersection for impostors) under the same camera matrices.
+  // A fragment hidden behind opaque geometry lost the pre-pass test, so the
+  // texture still holds the OPAQUE depth there and the fragment cannot match:
+  // occlusion falls out of the same comparison.
+  if (!_peelTestState) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionEqual;
+    d.depthWriteEnabled = NO;
+    _peelTestState = [_device newDepthStencilStateWithDescriptor:d];
+    [d release];
+  }
+  return _peelTestState;
+}
+
+void RendererMetal::beginPeelPrepass()
+{
+  if (!_cmdBuffer || !peelSupported()) return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+
+  // Seed the peel depth with the opaque depth. This is what makes a transparent
+  // fragment behind opaque geometry fail here and therefore never match in the
+  // OIT pass that follows.
+  id<MTLBlitCommandEncoder> blit = [_cmdBuffer blitCommandEncoder];
+  if (!blit) return;
+  [blit copyFromTexture:_sceneDepth toTexture:_peelDepth];
+  [blit endEncoding];
+
+  _passDesc = _peelPassDesc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_peelPassDesc];
+  bindNeutralMaterialU(_encoder);
+  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  [_encoder setViewport:_viewport];
+  [_encoder setDepthStencilState:peelWriteState()];
+  // No culling: a transparent object's nearest surface can be a back face
+  // (an open surface, a stick cap), and missing it would peel to the shell
+  // behind it.
+  [_encoder setCullMode:MTLCullModeNone];
+  _peelMode = true;
+}
+
+void RendererMetal::endPeelPrepass()
+{
+  if (!_peelMode) return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  _peelMode = false;
+  _passDesc = _scenePassDesc;
+}
+
+void RendererMetal::beginTransparentOIT(bool peel)
 {
   // OIT requires its targets + pipelines; if any are missing, leave the scene
   // encoder active so transparent draws fall back to normal blending.
@@ -4038,10 +4194,19 @@ void RendererMetal::beginTransparentOIT()
   if (!_cmdBuffer || !_oitPassDesc ||
       !_vboOitPipelineUByte[cMaterialFamily_default] || !_oitResolvePipeline)
     return;
+  if (peel && !peelSupported()) peel = false;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
 
-  _passDesc = _oitPassDesc;
-  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_oitPassDesc];
+  MTLRenderPassDescriptor* desc = peel ? _oitPeelPassDesc : _oitPassDesc;
+  // Only the frame's FIRST transparent encoder clears the accumulation and
+  // reveal targets; the peel path opens one pass per peeled object plus one for
+  // the rest, and each must add to the same image rather than wipe it.
+  MTLLoadAction load = _oitCleared ? MTLLoadActionLoad : MTLLoadActionClear;
+  desc.colorAttachments[0].loadAction = load;
+  desc.colorAttachments[1].loadAction = load;
+
+  _passDesc = desc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:desc];
   bindNeutralMaterialU(_encoder);
   // The environment every reflective material samples (#493). Bound with the
   // neutral material so no encoder can exist without it, and identical on the
@@ -4049,13 +4214,16 @@ void RendererMetal::beginTransparentOIT()
   // whichever pass draws it.
   bindEnvironment(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  _oitCleared = true;
   [_encoder setViewport:_viewport];
   // Depth-test against opaque depth (LEQUAL), but DO NOT write depth, so
   // transparent fragments occlude/are-occluded by opaque geometry yet never
-  // hide each other.
-  [_encoder setDepthStencilState:oitDepthState()];
+  // hide each other. With peel on, EQUAL against the pre-pass depth instead,
+  // which keeps only the object's front-most shell.
+  [_encoder setDepthStencilState:peel ? peelTestState() : oitDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
   _oitActive = true;
+  _oitPeelTest = peel;
   _oitHasContent = true;
 }
 
@@ -4064,6 +4232,7 @@ void RendererMetal::endTransparentOIT()
   if (!_oitActive) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _oitActive = false;
+  _oitPeelTest = false;
 
   // Resume rendering into the scene color (LOAD, don't clear) so any
   // post-transparent draws (e.g. selection indicators) land on the opaque
@@ -6194,6 +6363,33 @@ id<MTLRenderPipelineState> RendererMetal::shadowPipelineForVD(
   return ps;
 }
 
+// Depth-only VBO pipeline for the PEEL pre-pass (#488). The same two functions
+// as the shadow variant -- the peel pre-pass is a depth-only replay of one
+// object, and the camera matrices are already loaded when the scene loop runs
+// it, so nothing about the shader needs to change. What differs is the
+// attachment: the peel depth is Depth32Float_Stencil8 (a copy of _sceneDepth),
+// not the shadow map's plain Depth32Float, and a pipeline's attachment formats
+// are fixed at build time.
+id<MTLRenderPipelineState> RendererMetal::peelPipelineForVD(
+    MTLVertexDescriptor* vd)
+{
+  if (!_vboVertexFunc || !_vboFragmentShadowFunc) return nil;
+  MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
+  p.vertexFunction = _vboVertexFunc;
+  p.fragmentFunction = _vboFragmentShadowFunc;
+  p.vertexDescriptor = vd;
+  p.rasterSampleCount = 1;  // _peelDepth is single-sample, like the OIT targets
+  p.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  p.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  // No colorAttachments[0] pixel format: depth-only pass.
+  NSError* e = nil;
+  id<MTLRenderPipelineState> ps =
+      [_device newRenderPipelineStateWithDescriptor:p error:&e];
+  if (!ps) NSLog(@"RendererMetal: VBO peel pipeline failed: %@", e);
+  [p release];  // MRC: descriptor (+1) consumed by pipeline creation
+  return ps;
+}
+
 void RendererMetal::buildShadowPipelines()
 {
   if (_vboShadowPipelineUByte) return;
@@ -6214,6 +6410,11 @@ void RendererMetal::buildShadowPipelines()
   _vboShadowPipelineUByte =
       shadowPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
   _vboShadowPipelineFloat = shadowPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
+  // The peel pre-pass reuses the same two functions against the peel depth's
+  // format; built here so the two depth-only families cannot drift apart.
+  _vboPeelPipelineUByte =
+      peelPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
+  _vboPeelPipelineFloat = peelPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
 }
 
 // ---------------------------------------------------------------------------
@@ -6472,6 +6673,8 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
       ps = oitPipelineForVD(vd, cMaterialFamily_default);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
+  } else if (variant == VBOPipelineVariant::Peel) {
+    ps = peelPipelineForVD(vd);      // +1
   } else {
     // Opaque pass fallback for a non-prebuilt layout (mirrors the former inline
     // fallback): Lit uses the per-fragment shader, Unlit/UnlitFlat the flat ones.
@@ -6548,7 +6751,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer — the frame only records that this buffer contributed.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
@@ -6614,7 +6817,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // 1px MTLPrimitiveTypeLine. Lines still cast no shadows (the shadow branch
   // below early-returns for `unlit`) and are skipped in the transparent pass.
   if ((mode == PrimitiveType::Lines || mode == PrimitiveType::LineStrip) &&
-      !_shadowMode && !_oitActive) {
+      !_shadowMode && !_peelMode && !_oitActive) {
     bool flatLine = (colorOffset < 0);
     drawLinesAA(mode, vertexCount, data, stride, posOffset, colorOffset,
         colorType, flatLine);
@@ -6637,8 +6840,25 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     if (!pipeline) return;
   }
 
+  // Peel pre-pass (#488): the same depth-only replay as the shadow branch
+  // above, under the CAMERA matrices rather than the light's, writing into the
+  // peel depth. Identical routing on purpose -- the depth this records has to
+  // be computed by the same code that computes the depth the peeled object's
+  // OIT draw then compares for equality, or nothing would ever match.
+  if (_peelMode) {
+    if (unlit) return;
+    if (posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
+      if (colorType == 0 && stride == 28) pipeline = _vboPeelPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboPeelPipelineFloat;
+    }
+    if (!pipeline)  // e.g. surface stride 44 — build-once via the layout cache
+      pipeline = cachedVBOPipeline(VBOPipelineVariant::Peel, stride,
+          posOffset, normalOffset, colorOffset, colorType, vd);
+    if (!pipeline) return;
+  }
+
   // Check if layout matches pre-built pipelines
-  if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
     int fam = _repMatParams.family;
     if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
@@ -6691,8 +6911,13 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     // a thin cartoon/surface slab cannot self-shadow its own light-facing side
     // (genuine fold occlusion is preserved). Restored to back/none after.
     [_encoder setCullMode:MTLCullModeFront];
+  } else if (_peelMode) {
+    // The pre-pass set its own state on the encoder; this generic block would
+    // otherwise overwrite it with the scene's (and re-enable culling).
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     applyDepthStencilState();
     if (_depthStencilState) {
@@ -6748,7 +6973,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // --- Surface interior cap (stencil) — non-indexed (opaque surface) path.
   // MARK the slab's interior cross-section via stencil parity over the surface's
   // not-clipped faces, then FILL it flat at the near-plane sentinel depth.
-  if (interiorCap && !_shadowMode && !_oitActive && _capFillPipeline &&
+  if (interiorCap && !_shadowMode && !_peelMode && !_oitActive && _capFillPipeline &&
       _capMarkVtxFunc && _capMarkFragFunc) {
     if (!_capMarkPipeline || _capMarkStride != stride) {
       MTLVertexDescriptor* mvd = [[MTLVertexDescriptor alloc] init];
@@ -6815,7 +7040,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
   // into the coverage mask after the scene (see runPostChain).
-  if (_repContourEnabled && !_shadowMode) {
+  if (_repContourEnabled && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -6828,7 +7053,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
   // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
-  if (_repAOExempt && !_shadowMode) {
+  if (_repAOExempt && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -6852,7 +7077,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer. Keyed on the vertex data, with the index buffer as an alias so
   // freeing either one drops the cached triangles.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
@@ -6919,7 +7144,24 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
           posOffset, normalOffset, colorOffset, colorType, vd);
     if (!pipeline) return;
   }
-  if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+
+  // Peel pre-pass (#488): the same depth-only replay as the shadow branch
+  // above, under the CAMERA matrices rather than the light's, writing into the
+  // peel depth. Identical routing on purpose -- the depth this records has to
+  // be computed by the same code that computes the depth the peeled object's
+  // OIT draw then compares for equality, or nothing would ever match.
+  if (_peelMode) {
+    if (unlit) return;
+    if (posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
+      if (colorType == 0 && stride == 28) pipeline = _vboPeelPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboPeelPipelineFloat;
+    }
+    if (!pipeline)  // e.g. surface stride 44 — build-once via the layout cache
+      pipeline = cachedVBOPipeline(VBOPipelineVariant::Peel, stride,
+          posOffset, normalOffset, colorOffset, colorType, vd);
+    if (!pipeline) return;
+  }
+  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
     int fam = _repMatParams.family;
     if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
@@ -6965,8 +7207,13 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     // its own light-facing front — without this the surface stored its near
     // faces and the front-center read as a dark "lit from below" band.
     [_encoder setCullMode:MTLCullModeFront];
+  } else if (_peelMode) {
+    // The pre-pass set its own state on the encoder; this generic block would
+    // otherwise overwrite it with the scene's (and re-enable culling).
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     applyDepthStencilState();
     if (_depthStencilState) {
@@ -7020,7 +7267,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // interior cross-section (stencil parity over the not-clipped faces), then FILL
   // it with a flat darkened color at the near-plane sentinel depth (which the
   // post passes already exclude from SSAO/shadows). Opaque pass only.
-  if (interiorCap && !_shadowMode && !_oitActive && _capFillPipeline &&
+  if (interiorCap && !_shadowMode && !_peelMode && !_oitActive && _capFillPipeline &&
       _capMarkVtxFunc && _capMarkFragFunc) {
     if (!_capMarkPipeline || _capMarkStride != stride) {
       MTLVertexDescriptor* mvd = [[MTLVertexDescriptor alloc] init];
@@ -7083,7 +7330,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
   // into the coverage mask after the scene (see runPostChain).
-  if (_repContourEnabled && !_shadowMode) {
+  if (_repContourEnabled && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -7096,7 +7343,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
   // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
-  if (_repAOExempt && !_shadowMode) {
+  if (_repAOExempt && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -7474,6 +7721,19 @@ void RendererMetal::buildImpostorPipelines()
     _sphereShadowPipeline = [_device newRenderPipelineStateWithDescriptor:sp error:&err];
     if (!_sphereShadowPipeline)
       NSLog(@"RendererMetal: sphere shadow pipeline failed: %@", err);
+    // Peel pre-pass variant (#488): the same depth-only fragment -- it ray-casts
+    // the sphere and writes the intersection depth, which is precisely what the
+    // peel records -- against the peel depth's Depth32Float_Stencil8 instead of
+    // the shadow map's plain Depth32Float.
+    MTLRenderPipelineDescriptor* pp = [[MTLRenderPipelineDescriptor alloc] init];
+    pp.vertexFunction = vfn; pp.fragmentFunction = sfn; pp.vertexDescriptor = vd;
+    pp.rasterSampleCount = 1;
+    pp.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    pp.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _spherePeelPipeline = [_device newRenderPipelineStateWithDescriptor:pp error:&err];
+    if (!_spherePeelPipeline)
+      NSLog(@"RendererMetal: sphere peel pipeline failed: %@", err);
+    [pp release];
   }
 }
 
@@ -7493,6 +7753,9 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     sphereFam = cMaterialFamily_default;
   if (_oitActive && !_sphereOitPipeline[sphereFam]) return; // no OIT variant at all
   if (_shadowMode && !_sphereShadowPipeline) return; // can't cast: skip safely
+  // No peel pipeline: skip the PRE-PASS only. The object still draws in the OIT
+  // pass that follows -- unpeeled, which is the pre-#488 look, not nothing.
+  if (_peelMode && !_spherePeelPipeline) return;
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
   // is handled by the prebuilt pipeline. Log and bail otherwise (revisit if hit).
@@ -7524,7 +7787,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
   // sphereSizeScale is baked into the stored radius, so it is part of the
   // params signature: changing sphere_scale re-extracts.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(call.data, nullptr,
         rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
                      (uint64_t)call.posRadiusOff,
@@ -7557,9 +7820,17 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     [_encoder setRenderPipelineState:_sphereShadowPipeline];
     [_encoder setDepthStencilState:_shadowDepthState]; // LESS + write (light POV)
     [_encoder setCullMode:MTLCullModeNone]; // billboards: don't inherit VBO cull-front
+  } else if (_peelMode) {
+    // Depth-only replay under the camera: the SHADOW pipeline computes the ray
+    // intersection and writes its depth, which is exactly what the peel needs,
+    // and is the same computation the OIT draw below will produce -- so the
+    // equality test matches.
+    [_encoder setRenderPipelineState:_spherePeelPipeline];
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
     [_encoder setRenderPipelineState:_sphereOitPipeline[sphereFam]];
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     [_encoder setRenderPipelineState:_sphereImpostorPipeline[sphereFam]];
     applyDepthStencilState();
@@ -7592,7 +7863,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
   // Cap the slab cross-section only in the opaque pass (not shadow/OIT).
-  u.interiorCap = (call.interiorCap && !_shadowMode && !_oitActive) ? 1.0f : 0.0f;
+  u.interiorCap = (call.interiorCap && !_shadowMode && !_peelMode && !_oitActive) ? 1.0f : 0.0f;
   // ray_interior_color: .a>0.5 => use this rgb for the cap (else atom*0.45).
   u.interiorColor[0] = _capColor[0]; u.interiorColor[1] = _capColor[1];
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;
@@ -7948,12 +8219,14 @@ void RendererMetal::buildCylinderImpostorPipeline(
       _cylinderImpostorPipeline = it->second.opaque;
       _cylinderOitPipeline = it->second.oit;
       _cylinderShadowPipeline = it->second.shadow;
+      _cylinderPeelPipeline = it->second.peel;
       return;
     }
   }
   _cylinderImpostorPipeline = nil;
   _cylinderOitPipeline = nil;
   _cylinderShadowPipeline = nil;
+  _cylinderPeelPipeline = nil;
 
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
@@ -8062,6 +8335,19 @@ void RendererMetal::buildCylinderImpostorPipeline(
     _cylinderShadowPipeline = [_device newRenderPipelineStateWithDescriptor:sp error:&err];
     if (!_cylinderShadowPipeline)
       NSLog(@"RendererMetal: cyl shadow pipeline failed: %@", err);
+    // Peel pre-pass variant (#488): the same depth-only fragment -- it ray-casts
+    // the cylinder and writes the intersection depth, the exact value the peeled
+    // object's OIT draw will compare against -- built for the peel depth's
+    // Depth32Float_Stencil8 rather than the shadow map's Depth32Float.
+    MTLRenderPipelineDescriptor* pp = [[MTLRenderPipelineDescriptor alloc] init];
+    pp.vertexFunction = vfn; pp.fragmentFunction = sfn; pp.vertexDescriptor = vd;
+    pp.rasterSampleCount = 1;
+    pp.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    pp.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _cylinderPeelPipeline = [_device newRenderPipelineStateWithDescriptor:pp error:&err];
+    if (!_cylinderPeelPipeline)
+      NSLog(@"RendererMetal: cyl peel pipeline failed: %@", err);
+    [pp release];
   }
 
   // The map takes ownership of the +1 pipelines; the ivars stay as aliases.
@@ -8079,10 +8365,12 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // pass would be off before this could bite.
   if (_cylinderImpostorPipeline) {
     _cylinderPipelines[layout] = CylinderPipelines{
-        _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline};
+        _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline,
+        _cylinderPeelPipeline};
   } else {
     [_cylinderOitPipeline release];    _cylinderOitPipeline = nil;
     [_cylinderShadowPipeline release]; _cylinderShadowPipeline = nil;
+    [_cylinderPeelPipeline release];   _cylinderPeelPipeline = nil;
   }
 }
 
@@ -8094,11 +8382,13 @@ void RendererMetal::releaseCylinderPipelines()
     [kv.second.opaque release];
     [kv.second.oit release];
     [kv.second.shadow release];
+    [kv.second.peel release];
   }
   _cylinderPipelines.clear();
   _cylinderImpostorPipeline = nil;
   _cylinderOitPipeline = nil;
   _cylinderShadowPipeline = nil;
+  _cylinderPeelPipeline = nil;
 }
 
 void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
@@ -8119,6 +8409,9 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   if (!_cylinderImpostorPipeline) return;
   if (_oitActive && !_cylinderOitPipeline) return; // no OIT variant: skip
   if (_shadowMode && !_cylinderShadowPipeline) return; // can't cast: skip safely
+  // No peel pipeline: skip the PRE-PASS only. The object still draws unpeeled
+  // in the OIT pass that follows, which is the pre-#488 look, not nothing.
+  if (_peelMode && !_cylinderPeelPipeline) return;
 
   id<MTLBuffer> vbo = nil, ibo = nil;
   { auto it = _vboCache.find(call.vdata);
@@ -8137,7 +8430,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
   // stick regenerated on every frame, including pure camera moves. 8
   // verts/cylinder share v1/v2/radius.
-  if (_rtEnabled && !_shadowMode && !_oitActive && call.cylinderCount > 0) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive && call.cylinderCount > 0) {
     rtNoteGeometry(call.vdata, nullptr,
         rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
                      (uint64_t)call.v1Off, (uint64_t)call.v2Off,
@@ -8168,9 +8461,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     [_encoder setRenderPipelineState:_cylinderShadowPipeline];
     [_encoder setDepthStencilState:_shadowDepthState]; // LESS + write (light POV)
     [_encoder setCullMode:MTLCullModeNone]; // boxes: don't inherit VBO cull-front
+  } else if (_peelMode) {
+    [_encoder setRenderPipelineState:_cylinderPeelPipeline];
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
     [_encoder setRenderPipelineState:_cylinderOitPipeline];
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     [_encoder setRenderPipelineState:_cylinderImpostorPipeline];
     applyDepthStencilState();
@@ -8212,7 +8509,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.half_bond = 0.0f;      // smooth_half_bonds default off
   u.inv_height = 1.0f;     // only used when half_bond != 0
   // Cap the slab cross-section only in the opaque pass (not shadow/OIT).
-  u.interiorCap = (call.interiorCap && !_shadowMode && !_oitActive) ? 1.0f : 0.0f;
+  u.interiorCap = (call.interiorCap && !_shadowMode && !_peelMode && !_oitActive) ? 1.0f : 0.0f;
   // ray_interior_color: .a>0.5 => use this rgb for the cap (else bond*0.45).
   u.interiorColor[0] = _capColor[0]; u.interiorColor[1] = _capColor[1];
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;

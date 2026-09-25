@@ -225,7 +225,11 @@ public:
   // Targets self-heal to the window size on the next live beginLiveFrame.
   void beginOffscreen(int w, int h, const std::string& path);
   void endOffscreen();
-  void beginTransparentOIT() override;
+  void beginTransparentOIT(bool peel = false) override;
+  void beginPeelPrepass() override;
+  void endPeelPrepass() override;
+  bool peelSupported() const override;
+  void resetTransparentOIT() override;
   void endTransparentOIT() override;
   void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -362,6 +366,7 @@ private:
     id<MTLRenderPipelineState> opaque = nil;
     id<MTLRenderPipelineState> oit = nil;
     id<MTLRenderPipelineState> shadow = nil;
+    id<MTLRenderPipelineState> peel = nil;   // depth-only, peel-depth format
   };
   // Keyed by (stride, a_cap offset, MATERIAL FAMILY): a marble stick and a
   // default stick at the same layout need different pipelines, and whichever
@@ -446,7 +451,7 @@ private:
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
   // MRC leak plus the (significant) cost of pipeline-state compilation. The cache
   // OWNS each +1 pipeline; callers borrow. Released in setSampleCount + the dtor.
-  enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow };
+  enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow, Peel };
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
       int colorType, MTLVertexDescriptor* vd);
@@ -479,6 +484,37 @@ private:
 
   bool _oitActive = false;      // true while the transparent pass is rendering
   bool _oitHasContent = false;  // true if any transparent fragments drew
+
+  // --- Per-object transparent depth peel (#488) ---
+  // _peelDepth is a single-sample copy of the opaque depth that ONE object's
+  // depth-only pre-pass then writes its nearest surface into; that object's OIT
+  // draw is then tested for EQUALITY against it, so only the front-most shell
+  // of that object contributes. Blitting the opaque depth in first is what
+  // makes a transparent fragment behind opaque geometry lose the pre-pass test
+  // and therefore never match -- occlusion comes for free.
+  //
+  // The peel pipelines are the SHADOW vertex/fragment functions (depth only,
+  // and the camera matrices are already loaded when the scene loop runs this)
+  // built against Depth32Float_Stencil8 instead of the shadow map's plain
+  // Depth32Float. Same shaders, different attachment formats -- so the depth a
+  // fragment writes here is computed by the same code that computes the depth
+  // the OIT pass compares, which is what makes the equality test exact.
+  id<MTLTexture> _peelDepth = nil;
+  MTLRenderPassDescriptor* _peelPassDesc = nil;   // zero colour attachments
+  MTLRenderPassDescriptor* _oitPeelPassDesc = nil;  // OIT MRT + _peelDepth
+  id<MTLDepthStencilState> _peelWriteState = nil;   // Less, write
+  id<MTLDepthStencilState> _peelTestState = nil;    // Equal, no write
+  id<MTLRenderPipelineState> _vboPeelPipelineUByte = nil;
+  id<MTLRenderPipelineState> _vboPeelPipelineFloat = nil;
+  id<MTLRenderPipelineState> _spherePeelPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderPeelPipeline = nil;  // alias, not owned
+  id<MTLRenderPipelineState> peelPipelineForVD(MTLVertexDescriptor* vd);
+  id<MTLDepthStencilState> oitDepthPeelAwareState();
+  id<MTLDepthStencilState> peelWriteState();
+  id<MTLDepthStencilState> peelTestState();
+  bool _peelMode = false;       // true between begin/endPeelPrepass
+  bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
+  bool _oitCleared = false;     // the frame's first transparent encoder cleared
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered

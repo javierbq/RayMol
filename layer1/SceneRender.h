@@ -56,11 +56,19 @@ struct SceneRenderInfo
 void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo);
 void SceneRenderMetal(PyMOLGlobals* G);
 void SceneRenderMetalSelections(PyMOLGlobals* G);
+/**
+ * @param only_object when non-null, render ONLY this object and skip every
+ *   other one. Used by the per-object transparent depth peel (#488), which has
+ *   to replay one object on its own -- first depth-only into the peel target,
+ *   then into the OIT targets -- and must not disturb how the rest of the pass
+ *   is assembled.
+ */
 void SceneRenderAll(PyMOLGlobals * G, SceneUnitContext * context,
                     float *normal, PickColorManager*,
                     RenderPass pass, int fat, float width_scale,
                     GridInfo * grid, int dynamic_pass, SceneRenderWhich which_objects,
-                    SceneRenderOrder render_order);
+                    SceneRenderOrder render_order,
+                    pymol::CObject* only_object = nullptr);
 
 void SceneInitializeViewport(PyMOLGlobals* G, bool offscreen);
 

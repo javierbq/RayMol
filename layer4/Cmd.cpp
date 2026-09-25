@@ -2466,6 +2466,58 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   return APIAutoNone(result);
 }
 
+/**
+ * Whether an object's transparent geometry is depth-PEELED as things stand
+ * (#488): the resolved answer, not the raw `transparency_peel` value.
+ *
+ * Exposed because the whole point of the -1 default is that it is AUTO -- the
+ * answer comes from the materials the object's representations resolve to, so
+ * reading the setting tells you nothing about what the renderer will do. This
+ * is the same call the scene loop makes.
+ *
+ * _cmd.get_object_peel(object_name_or_empty[, state=0])
+ */
+static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Os|i", &self, &oname, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  const CSetting* stateSetting = nullptr;
+  const CSetting* objSetting = nullptr;
+  bool ok = true;
+  if (oname && oname[0]) {
+    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    if (!obj) {
+      ErrMessage(G, "GetObjectPeel", "named object not found.");
+      ok = false;
+    } else {
+      objSetting = obj->Setting.get();
+      int const resolved =
+          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
+      auto* handle = obj->getSettingHandle(resolved);
+      if (handle && handle != &obj->Setting) {
+        stateSetting = handle->get();
+      }
+    }
+  }
+  PyObject* result = nullptr;
+  if (ok) {
+    result = PyInt_FromLong(
+        MaterialObjectWantsPeel(G, stateSetting, objSetting) ? 1 : 0);
+  }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
+}
+
 static PyObject *CmdGetObjectSettings(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -6703,6 +6755,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
   {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
+  {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},
   {"get_povray", CmdGetPovRay, METH_VARARGS},

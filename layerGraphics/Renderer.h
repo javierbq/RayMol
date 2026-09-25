@@ -455,8 +455,35 @@ public:
   // accumulate into weighted-blended OIT targets (depth-tested vs the opaque
   // depth, no depth-write) instead of blending into the scene color; endFrame
   // resolves them over the opaque color. Default: no-op (GL path unaffected).
-  virtual void beginTransparentOIT() {}
+  virtual void beginTransparentOIT(bool peel = false) {}
   virtual void endTransparentOIT() {}
+
+  // Per-object transparent depth peel (#488). Without it every transparent
+  // fragment of an object accumulates -- the front and back of every stick, and
+  // every stick behind it -- so a translucent ball-and-stick reads as dense
+  // mottle rather than one glassy shell. With it, the scene loop runs a
+  // COLOUR-LESS depth pre-pass for one object into a copy of the opaque depth,
+  // then draws that object's transparent geometry tested for EQUALITY against
+  // it, so only the nearest surface per pixel contributes.
+  //
+  // The sequence per peeled object is
+  //     beginPeelPrepass(); <draw the object>; endPeelPrepass();
+  //     beginTransparentOIT(true); <draw the object>; endTransparentOIT();
+  // and the objects that are not peeled follow in one ordinary
+  // beginTransparentOIT(false) pass. The OIT targets are cleared only by the
+  // frame's FIRST transparent encoder and loaded by every later one, so the
+  // passes accumulate into one image.
+  //
+  // peelSupported() is false wherever the targets or pipelines are missing; the
+  // caller then skips the pre-pass entirely and the object renders unpeeled,
+  // which is the pre-#488 look rather than nothing. Default: no-op (GL path
+  // unaffected), and peelSupported() false so no caller tries.
+  virtual void beginPeelPrepass() {}
+  virtual void endPeelPrepass() {}
+  virtual bool peelSupported() const { return false; }
+  // Reset the "the OIT targets still need clearing" flag. SceneRenderMetal
+  // calls this once per frame before the first transparent pass.
+  virtual void resetTransparentOIT() {}
 
   // Real shadow map. SceneRenderMetal sets the light's eye-space view-projection
   // via setLightViewProjEye, then replays the opaque geometry between
