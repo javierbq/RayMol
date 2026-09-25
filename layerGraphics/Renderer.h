@@ -474,6 +474,16 @@ public:
   // no-op (GL unaffected).
   virtual void setShadowBias(float bias) {}
 
+  // Environment reflected by the reflective materials (#493). `mode` is
+  // material_env: 0 = the background colour, 1 = a studio, 2 = none. The
+  // renderer builds a small cubemap from this and the background colour and
+  // rebuilds it only when either changes -- so it costs nothing per frame, and
+  // nothing at all until a reflective material asks for it.
+  //
+  // Called every frame from SceneRenderMetal; the renderer decides whether
+  // anything actually has to be rebuilt. Default: no-op (GL path unaffected).
+  virtual void setEnvironment(int mode, float bgR, float bgG, float bgB) {}
+
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each
   // (P0,P1,P2,P3), dataSize bytes total. radius = tube radius; r/g/b = color.

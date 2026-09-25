@@ -227,6 +227,7 @@ public:
   void endOffscreen();
   void beginTransparentOIT() override;
   void endTransparentOIT() override;
+  void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
       float r, float g, float b) override;
 
@@ -453,6 +454,25 @@ private:
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;
+  // --- Environment cubemap for the reflective materials (#493) ---
+  // Six 128px RGBA16F faces with mipmaps, rebuilt only when material_env or
+  // the background colour changes. Mipmaps are the roughness axis: a rough
+  // material samples a coarser level, which is what lets brushed metal read
+  // differently from a mirror without a second texture.
+  //
+  // Bound on the scene, OIT and RT-composite encoders so a reflective object
+  // reflects the SAME room whichever path draws it -- toggling metal_raytrace
+  // must not change the reflection.
+  static constexpr NSUInteger kEnvFaceDim = 128;
+  static constexpr NSUInteger kEnvTextureIndex = 6;   // fragment texture slot
+  id<MTLTexture> _envCubemap = nil;
+  id<MTLSamplerState> _envSampler = nil;
+  int _envMode = -1;            // the material_env the cubemap was built for
+  float _envBg[3] = {-1.0f, -1.0f, -1.0f};
+  bool _envDirty = true;
+  bool ensureEnvironmentMap();
+  void bindEnvironment(id<MTLRenderCommandEncoder> enc);
+
   bool _oitActive = false;      // true while the transparent pass is rendering
   bool _oitHasContent = false;  // true if any transparent fragments drew
 

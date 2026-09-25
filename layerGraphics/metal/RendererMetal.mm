@@ -638,6 +638,11 @@ void RendererMetal::ensureEncoder()
 
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
   bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (!_encoder) return;
 
   // Restore viewport
@@ -880,6 +885,11 @@ void RendererMetal::beginFrame()
     // Create the encoder immediately to ensure the clear executes
     _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
     bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   }
 }
 
@@ -4031,6 +4041,11 @@ void RendererMetal::beginTransparentOIT()
   _passDesc = _oitPassDesc;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_oitPassDesc];
   bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
   [_encoder setViewport:_viewport];
   // Depth-test against opaque depth (LEQUAL), but DO NOT write depth, so
@@ -4057,6 +4072,11 @@ void RendererMetal::endTransparentOIT()
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
   bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -4093,6 +4113,11 @@ void RendererMetal::beginShadowPass()
   _shadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_shadowPassDesc];
   bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
@@ -4127,6 +4152,11 @@ void RendererMetal::endShadowPass()
   _scenePassDesc.stencilAttachment.clearStencil = 0;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
   bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -4239,6 +4269,161 @@ void RendererMetal::clear(bool color, bool depth, bool stencil)
 
   // The next ensureEncoder() call will create a new encoder with these
   // load actions, effectively performing the clear.
+}
+
+// float -> IEEE half, for the RGBA16Float environment faces. The file's other
+// f16() lives ~4000 lines below with the tessellation code; duplicating three
+// lines here beats moving a helper other code depends on.
+static inline uint16_t envHalf(float v)
+{
+  _Float16 h = (_Float16) v;
+  uint16_t bits;
+  std::memcpy(&bits, &h, sizeof(bits));
+  return bits;
+}
+
+void RendererMetal::setEnvironment(int mode, float bgR, float bgG, float bgB)
+{
+  // Called every frame; only a CHANGE costs anything. The cubemap depends on
+  // exactly two inputs, so comparing them is the whole invalidation rule.
+  if (mode == _envMode && bgR == _envBg[0] && bgG == _envBg[1] && bgB == _envBg[2])
+    return;
+  _envMode = mode;
+  _envBg[0] = bgR; _envBg[1] = bgG; _envBg[2] = bgB;
+  _envDirty = true;
+}
+
+// Build the environment cubemap (#493), or keep the one we have.
+//
+// Six 128px RGBA16F faces + mipmaps, filled on the CPU: at this size the whole
+// thing is 6 * 128 * 128 * 8 B = 768 KB before mips, and it is rebuilt only
+// when material_env or the background colour changes, so generating it on the
+// GPU would buy nothing but complexity.
+//
+// The three modes are material_env:
+//   0 background -- a flat room the colour of the backdrop, so a reflective
+//                   object on a white page reflects white rather than a room
+//                   that is not there.
+//   1 studio     -- a soft overhead key with a dimmer fill below, the classic
+//                   product-shot rig, which is what makes metal read as metal.
+//   2 none       -- black; the material keeps its Fresnel rim and its
+//                   highlight but reflects nothing.
+//
+// Studio brightness is scaled by the background's luminance so glass does not
+// frost on a light backdrop: a fixed-brightness room reflected on a white page
+// washes the object out.
+bool RendererMetal::ensureEnvironmentMap()
+{
+  if (_envCubemap && !_envDirty)
+    return true;
+  if (!_device)
+    return false;
+
+  if (!_envCubemap) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                        size:kEnvFaceDim
+                                   mipmapped:YES];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;   // written from the CPU
+    _envCubemap = [_device newTextureWithDescriptor:d];
+    if (!_envCubemap)
+      return false;
+  }
+  if (!_envSampler) {
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = MTLSamplerMinMagFilterLinear;
+    sd.magFilter = MTLSamplerMinMagFilterLinear;
+    // Trilinear: the mip level IS the roughness axis, so blending between
+    // levels is what keeps a roughness slider smooth instead of stepped.
+    sd.mipFilter = MTLSamplerMipFilterLinear;
+    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    _envSampler = [_device newSamplerStateWithDescriptor:sd];
+    [sd release];
+  }
+
+  // Luminance of the backdrop, used to keep the studio in proportion to it.
+  const float bgLum = 0.299f * _envBg[0] + 0.587f * _envBg[1] + 0.114f * _envBg[2];
+  const float studioScale = 0.35f + 0.65f * std::min(1.0f, std::max(0.0f, bgLum));
+
+  std::vector<uint16_t> face(kEnvFaceDim * kEnvFaceDim * 4);
+  for (int f = 0; f < 6; ++f) {
+    for (NSUInteger y = 0; y < kEnvFaceDim; ++y) {
+      for (NSUInteger x = 0; x < kEnvFaceDim; ++x) {
+        // Face-local direction, so the gradient follows world up rather than
+        // the face, and the six faces meet without a seam.
+        const float u = 2.0f * (x + 0.5f) / kEnvFaceDim - 1.0f;
+        const float v = 1.0f - 2.0f * (y + 0.5f) / kEnvFaceDim;
+        float dir[3];
+        switch (f) {
+        case 0: dir[0] =  1; dir[1] =  v; dir[2] = -u; break;  // +X
+        case 1: dir[0] = -1; dir[1] =  v; dir[2] =  u; break;  // -X
+        case 2: dir[0] =  u; dir[1] =  1; dir[2] = -v; break;  // +Y
+        case 3: dir[0] =  u; dir[1] = -1; dir[2] =  v; break;  // -Y
+        case 4: dir[0] =  u; dir[1] =  v; dir[2] =  1; break;  // +Z
+        default: dir[0] = -u; dir[1] = v; dir[2] = -1; break;  // -Z
+        }
+        const float len = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        const float up = dir[1] / (len > 0.0f ? len : 1.0f);   // -1 down .. +1 up
+
+        float r, g, b;
+        if (_envMode == 2) {                 // none
+          r = g = b = 0.0f;
+        } else if (_envMode == 1) {          // studio
+          // Soft overhead key: bright above, mid at the horizon, dim below,
+          // with a broad highlight straight up. No hard edges -- a sharp light
+          // shape would show as a recognisable rectangle in every sphere.
+          const float t = 0.5f * (up + 1.0f);
+          const float key = std::pow(std::max(0.0f, up), 3.0f);
+          const float base = 0.18f + 0.55f * t + 0.75f * key;
+          r = g = b = base * studioScale;
+          // A touch cooler above and warmer below, so a mirror shows some
+          // orientation rather than a flat grey.
+          r *= 0.97f + 0.06f * (1.0f - t);
+          b *= 0.97f + 0.06f * t;
+        } else {                              // 0 = the background colour
+          r = _envBg[0]; g = _envBg[1]; b = _envBg[2];
+        }
+        const NSUInteger i = (y * kEnvFaceDim + x) * 4;
+        face[i + 0] = envHalf(r);
+        face[i + 1] = envHalf(g);
+        face[i + 2] = envHalf(b);
+        face[i + 3] = envHalf(1.0f);
+      }
+    }
+    [_envCubemap replaceRegion:MTLRegionMake2D(0, 0, kEnvFaceDim, kEnvFaceDim)
+                   mipmapLevel:0
+                         slice:static_cast<NSUInteger>(f)
+                     withBytes:face.data()
+                   bytesPerRow:kEnvFaceDim * 4 * sizeof(uint16_t)
+                 bytesPerImage:0];
+  }
+
+  // Mips are the roughness axis, so they have to exist before anything samples
+  // a rough material. A blit on its own command buffer: this runs outside the
+  // frame's encoder, and waiting is fine because it happens only on a change.
+  if (_queue) {
+    id<MTLCommandBuffer> cb = [_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit generateMipmapsForTexture:_envCubemap];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+  }
+
+  _envDirty = false;
+  return true;
+}
+
+void RendererMetal::bindEnvironment(id<MTLRenderCommandEncoder> enc)
+{
+  if (!enc)
+    return;
+  if (!ensureEnvironmentMap())
+    return;
+  [enc setFragmentTexture:_envCubemap atIndex:kEnvTextureIndex];
+  [enc setFragmentSamplerState:_envSampler atIndex:kEnvTextureIndex];
 }
 
 void RendererMetal::clearColor(float r, float g, float b, float a)
@@ -5060,11 +5245,56 @@ using namespace metal;
 // existed rather than merely equal to it.
 constant int kMatFamily [[function_constant(0)]];
 constant bool kMatProcedural = (kMatFamily == 1);
+constant bool kMatReflective = (kMatFamily == 2);
 
 // Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
 // BOTH the lit VBO path and the impostors so one object's cartoon and spheres
 // are lit the same way.
 constant float kMatMarbleWrap = 0.35;
+
+// --- Environment reflection (#493) ------------------------------------------
+// One cubemap, one sampler, shared by every reflective material. The prototype
+// carried three hand-written studios inline in the shader; a sampled cubemap
+// replaces all of them and lets the environment follow the background colour
+// without a recompile.
+//
+// Roughness is the MIP LEVEL: a mirror reads level 0, a rough metal a coarser
+// one. That is why the texture is mipmapped and the sampler trilinear -- it is
+// a one-texture stand-in for a pre-convolved radiance map, which is what makes
+// a roughness slider smooth instead of stepped.
+// Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
+// the head-on reflectance -- what makes a metal reflect strongly everywhere and
+// a dielectric only at the rim.
+static float3 mat_fresnel(float3 f0, float vdoth) {
+  return f0 + (float3(1.0) - f0) * pow(1.0 - saturate(vdoth), 5.0);
+}
+
+// Environment specular for the reflective family: one GGX lobe against the
+// cubemap, with roughness selecting the mip level.
+//
+// This is the base every reflective material shares, and it works on EVERY GPU
+// -- the traced reflection in #494 is an upgrade on top of it, not a
+// replacement, which is what makes toggling metal_raytrace leave the
+// environment reflection alone.
+//
+// `N` and `V` are EYE space, which is the space both the lit VBO path and the
+// impostors already have a normal in. The cubemap is sampled with the eye-space
+// reflection vector directly: the room is anchored to the camera rather than to
+// the model, so orbiting an object sweeps the reflection across it the way a
+// real room does, instead of the room turning with the molecule.
+static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
+    texturecube<float> envMap, sampler envSmp) {
+  float3 R = reflect(-V, N);
+  // Roughness -> mip. The cube is 128px, i.e. 8 levels; a mirror takes 0.
+  float lod = sqrt(saturate(rough)) * 7.0;
+  float3 room = envMap.sample(envSmp, R, level(lod)).rgb;
+  float ndotv = saturate(dot(N, V));
+  // Split-sum approximation: the Fresnel term carries the angle dependence and
+  // the pre-filtered sample carries the lobe, which is what keeps this one
+  // texture fetch instead of an integral per fragment.
+  float3 F = mat_fresnel(f0, ndotv);
+  return room * F;
+}
 
 constant int kMatMode_matte  = 1;
 constant int kMatMode_marble = 7;
@@ -5233,7 +5463,15 @@ static float mat_impostor_intensity(float3 N, float3 keyDir, float ambient,
 static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float ambient, float direct, float reflectAmt, float3 keyDir,
     constant MaterialU& m, float defaultIntensity, float defaultSpecular,
-    float sceneWrap) {
+    float sceneWrap, texturecube<float> envMap, sampler envSmp) {
+  if (kMatReflective) {
+    // Same base as the lit VBO path, so one object's surface and its spheres
+    // reflect the same room -- the drift that bit marble in #487.
+    float3 V = float3(0.0, 0.0, 1.0);
+    float3 f0 = mix(float3(m.reflect), base * m.reflect, m.tint);
+    return base * min(defaultIntensity, 1.0) + defaultSpecular
+         + mat_env_specular(N, V, m.rough, f0, envMap, envSmp);
+  }
   if (kMatProcedural) {
     float3 pModel = (m.invModelview * float4(pEye, 1.0)).xyz;
     if (m.mode == kMatMode_marble) {
@@ -5352,7 +5590,23 @@ struct VBOVertexInUnlit {
 // diffusion real stone has), so it reads as the same scene lit the same way.
 // Matte, clay and rubber replace the shading outright.
 static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
-    LightU lt, constant MaterialU& mat) {
+    LightU lt, constant MaterialU& mat,
+    texturecube<float> envMap, sampler envSmp) {
+  if (kMatReflective) {
+    // The reflective family's BASE: the default shading plus one GGX lobe
+    // against the environment cubemap. Works on every GPU; #494's traced
+    // reflection refines this rather than replacing it, which is what keeps
+    // toggling metal_raytrace from changing the environment reflection.
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;
+    float3 V = float3(0.0, 0.0, 1.0);          // eye space: the camera looks -Z
+    // f0 from the material's reflect/tint: tint pulls the reflection toward the
+    // object's own colour, which is what separates a coloured metal from a
+    // clear coat over it.
+    float3 f0 = mix(float3(mat.reflect), baseColor * mat.reflect, mat.tint);
+    return vbo_shade(baseColor, nEye, lt)
+         + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp);
+  }
   if (kMatProcedural) {
     float3 N = normalize(nEye);
     if (N.z < 0.0) N = -N;   // two-sided, as the default model is
@@ -5401,12 +5655,14 @@ vertex VBOVertexOut vbo_vertex(
 }
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat),
+  return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                 in.color.a);
 }
 
@@ -5531,12 +5787,14 @@ static float oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  float4 c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat),
+  float4 c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                     in.color.a);
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
@@ -6998,7 +7256,7 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
 
 // The material-aware entry point the colour fragments use.
 static void sphere_shade_material(SphereVOut in, constant SphereU& u,
-    constant MaterialU& mat,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
     thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 n = float3(0.0), pt = float3(0.0);
   float intensity = 0.0, specular = 0.0;
@@ -7007,14 +7265,16 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
   if (!lit) return;   // interior cap: already a final colour
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
-                               intensity, specular, u.lSSSWrap);
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade_material(in, u, mat, rgb, a, depth);
+  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   SphereFOut out;
   out.color = float4(rgb, a);
   out.depth = depth;
@@ -7022,10 +7282,12 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
 }
 
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade_material(in, u, mat, rgb, a, depth);
+  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
   out.accum = float4(rgb * a, a) * w;
@@ -7538,7 +7800,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
 
 // The material-aware entry point the colour fragments use.
 static void cyl_shade_material(CylVOut in, constant CylU& u,
-    constant MaterialU& mat,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
     thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
   float intensity = 0.0, specular = 0.0;
@@ -7547,14 +7809,16 @@ static void cyl_shade_material(CylVOut in, constant CylU& u,
   if (!lit) return;   // interior cap: already a final colour
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
-                               intensity, specular, u.lSSSWrap);
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade_material(in, u, mat, rgb, a, depth);
+  cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   CylFOut o;
   o.color = float4(rgb, a);
   o.depth = depth;
@@ -7562,10 +7826,12 @@ fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
 }
 
 fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade_material(in, u, mat, rgb, a, depth);
+  cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   float w = cyl_oit_weight(a, depth);
   CylOITOut o;
   o.accum = float4(rgb * a, a) * w;
