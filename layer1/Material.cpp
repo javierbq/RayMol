@@ -38,6 +38,14 @@ constexpr int kP_edge = 2;     /* procedural: grazing-angle darkening */
 constexpr int kP_sheen = 3;    /* procedural: velvet sheen (rubber) */
 constexpr int kP_vein = 4;     /* marble: vein contrast */
 constexpr int kP_sharp = 5;    /* marble: vein sharpness */
+/* Glass family. The slots are reused per family -- p[0] is grain for a
+   procedural material and absorption for a glass one -- which is why they are
+   named here rather than carried as one flat list. p[5] is NOT a table knob:
+   setRepMaterial overwrites it for the whole glass family with the frost tap
+   count the current target can afford, so nothing put here would survive. */
+constexpr int kP_absorb = 0;   /* jelly: Beer-Lambert strength through the body */
+constexpr int kP_scatter = 1;  /* jelly: density of the scattered inner glow */
+constexpr int kP_wet = 2;      /* jelly: sharp wet-skin highlight strength */
 
 /* Index is the material id; the order must match the enum in Material.h.
  *
@@ -72,9 +80,87 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_glass, cMaterial_frosted_glass, 0.0f, 0.0f, 0.6f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
-    {cMaterial_jelly, "jelly", cMaterialFamily_glass, false, 0.45f,
-        {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.1f,
-            {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
+    /* Jelly is in the glass family but is the opposite material: a dense
+       scattering BODY under a smooth skin, where glass is a clear body under a
+       Fresnel rim. p[0..2] are the prototype's gummy knobs (absorption 2.2,
+       scatter 0.35, wet highlight 1.1).
+
+       IMPLIED ALPHA IS 0.85, NOT THE 0.45 #496 AND #503 SPECIFY. At 0.45 this
+       material cannot reach the look it is measured against, and the reason is
+       arithmetic rather than taste -- but the arithmetic has two conditions,
+       and both happen to hold for jelly, which is why it is stated here rather
+       than in the design doc as a law.
+
+       A single transparent layer over a NEUTRAL background reaches the screen
+       as col*a + bg*(1-a). Channel spread (max - min) is unaffected by adding
+       a constant to every channel, so the spread of the result is
+       a * spread(col) <= a. Both conditions matter:
+
+         - NEUTRAL background. In general spread(result) <= a * spread(col) +
+           (1-a) * spread(bg); a coloured background contributes its own spread
+           through the second term and the bound does not hold. The epic's
+           probe uses a 0.85 grey, so it does here.
+         - ONE layer. The OIT resolve composites reveal = product of (1 - a_i)
+           over every transparent fragment, so n overlapping layers cover
+           1 - (1-a)^n, not a. `backface_cull` is 0 by default, so a closed
+           surface delivers two. Jelly's row sets wantsPeel, and the peel is an
+           EQUAL depth test that keeps only the nearest layer, so n is 1 for a
+           jelly object that is actually PEELED. That is not the same as "every
+           jelly object": auto-peel refuses when the object has another
+           transparent rep, SceneCollectPeelObjects stops at kMaxPeeledObjects
+           (3) per frame, and the GL path peels nothing at all. So the bound is
+           load-bearing on the peel, and the peel is not guaranteed.
+
+       The prototype gallery's red gummy measures a mean channel spread of
+       0.539, and the measured spread of jelly's own emitted colour is ~0.62,
+       so reproducing the reference EXACTLY would take alpha ~0.87. 0.85 lands
+       at 0.528, i.e. 98% of the reference and just under it.
+
+       Be precise about which half of that is arithmetic. The LOW end is:
+       spread(result) = a * spread(col) <= a, so any alpha at or below 0.539
+       cannot reach the reference's spread no matter how the shader is
+       written, and the specified 0.45 is well inside that -- it renders
+       something (a pale pink that still reads as a gummy), it just cannot
+       render THIS one. The HIGH end is a judgement, not a bound: the alpha is
+       also how much of the scene a jelly object hides, so there is no reason
+       to round past the reference and every reason not to. Arithmetic rules
+       out below ~0.87 for an exact match and below 0.539 outright; the
+       preference for not hiding more than the reference does rules out above.
+       Between them the band is narrow, and 0.85 is in it.
+       That the 0.45 version still reads as "a gummy" -- pale pink, highlights
+       intact -- is exactly why the ticket's done-when is a measurement and not
+       a glance.
+
+       An unpeeled jelly object is therefore denser than the one measured
+       above: two layers cover 1 - 0.15^2 = 0.978 rather than 0.85. It does not
+       become OPAQUE, which is the intuition the reveal term alone suggests and
+       which is wrong -- measured, a translucent cartoon inside an unpeeled
+       jelly surface still contributes across 42% of the frame at mean |delta|
+       0.134 (0.257 at alpha 0.45), because the weighted-blend resolve averages
+       the layers' colours instead of occluding the far ones.
+
+       0.45 is not wrong so much as it is a number from a different
+       architecture. In the prototype the user's 0.55 was a SHADING knob: the
+       fragment wrote coverage 1.0 ("this fragment must dominate the
+       weighted-blended resolve") and did its own transmission by sampling the
+       refracted opaque scene. #495 deliberately did not port that sampling --
+       there is no opaque texture inside the OIT pass -- so here the implied
+       alpha IS the blend coverage, and it has to carry the density the
+       prototype got from the refraction.
+
+       Measured at 0.85, against the gallery's g_jelly_red_v3 / sticks_red:
+       surface mean rgb 0.810/0.323/0.282 vs 0.796/0.298/0.257, spread 0.528 vs
+       0.539, silhouette coverage 0.421 vs 0.426.
+
+       `rough` is 0.03, not the 0.1 this row was declared with in #486. It is
+       the cubemap MIP axis (lod = sqrt(rough) * 7), and 0.1 selects level 2.2
+       of 7 -- a 32px room, visibly soft. A gummy's skin is WET: the whole
+       point of the look is that the body is frosted and the surface is not.
+       0.03 lands just under level 1. The number was never rendered before
+       this ticket; the table declared it in advance. */
+    {cMaterial_jelly, "jelly", cMaterialFamily_glass, true, 0.85f,
+        {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.03f,
+            {2.2f, 0.35f, 1.1f, 0.0f, 0.0f, 0.0f}, 1}},
 
     {cMaterial_marble, "marble", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_marble, 0.0f, 0.0f, 0.9f,
@@ -159,8 +245,19 @@ MaterialParams MaterialResolve(int id, int repType)
   if (!row || !row->implemented) {
     return MaterialParams{};
   }
-  /* Glass and jelly have no sphere-impostor path; they would float as
-     near-invisible discs. Degrade cleanly instead of glitching. */
+  /* No glass-family material draws on sphere impostors. Not for want of a
+     path: buildImpostorPipelines() builds the sphere pipelines for every
+     implemented family, and mat_impostor_composite's kMatGlass branch is what
+     the cylinder impostor already uses. It is a deliberate scope line -- #487
+     onward specify glass on cartoon, surface and sticks, and #496 specifies
+     the same three for jelly -- kept in one place so a rep cannot shade as a
+     material while building with its implied alpha.
+
+     The original reason given here, that glass spheres "would float as
+     near-invisible discs", is true of glass at alpha 0.15 and NOT of jelly at
+     0.85, which would render as perfectly reasonable gummy balls. Enabling it
+     is a behaviour change outside this ticket; see the "Found while building"
+     list on #503. */
   if (row->family == cMaterialFamily_glass && repType == cRepSphere) {
     return MaterialParams{};
   }

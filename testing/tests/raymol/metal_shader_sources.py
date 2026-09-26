@@ -47,6 +47,46 @@ _PREPENDED = {
 }
 
 
+def _strip_comments(text):
+    """MSL // comments removed, so a commented-out branch does not satisfy a
+    substring check.
+
+    Block comments would need the same treatment; no literal uses one today and
+    testNoBlockCommentsInTheShaderLiterals keeps it that way, because a `/* */`
+    around a dispatch would slip past every check in this file.
+    """
+    return re.sub(r'//[^\n]*', '', text)
+
+
+def _function_body(literal, name):
+    """The body of `name`, from its signature to the matching closing brace.
+
+    Slicing from the name to the end of the literal -- which this test did at
+    first -- is not the function: it is every later function too, so a check
+    for "does this function dispatch jelly" passed when the dispatch had moved
+    somewhere else entirely.
+
+    Comments are stripped BEFORE the braces are counted, not after. These
+    literals already contain braces inside comments elsewhere (kVBOSrc has
+    `// {0,0,1})`, kRTSrc has a `{`...`}` pair spanning two comment lines), so
+    counting the raw text would end the slice early on a stray `}` or run it
+    into the next function on a stray `{` -- reintroducing the defect this
+    helper exists to remove.
+    """
+    literal = _strip_comments(literal)
+    start = literal.index(name)
+    open_brace = literal.index('{', start)
+    depth = 0
+    for i in range(open_brace, len(literal)):
+        if literal[i] == '{':
+            depth += 1
+        elif literal[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return literal[start:i + 1]
+    raise AssertionError('unbalanced braces after %s' % name)
+
+
 def shader_literals(source):
     """{name: body} for every @R"(...)" literal in `source`.
 
@@ -145,7 +185,6 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         renumbers a material, the shader would silently shade the wrong one."""
         import os
         literals = shader_literals(self.source())
-        msl = literals['kMaterialSrc']
         root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
                             os.pardir)
         header = os.path.normpath(os.path.join(root, 'layer1', 'Material.h'))
@@ -158,14 +197,86 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
                                  .splitlines()[1:]
                  if line.strip().startswith('cMaterial_')]
         ids = {name: i for i, name in enumerate(order)}
-        for name in ('matte', 'marble', 'clay', 'rubber'):
-            self.assertIn(name, ids, 'material %s vanished from the C enum' % name)
-            self.assertIn('kMatMode_%s' % name, msl)
-            declared = re.search(
-                r'constant int kMatMode_%s\s*=\s*(\d+);' % name, msl)
-            self.assertIsNotNone(declared, name)
-            self.assertEqual(int(declared.group(1)), ids[name],
+        # EVERY kMatMode_* the shader declares, not a hand-written list. The
+        # list this was -- matte, marble, clay, rubber -- had not grown since
+        # #487, so kMatMode_frosted_glass (#495) and kMatMode_jelly (#496) were
+        # both unchecked: renumber the C enum and the glass-family pipeline
+        # dispatches on a stale literal, which does not fail to draw, it draws
+        # the wrong material. That is this epic's signature bug.
+        # Every LITERAL too, not just the shared block. Restricting the scan
+        # to kMaterialSrc would generalise over names and not over files --
+        # the same shape as the hardcoded list it replaced, and it would go
+        # stale the same way the moment a material declares its mode beside
+        # its own helper.
+        declared = {}
+        for body in literals.values():
+            declared.update(re.findall(
+                r'constant int kMatMode_(\w+)\s*=\s*(\d+);', body))
+        self.assertTrue(declared, 'no kMatMode_* constants found in the MSL')
+        for name, value in declared.items():
+            self.assertIn(name, ids,
+                          'kMatMode_%s names no material in layer1/Material.h' % name)
+            self.assertEqual(int(value), ids[name],
                              'kMatMode_%s disagrees with layer1/Material.h' % name)
+        # ...and the four the procedural dispatch has always needed are still
+        # among them, so deleting a constant cannot make the loop above vacuous.
+        for name in ('matte', 'marble', 'clay', 'rubber'):
+            self.assertIn(name, declared)
+
+    def testNoBlockCommentsInTheShaderLiterals(self):
+        """_strip_comments only understands `//`, and the dispatch checks below
+        are substring searches over the stripped text. A `/* */` around a
+        material's dispatch would satisfy every one of them while the branch
+        never compiles, so the assumption is enforced rather than stated."""
+        for name, body in shader_literals(self.source()).items():
+            self.assertNotIn('/*', body,
+                             '%s uses a block comment; _strip_comments only '
+                             'removes // comments' % name)
+
+    def testEveryGlassFamilyMaterialIsDispatchedInBothShadingPaths(self):
+        """The glass family shares ONE pipeline and is told apart by `mode`, in
+        two places: vbo_material_shade (cartoons and surfaces) and
+        mat_impostor_composite (the sphere and cylinder impostors).
+
+        Nothing else in the repo can see these branches. Delete the jelly
+        dispatch from either site and every C-side test still passes -- the
+        table row, the built transparency and the peel are all unchanged --
+        while jelly ships shading as clear glass on half its representations.
+        A source-level check is not a render, but it is the difference between
+        that failure being caught and being shipped."""
+        msl = shader_literals(self.source())
+        shared = msl['kMaterialSrc']
+        # vbo_material_shade lives in kVBOSrc (it needs LightU and vbo_shade);
+        # mat_impostor_composite in kMaterialImpostorSrc. Both are compiled
+        # with kMaterialSrc prepended -- see _PREPENDED above -- which is what
+        # makes mat_jelly_shade visible to them.
+        for site, body in (('vbo_material_shade', msl['kVBOSrc']),
+                           ('mat_impostor_composite', msl['kMaterialImpostorSrc'])):
+            self.assertIn(site, body)
+            # _function_body strips comments before brace-matching, so the
+            # slice is the function's CODE. The first version of this test
+            # searched the raw text from the function's NAME to the end of the
+            # library, so a dispatch that had been commented out -- or moved
+            # into a later function entirely -- still matched.
+            code = _function_body(body, site)
+            self.assertIn('kMatMode_jelly', code,
+                          '%s does not dispatch jelly' % site)
+            self.assertIn('mat_jelly_shade', code,
+                          '%s does not call mat_jelly_shade' % site)
+            self.assertIn('kMatMode_frosted_glass', code,
+                          '%s does not dispatch frosted_glass' % site)
+            # ...and REACHABLE. Both sites end with an unconditional glass
+            # fallback; a jelly branch after it is dead code that still
+            # contains every string above.
+            self.assertLess(code.index('kMatMode_jelly'),
+                            code.index('mat_glass_shade'),
+                            '%s dispatches jelly after the unconditional '
+                            'mat_glass_shade fallback, so it never runs' % site)
+        # The helper itself must be declared before the MaterialU it takes by
+        # reference: the libraries are concatenated and compiled at RUNTIME, so
+        # a bad order is a silent NSLog and a material that does nothing.
+        self.assertLess(shared.index('struct MaterialU {'),
+                        shared.index('float3 mat_jelly_shade('))
 
     def testRTBlurUsesTheSharedOrthoAwareDepth(self):
         """rt_composite's bilateral AO blur must reconstruct the neighbour depth

@@ -79,6 +79,7 @@ jobs:
               testing/tests/raymol/material_bundles.py \
               testing/tests/raymol/material_env.py \
               testing/tests/raymol/material_glass.py \
+              testing/tests/raymol/material_jelly.py \
               testing/tests/raymol/material_resolution.py \
               testing/tests/raymol/material_settings.py \
               testing/tests/raymol/material_table.py \

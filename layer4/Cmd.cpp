@@ -2485,17 +2485,6 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   return APIAutoNone(result);
 }
 
-/**
- * Whether an object's transparent geometry is depth-PEELED as things stand
- * (#488): the resolved answer, not the raw `transparency_peel` value.
- *
- * Exposed because the whole point of the -1 default is that it is AUTO -- the
- * answer comes from the materials the object's representations resolve to, so
- * reading the setting tells you nothing about what the renderer will do. This
- * is the same call the scene loop makes.
- *
- * _cmd.get_object_peel(object_name_or_empty[, state=0])
- */
 /* The FINAL material parameters a representation draws with: family, mode and
    the reflect/tint/rough triple after the legacy-slider decision. Exposed so
    the rules can be asserted without a Metal context -- `frosted_glass` losing
@@ -2527,8 +2516,75 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     CoordSet* cs = objmol->getCoordSet(resolved);
     MaterialParams const p = MaterialDrawParams(G,
         cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
-    result = Py_BuildValue("(iifff)", p.family, p.mode, p.reflect, p.tint,
-        p.rough);
+    /* The per-material KNOBS are part of "what this draw uses" too, and until
+       #496 nothing could see them from Python. They are the half of a material
+       that fails QUIETLY: zeroing jelly's absorption renders a white body,
+       zeroing its scatter or its wet highlight renders a plausible gummy that
+       is simply the wrong one.
+
+       All six slots, but note what p[5] means here: this is MaterialDrawParams,
+       which is upstream of RendererMetal::setRepMaterial, and setRepMaterial
+       overwrites p[5] for the whole glass family with the frost tap count the
+       current target can afford. So Python sees the TABLE's p[5] and can never
+       see the tap count -- a test that asserts on it is asserting on the table
+       row, not on what the fragment reads. It is returned for completeness and
+       so that a future table knob parked in p[5] is at least visible as such;
+       catching the collision itself needs an observer on the renderer side,
+       which does not exist. */
+    result = Py_BuildValue("(iifff(ffffff))", p.family, p.mode, p.reflect,
+        p.tint, p.rough, p.p[0], p.p[1], p.p[2], p.p[3], p.p[4], p.p[5]);
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/* Was `line_stick_helper` still on when the LINES rep was built (#496)?
+
+   The setting says what the user asked for; this says what the build decided.
+   #495 turns the helper off for a stick rep that a MATERIAL made translucent,
+   without the material ever writing `stick_transparency` -- so a test written
+   against the setting stays green with that rule reverted, and the geometry the
+   helper suppresses is not otherwise visible from Python. It had no test
+   anywhere in the tree until this. */
+static PyObject* CmdGetBuiltLineStickHelper(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Os|i", &self, &oname, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    Rep* rep = cs ? cs->Rep[cRepLine] : nullptr;
+    if (!rep) {
+      PyErr_SetString(PyExc_ValueError,
+          "the lines representation is not built");
+    } else if (rep->builtLineStickHelper() < 0) {
+      /* Unreachable today, and kept anyway: RepWireBondNew is the only factory
+         for cRepLine and always records, so a lines rep that exists carries a
+         value. It is here because 0 must not also mean "nothing recorded" --
+         the distinction that IS live for CmdGetBuiltTransparency, where
+         several rep types record nothing. No test can cover this branch; the
+         one named for it exercises the missing-rep case above. */
+      PyErr_SetString(PyExc_ValueError,
+          "this representation records no line_stick_helper");
+    } else {
+      result = PyLong_FromLong(rep->builtLineStickHelper());
+    }
   }
   APIExitBlocked(G);
   return result;
@@ -2591,6 +2647,26 @@ static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
   return result;
 }
 
+/**
+ * Whether an object's transparent geometry is depth-PEELED as things stand
+ * (#488): the resolved answer, not the raw `transparency_peel` value.
+ *
+ * Exposed because the whole point of the -1 default is that it is AUTO -- the
+ * answer comes from the materials the object's representations resolve to, so
+ * reading the setting tells you nothing about what the renderer will do.
+ *
+ * This reports the object's REQUEST, not the frame's decision. It is the same
+ * predicate the scene loop consults, but the loop then applies three gates
+ * this does not: the object must be Enabled, the renderer must support peeling
+ * (the GL path does not), and SceneCollectPeelObjects stops after
+ * kMaxPeeledObjects. So a 1 here can still draw unpeeled -- which matters,
+ * because a jelly object's implied alpha was measured peeled and an unpeeled
+ * one is denser (see the table comment in layer1/Material.cpp). Bounding this
+ * by the cap would be worse, not better: the cap is per frame and depends on
+ * object order, so it is not a property of the object being asked about.
+ *
+ * _cmd.get_object_peel(object_name_or_empty[, state=0])
+ */
 static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -6872,6 +6948,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
   {"get_built_transparency", CmdGetBuiltTransparency, METH_VARARGS},
+  {"get_built_line_stick_helper", CmdGetBuiltLineStickHelper, METH_VARARGS},
   {"get_material_draw_params", CmdGetMaterialDrawParams, METH_VARARGS},
   {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},

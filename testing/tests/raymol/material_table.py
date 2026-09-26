@@ -40,7 +40,13 @@ MATERIAL_SETTINGS = ['cartoon_material', 'surface_material', 'stick_material',
 # flips one or more `implemented` flags in layer1/Material.cpp and must update
 # this list in the same change -- that is the point of asserting it exactly.
 IMPLEMENTED_TODAY = ['default', 'matte', 'plastic', 'metallic', 'glass',
-                     'frosted_glass', 'marble', 'clay', 'rubber']
+                     'frosted_glass', 'jelly', 'marble', 'clay', 'rubber']
+
+# With #496 that is the WHOLE table, so the three tests below that need an
+# unimplemented row to exist now skip themselves. They are kept rather than
+# deleted: the `implemented` flag is the mechanism a future material arrives
+# through, and testAnIdWithNoRowIsAccepted still covers the case that matters
+# for .pse compatibility -- an id this build has never heard of.
 
 
 class TestMaterialTable(testing.PyMOLTestCase):

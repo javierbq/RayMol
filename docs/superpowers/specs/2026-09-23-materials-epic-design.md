@@ -84,6 +84,32 @@ and the change must land in small, individually shippable steps.
 
 A material resolves to `MaterialParams` and **writes no other setting**:
 
+[^jelly-alpha]: 0.45 in revisions 1-4, raised in #496 (PR #525). For a SINGLE
+    transparent layer over a NEUTRAL background, `col*a + bg*(1-a)` has channel
+    spread `a * spread(col) <= a`, whatever the shader does. Both conditions
+    are needed and both hold for the measured renders: the epic's probe
+    background is a 0.85 grey, and jelly's row sets `wantsPeel`, whose EQUAL
+    depth test keeps only the nearest layer. Note the peel is a property of the
+    frame, not of the material -- auto-peel can refuse, only
+    `kMaxPeeledObjects` (3) objects peel per frame, and the GL path peels
+    nothing -- so an unpeeled jelly object is denser (two layers cover
+    `1 - 0.15² = 0.978`). **This is not a general law of the epic's transparency
+    model** -- without a peel, `n` layers cover `1 - (1-a)^n` (and
+    `backface_cull` is 0 by default, so a closed surface delivers two), and a
+    coloured background contributes `(1-a) * spread(bg)` of its own. Under
+    those two conditions the gallery's red gummy, at spread 0.539 against
+    jelly's own emitted spread of ~0.62, would need alpha ~0.87 to match
+    exactly; 0.85 lands at 0.528, 98% of it. Only the LOW end is arithmetic:
+    any alpha at or below 0.539 cannot reach the reference's spread whatever
+    the shader does, and the specified 0.45 is well inside that -- it renders
+    a pale pink that still reads as a gummy, just not this one. The high end
+    is a judgement (the alpha is also how much of the scene a jelly object
+    hides), not a bound. 0.45 was a number from the prototype's
+    architecture, where the fragment wrote coverage 1.0 and did its own
+    transmission from the refracted opaque scene; that sampling is not
+    available inside the OIT pass (see M6), so here the implied alpha has to
+    carry the density the refraction used to.
+
 - **Opacity.** Glass and jelly carry an implied alpha. Because a rep is routed
   to the transparent pass and bakes its per-vertex alpha at *build* time, the
   implied alpha is consulted in layer2 next to the rep's transparency setting
@@ -113,7 +139,7 @@ A material resolves to `MaterialParams` and **writes no other setting**:
 | `metallic` | reflective | satin metal: F0 0.6, tint 0.35, rough 0.35 | all | reflection tinted by base colour |
 | `glass` | glass | clear glass: refraction of the opaque scene, Fresnel rim, sharp highlight | cartoon, surface, sticks without `stick_ball` (else `default`); spheres `default` | implied alpha 0.15; peel |
 | `frosted_glass` | glass | etched glass, 12-tap frosted refraction (capped in the live view) | same | implied alpha 0.2; peel |
-| `jelly` | glass | wet-glossy translucent gummy | same | implied alpha 0.45; peel |
+| `jelly` | glass | wet-glossy translucent gummy | same | implied alpha 0.85 [^jelly-alpha]; peel |
 | `marble` | procedural | matte statuary marble, faint grey veins, waxy wrap | all | veins derived from base; `materials.marble()` adds the light rig |
 | `clay` | procedural | dead-matte ceramic with grazing darkening | all | `materials.clay()` adds strong wide AO |
 | `rubber` | procedural | matte grainy rubber with velvet sheen | all | grain 0.14 at 14 /Å |

@@ -561,6 +561,10 @@ Rep *RepWireBondNew(CoordSet * cs, int state)
               cSetting_stick_transparency),
           cs) > R_SMALL4)
     line_stick_helper = false;
+  // Recorded on the rep below, once it exists: the SETTING says what the user
+  // asked for, this says what the build decided, and only the second one moves
+  // when a material is what made the sticks translucent.
+  int const built_line_stick_helper = line_stick_helper ? 1 : 0;
   half_bonds = SettingGet_i(G, cs->Setting.get(), obj->Setting.get(), cSetting_half_bonds);
   hide_long = SettingGet_b(G, cs->Setting.get(), obj->Setting.get(), cSetting_hide_long_bonds);
   na_mode =
@@ -595,6 +599,7 @@ Rep *RepWireBondNew(CoordSet * cs, int state)
   }
 
   auto I = new RepWireBond(cs, state);
+  I->setBuiltLineStickHelper(built_line_stick_helper);
 
   I->primitiveCGO = CGONew(G);
 

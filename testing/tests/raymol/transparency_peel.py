@@ -8,10 +8,17 @@ object's transparent draws are tested for equality against it.
 
 `transparency_peel` is a TRI-STATE: 1 on, 0 off, -1 (the default) auto -- on
 when any of the object's four representations resolves to a material whose row
-asks for it. No material asks today (it is a glass-family flag and glass lands
-in #495), so auto is off for everything, which is exactly why these tests pin
-the RESOLUTION rather than the raw setting: the setting alone says nothing
-about what the renderer will do.
+asks for it. All three glass-family materials ask -- `glass` and
+`frosted_glass` since #495, `jelly` since #496 -- and nothing else does, which
+is why these tests pin the RESOLUTION rather than the raw setting: the setting
+alone says nothing about what the renderer will do. (This paragraph said "no
+material asks today" until #496; it had been stale since #495, and the tests
+below were written against a resolution that was off for everything.)
+
+What the resolution does NOT tell you is whether the frame actually peels the
+object: the scene loop additionally requires `obj->Enabled`, a renderer that
+supports peeling, and a place within `kMaxPeeledObjects`. See the comment on
+CmdGetObjectPeel.
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/transparency_peel.py
