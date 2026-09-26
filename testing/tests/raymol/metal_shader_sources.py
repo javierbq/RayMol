@@ -47,6 +47,33 @@ _PREPENDED = {
 }
 
 
+def _strip_comments(text):
+    """MSL // comments removed, so a commented-out branch does not satisfy a
+    substring check. Block comments are not used in these literals."""
+    return re.sub(r'//[^\n]*', '', text)
+
+
+def _function_body(literal, name):
+    """The body of `name`, from its signature to the matching closing brace.
+
+    Slicing from the name to the end of the literal -- which this test did at
+    first -- is not the function: it is every later function too, so a check
+    for "does this function dispatch jelly" passed when the dispatch had moved
+    somewhere else entirely.
+    """
+    start = literal.index(name)
+    open_brace = literal.index('{', start)
+    depth = 0
+    for i in range(open_brace, len(literal)):
+        if literal[i] == '{':
+            depth += 1
+        elif literal[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return literal[start:i + 1]
+    raise AssertionError('unbalanced braces after %s' % name)
+
+
 def shader_literals(source):
     """{name: body} for every @R"(...)" literal in `source`.
 
@@ -164,9 +191,16 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         # both unchecked: renumber the C enum and the glass-family pipeline
         # dispatches on a stale literal, which does not fail to draw, it draws
         # the wrong material. That is this epic's signature bug.
-        declared = dict(re.findall(
-            r'constant int kMatMode_(\w+)\s*=\s*(\d+);', msl))
-        self.assertTrue(declared, 'no kMatMode_* constants found in kMaterialSrc')
+        # Every LITERAL too, not just the shared block. Restricting the scan
+        # to kMaterialSrc would generalise over names and not over files --
+        # the same shape as the hardcoded list it replaced, and it would go
+        # stale the same way the moment a material declares its mode beside
+        # its own helper.
+        declared = {}
+        for body in literals.values():
+            declared.update(re.findall(
+                r'constant int kMatMode_(\w+)\s*=\s*(\d+);', body))
+        self.assertTrue(declared, 'no kMatMode_* constants found in the MSL')
         for name, value in declared.items():
             self.assertIn(name, ids,
                           'kMatMode_%s names no material in layer1/Material.h' % name)
@@ -197,13 +231,25 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         for site, body in (('vbo_material_shade', msl['kVBOSrc']),
                            ('mat_impostor_composite', msl['kMaterialImpostorSrc'])):
             self.assertIn(site, body)
-            fn = body[body.index(site):]
-            self.assertIn('kMatMode_jelly', fn,
+            fn = _function_body(body, site)
+            # Comments stripped: the first version of this test searched the
+            # raw text from the function's NAME to the end of the library, so
+            # a dispatch that had been commented out -- or moved into a later
+            # function entirely -- still matched.
+            code = _strip_comments(fn)
+            self.assertIn('kMatMode_jelly', code,
                           '%s does not dispatch jelly' % site)
-            self.assertIn('mat_jelly_shade', fn,
+            self.assertIn('mat_jelly_shade', code,
                           '%s does not call mat_jelly_shade' % site)
-            self.assertIn('kMatMode_frosted_glass', fn,
+            self.assertIn('kMatMode_frosted_glass', code,
                           '%s does not dispatch frosted_glass' % site)
+            # ...and REACHABLE. Both sites end with an unconditional glass
+            # fallback; a jelly branch after it is dead code that still
+            # contains every string above.
+            self.assertLess(code.index('kMatMode_jelly'),
+                            code.index('mat_glass_shade'),
+                            '%s dispatches jelly after the unconditional '
+                            'mat_glass_shade fallback, so it never runs' % site)
         # The helper itself must be declared before the MaterialU it takes by
         # reference: the libraries are concatenated and compiled at RUNTIME, so
         # a bad order is a silent NSLog and a material that does nothing.

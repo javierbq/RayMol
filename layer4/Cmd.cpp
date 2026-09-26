@@ -2491,8 +2491,17 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
  *
  * Exposed because the whole point of the -1 default is that it is AUTO -- the
  * answer comes from the materials the object's representations resolve to, so
- * reading the setting tells you nothing about what the renderer will do. This
- * is the same call the scene loop makes.
+ * reading the setting tells you nothing about what the renderer will do.
+ *
+ * This reports the object's REQUEST, not the frame's decision. It is the same
+ * predicate the scene loop consults, but the loop then applies three gates
+ * this does not: the object must be Enabled, the renderer must support peeling
+ * (the GL path does not), and SceneCollectPeelObjects stops after
+ * kMaxPeeledObjects. So a 1 here can still draw unpeeled -- which matters,
+ * because a jelly object's implied alpha was measured peeled and an unpeeled
+ * one is denser (see the table comment in layer1/Material.cpp). Bounding this
+ * by the cap would be worse, not better: the cap is per frame and depends on
+ * object order, so it is not a property of the object being asked about.
  *
  * _cmd.get_object_peel(object_name_or_empty[, state=0])
  */
@@ -2544,6 +2553,54 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
        which does not exist. */
     result = Py_BuildValue("(iifff(ffffff))", p.family, p.mode, p.reflect,
         p.tint, p.rough, p.p[0], p.p[1], p.p[2], p.p[3], p.p[4], p.p[5]);
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/* Was `line_stick_helper` still on when the LINES rep was built (#496)?
+
+   The setting says what the user asked for; this says what the build decided.
+   #495 turns the helper off for a stick rep that a MATERIAL made translucent,
+   without the material ever writing `stick_transparency` -- so a test written
+   against the setting stays green with that rule reverted, and the geometry the
+   helper suppresses is not otherwise visible from Python. It had no test
+   anywhere in the tree until this. */
+static PyObject* CmdGetBuiltLineStickHelper(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Os|i", &self, &oname, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    Rep* rep = cs ? cs->Rep[cRepLine] : nullptr;
+    if (!rep) {
+      PyErr_SetString(PyExc_ValueError,
+          "the lines representation is not built");
+    } else if (rep->builtLineStickHelper() < 0) {
+      /* Never 0: "the helper was off" and "nothing recorded" must not be the
+         same answer, or every assertion below passes on an unbuilt rep. */
+      PyErr_SetString(PyExc_ValueError,
+          "this representation records no line_stick_helper");
+    } else {
+      result = PyLong_FromLong(rep->builtLineStickHelper());
+    }
   }
   APIExitBlocked(G);
   return result;
@@ -6887,6 +6944,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
   {"get_built_transparency", CmdGetBuiltTransparency, METH_VARARGS},
+  {"get_built_line_stick_helper", CmdGetBuiltLineStickHelper, METH_VARARGS},
   {"get_material_draw_params", CmdGetMaterialDrawParams, METH_VARARGS},
   {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},

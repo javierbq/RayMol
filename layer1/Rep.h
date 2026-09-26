@@ -240,6 +240,19 @@ struct Rep {
   //! Records the answer at build time; see above.
   void setEmitsStickBalls(bool v) { m_emits_stick_balls = v; }
 
+  //! Was `line_stick_helper` still ON when this (lines) rep was built?
+  //! -1 for a rep that does not record one.
+  //!
+  //! The setting says what the user asked for; this says what the build
+  //! DECIDED, which is not the same thing -- #495 turns the helper off for a
+  //! stick rep that a MATERIAL made translucent, without the material ever
+  //! writing `stick_transparency`. That rule had no test anywhere in the tree:
+  //! a test written against the setting stays green with the rule reverted,
+  //! and the geometry it suppresses is not otherwise visible from Python.
+  int builtLineStickHelper() const { return m_built_line_stick_helper; }
+  //! Records the decision at build time; see above.
+  void setBuiltLineStickHelper(int v) { m_built_line_stick_helper = v; }
+
 protected:
   cRepInv_t MaxInvalid = cRepInvNone;
 
@@ -250,6 +263,10 @@ private:
   //! accessor exists to prevent.
   float m_built_transparency = -1.0f;
   bool m_emits_stick_balls = false;
+  //! Negative = "this rep does not record one", for the same reason as above:
+  //! 0 would mean "the helper was off" and make an unbuilt rep answer with
+  //! confidence.
+  int m_built_line_stick_helper = -1;
   Rep* rebuild();
   virtual Rep* recolor() { return rebuild(); }
   virtual bool sameVis() const { return false; }

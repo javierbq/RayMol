@@ -104,23 +104,34 @@ const MaterialRow kMaterialTable[] = {
            over every transparent fragment, so n overlapping layers cover
            1 - (1-a)^n, not a. `backface_cull` is 0 by default, so a closed
            surface delivers two. Jelly's row sets wantsPeel, and the peel is an
-           EQUAL depth test that keeps only the nearest layer -- so for THIS
-           material n really is 1. The bound is load-bearing on the peel.
+           EQUAL depth test that keeps only the nearest layer, so n is 1 for a
+           jelly object that is actually PEELED. That is not the same as "every
+           jelly object": auto-peel refuses when the object has another
+           transparent rep, SceneCollectPeelObjects stops at kMaxPeeledObjects
+           (3) per frame, and the GL path peels nothing at all. So the bound is
+           load-bearing on the peel, and the peel is not guaranteed.
 
        The prototype gallery's red gummy measures a mean channel spread of
        0.539, and the measured spread of jelly's own emitted colour is ~0.62,
-       so the smallest alpha that can reach the reference is ~0.87. 0.85 is not
-       a taste choice with room either side of it: it is essentially the floor.
+       so reproducing the reference EXACTLY would take alpha ~0.87. 0.85 lands
+       at 0.528, i.e. 98% of the reference and just under it -- deliberately,
+       because the alpha is also how much of the scene a jelly object hides,
+       and there is no reason to round that up past the measurement's own
+       noise. What the arithmetic rules out is the low end: anything at or
+       below 0.539 cannot render this material at all, and the specified 0.45
+       is well inside that. The choice is a narrow band near 0.85, not a free
+       parameter.
        At the specified 0.45 the material renders a pale pink that still has
        the highlights and still reads as "a gummy", which is why the ticket's
        done-when is a measurement and not a glance.
 
-       What DOES change with the peel is density, not the bound: an unpeeled
-       closed jelly surface delivers two layers and covers 1 - 0.15^2 = 0.978.
-       Measured rather than assumed -- a translucent cartoon inside an unpeeled
+       An unpeeled jelly object is therefore denser than the one measured
+       above: two layers cover 1 - 0.15^2 = 0.978 rather than 0.85. It does not
+       become OPAQUE, which is the intuition the reveal term alone suggests and
+       which is wrong -- measured, a translucent cartoon inside an unpeeled
        jelly surface still contributes across 42% of the frame at mean |delta|
        0.134 (0.257 at alpha 0.45), because the weighted-blend resolve averages
-       the layers' colours and does not simply occlude the far ones.
+       the layers' colours instead of occluding the far ones.
 
        0.45 is not wrong so much as it is a number from a different
        architecture. In the prototype the user's 0.55 was a SHADING knob: the

@@ -61,6 +61,13 @@ def draw_params(obj, rep):
     return _cmd.get_material_draw_params(cmd._COb, obj, rep)
 
 
+def built_line_stick_helper(obj):
+    """What the LINES build decided about line_stick_helper, not what the
+    setting says. The two differ exactly when a material is what made the
+    sticks translucent, which is the case worth testing."""
+    return _cmd.get_built_line_stick_helper(cmd._COb, obj)
+
+
 def build(obj, rep_name):
     """Show a representation and force its geometry to be BUILT."""
     cmd.show(rep_name, obj)
@@ -273,27 +280,72 @@ class TestJelly(testing.PyMOLTestCase):
 
     def testJellySticksKeepTheirLines(self):
         """`line_stick_helper` suppresses the lines under a stick, and #495
-        turned it off for any stick the MATERIAL makes translucent -- a
+        turned it off for any stick a MATERIAL makes translucent -- a
         see-through stick with its lines suppressed shows nothing.
 
         Jelly enters the same branch, and the rule is binary: 0.15 transparency
         trips it exactly as glass's 0.85 does. So `show lines` beside jelly
-        sticks now draws a wireframe down the middle of every 85%-opaque bond
-        (measured at 5.3% of the frame). That is the pre-existing rule applied
-        to a new value rather than anything this ticket introduced -- a user
-        typing `set stick_transparency, 0.15` gets it on master today -- but it
-        is a behaviour of the material, so it is pinned rather than left to be
-        discovered. See "Found while building" on #503 for the threshold.
+        sticks draws a wireframe down the middle of every 85%-opaque bond
+        (measured at 5.3% of the frame; with `default` the same comparison is
+        byte-identical, i.e. fully suppressed). That is the pre-existing rule
+        applied to a new value rather than anything this ticket introduced, so
+        it is pinned rather than changed -- see #527.
+
+        Asserted on what the BUILD decided, not on the setting. The first
+        version of this test checked `built_transparency` and an untouched
+        `stick_transparency`, which are the rule's INPUT: revert #495's branch
+        in RepWireBond and both assertions still hold, so it pinned nothing.
+        Nothing else in the tree covered that branch either.
         """
+        cmd.show('lines', 'm1')
+        cmd.show('sticks', 'm1')
         cmd.set('stick_material', 'jelly', 'm1')
-        build('m1', 'sticks')
-        build('m1', 'lines')
-        self.assertAlmostEqual(built_transparency('m1', repres['sticks']),
-                               JELLY_TRANSPARENCY, places=4)
-        # the setting itself is untouched; it is the EFFECTIVE value the rule
-        # reads, which is the whole point of routing it through the material.
+        cmd.rebuild('m1')
+        cmd.refresh()
+        # the helper the user asked for is ON ...
+        self.assertEqual(cmd.get_setting_boolean('line_stick_helper', 'm1'), 1)
+        # ... and the build turned it off anyway, because the MATERIAL made the
+        # sticks translucent without ever writing stick_transparency.
         self.assertEqual(
             cmd.get_setting_float('stick_transparency', 'm1'), 0.0)
+        # Reported as a failure, not an error: with the rule reverted the
+        # helper stays on, every line is suppressed and RepWireBondNew
+        # discards the rep, so the accessor raises. That is the right
+        # observation but an unreadable way to report it.
+        try:
+            helper = built_line_stick_helper('m1')
+        except Exception as exc:
+            self.fail('the lines rep was discarded, i.e. line_stick_helper '
+                      'suppressed every line under a jelly stick: %s' % exc)
+        self.assertEqual(helper, 0)
+
+    def testDefaultSticksSuppressTheirLinesEntirely(self):
+        """The mirror, and it is stronger than the flag: with the helper left
+        ON, every line under a stick is dropped, RepWireBondNew emits no
+        geometry and discards the rep outright -- so the accessor raises where
+        jelly's returns 0.
+
+        The second half is what makes "raises" mean something. Hide the sticks
+        on the same object, with `lines` shown throughout, and the rep comes
+        back recording the helper as 1. So the difference between the two is
+        the sticks, not whether lines were ever asked for."""
+        cmd.show('lines', 'm1')
+        cmd.show('sticks', 'm1')
+        cmd.rebuild('m1')
+        cmd.refresh()
+        with self.assertRaises(Exception):
+            built_line_stick_helper('m1')
+        cmd.hide('sticks', 'm1')
+        cmd.rebuild('m1')
+        cmd.refresh()
+        self.assertEqual(built_line_stick_helper('m1'), 1)
+
+    def testAnUnbuiltLinesRepIsAnErrorNotZero(self):
+        """0 means "the helper was turned off", so it must not also mean
+        "nothing was recorded" -- that would make both tests above vacuous."""
+        cmd.set('stick_material', 'jelly', 'm1')
+        with self.assertRaises(Exception):
+            built_line_stick_helper('m1')
 
     # -- the representations jelly cannot draw on -----------------------------
 

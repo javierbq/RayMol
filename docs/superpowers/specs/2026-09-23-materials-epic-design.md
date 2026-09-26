@@ -87,16 +87,22 @@ A material resolves to `MaterialParams` and **writes no other setting**:
 [^jelly-alpha]: 0.45 in revisions 1-4, raised in #496 (PR #525). For a SINGLE
     transparent layer over a NEUTRAL background, `col*a + bg*(1-a)` has channel
     spread `a * spread(col) <= a`, whatever the shader does. Both conditions
-    are needed and both hold for jelly: the epic's probe background is a 0.85
-    grey, and jelly's row sets `wantsPeel`, whose EQUAL depth test keeps only
-    the nearest layer. **This is not a general law of the epic's transparency
+    are needed and both hold for the measured renders: the epic's probe
+    background is a 0.85 grey, and jelly's row sets `wantsPeel`, whose EQUAL
+    depth test keeps only the nearest layer. Note the peel is a property of the
+    frame, not of the material -- auto-peel can refuse, only
+    `kMaxPeeledObjects` (3) objects peel per frame, and the GL path peels
+    nothing -- so an unpeeled jelly object is denser (two layers cover
+    `1 - 0.15² = 0.978`). **This is not a general law of the epic's transparency
     model** -- without a peel, `n` layers cover `1 - (1-a)^n` (and
     `backface_cull` is 0 by default, so a closed surface delivers two), and a
     coloured background contributes `(1-a) * spread(bg)` of its own. Under
     those two conditions the gallery's red gummy, at spread 0.539 against
-    jelly's own emitted spread of ~0.62, needs alpha >= ~0.87; 0.85 is
-    effectively the floor rather than a choice with room either side. At 0.45
-    the material renders a pale pink. 0.45 was a number from the prototype's
+    jelly's own emitted spread of ~0.62, would need alpha ~0.87 to match
+    exactly; 0.85 lands at 0.528, 98% of it. What the arithmetic rules out is
+    the low end -- any alpha at or below 0.539 cannot render the material at
+    all -- so the choice is a narrow band near 0.85, not a free parameter. At
+    the specified 0.45 the material renders a pale pink. 0.45 was a number from the prototype's
     architecture, where the fragment wrote coverage 1.0 and did its own
     transmission from the refracted opaque scene; that sampling is not
     available inside the OIT pass (see M6), so here the implied alpha has to
