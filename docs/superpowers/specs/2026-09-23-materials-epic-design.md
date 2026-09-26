@@ -84,6 +84,16 @@ and the change must land in small, individually shippable steps.
 
 A material resolves to `MaterialParams` and **writes no other setting**:
 
+[^jelly-alpha]: 0.45 in revisions 1-4, raised in #496 (PR #525). A transparent
+    fragment reaches the screen as `col*a + bg*(1-a)`, so the largest channel
+    spread an alpha of `a` can produce is `a` itself, whatever the shader does.
+    The prototype gallery's red gummy measures a spread of 0.539, so no shader
+    at alpha 0.45 can render it -- it comes out a pale pink. 0.45 was a number
+    from the prototype's architecture, where the fragment wrote coverage 1.0
+    and did its own transmission from the refracted opaque scene; that sampling
+    is not available inside the OIT pass (see M6), so here the implied alpha
+    has to carry the density the refraction used to.
+
 - **Opacity.** Glass and jelly carry an implied alpha. Because a rep is routed
   to the transparent pass and bakes its per-vertex alpha at *build* time, the
   implied alpha is consulted in layer2 next to the rep's transparency setting
@@ -113,7 +123,7 @@ A material resolves to `MaterialParams` and **writes no other setting**:
 | `metallic` | reflective | satin metal: F0 0.6, tint 0.35, rough 0.35 | all | reflection tinted by base colour |
 | `glass` | glass | clear glass: refraction of the opaque scene, Fresnel rim, sharp highlight | cartoon, surface, sticks without `stick_ball` (else `default`); spheres `default` | implied alpha 0.15; peel |
 | `frosted_glass` | glass | etched glass, 12-tap frosted refraction (capped in the live view) | same | implied alpha 0.2; peel |
-| `jelly` | glass | wet-glossy translucent gummy | same | implied alpha 0.45; peel |
+| `jelly` | glass | wet-glossy translucent gummy | same | implied alpha 0.85 [^jelly-alpha]; peel |
 | `marble` | procedural | matte statuary marble, faint grey veins, waxy wrap | all | veins derived from base; `materials.marble()` adds the light rig |
 | `clay` | procedural | dead-matte ceramic with grazing darkening | all | `materials.clay()` adds strong wide AO |
 | `rubber` | procedural | matte grainy rubber with velvet sheen | all | grain 0.14 at 14 /Å |

@@ -82,9 +82,32 @@ const MaterialRow kMaterialTable[] = {
 
     /* Jelly is in the glass family but is the opposite material: a dense
        scattering BODY under a smooth skin, where glass is a clear body under a
-       Fresnel rim. Its implied alpha of 0.45 -- three times clear glass's --
-       is what carries that; p[0..2] are the prototype's gummy knobs
-       (absorption 2.2, scatter 0.35, wet highlight 1.1).
+       Fresnel rim. p[0..2] are the prototype's gummy knobs (absorption 2.2,
+       scatter 0.35, wet highlight 1.1).
+
+       IMPLIED ALPHA IS 0.85, NOT THE 0.45 #496 AND #503 SPECIFY. That number
+       cannot draw this material, and the reason is arithmetic rather than
+       taste. A transparent fragment reaches the screen as col*a + bg*(1-a),
+       so the most saturated thing an alpha of `a` can produce -- over ANY
+       background, with ANY shader behind it -- is a * (max channel - min
+       channel), i.e. at most `a`. The prototype gallery's red gummy measures a
+       mean channel spread of 0.539. No shader written at alpha 0.45 can reach
+       it; at 0.45 the material renders a pale pink that still has the
+       highlights and still reads as "a gummy", which is why the ticket's
+       done-when is a measurement and not a glance.
+
+       0.45 is not wrong so much as it is a number from a different
+       architecture. In the prototype the user's 0.55 was a SHADING knob: the
+       fragment wrote coverage 1.0 ("this fragment must dominate the
+       weighted-blended resolve") and did its own transmission by sampling the
+       refracted opaque scene. #495 deliberately did not port that sampling --
+       there is no opaque texture inside the OIT pass -- so here the implied
+       alpha IS the blend coverage, and it has to carry the density the
+       prototype got from the refraction.
+
+       Measured at 0.85, against the gallery's g_jelly_red_v3 / sticks_red:
+       surface mean rgb 0.810/0.323/0.282 vs 0.796/0.298/0.257, spread 0.528 vs
+       0.539, silhouette coverage 0.421 vs 0.426.
 
        `rough` is 0.03, not the 0.1 this row was declared with in #486. It is
        the cubemap MIP axis (lod = sqrt(rough) * 7), and 0.1 selects level 2.2
@@ -92,7 +115,7 @@ const MaterialRow kMaterialTable[] = {
        point of the look is that the body is frosted and the surface is not.
        0.03 lands just under level 1. The number was never rendered before
        this ticket; the table declared it in advance. */
-    {cMaterial_jelly, "jelly", cMaterialFamily_glass, true, 0.45f,
+    {cMaterial_jelly, "jelly", cMaterialFamily_glass, true, 0.85f,
         {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.03f,
             {2.2f, 0.35f, 1.1f, 0.0f, 0.0f, 0.0f}, 1}},
 

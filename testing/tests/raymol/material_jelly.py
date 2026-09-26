@@ -6,9 +6,14 @@ body under a Fresnel rim; jelly is a dense scattering body under a smooth wet
 skin. Everything asserted here is a place those two could quietly collapse into
 each other:
 
-  * its implied alpha is 0.45, three times clear glass's, so a jelly surface is
-    a body you look INTO rather than through. Sharing a value with glass would
-    still shade like a gummy and still look wrong.
+  * its implied alpha is 0.85, where clear glass's is 0.15, so a jelly surface
+    is a body you look INTO rather than through. Sharing a value with glass
+    would still shade like a gummy and still look wrong. That 0.85 is a
+    deliberate departure from the 0.45 #496 and #503 specify, and the reason is
+    arithmetic: a transparent fragment reaches the screen as col*a + bg*(1-a),
+    so the largest channel spread an alpha of `a` can produce is `a` itself,
+    whatever the shader does -- and the prototype gallery's red gummy measures
+    0.539. See the table comment in layer1/Material.cpp.
   * its `rough` is near zero where frosted_glass's is 0.6. `rough` is the
     cubemap MIP axis, so a jelly that picked up a frosted roughness reflects a
     blurred room and stops reading as wet -- the same class of defect as #495's
@@ -34,7 +39,7 @@ GLASS_FAMILY = 3
 JELLY_MODE = 6
 
 # The alpha the table implies, as the TRANSPARENCY layer2 builds with.
-JELLY_TRANSPARENCY = 1.0 - 0.45
+JELLY_TRANSPARENCY = 1.0 - 0.85
 
 
 def family(name):
@@ -79,8 +84,15 @@ class TestJelly(testing.PyMOLTestCase):
     def testJellyIsInTheGlassFamily(self):
         """Family is the function-constant axis the Metal pipelines are
         specialised on. Jelly in any other family would need a pipeline that is
-        not built, and would draw as `default`."""
+        not built, and would draw as `default`.
+
+        Asserted twice on purpose: the table row carries a family AND the
+        MaterialParams inside it carry one, and only the second reaches the
+        GPU. They are separate fields and nothing but this compares them."""
         self.assertEqual(family('jelly'), GLASS_FAMILY)
+        cmd.set('surface_material', 'jelly', 'm1')
+        fam, _m, _r, _t, _ro, _p = draw_params('m1', repres['surface'])
+        self.assertEqual(fam, GLASS_FAMILY)
 
     def testJellyHasItsOwnModeWithinTheFamily(self):
         """The three glass-family materials share one pipeline and are told
@@ -97,9 +109,10 @@ class TestJelly(testing.PyMOLTestCase):
     # -- implied alpha --------------------------------------------------------
 
     def testJellySurfaceBuildsAtItsOwnAlpha(self):
-        """0.45 alpha -> 0.55 transparency. The table stores ALPHA and layer2
-        wants a TRANSPARENCY; returning 0.45 here would shade like a gummy and
-        be 45% see-through instead of 55% -- close enough to look deliberate."""
+        """0.85 alpha -> 0.15 transparency. The table stores ALPHA and layer2
+        wants a TRANSPARENCY; returning the alpha itself would shade like a
+        gummy and be 85% see-through instead of 15% -- the inversion that shipped
+        clear glass 85% OPAQUE in #495, and which looks deliberate either way."""
         cmd.set('surface_material', 'jelly', 'm1')
         build('m1', 'surface')
         self.assertAlmostEqual(built_transparency('m1', repres['surface']),
@@ -148,7 +161,8 @@ class TestJelly(testing.PyMOLTestCase):
         """The failure this rules out is a shared constant: one alpha for the
         whole family renders three materials that differ only in their shading
         and are all equally see-through. Jelly is the one that would suffer --
-        a 0.85-transparent gummy is a tinted glass."""
+        a 0.85-transparent gummy is a pale pink tinted glass, which is exactly
+        what the ticket's own 0.45 produced."""
         seen = {}
         for name in ('glass', 'frosted_glass', 'jelly'):
             cmd.reinitialize()
@@ -157,15 +171,15 @@ class TestJelly(testing.PyMOLTestCase):
             build('m1', 'surface')
             seen[name] = round(built_transparency('m1', repres['surface']), 4)
         self.assertEqual(seen, {'glass': 0.85, 'frosted_glass': 0.8,
-                                'jelly': 0.55})
+                                'jelly': 0.15})
 
     def testTheUsersSliderWins(self):
-        cmd.set('transparency', 0.2, 'm1')
+        cmd.set('transparency', 0.6, 'm1')
         cmd.set('surface_material', 'jelly', 'm1')
         build('m1', 'surface')
-        self.assertAlmostEqual(cmd.get_setting_float('transparency', 'm1'), 0.2,
+        self.assertAlmostEqual(cmd.get_setting_float('transparency', 'm1'), 0.6,
                                places=4)
-        self.assertAlmostEqual(built_transparency('m1', repres['surface']), 0.2,
+        self.assertAlmostEqual(built_transparency('m1', repres['surface']), 0.6,
                                places=4)
 
     # -- the knobs that make it a gummy --------------------------------------

@@ -5769,18 +5769,39 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   float rim = 1.0 - ndotv;              // thickness proxy: longest path at the edge
   float3 L1 = normalize(keyDir);
 
-  // Beer-Lambert through the body. The exponent passes through 1.0 as the view
-  // tilts (2.2 * 0.35 face-on, 2.2 * 1.75 at the rim), so a face-on gummy keeps
-  // close to the colour the user chose and only its silhouette goes deep --
-  // which is the half of the effect that survives without a refracted sample.
-  float3 body = pow(saturate(base), float3(m.p[0] * (0.35 + 1.4 * rim)));
+  // What the body TRANSMITS: light from the room, FILTERED by the material.
+  //
+  // The filter is Beer-Lambert. Its exponent starts at 1 -- a face-on gummy is
+  // the colour the user chose -- and climbs with the path length, so the
+  // silhouette goes deep and saturated. The prototype's exponent was
+  // p[0] * (0.35 + 1.4 * rim), i.e. 0.77 face-on, which is right THERE and
+  // wrong here: it multiplied the refracted BACKGROUND, where an exponent
+  // below 1 means little absorption. Applied to a body colour it means the
+  // opposite -- pow(c, 0.77) lifts every channel toward white.
+  //
+  // The room is deliberately NOT multiplied in here, though transmitted light
+  // physically is. Tried: the cube's coarsest mip is its average radiance, and
+  // on the reference scene that average is ~0.5 while the background it stands
+  // for is 0.85, so the gummy came out brown -- measured mean red 0.405 against
+  // the reference's 0.796. Getting it back would mean inventing a gain
+  // constant, and the honest version of "lit by what is behind it" is the
+  // refracted sample this pass does not have (see mat_glass_shade, and #499).
+  // Every other material in this epic lights its base colour from the scene
+  // LIGHTS, which is what the scatter term below does.
+  float3 body = pow(saturate(base), float3(1.0 + m.p[0] * rim));
 
   // Light scattered INSIDE the body: a wide wrap, so it glows through the
   // terminator instead of shading across it.
+  //
+  // Thinnest at the rim, where the prototype's was thickest -- the same swap.
+  // There the mix ran from a bright refracted background TOWARD the body, so
+  // more of it at the rim meant denser; here it runs from the absorbed body
+  // toward a LIGHT glow, so more of it at the rim would undo the absorption
+  // that the silhouette is made of.
   float wrapLit = ambient + reflectAmt * saturate((dot(N, L1) + 0.6) / 1.6)
                           + direct * saturate((ndotv + 0.6) / 1.6);
   float3 glow = saturate(base * 1.15) * min(wrapLit, 1.0);
-  float3 col = mix(body, glow, saturate(m.p[1] * (0.55 + 0.9 * rim)));
+  float3 col = mix(body, glow, saturate(m.p[1] * (1.0 - 0.6 * rim)));
 
   // The wet skin: the room, unblurred, at a full dielectric Fresnel.
   float3 R = reflect(-V, N);
