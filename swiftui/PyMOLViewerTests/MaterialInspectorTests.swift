@@ -157,10 +157,32 @@ final class MaterialInspectorTests: XCTestCase {
     /// The bundle is CALLED, not reimplemented: it writes global lighting as
     /// well as the object's material, and a copy of that list here would drift
     /// from modules/pymol/materials.py with nothing to catch it.
-    func testTheSuggestedLightingButtonCallsTheBundle() {
+    func testTheLookButtonCallsTheBundle() {
         XCTAssertEqual(MaterialCommands.runBundle("marble", on: "m1"),
                        "python\nfrom pymol import materials; "
                        + "materials.marble('m1', _self=cmd)\npython end")
+    }
+
+    /// The chip's help has to say that the bundle rewrites the material on
+    /// EVERY representation, because it does -- `_apply_material` loops all
+    /// four settings by design. #498 calls this "Suggested lighting" and the
+    /// first version was labelled that way, which would have let a click
+    /// beside the Sticks dropdown silently replace a deliberate
+    /// `surface_material, glass` with marble and never mention the surface.
+    func testTheLookButtonSaysItRewritesEveryRepresentation() {
+        let help = MaterialCommands.bundleHelp("Marble (statuary)")
+        XCTAssertTrue(help.contains("Marble (statuary)"), help)
+        XCTAssertTrue(help.contains("EVERY representation"), help)
+        XCTAssertTrue(help.contains("lighting"), help)
+        // ...and the many-bundles variant, which has no single label to name.
+        XCTAssertTrue(MaterialCommands.bundleHelp(nil).contains("EVERY representation"))
+    }
+
+    /// The gate that keeps the rows off measurements, CGOs, maps and groups.
+    func testTheObjectRowsAreOffByDefaultUntilThePayloadSaysOtherwise() {
+        XCTAssertFalse(ObjStateMeta().hasMaterialRows)
+        XCTAssertFalse(PyMOLEngine.parseObjMeta(["state": 1]).hasMaterialRows)
+        XCTAssertTrue(PyMOLEngine.parseObjMeta(["material_rows": 1]).hasMaterialRows)
     }
 
     // MARK: - the two scene-wide rows
@@ -187,17 +209,12 @@ final class MaterialInspectorTests: XCTestCase {
         XCTAssertEqual(env?.options.map { Int($0.value) }, [0, 1, 2])
     }
 
-    /// Every scene setting the panel offers must be one the poll actually
-    /// reads, or the row renders at 0 and silently disagrees with the session.
-    /// Checked for the two rows this ticket adds.
-    func testTheNewSceneRowsAreInThePolledList() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("modules/pymol/appkit_inspector.py")
-        let src = try XCTUnwrap(try? String(contentsOf: url, encoding: .utf8),
-                               "appkit_inspector.py not found (not a repo checkout)")
-        XCTAssertTrue(src.contains("'material_default'"))
-        XCTAssertTrue(src.contains("'material_env'"))
-    }
+    // The "is it in SCENE_SETTINGS" check that used to live here has been
+    // deleted rather than fixed. It grepped the whole of appkit_inspector.py
+    // for the literal 'material_default', which also appears in
+    // MATERIAL_VALUED — so removing it from SCENE_SETTINGS, the exact mutation
+    // its docstring claimed to catch, left it green. That is the epic's
+    // recurring shape: an assertion on a nearby observable that survives the
+    // feature's death. The real check is Python-side and reads the list
+    // itself: TestSceneMaterialRows.testTheSceneParamsArePolled.
 }

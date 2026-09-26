@@ -26,7 +26,7 @@ from pymol import cmd, materials, setting, testing
 
 def meta(obj, objs=None):
     """The objmeta entry `poll()` would ship for `obj`."""
-    built = ai._build(objs or [obj])
+    built = ai._build(objs if objs is not None else [obj])
     return built['objmeta'][obj]
 
 
@@ -149,18 +149,75 @@ class TestLegacyReflectionGroup(testing.PyMOLTestCase):
         cmd.show('nb_spheres', 'm1')
         cmd.rebuild('m1')
         cmd.refresh()
-        cmd.set('surface_material', 'marble', 'm1')
+        # GLASS, not a procedural material: glass is the one family that is
+        # deaf, so nb_spheres is the ONLY thing keeping the group live here.
+        # With marble it would stay live for two reasons and this test would
+        # pass with the nb_spheres half deleted.
+        cmd.set('surface_material', 'glass', 'm1')
         self.assertEqual(self.dead(), 0)
 
-    def testAProceduralMaterialOnEveryShownRepKillsIt(self):
+    def testAProceduralMaterialKeepsItLive(self):
+        """The first version of this asserted the opposite, on the strength of
+        MaterialApplyLegacyTriple's comment that "the procedural materials do
+        not read these at all". That is true of the RASTER shaders and false of
+        the draw: the same function OVERWRITES reflect/tint/rough from the
+        object settings for every family except reflective and glass, and the
+        values reach the ray tracer's per-occurrence table. The triple is an
+        RT-only knob to begin with -- the scene copies carry
+        `dependsOn: metal_raytrace` -- so that is the path that decides."""
         self.show('surface')
         cmd.set('surface_material', 'marble', 'm1')
-        self.assertEqual(self.dead(), 1)
+        self.assertEqual(self.dead(), 0)
+        # ...and the slider really does reach the draw, so the group is not
+        # merely being left live out of caution.
+        from pymol import _cmd
+        from pymol.constants import repres
+        cmd.set('metal_rt_reflect', 0.9, 'm1')
+        _f, _m, refl, _t, _r, _p = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['surface'])
+        self.assertAlmostEqual(refl, 0.9, places=4)
 
-    def testAGlassMaterialKillsItToo(self):
+    def testAGlassMaterialKillsIt(self):
+        """Glass is the one family that really is deaf: its table row carries
+        reflect 0 and MaterialApplyLegacyTriple exempts it outright."""
         self.show('surface')
         cmd.set('surface_material', 'glass', 'm1')
         self.assertEqual(self.dead(), 1)
+
+    def testAGlassMaterialThatDEGRADESKeepsItLive(self):
+        """Judged on what the rep DRAWS, not on what its setting names.
+
+        Glass has no sphere-impostor path, so `sphere_material, glass` draws as
+        `default` -- and `default` reads the triple. Asking
+        get_material_family about the setting's id said "deaf" and greyed out a
+        group whose sliders were reaching the draw, on the epic's own showcase
+        materials. The surface case above is the one glass rep that does NOT
+        degrade, which is why it was the only one covered."""
+        cmd.hide('everything', 'm1')
+        cmd.show('spheres', 'm1')
+        cmd.rebuild('m1')
+        cmd.refresh()
+        cmd.set('sphere_material', 'glass', 'm1')
+        self.assertEqual(self.dead(), 0)
+        from pymol import _cmd
+        from pymol.constants import repres
+        cmd.set('metal_rt_reflect', 0.9, 'm1')
+        fam, _m, refl, _t, _r, _p = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['spheres'])
+        self.assertEqual(fam, 0)                       # degraded to default ...
+        self.assertAlmostEqual(refl, 0.9, places=4)    # ... and reading the slider
+
+    def testBallAndStickGlassKeepsItLiveToo(self):
+        """The other degradation, and the one `get_effective_material` alone
+        would not catch: it lives in MaterialResolveForDraw, not
+        MaterialResolve."""
+        cmd.hide('everything', 'm1')
+        cmd.show('sticks', 'm1')
+        cmd.set('stick_ball', 1, 'm1')
+        cmd.set('stick_material', 'glass', 'm1')
+        cmd.rebuild('m1')
+        cmd.refresh()
+        self.assertEqual(self.dead(), 0)
 
     def testAReflectiveMaterialKeepsItLive(self):
         """The #497 refinement, and the one the ticket's own wording gets
@@ -185,20 +242,20 @@ class TestLegacyReflectionGroup(testing.PyMOLTestCase):
         earlier version of this looked only at the four material-bearing reps
         and disabled the group while a ribbon on screen still obeyed it."""
         self.show('surface', 'ribbon')
-        cmd.set('surface_material', 'marble', 'm1')
+        cmd.set('surface_material', 'glass', 'm1')
         self.assertEqual(self.dead(), 0)
 
     def testAMaterialOnAnUNSHOWNRepDoesNotKillIt(self):
         """The claim the disabled group makes is about what the object DRAWS."""
         self.show('surface')
-        cmd.set('cartoon_material', 'marble', 'm1')   # cartoon is not shown
+        cmd.set('cartoon_material', 'glass', 'm1')   # cartoon is not shown
         self.assertEqual(self.dead(), 0)
 
-    def testEveryShownRepMustHaveOne(self):
+    def testEveryShownRepMustBeDeaf(self):
         self.show('surface', 'sticks')
-        cmd.set('surface_material', 'marble', 'm1')
+        cmd.set('surface_material', 'glass', 'm1')
         self.assertEqual(self.dead(), 0)
-        cmd.set('stick_material', 'marble', 'm1')
+        cmd.set('stick_material', 'glass', 'm1')
         self.assertEqual(self.dead(), 1)
 
     def testAnObjectShowingNothingKeepsItLive(self):
@@ -208,6 +265,54 @@ class TestLegacyReflectionGroup(testing.PyMOLTestCase):
         cmd.rebuild('m1')
         cmd.refresh()
         self.assertEqual(self.dead(), 0)
+
+
+class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
+    """The object-wide rows are for MOLECULES, and not for groups.
+
+    Three separate reasons, and each of them bit before the gate existed:
+
+      * a measurement, CGO or map has no material, so the group rendered live
+        and inert directly above "No representations shown";
+      * probing one for its peel resolves through ExecutiveFindObjectByName,
+        which writes "named object not found." straight to the feedback log --
+        the issue #219 flood, twice a second for as long as the card is open,
+        and unsuppressable from Python because the line is out before the call
+        returns;
+      * on a GROUP, `cmd.set` expands to the members but `cmd.get` reports the
+        group's own value, so every control wrote correctly and then reverted
+        half a second later when the poll landed.
+    """
+    def setUp(self):
+        super().setUp()
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+
+    def testAMoleculeGetsThem(self):
+        self.assertEqual(meta('m1')['material_rows'], 1)
+
+    def testAMeasurementDoesNot(self):
+        cmd.distance('d1', 'm1 and index 1', 'm1 and index 2')
+        m = meta('d1', objs=['m1', 'd1'])
+        self.assertEqual(m['material_rows'], 0)
+        # ...and the payload carries none of the rows, so nothing downstream
+        # can render them from a default.
+        for key in ('peel', 'peel_resolved', 'refl', 'legacy_dead'):
+            self.assertNotIn(key, m)
+
+    def testAGroupDoesNot(self):
+        cmd.fragment('ala', 'm2')
+        cmd.group('g1', 'm1 m2')
+        self.assertEqual(meta('g1', objs=['g1'])['material_rows'], 0)
+
+    def testTheGroupAsymmetryIsRealAndNotJustCaution(self):
+        """`set` reaches the members, `get` does not -- which is what would
+        make every control on a group card write and then snap back."""
+        cmd.fragment('ala', 'm2')
+        cmd.group('g1', 'm1 m2')
+        cmd.set('transparency_peel', 1, 'g1')
+        self.assertEqual(cmd.get_setting_int('transparency_peel', 'm1'), 1)
+        self.assertEqual(cmd.get_setting_int('transparency_peel', 'g1'), -1)
 
 
 class TestObjectWideReflectionValues(testing.PyMOLTestCase):

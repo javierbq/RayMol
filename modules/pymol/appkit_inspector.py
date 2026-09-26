@@ -468,12 +468,28 @@ def _build(objs):
         # rather than in a rep panel because the settings are object-scoped:
         # carried per rep, the same value appeared in four places and moving
         # one moved them all.
-        entry['peel'] = int(round(_num('transparency_peel', o)))
-        entry['peel_resolved'] = _object_peel(o)
-        entry['refl'] = [_num('metal_rt_reflect', o),
-                         _num('metal_rt_reflect_tint', o),
-                         _num('metal_rt_reflect_rough', o)]
-        entry['legacy_dead'] = _legacy_reflection_is_dead(detail.get(o, []))
+        # ...but only for objects the rows MEAN something for.
+        #
+        # A measurement, CGO or map has no material and no reps, so the group
+        # would render live and inert above "No representations shown". Worse,
+        # _object_peel resolves through ExecutiveFindObjectByName, which writes
+        # "named object not found." straight to the feedback log for anything
+        # that is not an object -- the issue #219 flood, twice a second for as
+        # long as the card is open, and a Python except cannot suppress it.
+        #
+        # GROUPS are excluded for a different reason: `set` on a group name
+        # expands to its members but `get` does not, so every control would
+        # write successfully and then snap back to the group's own untouched
+        # value half a second later. That asymmetry predates this ticket; what
+        # is new is putting a control on it.
+        entry['material_rows'] = int(_takes_material_rows(o))
+        if entry['material_rows']:
+            entry['peel'] = int(round(_num('transparency_peel', o)))
+            entry['peel_resolved'] = _object_peel(o)
+            entry['refl'] = [_num('metal_rt_reflect', o),
+                             _num('metal_rt_reflect_tint', o),
+                             _num('metal_rt_reflect_rough', o)]
+            entry['legacy_dead'] = _legacy_reflection_is_dead(o, detail.get(o, []))
         # Per-state titles (e.g. compound names from a multi-record SDF, which
         # PyMOL stores as each state's title). Included only when at least one
         # state carries a non-empty title, so ordinary single structures add
@@ -698,6 +714,20 @@ def _search_map():
         return []
 
 
+def _takes_material_rows(obj):
+    """True for the objects the Inspector's object-wide material rows apply to:
+    molecules, and not groups.
+
+    Measurements, CGOs and maps have no material. Groups do, in the sense that
+    `set` reaches their members -- but `get` reports the group's own value, so a
+    control on a group card writes correctly and then reads back the old value
+    and reverts. Until one of those two halves changes, no row."""
+    try:
+        return cmd.get_type(obj) == 'object:molecule'
+    except Exception:
+        return False
+
+
 def _object_peel(obj):
     """The RESOLVED peel answer for `obj` (#488), not the raw tri-state.
 
@@ -717,46 +747,75 @@ def _object_peel(obj):
         return 0
 
 
-#: Material families that IGNORE the legacy metal_rt_reflect* triple, from
-#: layer1/Material.h. Procedural (1) and glass (3) never read it;
-#: reflective (2) takes its table row but an EXPLICIT per-object value still
-#: wins (#497), so a reflective material keeps the sliders live.
-_TRIPLE_DEAF_FAMILIES = (1, 3)
+#: The one material family that ignores the legacy metal_rt_reflect* triple.
+#:
+#: GLASS only. An earlier version of this listed procedural too, on the
+#: strength of the comment in MaterialApplyLegacyTriple -- "the procedural
+#: materials do not read these at all" -- which is true of the RASTER shaders
+#: (mat_shade_procedural reads m.p[] and m.mode, never m.reflect) and false of
+#: the draw as a whole: that function OVERWRITES reflect/tint/rough from the
+#: object settings for every family except reflective and glass, and the values
+#: go straight into the ray tracer's per-occurrence table. The triple is an
+#: RT-only knob in the first place -- the scene-level copies carry
+#: `dependsOn: metal_raytrace` -- so the RT path is the consumer that decides.
+#:
+#: Reflective is not deaf either, for the other reason: it starts from its
+#: table row, but an EXPLICIT per-object value still wins (#497).
+_TRIPLE_DEAF_FAMILIES = (3,)
 
 
-def _legacy_reflection_is_dead(reps):
+def _drawn_family(obj, rep_name):
+    """The family a representation actually DRAWS with, or None.
+
+    Not the family of the material the SETTING holds. `MaterialResolve`
+    degrades a glass-family material to `default` on sphere impostors, and
+    `MaterialResolveForDraw` does the same for glass sticks that emit
+    stick_ball spheres -- and a degraded rep draws as family 0, which reads the
+    legacy triple. get_material_draw_params is documented as "the FINAL
+    material parameters a representation draws with ... after the legacy-slider
+    decision", which is exactly the question being asked here."""
+    try:
+        from pymol import _cmd
+        from pymol.constants import repres
+        entry = MATERIAL_REPS.get(rep_name)
+        if not entry:
+            return None
+        params = _cmd.get_material_draw_params(
+            cmd._COb, obj or '', repres[entry[1]])
+        return int(params[0]) if params else None
+    except Exception:
+        return None
+
+
+def _legacy_reflection_is_dead(obj, reps):
     """True when the legacy metal_rt_reflect* triple cannot change anything the
     object currently DRAWS, so the Inspector can disable the group and say why.
 
-    #498 specifies "once every active rep has a non-default material". That was
-    written before #497, which gave REFLECTIVE materials an explicit-override
-    path: set `metal_rt_reflect` on an object whose material is `metallic` and
-    it wins over the table row. Disabling the group there would take away a
-    control that still works, so the test is narrower than the ticket's -- the
-    material must also belong to a family that ignores the triple.
+    #498 specifies "once every active rep has a non-default material". Two
+    things make the real test narrower, and both were found by rendering rather
+    than by reading:
+
+      * a REFLECTIVE material still honours an explicit per-object value
+        (#497), so `metallic` keeps the sliders live;
+      * a PROCEDURAL material does not read them in the raster shader but does
+        take them on the ray-traced path, which is the only path they affect at
+        all.
+
+    So the family must be glass, and it must be the family the rep DRAWS with
+    rather than the one its setting names -- glass degrades to `default` on
+    spheres and on ball-and-stick sticks, and `default` reads the triple.
 
     A rep with NO material setting (ribbon, mesh, lines, dots, labels) draws
-    with `default` shading and does read the triple, so one of those on screen
-    keeps the group live.
+    with `default` shading and reads it too, so one of those on screen keeps the
+    group live.
     """
     if not reps:
         return 0
-    try:
-        from pymol import _cmd
-    except Exception:
-        return 0
     for rep in reps:
-        entry = MATERIAL_REPS.get(rep.get('rep'))
-        if not entry:
+        if not MATERIAL_REPS.get(rep.get('rep')):
             return 0
-        mat = int(round(rep.get('vals', {}).get(entry[0]) or 0))
-        if mat == 0:
-            return 0
-        try:
-            family = int(_cmd.get_material_family(mat))
-        except Exception:
-            return 0
-        if family not in _TRIPLE_DEAF_FAMILIES:
+        family = _drawn_family(obj, rep.get('rep'))
+        if family is None or family not in _TRIPLE_DEAF_FAMILIES:
             return 0
     return 1
 

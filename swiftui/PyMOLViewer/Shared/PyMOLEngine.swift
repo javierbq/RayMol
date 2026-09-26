@@ -3942,7 +3942,8 @@ final class PyMOLEngine: ObservableObject {
             peelResolved: ((m["peel_resolved"] as? NSNumber)?.intValue ?? 0) != 0,
             reflect: (m["refl"] as? [Any])?.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
                 ?? [0, 0, 0],
-            legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0)
+            legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0,
+            hasMaterialRows: ((m["material_rows"] as? NSNumber)?.intValue ?? 0) != 0)
     }
 
     /// Ask the core for the material table, unless we already have it.

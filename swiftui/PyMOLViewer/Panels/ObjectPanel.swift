@@ -114,9 +114,16 @@ struct ObjStateMeta: Equatable {
     /// Object-level `metal_rt_reflect` / `_tint` / `_rough`.
     var reflect: [Double] = [0, 0, 0]
     /// True when every shown rep's material ignores the legacy triple, so the
-    /// group can be disabled and say why. Narrower than "has a material":
-    /// a REFLECTIVE material still honours an explicit value (#497).
+    /// group can be disabled and say why. Much narrower than "has a material":
+    /// only the GLASS family is deaf to it, a REFLECTIVE material still
+    /// honours an explicit value (#497), and a PROCEDURAL one takes the triple
+    /// on the ray-traced path. Computed core-side from what each rep DRAWS.
     var legacyReflectionDead: Bool = false
+    /// Whether these rows apply to this object at all. False for measurements,
+    /// CGOs and maps (no material, and probing them logs an error per poll
+    /// tick) and for groups (`set` reaches the members, `get` does not, so
+    /// every control would write and then revert).
+    var hasMaterialRows: Bool = false
 
     /// Title for a 1-based state, or nil when none/blank.
     func title(forState state: Int) -> String? {
@@ -310,6 +317,28 @@ enum MaterialCommands {
     /// modules/pymol/materials.py silently.
     static func runBundle(_ attr: String, on obj: String) -> String {
         "python\nfrom pymol import materials; materials.\(attr)('\(obj)', _self=cmd)\npython end"
+    }
+
+    /// What the chip actually does, said out loud.
+    ///
+    /// #498 calls this button "Suggested lighting", and the first version was
+    /// labelled and tooltipped that way. It is not what running a bundle does:
+    /// `_apply_material` writes the material to ALL FOUR of the object's
+    /// representation settings, shown or not, deliberately and by its own
+    /// docstring. Clicking a chip beside the Sticks dropdown would have
+    /// silently rewritten `surface_material` — so on an object with a
+    /// deliberate mixed look, a glass shell would vanish and nothing on the
+    /// control would have mentioned the surface.
+    ///
+    /// The alternative was to split the bundles into a material half and a
+    /// lighting half and call only the second. That forks a contract the
+    /// A-menu shares, and for the four metals "lighting only" is empty anyway
+    /// — they write a colour and a reflect triple, no light rig. Saying what
+    /// the button does is the smaller and more honest change.
+    static func bundleHelp(_ label: String?) -> String {
+        let what = label.map { "Apply the \($0) look" } ?? "Apply a look"
+        return what + ": this material on EVERY representation of the object, "
+             + "plus the lighting it was tuned for. Named metals also set the colour."
     }
 }
 
@@ -3524,9 +3553,18 @@ private struct ObjectCard: View {
                     // grid because that is what they are: one peel decision and
                     // one legacy reflection triple for the whole object, not
                     // four copies of each.
-                    ObjectMaterialRows(objName: entry.name,
-                                       meta: engine.objectMeta[entry.name] ?? ObjStateMeta())
-                    Divider().background(PanelTheme.disabledColor.opacity(0.3))
+                    //
+                    // The OPTIONAL is load-bearing. objectMeta is filled only by
+                    // the poll for the currently expanded object, so re-opening
+                    // a card starts empty; `?? ObjStateMeta()` rendered the
+                    // DEFAULTS for the ~100-500ms round trip, and TriStateSetting
+                    // writes on every tap including the already-highlighted one.
+                    // A tap in that window on a cell that looks like the current
+                    // state is a real write of a value the user never chose.
+                    if let meta = engine.objectMeta[entry.name], meta.hasMaterialRows {
+                        ObjectMaterialRows(objName: entry.name, meta: meta)
+                        Divider().background(PanelTheme.disabledColor.opacity(0.3))
+                    }
                     if let rep = currentRep {
                         // Always present (even when hidden): show/hide the layer
                         // + delete it. Hiding keeps the layer listed so it can be
@@ -4094,7 +4132,7 @@ private struct RepPropertyGrid: View {
         if matching.count == 1, let b = matching[0] as (attr: String, label: String, material: String)? {
             Button(action: { runBundle(b.attr) }) { suggestedLabel }
                 .buttonStyle(.plain)
-                .help("Also set the lighting this material was tuned for (\(b.label)).")
+                .help(MaterialCommands.bundleHelp(b.label))
         } else if matching.count > 1 {
             Menu {
                 ForEach(matching, id: \.attr) { b in
@@ -4104,14 +4142,14 @@ private struct RepPropertyGrid: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Also set the lighting this material was tuned for.")
+                .help(MaterialCommands.bundleHelp(nil))
         }
     }
 
     private var suggestedLabel: some View {
         HStack(spacing: 2) {
-            Image(systemName: "lightbulb").font(.system(size: 9))
-            Text("Lighting").font(.system(size: 9))
+            Image(systemName: "wand.and.stars").font(.system(size: 9))
+            Text("Look").font(.system(size: 9))
         }
         .padding(.horizontal, 5).frame(height: 16)
         .background(PanelTheme.buttonBackground)
