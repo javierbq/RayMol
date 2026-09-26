@@ -221,6 +221,16 @@ final class PyMOLEngine: ObservableObject {
     /// How many times the material table has been asked for; see
     /// requestMaterialsIfNeeded().
     private var materialRequests = 0
+
+    /// The `pymol.materials` look bundles (#498), as (attr, label, material).
+    ///
+    /// A material is half a look; the bundle sets the lighting that flatters
+    /// it. The Inspector offers one beside a material dropdown when the chosen
+    /// material has a bundle, and the join key -- the material the bundle
+    /// applies -- comes from `materials.BUNDLES` rather than from a copy here,
+    /// which would go stale the moment a bundle changed what it applies.
+    @Published var materialBundles: [(attr: String, label: String, material: String)] = []
+    private var bundleRequests = 0
     // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
     @Published var sceneState = SceneState()
     // Per-object state metadata (effective current state + overlay-all) for the
@@ -732,6 +742,7 @@ final class PyMOLEngine: ObservableObject {
         // object poll while the table is still empty, so a lost line costs one
         // tick rather than the session.
         requestMaterialsIfNeeded()
+        requestBundlesIfNeeded()
 
         // Test affordance: seed the inspector's expanded object cards so the
         // expanded representation grid can be screenshotted without a click.
@@ -3709,6 +3720,8 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("MATERIALS:") {
                     parseMaterialsFeedback(line)
+                } else if line.hasPrefix("BUNDLES:") {
+                    parseBundlesFeedback(line)
                 } else if line.hasPrefix("SETTINGS:ready") {
                     loadSettingsCatalogFile()
                 } else if line.hasPrefix("SETTINGS:err") {
@@ -3816,6 +3829,7 @@ final class PyMOLEngine: ObservableObject {
         // couple of seconds, which is the timescale a slow Python layer would
         // need, not crammed into the first 500ms. A no-op once the table is in.
         requestMaterialsIfNeeded()
+        requestBundlesIfNeeded()
 
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
@@ -3911,6 +3925,26 @@ final class PyMOLEngine: ObservableObject {
         return out.isEmpty ? nil : out
     }
 
+    /// One object's `objmeta` entry -> ObjStateMeta.
+    ///
+    /// Static so a test can exercise it without an engine, the way
+    /// parseMaterials/parseBundles are. The DEFAULTS are the point: they match
+    /// each setting's own, so a payload from a build that predates a key reads
+    /// as "not set" rather than as a value the user chose. `peel` in
+    /// particular defaults to -1 (AUTO) and not 0 — 0 means the user turned
+    /// peeling off, which is a different claim.
+    static func parseObjMeta(_ m: [String: Any]) -> ObjStateMeta {
+        ObjStateMeta(
+            state: (m["state"] as? NSNumber)?.intValue ?? 1,
+            overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0,
+            titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [],
+            peel: (m["peel"] as? NSNumber)?.intValue ?? -1,
+            peelResolved: ((m["peel_resolved"] as? NSNumber)?.intValue ?? 0) != 0,
+            reflect: (m["refl"] as? [Any])?.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+                ?? [0, 0, 0],
+            legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0)
+    }
+
     /// Ask the core for the material table, unless we already have it.
     ///
     /// Bounded: the table cannot change within a session, so after a handful of
@@ -3920,6 +3954,43 @@ final class PyMOLEngine: ObservableObject {
         guard materialNames.isEmpty, materialRequests < 5 else { return }
         materialRequests += 1
         runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
+    }
+
+    /// Ask the core for the look bundles, unless we already have them. Same
+    /// bounded shape as the material table above, and for the same reason:
+    /// neither can change within a session.
+    func requestBundlesIfNeeded() {
+        guard materialBundles.isEmpty, bundleRequests < 5 else { return }
+        bundleRequests += 1
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_bundles()")
+    }
+
+    /// `BUNDLES:[[attr, label, material], ...]` -> the published list.
+    ///
+    /// Static so a test can exercise the parse without an engine; mirrors
+    /// parseMaterials. A row that is not three strings is DROPPED rather than
+    /// guessed at -- a bundle whose attr did not resolve would be a button
+    /// that runs nothing.
+    static func parseBundles(_ line: String)
+            -> [(attr: String, label: String, material: String)]? {
+        guard let r = line.range(of: "BUNDLES:") else { return nil }
+        let json = String(line[r.upperBound...])
+        guard let data = json.data(using: .utf8),
+              let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[Any]]
+        else { return nil }
+        var out: [(attr: String, label: String, material: String)] = []
+        for row in rows where row.count >= 3 {
+            if let a = row[0] as? String, let l = row[1] as? String,
+               let m = row[2] as? String, !a.isEmpty, !m.isEmpty {
+                out.append((attr: a, label: l, material: m))
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private func parseBundlesFeedback(_ line: String) {
+        guard let out = PyMOLEngine.parseBundles(line) else { return }
+        DispatchQueue.main.async { self.materialBundles = out }
     }
 
     private func parseMaterialsFeedback(_ line: String) {
@@ -3985,10 +4056,7 @@ final class PyMOLEngine: ObservableObject {
         if let om = root["objmeta"] as? [String: Any] {
             for (obj, mAny) in om {
                 guard let m = mAny as? [String: Any] else { continue }
-                meta[obj] = ObjStateMeta(
-                    state: (m["state"] as? NSNumber)?.intValue ?? 1,
-                    overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0,
-                    titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [])
+                meta[obj] = PyMOLEngine.parseObjMeta(m)
             }
         }
 

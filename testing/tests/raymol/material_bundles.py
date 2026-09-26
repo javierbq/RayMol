@@ -227,9 +227,29 @@ class TestMaterialBundles(testing.PyMOLTestCase):
     # -- registration ---------------------------------------------------------
 
     def testBothBundlesAreOfferedAndResolve(self):
-        for _label, attr in materials.BUNDLES:
+        for _label, attr, _material in materials.BUNDLES:
             self.assertTrue(hasattr(materials, attr), attr)
             self.assertTrue(callable(getattr(materials, attr)), attr)
+
+    def testEveryBundleNamesTheMaterialItActuallyApplies(self):
+        """The third field of BUNDLES is what the Inspector joins on to offer
+        "Suggested lighting" beside a material dropdown (#498). A wrong value
+        there is invisible -- the button simply appears next to the wrong
+        material, or not at all -- so it is checked against what the bundle
+        DOES rather than against a second list."""
+        from pymol import setting
+        for label, attr, material in materials.BUNDLES:
+            cmd.reinitialize()
+            cmd.fragment('ala', 'm1')
+            getattr(materials, attr)('m1')
+            for rep_setting in REP_MATERIALS:
+                self.assertEqual(cmd.get(rep_setting, 'm1'), material,
+                                 '%s (%s) writes a different material' % (label, attr))
+            # ...and it is a real, offerable material, not a typo that happens
+            # to match: an unimplemented name would make the button appear for
+            # a dropdown entry that does not exist.
+            self.assertIn(material,
+                          [n for _i, n in setting.get_material_names(1)], label)
 
     def testAGroupResolvesToItsMembers(self):
         cmd.group('g1', 'm1 m2')

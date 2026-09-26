@@ -21,20 +21,16 @@ REP_SETTINGS = {
     'cartoon':    ['cartoon_material',
                    'cartoon_transparency', 'cartoon_loop_radius',
                    'cartoon_tube_radius', 'cartoon_fancy_helices',
-                   'cartoon_flat_sheets', 'cartoon_spline',
-                   'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
+                   'cartoon_flat_sheets', 'cartoon_spline'],
     'surface':    ['surface_material',
                    'transparency', 'surface_quality', 'solvent_radius',
                    'surface_clip_front', 'surface_clip_back', 'metal_interior_cap',
                    'surface_contour', 'surface_contour_width',
-                   'surface_contour_opaque',
-                   'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
+                   'surface_contour_opaque'],
     'sticks':     ['stick_material',
-                   'stick_transparency', 'stick_radius', 'stick_h_scale', 'metal_interior_cap',
-                   'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
+                   'stick_transparency', 'stick_radius', 'stick_h_scale', 'metal_interior_cap'],
     'spheres':    ['sphere_material',
-                   'sphere_transparency', 'sphere_scale', 'metal_interior_cap',
-                   'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough'],
+                   'sphere_transparency', 'sphere_scale', 'metal_interior_cap'],
     'nb_spheres': ['nb_spheres_size'],
     'mesh':       ['transparency', 'mesh_width'],
     'ribbon':     ['ribbon_transparency', 'ribbon_width'],
@@ -80,6 +76,37 @@ def poll_materials():
         print('MATERIALS:' + json.dumps(material_names()))
     except Exception:
         print('MATERIALS:[]')
+
+
+def material_bundles():
+    """The `pymol.materials` look bundles, as [[attr, label, material], ...].
+
+    A material on its own is half a look; the bundle sets the lighting that
+    flatters it. The Inspector offers one beside the material dropdown when the
+    chosen material has a bundle, so the join key -- the MATERIAL the bundle
+    applies -- comes from `materials.BUNDLES` rather than from a copy in the UI.
+
+    Several bundles can name the same material: the four metals are all
+    `metallic` and differ in colour and in the legacy reflect triple. The UI
+    offers a menu when more than one matches, which is why this returns the
+    whole list rather than a material -> bundle map."""
+    try:
+        from pymol import materials
+        return [[str(attr), str(label), str(mat)]
+                for (label, attr, mat) in materials.BUNDLES]
+    except Exception:
+        return []
+
+
+def poll_bundles():
+    """Print `BUNDLES:<json>` once, for the Inspector's suggested-lighting
+    control. Emitted at startup beside the material table: neither can change
+    within a session."""
+    import json
+    try:
+        print('BUNDLES:' + json.dumps(material_bundles()))
+    except Exception:
+        print('BUNDLES:[]')
 
 
 def _material_id(rep_name, obj):
@@ -144,11 +171,24 @@ SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_
                   'depth_cue', 'fog', 'field_of_view', 'ortho', 'surface_quality',
                   'grid_mode', 'all_states', 'mouse_selection_mode',
                   'ambient', 'direct', 'reflect', 'specular', 'shininess',
+                  # The two scene-wide material rows (#498). `material_default`
+                  # is a material ID and `material_env` an enum; both are read
+                  # as plain numbers here and named by the Inspector.
+                  'material_default', 'material_env',
                   'ray_opaque_background']
+
+
+#: Settings whose value is a MATERIAL ID. `cmd.get` renders one as a NAME
+#: ('marble'), so float() raises and the generic fallback below answers 0 --
+#: i.e. `default`. The rep loop already resolves its four through
+#: _material_id(); these are the scene-level ones (#498).
+MATERIAL_VALUED = ('material_default',)
 
 
 def _num(setting, obj):
     """cmd.get a setting (object-scoped if obj else global) as a float; bools→0/1."""
+    if setting in MATERIAL_VALUED:
+        return _material_setting_id(setting, obj)
     try:
         v = cmd.get(setting, obj) if obj else cmd.get(setting)
     except Exception:
@@ -157,6 +197,21 @@ def _num(setting, obj):
         return float(v)
     except Exception:
         return 1.0 if v in (True, 'on', '1', 'yes') else 0.0
+
+
+def _material_setting_id(setting, obj):
+    """A material-valued setting as its ID.
+
+    `cmd.get` returns the NAME so that `get`/`set` round-trip for humans, which
+    is exactly what breaks a numeric poll: float('marble') raises and the row
+    renders as `default` however it is set. get_setting_int returns the stored
+    integer."""
+    try:
+        if obj:
+            return float(cmd.get_setting_int(setting, obj))
+        return float(cmd.get_setting_int(setting))
+    except Exception:
+        return 0.0
 
 
 def _rep_color(obj, setting):
@@ -409,6 +464,16 @@ def _build(objs):
             continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
+        # Object-wide material rows (#498). These live on the object header
+        # rather than in a rep panel because the settings are object-scoped:
+        # carried per rep, the same value appeared in four places and moving
+        # one moved them all.
+        entry['peel'] = int(round(_num('transparency_peel', o)))
+        entry['peel_resolved'] = _object_peel(o)
+        entry['refl'] = [_num('metal_rt_reflect', o),
+                         _num('metal_rt_reflect_tint', o),
+                         _num('metal_rt_reflect_rough', o)]
+        entry['legacy_dead'] = _legacy_reflection_is_dead(detail.get(o, []))
         # Per-state titles (e.g. compound names from a multi-record SDF, which
         # PyMOL stores as each state's title). Included only when at least one
         # state carries a non-empty title, so ordinary single structures add
@@ -631,6 +696,69 @@ def _search_map():
         return rows
     except Exception:
         return []
+
+
+def _object_peel(obj):
+    """The RESOLVED peel answer for `obj` (#488), not the raw tri-state.
+
+    The point of `transparency_peel` -1 is that it is AUTO, so the setting says
+    nothing about what the renderer will do -- the answer comes from the
+    materials the object's representations resolve to. The header toggle shows
+    the resolved value beside the tri-state so "Auto" is legible rather than
+    mysterious.
+
+    Note this is the object's REQUEST: the scene loop additionally requires the
+    object to be enabled, the renderer to support peeling, and a place within
+    kMaxPeeledObjects. See CmdGetObjectPeel."""
+    try:
+        from pymol import _cmd
+        return int(_cmd.get_object_peel(cmd._COb, obj or ''))
+    except Exception:
+        return 0
+
+
+#: Material families that IGNORE the legacy metal_rt_reflect* triple, from
+#: layer1/Material.h. Procedural (1) and glass (3) never read it;
+#: reflective (2) takes its table row but an EXPLICIT per-object value still
+#: wins (#497), so a reflective material keeps the sliders live.
+_TRIPLE_DEAF_FAMILIES = (1, 3)
+
+
+def _legacy_reflection_is_dead(reps):
+    """True when the legacy metal_rt_reflect* triple cannot change anything the
+    object currently DRAWS, so the Inspector can disable the group and say why.
+
+    #498 specifies "once every active rep has a non-default material". That was
+    written before #497, which gave REFLECTIVE materials an explicit-override
+    path: set `metal_rt_reflect` on an object whose material is `metallic` and
+    it wins over the table row. Disabling the group there would take away a
+    control that still works, so the test is narrower than the ticket's -- the
+    material must also belong to a family that ignores the triple.
+
+    A rep with NO material setting (ribbon, mesh, lines, dots, labels) draws
+    with `default` shading and does read the triple, so one of those on screen
+    keeps the group live.
+    """
+    if not reps:
+        return 0
+    try:
+        from pymol import _cmd
+    except Exception:
+        return 0
+    for rep in reps:
+        entry = MATERIAL_REPS.get(rep.get('rep'))
+        if not entry:
+            return 0
+        mat = int(round(rep.get('vals', {}).get(entry[0]) or 0))
+        if mat == 0:
+            return 0
+        try:
+            family = int(_cmd.get_material_family(mat))
+        except Exception:
+            return 0
+        if family not in _TRIPLE_DEAF_FAMILIES:
+            return 0
+    return 1
 
 
 def poll_panel():
