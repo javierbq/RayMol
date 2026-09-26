@@ -174,15 +174,62 @@ final class MaterialInspectorTests: XCTestCase {
         XCTAssertTrue(help.contains("Marble (statuary)"), help)
         XCTAssertTrue(help.contains("EVERY representation"), help)
         XCTAssertTrue(help.contains("lighting"), help)
+        // The named metals write NO lighting setting -- no specular, no
+        // shininess, no shadows. They write a colour and the reflect triple,
+        // i.e. the group directly below the chip. An earlier version promised
+        // lighting for them and said nothing about the reflection.
+        XCTAssertTrue(help.contains("reflection"), help)
+        XCTAssertTrue(help.contains("colour"), help)
         // ...and the many-bundles variant, which has no single label to name.
         XCTAssertTrue(MaterialCommands.bundleHelp(nil).contains("EVERY representation"))
     }
 
-    /// The gate that keeps the rows off measurements, CGOs, maps and groups.
+    /// The gates that keep the rows off the objects they do not apply to.
+    ///
+    /// They are GATES, not values, so unlike every other key in this payload
+    /// they default to OFF rather than to the setting's own default: a payload
+    /// that predates them renders no rows rather than inert ones.
     func testTheObjectRowsAreOffByDefaultUntilThePayloadSaysOtherwise() {
         XCTAssertFalse(ObjStateMeta().hasMaterialRows)
-        XCTAssertFalse(PyMOLEngine.parseObjMeta(["state": 1]).hasMaterialRows)
+        XCTAssertFalse(ObjStateMeta().hasPeelRow)
+        XCTAssertFalse(ObjStateMeta().showsObjectMaterialRows)
+        XCTAssertFalse(PyMOLEngine.parseObjMeta(["state": 1]).showsObjectMaterialRows)
         XCTAssertTrue(PyMOLEngine.parseObjMeta(["material_rows": 1]).hasMaterialRows)
+        XCTAssertTrue(PyMOLEngine.parseObjMeta(["peel_row": 1]).hasPeelRow)
+    }
+
+    /// The two gates are independent, and that asymmetry is the point: peel
+    /// applies to anything SceneCollectPeelObjects can peel (an isosurface
+    /// included), materials only to molecules. A single flag hid the peel
+    /// control from the object class whose front/back double blend it exists
+    /// to fix.
+    func testPeelAndMaterialRowsAreGatedSeparately() {
+        let surface = PyMOLEngine.parseObjMeta(["peel_row": 1, "material_rows": 0])
+        XCTAssertTrue(surface.hasPeelRow)
+        XCTAssertFalse(surface.hasMaterialRows)
+        XCTAssertTrue(surface.showsObjectMaterialRows)   // the header still shows
+
+        let group = PyMOLEngine.parseObjMeta(["peel_row": 0, "material_rows": 0])
+        XCTAssertFalse(group.showsObjectMaterialRows)
+    }
+
+    /// Clearing restores the undefined state, which nothing else in the panel
+    /// offers: a reflective material draws its own table row until one of
+    /// these is set, and the first touch of a slider makes the displayed 0
+    /// real and detaches it for good.
+    func testClearingReflectionUnsetsAllThree() {
+        let cmdText = MaterialCommands.clearReflect(on: "m1")
+        XCTAssertEqual(cmdText, "unset metal_rt_reflect, m1\n"
+                              + "unset metal_rt_reflect_tint, m1\n"
+                              + "unset metal_rt_reflect_rough, m1")
+    }
+
+    /// An object name reaches a PYTHON string literal here, so a quote in it
+    /// is a syntax error rather than a name. `foo'bar.pdb` loads as foo'bar.
+    func testTheLookButtonEscapesTheObjectName() {
+        XCTAssertEqual(MaterialCommands.runBundle("marble", on: "foo'bar"),
+                       "python\nfrom pymol import materials; "
+                       + "materials.marble('foo\\'bar', _self=cmd)\npython end")
     }
 
     // MARK: - the two scene-wide rows

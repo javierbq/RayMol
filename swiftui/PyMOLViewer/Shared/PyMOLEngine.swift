@@ -3943,7 +3943,13 @@ final class PyMOLEngine: ObservableObject {
             reflect: (m["refl"] as? [Any])?.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
                 ?? [0, 0, 0],
             legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0,
-            hasMaterialRows: ((m["material_rows"] as? NSNumber)?.intValue ?? 0) != 0)
+            // These two break the "default to the setting's own" rule above, on
+            // purpose: they are GATES, not values. A payload that predates them
+            // renders no rows rather than rendering rows in a neutral state,
+            // which is the safe direction — an inert control on an object it
+            // does not apply to is worse than a missing one.
+            hasMaterialRows: ((m["material_rows"] as? NSNumber)?.intValue ?? 0) != 0,
+            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0)
     }
 
     /// Ask the core for the material table, unless we already have it.

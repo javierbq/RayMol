@@ -119,11 +119,25 @@ struct ObjStateMeta: Equatable {
     /// honours an explicit value (#497), and a PROCEDURAL one takes the triple
     /// on the ray-traced path. Computed core-side from what each rep DRAWS.
     var legacyReflectionDead: Bool = false
-    /// Whether these rows apply to this object at all. False for measurements,
-    /// CGOs and maps (no material, and probing them logs an error per poll
-    /// tick) and for groups (`set` reaches the members, `get` does not, so
-    /// every control would write and then revert).
+    /// Whether the MATERIAL rows (the legacy reflection group) apply here.
+    /// Molecules only: a measurement, CGO or map has no material and no reps,
+    /// so the group would render live and inert above "No representations
+    /// shown". Groups are excluded too — `set` reaches the members but `get`
+    /// reports the group's own value, so a control writes and then reverts.
     var hasMaterialRows: Bool = false
+    /// Whether the PEEL row applies. A wider set than the above, and
+    /// deliberately so: SceneCollectPeelObjects walks every non-gadget object,
+    /// so a translucent isosurface is peelable and its front/back double blend
+    /// is exactly what peel is for. Only groups are excluded.
+    var hasPeelRow: Bool = false
+
+    /// Does the object header show any of these rows at all?
+    ///
+    /// Extracted so the gate is testable. What a test can reach is this
+    /// predicate, not the `if let` in ObjectCard's body that consults it —
+    /// there is no snapshot harness here, so the view's use of it is covered
+    /// by neither side. Said plainly rather than implied.
+    var showsObjectMaterialRows: Bool { hasPeelRow || hasMaterialRows }
 
     /// Title for a 1-based state, or nil when none/blank.
     func title(forState state: Int) -> String? {
@@ -309,6 +323,17 @@ enum MaterialCommands {
         "set \(setting), \(String(format: "%.4f", value)), \(obj)"
     }
 
+    /// Drop this object's reflection overrides, so a material that carries its
+    /// own reflect/tint/roughness goes back to using them (#497).
+    ///
+    /// All three together: they are one look, and clearing one of three leaves
+    /// a state no material describes.
+    static func clearReflect(on obj: String) -> String {
+        ["metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough"]
+            .map { "unset \($0), \(obj)" }
+            .joined(separator: "\n")
+    }
+
     /// Run a `pymol.materials` bundle on an object.
     ///
     /// Calls the documented function rather than reimplementing its list of
@@ -316,7 +341,13 @@ enum MaterialCommands {
     /// material, and a copy of that list in the UI would drift from
     /// modules/pymol/materials.py silently.
     static func runBundle(_ attr: String, on obj: String) -> String {
-        "python\nfrom pymol import materials; materials.\(attr)('\(obj)', _self=cmd)\npython end"
+        // The object name goes into a PYTHON string literal, so a quote or a
+        // backslash in it is a syntax error rather than a name. `foo'bar.pdb`
+        // loads as an object called foo'bar, and the chip would have emitted a
+        // SyntaxError to the log and done nothing.
+        let safe = obj.replacingOccurrences(of: "\\", with: "\\\\")
+                      .replacingOccurrences(of: "'", with: "\\'")
+        return "python\nfrom pymol import materials; materials.\(attr)('\(safe)', _self=cmd)\npython end"
     }
 
     /// What the chip actually does, said out loud.
@@ -337,8 +368,14 @@ enum MaterialCommands {
     /// the button does is the smaller and more honest change.
     static func bundleHelp(_ label: String?) -> String {
         let what = label.map { "Apply the \($0) look" } ?? "Apply a look"
+        // Precise about the metals: `_metal` writes NO lighting setting at all
+        // — no specular, no shininess, no shadows — it writes a colour and the
+        // reflect/tint/roughness triple, i.e. the group directly below this
+        // chip. Saying "plus the lighting" for them promised something they do
+        // not do and stayed silent about what they overwrite.
         return what + ": this material on EVERY representation of the object, "
-             + "plus the lighting it was tuned for. Named metals also set the colour."
+             + "plus the scene lighting it was tuned for. A named metal instead "
+             + "sets the colour and this object's reflection sliders."
     }
 }
 
@@ -3561,7 +3598,8 @@ private struct ObjectCard: View {
                     // writes on every tap including the already-highlighted one.
                     // A tap in that window on a cell that looks like the current
                     // state is a real write of a value the user never chose.
-                    if let meta = engine.objectMeta[entry.name], meta.hasMaterialRows {
+                    if let meta = engine.objectMeta[entry.name],
+                       meta.showsObjectMaterialRows {
                         ObjectMaterialRows(objName: entry.name, meta: meta)
                         Divider().background(PanelTheme.disabledColor.opacity(0.3))
                     }
@@ -3856,8 +3894,8 @@ private struct ObjectMaterialRows: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            peelRow
-            legacyGroup
+            if meta.hasPeelRow { peelRow }
+            if meta.hasMaterialRows { legacyGroup }
         }
     }
 
@@ -3912,8 +3950,8 @@ private struct ObjectMaterialRows: View {
         }
         .buttonStyle(.plain)
         .help(meta.legacyReflectionDead
-              ? "Every shown representation has a material that ignores these."
-              : "Object-wide reflection, from before materials. Materials that read it override these per object.")
+              ? "Every shown representation has a glass-family material, the one family that ignores these."
+              : "Object-wide reflection, from before materials. Ray-traced only.")
 
         if legacyOpen {
             ForEach(Self.reflectProps) { p in
@@ -3930,12 +3968,41 @@ private struct ObjectMaterialRows: View {
                 // indistinguishable from a broken one -- and the reason here is
                 // not obvious: the sliders are fine, it is the materials on the
                 // shown reps that do not read them.
-                Text("Every shown representation has a material that ignores these sliders. "
-                     + "Set one back to `default`, or choose a reflective material, to use them.")
+                Text("Every shown representation has a glass-family material, and glass "
+                     + "is the one family that ignores these. Any other material — "
+                     + "including `default` — makes them live again.")
                     .font(.system(size: 9))
                     .foregroundColor(PanelTheme.disabledColor)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                // The way BACK to undefined, which nothing else in the panel
+                // offers. These sliders show the object's value, and an object
+                // with none shows the global's 0 -- while a REFLECTIVE material
+                // is drawing its own table row (metallic: 0.6 / 0.35 / 0.35).
+                // So the group reads three zeros that are not what is on
+                // screen, and the first touch of a slider makes the zero real
+                // and detaches the material from its row for good. The material
+                // dropdown one panel down has had `onInherit` for this since
+                // #490; the sliders never did.
+                HStack(spacing: 6) {
+                    Text("Unset = the material's own values")
+                        .font(.system(size: 9))
+                        .foregroundColor(PanelTheme.disabledColor)
+                    Spacer(minLength: 4)
+                    Button(action: clearReflection) {
+                        Text("Clear")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 8).padding(.vertical, 1)
+                            .overlay(RoundedRectangle(cornerRadius: 4)
+                                .stroke(PanelTheme.disabledColor.opacity(0.55), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove this object's reflection overrides, so a material "
+                          + "that carries its own (plastic, metallic, the named metals) "
+                          + "goes back to using them.")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -3951,6 +4018,11 @@ private struct ObjectMaterialRows: View {
 
     private func set(_ setting: String, _ v: Double) {
         engine.runCommand(MaterialCommands.setReflect(setting, v, on: objName))
+    }
+
+    private func clearReflection() {
+        engine.runCommand(MaterialCommands.clearReflect(on: objName))
+        engine.refreshExpandedDetail()
     }
 
     @ViewBuilder

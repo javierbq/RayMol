@@ -468,24 +468,16 @@ def _build(objs):
         # rather than in a rep panel because the settings are object-scoped:
         # carried per rep, the same value appeared in four places and moving
         # one moved them all.
-        # ...but only for objects the rows MEAN something for.
-        #
-        # A measurement, CGO or map has no material and no reps, so the group
-        # would render live and inert above "No representations shown". Worse,
-        # _object_peel resolves through ExecutiveFindObjectByName, which writes
-        # "named object not found." straight to the feedback log for anything
-        # that is not an object -- the issue #219 flood, twice a second for as
-        # long as the card is open, and a Python except cannot suppress it.
-        #
-        # GROUPS are excluded for a different reason: `set` on a group name
-        # expands to its members but `get` does not, so every control would
-        # write successfully and then snap back to the group's own untouched
-        # value half a second later. That asymmetry predates this ticket; what
-        # is new is putting a control on it.
-        entry['material_rows'] = int(_takes_material_rows(o))
-        if entry['material_rows']:
+        # ...but only for objects each row MEANS something for, and the two
+        # groups of rows do not have the same answer. Peel applies to anything
+        # the scene loop can peel; materials only to molecules.
+        kind = _object_kind(o)
+        entry['peel_row'] = int(_takes_peel_row(kind))
+        entry['material_rows'] = int(_takes_material_rows(kind))
+        if entry['peel_row']:
             entry['peel'] = int(round(_num('transparency_peel', o)))
             entry['peel_resolved'] = _object_peel(o)
+        if entry['material_rows']:
             entry['refl'] = [_num('metal_rt_reflect', o),
                              _num('metal_rt_reflect_tint', o),
                              _num('metal_rt_reflect_rough', o)]
@@ -714,18 +706,54 @@ def _search_map():
         return []
 
 
-def _takes_material_rows(obj):
-    """True for the objects the Inspector's object-wide material rows apply to:
-    molecules, and not groups.
+def _object_kind(obj):
+    """`cmd.get_type` without the selector. Empty string when it cannot say.
 
-    Measurements, CGOs and maps have no material. Groups do, in the sense that
-    `set` reaches their members -- but `get` reports the group's own value, so a
-    control on a group card writes correctly and then reads back the old value
-    and reverts. Until one of those two halves changes, no row."""
+    Safe to call per poll tick: ExecutiveGetType goes through ExecutiveFindSpec,
+    a lexicon lookup that never touches the selector and so never writes to the
+    feedback log -- unlike count_atoms/iterate, which is what takes_atom_selection
+    exists to guard (issue #219)."""
     try:
-        return cmd.get_type(obj) == 'object:molecule'
+        return cmd.get_type(obj) or ''
     except Exception:
-        return False
+        return ''
+
+
+def _takes_peel_row(kind):
+    """True for the objects `transparency_peel` actually applies to.
+
+    NOT just molecules. SceneCollectPeelObjects walks `NonGadgetObjs`, and
+    MaterialObjectWantsPeel returns an explicit object-level value outright
+    before it ever looks for an ObjectMolecule -- so an isosurface at
+    `transparency_peel 1` really is peeled, and a translucent isosurface's
+    front/back double blend is exactly what peel is for. An earlier version of
+    this gated peel on `object:molecule` and hid the control from the class
+    that most needs it.
+
+    GROUPS are excluded, and that is the only exclusion. `set` on a group name
+    expands to its members but `get` reports the group's own value, so a control
+    on a group card writes correctly and then reverts on the next poll. That
+    asymmetry predates this ticket; what is new is putting a control on it."""
+    return bool(kind) and kind != 'object:group'
+
+
+def _takes_material_rows(kind):
+    """True for the objects the material/reflection rows apply to: molecules,
+    and not groups.
+
+    Measurements, CGOs and maps have no material and no reps, so the legacy
+    reflection group would render LIVE and inert directly above "No
+    representations shown".
+
+    Note what this is NOT for. An earlier version of this comment said probing
+    those objects for their peel floods the console with "named object not
+    found." -- that is wrong, and worth correcting rather than deleting:
+    ExecutiveFindObjectByName returns the object for any cExecObject, which a
+    measurement, a CGO and a map all are. The names that DO reach that error
+    are selections and deleted ones, and neither can arrive here -- the
+    inspector never expands a selection row, and _build's `known` guard drops
+    deleted names before this."""
+    return kind == 'object:molecule'
 
 
 def _object_peel(obj):
@@ -773,7 +801,14 @@ def _drawn_family(obj, rep_name):
     stick_ball spheres -- and a degraded rep draws as family 0, which reads the
     legacy triple. get_material_draw_params is documented as "the FINAL
     material parameters a representation draws with ... after the legacy-slider
-    decision", which is exactly the question being asked here."""
+    decision", which is exactly the question being asked here.
+
+    Cost: this is the UNCACHED draw path, so for a glass-family sticks rep it
+    re-runs MaterialRepEmitsStickBalls -- an O(atoms) walk the draw site
+    deliberately avoids by caching the answer on the rep. It is paid at most
+    once per rep per poll tick and the loop below short-circuits on the first
+    non-deaf rep, so in practice it is one call; but there is no cached Python
+    entry point, and on a very large glass-sticks object it is real. See #530."""
     try:
         from pymol import _cmd
         from pymol.constants import repres

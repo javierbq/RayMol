@@ -290,20 +290,54 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
 
     def testAMoleculeGetsThem(self):
         self.assertEqual(meta('m1')['material_rows'], 1)
+        self.assertEqual(meta('m1')['peel_row'], 1)
 
-    def testAMeasurementDoesNot(self):
+    def testAMeasurementGetsPeelButNotMaterials(self):
+        """The two gates are separate. A measurement has no material, so the
+        reflection group would render live and inert -- but peel is not a
+        material question: SceneCollectPeelObjects walks every non-gadget
+        object."""
         cmd.distance('d1', 'm1 and index 1', 'm1 and index 2')
         m = meta('d1', objs=['m1', 'd1'])
         self.assertEqual(m['material_rows'], 0)
-        # ...and the payload carries none of the rows, so nothing downstream
-        # can render them from a default.
-        for key in ('peel', 'peel_resolved', 'refl', 'legacy_dead'):
+        self.assertEqual(m['peel_row'], 1)
+        for key in ('refl', 'legacy_dead'):
             self.assertNotIn(key, m)
 
-    def testAGroupDoesNot(self):
+    def testEveryNonGroupOBJECTKindGetsThePeelRow(self):
+        """The case that made a single gate wrong.
+
+        Peel is not a material question: SceneCollectPeelObjects walks
+        `NonGadgetObjs`, and MaterialObjectWantsPeel returns an explicit
+        object-level value outright before it ever looks for an ObjectMolecule.
+        So an isosurface at `transparency_peel 1` really is peeled -- and a
+        translucent one's front/back double blend is exactly what peel is for.
+        Gating peel on `object:molecule` hid the control from the class that
+        most needs it.
+
+        Asserted on the predicate rather than on a live isosurface: building
+        one needs a map that this headless build does not produce. The type
+        strings are cmd.get_type's own vocabulary."""
+        for kind in ('object:molecule', 'object:surface', 'object:mesh',
+                     'object:map', 'object:measurement', 'object:cgo'):
+            self.assertTrue(ai._takes_peel_row(kind), kind)
+        self.assertFalse(ai._takes_peel_row('object:group'))
+        self.assertFalse(ai._takes_peel_row(''))
+
+    def testOnlyMoleculesGetTheMaterialRows(self):
+        """The other half of the same split: a measurement, CGO or map has no
+        material, so the reflection group would render live and inert."""
+        self.assertTrue(ai._takes_material_rows('object:molecule'))
+        for kind in ('object:surface', 'object:map', 'object:measurement',
+                     'object:cgo', 'object:group', ''):
+            self.assertFalse(ai._takes_material_rows(kind), kind)
+
+    def testAGroupGetsNeither(self):
         cmd.fragment('ala', 'm2')
         cmd.group('g1', 'm1 m2')
-        self.assertEqual(meta('g1', objs=['g1'])['material_rows'], 0)
+        m = meta('g1', objs=['g1'])
+        self.assertEqual(m['material_rows'], 0)
+        self.assertEqual(m['peel_row'], 0)
 
     def testTheGroupAsymmetryIsRealAndNotJustCaution(self):
         """`set` reaches the members, `get` does not -- which is what would
