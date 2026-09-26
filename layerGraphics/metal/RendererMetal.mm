@@ -5589,6 +5589,7 @@ constant bool kMatReflective = (kMatFamily == 2);
 constant bool kMatGlass = (kMatFamily == 3);
 
 constant int kMatMode_frosted_glass = 5;
+constant int kMatMode_jelly = 6;
 
 // Attenuates the object's own COLOUR under glass, so the tint reads as seen
 // THROUGH something rather than painted on. It is deliberately not the coverage
@@ -5739,6 +5740,62 @@ struct MaterialU {
   float p[6];
   float _pad2[2];
 };
+
+// Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
+// shares the glass family's pipeline and its peel, and is otherwise the
+// opposite material: glass is a clear body under a Fresnel rim.
+//
+// The prototype got here by REFRACTING the resolved opaque scene through a
+// 12-tap frosted disc and filtering it Beer-Lambert toward the base colour.
+// None of that survives the move into the OIT pass -- there is no opaque
+// texture to sample (the reason is spelled out on mat_glass_shade), and what
+// is behind a gummy is what the blend brings in anyway, weighted by the 0.45
+// alpha this material implies: three times as covering as clear glass. So the
+// port keeps the three things that made it read as a gummy and not as glass:
+//
+//   * absorption -- the body deepens toward the silhouette, where the path
+//     through it is longest. p[0] is the Beer-Lambert strength.
+//   * a scattered inner glow -- light diffused inside the body, lit through a
+//     wide wrap so it has no terminator, again densest at the rim. p[1].
+//   * a WET skin -- unlike frosted_glass the surface is smooth: a full Fresnel
+//     reflection of an unblurred room plus a tight near-white highlight.
+//     p[2] is its strength. This is why jelly's `rough` is near zero while
+//     frosted_glass's is 0.6 -- the frost belongs to the body, and the body is
+//     not the thing that reflects.
+static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, texturecube<float> envMap, sampler envSmp) {
+  float ndotv = saturate(dot(N, V));
+  float rim = 1.0 - ndotv;              // thickness proxy: longest path at the edge
+  float3 L1 = normalize(keyDir);
+
+  // Beer-Lambert through the body. The exponent passes through 1.0 as the view
+  // tilts (2.2 * 0.35 face-on, 2.2 * 1.75 at the rim), so a face-on gummy keeps
+  // close to the colour the user chose and only its silhouette goes deep --
+  // which is the half of the effect that survives without a refracted sample.
+  float3 body = pow(saturate(base), float3(m.p[0] * (0.35 + 1.4 * rim)));
+
+  // Light scattered INSIDE the body: a wide wrap, so it glows through the
+  // terminator instead of shading across it.
+  float wrapLit = ambient + reflectAmt * saturate((dot(N, L1) + 0.6) / 1.6)
+                          + direct * saturate((ndotv + 0.6) / 1.6);
+  float3 glow = saturate(base * 1.15) * min(wrapLit, 1.0);
+  float3 col = mix(body, glow, saturate(m.p[1] * (0.55 + 0.9 * rim)));
+
+  // The wet skin: the room, unblurred, at a full dielectric Fresnel.
+  float3 R = reflect(-V, N);
+  float3 room = envMap.sample(envSmp, R, level(sqrt(saturate(m.rough)) * 7.0)).rgb;
+  float F = saturate(0.04 + 0.96 * pow(rim, 5.0));
+  col += room * F * 0.8;
+
+  // Two highlights, not one: a tight near-white glint and a broad soft sheen.
+  // The pair is what the prototype's gummy-bear reference was tuned against --
+  // the tight one alone reads as polished plastic.
+  float ndoth = max(dot(N, normalize(L1 + V)), 0.0);
+  col += (m.p[2] * pow(ndoth, 70.0) + 0.12 * pow(ndoth, 8.0))
+         * mix(float3(1.0), saturate(base * 1.3), 0.25);
+  return mat_soft_knee(col);
+}
 
 // --- value noise -----------------------------------------------------------
 static float mat_hash(float3 p) {
@@ -5891,6 +5948,10 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float sceneWrap, texturecube<float> envMap, sampler envSmp) {
   if (kMatGlass) {
     float3 V = float3(0.0, 0.0, 1.0);
+    if (m.mode == kMatMode_jelly) {
+      return mat_jelly_shade(base, N, V, ambient, direct, reflectAmt, keyDir, m,
+                             envMap, envSmp);
+    }
     int taps = (m.mode == kMatMode_frosted_glass)
                  ? int(max(1.0, m.p[5])) : 1;
     return mat_glass_shade(base, N, V, m.rough, taps, envMap, envSmp);
@@ -6030,6 +6091,12 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     float3 N = normalize(nEye);
     if (N.z < 0.0) N = -N;
     float3 V = float3(0.0, 0.0, 1.0);
+    if (mat.mode == kMatMode_jelly) {
+      // Jelly needs the scene's LIGHTING, which glass does not: its body glows
+      // rather than transmitting. Hence the light terms here and not above.
+      return mat_jelly_shade(baseColor, N, V, lt.ambient, lt.direct, lt.reflect,
+                             float3(lt.klx, lt.kly, lt.klz), mat, envMap, envSmp);
+    }
     int taps = (mat.mode == kMatMode_frosted_glass)
                  ? int(max(1.0, mat.p[5])) : 1;
     return mat_glass_shade(baseColor, N, V, mat.rough, taps, envMap, envSmp);

@@ -2527,8 +2527,15 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     CoordSet* cs = objmol->getCoordSet(resolved);
     MaterialParams const p = MaterialDrawParams(G,
         cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
-    result = Py_BuildValue("(iifff)", p.family, p.mode, p.reflect, p.tint,
-        p.rough);
+    /* The per-material KNOBS are part of "what this draw uses" too, and until
+       #496 nothing could see them from Python. They are the half of a material
+       that fails QUIETLY: zeroing jelly's absorption renders a white body,
+       zeroing its scatter or its wet highlight renders a plausible gummy that
+       is simply the wrong one. p[5] is included deliberately -- the renderer
+       overwrites it for the whole glass family with the frost tap count, so it
+       is the slot a future material would collide with. */
+    result = Py_BuildValue("(iifff(ffffff))", p.family, p.mode, p.reflect,
+        p.tint, p.rough, p.p[0], p.p[1], p.p[2], p.p[3], p.p[4], p.p[5]);
   }
   APIExitBlocked(G);
   return result;

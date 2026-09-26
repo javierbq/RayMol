@@ -70,10 +70,15 @@ class TestGlass(testing.PyMOLTestCase):
         self.assertEqual(family('glass'), GLASS_FAMILY)
         self.assertEqual(family('frosted_glass'), GLASS_FAMILY)
 
-    def testJellyIsNotImplementedYet(self):
-        """Jelly is #496. Guard, so flipping it there is a deliberate act and
-        this file's claims stay true until then."""
-        self.assertNotIn('jelly', [n for _i, n in setting.get_material_names(1)])
+    def testJellyIsTheThirdMemberOfTheFamily(self):
+        """This was `testJellyIsNotImplementedYet`, a guard so that flipping the
+        flag in #496 had to be a deliberate act. It was, so the guard becomes
+        its mirror: jelly ships, and the two materials above keep their OWN
+        alphas rather than collapsing onto jelly's denser one.
+
+        Jelly's own behaviour is asserted in material_jelly.py."""
+        self.assertIn('jelly', [n for _i, n in setting.get_material_names(1)])
+        self.assertEqual(family('jelly'), GLASS_FAMILY)
 
     # -- implied alpha --------------------------------------------------------
 
@@ -133,7 +138,7 @@ class TestGlass(testing.PyMOLTestCase):
         materials was their implied alpha, which is exactly what the render
         probe measured. Nothing could see it."""
         cmd.set('surface_material', 'frosted_glass', 'm1')
-        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+        _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(rough, 0.6, places=4)
 
@@ -143,7 +148,7 @@ class TestGlass(testing.PyMOLTestCase):
         glass frosted."""
         cmd.set('surface_material', 'glass', 'm1')
         cmd.set('metal_rt_reflect_rough', 1.0, 'm1')
-        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+        _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(rough, 0.0, places=4)
 
@@ -156,7 +161,7 @@ class TestGlass(testing.PyMOLTestCase):
         only thing that caught it -- no test covered it."""
         by_name = {n: i for i, n in setting.get_material_names(0)}
         cmd.set('surface_material', 'metallic', 'm1')
-        _f, _m, refl, tint, rough = _cmd.get_material_draw_params(
+        _f, _m, refl, tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         # untouched: the table row, NOT the sliders' default of 0
         self.assertAlmostEqual(refl, 0.6, places=4)
@@ -165,7 +170,7 @@ class TestGlass(testing.PyMOLTestCase):
         # explicit values win, and only the ones actually set
         cmd.set('metal_rt_reflect', 0.9, 'm1')
         cmd.set('metal_rt_reflect_rough', 0.05, 'm1')
-        _f, _m, refl, tint, rough = _cmd.get_material_draw_params(
+        _f, _m, refl, tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(refl, 0.9, places=4)
         self.assertAlmostEqual(tint, 0.35, places=4)   # untouched, table wins
@@ -175,7 +180,7 @@ class TestGlass(testing.PyMOLTestCase):
         """The exemption is narrow: `default` keeps reading the legacy triple,
         which is what makes this PR byte-identical for it."""
         cmd.set('metal_rt_reflect_rough', 0.42, 'm1')
-        _fam, _mode, _refl, _tint, rough = _cmd.get_material_draw_params(
+        _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(rough, 0.42, places=4)
 

@@ -38,6 +38,14 @@ constexpr int kP_edge = 2;     /* procedural: grazing-angle darkening */
 constexpr int kP_sheen = 3;    /* procedural: velvet sheen (rubber) */
 constexpr int kP_vein = 4;     /* marble: vein contrast */
 constexpr int kP_sharp = 5;    /* marble: vein sharpness */
+/* Glass family. The slots are reused per family -- p[0] is grain for a
+   procedural material and absorption for a glass one -- which is why they are
+   named here rather than carried as one flat list. p[5] is NOT a table knob:
+   setRepMaterial overwrites it for the whole glass family with the frost tap
+   count the current target can afford, so nothing put here would survive. */
+constexpr int kP_absorb = 0;   /* jelly: Beer-Lambert strength through the body */
+constexpr int kP_scatter = 1;  /* jelly: density of the scattered inner glow */
+constexpr int kP_wet = 2;      /* jelly: sharp wet-skin highlight strength */
 
 /* Index is the material id; the order must match the enum in Material.h.
  *
@@ -72,9 +80,21 @@ const MaterialRow kMaterialTable[] = {
         {cMaterialFamily_glass, cMaterial_frosted_glass, 0.0f, 0.0f, 0.6f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
-    {cMaterial_jelly, "jelly", cMaterialFamily_glass, false, 0.45f,
-        {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.1f,
-            {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
+    /* Jelly is in the glass family but is the opposite material: a dense
+       scattering BODY under a smooth skin, where glass is a clear body under a
+       Fresnel rim. Its implied alpha of 0.45 -- three times clear glass's --
+       is what carries that; p[0..2] are the prototype's gummy knobs
+       (absorption 2.2, scatter 0.35, wet highlight 1.1).
+
+       `rough` is 0.03, not the 0.1 this row was declared with in #486. It is
+       the cubemap MIP axis (lod = sqrt(rough) * 7), and 0.1 selects level 2.2
+       of 7 -- a 32px room, visibly soft. A gummy's skin is WET: the whole
+       point of the look is that the body is frosted and the surface is not.
+       0.03 lands just under level 1. The number was never rendered before
+       this ticket; the table declared it in advance. */
+    {cMaterial_jelly, "jelly", cMaterialFamily_glass, true, 0.45f,
+        {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.03f,
+            {2.2f, 0.35f, 1.1f, 0.0f, 0.0f, 0.0f}, 1}},
 
     {cMaterial_marble, "marble", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_marble, 0.0f, 0.0f, 0.9f,
