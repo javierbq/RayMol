@@ -304,8 +304,8 @@ class TestJelly(testing.PyMOLTestCase):
         cmd.refresh()
         # the helper the user asked for is ON ...
         self.assertEqual(cmd.get_setting_boolean('line_stick_helper', 'm1'), 1)
-        # ... and the build turned it off anyway, because the MATERIAL made the
-        # sticks translucent without ever writing stick_transparency.
+        # ... and no transparency was written anywhere, so nothing but the
+        # MATERIAL can be what makes the sticks translucent.
         self.assertEqual(
             cmd.get_setting_float('stick_transparency', 'm1'), 0.0)
         # Reported as a failure, not an error: with the rule reverted the
@@ -317,6 +317,7 @@ class TestJelly(testing.PyMOLTestCase):
         except Exception as exc:
             self.fail('the lines rep was discarded, i.e. line_stick_helper '
                       'suppressed every line under a jelly stick: %s' % exc)
+        # ...and THIS is the rule: the build turned the helper off anyway.
         self.assertEqual(helper, 0)
 
     def testDefaultSticksSuppressTheirLinesEntirely(self):
@@ -333,7 +334,10 @@ class TestJelly(testing.PyMOLTestCase):
         cmd.show('sticks', 'm1')
         cmd.rebuild('m1')
         cmd.refresh()
-        with self.assertRaises(Exception):
+        # Matched on the message: a bare assertRaises would also pass on "no
+        # such molecular object", i.e. on a typo in the object name, and
+        # report the suppression rule as verified when no rep was ever built.
+        with self.assertRaisesRegex(Exception, 'not built'):
             built_line_stick_helper('m1')
         cmd.hide('sticks', 'm1')
         cmd.rebuild('m1')
@@ -342,9 +346,16 @@ class TestJelly(testing.PyMOLTestCase):
 
     def testAnUnbuiltLinesRepIsAnErrorNotZero(self):
         """0 means "the helper was turned off", so it must not also mean
-        "nothing was recorded" -- that would make both tests above vacuous."""
+        "no lines rep exists" -- that would make both tests above vacuous.
+
+        Note this exercises the missing-rep branch, not the -1 sentinel. The
+        sentinel is unreachable for cRepLine: RepWireBondNew is the only
+        factory for it and always records, so a lines rep that exists always
+        carries a value. The sentinel is kept as defence and because
+        CmdGetBuiltTransparency's equivalent IS reachable -- several rep types
+        record no transparency -- but nothing can cover this one."""
         cmd.set('stick_material', 'jelly', 'm1')
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(Exception, 'not built'):
             built_line_stick_helper('m1')
 
     # -- the representations jelly cannot draw on -----------------------------

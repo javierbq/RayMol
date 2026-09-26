@@ -99,10 +99,12 @@ A material resolves to `MaterialParams` and **writes no other setting**:
     coloured background contributes `(1-a) * spread(bg)` of its own. Under
     those two conditions the gallery's red gummy, at spread 0.539 against
     jelly's own emitted spread of ~0.62, would need alpha ~0.87 to match
-    exactly; 0.85 lands at 0.528, 98% of it. What the arithmetic rules out is
-    the low end -- any alpha at or below 0.539 cannot render the material at
-    all -- so the choice is a narrow band near 0.85, not a free parameter. At
-    the specified 0.45 the material renders a pale pink. 0.45 was a number from the prototype's
+    exactly; 0.85 lands at 0.528, 98% of it. Only the LOW end is arithmetic:
+    any alpha at or below 0.539 cannot reach the reference's spread whatever
+    the shader does, and the specified 0.45 is well inside that -- it renders
+    a pale pink that still reads as a gummy, just not this one. The high end
+    is a judgement (the alpha is also how much of the scene a jelly object
+    hides), not a bound. 0.45 was a number from the prototype's
     architecture, where the fragment wrote coverage 1.0 and did its own
     transmission from the refracted opaque scene; that sampling is not
     available inside the OIT pass (see M6), so here the implied alpha has to

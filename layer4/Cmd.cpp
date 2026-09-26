@@ -2485,26 +2485,6 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   return APIAutoNone(result);
 }
 
-/**
- * Whether an object's transparent geometry is depth-PEELED as things stand
- * (#488): the resolved answer, not the raw `transparency_peel` value.
- *
- * Exposed because the whole point of the -1 default is that it is AUTO -- the
- * answer comes from the materials the object's representations resolve to, so
- * reading the setting tells you nothing about what the renderer will do.
- *
- * This reports the object's REQUEST, not the frame's decision. It is the same
- * predicate the scene loop consults, but the loop then applies three gates
- * this does not: the object must be Enabled, the renderer must support peeling
- * (the GL path does not), and SceneCollectPeelObjects stops after
- * kMaxPeeledObjects. So a 1 here can still draw unpeeled -- which matters,
- * because a jelly object's implied alpha was measured peeled and an unpeeled
- * one is denser (see the table comment in layer1/Material.cpp). Bounding this
- * by the cap would be worse, not better: the cap is per frame and depends on
- * object order, so it is not a property of the object being asked about.
- *
- * _cmd.get_object_peel(object_name_or_empty[, state=0])
- */
 /* The FINAL material parameters a representation draws with: family, mode and
    the reflect/tint/rough triple after the legacy-slider decision. Exposed so
    the rules can be asserted without a Metal context -- `frosted_glass` losing
@@ -2594,8 +2574,12 @@ static PyObject* CmdGetBuiltLineStickHelper(PyObject* self, PyObject* args)
       PyErr_SetString(PyExc_ValueError,
           "the lines representation is not built");
     } else if (rep->builtLineStickHelper() < 0) {
-      /* Never 0: "the helper was off" and "nothing recorded" must not be the
-         same answer, or every assertion below passes on an unbuilt rep. */
+      /* Unreachable today, and kept anyway: RepWireBondNew is the only factory
+         for cRepLine and always records, so a lines rep that exists carries a
+         value. It is here because 0 must not also mean "nothing recorded" --
+         the distinction that IS live for CmdGetBuiltTransparency, where
+         several rep types record nothing. No test can cover this branch; the
+         one named for it exercises the missing-rep case above. */
       PyErr_SetString(PyExc_ValueError,
           "this representation records no line_stick_helper");
     } else {
@@ -2663,6 +2647,26 @@ static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
   return result;
 }
 
+/**
+ * Whether an object's transparent geometry is depth-PEELED as things stand
+ * (#488): the resolved answer, not the raw `transparency_peel` value.
+ *
+ * Exposed because the whole point of the -1 default is that it is AUTO -- the
+ * answer comes from the materials the object's representations resolve to, so
+ * reading the setting tells you nothing about what the renderer will do.
+ *
+ * This reports the object's REQUEST, not the frame's decision. It is the same
+ * predicate the scene loop consults, but the loop then applies three gates
+ * this does not: the object must be Enabled, the renderer must support peeling
+ * (the GL path does not), and SceneCollectPeelObjects stops after
+ * kMaxPeeledObjects. So a 1 here can still draw unpeeled -- which matters,
+ * because a jelly object's implied alpha was measured peeled and an unpeeled
+ * one is denser (see the table comment in layer1/Material.cpp). Bounding this
+ * by the cap would be worse, not better: the cap is per frame and depends on
+ * object order, so it is not a property of the object being asked about.
+ *
+ * _cmd.get_object_peel(object_name_or_empty[, state=0])
+ */
 static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;

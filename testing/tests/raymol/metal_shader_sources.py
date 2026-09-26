@@ -49,7 +49,12 @@ _PREPENDED = {
 
 def _strip_comments(text):
     """MSL // comments removed, so a commented-out branch does not satisfy a
-    substring check. Block comments are not used in these literals."""
+    substring check.
+
+    Block comments would need the same treatment; no literal uses one today and
+    testNoBlockCommentsInTheShaderLiterals keeps it that way, because a `/* */`
+    around a dispatch would slip past every check in this file.
+    """
     return re.sub(r'//[^\n]*', '', text)
 
 
@@ -60,7 +65,15 @@ def _function_body(literal, name):
     first -- is not the function: it is every later function too, so a check
     for "does this function dispatch jelly" passed when the dispatch had moved
     somewhere else entirely.
+
+    Comments are stripped BEFORE the braces are counted, not after. These
+    literals already contain braces inside comments elsewhere (kVBOSrc has
+    `// {0,0,1})`, kRTSrc has a `{`...`}` pair spanning two comment lines), so
+    counting the raw text would end the slice early on a stray `}` or run it
+    into the next function on a stray `{` -- reintroducing the defect this
+    helper exists to remove.
     """
+    literal = _strip_comments(literal)
     start = literal.index(name)
     open_brace = literal.index('{', start)
     depth = 0
@@ -172,7 +185,6 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         renumbers a material, the shader would silently shade the wrong one."""
         import os
         literals = shader_literals(self.source())
-        msl = literals['kMaterialSrc']
         root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
                             os.pardir)
         header = os.path.normpath(os.path.join(root, 'layer1', 'Material.h'))
@@ -211,6 +223,16 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         for name in ('matte', 'marble', 'clay', 'rubber'):
             self.assertIn(name, declared)
 
+    def testNoBlockCommentsInTheShaderLiterals(self):
+        """_strip_comments only understands `//`, and the dispatch checks below
+        are substring searches over the stripped text. A `/* */` around a
+        material's dispatch would satisfy every one of them while the branch
+        never compiles, so the assumption is enforced rather than stated."""
+        for name, body in shader_literals(self.source()).items():
+            self.assertNotIn('/*', body,
+                             '%s uses a block comment; _strip_comments only '
+                             'removes // comments' % name)
+
     def testEveryGlassFamilyMaterialIsDispatchedInBothShadingPaths(self):
         """The glass family shares ONE pipeline and is told apart by `mode`, in
         two places: vbo_material_shade (cartoons and surfaces) and
@@ -231,12 +253,12 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         for site, body in (('vbo_material_shade', msl['kVBOSrc']),
                            ('mat_impostor_composite', msl['kMaterialImpostorSrc'])):
             self.assertIn(site, body)
-            fn = _function_body(body, site)
-            # Comments stripped: the first version of this test searched the
-            # raw text from the function's NAME to the end of the library, so
-            # a dispatch that had been commented out -- or moved into a later
-            # function entirely -- still matched.
-            code = _strip_comments(fn)
+            # _function_body strips comments before brace-matching, so the
+            # slice is the function's CODE. The first version of this test
+            # searched the raw text from the function's NAME to the end of the
+            # library, so a dispatch that had been commented out -- or moved
+            # into a later function entirely -- still matched.
+            code = _function_body(body, site)
             self.assertIn('kMatMode_jelly', code,
                           '%s does not dispatch jelly' % site)
             self.assertIn('mat_jelly_shade', code,

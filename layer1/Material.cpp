@@ -85,11 +85,11 @@ const MaterialRow kMaterialTable[] = {
        Fresnel rim. p[0..2] are the prototype's gummy knobs (absorption 2.2,
        scatter 0.35, wet highlight 1.1).
 
-       IMPLIED ALPHA IS 0.85, NOT THE 0.45 #496 AND #503 SPECIFY. That number
-       cannot draw this material, and the reason is arithmetic rather than
-       taste -- but the arithmetic has two conditions, and both happen to hold
-       for jelly, which is why it is stated here rather than in the design doc
-       as a law.
+       IMPLIED ALPHA IS 0.85, NOT THE 0.45 #496 AND #503 SPECIFY. At 0.45 this
+       material cannot reach the look it is measured against, and the reason is
+       arithmetic rather than taste -- but the arithmetic has two conditions,
+       and both happen to hold for jelly, which is why it is stated here rather
+       than in the design doc as a law.
 
        A single transparent layer over a NEUTRAL background reaches the screen
        as col*a + bg*(1-a). Channel spread (max - min) is unaffected by adding
@@ -114,16 +114,22 @@ const MaterialRow kMaterialTable[] = {
        The prototype gallery's red gummy measures a mean channel spread of
        0.539, and the measured spread of jelly's own emitted colour is ~0.62,
        so reproducing the reference EXACTLY would take alpha ~0.87. 0.85 lands
-       at 0.528, i.e. 98% of the reference and just under it -- deliberately,
-       because the alpha is also how much of the scene a jelly object hides,
-       and there is no reason to round that up past the measurement's own
-       noise. What the arithmetic rules out is the low end: anything at or
-       below 0.539 cannot render this material at all, and the specified 0.45
-       is well inside that. The choice is a narrow band near 0.85, not a free
-       parameter.
-       At the specified 0.45 the material renders a pale pink that still has
-       the highlights and still reads as "a gummy", which is why the ticket's
-       done-when is a measurement and not a glance.
+       at 0.528, i.e. 98% of the reference and just under it.
+
+       Be precise about which half of that is arithmetic. The LOW end is:
+       spread(result) = a * spread(col) <= a, so any alpha at or below 0.539
+       cannot reach the reference's spread no matter how the shader is
+       written, and the specified 0.45 is well inside that -- it renders
+       something (a pale pink that still reads as a gummy), it just cannot
+       render THIS one. The HIGH end is a judgement, not a bound: the alpha is
+       also how much of the scene a jelly object hides, so there is no reason
+       to round past the reference and every reason not to. Arithmetic rules
+       out below ~0.87 for an exact match and below 0.539 outright; the
+       preference for not hiding more than the reference does rules out above.
+       Between them the band is narrow, and 0.85 is in it.
+       That the 0.45 version still reads as "a gummy" -- pale pink, highlights
+       intact -- is exactly why the ticket's done-when is a measurement and not
+       a glance.
 
        An unpeeled jelly object is therefore denser than the one measured
        above: two layers cover 1 - 0.15^2 = 0.978 rather than 0.85. It does not
