@@ -10,10 +10,12 @@ each other:
     is a body you look INTO rather than through. Sharing a value with glass
     would still shade like a gummy and still look wrong. That 0.85 is a
     deliberate departure from the 0.45 #496 and #503 specify, and the reason is
-    arithmetic: a transparent fragment reaches the screen as col*a + bg*(1-a),
-    so the largest channel spread an alpha of `a` can produce is `a` itself,
-    whatever the shader does -- and the prototype gallery's red gummy measures
-    0.539. See the table comment in layer1/Material.cpp.
+    arithmetic: for a SINGLE layer over a NEUTRAL background, col*a + bg*(1-a)
+    has channel spread a*spread(col) <= a, and the prototype gallery's red
+    gummy measures 0.539. Both conditions are load-bearing and both hold for
+    jelly -- the probe background is grey, and jelly peels, so there is one
+    layer. It is not a general law; see the table comment in
+    layer1/Material.cpp, which spells out what happens without either.
   * its `rough` is near zero where frosted_glass's is 0.6. `rough` is the
     cubemap MIP axis, so a jelly that picked up a frosted roughness reflects a
     blurred room and stops reading as wet -- the same class of defect as #495's
@@ -96,9 +98,15 @@ class TestJelly(testing.PyMOLTestCase):
 
     def testJellyHasItsOwnModeWithinTheFamily(self):
         """The three glass-family materials share one pipeline and are told
-        apart by `mode` alone. Pinning the numbers here is what keeps the Metal
-        block's kMatMode_jelly and the C enum from drifting: they are in
-        different languages and nothing else compares them."""
+        apart by `mode` alone, so `mode` has to be the material's own id.
+
+        This pins the C side only. The Metal side -- that kMatMode_jelly in
+        RendererMetal.mm carries the same number -- is checked by
+        metal_shader_sources.py, which parses the MSL. An earlier draft of this
+        docstring claimed the check happened here, and it did not: that file's
+        loop was a hardcoded four-name list that had not grown since #487, so
+        both frosted_glass and jelly were unverified. It now covers every
+        kMatMode_* the shader declares."""
         by_name = {n: i for i, n in setting.get_material_names(0)}
         self.assertEqual(by_name['jelly'], JELLY_MODE)
         for name in ('glass', 'frosted_glass', 'jelly'):
@@ -228,10 +236,10 @@ class TestJelly(testing.PyMOLTestCase):
     # -- peel -----------------------------------------------------------------
 
     def testJellyTurnsPeelAutoOn(self):
-        """Jelly's row sets wantsPeel. At 0.55 transparency a ball-and-stick or
-        a closed surface accumulates its own far side, which is the mottle peel
-        exists to remove -- and jelly, being the densest of the three, is where
-        it matters most."""
+        """Jelly's row sets wantsPeel, and for jelly the peel does more than
+        tidy the look: it is what makes the material ONE layer, which is the
+        condition the implied alpha of 0.85 was measured under. Unpeeled, a
+        closed surface delivers two layers and covers 1 - 0.15^2 = 0.978."""
         build('m1', 'surface')
         self.assertEqual(resolved_peel('m1'), 0)
         cmd.set('surface_material', 'jelly', 'm1')
@@ -244,9 +252,9 @@ class TestJelly(testing.PyMOLTestCase):
 
     def testBallAndStickJellyDegradesLikeGlass(self):
         """stick_ball spheres arrive as cRepCyl and take stick_material, and the
-        sphere impostor has no glass-family path. The whole rep degrades --
-        shading AND implied alpha together, or a `default`-shaded stick would
-        still build 55% transparent."""
+        sphere impostor is outside the glass family's scope. The whole rep
+        degrades -- shading AND implied alpha together, or a `default`-shaded
+        stick would still build 15% transparent."""
         cmd.set('stick_ball', 1, 'm1')
         cmd.set('stick_material', 'jelly', 'm1')
         build('m1', 'sticks')
@@ -262,6 +270,30 @@ class TestJelly(testing.PyMOLTestCase):
         build('m1', 'cartoon')
         build('m1', 'surface')
         self.assertEqual(resolved_peel('m1'), 0)
+
+    def testJellySticksKeepTheirLines(self):
+        """`line_stick_helper` suppresses the lines under a stick, and #495
+        turned it off for any stick the MATERIAL makes translucent -- a
+        see-through stick with its lines suppressed shows nothing.
+
+        Jelly enters the same branch, and the rule is binary: 0.15 transparency
+        trips it exactly as glass's 0.85 does. So `show lines` beside jelly
+        sticks now draws a wireframe down the middle of every 85%-opaque bond
+        (measured at 5.3% of the frame). That is the pre-existing rule applied
+        to a new value rather than anything this ticket introduced -- a user
+        typing `set stick_transparency, 0.15` gets it on master today -- but it
+        is a behaviour of the material, so it is pinned rather than left to be
+        discovered. See "Found while building" on #503 for the threshold.
+        """
+        cmd.set('stick_material', 'jelly', 'm1')
+        build('m1', 'sticks')
+        build('m1', 'lines')
+        self.assertAlmostEqual(built_transparency('m1', repres['sticks']),
+                               JELLY_TRANSPARENCY, places=4)
+        # the setting itself is untouched; it is the EFFECTIVE value the rule
+        # reads, which is the whole point of routing it through the material.
+        self.assertEqual(
+            cmd.get_setting_float('stick_transparency', 'm1'), 0.0)
 
     # -- the representations jelly cannot draw on -----------------------------
 

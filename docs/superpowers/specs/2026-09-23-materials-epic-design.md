@@ -84,15 +84,23 @@ and the change must land in small, individually shippable steps.
 
 A material resolves to `MaterialParams` and **writes no other setting**:
 
-[^jelly-alpha]: 0.45 in revisions 1-4, raised in #496 (PR #525). A transparent
-    fragment reaches the screen as `col*a + bg*(1-a)`, so the largest channel
-    spread an alpha of `a` can produce is `a` itself, whatever the shader does.
-    The prototype gallery's red gummy measures a spread of 0.539, so no shader
-    at alpha 0.45 can render it -- it comes out a pale pink. 0.45 was a number
-    from the prototype's architecture, where the fragment wrote coverage 1.0
-    and did its own transmission from the refracted opaque scene; that sampling
-    is not available inside the OIT pass (see M6), so here the implied alpha
-    has to carry the density the refraction used to.
+[^jelly-alpha]: 0.45 in revisions 1-4, raised in #496 (PR #525). For a SINGLE
+    transparent layer over a NEUTRAL background, `col*a + bg*(1-a)` has channel
+    spread `a * spread(col) <= a`, whatever the shader does. Both conditions
+    are needed and both hold for jelly: the epic's probe background is a 0.85
+    grey, and jelly's row sets `wantsPeel`, whose EQUAL depth test keeps only
+    the nearest layer. **This is not a general law of the epic's transparency
+    model** -- without a peel, `n` layers cover `1 - (1-a)^n` (and
+    `backface_cull` is 0 by default, so a closed surface delivers two), and a
+    coloured background contributes `(1-a) * spread(bg)` of its own. Under
+    those two conditions the gallery's red gummy, at spread 0.539 against
+    jelly's own emitted spread of ~0.62, needs alpha >= ~0.87; 0.85 is
+    effectively the floor rather than a choice with room either side. At 0.45
+    the material renders a pale pink. 0.45 was a number from the prototype's
+    architecture, where the fragment wrote coverage 1.0 and did its own
+    transmission from the refracted opaque scene; that sampling is not
+    available inside the OIT pass (see M6), so here the implied alpha has to
+    carry the density the refraction used to.
 
 - **Opacity.** Glass and jelly carry an implied alpha. Because a rep is routed
   to the transparent pass and bakes its per-vertex alpha at *build* time, the

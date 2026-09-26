@@ -158,14 +158,57 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
                                  .splitlines()[1:]
                  if line.strip().startswith('cMaterial_')]
         ids = {name: i for i, name in enumerate(order)}
-        for name in ('matte', 'marble', 'clay', 'rubber'):
-            self.assertIn(name, ids, 'material %s vanished from the C enum' % name)
-            self.assertIn('kMatMode_%s' % name, msl)
-            declared = re.search(
-                r'constant int kMatMode_%s\s*=\s*(\d+);' % name, msl)
-            self.assertIsNotNone(declared, name)
-            self.assertEqual(int(declared.group(1)), ids[name],
+        # EVERY kMatMode_* the shader declares, not a hand-written list. The
+        # list this was -- matte, marble, clay, rubber -- had not grown since
+        # #487, so kMatMode_frosted_glass (#495) and kMatMode_jelly (#496) were
+        # both unchecked: renumber the C enum and the glass-family pipeline
+        # dispatches on a stale literal, which does not fail to draw, it draws
+        # the wrong material. That is this epic's signature bug.
+        declared = dict(re.findall(
+            r'constant int kMatMode_(\w+)\s*=\s*(\d+);', msl))
+        self.assertTrue(declared, 'no kMatMode_* constants found in kMaterialSrc')
+        for name, value in declared.items():
+            self.assertIn(name, ids,
+                          'kMatMode_%s names no material in layer1/Material.h' % name)
+            self.assertEqual(int(value), ids[name],
                              'kMatMode_%s disagrees with layer1/Material.h' % name)
+        # ...and the four the procedural dispatch has always needed are still
+        # among them, so deleting a constant cannot make the loop above vacuous.
+        for name in ('matte', 'marble', 'clay', 'rubber'):
+            self.assertIn(name, declared)
+
+    def testEveryGlassFamilyMaterialIsDispatchedInBothShadingPaths(self):
+        """The glass family shares ONE pipeline and is told apart by `mode`, in
+        two places: vbo_material_shade (cartoons and surfaces) and
+        mat_impostor_composite (the sphere and cylinder impostors).
+
+        Nothing else in the repo can see these branches. Delete the jelly
+        dispatch from either site and every C-side test still passes -- the
+        table row, the built transparency and the peel are all unchanged --
+        while jelly ships shading as clear glass on half its representations.
+        A source-level check is not a render, but it is the difference between
+        that failure being caught and being shipped."""
+        msl = shader_literals(self.source())
+        shared = msl['kMaterialSrc']
+        # vbo_material_shade lives in kVBOSrc (it needs LightU and vbo_shade);
+        # mat_impostor_composite in kMaterialImpostorSrc. Both are compiled
+        # with kMaterialSrc prepended -- see _PREPENDED above -- which is what
+        # makes mat_jelly_shade visible to them.
+        for site, body in (('vbo_material_shade', msl['kVBOSrc']),
+                           ('mat_impostor_composite', msl['kMaterialImpostorSrc'])):
+            self.assertIn(site, body)
+            fn = body[body.index(site):]
+            self.assertIn('kMatMode_jelly', fn,
+                          '%s does not dispatch jelly' % site)
+            self.assertIn('mat_jelly_shade', fn,
+                          '%s does not call mat_jelly_shade' % site)
+            self.assertIn('kMatMode_frosted_glass', fn,
+                          '%s does not dispatch frosted_glass' % site)
+        # The helper itself must be declared before the MaterialU it takes by
+        # reference: the libraries are concatenated and compiled at RUNTIME, so
+        # a bad order is a silent NSLog and a material that does nothing.
+        self.assertLess(shared.index('struct MaterialU {'),
+                        shared.index('float3 mat_jelly_shade('))
 
     def testRTBlurUsesTheSharedOrthoAwareDepth(self):
         """rt_composite's bilateral AO blur must reconstruct the neighbour depth

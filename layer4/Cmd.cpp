@@ -2531,9 +2531,17 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
        #496 nothing could see them from Python. They are the half of a material
        that fails QUIETLY: zeroing jelly's absorption renders a white body,
        zeroing its scatter or its wet highlight renders a plausible gummy that
-       is simply the wrong one. p[5] is included deliberately -- the renderer
-       overwrites it for the whole glass family with the frost tap count, so it
-       is the slot a future material would collide with. */
+       is simply the wrong one.
+
+       All six slots, but note what p[5] means here: this is MaterialDrawParams,
+       which is upstream of RendererMetal::setRepMaterial, and setRepMaterial
+       overwrites p[5] for the whole glass family with the frost tap count the
+       current target can afford. So Python sees the TABLE's p[5] and can never
+       see the tap count -- a test that asserts on it is asserting on the table
+       row, not on what the fragment reads. It is returned for completeness and
+       so that a future table knob parked in p[5] is at least visible as such;
+       catching the collision itself needs an observer on the renderer side,
+       which does not exist. */
     result = Py_BuildValue("(iifff(ffffff))", p.family, p.mode, p.reflect,
         p.tint, p.rough, p.p[0], p.p[1], p.p[2], p.p[3], p.p[4], p.p[5]);
   }

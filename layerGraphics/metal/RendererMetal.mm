@@ -5748,15 +5748,19 @@ struct MaterialU {
 // The prototype got here by REFRACTING the resolved opaque scene through a
 // 12-tap frosted disc and filtering it Beer-Lambert toward the base colour.
 // None of that survives the move into the OIT pass -- there is no opaque
-// texture to sample (the reason is spelled out on mat_glass_shade), and what
-// is behind a gummy is what the blend brings in anyway, weighted by the 0.45
-// alpha this material implies: three times as covering as clear glass. So the
-// port keeps the three things that made it read as a gummy and not as glass:
+// texture to sample (the reason is spelled out on mat_glass_shade). What
+// replaces it is coverage: jelly's implied alpha is 0.85, roughly six times
+// clear glass's 0.15, so this fragment dominates the blend and the body is
+// something you look INTO rather than through. See layer1/Material.cpp for why
+// that number is 0.85 and not the 0.45 the ticket specifies. So the port keeps
+// the three things that made it read as a gummy and not as glass:
 //
 //   * absorption -- the body deepens toward the silhouette, where the path
 //     through it is longest. p[0] is the Beer-Lambert strength.
 //   * a scattered inner glow -- light diffused inside the body, lit through a
-//     wide wrap so it has no terminator, again densest at the rim. p[1].
+//     wide wrap so it has no terminator. p[1]. Note THINNEST at the rim, the
+//     opposite of the prototype's: see the comment on the mix() below, which
+//     is where that inversion is explained rather than merely stated.
 //   * a WET skin -- unlike frosted_glass the surface is smooth: a full Fresnel
 //     reflection of an unblurred room plus a tight near-white highlight.
 //     p[2] is its strength. This is why jelly's `rough` is near zero while
@@ -5812,7 +5816,17 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   // Two highlights, not one: a tight near-white glint and a broad soft sheen.
   // The pair is what the prototype's gummy-bear reference was tuned against --
   // the tight one alone reads as polished plastic.
-  float ndoth = max(dot(N, normalize(L1 + V)), 0.0);
+  //
+  // The half-vector is guarded because L1 + V cancels exactly when the key
+  // light is antiparallel to the view (`set light, [0,0,1]` reaches it), and
+  // normalize(0) is 0/0. This GPU returns 0 from max(NaN, 0.0) so today it
+  // survives, but a NaN in the OIT accumulation buffer does not stay local --
+  // it contaminates the whole resolve for that pixel. The branch costs nothing
+  // on the path that matters and is bit-identical there, since normalize() is
+  // still what computes the unit vector.
+  float3 halfVec = L1 + V;
+  float ndoth = dot(halfVec, halfVec) > 1e-8
+                  ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
   col += (m.p[2] * pow(ndoth, 70.0) + 0.12 * pow(ndoth, 8.0))
          * mix(float3(1.0), saturate(base * 1.3), 0.25);
   return mat_soft_knee(col);

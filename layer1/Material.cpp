@@ -87,14 +87,40 @@ const MaterialRow kMaterialTable[] = {
 
        IMPLIED ALPHA IS 0.85, NOT THE 0.45 #496 AND #503 SPECIFY. That number
        cannot draw this material, and the reason is arithmetic rather than
-       taste. A transparent fragment reaches the screen as col*a + bg*(1-a),
-       so the most saturated thing an alpha of `a` can produce -- over ANY
-       background, with ANY shader behind it -- is a * (max channel - min
-       channel), i.e. at most `a`. The prototype gallery's red gummy measures a
-       mean channel spread of 0.539. No shader written at alpha 0.45 can reach
-       it; at 0.45 the material renders a pale pink that still has the
-       highlights and still reads as "a gummy", which is why the ticket's
+       taste -- but the arithmetic has two conditions, and both happen to hold
+       for jelly, which is why it is stated here rather than in the design doc
+       as a law.
+
+       A single transparent layer over a NEUTRAL background reaches the screen
+       as col*a + bg*(1-a). Channel spread (max - min) is unaffected by adding
+       a constant to every channel, so the spread of the result is
+       a * spread(col) <= a. Both conditions matter:
+
+         - NEUTRAL background. In general spread(result) <= a * spread(col) +
+           (1-a) * spread(bg); a coloured background contributes its own spread
+           through the second term and the bound does not hold. The epic's
+           probe uses a 0.85 grey, so it does here.
+         - ONE layer. The OIT resolve composites reveal = product of (1 - a_i)
+           over every transparent fragment, so n overlapping layers cover
+           1 - (1-a)^n, not a. `backface_cull` is 0 by default, so a closed
+           surface delivers two. Jelly's row sets wantsPeel, and the peel is an
+           EQUAL depth test that keeps only the nearest layer -- so for THIS
+           material n really is 1. The bound is load-bearing on the peel.
+
+       The prototype gallery's red gummy measures a mean channel spread of
+       0.539, and the measured spread of jelly's own emitted colour is ~0.62,
+       so the smallest alpha that can reach the reference is ~0.87. 0.85 is not
+       a taste choice with room either side of it: it is essentially the floor.
+       At the specified 0.45 the material renders a pale pink that still has
+       the highlights and still reads as "a gummy", which is why the ticket's
        done-when is a measurement and not a glance.
+
+       What DOES change with the peel is density, not the bound: an unpeeled
+       closed jelly surface delivers two layers and covers 1 - 0.15^2 = 0.978.
+       Measured rather than assumed -- a translucent cartoon inside an unpeeled
+       jelly surface still contributes across 42% of the frame at mean |delta|
+       0.134 (0.257 at alpha 0.45), because the weighted-blend resolve averages
+       the layers' colours and does not simply occlude the far ones.
 
        0.45 is not wrong so much as it is a number from a different
        architecture. In the prototype the user's 0.55 was a SHADING knob: the
@@ -202,8 +228,19 @@ MaterialParams MaterialResolve(int id, int repType)
   if (!row || !row->implemented) {
     return MaterialParams{};
   }
-  /* Glass and jelly have no sphere-impostor path; they would float as
-     near-invisible discs. Degrade cleanly instead of glitching. */
+  /* No glass-family material draws on sphere impostors. Not for want of a
+     path: buildImpostorPipelines() builds the sphere pipelines for every
+     implemented family, and mat_impostor_composite's kMatGlass branch is what
+     the cylinder impostor already uses. It is a deliberate scope line -- #487
+     onward specify glass on cartoon, surface and sticks, and #496 specifies
+     the same three for jelly -- kept in one place so a rep cannot shade as a
+     material while building with its implied alpha.
+
+     The original reason given here, that glass spheres "would float as
+     near-invisible discs", is true of glass at alpha 0.15 and NOT of jelly at
+     0.85, which would render as perfectly reasonable gummy balls. Enabling it
+     is a behaviour change outside this ticket; see the "Found while building"
+     list on #503. */
   if (row->family == cMaterialFamily_glass && repType == cRepSphere) {
     return MaterialParams{};
   }
