@@ -238,13 +238,22 @@ def chrome(selection='(all)', _self=cmd):
     _metal('chrome', selection, _self)
 
 
-#: (menu label, attribute name) for the menu and the Inspector's preset list.
-#: Only the looks whose material is implemented appear here.
+#: (menu label, attribute name, the MATERIAL the bundle applies) for the menu
+#: and the Inspector's preset list. Only the looks whose material is
+#: implemented appear here.
+#:
+#: The third field is what lets the Inspector offer "Suggested lighting" beside
+#: a material dropdown (#498): it is the bundle's half of the join, and it has
+#: to live here rather than in the UI, where a hard-coded copy would go stale
+#: the moment a bundle changed which material it applies. Several bundles can
+#: name the same material -- the four metals are all `metallic`, differing in
+#: colour and in the legacy reflect triple -- so the UI offers a menu, not a
+#: button, when more than one matches.
 BUNDLES = (
-    ('Marble (statuary)', 'marble'),
-    ('Clay (unglazed)', 'clay'),
-    ('Copper', 'copper'),
-    ('Gold', 'gold'),
-    ('Steel', 'steel'),
-    ('Chrome', 'chrome'),
+    ('Marble (statuary)', 'marble', 'marble'),
+    ('Clay (unglazed)', 'clay', 'clay'),
+    ('Copper', 'copper', 'metallic'),
+    ('Gold', 'gold', 'metallic'),
+    ('Steel', 'steel', 'metallic'),
+    ('Chrome', 'chrome', 'metallic'),
 )
