@@ -719,6 +719,33 @@ def _object_kind(obj):
         return ''
 
 
+#: Object kinds the peel row does NOT apply to, by cmd.get_type's vocabulary
+#: (ExecutiveGetType). Everything else object:* does.
+#:
+#: `object:group` -- `set` on a group name expands to its members but `get`
+#: reports the group's own value, so a control there writes correctly and then
+#: reverts on the next poll. That asymmetry predates this ticket; what is new
+#: is putting a control on it.
+#:
+#: `object:ramp` -- a GADGET. SceneObjectAdd files cObjectGadget into
+#: `GadgetObjs` and the peel walk iterates `NonGadgetObjs`, so no value of
+#: transparency_peel on a ramp ever reaches a render decision. This is the one
+#: the previous version of this predicate got wrong while its own docstring
+#: said "walks NonGadgetObjs": the word was in the comment and the exclusion
+#: was not in the code.
+_NO_PEEL_ROW_KINDS = ('object:group', 'object:ramp')
+
+#: Every string ExecutiveGetType can return for an OBJECT, in its own order
+#: (layer3/Executive.cpp). Here so a test can enumerate the gates over the
+#: whole vocabulary instead of over a hand-picked subset -- the previous test
+#: listed six of these twelve and omitted `object:ramp`, which is the one that
+#: was wrong, so the suite was green with the defect in it.
+OBJECT_KINDS = ('object:molecule', 'object:map', 'object:mesh', 'object:slice',
+                'object:surface', 'object:measurement', 'object:cgo',
+                'object:group', 'object:volume', 'object:alignment',
+                'object:ramp', 'object:')
+
+
 def _takes_peel_row(kind):
     """True for the objects `transparency_peel` actually applies to.
 
@@ -730,11 +757,8 @@ def _takes_peel_row(kind):
     this gated peel on `object:molecule` and hid the control from the class
     that most needs it.
 
-    GROUPS are excluded, and that is the only exclusion. `set` on a group name
-    expands to its members but `get` reports the group's own value, so a control
-    on a group card writes correctly and then reverts on the next poll. That
-    asymmetry predates this ticket; what is new is putting a control on it."""
-    return bool(kind) and kind != 'object:group'
+    See _NO_PEEL_ROW_KINDS for the two exclusions and why each is there."""
+    return bool(kind) and kind not in _NO_PEEL_ROW_KINDS
 
 
 def _takes_material_rows(kind):

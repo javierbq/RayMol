@@ -341,12 +341,32 @@ enum MaterialCommands {
     /// material, and a copy of that list in the UI would drift from
     /// modules/pymol/materials.py silently.
     static func runBundle(_ attr: String, on obj: String) -> String {
-        // The object name goes into a PYTHON string literal, so a quote or a
-        // backslash in it is a syntax error rather than a name. `foo'bar.pdb`
-        // loads as an object called foo'bar, and the chip would have emitted a
-        // SyntaxError to the log and done nothing.
+        // The object name lands inside a PYTHON string literal, which is
+        // itself inside a multi-line command that `cmd.do` SPLITS ON NEWLINES.
+        // So there are two levels to get right, and they fail differently:
+        //
+        //   * a quote or a backslash breaks the literal — a SyntaxError, the
+        //     chip does nothing;
+        //   * a NEWLINE breaks the command, which is worse. cmd.do runs each
+        //     fragment as its own command, so a name containing
+        //     "\npython end\n..." closes the block early, discards the
+        //     malformed buffer, and executes what follows as PyMOL commands.
+        //
+        // Escaping the newline to a two-character \n fixes both levels at
+        // once: the outer string gains no split point, and Python's literal
+        // parser turns it back into a newline inside the string.
+        //
+        // Reachability, stated accurately because an earlier version of this
+        // comment overstated it: `validate_object_names` defaults to 1 and
+        // ObjectMakeValidName rewrites everything outside [A-Za-z0-9+-.^_] to
+        // an underscore, so a name like this needs that setting turned off and
+        // the Python `object=` argument (or a session restored from one). A
+        // hardening gap rather than a live hole — but it is a gap in a defence
+        // this function exists to provide.
         let safe = obj.replacingOccurrences(of: "\\", with: "\\\\")
                       .replacingOccurrences(of: "'", with: "\\'")
+                      .replacingOccurrences(of: "\n", with: "\\n")
+                      .replacingOccurrences(of: "\r", with: "\\r")
         return "python\nfrom pymol import materials; materials.\(attr)('\(safe)', _self=cmd)\npython end"
     }
 

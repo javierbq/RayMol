@@ -304,33 +304,63 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         for key in ('refl', 'legacy_dead'):
             self.assertNotIn(key, m)
 
-    def testEveryNonGroupOBJECTKindGetsThePeelRow(self):
-        """The case that made a single gate wrong.
+    def testBothGatesAreAnsweredForEVERYObjectKind(self):
+        """Enumerated over the WHOLE of cmd.get_type's object vocabulary, not a
+        hand-picked subset.
+
+        The previous version listed six of the twelve labels and omitted
+        `object:ramp` -- which is a GADGET, the one kind the peel walk
+        structurally cannot reach, and therefore the one the predicate had
+        wrong. The suite was green with the defect in it. Driving the loop from
+        ai.OBJECT_KINDS means a label added to ExecutiveGetType without a
+        decision here shows up as a KeyError rather than as silence.
 
         Peel is not a material question: SceneCollectPeelObjects walks
         `NonGadgetObjs`, and MaterialObjectWantsPeel returns an explicit
         object-level value outright before it ever looks for an ObjectMolecule.
         So an isosurface at `transparency_peel 1` really is peeled -- and a
         translucent one's front/back double blend is exactly what peel is for.
-        Gating peel on `object:molecule` hid the control from the class that
-        most needs it.
 
-        Asserted on the predicate rather than on a live isosurface: building
-        one needs a map that this headless build does not produce. The type
-        strings are cmd.get_type's own vocabulary."""
-        for kind in ('object:molecule', 'object:surface', 'object:mesh',
-                     'object:map', 'object:measurement', 'object:cgo'):
-            self.assertTrue(ai._takes_peel_row(kind), kind)
-        self.assertFalse(ai._takes_peel_row('object:group'))
+        Asserted on the predicates rather than on live objects of each kind:
+        several need geometry this headless build does not produce."""
+        expected_peel = {
+            'object:molecule': True,
+            'object:map': True,
+            'object:mesh': True,
+            'object:slice': True,
+            'object:surface': True,
+            'object:measurement': True,
+            'object:cgo': True,
+            'object:volume': True,
+            'object:alignment': True,
+            'object:': True,
+            'object:group': False,   # set reaches members, get does not
+            'object:ramp': False,    # a gadget; the peel walk skips GadgetObjs
+        }
+        self.assertEqual(sorted(expected_peel), sorted(ai.OBJECT_KINDS))
+        for kind in ai.OBJECT_KINDS:
+            self.assertEqual(ai._takes_peel_row(kind), expected_peel[kind], kind)
+            # Materials are molecules-only, so the other gate needs no table.
+            self.assertEqual(ai._takes_material_rows(kind),
+                             kind == 'object:molecule', kind)
+        # A name the core cannot type at all gets neither.
         self.assertFalse(ai._takes_peel_row(''))
+        self.assertFalse(ai._takes_material_rows(''))
 
-    def testOnlyMoleculesGetTheMaterialRows(self):
-        """The other half of the same split: a measurement, CGO or map has no
-        material, so the reflection group would render live and inert."""
-        self.assertTrue(ai._takes_material_rows('object:molecule'))
-        for kind in ('object:surface', 'object:map', 'object:measurement',
-                     'object:cgo', 'object:group', ''):
-            self.assertFalse(ai._takes_material_rows(kind), kind)
+    def testARampGetsNoRowsAtAll(self):
+        """The live version of the gadget case, since a ramp IS buildable
+        headlessly. It reaches the panel -- get_names('public_objects')
+        includes every named object regardless of type -- so without the gate
+        its card renders a live Peel tri-state writing a setting no frame will
+        ever consult."""
+        cmd.pseudoatom('pa')
+        cmd.map_new('mp', 'gaussian', 1.0, 'pa', 4)
+        cmd.ramp_new('rmp', 'mp', [0, 1], ['blue', 'red'])
+        self.assertEqual(cmd.get_type('rmp'), 'object:ramp')
+        self.assertIn('rmp', cmd.get_names('public_objects'))
+        m = meta('rmp', objs=['rmp'])
+        self.assertEqual(m['peel_row'], 0)
+        self.assertEqual(m['material_rows'], 0)
 
     def testAGroupGetsNeither(self):
         cmd.fragment('ala', 'm2')

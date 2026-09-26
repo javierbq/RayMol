@@ -224,12 +224,32 @@ final class MaterialInspectorTests: XCTestCase {
                               + "unset metal_rt_reflect_rough, m1")
     }
 
-    /// An object name reaches a PYTHON string literal here, so a quote in it
-    /// is a syntax error rather than a name. `foo'bar.pdb` loads as foo'bar.
+    /// An object name reaches a PYTHON string literal that is itself inside a
+    /// command `cmd.do` splits on newlines — two levels, failing differently.
+    ///
+    /// Every escaped character is exercised, so dropping any one of the four
+    /// `replacingOccurrences` calls fails this. The first version tested only
+    /// the quote, and a mutation removing the backslash escape survived it.
+    ///
+    /// Reachability: `validate_object_names` defaults to 1 and rewrites these
+    /// characters to underscores, so this needs that setting off plus the
+    /// Python `object=` argument. A hardening gap, not a live hole.
     func testTheLookButtonEscapesTheObjectName() {
         XCTAssertEqual(MaterialCommands.runBundle("marble", on: "foo'bar"),
                        "python\nfrom pymol import materials; "
                        + "materials.marble('foo\\'bar', _self=cmd)\npython end")
+        // Backslash first, or escaping the quote would double-escape it.
+        XCTAssertTrue(MaterialCommands.runBundle("clay", on: "a\\b")
+                        .contains("materials.clay('a\\\\b'"))
+        // The newline is the one that can INJECT: cmd.do would run the tail as
+        // its own commands. It must not survive into the emitted string.
+        let injected = MaterialCommands.runBundle("clay", on: "a\npython end\nb")
+        XCTAssertFalse(injected.contains("a\npython end"), injected)
+        XCTAssertTrue(injected.contains("materials.clay('a\\npython end\\nb'"), injected)
+        // ...and the whole command still has exactly the two newlines its own
+        // block structure needs, not three.
+        XCTAssertEqual(injected.filter { $0 == "\n" }.count, 2)
+        XCTAssertFalse(MaterialCommands.runBundle("clay", on: "a\rb").contains("\r"))
     }
 
     // MARK: - the two scene-wide rows
