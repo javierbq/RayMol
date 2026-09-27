@@ -78,6 +78,15 @@ final class BinderDesignController: ObservableObject {
     @Published var target: DesignTargetInfo?
     @Published var resolveError: String?
 
+    /// What `designing.preview_set` says this run will deliver into: a new set, or an
+    /// EXTENSION of the set an identical earlier run made (#463 review).
+    ///
+    /// nil until the first payload arrives, and nil in a build with no set store. The
+    /// bar then falls back to "a new set" with the file's default budget, which is what
+    /// it said before -- wrong only in the case this field exists to catch, and not
+    /// wrong at all until a round trip has had a chance to answer.
+    @Published var setPlan: DesignSetPlan?
+
     /// Set by `run()` and cleared on the next resolve. The bar shows it in the status row
     /// so a refused Generate says why in the bar rather than only in the console.
     @Published var runError: String?
@@ -88,8 +97,15 @@ final class BinderDesignController: ObservableObject {
     /// lands in the console history like anything typed there, which is what lets a user
     /// adapt and re-run it.
     var runCommandSeam: ((String) -> Void)?
-    /// Triggers the tempfile-JSON feed for (target, hotspots, generator).
-    var refreshTrigger: ((String, String, String) -> Void)?
+    /// Triggers the tempfile-JSON feed for the whole form.
+    ///
+    /// The WHOLE form, not just (target, hotspots, generator), since #463's review: the
+    /// set a run lands in is named from the design key, so the length, the schedule, the
+    /// seed, the count and the `name=` all decide whether Generate creates a set or
+    /// EXTENDS the one an identical earlier run made. A struct rather than nine
+    /// positional arguments because the next field added here should not be a compile
+    /// error at the call site with the arguments silently in the wrong order.
+    var refreshTrigger: ((DesignFormRequest) -> Void)?
 
     // MARK: Entering the mode / input changes
 
@@ -117,7 +133,11 @@ final class BinderDesignController: ObservableObject {
     }
 
     private func emit() {
-        refreshTrigger?(targetText, hotspotsText, generator)
+        refreshTrigger?(DesignFormRequest(
+            target: targetText, hotspots: hotspotsText, generator: generator,
+            length: length, count: nDesigns, seedText: seedText.trimmingCharacters(in: .whitespaces),
+            resultName: Self.sanitise(resultName), diffusionSteps: diffusionSteps,
+            recyclingSteps: recyclingSteps))
     }
 
     /// Apply a decoded `pymol_design_<pid>.json` payload.
@@ -128,6 +148,7 @@ final class BinderDesignController: ObservableObject {
         }
         target = payload.target
         resolveError = payload.error
+        setPlan = payload.plan
     }
 
     /// Cleared when the mode closes, so re-entering does not show a stale resolve.
@@ -135,6 +156,7 @@ final class BinderDesignController: ObservableObject {
         target = nil
         resolveError = nil
         runError = nil
+        setPlan = nil
     }
 
     // MARK: Run
@@ -261,9 +283,44 @@ struct DesignTargetInfo: Decodable, Equatable {
     let hotspots: Int
 }
 
+/// What the bar asks Python to resolve. Every field is a form control.
+struct DesignFormRequest: Equatable {
+    let target: String
+    let hotspots: String
+    let generator: String
+    let length: Int
+    let count: Int
+    /// The seed box as TYPED, empty for auto — the distinction the set's name turns on.
+    let seedText: String
+    let resultName: String
+    let diffusionSteps: Int
+    let recyclingSteps: Int
+}
+
+/// `designing.preview_set`: the set this run would deliver into.
+///
+/// `name` is empty precisely when the name cannot be known yet — no seed (the digest
+/// hashes a seed drawn at submit), or `n_designs = 1` with a `name=` that names the
+/// object rather than the set. Empty therefore also means "a new set", which is what
+/// makes a fresh random seed a fresh key a name nothing answers to.
+struct DesignSetPlan: Decodable, Equatable {
+    let name: String
+    let extends: Bool
+    /// The budget that applies: the existing set's own `budget` column when this run
+    /// extends one, else `meta.stage_budget` — `pymol.sets.binding.budget`'s rule,
+    /// evaluated on the Python side so there is one of it.
+    let budget: Int
+    /// How many of that set's entries are staged right now. 0 for a new set.
+    let staged: Int
+}
+
 struct DesignFormPayload: Decodable {
     let generators: [DesignGeneratorInfo]
     let target: DesignTargetInfo?
     let error: String?
+    /// Absent from a payload written by an older build, or when this build has no set
+    /// store — hence optional rather than defaulted, so "no answer" and "a new set"
+    /// stay distinguishable.
+    let plan: DesignSetPlan?
 }
 #endif

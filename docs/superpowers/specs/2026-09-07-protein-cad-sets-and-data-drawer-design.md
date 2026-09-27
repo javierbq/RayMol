@@ -270,6 +270,14 @@ swipe action. The inspector's SETS section is the entry point on every size clas
 | Drawer | `Panels/DataDrawer.swift` with `SetTableView`, `SetPlotView`, `SequencesView` (moved from `SequencePanel.swift`), `LineageView` | `PanelLayout` gains `dataDrawerVisibleKey`, `dataDrawerFracKey` |
 | Engine | `PyMOLEngine`: `SetsStore` read-only SQLite connection, refresh on `SETS:v<n>` marker, peek/stage calls | no per-tick work; filters and sorts are queries |
 | Python emitters | `appkit_sets.py` emits only the change marker and the active-set/peek state | set contents are read from the database, not shuttled as JSON |
+| Tool panels | `Shared/ToolSetStatus.swift`: `PlannedSet` ("what will this run create") and `RunningToolBatch` ("what of this tool's work is running"), drawn by `BinderDesignBar` and `PredictBar`; `designing.preview_set` behind `appkit_design.emit` | **added by #463.** The table stopped here, and the tools' own UI was the omission: the bar that starts a batch has to say a batch becomes a set, and the batch has to report where it was started. The naming rules stay in `designing.py` -- the bar asks, it does not derive |
+
+
+**Amended 2026-09-17 (#463).** The row above was added after five of the six steps had
+shipped and the gap was found from the other side: every surface the table lists is a
+place a set is *browsed*, and none is a place work is *started*. A tool panel that cannot
+name the set it is about to create -- or report the batch it just started -- leaves the
+command line as the only place the model is whole, which is the asymmetry §2 is about.
 
 ## 8. Decisions to make
 
