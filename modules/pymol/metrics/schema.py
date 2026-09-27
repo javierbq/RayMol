@@ -44,6 +44,50 @@ DTYPES = ('float', 'int', 'str', 'bool')
 #: the lossy path this package exists to close.
 SUMMARY_RULES = ('mean', 'median', 'min', 'max', 'sum', 'count')
 
+#: What a column is FOR, which decides where a table puts it (#544). A SCORE is a
+#: measurement of the result -- pLDDT, an RMSD, a geometry check -- and is what a user
+#: triages on, so the Data drawer shows score columns first. PROVENANCE is what was
+#: asked for or what the run cost -- the designed length, the seed, the inference time --
+#: which is needed to interpret a score and is usually one value for a whole run, so
+#: the drawer folds a constant one into a run header instead of spending a column on it.
+SCORE = 'score'
+PROVENANCE = 'provenance'
+ROLES = (SCORE, PROVENANCE)
+
+
+def default_role(higher_is_better):
+    """The role a spec that does not name one gets: a metric with a better end is a
+    score, one without is provenance. The same rule reads a legacy `.raymol` whose
+    declared columns predate the field, so an old file and a new one agree."""
+    return PROVENANCE if higher_is_better is None else SCORE
+
+
+#: Where `default_role` gets a SHIPPED key wrong, for a record that carries no role
+#: (a `.raymol` written before #544). Without it an old boltz or RFD3 set would put
+#: Inference time and Peak memory -- which have a better end -- FIRST in the table, and
+#: file the unsigned geometry measurements under provenance. Mirrored verbatim by
+#: `MetricColumn.legacyRoleOverrides` in SetsStore.swift, because Swift reads
+#: `sets.columns` straight from the file and may see one before it is migrated.
+LEGACY_ROLE_OVERRIDES = {
+    'elapsed_s': PROVENANCE,
+    'peak_bytes': PROVENANCE,
+    'design_ca_ca_mean': SCORE,
+    'design_radius_of_gyration': SCORE,
+    'interface_min_distance': SCORE,
+    'sequence_recovery': SCORE,
+}
+
+
+def legacy_role(key, higher_is_better=None, tool=''):
+    """The role of a declared-column record that has none: the registered spec's when
+    this build declares (tool, key), else the shipped override, else `default_role`."""
+    table = _SCHEMAS.get(str(tool or ''))
+    if table and key in table:
+        return table[key].role
+    if key in LEGACY_ROLE_OVERRIDES:
+        return LEGACY_ROLE_OVERRIDES[key]
+    return default_role(higher_is_better)
+
 
 class MetricSpec:
     """One thing a tool measures.
@@ -53,15 +97,18 @@ class MetricSpec:
     `lo`/`hi` are the expected domain (pLDDT is 0-100, ipSAE is 0-1), used as the
     default spectrum range so colouring is comparable between runs rather than
     auto-scaled to each one. `higher_is_better` is None when the question does not
-    apply -- an elapsed time is neither.
+    apply -- an elapsed time is neither. `role` is SCORE or PROVENANCE (see ROLES);
+    omitted, it follows `higher_is_better` (`default_role`), which is right often
+    enough to be the default and wrong often enough -- an elapsed time HAS a better
+    end and is still provenance -- that the built-in schemas name theirs.
     """
 
     __slots__ = ('key', 'scope', 'dtype', 'units', 'label', 'lo', 'hi',
-                 'higher_is_better', 'summarizes', 'description')
+                 'higher_is_better', 'summarizes', 'description', 'role')
 
     def __init__(self, key, scope, dtype='float', units='', label='',
                  lo=None, hi=None, higher_is_better=None, summarizes='',
-                 description=''):
+                 description='', role=None):
         key = str(key or '').strip()
         if not key:
             raise MetricSchemaError('a metric needs a key')
@@ -84,6 +131,12 @@ class MetricSpec:
             raise MetricSchemaError(
                 'unknown summary rule %r for %r; rules are: %s'
                 % (summarizes, key, ', '.join(SUMMARY_RULES)))
+        if role in (None, ''):
+            role = default_role(higher_is_better)
+        if role not in ROLES:
+            raise MetricSchemaError(
+                'unknown role %r for %r; roles are: %s'
+                % (role, key, ', '.join(ROLES)))
         if lo is not None and hi is not None and float(lo) > float(hi):
             raise MetricSchemaError(
                 'range for %r is inverted: lo=%r > hi=%r' % (key, lo, hi))
@@ -97,6 +150,7 @@ class MetricSpec:
         self.higher_is_better = higher_is_better
         self.summarizes = summarizes
         self.description = str(description or '')
+        self.role = role
 
     def cast(self, value):
         """`value` as this spec's dtype, or raise.

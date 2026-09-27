@@ -55,6 +55,186 @@ final class SetTableModelTests: XCTestCase {
                        "a residue/pair array has no scalar column and so no table cell")
     }
 
+    // MARK: column layout (#544)
+
+    /// The 2026-09-26 walkthrough's RFD3 set, cut down: the run's provenance declared
+    /// first (as DESIGN_SPECS does), the scores after it.
+    private let designLength = MetricColumn(key: "design_length", dtype: "int",
+                                            units: "residues", label: "Designed residues",
+                                            column: "design_length", role: "provenance")
+    private let designChain = MetricColumn(key: "design_chain", dtype: "str",
+                                           label: "Designed chain", column: "design_chain",
+                                           role: "provenance")
+    private let seed = MetricColumn(key: "seed", dtype: "int", label: "Seed", column: "seed",
+                                    role: "provenance")
+    /// Has a better end and is still provenance: the reason roles are named, not derived.
+    private let inference = MetricColumn(key: "elapsed_s", dtype: "float", units: "s",
+                                         label: "Inference time", higherIsBetter: false,
+                                         column: "elapsed_s", role: "provenance")
+
+    private func designRow(_ i: Int, plddt: Double, rmsd: Double, seed: Double = 3827,
+                           chain: String = "B") -> SetRow {
+        SetRow(id: "id_\(i)", name: "d_\(i)", ord: i, starred: false, rejected: false,
+               pinned: false, stagedObject: nil, nChains: 2, nResidues: 201, tags: "",
+               runID: nil, values: ["design_length": .number(60), "design_chain": .text(chain),
+                                    "seed": .number(seed), "elapsed_s": .number(95),
+                                    "plddt": .number(plddt), "rmsd": .number(rmsd),
+                                    "iptm": .null])
+    }
+
+    private var designColumns: [MetricColumn] {
+        [designLength, designChain, inference, seed, plddt, iptm, rmsd]
+    }
+
+    func testRoleIsDerivedFromHigherIsBetterWhenAbsent() {
+        XCTAssertTrue(plddt.isScore, "a better end makes a score")
+        XCTAssertTrue(rmsd.isScore, "lower-is-better is still a score")
+        XCTAssertFalse(elapsed.isScore, "no better end is provenance")
+        XCTAssertFalse(inference.isScore, "an explicit role wins over higher_is_better")
+        XCTAssertEqual(MetricColumn(key: "x", higherIsBetter: true, role: "bogus").role,
+                       "score", "an unknown role falls back to the rule, not to a third role")
+    }
+
+    func testRoleDecodesAndLegacyColumnsDefaultByTheSameRule() {
+        // The second and third records are a pre-#544 container: no `role` field.
+        let json = #"""
+            [{"key":"elapsed_s","column":"elapsed_s","higher_is_better":false,"role":"provenance"},
+             {"key":"rmsd","column":"rmsd","higher_is_better":false},
+             {"key":"design_length","column":"design_length","dtype":"int"},
+             {"key":"rog","column":"rog","role":"score"},
+             {"key":"elapsed_s","column":"elapsed_s","higher_is_better":false},
+             {"key":"peak_bytes","column":"peak_bytes","higher_is_better":false},
+             {"key":"interface_min_distance","column":"interface_min_distance"}]
+            """#
+        let roles = SetsStore.decodeColumns(json).map(\.role)
+        // The last three are `LEGACY_ROLE_OVERRIDES`: a pre-#544 boltz set must not
+        // open on Inference time and Peak memory, and unsigned geometry is a score.
+        XCTAssertEqual(roles, ["provenance", "score", "provenance", "score",
+                               "provenance", "provenance", "score"])
+    }
+
+    func testScoreColumnsComeFirstInDeclaredOrder() {
+        let ordered = SetTableModel.ordered(designColumns)
+        XCTAssertEqual(ordered.map(\.key),
+                       ["plddt", "iptm", "rmsd", "design_length", "design_chain",
+                        "elapsed_s", "seed"])
+    }
+
+    func testConstantDetection() {
+        let rows = [designRow(1, plddt: 80, rmsd: 1.2), designRow(2, plddt: 91, rmsd: 0.8),
+                    designRow(3, plddt: 85, rmsd: 2.0, seed: 4001)]
+        let constant = SetTableModel.constantColumns(designColumns, rows: rows)
+        XCTAssertEqual(constant, ["design_length", "design_chain", "elapsed_s", "iptm"],
+                       "the same on every row (null everywhere counts); the seed varies")
+        XCTAssertEqual(SetTableModel.constantColumns(designColumns, rows: [rows[0]]), [],
+                       "one row makes nothing constant: the table would be empty")
+        XCTAssertEqual(SetTableModel.constantColumns(designColumns, rows: []), [])
+        let mixedNull = [designRow(1, plddt: 80, rmsd: 1.2), row("x", ord: 9, plddt: 80)]
+        XCTAssertFalse(SetTableModel.constantColumns([plddt, rmsd], rows: mixedNull)
+                        .contains("rmsd"), "a value on one row and null on another varies")
+    }
+
+    func testLayoutMovesProvenanceConstantsToTheRunHeader() {
+        let rows = [designRow(1, plddt: 80, rmsd: 1.2), designRow(2, plddt: 91, rmsd: 0.8)]
+        let layout = SetTableModel.layout(columns: designColumns + [array], setRows: rows)
+        XCTAssertEqual(layout.table.map(\.key), ["plddt", "iptm", "rmsd"],
+                       "scores first, and a score is never folded — not even one null everywhere")
+        XCTAssertEqual(layout.header.map(\.key),
+                       ["design_length", "design_chain", "elapsed_s", "seed"])
+        XCTAssertEqual(SetTableModel.runHeader(layout.header, rows: rows),
+                       "Designed residues 60 · Designed chain B · Inference time 95 s · Seed 3827")
+
+        // Columns ▾ can put a constant back in the table; a hidden column is in neither.
+        let shown = SetTableModel.layout(columns: designColumns, setRows: rows,
+                                         hidden: ["seed"], inline: ["design_chain"])
+        XCTAssertEqual(shown.table.map(\.key), ["plddt", "iptm", "rmsd", "design_chain"])
+        XCTAssertEqual(shown.header.map(\.key), ["design_length", "elapsed_s"])
+    }
+
+    func testAScoreConstantOverTheRowsIsNeverFolded() {
+        // A brush or a batch's first rows can make pLDDT one value; it must stay in
+        // the table (with its brush) and not jump when the next row lands.
+        let rows = [designRow(1, plddt: 80, rmsd: 1.2), designRow(2, plddt: 80, rmsd: 1.2)]
+        let layout = SetTableModel.layout(columns: designColumns, setRows: rows)
+        XCTAssertEqual(layout.table.prefix(3).map(\.key), ["plddt", "iptm", "rmsd"])
+        XCTAssertFalse(SetTableModel.runConstants(designColumns, setRows: rows).contains("plddt"))
+    }
+
+    func testColumnsMenuPlacementsCycleThroughHiddenToo() {
+        let constants: Set<String> = ["seed"]
+        var hidden: Set<String> = [], inline: Set<String> = []
+        XCTAssertEqual(SetTableModel.placement(of: "seed", constants: constants, hidden: hidden,
+                                               inline: inline), .runHeader)
+        (hidden, inline) = SetTableModel.place("seed", .table, hidden: hidden, inline: inline)
+        XCTAssertEqual(SetTableModel.placement(of: "seed", constants: constants, hidden: hidden,
+                                               inline: inline), .table)
+        (hidden, inline) = SetTableModel.place("seed", .hidden, hidden: hidden, inline: inline)
+        XCTAssertEqual(SetTableModel.placement(of: "seed", constants: constants, hidden: hidden,
+                                               inline: inline), .hidden,
+                       "a header constant can be hidden")
+        XCTAssertEqual(inline, [], "hiding forgets the inline choice")
+        (hidden, inline) = SetTableModel.place("seed", .runHeader, hidden: hidden, inline: inline)
+        XCTAssertEqual(SetTableModel.placement(of: "seed", constants: constants, hidden: hidden,
+                                               inline: inline), .runHeader)
+        XCTAssertEqual(SetTableModel.placement(of: "plddt", constants: constants, hidden: [],
+                                               inline: []), .table)
+    }
+
+    func testSavedViewsRoundTripHiddenAndInline() {
+        let all = ["plddt", "rmsd", "seed", "design_length", "design_chain"]
+        let saved = SetTableModel.viewColumns(allColumns: all, hidden: ["rmsd"],
+                                              inline: ["seed"])
+        XCTAssertEqual(saved, ["plddt", "seed", "design_length", "design_chain", "seed@inline"])
+        let restored = SetTableModel.restore(viewColumns: saved, allColumns: all)
+        XCTAssertEqual(restored.hidden, ["rmsd"])
+        XCTAssertEqual(restored.inline, ["seed"])
+        // A view saved before #544 has no marker: every constant goes to the header.
+        let old = SetTableModel.restore(viewColumns: ["plddt", "seed"], allColumns: all)
+        XCTAssertEqual(old.hidden, ["rmsd", "design_length", "design_chain"])
+        XCTAssertEqual(old.inline, [])
+    }
+
+    func testRunHeaderCutsALongValue() {
+        let key = MetricColumn(key: "design_key", dtype: "str", label: "Design key",
+                               column: "design_key", role: "provenance")
+        XCTAssertEqual(SetTableModel.runHeaderItem(key, value: .text("ed4b3520ff9a01c7")),
+                       "Design key ed4b3520ff…")
+        XCTAssertNil(SetTableModel.runHeaderItem(key, value: .null))
+    }
+
+    func testChainColumnGetsItsOwnWidth() {
+        XCTAssertTrue(designChain.isChainID)
+        XCTAssertFalse(seed.isChainID)
+        XCTAssertEqual(SetTableView.width(of: designChain, metricWidth: 60),
+                       SetTableView.chainWidth)
+        XCTAssertGreaterThanOrEqual(SetTableView.chainWidth, 40,
+                                    "wide enough that a chain id cannot touch its neighbour")
+        // The metric columns share what the chain column leaves.
+        let withChain = SetTableView.metricWidth(total: 800, columns: [plddt, designChain])
+        XCTAssertEqual(withChain, SetTableView.metricWidth(total: 800 - SetTableView.chainWidth,
+                                                           columns: 1))
+    }
+
+    /// Done-when #1 of #544: on the walkthrough's set at 1332 pt, the first three data
+    /// columns are the scores and every header fits its column.
+    func testTheWalkthroughSetOpensOnItsScores() {
+        let rows = (1...400).map { i in
+            SetRow(id: "id_\(i)", name: "d_\(i)", ord: i, starred: false, rejected: false,
+                   pinned: false, stagedObject: nil, nChains: 2, nResidues: 201, tags: "",
+                   runID: nil, values: ["design_length": .number(60), "design_chain": .text("B"),
+                                        "seed": .number(Double(3827 + i)),
+                                        "elapsed_s": .number(95),
+                                        "plddt": .number(Double(60 + i % 40)),
+                                        "iptm": .number(Double(i % 100) / 100),
+                                        "rmsd": .number(Double(i % 50) / 10)])
+        }
+        let layout = SetTableModel.layout(columns: designColumns, setRows: rows)
+        XCTAssertEqual(layout.table.prefix(3).map(SetTableModel.header),
+                       ["pLDDT", "iptm", "RMSD (Å)"])
+        let width = SetTableView.metricWidth(total: 1332, columns: layout.table)
+        XCTAssertEqual(width, 110, "few enough columns that each gets the maximum width")
+    }
+
     // MARK: sort
 
     func testDeliveryOrderByDefault() {

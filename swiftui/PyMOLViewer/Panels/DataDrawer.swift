@@ -174,6 +174,124 @@ struct SetTableModel: Equatable {
         column.units.isEmpty ? column.title : "\(column.title) (\(column.units))"
     }
 
+    // MARK: column layout (#544)
+
+    /// Score columns first, then provenance, each group in declared order. What a
+    /// user triages on — pLDDT, ipTM, an RMSD — must not be pushed off the right
+    /// edge by what the run was asked for.
+    static func ordered(_ columns: [MetricColumn]) -> [MetricColumn] {
+        columns.filter(\.isScore) + columns.filter { !$0.isScore }
+    }
+
+    /// The scalar columns whose value is the same on every row given — the run's
+    /// constants (designed length, target, seed of a one-seed run). Two rows at least:
+    /// on one row every column is "constant", and folding a whole entry into a header
+    /// would leave an empty table. A column that is null everywhere counts: it has
+    /// nothing to triage on either.
+    static func constantColumns(_ columns: [MetricColumn], rows: [SetRow]) -> Set<String> {
+        guard rows.count >= 2 else { return [] }
+        var out = Set<String>()
+        for column in columns {
+            guard let name = column.column else { continue }
+            let first = rows[0].value(column)
+            if rows.dropFirst().allSatisfy({ $0.value(column) == first }) {
+                out.insert(name)
+            }
+        }
+        return out
+    }
+
+    /// The columns that MAY go to the run header: PROVENANCE columns constant over
+    /// `setRows`, which is the whole set, never the filtered rows. A score is never
+    /// folded — brushing pLDDT down to one value must not take pLDDT (and its brush)
+    /// out of the table — and judging over the whole set means a filter never
+    /// reshuffles the columns under the user's pointer.
+    static func runConstants(_ columns: [MetricColumn], setRows: [SetRow]) -> Set<String> {
+        constantColumns(columns.filter { $0.isScalar && !$0.isScore }, rows: setRows)
+    }
+
+    /// Which columns the table shows and which go to the run header. `columns` is
+    /// every declared column and `setRows` every row of the set (see `runConstants`);
+    /// `hidden` is Columns ▾'s unchecked set (hidden from both places); `inline` is
+    /// the constants the user asked to keep in the table.
+    static func layout(columns: [MetricColumn], setRows: [SetRow], hidden: Set<String> = [],
+                       inline: Set<String> = []) -> (table: [MetricColumn], header: [MetricColumn]) {
+        let shown = ordered(columns.filter { $0.isScalar && !hidden.contains($0.column ?? "") })
+        let constant = runConstants(shown, setRows: setRows).subtracting(inline)
+        return (shown.filter { !constant.contains($0.column ?? "") },
+                shown.filter { constant.contains($0.column ?? "") })
+    }
+
+    /// Where a column is, as Columns ▾ shows and sets it.
+    enum Placement: Equatable { case table, runHeader, hidden }
+
+    static func placement(of name: String, constants: Set<String>, hidden: Set<String>,
+                          inline: Set<String>) -> Placement {
+        if hidden.contains(name) { return .hidden }
+        if constants.contains(name) && !inline.contains(name) { return .runHeader }
+        return .table
+    }
+
+    /// Columns ▾ moving `name` to `placement`: the new (hidden, inline) pair.
+    static func place(_ name: String, _ placement: Placement, hidden: Set<String>,
+                      inline: Set<String>) -> (hidden: Set<String>, inline: Set<String>) {
+        var hidden = hidden, inline = inline
+        switch placement {
+        case .hidden: hidden.insert(name); inline.remove(name)
+        case .runHeader: hidden.remove(name); inline.remove(name)
+        case .table: hidden.remove(name); inline.insert(name)
+        }
+        return (hidden, inline)
+    }
+
+    // MARK: saved views and the inline set
+
+    /// A saved view's column list is the columns NOT hidden (as before #544), plus
+    /// `name@inline` for each run constant kept in the table. `@` cannot occur in a
+    /// column name (`^[a-z][a-z0-9_]*$`), so an older view — no marker — reads as
+    /// "every constant in the header", which is what it showed.
+    static let inlineMarker = "@inline"
+
+    static func viewColumns(allColumns: [String], hidden: Set<String>,
+                            inline: Set<String>) -> [String] {
+        let visible = allColumns.filter { !hidden.contains($0) }
+        return visible + visible.filter { inline.contains($0) }.map { $0 + inlineMarker }
+    }
+
+    /// The (hidden, inline) pair a saved view's column list restores.
+    static func restore(viewColumns: [String],
+                        allColumns: [String]) -> (hidden: Set<String>, inline: Set<String>) {
+        let inline = Set(viewColumns.filter { $0.hasSuffix(inlineMarker) }
+            .map { String($0.dropLast(inlineMarker.count)) })
+        let visible = Set(viewColumns.filter { !$0.hasSuffix(inlineMarker) })
+        return (Set(allColumns.filter { !visible.contains($0) }), inline)
+    }
+
+    /// One header item: `Designed residues 60`, `Seed 3827…`. A long string (a design
+    /// key) is cut, because the whole header has to fit on one line; the tooltip has
+    /// it in full. Nil for a column that is null everywhere — "Target drift –" says
+    /// nothing worth the room.
+    static func runHeaderItem(_ column: MetricColumn, value: MetricValue,
+                              maxValueLength: Int = 10) -> String? {
+        if value.isNull { return nil }
+        var text = format(value, column)
+        if text.count > maxValueLength { text = String(text.prefix(maxValueLength)) + "…" }
+        // A symbol (s, Å, %) reads as part of the value; a word ("residues") only
+        // repeats what the label already says.
+        if !column.units.isEmpty, column.units.count <= 2, case .number = value,
+           column.dtype != "bool" {
+            text += " \(column.units)"
+        }
+        return "\(column.title) \(text)"
+    }
+
+    /// The one-line run header: every constant column, in table order, joined by ·.
+    static func runHeader(_ columns: [MetricColumn], rows: [SetRow]) -> String {
+        guard let first = rows.first else { return "" }
+        return columns.compactMap { runHeaderItem($0, value: first.value($0)) }
+            .joined(separator: " · ")
+    }
+
     // MARK: colour ramp
 
     /// Where a value sits in the column's declared domain, 0…1, clamped. nil when
@@ -680,10 +798,21 @@ struct SetTableView: View {
     private static let metricMin: CGFloat = 60
     private static let metricMax: CGFloat = 110
 
-    private var model: SetTableModel {
-        // Hidden columns are dropped HERE rather than in the store: which columns show
-        // is a property of this view on the data (and of a saved view), not of the set.
-        SetTableModel(columns: set.columns.filter { !engine.setHiddenColumns.contains($0.column ?? "") },
+    /// Which columns the table shows and which fold into the run header (#544).
+    /// Hidden columns are dropped HERE rather than in the store: which columns show
+    /// is a property of this view on the data (and of a saved view), not of the set.
+    /// Constancy is judged over the WHOLE set, not the rows shown, so a filter never
+    /// moves a column (`SetTableModel.runConstants`).
+    private var layout: (table: [MetricColumn], header: [MetricColumn]) {
+        SetTableModel.layout(columns: set.columns, setRows: engine.setRows,
+                             hidden: engine.setHiddenColumns,
+                             inline: engine.setInlineColumns)
+    }
+
+    private var model: SetTableModel { model(columns: layout.table) }
+
+    private func model(columns: [MetricColumn]) -> SetTableModel {
+        SetTableModel(columns: columns,
                       rows: rows,
                       sortKey: sortKey ?? set.sortKey,
                       sortDescending: sortDescending ?? set.sortDescending,
@@ -703,17 +832,25 @@ struct SetTableView: View {
 
     /// Every scalar column, hidden or not — what the Columns ▾ menu offers and what a
     /// saved view records as "visible".
-    private var allScalarColumns: [MetricColumn] { self.set.columns.filter(\.isScalar) }
+    private var allScalarColumns: [MetricColumn] {
+        SetTableModel.ordered(self.set.columns.filter(\.isScalar))
+    }
     private var visibleColumnNames: [String] {
-        allScalarColumns.compactMap(\.column)
-            .filter { !engine.setHiddenColumns.contains($0) }
+        SetTableModel.viewColumns(allColumns: allScalarColumns.compactMap(\.column),
+                                  hidden: engine.setHiddenColumns,
+                                  inline: engine.setInlineColumns)
     }
 
     var body: some View {
-        let model = self.model
+        let layout = self.layout
+        let model = self.model(columns: layout.table)
+        let header = SetTableModel.runHeader(layout.header, rows: engine.setRows)
         GeometryReader { geo in
-            let metricWidth = Self.metricWidth(total: geo.size.width, columns: model.columns.count)
+            let metricWidth = Self.metricWidth(total: geo.size.width, columns: model.columns)
             VStack(spacing: 0) {
+                if !header.isEmpty {
+                    runHeaderRow(header, columns: layout.header)
+                }
                 headerRow(model: model, metricWidth: metricWidth)
                 // Spec §4.2: "column headers are the filter UI". One strip per column,
                 // draggable, writing `col >= lo and col <= hi` into the same filter
@@ -789,6 +926,52 @@ struct SetTableView: View {
         return min(max((total - fixed) / CGFloat(columns), metricMin), metricMax)
     }
 
+    /// The shared metric width once the chain columns have taken their fixed share.
+    static func metricWidth(total: CGFloat, columns: [MetricColumn]) -> CGFloat {
+        let chains = columns.filter(\.isChainID).count
+        return metricWidth(total: total - CGFloat(chains) * chainWidth,
+                           columns: columns.count - chains)
+    }
+
+    /// A chain id is one or two letters. Given a metric column's full width it wastes
+    /// room; given what is left it could shrink to nothing and run into its neighbour
+    /// (#544: `B ed4b3520ff…`). So it gets its own fixed width, centred.
+    static let chainWidth: CGFloat = 52
+    /// Air on each side of every metric cell, so two full cells never touch.
+    static let cellPadding: CGFloat = 4
+
+    static func width(of column: MetricColumn, metricWidth: CGFloat) -> CGFloat {
+        column.isChainID ? chainWidth : metricWidth
+    }
+
+    static func alignment(of column: MetricColumn) -> Alignment {
+        column.isChainID ? .center : .trailing
+    }
+
+    // MARK: run header (#544)
+
+    /// The run's constants, on one line above the column headers: `Designed residues
+    /// 60 · Target residues 141 · Hotspots 7 · Designed chain B · Seed 3827`. Columns ▾
+    /// puts any of them back in the table.
+    private func runHeaderRow(_ text: String, columns: [MetricColumn]) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 10).monospacedDigit())
+        .foregroundColor(PanelTheme.disabledColor)
+        .padding(.horizontal, 8)
+        .frame(height: 18)
+        .help("The same on every entry of the set:\n"
+              + columns.map { column -> String in
+                  let value = engine.setRows.first.map { $0.value(column) } ?? .null
+                  return "\(SetTableModel.header(column)): \(SetTableModel.format(value, column))"
+              }.joined(separator: "\n")
+              + "\n\nColumns ▾ shows any of them in the table.")
+    }
+
     // MARK: header
 
     private func headerRow(model: SetTableModel, metricWidth: CGFloat) -> some View {
@@ -801,8 +984,10 @@ struct SetTableView: View {
                 .frame(width: Self.nameWidth, alignment: .leading)
             ForEach(model.columns) { column in
                 headerCell(column.column ?? column.id, title: SetTableModel.header(column),
-                           model: model, alignment: .trailing)
-                    .frame(width: metricWidth, alignment: .trailing)
+                           model: model, alignment: Self.alignment(of: column))
+                    .padding(.horizontal, Self.cellPadding)
+                    .frame(width: Self.width(of: column, metricWidth: metricWidth),
+                           alignment: Self.alignment(of: column))
                     .help(column.tool.isEmpty ? column.key : "\(column.key) — \(column.tool)")
             }
             Spacer(minLength: 0)
@@ -826,7 +1011,7 @@ struct SetTableView: View {
                         engine.updateBrush(set, brush, column: column.column ?? "",
                                            commit: commit)
                     })
-                    .frame(width: metricWidth, height: 14)
+                    .frame(width: Self.width(of: column, metricWidth: metricWidth), height: 14)
             }
             Spacer(minLength: 0)
         }
@@ -927,22 +1112,42 @@ struct SetTableView: View {
 
     /// Which columns show. A property of this view on the data, saved into a view
     /// rather than into the set, so two people can look at one set differently.
+    ///
+    /// A run constant (#544) sits in the run header by default; its item is a
+    /// submenu that moves it to the table, back to the header, or hides it.
     private var columnsMenu: some View {
-        Menu {
+        let constants = SetTableModel.runConstants(allScalarColumns, setRows: engine.setRows)
+        return Menu {
             ForEach(allScalarColumns) { column in
                 let name = column.column ?? ""
-                Button {
-                    if engine.setHiddenColumns.contains(name) {
-                        engine.setHiddenColumns.remove(name)
-                    } else {
-                        engine.setHiddenColumns.insert(name)
+                let where_ = SetTableModel.placement(of: name, constants: constants,
+                                                     hidden: engine.setHiddenColumns,
+                                                     inline: engine.setInlineColumns)
+                if constants.contains(name) {
+                    Menu {
+                        placementButton(name, .table, "In table", current: where_)
+                        placementButton(name, .runHeader, "In run header", current: where_)
+                        placementButton(name, .hidden, "Hidden", current: where_)
+                    } label: {
+                        Label(SetTableModel.header(column) + (where_ == .runHeader
+                                                             ? " — in run header" : ""),
+                              systemImage: where_ == .hidden ? "" : "checkmark")
                     }
-                } label: {
-                    Label(SetTableModel.header(column),
-                          systemImage: engine.setHiddenColumns.contains(name) ? "" : "checkmark")
+                } else {
+                    Button {
+                        let next = SetTableModel.place(name, where_ == .hidden ? .table : .hidden,
+                                                       hidden: engine.setHiddenColumns,
+                                                       inline: engine.setInlineColumns)
+                        engine.setHiddenColumns = next.hidden
+                        engine.setInlineColumns = next.inline
+                    } label: {
+                        Label(SetTableModel.header(column),
+                              systemImage: where_ == .hidden ? "" : "checkmark")
+                    }
                 }
             }
             Divider()
+            // Unhides; does not pull the run constants into the table.
             Button("Show all") { engine.setHiddenColumns = [] }
         } label: {
             Text("Columns").font(.system(size: 10))
@@ -950,6 +1155,19 @@ struct SetTableView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Hide columns you are not triaging on. Saved with a view (set_view_save).")
+    }
+
+    private func placementButton(_ name: String, _ placement: SetTableModel.Placement,
+                                 _ title: String,
+                                 current: SetTableModel.Placement) -> some View {
+        Button {
+            let next = SetTableModel.place(name, placement, hidden: engine.setHiddenColumns,
+                                           inline: engine.setInlineColumns)
+            engine.setHiddenColumns = next.hidden
+            engine.setInlineColumns = next.inline
+        } label: {
+            Label(title, systemImage: current == placement ? "checkmark" : "")
+        }
     }
 
     private func footerButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
@@ -1528,7 +1746,10 @@ private struct SetTableRowView: View {
                 let value = row.value(column)
                 Text(SetTableModel.format(value, column))
                     .lineLimit(1)
-                    .frame(width: metricWidth, alignment: .trailing)
+                    .truncationMode(column.dtype == "str" ? .middle : .tail)
+                    .padding(.horizontal, SetTableView.cellPadding)
+                    .frame(width: SetTableView.width(of: column, metricWidth: metricWidth),
+                           alignment: SetTableView.alignment(of: column))
                     .padding(.vertical, 2)
                     .background(rampTint(value, column))
                     .foregroundColor(value.isNull ? PanelTheme.disabledColor : PanelTheme.textColor)

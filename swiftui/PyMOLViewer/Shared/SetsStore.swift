@@ -42,9 +42,45 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
     let tool: String
     /// The wide-table column, `key` or `key__chain`; nil for residue/pair arrays.
     let column: String?
+    /// `score` or `provenance` (#544): whether this column measures the result — what
+    /// a user triages on, so the table shows it first — or records what was asked for
+    /// and what it cost. Python writes it (`MetricSpec.role`); a container from before
+    /// the field gets it by the same rule Python applies, `defaultRole`.
+    let role: String
+
+    static let scoreRole = "score"
+    static let provenanceRole = "provenance"
+
+    /// `metrics.schema.default_role`, verbatim: a column with a better end is a
+    /// score, one without is provenance.
+    static func defaultRole(higherIsBetter: Bool?) -> String {
+        higherIsBetter == nil ? provenanceRole : scoreRole
+    }
+
+    /// `metrics.schema.LEGACY_ROLE_OVERRIDES`, verbatim: the shipped keys the default
+    /// rule gets wrong, for a record with no role. Python migrates a file's records on
+    /// open, but this reader can see one first, and an old boltz set must not open on
+    /// Inference time and Peak memory.
+    static let legacyRoleOverrides: [String: String] = [
+        "elapsed_s": provenanceRole,
+        "peak_bytes": provenanceRole,
+        "design_ca_ca_mean": scoreRole,
+        "design_radius_of_gyration": scoreRole,
+        "interface_min_distance": scoreRole,
+        "sequence_recovery": scoreRole,
+    ]
+
+    /// The role of a record that names none: the override, else the default rule.
+    static func legacyRole(key: String, higherIsBetter: Bool?) -> String {
+        legacyRoleOverrides[key] ?? defaultRole(higherIsBetter: higherIsBetter)
+    }
 
     var id: String { column ?? "\(key)#\(chain ?? "")" }
     var isScalar: Bool { column != nil }
+    var isScore: Bool { role == Self.scoreRole }
+    /// A chain id column (`design_chain`): one or two characters that need a floor on
+    /// their width and some air, or they run into the next cell (#544).
+    var isChainID: Bool { dtype == "str" && (key == "chain" || key.hasSuffix("_chain")) }
     /// "plddt/B" for a chain scalar, else the spec's label.
     var title: String {
         if let chain, !chain.isEmpty { return "\(label)/\(chain)" }
@@ -52,14 +88,14 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case key, scope, dtype, units, label, lo, hi, chain, tool, column
+        case key, scope, dtype, units, label, lo, hi, chain, tool, column, role
         case higherIsBetter = "higher_is_better"
     }
 
     init(key: String, scope: String = "object", dtype: String = "float", units: String = "",
          label: String = "", lo: Double? = nil, hi: Double? = nil,
          higherIsBetter: Bool? = nil, chain: String? = nil, tool: String = "",
-         column: String? = nil) {
+         column: String? = nil, role: String? = nil) {
         self.key = key
         self.scope = scope
         self.dtype = dtype
@@ -71,6 +107,11 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
         self.chain = chain
         self.tool = tool
         self.column = column
+        if let role, role == Self.scoreRole || role == Self.provenanceRole {
+            self.role = role
+        } else {
+            self.role = Self.legacyRole(key: key, higherIsBetter: higherIsBetter)
+        }
     }
 
     /// Every field but `key` is optional on the way in: the JSON is written by
@@ -90,7 +131,8 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
             higherIsBetter: try? c.decodeIfPresent(Bool.self, forKey: .higherIsBetter),
             chain: try? c.decodeIfPresent(String.self, forKey: .chain),
             tool: (try? c.decodeIfPresent(String.self, forKey: .tool)) ?? "",
-            column: try? c.decodeIfPresent(String.self, forKey: .column))
+            column: try? c.decodeIfPresent(String.self, forKey: .column),
+            role: try? c.decodeIfPresent(String.self, forKey: .role))
     }
 }
 
@@ -1803,6 +1845,7 @@ extension PyMOLEngine {
         setSelection = []
         setViewportSelection = []
         setHiddenColumns = []
+        setInlineColumns = []
         dataDrawerTab = Self.tabAfterSetChange(dataDrawerTab)
         // The TAB is deliberately NOT reset. This runs on every `activeSetID` change,
         // and a campaign makes a new set active repeatedly — `binder_design` then
@@ -1874,7 +1917,12 @@ extension PyMOLEngine {
     func saveSetView(_ set: SetEntry, named view: String, columns: [String]) {
         let clean = view.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
-        let list = columns.filter { SetsStore.isSafeIdentifier($0) }.joined(separator: "+")
+        // `name@inline` (#544) is a column name plus a marker no column name can hold.
+        let list = columns.filter { name in
+            let bare = name.hasSuffix(SetTableModel.inlineMarker)
+                ? String(name.dropLast(SetTableModel.inlineMarker.count)) : name
+            return SetsStore.isSafeIdentifier(bare)
+        }.joined(separator: "+")
         runPythonQuiet("from pymol import cmd as _c\n"
                        + "_c.set_view_save(\(pyQuoted(set.name)), \(pyQuoted(clean)),"
                        + " columns=\(Self.pythonLiteral(list)))")
@@ -1888,9 +1936,10 @@ extension PyMOLEngine {
         setFilterText = view.filter
         setBrushes = []
         if !view.columns.isEmpty {
-            let visible = Set(view.columns)
-            setHiddenColumns = Set(set.columns.compactMap(\.column)
-                                    .filter { !visible.contains($0) })
+            let restored = SetTableModel.restore(viewColumns: view.columns,
+                                                 allColumns: set.columns.compactMap(\.column))
+            setHiddenColumns = restored.hidden
+            setInlineColumns = restored.inline
         }
         runPythonQuiet("from pymol import appkit_sets as _s\n"
                        + "_s.apply_view(\(pyQuoted(set.name)), \(pyQuoted(view.name)))")
