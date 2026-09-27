@@ -37,8 +37,15 @@ page is about the UI that sits on top of them (#417, #418, #419, tracking #421).
   the target or the reference has moved; the target itself is placed once, when it is
   made (superposed on the reference when staged from the drawer). `set_add`,
   `predict` and `design_sequences` on a staged binder read it together with its target
-  (`design_sequences` holds the target). A plain `save x.pdb` of the binder object
-  writes the binder only — select `binder or target_<set>` to write the complex.
+  (`design_sequences` holds the target), rebuilding the complex from the stored entry
+  if the target object was deleted. A plain `save x.pdb` of the binder object writes
+  the binder only — select `binder or target_<set>` to write the complex.
+  The target is drawn as a cartoon, except when it lies on the set's reference (same
+  sequences, CA RMSD ≤ 0.5 Å): then it is made **disabled** — its eye in the object
+  panel shows it — so the same structure is not drawn twice. Deleted while binders are
+  still staged, it is rebuilt from the most recently staged one, where they are. A
+  target that no longer fits (re-chained or edited by hand) makes the next entry stage
+  whole on the reference, with a warning.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
   with a header naming the set, the tab bar with the filter beside it, and the active
   tab. All four tabs — Table, Plot, Sequences, Lineage — are live since #419. Drag the

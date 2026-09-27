@@ -1253,6 +1253,144 @@ class SharedTarget(BatchTestCase):
         self.assertTrue(c.meta_get('app_version'))
         c.close()
 
+    # -- review round 2 ------------------------------------------------------------
+
+    def testPredictReadsABinderInItsStoredChainOrderHoweverItWasStaged(self):
+        from pymol import predicting
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        c = store.active()
+        delivered = self.staged(row)[0]
+        order = [ch for ch, _ in c.chain_blobs(delivered['id'])]
+        self.assertEqual(order, ['A', 'B'])
+        with redirect_stdout(io.StringIO()):
+            _seq, sources = predicting.resolve_input(delivered['staged_object'])
+        self.assertEqual([ch for _, ch in sources], order, 'delivered binder')
+        self.assertEqual(dict(sources)[delivered['staged_object']], 'B')
+        cmd.set_unstage(row['name'], delivered['name'])
+        cmd.set_stage(row['name'], delivered['name'])
+        with redirect_stdout(io.StringIO()):
+            _seq, again = predicting.resolve_input(delivered['staged_object'])
+        self.assertEqual([ch for _, ch in again], order, 'restaged binder')
+
+    def testATargetDeletedUnderLiveBindersIsRebuiltWhereTheyAre(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        names = [e['name'] for e in self.staged(row)]
+        cmd.create('far', row['reference'])
+        cmd.translate([0, 122, 0], 'far', camera=0)
+        cmd.set_reference(row['name'], 'far')
+        cmd.translate([9, 0, 0], row['reference'], camera=0)
+        target = self.target(row)
+        cmd.delete(target)
+        cmd.set_unstage(row['name'], names[0])
+        cmd.set_stage(row['name'], names[0])
+        self.assertEqual(self.target(row), target)
+        for name in names:
+            self.assertOnTarget(row, name)
+
+    def testATargetOnTopOfTheReferenceIsMadeDisabledAndOtherwiseShown(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        target = self.target(row)
+        enabled = cmd.get_names('objects', enabled_only=1)
+        self.assertNotIn(target, enabled, 'the design target copy IS the reference')
+        n = cmd.count_atoms(target)
+        self.assertEqual(cmd.count_atoms('%s and rep cartoon' % target), n,
+                         'disabled, not repless: the panel toggle shows it')
+        # Staged from the drawer against a reference that is somewhere else: shown.
+        cmd.set_unstage(row['name'], 'all')
+        cmd.translate([30, 0, 0], row['reference'], camera=0)
+        with patch.object(binding, '_superpose', return_value=False):
+            cmd.set_stage(row['name'], 'all')
+        target = self.target(row)
+        self.assertIn(target, cmd.get_names('objects', enabled_only=1))
+        self.assertEqual(cmd.count_atoms('%s and rep cartoon' % target), n)
+        # And by the same rule on the stage path: superposed onto it, it coincides.
+        cmd.set_unstage(row['name'], 'all')
+        cmd.set_stage(row['name'], 'all')
+        self.assertNotIn(self.target(row), cmd.get_names('objects', enabled_only=1))
+
+    def testAFailureInsideTheSplitLeavesTheComplexWholeAndNoTarget(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        cmd.set_unstage(row['name'], 'all')
+        name = jobs[0].spec.name
+        real_remove = cmd.remove
+
+        def failing(selection, *a, **k):
+            if 'not (' in str(selection):
+                raise RuntimeError('injected')
+            return real_remove(selection, *a, **k)
+        with patch.object(cmd, 'remove', side_effect=failing):
+            self.assertRaises(Exception, cmd.set_stage, row['name'], name)
+        self.assertNotIn(binding.target_name(row['name']), cmd.get_names('all'))
+        self.assertEqual(sorted(cmd.get_chains(name)), ['A', 'B'])
+        self.assertIsNone(store.active().entry(row['id'], name)['staged_object'])
+        # A failure AFTER the split: the binder is put back whole, too.
+        cmd.delete(name)
+        with patch.object(binding, '_adopt_target', side_effect=RuntimeError('boom')):
+            self.assertRaises(Exception, cmd.set_stage, row['name'], name)
+        self.assertEqual(sorted(cmd.get_chains(name)), ['A', 'B'])
+        self.assertNotIn(binding.target_name(row['name']), cmd.get_names('all'))
+
+    def testObjectToolsRebuildTheComplexWhenTheTargetIsGone(self):
+        from pymol import predicting
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        binder = self.staged(row)[0]['staged_object']
+        cmd.delete(self.target(row))
+        self.assertTrue(binding.is_split(binder))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _seq, sources = predicting.resolve_input(binder)
+        self.assertEqual([ch for _, ch in sources], ['A', 'B'])
+        self.assertIn('not in the scene', out.getvalue())
+        cmd.set_create('picked')
+        with redirect_stdout(io.StringIO()):
+            cmd.set_add('picked', binder)
+        c = store.active()
+        e = c.entries(c.get_set('picked')['id'])[0]
+        self.assertEqual([ch for ch, _ in c.chain_cifs(e['id'])], ['A', 'B'])
+        self.assertFalse([n for n in cmd.get_names('all') if n.startswith('_raymol_')])
+
+    def testATargetThatCannotBeFitStagesWholeOnTheReference(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        name = self.staged(row)[0]['name']
+        cmd.alter(self.target(row), 'chain="Q"')
+        cmd.set_unstage(row['name'], name)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            obj = cmd.set_stage(row['name'], name)[0]
+        self.assertIn('could not fit', out.getvalue())
+        self.assertEqual(sorted(cmd.get_chains(obj)), ['A', 'B'])
+
+    def testLoadingARaymolUnpicklesItsSessionOnce(self):
+        jobs = self.design(1)
+        deliver_designs(jobs)
+        path = os.path.join(_RESULTS['dir'], 'once.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+        import pickle
+        calls = []
+        real = pickle.loads
+
+        def counting(data, *a, **k):
+            calls.append(len(data))
+            return real(data, *a, **k)
+        with patch.object(binding.pickle, 'loads', side_effect=counting), \
+                redirect_stdout(io.StringIO()):
+            cmd.load(path)
+        self.assertEqual(len(calls), 1)
+
     def testAVersionOneFileIsBackfilledFromItsMetricsAndItsRuns(self):
         import sqlite3
         jobs = self.design(2)

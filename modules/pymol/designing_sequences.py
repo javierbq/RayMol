@@ -367,13 +367,14 @@ SEE ALSO
     # backbone is the complex as it sits in the scene, and the target -- outside the
     # source selection -- is held (#545 review). Everything else reads `obj` as before.
     from pymol.sets import binding as set_binding
-    context = set_binding.split_context(obj, _self=_self)
+    context = 'shared_target' if set_binding.is_split(obj, _self=_self) else ''
     with set_binding.complex_of(obj, state, _self=_self) as (src, src_state):
         backbone = designer_base.read_backbone(src, src_state, _self=_self)
     if context:
         colorprinting.parrot(' design_sequences: %s is staged over its set\'s shared'
                              ' target %s; designing it in that context, target held'
-                             % (obj, context))
+                             % (obj, set_binding.split_context(obj, _self=_self)
+                                or '(read from the stored complex)'))
     spec = designer_obj.parse_backbone(
         backbone, name=obj, source=obj, state=state,
         fixed=_held_positions(backbone, source, fixed, obj, _self=_self))
@@ -911,7 +912,7 @@ def _object_is_still_the_one(obj, index, state=1, context='', _self=cmd):
             # Designed over a shared target: the identity is the complex it was read
             # from, which has to still be there to be checked.
             from pymol.sets import binding as set_binding
-            if set_binding.split_context(obj, _self=_self) != context:
+            if not set_binding.is_split(obj, _self=_self):
                 return False
             with set_binding.complex_of(obj, state, _self=_self) as (src, _):
                 _self.iterate('(%s) and polymer and guide' % src,
